@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { QaRepoConfig } from "@/api/index.ts";
+import type { QaRepoConfig } from "@/api/types.ts";
 import { resolveQaRepoUrlInputValue } from "@/components/settings/qa-settings-state";
 
 function makeRepoConfig(overrides: Partial<QaRepoConfig> = {}): QaRepoConfig {

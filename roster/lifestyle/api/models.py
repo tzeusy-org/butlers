@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from butlers.api.models.base import ResponseSchemaModel
 
 type TasteSummaryQueryName = Literal[
     "total_works",
@@ -19,7 +21,7 @@ type TasteSummaryQueryName = Literal[
 ]
 
 
-class TasteSummaryQueryAvailability(BaseModel):
+class TasteSummaryQueryAvailability(ResponseSchemaModel):
     """Content-blind availability of one ledger summary query."""
 
     query: TasteSummaryQueryName
@@ -27,7 +29,7 @@ class TasteSummaryQueryAvailability(BaseModel):
     reason: Literal["query_failed"] | None = None
 
 
-class TasteSummary(BaseModel):
+class TasteSummary(ResponseSchemaModel):
     """Ledger-wide taste counts (bu-2jtfw.10)."""
 
     total_works: int
@@ -47,7 +49,7 @@ class TasteSummary(BaseModel):
     ledger_available: bool = True
 
 
-class TasteWork(BaseModel):
+class TasteWork(ResponseSchemaModel):
     """One work (track, artist, ...) in the taste ledger."""
 
     id: str
@@ -57,7 +59,7 @@ class TasteWork(BaseModel):
     created_at: str
 
 
-class TasteVerdict(BaseModel):
+class TasteVerdict(ResponseSchemaModel):
     """One owner assertion about taste, optionally tied to a work."""
 
     id: str

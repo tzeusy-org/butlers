@@ -21,8 +21,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getAttentionLedgerSummary } from "@/api/index.ts";
-import type { AttentionSourceSummary } from "@/api/index.ts";
+import { getAttentionLedgerSummary } from "@/api/client.ts";
+import type { AttentionSourceSummary } from "@/api/types.ts";
 import { QueryBoundary } from "@/components/ui/query-boundary.tsx";
 import { cn } from "@/lib/utils";
 import { Time } from "@/components/ui/time";

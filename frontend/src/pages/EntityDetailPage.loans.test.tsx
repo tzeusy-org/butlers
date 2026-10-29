@@ -129,11 +129,21 @@ const ENTITY: EntityDetail = {
   recent_facts_offset: 0,
   recent_facts_limit: 20,
   recent_facts_has_more: false,
+  rebind_receipts: [],
   entity_info: [],
 };
 
 function makeLoan(overrides: Partial<EntityLoan> = {}): EntityLoan {
   return {
+claim_id: null,
+resolution_state: null,
+unverifiable_reason: null,
+src: "memory_module_legacy",
+conf: null,
+last_seen: null,
+weight: null,
+verified: false,
+primary: false,
     id: "loan-1",
     description: "Concert tickets",
     amount_cents: "15000",

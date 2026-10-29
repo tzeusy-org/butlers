@@ -382,6 +382,10 @@ describe("AuditLogPage — debounced filter feedback", () => {
     try {
       setupDefaults([
         {
+error: null,
+metadata: null,
+redacted: false,
+result: null,
           id: 1,
           ts: "2026-01-15T10:00:00Z",
           actor: "owner",
@@ -416,6 +420,10 @@ describe("AuditLogPage — debounced filter feedback", () => {
 describe("AuditLogPage — table renders new-schema rows", () => {
   it("renders actor and action columns from AuditLogEntry", () => {
     const entry: AuditLogEntry = {
+metadata: null,
+result: null,
+error: null,
+redacted: false,
       id: 1,
       ts: "2026-01-15T10:00:00Z",
       actor: "owner",
@@ -435,6 +443,10 @@ describe("AuditLogPage — table renders new-schema rows", () => {
   it("renders multiple entries", () => {
     const entries: AuditLogEntry[] = [
       {
+error: null,
+metadata: null,
+redacted: false,
+result: null,
         id: 1,
         ts: "2026-01-15T10:00:00Z",
         actor: "owner",
@@ -445,6 +457,10 @@ describe("AuditLogPage — table renders new-schema rows", () => {
         request_id: null,
       },
       {
+error: null,
+metadata: null,
+redacted: false,
+result: null,
         id: 2,
         ts: "2026-01-15T09:00:00Z",
         actor: "qa",
@@ -467,6 +483,10 @@ describe("AuditLogPage — keyboard triage", () => {
   it("moves between rows and exposes the selected-entry toggle in the palette", () => {
     setupDefaults([
       {
+error: null,
+metadata: null,
+redacted: false,
+result: null,
         id: 1,
         ts: "2026-01-15T10:00:00Z",
         actor: "owner",
@@ -477,6 +497,10 @@ describe("AuditLogPage — keyboard triage", () => {
         request_id: null,
       },
       {
+error: null,
+metadata: null,
+redacted: false,
+result: null,
         id: 2,
         ts: "2026-01-15T09:00:00Z",
         actor: "qa",
@@ -525,6 +549,10 @@ describe("AuditLogPage — keyboard triage", () => {
   it("lets the focused disclosure row handle Enter exactly once", () => {
     setupDefaults([
       {
+error: null,
+metadata: null,
+redacted: false,
+result: null,
         id: 1,
         ts: "2026-01-15T10:00:00Z",
         actor: "owner",

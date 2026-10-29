@@ -22,6 +22,8 @@ import type { AuditLogEntry, Issue } from "../../api/types";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
+recurrence_at: null,
+dismissed: false,
     severity: "warning",
     type: "audit_error_group:boom",
     butler: "general",
@@ -248,6 +250,10 @@ describe("IssuesPanel", () => {
   describe("Occurrences drill-down (JARVIS audit move 6)", () => {
     function makeOccurrence(overrides: Partial<AuditLogEntry> = {}): AuditLogEntry {
       return {
+metadata: null,
+result: null,
+error: null,
+redacted: false,
         id: 1,
         ts: "2026-06-14T10:30:00.000Z",
         actor: "general",

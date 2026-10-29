@@ -18,8 +18,8 @@ vi.mock("sonner", () => ({
 }))
 
 // GoogleAppCredentials fetches status + saves via the api barrel.
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>()
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>()
   return {
     ...actual,
     getGoogleCredentialStatus: vi.fn(() =>
@@ -45,7 +45,7 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(() => ({ data: { data: [] }, isLoading: false, error: null })),
 }))
 
-import { getGoogleCredentialStatus } from "@/api/index.ts"
+import { getGoogleCredentialStatus } from "@/api/client.ts";
 import { PageSystem } from "./pages.tsx"
 import type { SystemCredential } from "./types.ts"
 

@@ -23,17 +23,7 @@
 import { useMemo } from "react";
 import { Link } from "react-router";
 
-import type {
-  LatestMeasurementEntry,
-  HealthBaseline,
-  HealthBaselinesResponse,
-  ExpectedSignal,
-  Measurement,
-  MeasurementSource,
-  Medication,
-  HealthCondition,
-  SleepLatestResponse,
-} from "@/api/index.ts";
+import type { LatestMeasurementEntry, HealthBaseline, HealthBaselinesResponse, ExpectedSignal, Measurement, MeasurementSource, Medication, HealthCondition, SleepLatestResponse } from "@/api/types.ts";
 import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

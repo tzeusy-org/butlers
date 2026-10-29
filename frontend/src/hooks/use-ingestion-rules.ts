@@ -11,19 +11,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  createIngestionRule,
-  deleteIngestionRule,
-  getIngestionRules,
-  testIngestionRule,
-  updateIngestionRule,
-} from "@/api/index.ts";
-import type {
-  IngestionRuleCreate,
-  IngestionRuleListParams,
-  IngestionRuleTestRequest,
-  IngestionRuleUpdate,
-} from "@/api/index.ts";
+import { createIngestionRule, deleteIngestionRule, getIngestionRules, testIngestionRule, updateIngestionRule } from "@/api/client.ts";
+import type { IngestionRuleCreate, IngestionRuleListParams, IngestionRuleTestRequest, IngestionRuleUpdate } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory

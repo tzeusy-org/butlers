@@ -58,16 +58,16 @@ import type { OwnTracksConfigResponse, OwnTracksStatusResponse } from "../../src
 const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
   data: {
     user: [
-      {
+      { issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
         id: "u-google-tze",
         entity_id: "tze",
         provider: "google",
         state: "ok",
         fingerprint: "sha256:7a3f9e2c",
         last_verified: "14:21 today",
-        test: { ok: true, code: 200, at: "14:21 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "14:21 today" },
       },
-      {
+      { issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
         id: "u-ha-tze",
         entity_id: "tze",
         provider: "homeassistant",
@@ -78,22 +78,22 @@ const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
       },
     ],
     system: [
-      {
+      { last_test_ok: null, last_test_code: null, audit: [], read_only: false, used_by: [],
         key: "BUTLER_TELEGRAM_TOKEN",
         state: "ok",
         fingerprint: "sha256:ab12cd34",
         last_verified: "14:01 today",
         butler: "switchboard",
-        test: { ok: true, code: 200, at: "14:01 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "14:01 today" },
       },
     ],
     cli: [
-      {
+      { issued: null, expires: null, last_test_ok: null, last_test_code: null,
         key: "claude-cli",
         state: "ok",
         fingerprint: "sha256:11a47cd2",
         last_verified: "14:15 today",
-        test: { ok: true, code: 200, at: "14:15 today" },
+        test: { latency_ms: null, ok: true, code: 200, at: "14:15 today" },
       },
     ],
     identities: [
@@ -118,7 +118,7 @@ const MOCK_INVENTORY_RESPONSE: ResponseOf<"getSecretsInventory"> = {
       },
     },
   },
-  meta: {
+  meta: { severity: {"ok":3,"never_set":1},
     failing_count: 1,
     unverified_count: 0,
     failing_count_by_family: { cli: 0, system: 0, user: 1 },
@@ -158,7 +158,7 @@ async function mockAllSecretRoutes(page: Page) {
   );
   // User secret mutations
   await page.route("**/api/secrets/user/*/probe**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("probeUserCredential", { data: { ok: true, code: 200, at: "just now", message: null }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("probeUserCredential", { data: { latency_ms: null, ok: true, code: 200, at: "just now", message: null }, meta: {} }) })
   );
   await page.route("**/api/secrets/user/*/rotate**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: mockJson("rotateUserCredential", { data: { state: "ok", id: "u-google-tze", entity_id: "tze", provider: "google", fingerprint: null, issued: null, expires: null, last_verified: null, capabilities_required: [], capabilities_granted: [], test: null, audit: [], capabilities: [] }, meta: {} }) })
@@ -171,7 +171,7 @@ async function mockAllSecretRoutes(page: Page) {
   );
   // System secret mutations
   await page.route("**/api/secrets/system/*/probe**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("probeSystemCredential", { data: { ok: true, code: 200, at: "just now", message: null }, meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("probeSystemCredential", { data: { latency_ms: null, ok: true, code: 200, at: "just now", message: null }, meta: {} }) })
   );
   await page.route("**/api/secrets/system/**", (route) => {
     const method = route.request().method();
@@ -198,7 +198,7 @@ async function mockAllSecretRoutes(page: Page) {
     route.fulfill({
       status: 200, contentType: "application/json",
       body: mockJson("reauthorizeCliCredential", {
-        data: {
+        data: { env_var: null, prompt: null,
           auth_mode: "device_code",
           provider: "github",
           session_id: "sess-001",
@@ -213,7 +213,7 @@ async function mockAllSecretRoutes(page: Page) {
   );
   // Butler list (for override picker)
   await page.route("**/api/butlers", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getButlers", { data: [{ name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0 }, { name: "tze", status: "running", port: 0, type: "butler", sessions_24h: 0 }], meta: {} }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getButlers", { data: [{ db: "", description: null, modules: [], last_session_started_at: null, name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0 }, { db: "", description: null, modules: [], last_session_started_at: null, name: "tze", status: "running", port: 0, type: "butler", sessions_24h: 0 }], meta: {} }) })
   );
   // Google accounts list (GET only -- sub-paths handled separately below)
   await page.route((url) => url.pathname === "/api/oauth/google/accounts" && url.search === "", (route) => {
@@ -276,7 +276,7 @@ async function mockAllSecretRoutes(page: Page) {
     route.continue();
   });
   // OwnTracks: use the connector API contract, not the inventory state shape.
-  const ownTracksStatus = {
+  const ownTracksStatus = { connector_running: false, uptime_seconds: null,
     state: "connected",
     token_configured: true,
     last_event_at: "2026-01-15T14:01:00Z",
@@ -301,12 +301,12 @@ async function mockAllSecretRoutes(page: Page) {
     route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getOwnTracksConfig", ownTracksConfig) })
   );
   await page.route("**/api/connectors/owntracks/token/generate**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("generateOwnTracksToken", { token: "new-owntracks-token-abc123" }) })
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("generateOwnTracksToken", { message: "Token generated. Copy it now — it will not be shown again.", token: "new-owntracks-token-abc123" }) })
   );
   // Steam
   await page.route("**/api/steam/accounts**", (route) => {
-    if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("listSteamAccounts", { accounts: [{ id: "steam-1", steam_id: "76561198000001", display_name: "SteamUser1", profile_url: null, avatar_url: null, is_primary: false, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null }] }) });
-    if (route.request().method() === "POST") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("connectSteamAccount", { success: true, message: "Connected", account: { id: "steam-2", steam_id: "76561198000002", display_name: null, profile_url: null, avatar_url: null, is_primary: false, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null } }) });
+    if (route.request().method() === "GET") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("listSteamAccounts", { accounts: [{ id: "steam-1", steam_id: 76561198000001, display_name: "SteamUser1", profile_url: null, avatar_url: null, is_primary: false, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null }] }) });
+    if (route.request().method() === "POST") return route.fulfill({ status: 200, contentType: "application/json", body: mockJson("connectSteamAccount", { success: true, message: "Connected", account: { id: "steam-2", steam_id: 76561198000002, display_name: null, profile_url: null, avatar_url: null, is_primary: false, status: "active", connected_at: "2026-01-01T00:00:00Z", last_poll_at: null } }) });
     route.continue();
   });
   await page.route("**/api/steam/accounts/**", (route) => {
@@ -622,12 +622,12 @@ test.describe("PageCli (C22–C28)", () => {
     // In that mode PageCli renders rotate/test/reveal/revoke (direct rotate flow).
     await mockAllSecretRoutes(page);
     const inventoryWithGeneric = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithGeneric.data.cli.push({
+    inventoryWithGeneric.data.cli.push({ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "generic-token",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
-      test: { ok: true, code: 200, at: "13:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithGeneric) })
@@ -660,12 +660,12 @@ test.describe("PageCli (C22–C28)", () => {
     // rotation path offered must be paste ("update token"), never generate.
     await mockAllSecretRoutes(page);
     const inventoryWithMirror = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithMirror.data.cli.push({
+    inventoryWithMirror.data.cli.push({ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "cli-auth/orphan-provider",
       state: "ok",
       fingerprint: "sha256:orphan01",
       last_verified: "13:00 today",
-      test: { ok: true, code: 200, at: "13:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithMirror) })
@@ -685,12 +685,12 @@ test.describe("PageCli (C22–C28)", () => {
     // Use generic-token (no provider entry) so isApiKeyMode=false and revoke shows.
     await mockAllSecretRoutes(page);
     const inventoryWithGeneric = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithGeneric.data.cli.push({
+    inventoryWithGeneric.data.cli.push({ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "generic-token",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
-      test: { ok: true, code: 200, at: "13:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithGeneric) })
@@ -759,7 +759,7 @@ test.describe("PageCli (C22–C28)", () => {
     // Inject a device-code CLI credential
     await mockAllSecretRoutes(page);
     const inventoryWithDevice = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithDevice.data.cli.push({
+    inventoryWithDevice.data.cli.push({ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "github-cli",
       state: "never_set",
       fingerprint: null,
@@ -793,12 +793,12 @@ test.describe("PageCli (C22–C28)", () => {
     // Covers C27 -- cancel device-code flow
     await mockAllSecretRoutes(page);
     const inventoryWithDevice = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithDevice.data.cli.push({
+    inventoryWithDevice.data.cli.push({ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "github-cli2",
       state: "ok",
       fingerprint: "sha256:ghcli2",
       last_verified: "12:00 today",
-      test: { ok: true, code: 200, at: "12:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "12:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithDevice) })
@@ -1005,14 +1005,14 @@ test.describe("Provider drawers (C32-C36)", () => {
     // Add owntracks to the inventory mock and navigate to it
     await mockAllSecretRoutes(page);
     const inventoryWithOT = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithOT.data.user.push({
+    inventoryWithOT.data.user.push({ issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
       id: "u-owntracks-tze",
       entity_id: "tze",
       provider: "owntracks",
       state: "ok",
       fingerprint: "sha256:ottrack",
       last_verified: "11:00 today",
-      test: { ok: true, code: 200, at: "11:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "11:00 today" },
     });
     (inventoryWithOT.data.providers ??= {}).owntracks = {
       id: "owntracks", label: "OwnTracks", glyph: "O", kind: "webhook",
@@ -1043,14 +1043,14 @@ test.describe("Provider drawers (C32-C36)", () => {
     // Covers C33 -- replacing a configured token requires confirmation.
     await mockAllSecretRoutes(page);
     const inventoryWithOT = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithOT.data.user.push({
+    inventoryWithOT.data.user.push({ issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
       id: "u-owntracks-tze",
       entity_id: "tze",
       provider: "owntracks",
       state: "ok",
       fingerprint: "sha256:ottrack",
       last_verified: "11:00 today",
-      test: { ok: true, code: 200, at: "11:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "11:00 today" },
     });
     (inventoryWithOT.data.providers ??= {}).owntracks = {
       id: "owntracks", label: "OwnTracks", glyph: "O", kind: "webhook",
@@ -1091,14 +1091,14 @@ test.describe("Provider drawers (C32-C36)", () => {
     // Covers C34 -- Steam drawer: connect SteamID / API key, disconnect accounts
     await mockAllSecretRoutes(page);
     const inventoryWithSteam = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithSteam.data.user.push({
+    inventoryWithSteam.data.user.push({ issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
       id: "u-steam-tze",
       entity_id: "tze",
       provider: "steam",
       state: "ok",
       fingerprint: "sha256:steam1",
       last_verified: "10:00 today",
-      test: { ok: true, code: 200, at: "10:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "10:00 today" },
     });
     (inventoryWithSteam.data.providers ??= {}).steam = {
       id: "steam", label: "Steam", glyph: "S", kind: "apikey",
@@ -1156,14 +1156,14 @@ test.describe("Provider drawers (C32-C36)", () => {
     // Covers C36 -- WhatsApp drawer: QR pairing start/poll/cancel, disconnect
     await mockAllSecretRoutes(page);
     const inventoryWithWA = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithWA.data.user.push({
+    inventoryWithWA.data.user.push({ issued: null, expires: null, capabilities_required: [], capabilities_granted: [], audit: [], capabilities: [],
       id: "u-whatsapp-tze",
       entity_id: "tze",
       provider: "whatsapp",
       state: "ok",
       fingerprint: "sha256:wa1234",
       last_verified: "09:00 today",
-      test: { ok: true, code: 200, at: "09:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "09:00 today" },
     });
     (inventoryWithWA.data.providers ??= {}).whatsapp = {
       id: "whatsapp", label: "WhatsApp", glyph: "W", kind: "token",
@@ -1437,12 +1437,12 @@ test.describe("Error / edge paths", () => {
       route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "revoke failed" }) })
     );
     const inventoryWithGeneric = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryWithGeneric.data.cli.push({
+    inventoryWithGeneric.data.cli.push({ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "generic-token",
       state: "ok",
       fingerprint: "sha256:gentoken",
       last_verified: "13:00 today",
-      test: { ok: true, code: 200, at: "13:00 today" },
+      test: { latency_ms: null, ok: true, code: 200, at: "13:00 today" },
     });
     await page.route("**/api/secrets/inventory**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getSecretsInventory", inventoryWithGeneric) })
@@ -1500,7 +1500,7 @@ test.describe("No-dead-control assertion", () => {
     // Commit pill on missing system credential is "set value"
     await mockAllSecretRoutes(page);
     const inventoryMissing = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryMissing.data.system = [{
+    inventoryMissing.data.system = [{ last_test_ok: null, last_test_code: null, audit: [], read_only: false, used_by: [],
       key: "MISSING_KEY",
       state: "missing",
       fingerprint: null,
@@ -1526,7 +1526,7 @@ test.describe("No-dead-control assertion", () => {
   test("every commit-pill on CLI page (missing) triggers a visible response", async ({ page }) => {
     await mockAllSecretRoutes(page);
     const inventoryMissingCli = structuredClone(MOCK_INVENTORY_RESPONSE);
-    inventoryMissingCli.data.cli = [{
+    inventoryMissingCli.data.cli = [{ issued: null, expires: null, last_test_ok: null, last_test_code: null,
       key: "missing-cli",
       state: "never_set",
       fingerprint: null,

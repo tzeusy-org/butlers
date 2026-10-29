@@ -77,7 +77,7 @@ vi.mock("@/lib/event-bus", () => ({
 
 // Mock the API module — we only need getApprovalsFlat + getApprovalsHistory +
 // getApprovalsPolicy for these tests. Others are stubs to satisfy imports.
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getApprovalsFlat: vi.fn(),
   getApprovalsHistory: vi.fn(),
   getApprovalsPolicy: vi.fn(),
@@ -115,31 +115,7 @@ vi.mock("@/api/index.ts", () => ({
   setRulePromotionRuleEnabled: vi.fn(),
 }));
 
-import {
-  approveApproval,
-  abandonApproval,
-  confirmAutonomySuggestion,
-  deferApproval,
-  denyApproval,
-  dismissAutonomySuggestion,
-  getApprovalDetail,
-  getApprovalGatedTools,
-  getApprovalMetrics,
-  getApprovalRuleSuggestions,
-  getApprovalRules,
-  getApprovalsFlat,
-  getApprovalsHistory,
-  getApprovalsPolicy,
-  getUnroutableAttention,
-  getAutonomySuggestions,
-  getRulePromotionStats,
-  getRulePromotionSuggestions,
-  retryApproval,
-  retryUnroutableAttention,
-  revokeApprovalRule,
-  createApprovalRuleFromAction,
-  updateApprovalsPolicy,
-} from "@/api/index.ts";
+import { approveApproval, abandonApproval, confirmAutonomySuggestion, deferApproval, denyApproval, dismissAutonomySuggestion, getApprovalDetail, getApprovalGatedTools, getApprovalMetrics, getApprovalRuleSuggestions, getApprovalRules, getApprovalsFlat, getApprovalsHistory, getApprovalsPolicy, getUnroutableAttention, getAutonomySuggestions, getRulePromotionStats, getRulePromotionSuggestions, retryApproval, retryUnroutableAttention, revokeApprovalRule, createApprovalRuleFromAction, updateApprovalsPolicy } from "@/api/client.ts";
 import { applyFleetEvent } from "@/hooks/event-cache-registry";
 import { toast } from "sonner";
 

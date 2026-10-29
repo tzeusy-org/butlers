@@ -43,6 +43,18 @@ const NOW = new Date("2026-06-13T00:00:00Z");
 
 function makeFact(overrides: Partial<Fact> = {}): Fact {
   return {
+source_episode_status: null,
+superseded_by: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+valid_at: null,
+invalid_at: null,
+idempotency_key: null,
     id: "7a3f21c9-0000-0000-0000-000000000000",
     subject: "Owner",
     predicate: "preferred_pain_relief",

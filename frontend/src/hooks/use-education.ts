@@ -1,28 +1,8 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import {
-  getEducationCrossTopicAnalytics,
-  getEducationCurriculumRequest,
-  getEducationLatestCurriculumRequest,
-  getEducationMasterySummary,
-  getEducationMindMap,
-  getEducationMindMapAnalytics,
-  getEducationMindMapAnalyticsTrend,
-  getEducationMindMapFrontier,
-  getEducationMindMaps,
-  getEducationPendingReviews,
-  getEducationQuizResponses,
-  getEducationSources,
-  requestEducationCurriculum,
-  updateEducationMindMapStatus,
-} from "@/api/index.ts";
-import type {
-  CurriculumRequestBody,
-  CurriculumRequestReceipt,
-  MindMapListParams,
-  QuizResponseParams,
-} from "@/api/index.ts";
+import { getEducationCrossTopicAnalytics, getEducationCurriculumRequest, getEducationLatestCurriculumRequest, getEducationMasterySummary, getEducationMindMap, getEducationMindMapAnalytics, getEducationMindMapAnalyticsTrend, getEducationMindMapFrontier, getEducationMindMaps, getEducationPendingReviews, getEducationQuizResponses, getEducationSources, requestEducationCurriculum, updateEducationMindMapStatus } from "@/api/client.ts";
+import type { CurriculumRequestBody, CurriculumRequestReceipt, MindMapListParams, QuizResponseParams } from "@/api/types.ts";
 
 /**
  * Primary poll intervals for education queries (bu-ep4ks.15). No fleet-bus event

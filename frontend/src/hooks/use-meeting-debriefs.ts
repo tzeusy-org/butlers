@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getPendingMeetingDebriefs } from "@/api/index.ts";
+import { getPendingMeetingDebriefs } from "@/api/client.ts";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy.ts";
 
 export const PENDING_DEBRIEFS_KEY = ["relationship", "meeting-debriefs", "pending"] as const;

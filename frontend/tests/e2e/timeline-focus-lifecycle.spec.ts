@@ -1,5 +1,6 @@
+import type { TimelineEvent } from "../../src/api/types";
 import { fulfillEmptyApi } from "./fixtures/empty-api";
-import { mockJson, type ResponseOf } from "./fixtures/api-responses";
+import { mockJson } from "./fixtures/api-responses";
 import { expect, test, type Page } from "@playwright/test";
 
 const HOUR_MS = 60 * 60 * 1_000;
@@ -10,7 +11,7 @@ function completeHour() {
   return { since: until - HOUR_MS, until };
 }
 
-function timelineEvent(id: string, timestamp: string): ResponseOf<"getTimeline">["data"][number] {
+function timelineEvent(id: string, timestamp: string): TimelineEvent {
   return {
     id,
     type: "notification",
@@ -89,7 +90,7 @@ async function mockTimeline(page: Page) {
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: mockJson("getTimeline", {
+      body: JSON.stringify({
         data: rows,
         meta: {
           cursor: null,

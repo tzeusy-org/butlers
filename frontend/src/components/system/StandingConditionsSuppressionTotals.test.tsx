@@ -24,6 +24,7 @@ afterEach(() => {
 
 function condition(id: string, fingerprint: string, ledger = "infra"): ConditionEntry {
   return {
+attention: null,
     id, fingerprint, ledger, source: "infra_state", episode: 1, state: "open",
     first_detected_at: "2026-10-20T00:00:00Z", last_confirmed_at: "2026-10-20T00:00:00Z",
     last_escalated_at: null, next_reescalate_at: null, escalation_level: "L1",

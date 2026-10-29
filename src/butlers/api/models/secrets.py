@@ -12,12 +12,14 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
+from butlers.api.models.base import ResponseSchemaModel
+
 # ---------------------------------------------------------------------------
 # Response models — values NEVER included
 # ---------------------------------------------------------------------------
 
 
-class SecretEntry(BaseModel):
+class SecretEntry(ResponseSchemaModel):
     """Metadata for a single secret.  Raw values are never exposed.
 
     Attributes

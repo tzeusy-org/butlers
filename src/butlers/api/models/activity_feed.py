@@ -10,10 +10,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class ActivityEvent(BaseModel):
+class ActivityEvent(ResponseSchemaModel):
     """A single event in the butler activity feed.
 
     Events are produced from multiple sources and normalized into a common
@@ -42,7 +42,7 @@ class ActivityEvent(BaseModel):
     metadata: dict[str, Any] = {}
 
 
-class ActivityFeed(BaseModel):
+class ActivityFeed(ResponseSchemaModel):
     """Response model for the activity feed endpoint.
 
     Attributes

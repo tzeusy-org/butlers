@@ -4,27 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  createModelCatalogEntry,
-  deleteModelCatalogEntry,
-  getModelCatalogDeleteImpact,
-  deleteButlerModelOverride,
-  listModelCatalog,
-  listButlerModelOverrides,
-  resolveButlerModel,
-  testModelCatalogEntry,
-  updateModelCatalogEntry,
-  updateModelPriority,
-  upsertButlerModelOverrides,
-  setModelTokenLimits,
-  resetModelUsage,
-  getModelUsageDetail,
-  verifyAllModels,
-  getModelAllowance,
-  getModelAttention,
-  reissueModelAttention,
-  ApiError,
-} from "@/api/index.ts";
+import { createModelCatalogEntry, deleteModelCatalogEntry, getModelCatalogDeleteImpact, deleteButlerModelOverride, listModelCatalog, listButlerModelOverrides, resolveButlerModel, testModelCatalogEntry, updateModelCatalogEntry, updateModelPriority, upsertButlerModelOverrides, setModelTokenLimits, resetModelUsage, getModelUsageDetail, verifyAllModels, getModelAllowance, getModelAttention, reissueModelAttention, ApiError } from "@/api/client.ts";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy.ts";
 import type {
   ModelCatalogCreate,

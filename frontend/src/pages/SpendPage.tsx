@@ -1,3 +1,4 @@
+import type { ApiResult } from "@/api/request-types";
 // ---------------------------------------------------------------------------
 // SpendPage — /spend  [bu-86c4c.11, JARVIS audit move 8]
 //
@@ -102,7 +103,6 @@ import {
 } from "@/lib/spend-forecast";
 import type {
   ComplexityTier,
-  SpendDivergence,
   UnpricedModelUsage,
 } from "@/api/types";
 
@@ -148,27 +148,7 @@ function toExplicitSpendRangeDate(date: Date): Date {
   return parseISO(formatCostDate(date, SPEND_UTC_DATE_KEY_TIMEZONE));
 }
 
-export interface BreakdownData {
-  by: string;
-  breakdown: Record<string, number>;
-  // Set only on the "purpose" dimension (bu-og0j2): true when the ledger-backed
-  // query failed or the dashboard DB pool is unavailable -- there is no per-butler
-  // MCP fallback for this dimension, so an empty breakdown must never be read as
-  // "genuinely no purpose-tagged spend this month" (see SourceDegradedNote below).
-  source_error?: boolean;
-  // Set on the butler/model/feature dimensions (bu-jad4j.3): butlers whose cost
-  // source failed and were dropped from the per-butler fan-out. When non-empty the
-  // breakdown undercounts, so an empty result must not read as a genuine "$0 month"
-  // and a populated result must footnote the missing butlers.
-  unavailable_butlers?: string[];
-  /** Executed models excluded from the priced subtotal because no price exists. */
-  unpriced_models?: UnpricedModelUsage[];
-  /** Declared marginal-cost class for model rows, including subscription zeroes. */
-  billing_classes?: Record<string, "metered" | "subscription" | "local">;
-  divergences?: SpendDivergence[];
-  divergence_source_error?: boolean;
-  historical_attribution_note?: string | null;
-}
+export type BreakdownData = ApiResult<"/spend/breakdown", "GET">["data"];
 
 // ---------------------------------------------------------------------------
 // API helpers
@@ -177,31 +157,27 @@ export interface BreakdownData {
 function fetchBreakdown(
   by: "butler" | "model" | "feature" | "purpose",
 ): Promise<{ data: BreakdownData }> {
-  return apiFetch<{ data: BreakdownData }>(`/spend/breakdown?by=${by}`);
+  return apiFetch("/spend/breakdown", { query: { by } });
 }
 
 function fetchRules(): Promise<{ data: SpendRule[] }> {
-  return apiFetch<{ data: SpendRule[] }>("/spend/rules");
+  return apiFetch("/spend/rules");
 }
 
 function updateCeiling(monthly_usd: number): Promise<unknown> {
-  return apiFetch("/spend/ceiling", {
-    method: "PUT",
+  return apiFetch("/spend/ceiling", { method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ monthly_usd }),
-  });
+    body: { monthly_usd } });
 }
 
 function deleteRule(id: string): Promise<void> {
-  return apiFetch<void>(`/spend/rules/${id}`, { method: "DELETE" });
+  return apiFetch("/spend/rules/{rule_id}", { method: "DELETE", path: { rule_id: id } });
 }
 
 function reorderRule(id: string, position: number): Promise<unknown> {
-  return apiFetch(`/spend/rules/${id}`, {
-    method: "PUT",
+  return apiFetch("/spend/rules/{rule_id}", { method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ position }),
-  });
+    body: { position }, path: { rule_id: id } });
 }
 
 // Create a routing rule. The shape mirrors the dispatch-time evaluator in
@@ -221,11 +197,9 @@ function createRule(body: {
    *  compaction DELETE performed (bu-6jv4m.2). */
   position?: number;
 }): Promise<{ data: SpendRule }> {
-  return apiFetch<{ data: SpendRule }>("/spend/rules", {
-    method: "POST",
+  return apiFetch("/spend/rules", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body });
 }
 
 // Canonical complexity tiers (model_routing.Complexity), highest → lowest.
@@ -871,7 +845,7 @@ interface BreakdownBarProps {
   value: number | null;
   maxValue: number;
   href?: string;
-  billingClass?: "metered" | "subscription" | "local";
+  billingClass?: string;
 }
 
 function BreakdownBar({

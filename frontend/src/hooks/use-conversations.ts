@@ -3,14 +3,8 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import {
-  listConversations,
-  getConversationById,
-  getConversationMessages,
-  searchConversations,
-  searchMessages,
-} from "@/api/index.ts";
-import type { ConversationListParams, MessageSearchParams } from "@/api/index.ts";
+import { listConversations, getConversationById, getConversationMessages, searchConversations, searchMessages } from "@/api/client.ts";
+import type { ConversationListParams, MessageSearchParams } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys

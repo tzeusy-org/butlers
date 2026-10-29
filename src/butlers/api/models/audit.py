@@ -20,6 +20,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
+from butlers.api.models.base import ResponseSchemaModel
+
 
 class AuditEntry(BaseModel):
     """Single audit log entry from the legacy dashboard_audit_log table."""
@@ -62,7 +64,7 @@ def is_credential_target(target: str | None) -> bool:
     return target is not None and _CREDENTIAL_TARGET_RE.match(target) is not None
 
 
-class AuditLogEntry(BaseModel):
+class AuditLogEntry(ResponseSchemaModel):
     """Single entry from the ``public.audit_log`` primitive table (core_092).
 
     This is the canonical audit primitive used by every mutation endpoint

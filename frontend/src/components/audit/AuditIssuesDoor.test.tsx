@@ -54,6 +54,7 @@ beforeEach(() => {
 
 function groupRef(overrides: Partial<AuditIssueGroupRef> = {}): AuditIssueGroupRef {
   return {
+reason: null,
     audit_id: 42,
     window: "24h",
     found: true,

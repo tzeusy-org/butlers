@@ -12,8 +12,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, StrictInt
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class Measurement(BaseModel):
+
+class Measurement(ResponseSchemaModel):
     """A health measurement (e.g. blood pressure, weight)."""
 
     id: str
@@ -62,7 +64,7 @@ class MeasurementUpdateRequest(BaseModel):
     notes: str | None = None
 
 
-class Medication(BaseModel):
+class Medication(ResponseSchemaModel):
     """A tracked medication with dosage and schedule."""
 
     id: str
@@ -120,7 +122,7 @@ class MedicationUpdateRequest(BaseModel):
     quantity: StrictInt | None = Field(default=None, gt=0)
 
 
-class Dose(BaseModel):
+class Dose(ResponseSchemaModel):
     """A recorded dose of a medication."""
 
     id: str
@@ -148,7 +150,7 @@ class DoseLogRequest(BaseModel):
     notes: str | None = None
 
 
-class MedicationAdherenceResponse(BaseModel):
+class MedicationAdherenceResponse(ResponseSchemaModel):
     """Response for GET /medications/{id}/adherence.
 
     Aggregated from the ``took_dose`` facts scoped to a single medication
@@ -170,7 +172,7 @@ class MedicationAdherenceResponse(BaseModel):
     adherence_rate: float | None = None
 
 
-class Condition(BaseModel):
+class Condition(ResponseSchemaModel):
     """A health condition being tracked."""
 
     id: str
@@ -214,7 +216,7 @@ class ConditionUpdateRequest(BaseModel):
     notes: str | None = None
 
 
-class Symptom(BaseModel):
+class Symptom(ResponseSchemaModel):
     """A recorded symptom occurrence."""
 
     id: str
@@ -261,7 +263,7 @@ class SymptomUpdateRequest(BaseModel):
     notes: str | None = None
 
 
-class Meal(BaseModel):
+class Meal(ResponseSchemaModel):
     """A recorded meal with optional nutrition data."""
 
     id: str
@@ -312,7 +314,7 @@ class MealUpdateRequest(BaseModel):
     notes: str | None = None
 
 
-class Research(BaseModel):
+class Research(ResponseSchemaModel):
     """A health research entry or reference."""
 
     id: str
@@ -366,7 +368,7 @@ class ResearchUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class LatestMeasurementEntry(BaseModel):
+class LatestMeasurementEntry(ResponseSchemaModel):
     """Latest measurement row for a single type.
 
     Backed by the ``facts`` table (predicate ``measurement_{type}``).
@@ -382,7 +384,7 @@ class LatestMeasurementEntry(BaseModel):
     metadata: dict | None = None
 
 
-class LatestMeasurementsResponse(BaseModel):
+class LatestMeasurementsResponse(ResponseSchemaModel):
     """Response for GET /measurements/latest?types=X,Y,Z.
 
     Keys are the requested type strings.  A key maps to ``None`` when no row
@@ -392,7 +394,7 @@ class LatestMeasurementsResponse(BaseModel):
     measurements: dict[str, LatestMeasurementEntry | None]
 
 
-class MeasurementTypeInfo(BaseModel):
+class MeasurementTypeInfo(ResponseSchemaModel):
     """An active measurement type observed from temporal Health facts.
 
     ``type`` is the suffix of an active ``measurement_{type}`` predicate and
@@ -411,20 +413,20 @@ class MeasurementTypeInfo(BaseModel):
     kpi_eligible: bool
 
 
-class MeasurementTypesResponse(BaseModel):
+class MeasurementTypesResponse(ResponseSchemaModel):
     """Response for GET /measurements/types."""
 
     types: list[MeasurementTypeInfo]
 
 
-class SleepStage(BaseModel):
+class SleepStage(ResponseSchemaModel):
     """A single sleep-stage entry in a sleep session."""
 
     kind: str  # deep | light | rem | awake
     minutes: int
 
 
-class SleepSessionResponse(BaseModel):
+class SleepSessionResponse(ResponseSchemaModel):
     """Response for GET /measurements/sleep/latest.
 
     Derived from the ``sleep_session`` fact stored by the Google Health
@@ -439,7 +441,7 @@ class SleepSessionResponse(BaseModel):
     stages: list[SleepStage] = []
 
 
-class MeasurementSource(BaseModel):
+class MeasurementSource(ResponseSchemaModel):
     """A single data-source entry observed across measurements."""
 
     name: str
@@ -447,13 +449,13 @@ class MeasurementSource(BaseModel):
     sample_count: int
 
 
-class MeasurementSourcesResponse(BaseModel):
+class MeasurementSourcesResponse(ResponseSchemaModel):
     """Response for GET /measurements/sources."""
 
     sources: list[MeasurementSource]
 
 
-class ExpectedSignalResponse(BaseModel):
+class ExpectedSignalResponse(ResponseSchemaModel):
     """One liveness-qualified expectation used by a Health gap detector."""
 
     signal_key: str
@@ -466,7 +468,7 @@ class ExpectedSignalResponse(BaseModel):
     evaluated_at: str
 
 
-class ExpectedSignalsResponse(BaseModel):
+class ExpectedSignalsResponse(ResponseSchemaModel):
     """Honest expected-signal surface; unavailable evidence is not an empty list."""
 
     signals: list[ExpectedSignalResponse] | None
@@ -474,14 +476,14 @@ class ExpectedSignalsResponse(BaseModel):
     degraded_reason: str | None = None
 
 
-class BaselineBand(BaseModel):
+class BaselineBand(ResponseSchemaModel):
     """The owner's usual range for a metric: the values not called a deviation."""
 
     low: float
     high: float
 
 
-class BaselineResponse(BaseModel):
+class BaselineResponse(ResponseSchemaModel):
     """One metric's stored personal baseline, or the named reason there is no band.
 
     ``band`` is set only when ``state`` is ``ready``; ``insufficient_history``,
@@ -501,7 +503,7 @@ class BaselineResponse(BaseModel):
     method_version: str | None
 
 
-class BaselinesResponse(BaseModel):
+class BaselinesResponse(ResponseSchemaModel):
     """Honest baseline surface; an unreadable table is not an absent baseline."""
 
     baselines: list[BaselineResponse] | None
@@ -514,7 +516,7 @@ class BaselinesResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class TrendBucket(BaseModel):
+class TrendBucket(ResponseSchemaModel):
     """A single time bucket in a measurement trend response.
 
     Backed by ``date_trunc('day' | 'hour', valid_at AT TIME ZONE 'UTC')``
@@ -530,7 +532,7 @@ class TrendBucket(BaseModel):
     sample_count: int
 
 
-class TrendResponse(BaseModel):
+class TrendResponse(ResponseSchemaModel):
     """Response for GET /measurements/trend.
 
     Aggregates ``facts`` rows for a single measurement type into hourly or
@@ -548,7 +550,7 @@ class TrendResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class NutritionDailyAverage(BaseModel):
+class NutritionDailyAverage(ResponseSchemaModel):
     """Per-day average macros within a nutrition summary window."""
 
     calories: float
@@ -557,7 +559,7 @@ class NutritionDailyAverage(BaseModel):
     fat_g: float
 
 
-class NutritionSummaryResponse(BaseModel):
+class NutritionSummaryResponse(ResponseSchemaModel):
     """Response for GET /nutrition/summary?start=&end=.
 
     Aggregates nutrition from ``meal_*`` facts (the same surface the ``meal_log``
@@ -575,7 +577,7 @@ class NutritionSummaryResponse(BaseModel):
     days: int
 
 
-class Briefing(BaseModel):
+class Briefing(ResponseSchemaModel):
     """The six-field health Voice briefing returned by GET /api/health/briefing.
 
     Mirrors the dashboard briefing contract (``GET /api/dashboard/briefing``).

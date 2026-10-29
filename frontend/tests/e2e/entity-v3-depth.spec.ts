@@ -81,7 +81,7 @@ function entityDetail(
   recentFacts: Fact[] = [],
 ): ResponseOf<"getEntity"> {
   return {
-    data: {
+    data: { rebind_receipts: [],
       id,
       canonical_name: name,
       entity_type: "person",
@@ -462,7 +462,7 @@ async function installDetailStubs(
     `**/api/relationship/entities/${ENTITY_ID}/timeline**`,
     (route) =>
       json(route, mockJson("getEntityTimeline", [
-        {
+        { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
           kind: "interaction",
           id: "tl-1",
           content: "Coffee catch-up",
@@ -504,6 +504,7 @@ async function installDetailStubs(
             staleness_band: "fresh",
           };
         }),
+        sources_degraded: [],
         next_cursor: null,
         limit: 50,
       })),

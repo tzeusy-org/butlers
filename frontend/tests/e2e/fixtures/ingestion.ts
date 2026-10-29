@@ -20,10 +20,7 @@
  * of a runtime crash discovered by a component deep in the tree.
  */
 
-import type {
-  IngestionEventListSessionSummary,
-  IngestionEventSummary,
-} from "@/api/index.ts";
+import type { IngestionEventListSessionSummary, IngestionEventSummary } from "@/api/types.ts";
 
 /**
  * A single realistic butler session, for fixtures that want to exercise the
@@ -32,7 +29,7 @@ import type {
 export function makeIngestionSession(
   overrides: Partial<IngestionEventListSessionSummary> = {},
 ): IngestionEventListSessionSummary {
-  return {
+  return { cost_evidence: "no_usage",
     butler_name: "general",
     duration_ms: 4_200,
     cost_usd: 0.0123,
@@ -51,7 +48,7 @@ export function makeIngestionSession(
 export function makeIngestionEventSummary(
   overrides: Partial<IngestionEventSummary> = {},
 ): IngestionEventSummary {
-  return {
+  return { replay_safe: false, replay_block_reason: null, unpriced_session_count: 0, no_usage_session_count: 0,
     id: "aabbccdd-0000-0000-0000-000000000001",
     received_at: "2026-05-17T14:05:00Z",
     source_channel: "email",

@@ -1067,7 +1067,8 @@ describe("ExpandedContactInfoRow — structured 409 error toast", () => {
         json: async () => ({ detail: { code: "contact_fact_changed", message: sentence } }),
       })),
     );
-    const apiError = await apiFetch("/relationship/entities/e/contacts/has-handle/h", {
+    const apiError = await apiFetch("/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}", {
+      path: { entity_id: "e", predicate: "has-handle", value_hash: "h" },
       method: "DELETE",
     }).catch((caught: unknown) => caught);
     vi.unstubAllGlobals();

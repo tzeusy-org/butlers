@@ -133,7 +133,10 @@ function ConsolidationGlyph({ status }: { status: string }) {
 // Episode row
 // ---------------------------------------------------------------------------
 
-export function EpisodeRow({ episode }: { episode: Episode }) {
+type EpisodeRowValue = Pick<Episode, "id" | "created_at" | "importance" | "butler" |
+  "content" | "consolidation_status">;
+
+export function EpisodeRow({ episode }: { episode: EpisodeRowValue }) {
   const navigate = useNavigate();
   const tz = useTimezone();
   const [expanded, setExpanded] = useState(false);
@@ -313,7 +316,9 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const episodes = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
-  const poolsFailed = response?.meta?.pools_failed ?? [];
+  const poolsFailed = Array.isArray(response?.meta?.pools_failed)
+    ? response.meta.pools_failed.filter((value): value is string => typeof value === "string")
+    : [];
 
   const groups = groupEpisodesByDay(episodes, tz, now);
 

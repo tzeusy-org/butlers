@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
+
+from butlers.api.models.base import ResponseSchemaModel
 
 # ---------------------------------------------------------------------------
 # Account models
@@ -30,7 +33,12 @@ class SteamConnectRequest(BaseModel):
     the account is stored.
     """
 
-    steam_id: int = Field(
+    steam_id: Annotated[
+        int,
+        BeforeValidator(
+            lambda value: value, json_schema_input_type=Annotated[int, Field(gt=0)] | str
+        ),
+    ] = Field(
         ...,
         description="Steam 64-bit account ID (SteamID64).",
         gt=0,
@@ -48,7 +56,7 @@ class SteamConnectRequest(BaseModel):
     )
 
 
-class SteamAccountResponse(BaseModel):
+class SteamAccountResponse(ResponseSchemaModel):
     """Representation of a connected Steam account.
 
     Returned by GET /api/steam/accounts (list) and POST /api/steam/accounts.
@@ -83,7 +91,7 @@ class SteamAccountResponse(BaseModel):
     """Timestamp of the last successful poll, or null."""
 
 
-class SteamConnectResponse(BaseModel):
+class SteamConnectResponse(ResponseSchemaModel):
     """Response for POST /api/steam/accounts.
 
     Returned after a Steam account has been validated and registered.
@@ -99,14 +107,14 @@ class SteamConnectResponse(BaseModel):
     """The newly connected Steam account record."""
 
 
-class SteamAccountListResponse(BaseModel):
+class SteamAccountListResponse(ResponseSchemaModel):
     """Response for GET /api/steam/accounts."""
 
     accounts: list[SteamAccountResponse]
     """All connected Steam accounts, ordered by primary first, then connected_at."""
 
 
-class SteamDisconnectResponse(BaseModel):
+class SteamDisconnectResponse(ResponseSchemaModel):
     """Response for DELETE /api/steam/accounts/{id}."""
 
     success: bool = True
@@ -116,7 +124,7 @@ class SteamDisconnectResponse(BaseModel):
     """Human-readable status message."""
 
 
-class SteamSetPrimaryResponse(BaseModel):
+class SteamSetPrimaryResponse(ResponseSchemaModel):
     """Response for PUT /api/steam/accounts/{id}/primary."""
 
     success: bool = True
@@ -134,7 +142,7 @@ class SteamSetPrimaryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SteamAccountStatusResponse(BaseModel):
+class SteamAccountStatusResponse(ResponseSchemaModel):
     """Per-account status response for GET /api/steam/accounts/{id}/status.
 
     Provides credential health, poll recency, and connector health summary
@@ -177,7 +185,7 @@ class SteamAccountStatusResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SteamConnectorDataTypeHealth(BaseModel):
+class SteamConnectorDataTypeHealth(ResponseSchemaModel):
     """Health snapshot for a single data-type poller within an account."""
 
     status: str
@@ -187,7 +195,7 @@ class SteamConnectorDataTypeHealth(BaseModel):
     """Timestamp of the last successful poll for this data type, or null."""
 
 
-class SteamConnectorAccountHealth(BaseModel):
+class SteamConnectorAccountHealth(ResponseSchemaModel):
     """Health summary for a single Steam account tracked by the connector."""
 
     steam_id: str
@@ -206,7 +214,7 @@ class SteamConnectorAccountHealth(BaseModel):
     """Per-data-type health keyed by data type name."""
 
 
-class SteamConnectorHealthResponse(BaseModel):
+class SteamConnectorHealthResponse(ResponseSchemaModel):
     """Response for GET /api/steam/connector/health.
 
     Proxied directly from the connector's ``/health`` HTTP endpoint.
@@ -234,7 +242,7 @@ class SteamConnectorHealthResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SteamDailyPlaytimeSummary(BaseModel):
+class SteamDailyPlaytimeSummary(ResponseSchemaModel):
     """Aggregated playtime for a single calendar day across all games.
 
     Used in the daily rollup array of SteamPlaytimeAnalytics.
@@ -247,7 +255,7 @@ class SteamDailyPlaytimeSummary(BaseModel):
     """Total playtime across all games on this date, in minutes."""
 
 
-class SteamGamePlaytime(BaseModel):
+class SteamGamePlaytime(ResponseSchemaModel):
     """Playtime record for a single game.
 
     Used in the games list of SteamPlaytimeAnalytics.
@@ -263,7 +271,7 @@ class SteamGamePlaytime(BaseModel):
     """Total playtime in the requested window, in minutes."""
 
 
-class SteamPlaytimeAnalytics(BaseModel):
+class SteamPlaytimeAnalytics(ResponseSchemaModel):
     """Aggregated playtime analytics for a Steam account.
 
     Returned by GET /api/steam/playtime.
@@ -298,7 +306,7 @@ class SteamPlaytimeAnalytics(BaseModel):
     """Timestamp when this data was queried from the database."""
 
 
-class SteamGamePlaytimeHistoryEntry(BaseModel):
+class SteamGamePlaytimeHistoryEntry(ResponseSchemaModel):
     """A single daily playtime entry for a specific game.
 
     Used in SteamGamePlaytimeHistory.
@@ -314,7 +322,7 @@ class SteamGamePlaytimeHistoryEntry(BaseModel):
     """Timestamp when this record was written to the database."""
 
 
-class SteamGamePlaytimeHistory(BaseModel):
+class SteamGamePlaytimeHistory(ResponseSchemaModel):
     """Per-game playtime history from the connectors.steam_play_history table.
 
     Returned by GET /api/steam/playtime/{app_id}.
@@ -353,7 +361,7 @@ class SteamGamePlaytimeHistory(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SteamPollIntervals(BaseModel):
+class SteamPollIntervals(ResponseSchemaModel):
     """Per-data-type poll interval overrides (seconds).
 
     Omitted fields retain their connector defaults. All values must be positive
@@ -397,7 +405,7 @@ class SteamPollIntervals(BaseModel):
     )
 
 
-class SteamConnectorConfigResponse(BaseModel):
+class SteamConnectorConfigResponse(ResponseSchemaModel):
     """Response for GET /api/steam/connector/config.
 
     Shows the effective connector configuration: the dashboard-stored value
@@ -458,7 +466,7 @@ class SteamConnectorConfigUpdateRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SteamAccountConfigOverrides(BaseModel):
+class SteamAccountConfigOverrides(ResponseSchemaModel):
     """Per-account configuration overrides stored in steam_accounts.metadata.
 
     Only supplied fields are applied; unset fields inherit global connector
@@ -477,7 +485,7 @@ class SteamAccountConfigOverrides(BaseModel):
     )
 
 
-class SteamAccountConfigResponse(BaseModel):
+class SteamAccountConfigResponse(ResponseSchemaModel):
     """Response for GET /api/steam/accounts/{id}/config.
 
     Shows the per-account configuration overrides stored in the account's
@@ -494,7 +502,7 @@ class SteamAccountConfigResponse(BaseModel):
     """Current per-account configuration overrides (may be empty if none set)."""
 
 
-class SteamAccountConfigUpdateResponse(BaseModel):
+class SteamAccountConfigUpdateResponse(ResponseSchemaModel):
     """Response for PATCH /api/steam/accounts/{id}/config."""
 
     success: bool = True

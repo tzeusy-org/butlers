@@ -10,7 +10,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { getApprovalRuleSuggestions } from "@/api/index.ts";
+import { getApprovalRuleSuggestions } from "@/api/client.ts";
 import { useCreateRuleFromAction } from "@/hooks/use-approvals.ts";
 import { Button } from "@/components/ui/button.tsx";
 

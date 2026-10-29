@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { getTimeline } from "@/api/index.ts";
+import { getTimeline } from "@/api/client.ts";
 import type { TimelineEvent, TimelineHeartbeatRollup } from "@/api/types.ts";
 import { useTimeline } from "./use-timeline";
 

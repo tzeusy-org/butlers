@@ -13,7 +13,7 @@ const loader = vi.fn(() => Promise.resolve({}))
 vi.mock("@/lib/route-chunk-registry", () => ({
   resolveRouteChunkLoader: () => loader,
 }))
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getSession: vi.fn((id: string) => Promise.resolve({ data: { id } })),
 }))
 

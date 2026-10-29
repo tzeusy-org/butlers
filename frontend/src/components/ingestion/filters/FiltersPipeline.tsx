@@ -52,8 +52,8 @@ import { ChannelDefaultsBlock, type ChannelDefaultEditorState } from './ChannelD
 import { ArchivedRulesSection } from './ArchivedRulesSection'
 import { RuleEditor, type EditorMode } from './RuleEditor'
 import type { IngestionRule, PipelineStats } from '@/api/types'
-import type { ChannelDefaultPolicy } from '@/api/index.ts'
-import { ApiError } from '@/api/index.ts'
+import type { ChannelDefaultPolicy } from "@/api/types.ts";
+import { ApiError } from "@/api/client.ts";
 import { getAvailablePipelineBacklog } from './backlog-state'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 

@@ -66,7 +66,7 @@ const VALIDITY_PILLS: MemoryValidity[] = [
 // ---------------------------------------------------------------------------
 
 /** Two-decimal effective confidence, e.g. `0.94`. No `%` (§4). */
-function formatConfidence(fact: Fact, now?: Date): string {
+function formatConfidence(fact: Parameters<typeof effectiveConfidence>[0], now?: Date): string {
   return effectiveConfidence(fact, now).toFixed(2);
 }
 
@@ -74,7 +74,13 @@ function formatConfidence(fact: Fact, now?: Date): string {
 // Ledger row
 // ---------------------------------------------------------------------------
 
-export function LedgerRow({ fact, now }: { fact: Fact; now?: Date }) {
+type LedgerFact = Pick<Fact,
+  "id" | "validity" | "permanence" | "source_episode_id" | "entity_name" | "subject" |
+  "predicate" | "entity_id" | "content" | "confidence" | "decay_rate" |
+  "last_confirmed_at" | "created_at"
+> & Partial<Pick<Fact, "source_episode_status">>;
+
+export function LedgerRow({ fact, now }: { fact: LedgerFact; now?: Date }) {
   const navigate = useNavigate();
 
   // Confidence is ink: a fading fact dims the WHOLE row to --dim. Active facts
@@ -225,7 +231,9 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
   const facts = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
-  const poolsFailed = response?.meta?.pools_failed ?? [];
+  const poolsFailed = Array.isArray(response?.meta?.pools_failed)
+    ? response.meta.pools_failed.filter((value): value is string => typeof value === "string")
+    : [];
 
   const onSelectValidity = (v: MemoryValidity) => {
     // Switching filter resets paging to the first page.

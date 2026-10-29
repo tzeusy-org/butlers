@@ -11,8 +11,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class TargetContact(BaseModel):
+
+class TargetContact(ResponseSchemaModel):
     """Compact target object resolved from an entity_id in action constraints.
 
     Included in ApprovalAction when ``tool_args`` contains an ``entity_id`` that
@@ -24,7 +26,7 @@ class TargetContact(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
-class EntityRef(BaseModel):
+class EntityRef(ResponseSchemaModel):
     """Human-readable resolution of an entity UUID referenced by a pending action.
 
     Pending actions such as ``relationship_assert_fact`` carry raw
@@ -39,7 +41,7 @@ class EntityRef(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
-class ApprovalEvidence(BaseModel):
+class ApprovalEvidence(ResponseSchemaModel):
     """A typed reference supporting a proposed approval action."""
 
     type: Literal["fact", "entity", "url", "text"]
@@ -60,7 +62,7 @@ DeliveryPresentationState = Literal[
 ]
 
 
-class ApprovalDeliveryCohort(BaseModel):
+class ApprovalDeliveryCohort(ResponseSchemaModel):
     """Safe state of the shared digest associated with one action."""
 
     eligible: bool
@@ -72,7 +74,7 @@ class ApprovalDeliveryCohort(BaseModel):
     ambiguous: bool = False
 
 
-class ApprovalDeliveryTruth(BaseModel):
+class ApprovalDeliveryTruth(ResponseSchemaModel):
     """Content-blind durable or legacy notification evidence."""
 
     source: Literal["durable", "legacy", "unknown"]
@@ -90,7 +92,7 @@ class ApprovalDeliveryTruth(BaseModel):
     cohort: ApprovalDeliveryCohort | None = None
 
 
-class ApprovalAction(BaseModel):
+class ApprovalAction(ResponseSchemaModel):
     """Approval action representation for dashboard API.
 
     Maps to PendingAction from the approvals module with frontend-friendly
@@ -152,7 +154,7 @@ class ApprovalAction(BaseModel):
     delivery: ApprovalDeliveryTruth | None = None
 
 
-class ApprovalDetail(BaseModel):
+class ApprovalDetail(ResponseSchemaModel):
     """Full dossier for a single approval — returned by GET /api/approvals/{id}.
 
     Includes all ApprovalAction fields plus the dossier-specific fields:
@@ -230,7 +232,7 @@ class ApprovalAbandonRequest(BaseModel):
         return value.strip()
 
 
-class ApprovalSummary(BaseModel):
+class ApprovalSummary(ResponseSchemaModel):
     """Compact approval item for the flat-list and history endpoints."""
 
     id: str
@@ -266,7 +268,7 @@ class ApprovalSummary(BaseModel):
     delivery: ApprovalDeliveryTruth | None = None
 
 
-class UnroutableAttentionItem(BaseModel):
+class UnroutableAttentionItem(ResponseSchemaModel):
     """Replayable dashboard routing failure shown on the Command surface."""
 
     id: str
@@ -275,7 +277,7 @@ class UnroutableAttentionItem(BaseModel):
     created_at: datetime
 
 
-class UnroutableRetryResult(BaseModel):
+class UnroutableRetryResult(ResponseSchemaModel):
     """Durable result of re-enqueueing one unroutable dashboard message."""
 
     dead_letter_id: str
@@ -283,7 +285,7 @@ class UnroutableRetryResult(BaseModel):
     status: Literal["queued"] = "queued"
 
 
-class ApprovalsPolicy(BaseModel):
+class ApprovalsPolicy(ResponseSchemaModel):
     """Owner Attention Policy singleton — GET/PUT /api/approvals/policy."""
 
     quiet_start_hour: int | None = Field(default=None, ge=0, le=23)
@@ -306,7 +308,7 @@ class ApprovalsPolicyUpdate(ApprovalsPolicy):
         return self
 
 
-class DisplayedApprovalCall(BaseModel):
+class DisplayedApprovalCall(ResponseSchemaModel):
     """The call shown to the owner; never a source of actor authority."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -314,7 +316,7 @@ class DisplayedApprovalCall(BaseModel):
     args_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class ApprovalCallPreview(BaseModel):
+class ApprovalCallPreview(ResponseSchemaModel):
     """Complete deterministic facts of a call safe for one-tap approval."""
 
     title: str
@@ -341,7 +343,7 @@ class ApprovalDeferRequest(BaseModel):
     hours: int = Field(..., ge=1, le=168, description="Hours to defer (1–168 inclusive)")
 
 
-class ApprovalRule(BaseModel):
+class ApprovalRule(ResponseSchemaModel):
     """Approval rule representation for dashboard API.
 
     Maps to ApprovalRule from the approvals module with frontend-friendly
@@ -360,7 +362,7 @@ class ApprovalRule(BaseModel):
     active: bool = True
 
 
-class ApprovalGatedTool(BaseModel):
+class ApprovalGatedTool(ResponseSchemaModel):
     """Configured approval gate and the active rules that narrow it.
 
     A configured gate remains present even when ``active_rules`` is empty.
@@ -375,7 +377,7 @@ class ApprovalGatedTool(BaseModel):
     active_rules: list[ApprovalRule] = Field(default_factory=list)
 
 
-class RuleConstraintSuggestion(BaseModel):
+class RuleConstraintSuggestion(ResponseSchemaModel):
     """Suggested constraints for creating a rule from an action."""
 
     action_id: str
@@ -384,7 +386,7 @@ class RuleConstraintSuggestion(BaseModel):
     suggested_constraints: dict[str, Any]
 
 
-class ApprovalMetrics(BaseModel):
+class ApprovalMetrics(ResponseSchemaModel):
     """Aggregate metrics for the approvals dashboard.
 
     ``ApiResponse.meta`` carries availability per independently aggregated
@@ -454,14 +456,14 @@ class ApprovalRuleFromActionRequest(BaseModel):
     constraint_overrides: dict[str, Any] | None = None
 
 
-class ExpireStaleActionsResponse(BaseModel):
+class ExpireStaleActionsResponse(ResponseSchemaModel):
     """Response from expiring stale actions."""
 
     expired_count: int
     expired_ids: list[str]
 
 
-class AutonomySuggestionVelocity(BaseModel):
+class AutonomySuggestionVelocity(ResponseSchemaModel):
     """Approval velocity data for an autonomy suggestion."""
 
     avg_seconds: float | None = None
@@ -470,7 +472,7 @@ class AutonomySuggestionVelocity(BaseModel):
     updated_at: datetime | None = None
 
 
-class AutonomySuggestion(BaseModel):
+class AutonomySuggestion(ResponseSchemaModel):
     """Autonomy promotion/demotion suggestion for dashboard API.
 
     Represents a suggestion that a frequently-approved tool pattern should

@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
-import type { IngestionHistogramBucket, IngestionHistogramCounts } from "@/api/index.ts";
+import type { IngestionHistogramBucket, IngestionHistogramCounts } from "@/api/types.ts";
 import { AppTimezoneProvider } from "@/components/ui/timezone-context";
 import { HourFlameStrip } from "./HourFlameStrip";
 

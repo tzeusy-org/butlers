@@ -1,22 +1,14 @@
-import { apiFetch } from './client'
-import type { ApiResponse } from './types'
-
-interface LifecycleResult {
-  connector_type: string
-  endpoint_identity: string
-  state: 'paused' | 'unknown'
-}
-
-function actionPath(type: string, identity: string, action: 'pause' | 'run-now') {
-  return `/ingestion/connectors/${encodeURIComponent(type)}/${encodeURIComponent(identity)}/${action}`
-}
+import { apiFetch } from "./client";
 
 /** The existing server route commits pause and attempts its best-effort audit. */
 export function pauseConnector(type: string, identity: string) {
-  return apiFetch<ApiResponse<LifecycleResult>>(actionPath(type, identity, 'pause'), { method: 'POST' })
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/pause", {
+    method: "POST", path: { connector_type: String(type), endpoint_identity: String(identity) },
+  });
 }
-
 /** Resume only: the server sets unknown until heartbeat, without forcing a poll. */
 export function resumeConnector(type: string, identity: string) {
-  return apiFetch<ApiResponse<LifecycleResult>>(actionPath(type, identity, 'run-now'), { method: 'POST' })
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/run-now", {
+    method: "POST", path: { connector_type: String(type), endpoint_identity: String(identity) },
+  });
 }

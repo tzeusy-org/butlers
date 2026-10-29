@@ -5,9 +5,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import ButlerMcpTab from "@/components/butler-detail/ButlerMcpTab";
-import { callButlerMcpTool, getButlerMcpTools } from "@/api/index.ts";
+import { callButlerMcpTool, getButlerMcpTools } from "@/api/client.ts";
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getButlerMcpTools: vi.fn(),
   callButlerMcpTool: vi.fn(),
 }));

@@ -159,6 +159,7 @@ function renderInRouter(element: React.ReactElement): string {
 /** Build a minimal GoogleHealthStatusResponse with sensible defaults. */
 function makeHealthStatus(overrides: Partial<GoogleHealthStatusResponse> = {}): GoogleHealthStatusResponse {
   return {
+token_expiry_estimate_at: null,
     connected: true,
     scopes_granted: [...GOOGLE_HEALTH_SCOPES],
     last_ingest_at: "2026-06-06T10:00:00Z",

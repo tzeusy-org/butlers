@@ -106,7 +106,7 @@ function orderRules(rules: MemoryRule[]): MemoryRule[] {
  * `harmful` word and its numeral — ONLY that fragment — take --red. A dataset
  * with zero harm therefore renders zero red pixels here.
  */
-function TallyLine({ rule }: { rule: MemoryRule }) {
+function TallyLine({ rule }: { rule: Pick<MemoryRule, "harmful_count" | "applied_count" | "success_count"> }) {
   const harmful = rule.harmful_count;
   const harmfulRed = harmful > 0;
 
@@ -127,7 +127,10 @@ function TallyLine({ rule }: { rule: MemoryRule }) {
 // Directive row
 // ---------------------------------------------------------------------------
 
-export function DirectiveRow({ rule, index }: { rule: MemoryRule; index: number }) {
+type DirectiveRule = Pick<MemoryRule, "id" | "content" | "maturity" | "retired_at" |
+  "confidence" | "harmful_count" | "applied_count" | "success_count">;
+
+export function DirectiveRow({ rule, index }: { rule: DirectiveRule; index: number }) {
   const navigate = useNavigate();
 
   // §NN — zero-padded, global render-order numbering across the filtered list.
@@ -262,7 +265,9 @@ export default function RulesRegister({ butlerScope }: RulesRegisterProps) {
   const rules = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
-  const poolsFailed = response?.meta?.pools_failed ?? [];
+  const poolsFailed = Array.isArray(response?.meta?.pools_failed)
+    ? response.meta.pools_failed.filter((value): value is string => typeof value === "string")
+    : [];
 
   // anti_pattern pinned top, then maturity rank, then confidence desc.
   const ordered = orderRules(rules);

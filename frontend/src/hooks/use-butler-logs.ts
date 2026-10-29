@@ -12,8 +12,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getButlerLogs } from "@/api/index.ts";
-import type { ButlerLogsParams } from "@/api/index.ts";
+import { getButlerLogs } from "@/api/client.ts";
+import type { ButlerLogsParams } from "@/api/types.ts";
 
 /**
  * Primary poll interval for butler logs queries (bu-ep4ks.15).

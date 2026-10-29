@@ -22,7 +22,7 @@
 
 import { useState } from "react";
 
-import type { SessionParams, SessionSummary } from "@/api/types";
+import type { ButlerSessionParams, SessionSummary } from "@/api/types";
 import { SessionTable } from "@/components/sessions/SessionTable";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { Button } from "@/components/ui/button";
@@ -65,7 +65,7 @@ export default function ButlerSessionsTab({
 
   const isFiltered = Boolean(since || until);
 
-  const params: SessionParams = {
+  const params: ButlerSessionParams = {
     offset: page * PAGE_SIZE,
     limit: PAGE_SIZE,
     ...(since ? { since } : {}),

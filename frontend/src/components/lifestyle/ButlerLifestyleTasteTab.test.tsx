@@ -66,6 +66,9 @@ const SUMMARY_FIXTURE: TasteSummary = {
 };
 
 const LEGACY_SUMMARY_FIXTURE: TasteSummary = {
+availability: "complete",
+query_availability: [],
+
   total_works: 220,
   total_signals: 340,
   total_verdicts: 61,

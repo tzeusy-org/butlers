@@ -46,6 +46,12 @@ function thread(over: Partial<MessageThreadSummary>): MessageThreadSummary {
 
 function timelineItem(over: Partial<EntityTimelineItem>): EntityTimelineItem {
   return {
+src: "memory_module_legacy",
+conf: null,
+last_seen: null,
+weight: null,
+verified: false,
+primary: false,
     kind: "interaction",
     id: "i1",
     content: "coffee catch-up",

@@ -98,7 +98,9 @@ describe("QaVerdictOpener -- clauses", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,
       staffer_status: "circuit_breaker_tripped",
-      circuit_breaker: { tripped: true, consecutive_failures: 5 },
+      circuit_breaker: {
+threshold: 5,
+ tripped: true, consecutive_failures: 5 },
     };
     const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
     expect(html).toContain('data-testid="qa-verdict-clauses"');
@@ -201,7 +203,9 @@ describe("QaVerdictOpener -- clauses", () => {
   it("falls back to the known default threshold when the wire omits it", () => {
     const summary: QaSummary = {
       ...HEALTHY_SUMMARY,
-      circuit_breaker: { tripped: false, consecutive_failures: 1 },
+      circuit_breaker: {
+threshold: 5,
+ tripped: false, consecutive_failures: 1 },
     };
     const html = render(<QaVerdictOpener summary={summaryQuery(summary)} />);
     expect(html).toContain("1 consecutive failure, breaker opens at 5");

@@ -38,18 +38,25 @@ vi.mock("recharts", () => {
 
 import { CostStripeChart } from "./CostStripeChart"
 import type { DailySpend } from "@/api/types"
+import { getDailyCosts } from "@/api/client"
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
-const DATA: DailySpend[] = [
+const DATA = [
   { date: "2026-05-01", cost_usd: 0.1, sessions: 1, input_tokens: 100, output_tokens: 50 },
   { date: "2026-05-02", cost_usd: 0.4, sessions: 2, input_tokens: 200, output_tokens: 100 },
 ]
 
 const DATA_WITH_BUTLERS: DailySpend[] = [
   {
+cache_creation_tokens: 0,
+cache_hit_rate: null,
+cache_read_cost_usd: 0,
+cached_input_tokens: 0,
+unpriced_models: [],
     date: "2026-05-01",
     cost_usd: 0.3,
     sessions: 2,
@@ -58,6 +65,11 @@ const DATA_WITH_BUTLERS: DailySpend[] = [
     by_butler: { general: 0.2, memory: 0.1 },
   },
   {
+cache_creation_tokens: 0,
+cache_hit_rate: null,
+cache_read_cost_usd: 0,
+cached_input_tokens: 0,
+unpriced_models: [],
     date: "2026-05-02",
     cost_usd: 0.1,
     sessions: 1,
@@ -68,8 +80,14 @@ const DATA_WITH_BUTLERS: DailySpend[] = [
 ]
 
 describe("CostStripeChart", () => {
-  it("renders a single honest total bar when no by_butler data is present", () => {
-    render(<CostStripeChart data={DATA} />)
+  it("renders a single honest total bar when no by_butler data is present", async () => {
+    // Exercise the intentionally incomplete legacy wire response through the
+    // actual transport rather than presenting it as a valid generated DTO.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ data: DATA, meta: {} }), { status: 200 }),
+    )
+    const response = await getDailyCosts()
+    render(<CostStripeChart data={response.data} />)
     expect(screen.getByTestId("cost-stripe-chart")).toBeTruthy()
     // Exactly one series (cost_usd) — no fabricated stripes, no legend.
     expect(screen.getByTestId("recharts-bar-cost_usd")).toBeTruthy()
@@ -141,6 +159,7 @@ describe("CostStripeChart", () => {
     expect(screen.queryByTestId("cost-stripe-unavailable")).toBeNull()
 
     cleanup()
+  vi.restoreAllMocks()
     render(<CostStripeChart data={[]} unavailableButlers={[]} />)
     expect(screen.getByTestId("cost-stripe-empty")).toBeTruthy()
     expect(screen.queryByTestId("cost-stripe-unavailable")).toBeNull()

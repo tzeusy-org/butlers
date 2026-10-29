@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createConversation } from "@/api/index.ts";
+import { createConversation } from "@/api/client.ts";
 import type { PendingDebrief } from "@/api/types.ts";
 import { debriefReplyMessage, sendDebriefReply } from "@/lib/debrief-reply.ts";
 
-vi.mock("@/api/index.ts", () => ({ createConversation: vi.fn() }));
+vi.mock("@/api/client.ts", () => ({ createConversation: vi.fn() }));
 
 const DEBRIEF: PendingDebrief = {
   debrief_id: "11111111-1111-1111-1111-111111111111",

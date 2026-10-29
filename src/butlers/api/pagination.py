@@ -9,8 +9,8 @@ from __future__ import annotations
 import types
 
 from fastapi import HTTPException
-from pydantic import BaseModel
 
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.pagination import CURSOR_VERSION as CURSOR_VERSION
 from butlers.pagination import CursorValue as CursorValue
 from butlers.pagination import InvalidCursorError as _CursorError
@@ -36,7 +36,7 @@ def decode_cursor(
         raise InvalidCursorError() from exc
 
 
-class Page[T](BaseModel):
+class Page[T](ResponseSchemaModel):
     """The one dashboard list envelope: ``{"items": [...], "next_cursor": ..., "limit": N}``.
 
     ``next_cursor`` is ``null`` on the last page; there is no ``has_more``, ``total`` or

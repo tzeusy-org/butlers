@@ -6,24 +6,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 
-import {
-  acceptCalendarProposal,
-  dismissCalendarProposal,
-  getCalendarDayBriefing,
-  getCalendarMeetingPrep,
-  getCalendarWorkspace,
-  getCalendarWorkspaceAudit,
-  getCalendarWorkspaceConflicts,
-  getCalendarInvitations,
-  getCalendarWorkspaceEntry,
-  getCalendarWorkspaceMeta,
-  mutateCalendarWorkspaceButlerEvent,
-  mutateCalendarWorkspaceUserEvent,
-  parseCalendarQuickAdd,
-  previewCalendarWorkspaceButlerEvent,
-  searchCalendarWorkspace,
-  syncCalendarWorkspace,
-} from "@/api/index.ts";
+import { acceptCalendarProposal, dismissCalendarProposal, getCalendarDayBriefing, getCalendarMeetingPrep, getCalendarWorkspace, getCalendarWorkspaceAudit, getCalendarWorkspaceConflicts, getCalendarInvitations, getCalendarWorkspaceEntry, getCalendarWorkspaceMeta, mutateCalendarWorkspaceButlerEvent, mutateCalendarWorkspaceUserEvent, parseCalendarQuickAdd, previewCalendarWorkspaceButlerEvent, searchCalendarWorkspace, syncCalendarWorkspace } from "@/api/client.ts";
 import type {
   ApiResponse,
   CalendarAuditParams,

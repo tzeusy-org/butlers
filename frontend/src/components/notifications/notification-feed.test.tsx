@@ -19,6 +19,8 @@ function makeNotification(
   overrides: Partial<NotificationSummary> = {},
 ): NotificationSummary {
   return {
+approval_review: null,
+approval_review_state: "none",
     id: "notif-1",
     source_butler: "switchboard",
     channel: "telegram",

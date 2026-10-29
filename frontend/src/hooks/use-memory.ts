@@ -4,35 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  confirmFact,
-  createEntityInfo,
-  getEntities,
-  getEntity,
-  getEpisode,
-  getEpisodes,
-  getFact,
-  getFacts,
-  getMemoryActivity,
-  getMemoryCompactionLog,
-  getMemoryRetentionPolicies,
-  getMemoryStats,
-  getRule,
-  getRules,
-  inspectMemory,
-  promoteEntity,
-  retireRule,
-  retractFact,
-  retryEpisodeConsolidation,
-  revealEntitySecret,
-  updateEntity,
-  updateMemoryRetentionPolicies,
-  getDunbarRanking,
-  forgetRelationshipEntity,
-  getLifestyleTasteSummary,
-  getLifestyleTasteWorks,
-  getLifestyleTasteVerdicts,
-} from "@/api/index.ts";
+import { confirmFact, createEntityInfo, getEntities, getEntity, getEpisode, getEpisodes, getFact, getFacts, getMemoryActivity, getMemoryCompactionLog, getMemoryRetentionPolicies, getMemoryStats, getRule, getRules, inspectMemory, promoteEntity, retireRule, retractFact, retryEpisodeConsolidation, revealEntitySecret, updateEntity, updateMemoryRetentionPolicies, getDunbarRanking, forgetRelationshipEntity, getLifestyleTasteSummary, getLifestyleTasteWorks, getLifestyleTasteVerdicts } from "@/api/client.ts";
 import type {
   ApiResponse,
   CreateEntityInfoRequest,

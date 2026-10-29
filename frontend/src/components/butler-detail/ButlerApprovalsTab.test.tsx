@@ -42,6 +42,15 @@ import { useApprovalActions } from "@/hooks/use-approvals"
 
 /** An action that expires in 30 minutes -- HIGH severity */
 const HIGH_ACTION = {
+why: null,
+evidence: [],
+blast_radius: null,
+reversibility: null,
+origin: null,
+dispatched: false,
+push_outcome: null,
+push_failed: false,
+delivery: null,
   id: "action-high-001",
   butler: "general",
   tool_name: "send_telegram",
@@ -60,6 +69,15 @@ const HIGH_ACTION = {
 
 /** An action that expires in 6 hours -- MEDIUM severity */
 const MEDIUM_ACTION = {
+why: null,
+evidence: [],
+blast_radius: null,
+reversibility: null,
+origin: null,
+dispatched: false,
+push_outcome: null,
+push_failed: false,
+delivery: null,
   id: "action-med-002",
   butler: "general",
   tool_name: "notify",
@@ -78,6 +96,15 @@ const MEDIUM_ACTION = {
 
 /** An action with no expiry -- LOW severity */
 const LOW_ACTION = {
+why: null,
+evidence: [],
+blast_radius: null,
+reversibility: null,
+origin: null,
+dispatched: false,
+push_outcome: null,
+push_failed: false,
+delivery: null,
   id: "action-low-003",
   butler: "general",
   tool_name: "archive_email",
@@ -378,7 +405,8 @@ describe("ButlerApprovalsTab -- row content", () => {
   })
 
   it("falls back to short action ID when agent_summary is an empty string", () => {
-    const emptyStringAction = { ...HIGH_ACTION, agent_summary: "" }
+    const emptyStringAction = {
+...HIGH_ACTION, agent_summary: "" }
     setupWithActions([emptyStringAction])
     renderTab()
     expect(screen.getByText(emptyStringAction.id.slice(0, 8))).toBeDefined()

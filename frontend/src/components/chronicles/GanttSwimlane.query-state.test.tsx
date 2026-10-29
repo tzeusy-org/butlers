@@ -35,6 +35,7 @@ const WINDOW_END = new Date("2026-04-25T23:59:59Z");
 
 function makeEpisode(id: string): ChroniclerEpisode {
   return {
+participant_entity_ids: [],
     id,
     source_name: "core.sessions",
     source_ref: id,

@@ -397,7 +397,7 @@ jobs:
           exit "$failed"
 
       - name: Set up Node 24
-        if: needs.route.outputs.frontend == 'true'
+        if: needs.route.outputs.backend == 'true'
         uses: actions/setup-node@v6
         with:
           node-version: "24.22.0"
@@ -406,9 +406,19 @@ jobs:
 
 
       - name: Install dependencies
-        if: needs.route.outputs.frontend == 'true'
+        if: needs.route.outputs.backend == 'true'
         working-directory: frontend
         run: npm ci
+
+      - name: Native API schema drift
+        if: needs.route.outputs.backend == 'true'
+        working-directory: frontend
+        run: npm run check:api
+
+      - name: Native client path and query contracts
+        if: needs.route.outputs.backend == 'true'
+        working-directory: frontend
+        run: npm run check:api-contract
 
 
       - name: Lint

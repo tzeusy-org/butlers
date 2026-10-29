@@ -345,7 +345,8 @@ describe("adaptInventoryResponse: user rows are content-blind [bu-iph56]", () =>
           test: { ok: false, code: 401, at: "2 days ago", latency_ms: 134 },
           audit: [{ ts: "2026-05-21 06:08", actor: "system", action: "failed" }],
           capabilities: [
-            { capability: "calendar", test: { ok: true, code: 200, at: "14:21 today" } },
+            { capability: "calendar", test: {
+latency_ms: null, ok: true, code: 200, at: "14:21 today" } },
           ],
         }),
       ],

@@ -27,13 +27,13 @@ export type ActivityVerb = "running" | "idle" | "overdue" | "offline" | "quarant
 export type CellTone = "neutral" | "green" | "amber" | "red"
 export type EligibilityState = "active" | "quarantined" | "stale" | "unavailable"
 export type CadenceStatus = "on_schedule" | "overdue" | "unknown"
-export type CadenceLabel = "hourly" | "daily" | "weekly" | "custom" | null
+export type CadenceLabel = BoardRow["cadence_label"]
 
 /** Per-butler row for the status board table. */
 export interface StatusBoardRow {
   name: string
   /** Agent type: "butler" (user-facing) or "staffer" (infrastructure). */
-  type: "butler" | "staffer"
+  type: BoardRow["type"]
   description: string | null
   /** Raw API status string: 'ok' (healthy) or 'down'. Backend emits no other values. */
   status: string
@@ -147,15 +147,37 @@ export interface StatusBoardResult {
 // Row mapping
 // ---------------------------------------------------------------------------
 
+function activityView(activity: BoardRow["activity"]): ActivityVerb {
+  switch (activity) {
+    case "running": case "idle": case "overdue": case "offline":
+    case "quarantined": case "unknown": return activity
+    default: return "unknown"
+  }
+}
+
+function toneView(tone: BoardRow["cell_tone"]): CellTone {
+  switch (tone) {
+    case "green": case "amber": case "red": case "neutral": return tone
+    default: return "neutral"
+  }
+}
+
+function eligibilityView(eligibility: BoardRow["eligibility"]): EligibilityState {
+  switch (eligibility) {
+    case "active": case "quarantined": case "stale": case "unavailable": return eligibility
+    default: return "unavailable"
+  }
+}
+
 function mapRow(row: BoardRow): StatusBoardRow {
   return {
     name: row.name,
     type: row.type,
     description: row.description,
     status: row.status,
-    activity: row.activity,
-    cellTone: row.cell_tone,
-    eligibility: row.eligibility,
+    activity: activityView(row.activity),
+    cellTone: toneView(row.cell_tone),
+    eligibility: eligibilityView(row.eligibility),
     quarantineReason: row.quarantine_reason,
     quarantinedAt: row.quarantined_at,
     sessions24h: row.sessions_24h,
@@ -174,7 +196,7 @@ function mapRow(row: BoardRow): StatusBoardRow {
     cadenceSeconds: row.cadence_seconds,
     cadenceLabel: row.cadence_label,
     silenceSeconds: row.silence_seconds,
-    cadenceStatus: row.cadence_status,
+    cadenceStatus: row.cadence_status === "on_schedule" || row.cadence_status === "overdue" ? row.cadence_status : "unknown",
   }
 }
 
@@ -186,7 +208,7 @@ function mapRow(row: BoardRow): StatusBoardRow {
 // (components/overview/model.ts, bu-qvnce.4) -- classifies "needs attention"
 // from the exact same set. Two independently-maintained copies of this list
 // is exactly the "one instrument built by one hand" defect this move fixes.
-export const NEEDS_YOU_ACTIVITIES: ReadonlySet<ActivityVerb> = new Set([
+export const NEEDS_YOU_ACTIVITIES: ReadonlySet<string> = new Set([
   "offline",
   "quarantined",
   "overdue",

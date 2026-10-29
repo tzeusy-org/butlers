@@ -19,6 +19,7 @@ vi.mock("@/hooks/use-sessions", () => ({
 type UseSessionDetailResult = ReturnType<typeof useGlobalSessionDetail>;
 
 const SESSION_DETAIL = {
+purpose_lane: null,
   id: "sess-123",
   butler: "switchboard",
   prompt: "Summarize today's routing failures",
@@ -43,6 +44,8 @@ const SESSION_DETAIL = {
 };
 
 const SESSION_SUMMARY: SessionSummary = {
+purpose_lane: null,
+cost_usd: null,
   id: "sess-123",
   butler: "switchboard",
   prompt: "Summarize today's routing failures",
@@ -390,6 +393,10 @@ describe("SessionDetailDrawer", () => {
           complexity: null,
           resolution_source: null,
           process_log: {
+retry_attempted: null,
+retry_succeeded: null,
+result_source: null,
+attempt_count: null,
             pid: 1234,
             exit_code: 0,
             command: null,

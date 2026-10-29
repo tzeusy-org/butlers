@@ -16,6 +16,10 @@ vi.mock("@/hooks/use-sessions", () => ({
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const BASE_SESSION: SessionDetail = {
+purpose_lane: null,
+correction_count: 0,
+linked_message: null,
+resolution_receipt: null,
   id: "sess-abc123",
   butler: "general",
   prompt: "What is the weather today?",
@@ -191,6 +195,10 @@ describe("SessionDossier", () => {
       success: false,
       error: "Session failed",
       process_log: {
+retry_attempted: null,
+retry_succeeded: null,
+result_source: null,
+attempt_count: null,
         pid: 123,
         exit_code: 1,
         command: null,
@@ -222,6 +230,10 @@ describe("SessionDossier", () => {
       ...BASE_SESSION,
       success: true,
       process_log: {
+retry_attempted: null,
+retry_succeeded: null,
+result_source: null,
+attempt_count: null,
         pid: 123,
         exit_code: 0,
         command: null,

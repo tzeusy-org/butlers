@@ -108,6 +108,7 @@ const WINDOW_END = new Date("2026-04-25T23:59:59Z")
 
 function makeEpisode(overrides: Partial<ChroniclerEpisode> = {}): ChroniclerEpisode {
   return {
+participant_entity_ids: [],
     id: "ep-test-id",
     source_name: "work",
     source_ref: "ref-1",

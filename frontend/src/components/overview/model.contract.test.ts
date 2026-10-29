@@ -58,6 +58,7 @@ function boardRow(
     heartbeat_age_seconds: null,
     heartbeat_unavailable: false,
     schema_unreachable: false,
+    stripe_source_error: false,
     hourly_stripe: [],
     hourly_total: 0,
     cadence_seconds: null,
@@ -72,6 +73,7 @@ function notificationStats(
   overrides: Partial<NotificationStats> = {},
 ): NotificationStats {
   return {
+source_available: true,
     total: 0,
     sent: 0,
     failed: 0,
@@ -196,6 +198,16 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
         boardRows: scenario.board_rows.map((r) => boardRow(r)),
         butlersError: scenario.board_source_error,
         approvalMetrics: {
+callback_secret_configured: null,
+delivery_due_count: 0,
+delivery_retry_wait_count: 0,
+delivery_expired_lease_count: 0,
+delivery_ambiguous_count: 0,
+delivery_stuck_count: 0,
+delivery_oldest_due_age_seconds: null,
+delivery_by_state: {},
+delivery_by_reason: {},
+delivery_sources_complete: false,
           total_pending: scenario.approvals_pending,
           total_approved_today: 0,
           total_rejected_today: 0,
@@ -217,6 +229,7 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
                 ? "unknown_patrol_status"
                 : "healthy",
               circuit_breaker: {
+threshold: 5,
                 tripped: scenario.qa.circuit_breaker_tripped ?? false,
                 consecutive_failures:
                   scenario.qa.circuit_breaker_consecutive_failures ?? 0,
@@ -252,6 +265,7 @@ describe("attention contract (bu-gcz9e.2, shared fixtures)", () => {
             })
           : null,
         issues: (scenario.issues ?? []).map((issue, index) => ({
+          butlers: [], dismissed: false, error_message: null, occurrences: 1, recurrence_at: null,
           ...issue,
           link: "/issues",
           issue_key: `contract:${scenario.name}:${index}`,

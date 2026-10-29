@@ -1,4 +1,4 @@
-import type { NeighbourEntry } from "@/api/index.ts";
+import type { NeighbourEntry } from "@/api/types.ts";
 
 /** Event dispatched to open the entity-first Cmd-K finder (bu-xfjwk). */
 export const OPEN_ENTITY_FINDER_EVENT = "open-entity-finder";

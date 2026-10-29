@@ -7,10 +7,10 @@ models. bu-gxmfx.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class DelegationLedgerEntry(BaseModel):
+class DelegationLedgerEntry(ResponseSchemaModel):
     """One row of ``public.delegation_ledger`` — a cross-butler question/answer.
 
     ``wake_*``/``answer_digest`` (bu-ep4ks.3) widen this entry with the

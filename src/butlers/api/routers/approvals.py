@@ -26,7 +26,8 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, create_model, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
@@ -36,6 +37,7 @@ from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
+    ApiResponseWithMeta,
     PaginatedResponse,
     PaginationMeta,
 )
@@ -97,6 +99,40 @@ from butlers.modules.approvals.rules import is_rule_effective, validate_rule_con
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
 from butlers.modules.approvals.stepup import bind_rule_action, is_receipt, run_rule_write
 from butlers.modules.base import ToolMeta
+
+
+@with_config(ConfigDict(extra="allow"))
+class ApprovalSourceMeta(TypedDict, total=False):
+    sources_degraded: list[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class ApprovalMetricsMeta(ApprovalSourceMeta, total=False):
+    pending_actions_sources_degraded: list[str]
+    approval_rules_sources_degraded: list[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class ApprovalFlatMeta(ApprovalSourceMeta):
+    stalled_count: int
+
+
+@with_config(ConfigDict(extra="allow"))
+class ApprovalActionsMeta(ApprovalSourceMeta):
+    total: int
+    offset: int
+    limit: int
+    has_more: bool
+
+
+# A native refinement of the real canonical envelope, used only for output metadata.
+# Keep the shared generic and every default component/validation schema unchanged.
+_ApprovalActionsPage = create_model(
+    "PaginatedResponse[ApprovalAction, ApprovalActionsMeta]",
+    __base__=PaginatedResponse[ApprovalAction],
+    __config__=ConfigDict(json_schema_serialization_defaults_required=False),
+    meta=(ApprovalActionsMeta, ...),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -859,7 +895,11 @@ def _configured_gated_tools_for(butler_name: str) -> list[tuple[str, str, int]]:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/actions")
+@router.get(
+    "/actions",
+    response_model=PaginatedResponse[ApprovalAction],
+    responses={200: {"model": _ApprovalActionsPage}},
+)
 async def list_actions(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
@@ -1872,7 +1912,9 @@ async def list_rules(
     )
 
 
-@router.get("/gated-tools")
+@router.get(
+    "/gated-tools", response_model=ApiResponseWithMeta[list[ApprovalGatedTool], ApprovalSourceMeta]
+)
 async def list_gated_tools(
     *,
     db_mgr: Db,
@@ -2082,7 +2124,7 @@ async def get_rule_suggestions(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/metrics")
+@router.get("/metrics", response_model=ApiResponseWithMeta[ApprovalMetrics, ApprovalMetricsMeta])
 async def get_metrics(
     *,
     db_mgr: Db,
@@ -2400,7 +2442,7 @@ def _decision_audit_actor(actor_id: str) -> str:
     return _ACTOR_DASHBOARD
 
 
-@router.get("")
+@router.get("", response_model=ApiResponseWithMeta[list[ApprovalSummary], ApprovalFlatMeta])
 async def list_approvals_flat(
     state: Literal["waiting", "decided", "stalled", "all"] = Query(
         default="all", description="waiting|decided|stalled|all"
@@ -2490,7 +2532,9 @@ async def list_approvals_flat(
     return ApiResponse(data=summaries, meta=meta)
 
 
-@router.get("/history")
+@router.get(
+    "/history", response_model=ApiResponseWithMeta[list[ApprovalSummary], ApprovalSourceMeta]
+)
 async def list_approvals_history(
     since: str | None = Query(default=None, description="ISO 8601 timestamp"),
     limit: int = Query(default=30, ge=1, le=500),

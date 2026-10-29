@@ -17,17 +17,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, cleanup, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { AttentionLedgerSummaryResponse } from "@/api/index.ts";
+import type { AttentionLedgerSummaryResponse } from "@/api/types.ts";
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     getAttentionLedgerSummary: vi.fn(),
   };
 });
 
-import { getAttentionLedgerSummary } from "@/api/index.ts";
+import { getAttentionLedgerSummary } from "@/api/client.ts";
 import { AttentionLedgerPanel } from "@/components/approvals/attention-ledger-panel.tsx";
 
 afterEach(() => {

@@ -12,6 +12,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel, Field
 
+from butlers.api.models.base import ResponseSchemaModel
+
 
 class HAConnectionState(StrEnum):
     """Operational state of the Home Assistant connection.
@@ -29,7 +31,7 @@ class HAConnectionState(StrEnum):
     """No HA URL or token configured — setup required."""
 
 
-class HAStatusResponse(BaseModel):
+class HAStatusResponse(ResponseSchemaModel):
     """Response for GET /api/settings/home-assistant.
 
     Reports the current HA connection state for the settings page.
@@ -67,7 +69,7 @@ class HAConfigRequest(BaseModel):
     )
 
 
-class HAConfigResponse(BaseModel):
+class HAConfigResponse(ResponseSchemaModel):
     """Response for POST /api/settings/home-assistant.
 
     Includes connection validation result and masked URL.
@@ -83,7 +85,7 @@ class HAConfigResponse(BaseModel):
     """Base origin of the stored HA URL, or null on failure."""
 
 
-class HADeleteResponse(BaseModel):
+class HADeleteResponse(ResponseSchemaModel):
     """Response for DELETE /api/settings/home-assistant."""
 
     success: bool = True

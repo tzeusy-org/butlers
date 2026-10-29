@@ -30,7 +30,7 @@ test.describe("ingestion filters pipeline", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: mockJson("getPipelineStats", {
+          body: mockJson("getPipelineStats", { bearer_scrub_counts: null, bearer_scrub_available: false,
             window: "24h",
             aggregates_available: true, failed_total: 0, replay_pending_total: 0, written_off_total: 0, backlog_available: true,
             ingested: 1000,
@@ -104,7 +104,7 @@ test.describe("ingestion filters pipeline", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: mockJson("getPipelineStats", {
+          body: mockJson("getPipelineStats", { bearer_scrub_counts: null, bearer_scrub_available: false,
             window: "24h",
             aggregates_available: false, failed_total: 0, replay_pending_total: 0, written_off_total: 0, backlog_available: false,
             ingested: 0,

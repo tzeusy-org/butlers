@@ -75,7 +75,7 @@ export default function SessionDetailPage() {
                 so the persisted conversation/message IDs are the only link
                 inputs. Never fabricated: no linked message or incomplete IDs
                 means no affordance. */}
-            {session.linked_message?.conversation_id && session.linked_message.message_id && (
+            {"linked_message" in session && session.linked_message?.conversation_id && session.linked_message.message_id && (
               <Link
                 to={chatMessageDeepLink(
                   session.linked_message.conversation_id,

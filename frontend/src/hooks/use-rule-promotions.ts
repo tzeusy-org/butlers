@@ -1,12 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  confirmRulePromotionSuggestion,
-  dismissRulePromotionSuggestion,
-  getRulePromotionStats,
-  getRulePromotionSuggestions,
-  setRulePromotionRuleEnabled,
-} from "@/api/index.ts";
-import type { RulePromotionDismissRequest } from "@/api/index.ts";
+import { confirmRulePromotionSuggestion, dismissRulePromotionSuggestion, getRulePromotionStats, getRulePromotionSuggestions, setRulePromotionRuleEnabled } from "@/api/client.ts";
+import type { RulePromotionDismissRequest } from "@/api/types.ts";
 
 // Query keys
 export const rulePromotionKeys = {

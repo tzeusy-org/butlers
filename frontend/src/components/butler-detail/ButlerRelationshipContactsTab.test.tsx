@@ -102,6 +102,8 @@ const ALICE_DETAIL = {
 const DUNBAR_DATA = {
   entries: [
     {
+effective_cadence_days: null,
+stale_contact_state: "unmeasurable" as const,
       contact_id: "c-1",
       entity_id: "e-1",
       canonical_name: "Alice Smith",
@@ -114,6 +116,8 @@ const DUNBAR_DATA = {
       last_interaction_at: "2026-05-01T10:00:00Z",
     },
     {
+effective_cadence_days: null,
+stale_contact_state: "unmeasurable" as const,
       contact_id: "c-2",
       entity_id: "e-2",
       canonical_name: "Bob Jones",
@@ -126,6 +130,8 @@ const DUNBAR_DATA = {
       last_interaction_at: null,
     },
     {
+effective_cadence_days: null,
+stale_contact_state: "unmeasurable" as const,
       contact_id: "c-3",
       entity_id: "e-3",
       canonical_name: "Carol White",

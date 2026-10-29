@@ -110,6 +110,18 @@ vi.mock("@/components/relationship/OwnerSetupBanner", () => ({
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 const FACT: Fact = {
+source_episode_status: null,
+superseded_by: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+valid_at: null,
+invalid_at: null,
+idempotency_key: null,
   id: "fact-1",
   subject: "user",
   predicate: "works_at",
@@ -179,6 +191,7 @@ const ENTITY: EntityDetail = {
   recent_facts_offset: 0,
   recent_facts_limit: 20,
   recent_facts_has_more: false,
+  rebind_receipts: [],
   entity_info: [],
 };
 

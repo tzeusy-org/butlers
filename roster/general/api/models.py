@@ -5,10 +5,10 @@ Provides models for collections and entities.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class Collection(BaseModel):
+class Collection(ResponseSchemaModel):
     """A named collection of entities in the general butler."""
 
     id: str
@@ -18,7 +18,7 @@ class Collection(BaseModel):
     created_at: str
 
 
-class Entity(BaseModel):
+class Entity(ResponseSchemaModel):
     """An entity within a collection."""
 
     id: str
@@ -30,14 +30,14 @@ class Entity(BaseModel):
     updated_at: str
 
 
-class SizeHistogramBucket(BaseModel):
+class SizeHistogramBucket(ResponseSchemaModel):
     """A bucket in the collection size distribution histogram."""
 
     bracket: str  # e.g., "0", "1-10", "11-100", "101+"
     count: int  # number of collections in this bracket
 
 
-class GeneralStats(BaseModel):
+class GeneralStats(ResponseSchemaModel):
     """Aggregated statistics for the general butler's collections."""
 
     total_collections: int

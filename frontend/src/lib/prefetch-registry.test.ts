@@ -6,39 +6,25 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@/api/index.ts", () => ({
-  getButler: vi.fn((name: string) => Promise.resolve({ data: { name } })),
-  getEntity: vi.fn((id: string, params?: unknown) => Promise.resolve({ data: { id, params } })),
-  getEpisode: vi.fn((id: string) => Promise.resolve({ data: { id } })),
-  getFact: vi.fn((id: string) => Promise.resolve({ data: { id } })),
-  getHealthBriefing: vi.fn(() => Promise.resolve({ data: { summary: "briefing" } })),
-  getRule: vi.fn((id: string) => Promise.resolve({ data: { id } })),
-  getMeasurementTypes: vi.fn(() => Promise.resolve({ types: [] })),
-  getSession: vi.fn((id: string) => Promise.resolve({ data: { id } })),
-  getSessions: vi.fn((params?: unknown) => Promise.resolve({ data: [], meta: { params } })),
-  getApprovalDetail: vi.fn((id: string) => Promise.resolve({ data: { id } })),
-  getIngestionEvent: vi.fn((id: string) => Promise.resolve({ data: { id } })),
-  getTimeline: vi.fn((params: unknown) => Promise.resolve({ data: [], meta: { params } })),
+
+
+vi.mock("@/api/client.ts", () => ({
+getButler: vi.fn((name: string) => Promise.resolve({ data: { name } })),
+getEntity: vi.fn((id: string, params?: unknown) => Promise.resolve({ data: { id, params } })),
+getEpisode: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+getFact: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+getHealthBriefing: vi.fn(() => Promise.resolve({ data: { summary: "briefing" } })),
+getRule: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+getMeasurementTypes: vi.fn(() => Promise.resolve({ types: [] })),
+getSession: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+getSessions: vi.fn((params?: unknown) => Promise.resolve({ data: [], meta: { params } })),
+getApprovalDetail: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+getIngestionEvent: vi.fn((id: string) => Promise.resolve({ data: { id } })),
+getTimeline: vi.fn((params: unknown) => Promise.resolve({ data: [], meta: { params } })),
+apiFetch: vi.fn(() => Promise.resolve({ data: { days: [] } }))
 }));
 
-vi.mock("@/api/client", () => ({
-  apiFetch: vi.fn(() => Promise.resolve({ data: { days: [] } })),
-}));
-
-import {
-  getApprovalDetail,
-  getButler,
-  getEntity,
-  getEpisode,
-  getFact,
-  getHealthBriefing,
-  getIngestionEvent,
-  getMeasurementTypes,
-  getRule,
-  getSession,
-  getSessions,
-  getTimeline,
-} from "@/api/index.ts";
+import { getApprovalDetail, getButler, getEntity, getEpisode, getFact, getHealthBriefing, getIngestionEvent, getMeasurementTypes, getRule, getSession, getSessions, getTimeline } from "@/api/client.ts";
 import { apiFetch } from "@/api/client";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
 import { resolvePrefetchTarget } from "./prefetch-registry";

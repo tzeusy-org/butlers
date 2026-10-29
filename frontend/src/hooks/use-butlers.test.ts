@@ -21,8 +21,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   };
 });
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     getButler: vi.fn(),
@@ -31,7 +31,7 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
 });
 
 import { useMutation } from "@tanstack/react-query";
-import { forceButlerTick, getButler } from "@/api/index.ts";
+import { forceButlerTick, getButler } from "@/api/client.ts";
 import { useForceButlerTick, usePingButler } from "@/hooks/use-butlers";
 
 const mockUseMutation = vi.mocked(useMutation);

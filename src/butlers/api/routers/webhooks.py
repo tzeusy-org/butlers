@@ -57,6 +57,7 @@ from pydantic import BaseModel
 
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.routers import audit
 from butlers.core.crypto import aes_gcm
 
@@ -90,7 +91,7 @@ _WEBHOOK_PROJECTION = (
 # ---------------------------------------------------------------------------
 
 
-class RetryPolicy(BaseModel):
+class RetryPolicy(ResponseSchemaModel):
     """Webhook retry configuration."""
 
     max_attempts: int = 3
@@ -124,7 +125,7 @@ class WebhookUpdate(BaseModel):
     regenerate_secret: bool = False
 
 
-class WebhookRow(BaseModel):
+class WebhookRow(ResponseSchemaModel):
     """A webhook registration returned by the API.
 
     The plaintext signing secret is NEVER included — only ``secret_prefix``
@@ -154,7 +155,7 @@ class WebhookWithSecret(WebhookRow):
     secret: str | None = None
 
 
-class WebhookTestResult(BaseModel):
+class WebhookTestResult(ResponseSchemaModel):
     """Result of a test-fire."""
 
     webhook_id: uuid.UUID
@@ -636,7 +637,7 @@ async def update_webhook(
 # ---------------------------------------------------------------------------
 
 
-class WebhookDeleteResponse(BaseModel):
+class WebhookDeleteResponse(ResponseSchemaModel):
     """Confirmation of webhook deletion."""
 
     deleted: bool

@@ -37,6 +37,9 @@ import { useFleetHaltStatus, CEILING_DENIAL_REASON_PREFIX } from "./use-fleet-ha
 
 function attempt(overrides: Partial<DispatchAttemptEntry> = {}): DispatchAttemptEntry {
   return {
+duration_ms: null,
+purpose_lane: null,
+resolution_receipt: null,
     ts: "2026-07-10T08:00:00.000Z",
     butler: "general",
     outcome: "quota_skip",

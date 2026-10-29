@@ -12,8 +12,10 @@ from enum import StrEnum
 
 from pydantic import BaseModel, computed_field
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class OAuthStartResponse(BaseModel):
+
+class OAuthStartResponse(ResponseSchemaModel):
     """Response from the OAuth start endpoint.
 
     Returns the authorization URL that the user should visit to grant access.
@@ -71,7 +73,7 @@ class OAuthCredentialState(StrEnum):
     """An unclassified error is preventing credential use; see ``remediation`` for guidance."""
 
 
-class OAuthCredentialStatus(BaseModel):
+class OAuthCredentialStatus(ResponseSchemaModel):
     """Status of a single OAuth credential set (e.g. Google).
 
     Provides a machine-readable ``state`` and a human-readable
@@ -118,7 +120,7 @@ class OAuthCredentialStatus(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class GoogleAccountStatus(BaseModel):
+class GoogleAccountStatus(ResponseSchemaModel):
     """Per-account credential status for GET /api/oauth/google/accounts/<id>/status."""
 
     has_refresh_token: bool
@@ -129,7 +131,7 @@ class GoogleAccountStatus(BaseModel):
     last_token_refresh_at: datetime | None = None
 
 
-class GoogleAccountResponse(BaseModel):
+class GoogleAccountResponse(ResponseSchemaModel):
     """Serialized representation of a connected Google account.
 
     No credential material (refresh tokens, client secrets) is included.
@@ -145,14 +147,14 @@ class GoogleAccountResponse(BaseModel):
     last_token_refresh_at: datetime | None = None
 
 
-class SetPrimaryResponse(BaseModel):
+class SetPrimaryResponse(ResponseSchemaModel):
     """Response for PUT /api/oauth/google/accounts/<id>/primary."""
 
     success: bool = True
     account: GoogleAccountResponse
 
 
-class DisconnectAccountResponse(BaseModel):
+class DisconnectAccountResponse(ResponseSchemaModel):
     """Response for DELETE /api/oauth/google/accounts/<id>."""
 
     success: bool = True
@@ -161,7 +163,7 @@ class DisconnectAccountResponse(BaseModel):
     """UUID of the account auto-promoted to primary, if applicable."""
 
 
-class OAuthStatusResponse(BaseModel):
+class OAuthStatusResponse(ResponseSchemaModel):
     """Top-level response for GET /api/oauth/status.
 
     Aggregates the status of all OAuth credential sets known to the system.
@@ -189,7 +191,7 @@ class CredentialField(StrEnum):
     absent = "absent"
 
 
-class GoogleCredentialStatusResponse(BaseModel):
+class GoogleCredentialStatusResponse(ResponseSchemaModel):
     """Masked credential status for GET /api/oauth/google/credentials.
 
     Secret values are NEVER returned — only presence indicators.
@@ -227,14 +229,14 @@ class UpsertAppCredentialsRequest(BaseModel):
     """Google OAuth client secret."""
 
 
-class UpsertAppCredentialsResponse(BaseModel):
+class UpsertAppCredentialsResponse(ResponseSchemaModel):
     """Response for PUT /api/oauth/google/credentials."""
 
     success: bool = True
     message: str = "Google app credentials stored."
 
 
-class DeleteCredentialsResponse(BaseModel):
+class DeleteCredentialsResponse(ResponseSchemaModel):
     """Response for DELETE /api/oauth/google/credentials."""
 
     success: bool = True

@@ -77,11 +77,11 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from opentelemetry import trace
-from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, Db, get_butler_configs
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.read_models.insights import query_insight_delivery_state
 from butlers.api.runtime_attention_status import (
     CONDITION_ATTENTION_GRACE,
@@ -118,7 +118,7 @@ _PROCESS_START: datetime = datetime.now(UTC)
 # ---------------------------------------------------------------------------
 
 
-class InstanceFacts(BaseModel):
+class InstanceFacts(ResponseSchemaModel):
     """Software identity and process uptime facts."""
 
     version: str
@@ -126,7 +126,7 @@ class InstanceFacts(BaseModel):
     started_at: str
 
 
-class DeploymentRecord(BaseModel):
+class DeploymentRecord(ResponseSchemaModel):
     """Single row from public.deployments (a boot or deploy execution)."""
 
     id: str
@@ -140,7 +140,7 @@ class DeploymentRecord(BaseModel):
     serving_worktree: str | None  # ".worktrees/<name>" when detected at boot
 
 
-class DeploymentFacts(BaseModel):
+class DeploymentFacts(ResponseSchemaModel):
     """Current (most recent) deployment plus recent deployment history.
 
     ``commits_behind_available=False`` means the comparison itself could not
@@ -155,7 +155,7 @@ class DeploymentFacts(BaseModel):
     commits_behind_available: bool
 
 
-class DriftEntry(BaseModel):
+class DriftEntry(ResponseSchemaModel):
     """One migration chain out of sync between the codebase and a schema."""
 
     schema_name: str
@@ -164,7 +164,7 @@ class DriftEntry(BaseModel):
     actual_revision: str | None
 
 
-class DriftFacts(BaseModel):
+class DriftFacts(ResponseSchemaModel):
     """Migration-drift sentinel result (bu-9r3hd.1).
 
     ``drift_check_available=False`` means the comparison itself failed (pool
@@ -182,7 +182,7 @@ class DriftFacts(BaseModel):
     drift_check_available: bool
 
 
-class StoredFunctionEntry(BaseModel):
+class StoredFunctionEntry(ResponseSchemaModel):
     """One stored function whose deployed body left the committed definition.
 
     Digests only: a stored body can hold operator-supplied literals, so the
@@ -195,7 +195,7 @@ class StoredFunctionEntry(BaseModel):
     deployed_digests: list[str]
 
 
-class UnpinnedDefinerEntry(BaseModel):
+class UnpinnedDefinerEntry(ResponseSchemaModel):
     """One SECURITY DEFINER whose search_path is not exactly ``pg_catalog, pg_temp``.
 
     ``remedy`` is ``migrations`` when the connecting (migration) login owns the
@@ -209,7 +209,7 @@ class UnpinnedDefinerEntry(BaseModel):
     remedy: str
 
 
-class StoredFunctionFacts(BaseModel):
+class StoredFunctionFacts(ResponseSchemaModel):
     """Deployed stored-function bodies vs the configured bootstrap source (bu-bi5an).
 
     ``scripts/init-db.sql`` is the default committed authority for every managed
@@ -242,7 +242,7 @@ class StoredFunctionFacts(BaseModel):
     definer_check_available: bool = False
 
 
-class SchemaSize(BaseModel):
+class SchemaSize(ResponseSchemaModel):
     """Disk footprint of a single butler schema."""
 
     schema_name: str
@@ -250,7 +250,7 @@ class SchemaSize(BaseModel):
     table_count: int
 
 
-class TableSize(BaseModel):
+class TableSize(ResponseSchemaModel):
     """Disk footprint of a single table."""
 
     schema_name: str
@@ -258,7 +258,7 @@ class TableSize(BaseModel):
     size_bytes: int
 
 
-class DatabaseFacts(BaseModel):
+class DatabaseFacts(ResponseSchemaModel):
     """PostgreSQL catalog size facts for the running database."""
 
     total_size_bytes: int
@@ -267,7 +267,7 @@ class DatabaseFacts(BaseModel):
     growth_rate_bytes_per_day: None = None  # reserved for v2
 
 
-class EgressActor(BaseModel):
+class EgressActor(ResponseSchemaModel):
     """A single external actor that has received data from this instance."""
 
     actor_id: str
@@ -277,14 +277,14 @@ class EgressActor(BaseModel):
     data_types: list[str]
 
 
-class EgressCatalog(BaseModel):
+class EgressCatalog(ResponseSchemaModel):
     """Aggregated catalog of external-actor egress events."""
 
     actors: list[EgressActor]
     catalog_covers_from: str | None
 
 
-class ButlerHeartbeat(BaseModel):
+class ButlerHeartbeat(ResponseSchemaModel):
     """Per-butler liveness and session snapshot."""
 
     name: str
@@ -295,13 +295,13 @@ class ButlerHeartbeat(BaseModel):
     error: str | None = None
 
 
-class HeartbeatFacts(BaseModel):
+class HeartbeatFacts(ResponseSchemaModel):
     """Collection of per-butler heartbeat entries."""
 
     butlers: list[ButlerHeartbeat]
 
 
-class InsightDeliveryState(BaseModel):
+class InsightDeliveryState(ResponseSchemaModel):
     """Aggregated state of the proactive insight delivery pipeline.
 
     Counts are drawn from public.insight_candidates and reflect the last 30
@@ -329,7 +329,7 @@ class InsightDeliveryState(BaseModel):
     last_delivery_at: str | None
 
 
-class ConditionAttention(BaseModel):
+class ConditionAttention(ResponseSchemaModel):
     """Linked owner-attention delivery for a fleet or overdue-QA condition.
 
     ``status`` is one of ``butlers.api.runtime_attention_status``'s fixed
@@ -345,7 +345,7 @@ class ConditionAttention(BaseModel):
     outbox_retained: bool | None = None
 
 
-class ConditionEntry(BaseModel):
+class ConditionEntry(ResponseSchemaModel):
     """One episode row from public.infra_conditions or public.owner_conditions.
 
     An ``open``/``aging`` episode is an active outage/standing concern; a
@@ -380,7 +380,7 @@ class ConditionEntry(BaseModel):
     attention: ConditionAttention | None = None
 
 
-class ConditionsFacts(BaseModel):
+class ConditionsFacts(ResponseSchemaModel):
     """Standing infrastructure conditions, most-recently-detected first.
 
     ``conditions_available=False`` means the ledger query itself failed

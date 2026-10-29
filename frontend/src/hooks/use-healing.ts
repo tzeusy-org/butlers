@@ -11,7 +11,8 @@
 
 import { useQueries, useQuery } from "@tanstack/react-query";
 
-import { getHealingDispatchEvents, type HealingDispatchEventsParams } from "@/api/index.ts";
+import { getHealingDispatchEvents } from "@/api/client.ts";
+import type { HealingDispatchEventsParams } from "@/api/client.ts";
 
 // No fleet event type covers healing gate evaluations, so this local poll is the primary path.
 const HEALING_DISPATCH_EVENTS_POLL_MS = 30_000;

@@ -45,6 +45,19 @@ def test_every_hosted_frontend_command_is_run_locally_or_declared_hosted_only() 
     local = {f"npm run {script}" for _, script in runner.STEPS}
     hosted_only = {f"npm run {script}" for script in runner.HOSTED_ONLY}
     assert set(HOSTED_COMMANDS) == local | hosted_only | _NOT_LOCAL
+    # API drift must run for backend-only changes too, and has a local predicate.
+    setup = next(step for step in _GUARDS if step.get("name") == "Set up Node 24" and "if" in step)
+    install = next(step for step in _GUARDS if step.get("name") == "Install dependencies")
+    assert setup["if"] == install["if"] == "needs.route.outputs.backend == 'true'"
+    assert setup["with"]["node-version"] == "24.22.0"
+    assert setup["with"]["cache-dependency-path"] == "frontend/package-lock.json"
+    for script in ("check:api", "check:api-contract"):
+        step = next(step for step in _GUARDS if step.get("run") == f"npm run {script}")
+        assert step["if"] == "needs.route.outputs.backend == 'true'"
+    makefile = (ROOT / "Makefile").read_text()
+    assert "check-guards: check-api-contract " in makefile
+    assert "npm --prefix frontend run check:api\n" in makefile
+    assert "npm --prefix frontend run check:api-contract\n" in makefile
 
 
 @pytest.mark.unit
@@ -63,6 +76,7 @@ def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
         "python3": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$ARGUMENT_LOG"\n',
         "git": '#!/bin/sh\nprintf "git %s\\n" "$*" >> "$ARGUMENT_LOG"\n',
         "openspec": "#!/bin/sh\nexit 0\n",
+        "npm": '#!/bin/sh\nprintf "npm %s\\n" "$*" >> "$ARGUMENT_LOG"\n',
     }.items():
         tool = tools / name
         tool.write_text(body)
@@ -96,5 +110,7 @@ def test_make_check_guards_passes_the_configured_guards_base(tmp_path) -> None:
     )
     commands = log.read_text().splitlines()
     assert "scripts/frontend_guards.py --base review-fork" in commands
+    assert "npm --prefix frontend run check:api" in commands
+    assert "npm --prefix frontend run check:api-contract" in commands
     assert not any("extract-frontend-copy.py" in command for command in commands)
     assert not any("COPY_INVENTORY.md" in command for command in commands)

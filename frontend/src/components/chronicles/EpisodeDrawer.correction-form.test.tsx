@@ -30,6 +30,7 @@ import type { ChroniclerEpisode } from "@/api/types";
 
 function makeEpisode(overrides: Partial<ChroniclerEpisode> = {}): ChroniclerEpisode {
   return {
+participant_entity_ids: [],
     id: "ep-test-id",
     source_name: "work",
     source_ref: "ref-1",

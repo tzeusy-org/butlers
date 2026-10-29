@@ -1,4 +1,4 @@
-import type { QaRepoConfig } from "@/api/index.ts";
+import type { QaRepoConfig } from "@/api/types.ts";
 
 export function resolveQaRepoUrlInputValue({
   draft,

@@ -8,8 +8,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class ReplayHistoryEntry(BaseModel):
+
+class ReplayHistoryEntry(ResponseSchemaModel):
     """One replay attempt entry from public.audit_log."""
 
     ts: datetime
@@ -18,7 +20,7 @@ class ReplayHistoryEntry(BaseModel):
     cost: float | None = None
 
 
-class SenderContactResolution(BaseModel):
+class SenderContactResolution(ResponseSchemaModel):
     """Contact resolution result for an event's sender_identity.
 
     ``resolved`` is True when a matching contact was found.
@@ -31,7 +33,7 @@ class SenderContactResolution(BaseModel):
     raw: str | None = None
 
 
-class IngestionEventListSessionSummary(BaseModel):
+class IngestionEventListSessionSummary(ResponseSchemaModel):
     """Compact per-session summary embedded in a list row (dispatch-ticks cell).
 
     A trimmed projection of :class:`IngestionEventSession` — just enough to
@@ -48,7 +50,7 @@ class IngestionEventListSessionSummary(BaseModel):
     success: bool | None = None
 
 
-class IngestionEventSummary(BaseModel):
+class IngestionEventSummary(ResponseSchemaModel):
     """Lightweight ingestion event representation for list views.
 
     Returned from the unified timeline endpoint which merges
@@ -115,7 +117,7 @@ class IngestionEventDetail(IngestionEventSummary):
     decomposition_output: dict[str, Any] | None = None
 
 
-class IngestionHistogramCounts(BaseModel):
+class IngestionHistogramCounts(ResponseSchemaModel):
     """Per-status event counts for one histogram bucket.
 
     Mirrors the unified timeline's status vocabulary (see ``_HISTOGRAM_STATUSES``
@@ -133,14 +135,14 @@ class IngestionHistogramCounts(BaseModel):
     replay_failed: int = 0
 
 
-class IngestionHistogramBucket(BaseModel):
+class IngestionHistogramBucket(ResponseSchemaModel):
     """One bucket of the ingestion events histogram."""
 
     ts: datetime
     counts: IngestionHistogramCounts
 
 
-class IngestionHistogramResponse(BaseModel):
+class IngestionHistogramResponse(ResponseSchemaModel):
     """Response body for GET /api/ingestion/events/histogram.
 
     ``buckets`` omits zero-count buckets — a bucket only appears when at
@@ -151,7 +153,7 @@ class IngestionHistogramResponse(BaseModel):
     bucket: str
 
 
-class IngestionDroppedKnownSummary(BaseModel):
+class IngestionDroppedKnownSummary(ResponseSchemaModel):
     """Response body for GET /api/ingestion/events/dropped-known.
 
     ``available=False`` means current classification or historical completeness
@@ -175,7 +177,7 @@ class IngestionDroppedKnownSummary(BaseModel):
     ] = "counts_unavailable"
 
 
-class IngestionEventSession(BaseModel):
+class IngestionEventSession(ResponseSchemaModel):
     """A butler session linked to an ingestion event."""
 
     id: str
@@ -192,7 +194,7 @@ class IngestionEventSession(BaseModel):
     model: str | None = None
 
 
-class ButlerRollupEntry(BaseModel):
+class ButlerRollupEntry(ResponseSchemaModel):
     """Per-butler cost and token breakdown."""
 
     sessions: int = 0
@@ -203,7 +205,7 @@ class ButlerRollupEntry(BaseModel):
     no_usage_session_count: int = 0
 
 
-class IngestionEventRollup(BaseModel):
+class IngestionEventRollup(ResponseSchemaModel):
     """Aggregate cost/token totals for a single ingestion event."""
 
     request_id: str
@@ -230,7 +232,7 @@ class IngestionWindowRollupWindow(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class IngestionWindowRollup(BaseModel):
+class IngestionWindowRollup(ResponseSchemaModel):
     """Aggregate event/session counts for the active filter window.
 
     Returned by GET /api/ingestion/rollup. ``cost`` is the known-priced
@@ -252,7 +254,7 @@ class IngestionWindowRollup(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class IngestionEventPayload(BaseModel):
+class IngestionEventPayload(ResponseSchemaModel):
     """Raw inbound payload for an ingestion event.
 
     Returned by ``GET /api/ingestion/events/{id}/payload``.
@@ -272,7 +274,7 @@ class IngestionEventPayload(BaseModel):
     """Source channel/connector that produced this payload."""
 
 
-class PriorityContactEntry(BaseModel):
+class PriorityContactEntry(ResponseSchemaModel):
     """One row in public.priority_contacts, joined to public.contacts for display.
 
     ``name`` is the canonical contact name from public.contacts.  It may be
@@ -308,7 +310,7 @@ class PriorityContactAddRequest(BaseModel):
     contact_id: UUID
 
 
-class PriorityContactAddResponse(BaseModel):
+class PriorityContactAddResponse(ResponseSchemaModel):
     """Response body for POST /api/ingestion/priority-contacts (201)."""
 
     contact_id: UUID

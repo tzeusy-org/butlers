@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 
-import { getGeneralSettings } from "@/api/index.ts";
+import { getGeneralSettings } from "@/api/client.ts";
 
 export const generalSettingsKeys = {
   settings: () => ["general-settings"] as const,

@@ -31,7 +31,7 @@
  *       §"Timeline Ledger"
  */
 
-import type { IngestionEventListSessionSummary } from "@/api/index.ts";
+import type { IngestionEventListSessionSummary } from "@/api/types.ts";
 import { formatDurationTicks } from "@/lib/format-duration";
 import { formatCostUsdPrecise } from "@/lib/format-cost";
 

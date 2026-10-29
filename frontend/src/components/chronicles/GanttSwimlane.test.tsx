@@ -39,6 +39,7 @@ function makeEpisode(overrides: Partial<ChroniclerEpisode> & { id: string }): Ch
   // `source_name` + `episode_type` (or pass `category` directly) to a pair
   // recognised by `categoryForSource()`.
   return {
+participant_entity_ids: [],
     source_name: "core.sessions",
     source_ref: overrides.id,
     episode_type: "work",

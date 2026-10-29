@@ -1,3 +1,4 @@
+import type { ApiArguments, ApiMethod, ApiOptions, ApiPath, ApiResult, ApiQuery } from "./request-types";
 import { ownerFetch } from "./owner-session";
 import { standingRuleHeaders } from "./approval-step-up";
 /**
@@ -6,452 +7,7 @@ import { standingRuleHeaders } from "./approval-step-up";
  * Uses native `fetch` — no external HTTP libraries required.
  */
 
-import type {
-  CandidateIdentityFact,
-  ApprovalAction,
-  ApprovalActionsResponse,
-  ApprovalActionParams,
-  ApprovalApproveRequest,
-  ApprovalDeferRequest,
-  ApprovalDenyRequest,
-  ApprovalDetail,
-  ApprovalAbandonRequest,
-  ApprovalGatedTool,
-  ApprovalMetricsResponse,
-  ApprovalRule,
-  ApprovalRuleCreateRequest,
-  ApprovalRuleFromActionRequest,
-  ApprovalRuleParams,
-  ApprovalsFlatListResponse,
-  ApprovalsListResponse,
-  ApprovalsPolicy,
-  UnroutableAttentionItem,
-  UnroutableRetryResult,
-  AutonomySuggestion,
-  AutonomySuggestionDismissRequest,
-  AutonomySuggestionParams,
-  RuleConstraintSuggestion,
-  ApiResponse,
-  AuditIssueGroupRef,
-  AuditLogEntry,
-  AuditLogParams,
-  BoardResponse,
-  ButlerConfigResponse,
-  ButlerDetail,
-  ButlerSkill,
-  ButlerSummary,
-  CalendarAccountsResponse,
-  CalendarAuditParams,
-  CalendarAuditResponse,
-  CalendarDayBriefingResponse,
-  ConflictScanParams,
-  ConflictScanResponse,
-  CalendarInvitationsParams,
-  CalendarInvitationsResponse,
-  CalendarResponseRequest,
-  CalendarResponseReceipt,
-  CalendarPrepResponse,
-  CalendarSourceToggleRequest,
-  CalendarProposalAcceptRequest,
-  CalendarProposalActionResponse,
-  CalendarSourceToggleResponse,
-  CalendarWorkspaceMetaResponse,
-  CalendarWorkspaceMutationResponse,
-  CalendarWorkspaceParams,
-  CalendarWorkspaceReadResponse,
-  CalendarWorkspaceSearchParams,
-  CalendarWorkspaceSearchResponse,
-  UnifiedCalendarEntry,
-  CalendarWorkspaceButlerMutationRequest,
-  CalendarWorkspaceButlerEventPreviewRequest,
-  CalendarWorkspaceButlerEventPreviewResponse,
-  CalendarWorkspaceSyncRequest,
-  CalendarWorkspaceSyncResponse,
-  CalendarWorkspaceUserMutationRequest,
-  QuickAddParseRequest,
-  QuickAddParseResponse,
-  SetPrimaryCalendarRequest,
-  SetPrimaryCalendarResponse,
-  SpendSummary,
-  DailySpendResponse,
-  TopSessionsResponse,
-  DispatchAttemptEntry,
-  DispatchAttemptsParams,
-  ErrorResponse,
-  Group,
-  GroupListResponse,
-  GroupParams,
-  HealthResponse,
-  IssuesListResponse,
-  DismissIssueResult,
-  UndismissIssueResult,
-  Label,
-  CursorPage,
-  AckFailedResult,
-  NotificationActionResult,
-  NotificationListResponse,
-  NotificationParams,
-  NotificationStats,
-  NotificationStatsParams,
-  NotificationSummary,
-  MemoryPaginatedResponse,
-  PaginatedResponse,
-  Schedule,
-  ScheduleCreate,
-  ScheduleToggleRequest,
-  ScheduleToggleResult,
-  ScheduleUpdate,
-  SearchResults,
-  SessionAggregate,
-  SessionDetail,
-  SessionPromptReceipt,
-  SessionParams,
-  SessionSummary,
-  KeysetResponse,
-  StateEntry,
-  StateSetRequest,
-  TimelineParams,
-  TimelineResponse,
-  TimelineHistogramParams,
-  TimelineHistogramResponse,
-  TimelineAttentionParams,
-  TimelineAttentionResponse,
-  ScheduleCostsResponse,
-  TriggerResponse,
-  TickResponse,
-  ButlerMcpTool,
-  ButlerMcpToolCallRequest,
-  ButlerMcpToolCallResponse,
-  ConditionCreateRequest,
-  ConditionUpdateRequest,
-  Dose,
-  DoseLogRequest,
-  MedicationAdherence,
-  HealthCondition,
-  HealthResearch,
-  Meal,
-  MealParams,
-  MealCreateRequest,
-  MealUpdateRequest,
-  Measurement,
-  MeasurementParams,
-  MeasurementTypesResponse,
-  MeasurementCreateRequest,
-  MeasurementUpdateRequest,
-  Medication,
-  MedicationParams,
-  MedicationCreateRequest,
-  MedicationUpdateRequest,
-  ResearchCreateRequest,
-  ResearchParams,
-  ResearchUpdateRequest,
-  Symptom,
-  SymptomParams,
-  SymptomCreateRequest,
-  SymptomUpdateRequest,
-  RegistryEntry,
-  RoutingEntry,
-  SetEligibilityResponse,
-  RoutingLogParams,
-  UpcomingDate,
-  Episode,
-  CreateEntityInfoRequest,
-  CreateEntityInfoResponse,
-  EntityDetail,
-  EntityDetailParams,
-  EntityInfoEntry,
-  EntityParams,
-  EntitySummary,
-  ExpectedSignalsResponse,
-  HealthBaselinesResponse,
-  UpdateEntityRequest,
-  EpisodeParams,
-  Fact,
-  FactParams,
-  MemoryActivity,
-  MemoryInspectParams,
-  MemoryInspectResult,
-  MemoryRetentionPolicy,
-  MemoryRule,
-  MemoryStatsResponse,
-  CompactionLogEntry,
-  ReembedPendingCounts,
-  ReembedRunRequest,
-  ReembedRunResult,
-  UpdateRetentionPoliciesRequest,
-  RuleParams,
-  OwnerSetupStatus,
-  IngestionEventSummary,
-  IngestionEventSession,
-  IngestionEventReplayResponse,
-  IngestionEventReplayHistoryEntry,
-  BulkRetryEventsResponse,
-  IngestionEventSenderContact,
-  IngestionEventDetail,
-  IngestionEventPayload,
-  IngestionEventsParams,
-  IngestionHistogramParams,
-  IngestionHistogramResponse,
-  IngestionDroppedKnownSummary,
-  IngestionWindowRollup,
-  IngestionWindowRollupParams,
-  IngestionRule,
-  RulePromotionSurfaceResponse,
-  RulePromotionStatsResponse,
-  RulePromotionDismissRequest,
-  IngestionRuleCreate,
-  IngestionRuleUpdate,
-  IngestionRuleListParams,
-  IngestionRuleTestRequest,
-  IngestionRuleTestResponse,
-  ChannelDefaultEntry,
-  ChannelDefaultUpdate,
-  PriorityContactEntry,
-  PriorityContactAddRequest,
-  PriorityContactAddResponse,
-  PriorityContactListParams,
-  ContactSearchResponse,
-  ModelCatalogEntry,
-  ModelDeleteImpact,
-  AllowanceObservation,
-  ModelAttentionObservation,
-  ModelAttentionReissueResult,
-  FleetHaltAttentionObservation,
-  PricingMap,
-  ModelCatalogCreate,
-  ModelCatalogUpdate,
-  ModelPriorityDelta,
-  VerifyAllResult,
-  ModelTestResult,
-  ButlerModelOverride,
-  ButlerModelOverridesWrite,
-  ButlerModelOverrideReason,
-  ResolveModelResponse,
-  TokenLimitsRequest,
-  TokenLimitsResponse,
-  ResetUsageRequest,
-  TokenUsageDetail,
-  WhatsAppDisconnectResponse,
-  WhatsAppPairPollResponse,
-  WhatsAppPairStartResponse,
-  WhatsAppStatusResponse,
-  SpotifyConfigRequest,
-  SpotifyConfigResponse,
-  SpotifyDisconnectResponse,
-  SpotifyOAuthStartResponse,
-  SpotifyStatusResponse,
-  OwnTracksConfigResponse,
-  OwnTracksStatusResponse,
-  OwnTracksTokenResponse,
-  HomeAssistantConfigRequest,
-  HomeAssistantConfigResponse,
-  HomeAssistantDeleteResponse,
-  HomeAssistantStatusResponse,
-  HomePersonMappingInput,
-  HomePersonMappingReceipt,
-  DunbarRankingResponse,
-  ConversationSummary,
-  ConversationListParams,
-  Message,
-  CreateConversationRequest,
-  SendMessageRequest,
-  ConversationCancelResponse,
-  MessageSearchResult,
-  MessageSearchParams,
-  TelegramSendCodeRequest,
-  TelegramSendCodeResponse,
-  TelegramVerifyCodeRequest,
-  TelegramVerifyCodeResponse,
-  TelegramSessionStatusResponse,
-  GeneralSettings,
-  SteamAccountListResponse,
-  SteamConnectRequest,
-  SteamConnectResponse,
-  SteamDisconnectResponse,
-  QaPatrolSummary,
-  QaPatrolDetail,
-  QaCaseDossier,
-  QaCaseJournalParams,
-  QaCasesParams,
-  QaCaseSummary,
-  QaJournalEvent,
-  QaSummary,
-  QaDismissal,
-  QaDismissRequest,
-  QaPatrolsParams,
-  QaInvestigation,
-  QaInvestigationsParams,
-  ForcePatrolResponse,
-  CircuitBreakerStatus,
-  CircuitBreakerResetResponse,
-  QaRepoConfig,
-  QaRepoConfigUpdate,
-  QaRepoSyncResponse,
-  QaGitAuthorUpdate,
-  QaGitAuthorStatus,
-  QaAllowedRepo,
-  QaAllowedRepoCreate,
-  QaAllowedRepoPatch,
-  RuntimeConfigResponse,
-  RuntimeConfigPatch,
-  RuntimeConfigPatchResponse,
-  ChroniclerAggregateByCategoryParams,
-  ChroniclerAggregateByDayParams,
-  ChroniclerAggregateByDayRow,
-  ChroniclerCategoryBuckets,
-  ChroniclerCreateRoutineRequest,
-  ChroniclerDayCloseParams,
-  ChroniclerDayCloseRefreshRequest,
-  ChroniclerDayCloseRefreshResult,
-  ChroniclerDayCloseResponse,
-  ChroniclerEpisode,
-  ChroniclerEpisodeExplainResponse,
-  ChroniclerEpisodesParams,
-  ChroniclerEventsParams,
-  ChroniclerOverride,
-  ChroniclerPointEvent,
-  ChroniclerRoutine,
-  ChroniclerBalanceParams,
-  ChroniclerBalanceResponse,
-  ChroniclerTrendsParams,
-  ChroniclerTrendsResponse,
-  ChroniclerRollupsParams,
-  ChroniclerRollupsResponse,
-  ChroniclerWhoYouWereWithParams,
-  ChroniclerWhoYouWereWithResponse,
-  ChroniclerActivityEvidenceChain,
-  ChroniclerCorrectionPromptsParams,
-  ChroniclerCorrectionPrompts,
-  ChroniclerSourceStateRow,
-  ChroniclerUpdateRoutineRequest,
-  SubmitCorrectionRequest,
-  EntityGift,
-  EntityLoan,
-  EntityNote,
-  EntityInteraction,
-  CreateEntityNoteRequest,
-  CreateEntityInteractionRequest,
-  CreateEntityGiftRequest,
-  EntityActivityResponse,
-  ActivityBinsResponse,
-  DeltaFactsResponse,
-  ViewMarkResponse,
-  CoreDatesResponse,
-  EntityTimelineItem,
-  EntityCadenceResponse,
-  DunbarTierOverrideResponse,
-  EntityFinderSearchResponse,
-  NeighboursResponse,
-  NeighboursParams,
-  HaloResponse,
-  ConcentrationResponse,
-  LinkedContactSummary,
-  MessageThreadSummary,
-  RelationshipEntityDetail,
-  RelationshipEntityListResponse,
-  RelationshipEntityListParams,
-  RelationshipQueueResponse,
-  DismissRelationshipEntityQueueResponse,
-  CompareEntitiesRequest,
-  CompareEntitiesResponse,
-  DismissEntityPairRequest,
-  DismissEntityPairResponse,
-  MergeRelationshipEntitiesRequest,
-  MergeRelationshipEntitiesResponse,
-  PromoteRelationshipEntityRequest,
-  CreateRelationshipEntityRequest,
-  InstanceFacts,
-  DatabaseFacts,
-  BackupFacts,
-  EgressCatalog,
-  HeartbeatFacts,
-  InsightDeliveryState,
-  DriftFacts,
-  StoredFunctionFacts,
-  ConditionsFacts,
-  HealingDispatchEvent,
-  DelegationLedgerEntry,
-  SubscriptionEntry,
-  DeliveryEntry,
-  ReactionEntry,
-  ContractEntry,
-  DeploymentFacts,
-  ModuleStatus,
-  Briefing,
-  ChroniclesBriefing,
-  ChroniclesKpi,
-  FinanceTransaction,
-  FinanceSubscription,
-  FinanceExpectedSignalsResponse,
-  FinanceObligationsResponse,
-  FinanceAccount,
-  FinanceSpendingSummary,
-  FinanceUpcomingBillsResponse,
-  FinanceTransactionListParams,
-  FinanceSubscriptionListParams,
-  FinanceAccountListParams,
-  FinanceSpendingSummaryParams,
-  FinanceUpcomingBillsParams,
-  FinanceBulkUpdateRequest,
-  FinanceBulkUpdateResponse,
-  TravelTripSummary,
-  TravelTripsResponse,
-  TravelUpcomingModel,
-  TravelTripsParams,
-  TravelExpiringDocumentsResponse,
-  HomeSnapshotStatus,
-  HomeAtmosphereCurrentResponse,
-  HomeAtmosphereLocationUpdate,
-  HomeDeviceInventoryResponse,
-  HomeMaintenanceItem,
-  HomeEnergyDataPoint,
-  HomeTopConsumer,
-  HomeCommandLogEntry,
-  OverdueContactsResponse,
-  PendingDebriefsResponse,
-  ButlerLogsParams,
-  ButlerLogsResponse,
-  GeneralCollection,
-  GeneralEntity,
-  GeneralStats,
-  HourlyActivity,
-  HourlyActivityParams,
-  DailyActivity,
-  DailyActivityParams,
-  SessionKindBreakdown,
-  SessionKindsParams,
-  LatencyStats,
-  LatencyStatsParams,
-  FrictionSummary,
-  FrictionSummaryParams,
-  ActivityFeed,
-  ActivityFeedParams,
-  ButlerMemoryStats,
-  ButlerEffectivePrompt,
-  PromptVersion,
-  PromptUpdateRequest,
-  MemoryAccess,
-  KillRequest,
-  KillResponse,
-  EntityFact,
-  EntityFactsParams,
-  AddEntityContactRequest,
-  AddEntityContactResponse,
-  DeleteEntityContactResponse,
-  MarkEntityContactVerifiedResponse,
-  UpdateEntityContactRequest,
-  UpdateEntityContactResponse,
-  SetPreferredChannelRequest,
-  SetPreferredChannelResponse,
-  ClearPreferredChannelResponse,
-  TimelineSavedViewEntry,
-  TimelineSavedViewCreateRequest,
-  TimelineSavedViewUpdateRequest,
-  CreateLabelResponse,
-  AssignGroupLabelResponse,
-  RemoveGroupLabelResponse,
-  GroupMembersResponse,
-} from "./types.ts";
+import type { ApprovalActionParams, ApprovalApproveRequest, ApprovalDeferRequest, ApprovalDenyRequest, ApprovalAbandonRequest, ApprovalRuleCreateRequest, ApprovalRuleFromActionRequest, ApprovalRuleParams, ApprovalsPolicy, AutonomySuggestionDismissRequest, AutonomySuggestionParams, AuditLogParams, CalendarAuditParams, ConflictScanParams, CalendarInvitationsParams, CalendarResponseRequest, CalendarSourceToggleRequest, CalendarProposalAcceptRequest, CalendarWorkspaceParams, CalendarWorkspaceSearchParams, CalendarWorkspaceButlerMutationRequest, CalendarWorkspaceButlerEventPreviewRequest, CalendarWorkspaceSyncRequest, CalendarWorkspaceUserMutationRequest, QuickAddParseRequest, SetPrimaryCalendarRequest, DispatchAttemptsParams, ErrorResponse, GroupParams, NotificationParams, NotificationStatsParams, ScheduleCreate, ScheduleToggleRequest, ScheduleUpdate, SessionParams, ButlerSessionParams, StateSetRequest, TimelineParams, TimelineHistogramParams, TimelineAttentionParams, ButlerMcpToolCallRequest, ConditionCreateRequest, ConditionUpdateRequest, DoseLogRequest, MealParams, MealCreateRequest, MealUpdateRequest, MeasurementParams, MeasurementCreateRequest, MeasurementUpdateRequest, MedicationParams, MedicationCreateRequest, MedicationUpdateRequest, ResearchCreateRequest, ResearchParams, ResearchUpdateRequest, SymptomParams, SymptomCreateRequest, SymptomUpdateRequest, RoutingLogParams, CreateEntityInfoRequest, EntityDetailParams, EntityParams, UpdateEntityRequest, EpisodeParams, FactParams, MemoryInspectParams, ReembedRunRequest, UpdateRetentionPoliciesRequest, RuleParams, IngestionEventsParams, IngestionHistogramParams, IngestionWindowRollupParams, RulePromotionDismissRequest, IngestionRuleCreate, IngestionRuleUpdate, IngestionRuleListParams, IngestionRuleTestRequest, ChannelDefaultUpdate, PriorityContactAddRequest, PriorityContactListParams, ModelCatalogCreate, ModelCatalogUpdate, ModelPriorityDelta, ButlerModelOverridesWrite, ButlerModelOverrideReason, TokenLimitsRequest, ResetUsageRequest, SpotifyConfigRequest, HomeAssistantConfigRequest, HomePersonMappingInput, ConversationListParams, CreateConversationRequest, SendMessageRequest, MessageSearchParams, TelegramSendCodeRequest, TelegramVerifyCodeRequest, SteamConnectRequest, QaCaseJournalParams, QaCasesParams, QaDismissRequest, QaPatrolsParams, QaInvestigationsParams, QaRepoConfigUpdate, QaGitAuthorUpdate, QaAllowedRepoCreate, QaAllowedRepoPatch, RuntimeConfigPatch, ChroniclerAggregateByCategoryParams, ChroniclerAggregateByDayParams, ChroniclerCreateRoutineRequest, ChroniclerDayCloseParams, ChroniclerDayCloseRefreshRequest, ChroniclerEpisodesParams, ChroniclerEventsParams, ChroniclerBalanceParams, ChroniclerTrendsParams, ChroniclerRollupsParams, ChroniclerWhoYouWereWithParams, ChroniclerCorrectionPromptsParams, ChroniclerUpdateRoutineRequest, SubmitCorrectionRequest, CreateEntityNoteRequest, CreateEntityInteractionRequest, CreateEntityGiftRequest, NeighboursParams, RelationshipEntityListParams, CompareEntitiesRequest, DismissEntityPairRequest, MergeRelationshipEntitiesRequest, PromoteRelationshipEntityRequest, CreateRelationshipEntityRequest, FinanceTransactionListParams, FinanceSubscriptionListParams, FinanceAccountListParams, FinanceSpendingSummaryParams, FinanceUpcomingBillsParams, FinanceBulkUpdateRequest, TravelTripsParams, HomeAtmosphereLocationUpdate, ButlerLogsParams, HourlyActivityParams, DailyActivityParams, SessionKindsParams, LatencyStatsParams, FrictionSummaryParams, ActivityFeedParams, PromptUpdateRequest, KillRequest, EntityFactsParams, AddEntityContactRequest, UpdateEntityContactRequest, SetPreferredChannelRequest, TimelineSavedViewCreateRequest, TimelineSavedViewUpdateRequest } from "./types.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -577,21 +133,25 @@ async function parseErrorBody(
  * aborts the underlying fetch immediately, same as before this wrapper
  * introduced its own internal timeout controller.
  */
-export async function apiFetch<T>(
-  path: string,
-  options?: RequestInit & {
-    /**
-     * Per-call override of {@link API_REQUEST_TIMEOUT_MS} for endpoints whose
-     * happy path is legitimately slow (e.g. the CLI credential test runs a
-     * provider subprocess with a 30s backend budget). Not part of RequestInit
-     * — stripped before the fetch call.
-     */
-    timeoutMs?: number;
-  },
-): Promise<T> {
-  const url = `${API_BASE_URL}${path}`;
-  const { timeoutMs = API_REQUEST_TIMEOUT_MS, ...fetchOptions } = options ?? {};
-
+export async function apiFetch<
+  P extends ApiPath,
+  M extends ApiMethod<P> = Extract<"GET", ApiMethod<P>>,
+>(route: P, ...args: ApiArguments<P, M>): Promise<ApiResult<P, M>> {
+  const options = (args[0] ?? {}) as ApiOptions<P, M>;
+  const { timeoutMs = API_REQUEST_TIMEOUT_MS, path, query, body, omitEmptyQuery, ...fetchOptions } = options;
+  const pathname = route.replace(/\{([^}]+)\}/g, (_, key: string) => {
+    const value = (path as Record<string, string | number> | undefined)?.[key];
+    if (value === undefined) throw new Error(`Missing API path parameter: ${key}`);
+    return encodeURIComponent(String(value));
+  });
+  const search = new URLSearchParams();
+  const emptyOmissions = new Set(omitEmptyQuery?.map(String));
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value === "" && emptyOmissions.has(key)) continue;
+    if (value !== undefined && value !== null) for (const item of Array.isArray(value) ? value : [value]) search.append(key, String(item));
+  }
+  const suffix = search.toString();
+  const url = `${API_BASE_URL}${pathname}${suffix ? `?${suffix}` : ""}`;
   const controller = new AbortController();
   let timedOut = false;
   const timeoutId = setTimeout(() => {
@@ -610,6 +170,7 @@ export async function apiFetch<T>(
   try {
     response = await ownerFetch(url, {
       ...fetchOptions,
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
@@ -640,10 +201,10 @@ export async function apiFetch<T>(
   }
 
   if (response.status === 204) {
-    return undefined as T;
+    return undefined as ApiResult<P, M>;
   }
 
-  return (await response.json()) as T;
+  return (await response.json()) as ApiResult<P, M>;
 }
 
 // ---------------------------------------------------------------------------
@@ -651,13 +212,13 @@ export async function apiFetch<T>(
 // ---------------------------------------------------------------------------
 
 /** Fetch the health-check endpoint. */
-export function getHealth(): Promise<HealthResponse> {
-  return apiFetch<HealthResponse>("/health");
+export function getHealth() {
+  return apiFetch("/health");
 }
 
 /** Fetch all butlers. */
-export function getButlers(): Promise<ApiResponse<ButlerSummary[]>> {
-  return apiFetch<ApiResponse<ButlerSummary[]>>("/butlers");
+export function getButlers() {
+  return apiFetch("/butlers");
 }
 
 /**
@@ -669,25 +230,23 @@ export function getButlers(): Promise<ApiResponse<ButlerSummary[]>> {
  * aggregates. See useButlerStatusBoard for the camelCase mapping consumed by
  * the /butlers status board.
  */
-export function getButlersBoard(): Promise<ApiResponse<BoardResponse>> {
-  return apiFetch<ApiResponse<BoardResponse>>("/butlers/board");
+export function getButlersBoard() {
+  return apiFetch("/butlers/board");
 }
 
 /** Fetch a single butler by name. */
-export function getButler(name: string): Promise<ApiResponse<ButlerDetail>> {
-  return apiFetch<ApiResponse<ButlerDetail>>(`/butlers/${encodeURIComponent(name)}`);
+export function getButler(name: string) {
+  return apiFetch("/butlers/{name}", { path: { name: name } });
 }
 
 /** Fetch configuration files for a specific butler. */
-export function getButlerConfig(name: string): Promise<ApiResponse<ButlerConfigResponse>> {
-  return apiFetch<ApiResponse<ButlerConfigResponse>>(
-    `/butlers/${encodeURIComponent(name)}/config`,
-  );
+export function getButlerConfig(name: string) {
+  return apiFetch("/butlers/{name}/config", { path: { name: name } });
 }
 
 /** Fetch per-module health status for a specific butler. */
-export function getButlerModules(name: string): Promise<ApiResponse<ModuleStatus[]>> {
-  return apiFetch<ApiResponse<ModuleStatus[]>>(`/butlers/${encodeURIComponent(name)}/modules`);
+export function getButlerModules(name: string) {
+  return apiFetch("/butlers/{name}/modules", { path: { name: name } });
 }
 
 /**
@@ -700,16 +259,15 @@ export function getButlerModules(name: string): Promise<ApiResponse<ModuleStatus
  * `/sessions/aggregate`, offset for `/butlers/{name}/sessions` — so a single
  * shared builder could not honestly serve all three.
  */
-function sessionCommonSearchParams(params?: SessionParams): URLSearchParams {
-  const sp = new URLSearchParams();
+function sessionCommonSearchParams(params?: Omit<SessionParams, "status">): Pick<ApiQuery<"/butlers/{name}/sessions">, "trigger_source" | "request_id" | "from_date" | "to_date"> {
+  const sp: Pick<ApiQuery<"/butlers/{name}/sessions">, "trigger_source" | "request_id" | "from_date" | "to_date"> = {};
   if (params?.trigger_source != null && params.trigger_source !== "")
-    sp.set("trigger_source", params.trigger_source);
+    sp["trigger_source"] = params.trigger_source;
   if (params?.request_id != null && params.request_id !== "")
-    sp.set("request_id", params.request_id);
-  if (params?.status != null && params.status !== "all") sp.set("status", params.status);
+    sp["request_id"] = params.request_id;
   // Backend uses from_date/to_date; SessionParams uses since/until as field names.
-  if (params?.since != null && params.since !== "") sp.set("from_date", params.since);
-  if (params?.until != null && params.until !== "") sp.set("to_date", params.until);
+  if (params?.since != null && params.since !== "") sp["from_date"] = params.since;
+  if (params?.until != null && params.until !== "") sp["to_date"] = params.until;
   return sp;
 }
 
@@ -723,15 +281,14 @@ function sessionCommonSearchParams(params?: SessionParams): URLSearchParams {
  */
 export function getSessions(
   params?: SessionParams,
-): Promise<KeysetResponse<SessionSummary>> {
-  const sp = sessionCommonSearchParams(params);
+) {
+  const sp: ApiQuery<"/sessions"> = sessionCommonSearchParams(params);
+  if (params?.status != null && params.status !== "all") sp.status = params.status;
   // /sessions: keyset (cursor) pagination, cross-butler (accepts a butler filter).
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.cursor != null && params.cursor !== "") sp.set("cursor", params.cursor);
-  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
-  const qs = sp.toString();
-  const path = qs ? `/sessions?${qs}` : "/sessions";
-  return apiFetch<KeysetResponse<SessionSummary>>(path);
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.cursor != null && params.cursor !== "") sp["cursor"] = params.cursor;
+  if (params?.butler != null && params.butler !== "") sp["butler"] = params.butler;
+  return apiFetch("/sessions", { query: sp });
 }
 
 /**
@@ -744,43 +301,39 @@ export function getSessions(
  */
 export function getSessionAggregate(
   params?: SessionParams,
-): Promise<ApiResponse<SessionAggregate>> {
-  const sp = sessionCommonSearchParams(params);
+) {
+  const sp: ApiQuery<"/sessions/aggregate"> = sessionCommonSearchParams(params);
+  if (params?.status != null && params.status !== "all") sp.status = params.status;
   // /sessions/aggregate: NOT paginated (window-true counts). Accepts the
   // cross-butler filter and the trigger-breakdown toggle.
-  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
-  if (params?.include_trigger_breakdown) sp.set("include_trigger_breakdown", "true");
-  const qs = sp.toString();
-  const path = qs ? `/sessions/aggregate?${qs}` : "/sessions/aggregate";
-  return apiFetch<ApiResponse<SessionAggregate>>(path);
+  if (params?.butler != null && params.butler !== "") sp["butler"] = params.butler;
+  if (params?.include_trigger_breakdown) sp["include_trigger_breakdown"] = true;
+  return apiFetch("/sessions/aggregate", { query: sp });
 }
 
 /** Fetch a single session by ID (cross-butler). */
-export function getSession(id: string): Promise<ApiResponse<SessionDetail>> {
-  return apiFetch<ApiResponse<SessionDetail>>(`/sessions/${encodeURIComponent(id)}`);
+export function getSession(id: string) {
+  return apiFetch("/sessions/{session_id}", { path: { session_id: id } });
 }
 
 /** Fetch the separately protected effective-system-prompt receipt on demand. */
-export function getSessionPrompt(id: string): Promise<ApiResponse<SessionPromptReceipt>> {
-  return apiFetch<ApiResponse<SessionPromptReceipt>>(
-    `/sessions/${encodeURIComponent(id)}/prompt`,
-  );
+export function getSessionPrompt(id: string) {
+  return apiFetch("/sessions/{session_id}/prompt", { path: { session_id: id } });
 }
 
 /** Fetch sessions for a specific butler. */
 export function getButlerSessions(
   name: string,
-  params?: SessionParams,
-): Promise<PaginatedResponse<SessionSummary>> {
-  const sp = sessionCommonSearchParams(params);
+  params?: ButlerSessionParams,
+) {
+  const sp: ApiQuery<"/butlers/{name}/sessions"> = sessionCommonSearchParams(params);
+  if (params?.status != null && params.status !== "all") sp.status = params.status;
   // /butlers/{name}/sessions: offset pagination; the butler is the path param
   // (never a redundant `?butler=`), and there is no keyset `cursor`.
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  const base = `/butlers/${encodeURIComponent(name)}/sessions`;
-  const path = qs ? `${base}?${qs}` : base;
-  return apiFetch<PaginatedResponse<SessionSummary>>(path);
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+
+  return apiFetch("/butlers/{name}/sessions", { path: { name: name }, query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -791,75 +344,67 @@ export function getButlerSessions(
 export function getButlerHourlyActivity(
   name: string,
   params?: HourlyActivityParams,
-): Promise<ApiResponse<HourlyActivity>> {
-  const qs = new URLSearchParams();
-  if (params?.window_hours != null) qs.set("window_hours", String(params.window_hours));
-  const base = `/butlers/${encodeURIComponent(name)}/analytics/hourly-activity`;
-  return apiFetch<ApiResponse<HourlyActivity>>(qs.toString() ? `${base}?${qs}` : base);
+) {
+  const qs: ApiQuery<"/butlers/{name}/analytics/hourly-activity", "GET"> = {};
+  if (params?.window_hours != null) qs["window_hours"] = params.window_hours;
+  return apiFetch("/butlers/{name}/analytics/hourly-activity", { path: { name: name }, query: qs });
 }
 
 /** GET /api/butlers/{name}/analytics/daily-activity */
 export function getButlerDailyActivity(
   name: string,
   params?: DailyActivityParams,
-): Promise<ApiResponse<DailyActivity>> {
-  const qs = new URLSearchParams();
-  if (params?.window_days != null) qs.set("window_days", String(params.window_days));
-  const base = `/butlers/${encodeURIComponent(name)}/analytics/daily-activity`;
-  return apiFetch<ApiResponse<DailyActivity>>(qs.toString() ? `${base}?${qs}` : base);
+) {
+  const qs: ApiQuery<"/butlers/{name}/analytics/daily-activity", "GET"> = {};
+  if (params?.window_days != null) qs["window_days"] = params.window_days;
+  return apiFetch("/butlers/{name}/analytics/daily-activity", { path: { name: name }, query: qs });
 }
 
 /** GET /api/butlers/{name}/analytics/session-kinds */
 export function getButlerSessionKinds(
   name: string,
   params?: SessionKindsParams,
-): Promise<ApiResponse<SessionKindBreakdown>> {
-  const qs = new URLSearchParams();
-  if (params?.window_days != null) qs.set("window_days", String(params.window_days));
-  const base = `/butlers/${encodeURIComponent(name)}/analytics/session-kinds`;
-  return apiFetch<ApiResponse<SessionKindBreakdown>>(qs.toString() ? `${base}?${qs}` : base);
+) {
+  const qs: ApiQuery<"/butlers/{name}/analytics/session-kinds", "GET"> = {};
+  if (params?.window_days != null) qs["window_days"] = params.window_days;
+  return apiFetch("/butlers/{name}/analytics/session-kinds", { path: { name: name }, query: qs });
 }
 
 /** GET /api/butlers/{name}/analytics/latency-stats */
 export function getButlerLatencyStats(
   name: string,
   params?: LatencyStatsParams,
-): Promise<ApiResponse<LatencyStats>> {
-  const qs = new URLSearchParams();
-  if (params?.window_days != null) qs.set("window_days", String(params.window_days));
-  const base = `/butlers/${encodeURIComponent(name)}/analytics/latency-stats`;
-  return apiFetch<ApiResponse<LatencyStats>>(qs.toString() ? `${base}?${qs}` : base);
+) {
+  const qs: ApiQuery<"/butlers/{name}/analytics/latency-stats", "GET"> = {};
+  if (params?.window_days != null) qs["window_days"] = params.window_days;
+  return apiFetch("/butlers/{name}/analytics/latency-stats", { path: { name: name }, query: qs });
 }
 
 /** GET /api/butlers/{name}/analytics/friction */
 export function getButlerFrictionSummary(
   name: string,
   params?: FrictionSummaryParams,
-): Promise<ApiResponse<FrictionSummary>> {
-  const qs = new URLSearchParams();
-  if (params?.period != null) qs.set("period", params.period);
-  const base = `/butlers/${encodeURIComponent(name)}/analytics/friction`;
-  return apiFetch<ApiResponse<FrictionSummary>>(qs.toString() ? `${base}?${qs}` : base);
+) {
+  const qs: ApiQuery<"/butlers/{name}/analytics/friction", "GET"> = {};
+  if (params?.period != null) qs["period"] = params.period;
+  return apiFetch("/butlers/{name}/analytics/friction", { path: { name: name }, query: qs });
 }
 
 /** GET /api/butlers/{name}/activity-feed */
 export function getButlerActivityFeed(
   name: string,
   params?: ActivityFeedParams,
-): Promise<ApiResponse<ActivityFeed>> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  const base = `/butlers/${encodeURIComponent(name)}/activity-feed`;
-  return apiFetch<ApiResponse<ActivityFeed>>(qs.toString() ? `${base}?${qs}` : base);
+) {
+  const qs: ApiQuery<"/butlers/{name}/activity-feed", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+  return apiFetch("/butlers/{name}/activity-feed", { path: { name: name }, query: qs });
 }
 
 /** GET /api/butlers/{name}/memory/stats */
 export function getButlerMemoryStats(
   name: string,
-): Promise<ApiResponse<ButlerMemoryStats>> {
-  return apiFetch<ApiResponse<ButlerMemoryStats>>(
-    `/butlers/${encodeURIComponent(name)}/memory/stats`,
-  );
+) {
+  return apiFetch("/butlers/{name}/memory/stats", { path: { name: name } });
 }
 
 // ---------------------------------------------------------------------------
@@ -872,29 +417,27 @@ export function getButlerMemoryStats(
  * are intentionally omitted from the query string so the backend does not
  * add spurious WHERE clauses that would return zero rows.
  */
-function notificationCommonSearchParams(params?: NotificationParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+function notificationCommonSearchParams(params?: NotificationParams): ApiQuery<"/butlers/{name}/notifications", "GET"> {
+  const sp: ApiQuery<"/butlers/{name}/notifications", "GET"> = {};
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   if (params?.channel != null && params.channel !== "" && params.channel !== "all")
-    sp.set("channel", params.channel);
+    sp["channel"] = params.channel;
   if (params?.status != null && params.status !== "" && params.status !== "all")
-    sp.set("status", params.status);
-  if (params?.since != null && params.since !== "") sp.set("since", params.since);
-  if (params?.until != null && params.until !== "") sp.set("until", params.until);
+    sp["status"] = params.status;
+  if (params?.since != null && params.since !== "") sp["since"] = params.since;
+  if (params?.until != null && params.until !== "") sp["until"] = params.until;
   return sp;
 }
 
 /** Fetch a paginated list of notifications across all butlers. */
 export function getNotifications(
   params?: NotificationParams,
-): Promise<NotificationListResponse> {
-  const sp = notificationCommonSearchParams(params);
+) {
+  const sp: ApiQuery<"/notifications"> = notificationCommonSearchParams(params);
   // Only the cross-butler /notifications route declares a `butler` filter.
-  if (params?.butler != null && params.butler !== "") sp.set("butler", params.butler);
-  const qs = sp.toString();
-  const path = qs ? `/notifications?${qs}` : "/notifications";
-  return apiFetch<NotificationListResponse>(path);
+  if (params?.butler != null && params.butler !== "") sp["butler"] = params.butler;
+  return apiFetch("/notifications", { query: sp });
 }
 
 /**
@@ -906,43 +449,35 @@ export function getNotifications(
  */
 export function getNotificationStats(
   params?: NotificationStatsParams,
-): Promise<ApiResponse<NotificationStats>> {
-  const sp = new URLSearchParams();
-  if (params?.since != null && params.since !== "") sp.set("since", params.since);
-  if (params?.until != null && params.until !== "") sp.set("until", params.until);
-  const qs = sp.toString();
-  const path = qs ? `/notifications/stats?${qs}` : "/notifications/stats";
-  return apiFetch<ApiResponse<NotificationStats>>(path);
+) {
+  const sp: ApiQuery<"/notifications/stats", "GET"> = {};
+  if (params?.since != null && params.since !== "") sp["since"] = params.since;
+  if (params?.until != null && params.until !== "") sp["until"] = params.until;
+  return apiFetch("/notifications/stats", { query: sp });
 }
 
 /** Fetch notifications for a specific butler. */
 export function getButlerNotifications(
   name: string,
   params?: NotificationParams,
-): Promise<NotificationListResponse> {
+) {
   // Butler-scoped route: the butler is the path param `{name}`, so no
   // redundant `?butler=` is sent (bu-4u5l6).
-  const qs = notificationCommonSearchParams(params).toString();
-  const base = `/butlers/${encodeURIComponent(name)}/notifications`;
-  const path = qs ? `${base}?${qs}` : base;
-  return apiFetch<NotificationListResponse>(path);
+  const qs: ApiQuery<"/notifications"> = notificationCommonSearchParams(params);
+
+  return apiFetch("/butlers/{name}/notifications", { path: { name: name }, query: qs });
 }
 
 /** Mark a single notification as read (flips failed → read). */
 export function markNotificationRead(
   notificationId: string,
-): Promise<ApiResponse<NotificationSummary>> {
-  return apiFetch<ApiResponse<NotificationSummary>>(
-    `/notifications/${encodeURIComponent(notificationId)}/read`,
-    { method: "PATCH" },
-  );
+) {
+  return apiFetch("/notifications/{notification_id}/read", { method: "PATCH", path: { notification_id: notificationId } });
 }
 
 /** Acknowledge all failed notifications in bulk (flips all failed → read). */
-export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
-  return apiFetch<ApiResponse<AckFailedResult>>("/notifications/ack-failed", {
-    method: "POST",
-  });
+export function acknowledgeAllFailed() {
+  return apiFetch("/notifications/ack-failed", { method: "POST" });
 }
 
 /**
@@ -952,11 +487,8 @@ export function acknowledgeAllFailed(): Promise<ApiResponse<AckFailedResult>> {
  */
 export function retryNotification(
   notificationId: string,
-): Promise<ApiResponse<NotificationActionResult>> {
-  return apiFetch<ApiResponse<NotificationActionResult>>(
-    `/notifications/${encodeURIComponent(notificationId)}/retry`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/notifications/{notification_id}/retry", { method: "POST", path: { notification_id: notificationId } });
 }
 
 /**
@@ -965,21 +497,15 @@ export function retryNotification(
  */
 export function escalateNotification(
   notificationId: string,
-): Promise<ApiResponse<NotificationActionResult>> {
-  return apiFetch<ApiResponse<NotificationActionResult>>(
-    `/notifications/${encodeURIComponent(notificationId)}/escalate`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/notifications/{notification_id}/escalate", { method: "POST", path: { notification_id: notificationId } });
 }
 
 // ---------------------------------------------------------------------------
 // Attention ledger (bu-tdd4k.4) -- the ledger's first reader
 // ---------------------------------------------------------------------------
 
-import type {
-  AttentionLedgerSummaryParams,
-  AttentionLedgerSummaryResponse,
-} from "./types.ts";
+import type { AttentionLedgerSummaryParams } from "./types.ts";
 
 /**
  * Fetch the per-source (per-`origin_butler`) delivery-vs-suppression summary
@@ -988,17 +514,15 @@ import type {
  */
 export function getAttentionLedgerSummary(
   params?: AttentionLedgerSummaryParams,
-): Promise<AttentionLedgerSummaryResponse> {
-  const sp = new URLSearchParams();
-  if (params?.since != null && params.since !== "") sp.set("since", params.since);
-  if (params?.until != null && params.until !== "") sp.set("until", params.until);
-  if (params?.intent != null && params.intent !== "") sp.set("intent", params.intent);
-  if (params?.source != null && params.source !== "") sp.set("source", params.source);
+) {
+  const sp: ApiQuery<"/attention/ledger/summary", "GET"> = {};
+  if (params?.since != null && params.since !== "") sp["since"] = params.since;
+  if (params?.until != null && params.until !== "") sp["until"] = params.until;
+  if (params?.intent != null && params.intent !== "") sp["intent"] = params.intent;
+  if (params?.source != null && params.source !== "") sp["source"] = params.source;
   if (params?.origin_butler != null && params.origin_butler !== "")
-    sp.set("origin_butler", params.origin_butler);
-  const qs = sp.toString();
-  const path = qs ? `/attention/ledger/summary?${qs}` : "/attention/ledger/summary";
-  return apiFetch<AttentionLedgerSummaryResponse>(path);
+    sp["origin_butler"] = params.origin_butler;
+  return apiFetch("/attention/ledger/summary", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,12 +541,12 @@ export function getAttentionLedgerSummary(
  */
 export function getIssues(
   params: { includeDismissed?: boolean; window?: string } = {},
-): Promise<IssuesListResponse> {
-  const qs = new URLSearchParams();
-  if (params.includeDismissed) qs.set("include_dismissed", "true");
-  if (params.window) qs.set("window", params.window);
-  const query = qs.toString();
-  return apiFetch<IssuesListResponse>(`/issues${query ? `?${query}` : ""}`);
+) {
+  const qs: ApiQuery<"/issues", "GET"> = {};
+  if (params.includeDismissed) qs["include_dismissed"] = true;
+  if (params.window) qs["window"] = params.window;
+
+  return apiFetch("/issues", { query: qs });
 }
 
 /**
@@ -1036,11 +560,9 @@ export function getIssues(
 export function dismissIssue(
   issueKey: string,
   lastSeenAt?: string | null,
-): Promise<ApiResponse<DismissIssueResult>> {
-  return apiFetch<ApiResponse<DismissIssueResult>>("/issues/dismiss", {
-    method: "POST",
-    body: JSON.stringify({ issue_key: issueKey, last_seen_at: lastSeenAt ?? null }),
-  });
+) {
+  return apiFetch("/issues/dismiss", { method: "POST",
+    body: { issue_key: issueKey, last_seen_at: lastSeenAt ?? null } });
 }
 
 /** Undismiss (restore) a previously-dismissed issue group server-side.
@@ -1050,11 +572,8 @@ export function dismissIssue(
  */
 export function undismissIssue(
   issueKey: string,
-): Promise<ApiResponse<UndismissIssueResult>> {
-  return apiFetch<ApiResponse<UndismissIssueResult>>(
-    `/issues/dismiss/${encodeURIComponent(issueKey)}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/issues/dismiss/{issue_key}", { method: "DELETE", path: { issue_key: issueKey } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,17 +595,16 @@ export function getCostSummary(
   from?: string,
   to?: string,
   butler?: string,
-): Promise<ApiResponse<SpendSummary>> {
-  const sp = new URLSearchParams();
+) {
+  const sp: ApiQuery<"/spend", "GET"> = {};
   if (from && to) {
-    sp.set("from", from);
-    sp.set("to", to);
+    sp["from"] = from;
+    sp["to"] = to;
   } else if (period) {
-    sp.set("period", period);
+    sp["period"] = period;
   }
-  if (butler) sp.set("butler", butler);
-  const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<ApiResponse<SpendSummary>>(`/spend${qs}`);
+  if (butler) sp["butler"] = butler;
+  return apiFetch("/spend", { query: sp });
 }
 
 /** Fetch daily spend breakdown, optionally scoped to a date range (YYYY-MM-DD) and/or a butler. */
@@ -1094,16 +612,16 @@ export function getDailyCosts(
   from?: string,
   to?: string,
   butler?: string,
-): Promise<DailySpendResponse> {
-  const params = new URLSearchParams();
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  if (butler) params.set("butler", butler);
-  const query = params.toString() ? `?${params.toString()}` : "";
+) {
+  const params: ApiQuery<"/spend/daily", "GET"> = {};
+  if (from) params["from"] = from;
+  if (to) params["to"] = to;
+  if (butler) params["butler"] = butler;
+
   // DailySpendResponse types `meta.unavailable_butlers` so the stacked chart can
   // footnote butlers dropped from the fan-out instead of letting them silently
   // vanish (bu-jad4j.3).
-  return apiFetch<DailySpendResponse>(`/spend/daily${query}`);
+  return apiFetch("/spend/daily", { query: params });
 }
 
 /** Fetch most expensive sessions, optionally scoped to a date range (YYYY-MM-DD). */
@@ -1111,28 +629,26 @@ export function getTopSessions(
   limit?: number,
   from?: string,
   to?: string,
-): Promise<TopSessionsResponse> {
-  const params = new URLSearchParams();
-  if (limit) params.set("limit", String(limit));
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  const qs = params.toString() ? `?${params.toString()}` : "";
+) {
+  const params: ApiQuery<"/spend/top-sessions", "GET"> = {};
+  if (limit) params["limit"] = limit;
+  if (from) params["from"] = from;
+  if (to) params["to"] = to;
   // TopSessionsResponse types `meta.unavailable_butlers` so the evidence table
   // can name butlers dropped from the fan-out rather than reading as complete
   // (bu-jad4j.3).
-  return apiFetch<TopSessionsResponse>(`/spend/top-sessions${qs}`);
+  return apiFetch("/spend/top-sessions", { query: params });
 }
 
 /** Fetch per-schedule cost analysis (projected monthly USD per cron job), optionally scoped to a date range (YYYY-MM-DD). */
-export function getCostsBySchedule(from?: string, to?: string): Promise<ScheduleCostsResponse> {
-  const params = new URLSearchParams();
-  if (from) params.set("from", from);
-  if (to) params.set("to", to);
-  const qs = params.toString() ? `?${params.toString()}` : "";
+export function getCostsBySchedule(from?: string, to?: string) {
+  const params: ApiQuery<"/spend/by-schedule", "GET"> = {};
+  if (from) params["from"] = from;
+  if (to) params["to"] = to;
   // ScheduleCostsResponse types `meta.unavailable_butlers` so the By Schedule
   // table can footnote butlers dropped from the fan-out instead of letting
   // their schedules silently vanish (bu-h3ej9).
-  return apiFetch<ScheduleCostsResponse>(`/spend/by-schedule${qs}`);
+  return apiFetch("/spend/by-schedule", { query: params });
 }
 
 /**
@@ -1148,27 +664,20 @@ export function getCostsBySchedule(from?: string, to?: string): Promise<Schedule
  */
 export function getDispatchAttempts(
   params: DispatchAttemptsParams,
-): Promise<PaginatedResponse<DispatchAttemptEntry>> {
-  const query = new URLSearchParams();
-  if (params.session_id) query.set("session_id", params.session_id);
-  if (params.logical_session_id) query.set("logical_session_id", params.logical_session_id);
-  if (params.outcome) query.set("outcome", params.outcome);
-  if (params.reason_prefix) query.set("reason_prefix", params.reason_prefix);
-  if (params.since) query.set("since", params.since);
-  if (params.order) query.set("order", params.order);
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<DispatchAttemptEntry>>(
-    `/dispatch/attempts${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/dispatch/attempts", "GET"> = {};
+  if (params.session_id) query["session_id"] = params.session_id;
+  if (params.logical_session_id) query["logical_session_id"] = params.logical_session_id;
+  if (params.outcome) query["outcome"] = params.outcome;
+  if (params.reason_prefix) query["reason_prefix"] = params.reason_prefix;
+  if (params.since) query["since"] = params.since;
+  if (params.order) query["order"] = params.order;
+  if (params.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/dispatch/attempts", { query: query });
 }
 
-export function getFleetHaltAttention(): Promise<
-  ApiResponse<FleetHaltAttentionObservation>
-> {
-  return apiFetch<ApiResponse<FleetHaltAttentionObservation>>(
-    "/spend/runtime-attention",
-  );
+export function getFleetHaltAttention() {
+  return apiFetch("/spend/runtime-attention");
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,24 +685,17 @@ export function getFleetHaltAttention(): Promise<
 // ---------------------------------------------------------------------------
 
 /** Fetch all schedules for a specific butler. */
-export function getButlerSchedules(name: string): Promise<ApiResponse<Schedule[]>> {
-  return apiFetch<ApiResponse<Schedule[]>>(
-    `/butlers/${encodeURIComponent(name)}/schedules`,
-  );
+export function getButlerSchedules(name: string) {
+  return apiFetch("/butlers/{name}/schedules", { path: { name: name } });
 }
 
 /** Create a new schedule for a specific butler. */
 export function createButlerSchedule(
   name: string,
   body: ScheduleCreate,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/butlers/${encodeURIComponent(name)}/schedules`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/schedules", { method: "POST",
+      body: body, path: { name: name } });
 }
 
 /** Update an existing schedule for a specific butler. */
@@ -1201,40 +703,25 @@ export function updateButlerSchedule(
   name: string,
   scheduleId: string,
   body: ScheduleUpdate,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/schedules/{schedule_id}", { method: "PUT",
+      body: body, path: { name: name, schedule_id: scheduleId } });
 }
 
 /** Delete a schedule for a specific butler. */
 export function deleteButlerSchedule(
   name: string,
   scheduleId: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}`,
-    {
-      method: "DELETE",
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/schedules/{schedule_id}", { method: "DELETE", path: { name: name, schedule_id: scheduleId } });
 }
 
 /** Trigger a schedule immediately (one-off dispatch). */
 export function triggerButlerSchedule(
   name: string,
   scheduleId: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/trigger`,
-    {
-      method: "POST",
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/schedules/{schedule_id}/trigger", { method: "POST", path: { name: name, schedule_id: scheduleId } });
 }
 
 /** Toggle the enabled/disabled state of a schedule. */
@@ -1242,11 +729,8 @@ export function toggleButlerSchedule(
   name: string,
   scheduleId: string,
   body: ScheduleToggleRequest,
-): Promise<ApiResponse<ScheduleToggleResult>> {
-  return apiFetch<ApiResponse<ScheduleToggleResult>>(
-    `/butlers/${encodeURIComponent(name)}/schedules/${encodeURIComponent(scheduleId)}/toggle`,
-    { method: "PATCH", body: JSON.stringify(body) },
-  );
+) {
+  return apiFetch("/butlers/{name}/schedules/{schedule_id}/toggle", { method: "PATCH", body: body, path: { name: name, schedule_id: scheduleId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1254,10 +738,8 @@ export function toggleButlerSchedule(
 // ---------------------------------------------------------------------------
 
 /** Fetch skills available to a specific butler. */
-export function getButlerSkills(name: string): Promise<ApiResponse<ButlerSkill[]>> {
-  return apiFetch<ApiResponse<ButlerSkill[]>>(
-    `/butlers/${encodeURIComponent(name)}/skills`,
-  );
+export function getButlerSkills(name: string) {
+  return apiFetch("/butlers/{name}/skills", { path: { name: name } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1275,14 +757,13 @@ export function getButlerSkills(name: string): Promise<ApiResponse<ButlerSkill[]
 export function getButlerLogs(
   name: string,
   params?: ButlerLogsParams,
-): Promise<ButlerLogsResponse> {
-  const sp = new URLSearchParams();
-  if (params?.level) sp.set("level", params.level);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  const path = `/butlers/${encodeURIComponent(name)}/logs${qs ? `?${qs}` : ""}`;
-  return apiFetch<ButlerLogsResponse>(path);
+) {
+  const sp: ApiQuery<"/butlers/{name}/logs", "GET"> = {};
+  if (params?.level) sp["level"] = params.level;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.limit != null) sp["limit"] = params.limit;
+
+  return apiFetch("/butlers/{name}/logs", { path: { name: name }, query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,10 +771,8 @@ export function getButlerLogs(
 // ---------------------------------------------------------------------------
 
 /** Fetch all state entries for a butler. */
-export function getButlerState(name: string): Promise<ApiResponse<StateEntry[]>> {
-  return apiFetch<ApiResponse<StateEntry[]>>(
-    `/butlers/${encodeURIComponent(name)}/state`,
-  );
+export function getButlerState(name: string) {
+  return apiFetch("/butlers/{name}/state", { path: { name: name } });
 }
 
 /** Set a state value for a butler (creates or updates). */
@@ -1301,25 +780,17 @@ export function setButlerState(
   name: string,
   key: string,
   value: StateSetRequest["value"],
-): Promise<ApiResponse<Record<string, string>>> {
-  return apiFetch<ApiResponse<Record<string, string>>>(
-    `/butlers/${encodeURIComponent(name)}/state/${encodeURIComponent(key)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({ value }),
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/state/{key}", { method: "PUT",
+      body: { value }, path: { name: name, key: key } });
 }
 
 /** Delete a state entry for a butler. */
 export function deleteButlerState(
   name: string,
   key: string,
-): Promise<ApiResponse<Record<string, string>>> {
-  return apiFetch<ApiResponse<Record<string, string>>>(
-    `/butlers/${encodeURIComponent(name)}/state/${encodeURIComponent(key)}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/butlers/{name}/state/{key}", { method: "DELETE", path: { name: name, key: key } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1337,14 +808,9 @@ export function triggerButler(
   name: string,
   prompt: string,
   complexity?: string,
-): Promise<TriggerResponse> {
-  return apiFetch<TriggerResponse>(
-    `/butlers/${encodeURIComponent(name)}/trigger`,
-    {
-      method: "POST",
-      body: JSON.stringify({ prompt, complexity: complexity ?? "workhorse" }),
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/trigger", { method: "POST",
+      body: { prompt, complexity: complexity ?? "workhorse" }, path: { name: name } });
 }
 
 /**
@@ -1353,35 +819,25 @@ export function triggerButler(
  * Backs the "run schedule now" / "trigger tick" operator verbs (JARVIS audit
  * move 6, bu-86c4c.15) on the Issues and /system surfaces.
  */
-export function forceButlerTick(name: string): Promise<ApiResponse<TickResponse>> {
-  return apiFetch<ApiResponse<TickResponse>>(
-    `/butlers/${encodeURIComponent(name)}/tick`,
-    { method: "POST" },
-  );
+export function forceButlerTick(name: string) {
+  return apiFetch("/butlers/{name}/tick", { method: "POST", path: { name: name } });
 }
 
 /** Fetch MCP tools exposed by a specific butler. */
-export function getButlerMcpTools(name: string): Promise<ApiResponse<ButlerMcpTool[]>> {
-  return apiFetch<ApiResponse<ButlerMcpTool[]>>(
-    `/butlers/${encodeURIComponent(name)}/mcp/tools`,
-  );
+export function getButlerMcpTools(name: string) {
+  return apiFetch("/butlers/{name}/mcp/tools", { path: { name: name } });
 }
 
 /** Call an MCP tool on a specific butler with optional arguments. */
 export function callButlerMcpTool(
   name: string,
   request: ButlerMcpToolCallRequest,
-): Promise<ApiResponse<ButlerMcpToolCallResponse>> {
-  return apiFetch<ApiResponse<ButlerMcpToolCallResponse>>(
-    `/butlers/${encodeURIComponent(name)}/mcp/call`,
-    {
-      method: "POST",
-      body: JSON.stringify({
+) {
+  return apiFetch("/butlers/{name}/mcp/call", { method: "POST",
+      body: {
         tool_name: request.tool_name,
         arguments: request.arguments ?? {},
-      }),
-    },
-  );
+      }, path: { name: name } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1391,20 +847,19 @@ export function callButlerMcpTool(
 /** Fetch a paginated list of audit log entries from public.audit_log. */
 export function getAuditLog(
   params?: AuditLogParams,
-): Promise<PaginatedResponse<AuditLogEntry>> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.actor) sp.set("actor", params.actor);
-  if (params?.action) sp.set("action", params.action);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.from_date) sp.set("from_date", params.from_date);
-  if (params?.to_date) sp.set("to_date", params.to_date);
-  if (params?.key) sp.set("key", params.key);
-  if (params?.result) sp.set("result", params.result);
-  if (params?.kind) sp.set("kind", params.kind);
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `/audit-log?${qs}` : "/audit-log");
+) {
+  const sp: ApiQuery<"/audit-log", "GET"> = {};
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.actor) sp["actor"] = params.actor;
+  if (params?.action) sp["action"] = params.action;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.from_date) sp["from_date"] = params.from_date;
+  if (params?.to_date) sp["to_date"] = params.to_date;
+  if (params?.key) sp["key"] = params.key;
+  if (params?.result) sp["result"] = params.result;
+  if (params?.kind) sp["kind"] = params.kind;
+  return apiFetch("/audit-log", { query: sp });
 }
 
 /**
@@ -1419,14 +874,13 @@ export function getAuditLog(
 export function getIssueOccurrences(
   issueKey: string,
   params?: { window?: string; offset?: number; limit?: number },
-): Promise<PaginatedResponse<AuditLogEntry>> {
-  const sp = new URLSearchParams();
-  if (params?.window) sp.set("window", params.window);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  const path = `/issues/${encodeURIComponent(issueKey)}/occurrences`;
-  return apiFetch<PaginatedResponse<AuditLogEntry>>(qs ? `${path}?${qs}` : path);
+) {
+  const sp: ApiQuery<"/issues/{issue_key}/occurrences", "GET"> = {};
+  if (params?.window) sp["window"] = params.window;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+
+  return apiFetch("/issues/{issue_key}/occurrences", { path: { issue_key: issueKey }, query: sp });
 }
 
 /**
@@ -1444,12 +898,11 @@ export function getIssueOccurrences(
 export function getAuditIssueGroup(
   auditId: number,
   params?: { window?: string },
-): Promise<ApiResponse<AuditIssueGroupRef>> {
-  const sp = new URLSearchParams();
-  if (params?.window) sp.set("window", params.window);
-  const qs = sp.toString();
-  const path = `/issues/group-for-audit/${encodeURIComponent(String(auditId))}`;
-  return apiFetch<ApiResponse<AuditIssueGroupRef>>(qs ? `${path}?${qs}` : path);
+) {
+  const sp: ApiQuery<"/issues/group-for-audit/{audit_id}", "GET"> = {};
+  if (params?.window) sp["window"] = params.window;
+
+  return apiFetch("/issues/group-for-audit/{audit_id}", { path: { audit_id: auditId }, query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -1457,10 +910,10 @@ export function getAuditIssueGroup(
 // ---------------------------------------------------------------------------
 
 /** Search across all butlers for sessions, state, and other entities. */
-export function searchAll(query: string, limit?: number): Promise<ApiResponse<SearchResults>> {
-  const sp = new URLSearchParams({ q: query });
-  if (limit) sp.set("limit", String(limit));
-  return apiFetch<ApiResponse<SearchResults>>(`/search?${sp.toString()}`);
+export function searchAll(query: string, limit?: number) {
+  const sp: ApiQuery<"/search", "GET"> = { q: query };
+  if (limit) sp["limit"] = limit;
+  return apiFetch("/search", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,18 +921,17 @@ export function searchAll(query: string, limit?: number): Promise<ApiResponse<Se
 // ---------------------------------------------------------------------------
 
 /** Fetch the unified timeline with cursor-based pagination. */
-export async function getTimeline(params?: TimelineParams): Promise<TimelineResponse> {
-  const sp = new URLSearchParams();
-  if (params?.limit) sp.set("limit", String(params.limit));
-  if (params?.event) sp.set("event", params.event);
-  if (params?.before) sp.set("before", params.before);
-  if (params?.trace) sp.set("trace", params.trace);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  params?.butler?.forEach((b) => sp.append("butler", b));
-  params?.event_type?.forEach((t) => sp.append("event_type", t));
-  const qs = sp.toString();
-  const response = await apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
+export async function getTimeline(params?: TimelineParams) {
+  const sp: ApiQuery<"/timeline", "GET"> = {};
+  if (params?.limit) sp["limit"] = params.limit;
+  if (params?.event) sp["event"] = params.event;
+  if (params?.before) sp["before"] = params.before;
+  if (params?.trace) sp["trace"] = params.trace;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  params?.butler?.forEach((b) => (sp["butler"] ??= []).push(b));
+  params?.event_type?.forEach((t) => (sp["event_type"] ??= []).push(t));
+  const response = await apiFetch("/timeline", { query: sp });
   // The backend field is additive. Normalize an older rolling-deploy response
   // so Timeline consumers can distinguish an intentionally empty name list
   // from an omitted field without weakening generic degraded_sources handling.
@@ -1495,23 +947,22 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
 /** Fetch server-counted minute density for one bounded Timeline interval. */
 export function getTimelineHistogram(
   params: TimelineHistogramParams,
-): Promise<TimelineHistogramResponse> {
-  const sp = new URLSearchParams({ since: params.since, until: params.until });
-  if (params.trace) sp.set("trace", params.trace);
-  params.butler?.forEach((butler) => sp.append("butler", butler));
-  params.event_type?.forEach((type) => sp.append("event_type", type));
-  return apiFetch<TimelineHistogramResponse>(`/timeline/histogram?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/timeline/histogram", "GET"> = { since: params.since, until: params.until };
+  if (params.trace) sp["trace"] = params.trace;
+  params.butler?.forEach((butler) => (sp["butler"] ??= []).push(butler));
+  params.event_type?.forEach((type) => (sp["event_type"] ??= []).push(type));
+  return apiFetch("/timeline/histogram", { query: sp });
 }
 
 /** Fetch recent records created in the last 24 hours that are currently failed. */
 export function getTimelineAttention(
   params?: TimelineAttentionParams,
-): Promise<TimelineAttentionResponse> {
-  const sp = new URLSearchParams();
-  if (params?.trace) sp.set("trace", params.trace);
-  params?.butler?.forEach((butler) => sp.append("butler", butler));
-  const qs = sp.toString();
-  return apiFetch<TimelineAttentionResponse>(qs ? `/timeline/attention?${qs}` : "/timeline/attention");
+) {
+  const sp: ApiQuery<"/timeline/attention", "GET"> = {};
+  if (params?.trace) sp["trace"] = params.trace;
+  params?.butler?.forEach((butler) => (sp["butler"] ??= []).push(butler));
+  return apiFetch("/timeline/attention", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -1519,38 +970,36 @@ export function getTimelineAttention(
 // ---------------------------------------------------------------------------
 
 /** Build URLSearchParams from calendar workspace read query parameters. */
-function calendarWorkspaceSearchParams(params: CalendarWorkspaceParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  sp.set("view", params.view);
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+function calendarWorkspaceSearchParams(params: CalendarWorkspaceParams): ApiQuery<"/calendar/workspace", "GET"> {
+  const sp: ApiQuery<"/calendar/workspace", "GET"> = { "view": params.view, "start": params.start, "end": params.end };
+
+
+
+  if (params.timezone != null && params.timezone !== "") sp["timezone"] = params.timezone;
   params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
+    if (butler) (sp["butlers"] ??= []).push(butler);
   });
   params.sources?.forEach((source) => {
-    if (source) sp.append("sources", source);
+    if (source) (sp["sources"] ??= []).push(source);
   });
-  if (params.status != null) sp.set("status", params.status);
-  if (params.source_type != null) sp.set("source_type", params.source_type);
-  if (params.editable != null) sp.set("editable", String(params.editable));
-  if (params.limit != null) sp.set("limit", String(params.limit));
-  if (params.cursor != null && params.cursor !== "") sp.set("cursor", params.cursor);
+  if (params.status != null) sp["status"] = params.status;
+  if (params.source_type != null) sp["source_type"] = params.source_type;
+  if (params.editable != null) sp["editable"] = params.editable;
+  if (params.limit != null) sp["limit"] = params.limit;
+  if (params.cursor != null && params.cursor !== "") sp["cursor"] = params.cursor;
   return sp;
 }
 
 /** Fetch normalized calendar workspace entries for a given range and view. */
 export function getCalendarWorkspace(
   params: CalendarWorkspaceParams,
-): Promise<ApiResponse<CalendarWorkspaceReadResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceReadResponse>>(
-    `/calendar/workspace?${calendarWorkspaceSearchParams(params).toString()}`,
-  );
+) {
+  return apiFetch("/calendar/workspace", { query: calendarWorkspaceSearchParams(params) });
 }
 
 /** Fetch calendar workspace metadata: capabilities, sources, and lanes. */
-export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspaceMetaResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceMetaResponse>>("/calendar/workspace/meta");
+export function getCalendarWorkspaceMeta() {
+  return apiFetch("/calendar/workspace/meta");
 }
 
 /**
@@ -1561,51 +1010,43 @@ export function getCalendarWorkspaceMeta(): Promise<ApiResponse<CalendarWorkspac
  */
 export function getCalendarWorkspaceConflicts(
   params: ConflictScanParams,
-): Promise<ApiResponse<ConflictScanResponse>> {
-  const sp = new URLSearchParams();
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+) {
+  const sp: ApiQuery<"/calendar/workspace/conflicts", "GET"> = { "start": params.start, "end": params.end };
+
+
+  if (params.timezone != null && params.timezone !== "") sp["timezone"] = params.timezone;
   if (params.butler_name != null && params.butler_name !== "")
-    sp.set("butler_name", params.butler_name);
+    sp["butler_name"] = params.butler_name;
   if (params.back_to_back_gap_minutes != null)
-    sp.set("back_to_back_gap_minutes", String(params.back_to_back_gap_minutes));
+    sp["back_to_back_gap_minutes"] = params.back_to_back_gap_minutes;
   if (params.overloaded_day_hours != null)
-    sp.set("overloaded_day_hours", String(params.overloaded_day_hours));
-  return apiFetch<ApiResponse<ConflictScanResponse>>(
-    `/calendar/workspace/conflicts?${sp.toString()}`,
-  );
+    sp["overloaded_day_hours"] = params.overloaded_day_hours;
+  return apiFetch("/calendar/workspace/conflicts", { query: sp });
 }
 
 /** Read-only projected invitations; no provider/RSVP action. */
 export function getCalendarInvitations(
   params: CalendarInvitationsParams,
-): Promise<ApiResponse<CalendarInvitationsResponse>> {
-  const sp = new URLSearchParams({ start: params.start, end: params.end });
-  if (params.timezone) sp.set("timezone", params.timezone);
-  if (params.limit != null) sp.set("limit", String(params.limit));
-  if (params.cursor) sp.set("cursor", params.cursor);
-  return apiFetch<ApiResponse<CalendarInvitationsResponse>>(
-    `/calendar/workspace/invitations?${sp.toString()}`,
-  );
+) {
+  const sp: ApiQuery<"/calendar/workspace/invitations", "GET"> = { start: params.start, end: params.end };
+  if (params.timezone) sp["timezone"] = params.timezone;
+  if (params.limit != null) sp["limit"] = params.limit;
+  if (params.cursor) sp["cursor"] = params.cursor;
+  return apiFetch("/calendar/workspace/invitations", { query: sp });
 }
 
 /** Authenticated owner response through canonical preparation and approval. */
 export function getCalendarResponseReceipt(
   commandId: string, sourceButler: string, inverse = false,
-): Promise<ApiResponse<CalendarResponseReceipt>> {
-  const query = new URLSearchParams({ source_butler: sourceButler, inverse: String(inverse) });
-  return apiFetch<ApiResponse<CalendarResponseReceipt>>(
-    `/calendar/workspace/responses/${encodeURIComponent(commandId)}?${query}`,
-  );
+) {
+  const query: ApiQuery<"/calendar/workspace/responses/{command_id}", "GET"> = { source_butler: sourceButler, inverse: inverse };
+  return apiFetch("/calendar/workspace/responses/{command_id}", { path: { command_id: commandId }, query: query });
 }
 
 export function respondToCalendarInvitation(
   body: CalendarResponseRequest,
-): Promise<ApiResponse<CalendarResponseReceipt>> {
-  return apiFetch<ApiResponse<CalendarResponseReceipt>>("/calendar/workspace/respond", {
-    method: "POST", body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/calendar/workspace/respond", { method: "POST", body: body });
 }
 
 /**
@@ -1618,16 +1059,14 @@ export function getCalendarDayBriefing(params: {
   date: string;
   timezone?: string;
   butlers?: string[];
-}): Promise<ApiResponse<CalendarDayBriefingResponse>> {
-  const sp = new URLSearchParams();
-  sp.set("date", params.date);
-  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
+}) {
+  const sp: ApiQuery<"/calendar/workspace/day-briefing", "GET"> = { "date": params.date };
+
+  if (params.timezone != null && params.timezone !== "") sp["timezone"] = params.timezone;
   params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
+    if (butler) (sp["butlers"] ??= []).push(butler);
   });
-  return apiFetch<ApiResponse<CalendarDayBriefingResponse>>(
-    `/calendar/workspace/day-briefing?${sp.toString()}`,
-  );
+  return apiFetch("/calendar/workspace/day-briefing", { query: sp });
 }
 
 /**
@@ -1640,81 +1079,63 @@ export function getCalendarDayBriefing(params: {
  */
 export function getCalendarMeetingPrep(
   eventId: string,
-): Promise<ApiResponse<CalendarPrepResponse>> {
-  return apiFetch<ApiResponse<CalendarPrepResponse>>(
-    `/calendar/workspace/prep/${encodeURIComponent(eventId)}`,
-  );
+) {
+  return apiFetch("/calendar/workspace/prep/{event_id}", { path: { event_id: eventId } });
 }
 
 /** Full-text search calendar events by title/description/location, ranked by relevance. */
 export function searchCalendarWorkspace(
   params: CalendarWorkspaceSearchParams,
-): Promise<ApiResponse<CalendarWorkspaceSearchResponse>> {
-  const sp = new URLSearchParams();
-  sp.set("q", params.q);
-  sp.set("view", params.view);
-  if (params.timezone != null && params.timezone !== "") sp.set("timezone", params.timezone);
-  if (params.limit != null) sp.set("limit", String(params.limit));
+) {
+  const sp: ApiQuery<"/calendar/workspace/search", "GET"> = { "q": params.q, "view": params.view };
+
+
+  if (params.timezone != null && params.timezone !== "") sp["timezone"] = params.timezone;
+  if (params.limit != null) sp["limit"] = params.limit;
   params.butlers?.forEach((butler) => {
-    if (butler) sp.append("butlers", butler);
+    if (butler) (sp["butlers"] ??= []).push(butler);
   });
   params.sources?.forEach((source) => {
-    if (source) sp.append("sources", source);
+    if (source) (sp["sources"] ??= []).push(source);
   });
-  return apiFetch<ApiResponse<CalendarWorkspaceSearchResponse>>(
-    `/calendar/workspace/search?${sp.toString()}`,
-  );
+  return apiFetch("/calendar/workspace/search", { query: sp });
 }
 
 /** Trigger calendar workspace sync globally or for a selected source. */
 export function syncCalendarWorkspace(
   body: CalendarWorkspaceSyncRequest,
-): Promise<ApiResponse<CalendarWorkspaceSyncResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceSyncResponse>>("/calendar/workspace/sync", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/calendar/workspace/sync", { method: "POST",
+    body: body });
 }
 
 /** List connected Google accounts joined with Google Calendar connector health. */
-export function getCalendarAccounts(): Promise<ApiResponse<CalendarAccountsResponse>> {
-  return apiFetch<ApiResponse<CalendarAccountsResponse>>("/calendar/accounts");
+export function getCalendarAccounts() {
+  return apiFetch("/calendar/accounts");
 }
 
 /** Enable or disable a single calendar as a sync source. */
 export function toggleCalendarSource(
   body: CalendarSourceToggleRequest,
-): Promise<ApiResponse<CalendarSourceToggleResponse>> {
-  return apiFetch<ApiResponse<CalendarSourceToggleResponse>>("/calendar/sources", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/calendar/sources", { method: "POST",
+    body: body });
 }
 
 /** Set the primary calendar for a butler. */
 export function setPrimaryCalendar(
   body: SetPrimaryCalendarRequest,
-): Promise<ApiResponse<SetPrimaryCalendarResponse>> {
-  return apiFetch<ApiResponse<SetPrimaryCalendarResponse>>(
-    "/calendar/workspace/primary",
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/calendar/workspace/primary", { method: "PUT",
+      body: body });
 }
 
 /** Create, update, or delete a user-view provider event through workspace APIs. */
 export function mutateCalendarWorkspaceUserEvent(
   body: CalendarWorkspaceUserMutationRequest,
-): Promise<ApiResponse<CalendarWorkspaceMutationResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceMutationResponse>>(
-    "/calendar/workspace/user-events",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/calendar/workspace/user-events", { method: "POST",
+      body: body });
 }
 
 /**
@@ -1726,27 +1147,17 @@ export function mutateCalendarWorkspaceUserEvent(
  */
 export function parseCalendarQuickAdd(
   body: QuickAddParseRequest,
-): Promise<ApiResponse<QuickAddParseResponse>> {
-  return apiFetch<ApiResponse<QuickAddParseResponse>>(
-    "/calendar/workspace/parse-quick-add",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/calendar/workspace/parse-quick-add", { method: "POST",
+      body: body });
 }
 
 /** Create/update/delete/toggle butler-lane schedule/reminder events. */
 export function mutateCalendarWorkspaceButlerEvent(
   body: CalendarWorkspaceButlerMutationRequest,
-): Promise<ApiResponse<CalendarWorkspaceMutationResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceMutationResponse>>(
-    "/calendar/workspace/butler-events",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/calendar/workspace/butler-events", { method: "POST",
+      body: body });
 }
 
 /**
@@ -1756,14 +1167,9 @@ export function mutateCalendarWorkspaceButlerEvent(
  */
 export function previewCalendarWorkspaceButlerEvent(
   body: CalendarWorkspaceButlerEventPreviewRequest,
-): Promise<ApiResponse<CalendarWorkspaceButlerEventPreviewResponse>> {
-  return apiFetch<ApiResponse<CalendarWorkspaceButlerEventPreviewResponse>>(
-    "/calendar/workspace/butler-events/preview",
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/calendar/workspace/butler-events/preview", { method: "POST",
+      body: body });
 }
 
 /**
@@ -1778,14 +1184,9 @@ export function previewCalendarWorkspaceButlerEvent(
 export function acceptCalendarProposal(
   proposalId: string,
   overrides?: CalendarProposalAcceptRequest,
-): Promise<ApiResponse<CalendarProposalActionResponse>> {
-  return apiFetch<ApiResponse<CalendarProposalActionResponse>>(
-    `/calendar/workspace/proposals/${encodeURIComponent(proposalId)}/accept`,
-    {
-      method: "POST",
-      body: JSON.stringify(overrides ?? {}),
-    },
-  );
+) {
+  return apiFetch("/calendar/workspace/proposals/{proposal_id}/accept", { method: "POST",
+      body: overrides ?? {}, path: { proposal_id: proposalId } });
 }
 
 /**
@@ -1797,37 +1198,28 @@ export function acceptCalendarProposal(
  */
 export function dismissCalendarProposal(
   proposalId: string,
-): Promise<ApiResponse<CalendarProposalActionResponse>> {
-  return apiFetch<ApiResponse<CalendarProposalActionResponse>>(
-    `/calendar/workspace/proposals/${encodeURIComponent(proposalId)}/dismiss`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/calendar/workspace/proposals/{proposal_id}/dismiss", { method: "POST", path: { proposal_id: proposalId } });
 }
 
 /** Fetch a single calendar workspace entry by instance ID. */
 export function getCalendarWorkspaceEntry(
   entryId: string,
   timezone?: string,
-): Promise<ApiResponse<UnifiedCalendarEntry>> {
-  const sp = new URLSearchParams();
-  if (timezone) sp.set("timezone", timezone);
-  const qs = sp.toString();
-  return apiFetch<ApiResponse<UnifiedCalendarEntry>>(
-    `/calendar/workspace/entries/${encodeURIComponent(entryId)}${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const sp: ApiQuery<"/calendar/workspace/entries/{entry_id}", "GET"> = {};
+  if (timezone) sp["timezone"] = timezone;
+  return apiFetch("/calendar/workspace/entries/{entry_id}", { path: { entry_id: entryId }, query: sp });
 }
 /** Fetch paginated calendar mutation audit log entries. */
 export function getCalendarWorkspaceAudit(
   params?: CalendarAuditParams,
-): Promise<ApiResponse<CalendarAuditResponse>> {
-  const sp = new URLSearchParams();
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.butler) sp.set("butler", params.butler);
-  const qs = sp.toString();
-  return apiFetch<ApiResponse<CalendarAuditResponse>>(
-    `/calendar/workspace/audit${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const sp: ApiQuery<"/calendar/workspace/audit", "GET"> = {};
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.butler) sp["butler"] = params.butler;
+  return apiFetch("/calendar/workspace/audit", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -1835,88 +1227,71 @@ export function getCalendarWorkspaceAudit(
 // ---------------------------------------------------------------------------
 
 /** Get owner identity setup status. */
-export function getOwnerSetupStatus(): Promise<OwnerSetupStatus> {
-  return apiFetch<OwnerSetupStatus>("/relationship/owner/setup-status");
+export function getOwnerSetupStatus() {
+  return apiFetch("/relationship/owner/setup-status");
 }
 
 /** Fetch contacts that are overdue on their Dunbar tier cadence (bu-iuol4.22). */
-export function getOverdueContacts(days?: number): Promise<OverdueContactsResponse> {
-  const sp = new URLSearchParams();
-  if (days != null) sp.set("days", String(days));
-  const qs = sp.toString();
-  return apiFetch<OverdueContactsResponse>(
-    `/relationship/contacts/overdue${qs ? `?${qs}` : ""}`,
-  );
+export function getOverdueContacts(days?: number) {
+  const sp: ApiQuery<"/relationship/contacts/overdue", "GET"> = {};
+  if (days != null) sp["days"] = days;
+  return apiFetch("/relationship/contacts/overdue", { query: sp });
 }
 
 /** Fetch prompted, unanswered meeting debriefs (bu-q7vx1q.63). */
-export function getPendingMeetingDebriefs(): Promise<PendingDebriefsResponse> {
-  return apiFetch<PendingDebriefsResponse>("/relationship/meeting-debriefs/pending");
+export function getPendingMeetingDebriefs() {
+  return apiFetch("/relationship/meeting-debriefs/pending");
 }
 
 /** Build URLSearchParams from group query parameters. */
-function groupSearchParams(params?: GroupParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+function groupSearchParams(params?: GroupParams): ApiQuery<"/relationship/groups", "GET"> {
+  const sp: ApiQuery<"/relationship/groups", "GET"> = {};
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   return sp;
 }
 
 /** Fetch a paginated list of groups. */
-export function getGroups(params?: GroupParams): Promise<GroupListResponse> {
-  const qs = groupSearchParams(params).toString();
-  const path = qs ? `/relationship/groups?${qs}` : "/relationship/groups";
-  return apiFetch<GroupListResponse>(path);
+export function getGroups(params?: GroupParams) {
+  const qs = groupSearchParams(params);
+  return apiFetch("/relationship/groups", { query: qs });
 }
 
 /** Fetch a single group by ID. */
-export function getGroup(groupId: string): Promise<Group> {
-  return apiFetch<Group>(
-    `/relationship/groups/${encodeURIComponent(groupId)}`,
-  );
+export function getGroup(groupId: string) {
+  return apiFetch("/relationship/groups/{group_id}", { path: { group_id: groupId } });
 }
 
 /** Fetch a group's member roster (bu-5umz4 — Circles lens deep-links). */
-export function getGroupMembers(groupId: string): Promise<GroupMembersResponse> {
-  return apiFetch<GroupMembersResponse>(
-    `/relationship/groups/${encodeURIComponent(groupId)}/members`,
-  );
+export function getGroupMembers(groupId: string) {
+  return apiFetch("/relationship/groups/{group_id}/members", { path: { group_id: groupId } });
 }
 
 /** Fetch all labels. */
-export function getLabels(): Promise<Label[]> {
-  return apiFetch<Label[]>("/relationship/labels");
+export function getLabels() {
+  return apiFetch("/relationship/labels");
 }
 
 /** Create a new label. */
-export function createLabel(body: { name: string; color?: string | null }): Promise<CreateLabelResponse> {
-  return apiFetch<CreateLabelResponse>("/relationship/labels", {
-    method: "POST",
+export function createLabel(body: { name: string; color?: string | null }) {
+  return apiFetch("/relationship/labels", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body });
 }
 
 /** Assign a label to a group. */
-export function assignGroupLabel(groupId: string, labelId: string): Promise<AssignGroupLabelResponse> {
-  return apiFetch<AssignGroupLabelResponse>(
-    `/relationship/groups/${encodeURIComponent(groupId)}/labels/${encodeURIComponent(labelId)}`,
-    { method: "POST" },
-  );
+export function assignGroupLabel(groupId: string, labelId: string) {
+  return apiFetch("/relationship/groups/{group_id}/labels/{label_id}", { method: "POST", path: { group_id: groupId, label_id: labelId } });
 }
 
 /** Remove a label from a group. */
-export function removeGroupLabel(groupId: string, labelId: string): Promise<RemoveGroupLabelResponse> {
-  return apiFetch<RemoveGroupLabelResponse>(
-    `/relationship/groups/${encodeURIComponent(groupId)}/labels/${encodeURIComponent(labelId)}`,
-    { method: "DELETE" },
-  );
+export function removeGroupLabel(groupId: string, labelId: string) {
+  return apiFetch("/relationship/groups/{group_id}/labels/{label_id}", { method: "DELETE", path: { group_id: groupId, label_id: labelId } });
 }
 
 /** Fetch upcoming dates within a given number of days. */
-export function getUpcomingDates(days?: number): Promise<UpcomingDate[]> {
-  const params = days != null ? `?days=${days}` : "";
-  return apiFetch<UpcomingDate[]>(`/relationship/upcoming-dates${params}`);
+export function getUpcomingDates(days?: number) {
+  return apiFetch("/relationship/upcoming-dates", { query: { days: days ?? undefined } });
 }
 
 // ---------------------------------------------------------------------------
@@ -1924,20 +1299,19 @@ export function getUpcomingDates(days?: number): Promise<UpcomingDate[]> {
 // ---------------------------------------------------------------------------
 
 /** Fetch the observed active Health measurement vocabulary. */
-export function getMeasurementTypes(): Promise<MeasurementTypesResponse> {
-  return apiFetch<MeasurementTypesResponse>("/health/measurements/types");
+export function getMeasurementTypes() {
+  return apiFetch("/health/measurements/types");
 }
 
 /** Fetch a paginated list of health measurements. */
-export function getMeasurements(params?: MeasurementParams): Promise<PaginatedResponse<Measurement>> {
-  const sp = new URLSearchParams();
-  if (params?.type) sp.set("type", params.type);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<Measurement>>(qs ? `/health/measurements?${qs}` : "/health/measurements");
+export function getMeasurements(params?: MeasurementParams) {
+  const sp: ApiQuery<"/health/measurements", "GET"> = {};
+  if (params?.type) sp["type"] = params.type;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/health/measurements", { query: sp });
 }
 
 /**
@@ -1945,49 +1319,40 @@ export function getMeasurements(params?: MeasurementParams): Promise<PaginatedRe
  * (POST /health/measurements -> measurement_log), so the new reading is read
  * back by getMeasurements immediately.
  */
-export function createMeasurement(body: MeasurementCreateRequest): Promise<Measurement> {
-  return apiFetch<Measurement>("/health/measurements", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export function createMeasurement(body: MeasurementCreateRequest) {
+  return apiFetch("/health/measurements", { method: "POST",
+    body: body });
 }
 
 /** Update a measurement. Only supplied fields are applied (PUT /health/measurements/{id}). */
 export function updateMeasurement(
   measurementId: string,
   body: MeasurementUpdateRequest,
-): Promise<Measurement> {
-  return apiFetch<Measurement>(`/health/measurements/${encodeURIComponent(measurementId)}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/health/measurements/{measurement_id}", { method: "PUT",
+    body: body, path: { measurement_id: measurementId } });
 }
 
 /** Soft-delete a measurement (DELETE /health/measurements/{id}). Returns 204. */
-export function deleteMeasurement(measurementId: string): Promise<void> {
-  return apiFetch<void>(`/health/measurements/${encodeURIComponent(measurementId)}`, {
-    method: "DELETE",
-  });
+export function deleteMeasurement(measurementId: string) {
+  return apiFetch("/health/measurements/{measurement_id}", { method: "DELETE", path: { measurement_id: measurementId } });
 }
 
 /** Fetch a paginated list of medications. */
-export function getMedications(params?: MedicationParams): Promise<PaginatedResponse<Medication>> {
-  const sp = new URLSearchParams();
-  if (params?.active != null) sp.set("active", String(params.active));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<Medication>>(qs ? `/health/medications?${qs}` : "/health/medications");
+export function getMedications(params?: MedicationParams) {
+  const sp: ApiQuery<"/health/medications", "GET"> = {};
+  if (params?.active != null) sp["active"] = params.active;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/health/medications", { query: sp });
 }
 
 /** Fetch dose log entries for a specific medication. */
-export function getMedicationDoses(medicationId: string, params?: { since?: string; until?: string }): Promise<Dose[]> {
-  const sp = new URLSearchParams();
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  const qs = sp.toString();
-  const base = `/health/medications/${encodeURIComponent(medicationId)}/doses`;
-  return apiFetch<Dose[]>(qs ? `${base}?${qs}` : base);
+export function getMedicationDoses(medicationId: string, params?: { since?: string; until?: string }) {
+  const sp: ApiQuery<"/health/medications/{medication_id}/doses", "GET"> = {};
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  return apiFetch("/health/medications/{medication_id}/doses", { path: { medication_id: medicationId }, query: sp });
 }
 
 /**
@@ -1999,13 +1364,11 @@ export function getMedicationDoses(medicationId: string, params?: { since?: stri
 export function getMedicationAdherence(
   medicationId: string,
   params?: { start?: string; end?: string },
-): Promise<MedicationAdherence> {
-  const sp = new URLSearchParams();
-  if (params?.start) sp.set("start", params.start);
-  if (params?.end) sp.set("end", params.end);
-  const qs = sp.toString();
-  const base = `/health/medications/${encodeURIComponent(medicationId)}/adherence`;
-  return apiFetch<MedicationAdherence>(qs ? `${base}?${qs}` : base);
+) {
+  const sp: ApiQuery<"/health/medications/{medication_id}/adherence", "GET"> = {};
+  if (params?.start) sp["start"] = params.start;
+  if (params?.end) sp["end"] = params.end;
+  return apiFetch("/health/medications/{medication_id}/adherence", { path: { medication_id: medicationId }, query: sp });
 }
 
 /**
@@ -2018,14 +1381,9 @@ export function getMedicationAdherence(
 export function logMedicationDose(
   medicationId: string,
   body: DoseLogRequest = {},
-): Promise<Dose> {
-  return apiFetch<Dose>(
-    `/health/medications/${encodeURIComponent(medicationId)}/doses`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/health/medications/{medication_id}/doses", { method: "POST",
+      body: body, path: { medication_id: medicationId } });
 }
 
 /**
@@ -2033,38 +1391,31 @@ export function logMedicationDose(
  * (POST /health/medications -> medication_add), so the new record is read back
  * by getMedications immediately.
  */
-export function createMedication(body: MedicationCreateRequest): Promise<Medication> {
-  return apiFetch<Medication>("/health/medications", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export function createMedication(body: MedicationCreateRequest) {
+  return apiFetch("/health/medications", { method: "POST",
+    body: body });
 }
 
 /** Update a medication. Only supplied fields are merged (PUT /health/medications/{id}). */
 export function updateMedication(
   medicationId: string,
   body: MedicationUpdateRequest,
-): Promise<Medication> {
-  return apiFetch<Medication>(`/health/medications/${encodeURIComponent(medicationId)}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/health/medications/{medication_id}", { method: "PUT",
+    body: body, path: { medication_id: medicationId } });
 }
 
 /** Soft-delete a medication (DELETE /health/medications/{id}). Returns 204. */
-export function deleteMedication(medicationId: string): Promise<void> {
-  return apiFetch<void>(`/health/medications/${encodeURIComponent(medicationId)}`, {
-    method: "DELETE",
-  });
+export function deleteMedication(medicationId: string) {
+  return apiFetch("/health/medications/{medication_id}", { method: "DELETE", path: { medication_id: medicationId } });
 }
 
 /** Fetch a paginated list of health conditions. */
-export function getConditions(params?: { offset?: number; limit?: number }): Promise<PaginatedResponse<HealthCondition>> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<HealthCondition>>(qs ? `/health/conditions?${qs}` : "/health/conditions");
+export function getConditions(params?: { offset?: number; limit?: number }) {
+  const sp: ApiQuery<"/health/conditions", "GET"> = {};
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/health/conditions", { query: sp });
 }
 
 /**
@@ -2072,41 +1423,34 @@ export function getConditions(params?: { offset?: number; limit?: number }): Pro
  * (POST /health/conditions -> condition_add), so the new record is read back by
  * getConditions immediately.
  */
-export function createCondition(body: ConditionCreateRequest): Promise<HealthCondition> {
-  return apiFetch<HealthCondition>("/health/conditions", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export function createCondition(body: ConditionCreateRequest) {
+  return apiFetch("/health/conditions", { method: "POST",
+    body: body });
 }
 
 /** Update a condition. Only supplied fields are merged (PUT /health/conditions/{id}). */
 export function updateCondition(
   conditionId: string,
   body: ConditionUpdateRequest,
-): Promise<HealthCondition> {
-  return apiFetch<HealthCondition>(`/health/conditions/${encodeURIComponent(conditionId)}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/health/conditions/{condition_id}", { method: "PUT",
+    body: body, path: { condition_id: conditionId } });
 }
 
 /** Soft-delete a condition (DELETE /health/conditions/{id}). Returns 204. */
-export function deleteCondition(conditionId: string): Promise<void> {
-  return apiFetch<void>(`/health/conditions/${encodeURIComponent(conditionId)}`, {
-    method: "DELETE",
-  });
+export function deleteCondition(conditionId: string) {
+  return apiFetch("/health/conditions/{condition_id}", { method: "DELETE", path: { condition_id: conditionId } });
 }
 
 /** Fetch a paginated list of symptoms. */
-export function getSymptoms(params?: SymptomParams): Promise<PaginatedResponse<Symptom>> {
-  const sp = new URLSearchParams();
-  if (params?.name) sp.set("name", params.name);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<Symptom>>(qs ? `/health/symptoms?${qs}` : "/health/symptoms");
+export function getSymptoms(params?: SymptomParams) {
+  const sp: ApiQuery<"/health/symptoms", "GET"> = {};
+  if (params?.name) sp["name"] = params.name;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/health/symptoms", { query: sp });
 }
 
 /**
@@ -2114,41 +1458,34 @@ export function getSymptoms(params?: SymptomParams): Promise<PaginatedResponse<S
  * (POST /health/symptoms -> symptom_log), so the new record is read back by
  * getSymptoms immediately.
  */
-export function createSymptom(body: SymptomCreateRequest): Promise<Symptom> {
-  return apiFetch<Symptom>("/health/symptoms", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export function createSymptom(body: SymptomCreateRequest) {
+  return apiFetch("/health/symptoms", { method: "POST",
+    body: body });
 }
 
 /** Update a symptom. Only supplied fields are applied (PUT /health/symptoms/{id}). */
 export function updateSymptom(
   symptomId: string,
   body: SymptomUpdateRequest,
-): Promise<Symptom> {
-  return apiFetch<Symptom>(`/health/symptoms/${encodeURIComponent(symptomId)}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/health/symptoms/{symptom_id}", { method: "PUT",
+    body: body, path: { symptom_id: symptomId } });
 }
 
 /** Soft-delete a symptom (DELETE /health/symptoms/{id}). Returns 204. */
-export function deleteSymptom(symptomId: string): Promise<void> {
-  return apiFetch<void>(`/health/symptoms/${encodeURIComponent(symptomId)}`, {
-    method: "DELETE",
-  });
+export function deleteSymptom(symptomId: string) {
+  return apiFetch("/health/symptoms/{symptom_id}", { method: "DELETE", path: { symptom_id: symptomId } });
 }
 
 /** Fetch a paginated list of meals. */
-export function getMeals(params?: MealParams): Promise<PaginatedResponse<Meal>> {
-  const sp = new URLSearchParams();
-  if (params?.type) sp.set("type", params.type);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<Meal>>(qs ? `/health/meals?${qs}` : "/health/meals");
+export function getMeals(params?: MealParams) {
+  const sp: ApiQuery<"/health/meals", "GET"> = {};
+  if (params?.type) sp["type"] = params.type;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/health/meals", { query: sp });
 }
 
 /**
@@ -2156,26 +1493,20 @@ export function getMeals(params?: MealParams): Promise<PaginatedResponse<Meal>> 
  * (POST /health/meals -> meal_log), so the new record is read back by
  * getMeals immediately.
  */
-export function createMeal(body: MealCreateRequest): Promise<Meal> {
-  return apiFetch<Meal>("/health/meals", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export function createMeal(body: MealCreateRequest) {
+  return apiFetch("/health/meals", { method: "POST",
+    body: body });
 }
 
 /** Update a meal. Only supplied fields are applied (PUT /health/meals/{id}). */
-export function updateMeal(mealId: string, body: MealUpdateRequest): Promise<Meal> {
-  return apiFetch<Meal>(`/health/meals/${encodeURIComponent(mealId)}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+export function updateMeal(mealId: string, body: MealUpdateRequest) {
+  return apiFetch("/health/meals/{meal_id}", { method: "PUT",
+    body: body, path: { meal_id: mealId } });
 }
 
 /** Soft-delete a meal (DELETE /health/meals/{id}). Returns 204. */
-export function deleteMeal(mealId: string): Promise<void> {
-  return apiFetch<void>(`/health/meals/${encodeURIComponent(mealId)}`, {
-    method: "DELETE",
-  });
+export function deleteMeal(mealId: string) {
+  return apiFetch("/health/meals/{meal_id}", { method: "DELETE", path: { meal_id: mealId } });
 }
 
 /**
@@ -2188,11 +1519,11 @@ export function deleteMeal(mealId: string): Promise<void> {
  */
 export function getNutritionSummary(
   params: import("./types").NutritionSummaryParams,
-): Promise<import("./types").NutritionSummary> {
-  const sp = new URLSearchParams();
-  sp.set("start", params.start);
-  sp.set("end", params.end);
-  return apiFetch<import("./types").NutritionSummary>(`/health/nutrition/summary?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/health/nutrition/summary", "GET"> = { "start": params.start, "end": params.end };
+
+
+  return apiFetch("/health/nutrition/summary", { query: sp });
 }
 
 /** Fetch the latest measurement value for each requested type.
@@ -2202,13 +1533,10 @@ export function getNutritionSummary(
  */
 export function getMeasurementsLatest(
   types: string[],
-): Promise<import("./types").MeasurementsLatestResponse> {
-  const sp = new URLSearchParams();
-  if (types.length > 0) sp.set("types", types.join(","));
-  const qs = sp.toString();
-  return apiFetch<import("./types").MeasurementsLatestResponse>(
-    qs ? `/health/measurements/latest?${qs}` : "/health/measurements/latest",
-  );
+) {
+  const query: ApiQuery<"/health/measurements/latest", "GET"> = { types: types.join(",") };
+  // Preserve the original [] -> omitted required query -> server 422 edge.
+  return apiFetch("/health/measurements/latest", { query, omitEmptyQuery: ["types"] });
 }
 
 /** Fetch bucketed mean/min/max trend aggregation for a single measurement type.
@@ -2218,47 +1546,47 @@ export function getMeasurementsLatest(
  */
 export function getMeasurementsTrend(
   params: import("./types").MeasurementTrendParams,
-): Promise<import("./types").MeasurementTrendResponse> {
-  const sp = new URLSearchParams();
-  sp.set("type", params.type);
-  if (params.window_days != null) sp.set("window_days", String(params.window_days));
-  if (params.bucket) sp.set("bucket", params.bucket);
-  return apiFetch<import("./types").MeasurementTrendResponse>(
-    `/health/measurements/trend?${sp.toString()}`,
-  );
+) {
+  const sp: ApiQuery<"/health/measurements/trend", "GET"> = { "type": params.type };
+
+  if (params.window_days != null) sp["window_days"] = params.window_days;
+  if (params.bucket) sp["bucket"] = params.bucket;
+  return apiFetch("/health/measurements/trend", { query: sp });
 }
 
 /** Fetch the latest sleep session with stage breakdown.
  *
  * GET /api/health/measurements/sleep/latest
  */
-export function getSleepLatest(): Promise<import("./types").SleepLatestResponse> {
-  return apiFetch<import("./types").SleepLatestResponse>("/health/measurements/sleep/latest");
+export async function getSleepLatest(): Promise<import("./types").SleepLatestResponse> {
+  const session = await apiFetch("/health/measurements/sleep/latest");
+  return {
+    session_date: session?.session_start ?? null,
+    total_minutes: session?.total_duration_minutes ?? null,
+    stages: session?.stages.map(({ kind, minutes }) => ({
+      stage: kind, duration_minutes: minutes, start_time: null,
+    })) ?? null,
+    source: null,
+  };
 }
 
 /** Fetch all active measurement sources with their last-sample timestamps.
  *
  * GET /api/health/measurements/sources
  */
-export async function getMeasurementSources(): Promise<
-  import("./types").MeasurementSource[]
-> {
-  const res = await apiFetch<import("./types").MeasurementSourcesResponse>(
-    "/health/measurements/sources",
-  );
+export async function getMeasurementSources() {
+  const res = await apiFetch("/health/measurements/sources");
   return res.sources ?? [];
 }
 
 /** Read stored Health usual ranges; a failed read remains explicitly unavailable. */
-export function getHealthBaselines(): Promise<HealthBaselinesResponse> {
-  return apiFetch<HealthBaselinesResponse>("/health/baselines");
+export function getHealthBaselines() {
+  return apiFetch("/health/baselines");
 }
 
 /** Fetch liveness-qualified Health measurement expectations. */
-export function getExpectedSignals(): Promise<ExpectedSignalsResponse> {
-  return apiFetch<ExpectedSignalsResponse>(
-    "/health/measurements/expected-signals",
-  );
+export function getExpectedSignals() {
+  return apiFetch("/health/measurements/expected-signals");
 }
 
 /**
@@ -2270,8 +1598,8 @@ export function getExpectedSignals(): Promise<ExpectedSignalsResponse> {
  *
  * The returned promise resolves to the unwrapped Briefing data.
  */
-export function getHealthBriefing(): Promise<import("./types").Briefing> {
-  return apiFetch<ApiResponse<import("./types").Briefing>>("/health/briefing").then(
+export function getHealthBriefing() {
+  return apiFetch("/health/briefing").then(
     (r) => r.data,
   );
 }
@@ -2285,51 +1613,37 @@ export function getHealthBriefing(): Promise<import("./types").Briefing> {
  */
 export function getInsightCandidates(
   params?: import("./types").InsightCandidatesParams,
-): Promise<import("./types").InsightCandidate[]> {
-  const sp = new URLSearchParams();
-  if (params?.butler) sp.set("butler", params.butler);
-  if (params?.status) sp.set("status", params.status);
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<ApiResponse<import("./types").InsightCandidate[]>>(
-    qs ? `/switchboard/insights?${qs}` : "/switchboard/insights",
-  ).then((r) => r.data);
+) {
+  const sp: ApiQuery<"/switchboard/insights", "GET"> = {};
+  if (params?.butler) sp["butler"] = params.butler;
+  if (params?.status) sp["status"] = params.status;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/switchboard/insights", { query: sp }).then((r) => r.data);
 }
 
 /** Record one of the broker's bounded, reversible owner-feedback verbs. */
-type InsightFeedbackResult = {
-  status: "recorded";
-  verdict: import("./types").InsightFeedbackVerdict;
-  insight_id: string;
-  snooze_until: string | null;
-};
-
 export function submitInsightFeedback(
-  insightId: string,
-  verdict: import("./types").InsightFeedbackVerdict,
-  snoozeUntil?: string,
-): Promise<InsightFeedbackResult> {
+  ...[insightId, verdict, snoozeUntil]:
+    | [insightId: string, verdict: "not_now", snoozeUntil: string]
+    | [insightId: string, verdict: Exclude<import("./types").InsightFeedbackVerdict, "not_now">, snoozeUntil?: string]
+) {
+  const path = { insight_id: insightId };
   const action = verdict === "not_now" ? "snooze" : verdict === "never" ? "mute" : "useful";
-  return apiFetch<ApiResponse<InsightFeedbackResult>>(
-    `/switchboard/insights/${encodeURIComponent(insightId)}/${action}`,
-    {
-      method: "POST",
-      ...(verdict === "not_now"
-        ? { body: JSON.stringify({ snooze_until: snoozeUntil }) }
-        : {}),
-    },
-  ).then((response) => response.data);
+  const options = verdict === "not_now"
+    ? { method: "POST" as const, path, body: { snooze_until: snoozeUntil } }
+    : { method: "POST" as const, path };
+  return apiFetch(`/switchboard/insights/{insight_id}/${action}`, options)
+    .then((response) => response.data);
 }
 
 /** Fetch a paginated list of health research notes. */
-export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<HealthResearch>> {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.tag) sp.set("tag", params.tag);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<HealthResearch>>(qs ? `/health/research?${qs}` : "/health/research");
+export function getResearch(params?: ResearchParams) {
+  const sp: ApiQuery<"/health/research", "GET"> = {};
+  if (params?.q) sp["q"] = params.q;
+  if (params?.tag) sp["tag"] = params.tag;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/health/research", { query: sp });
 }
 
 /**
@@ -2337,29 +1651,23 @@ export function getResearch(params?: ResearchParams): Promise<PaginatedResponse<
  * path (POST /health/research -> research_save), so the new note is read back by
  * getResearch immediately.
  */
-export function createResearch(body: ResearchCreateRequest): Promise<HealthResearch> {
-  return apiFetch<HealthResearch>("/health/research", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+export function createResearch(body: ResearchCreateRequest) {
+  return apiFetch("/health/research", { method: "POST",
+    body: body });
 }
 
 /** Update a research note. Only supplied fields are merged (PUT /health/research/{id}). */
 export function updateResearch(
   researchId: string,
   body: ResearchUpdateRequest,
-): Promise<HealthResearch> {
-  return apiFetch<HealthResearch>(`/health/research/${encodeURIComponent(researchId)}`, {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/health/research/{research_id}", { method: "PUT",
+    body: body, path: { research_id: researchId } });
 }
 
 /** Soft-delete a research note (DELETE /health/research/{id}). Returns 204. */
-export function deleteResearch(researchId: string): Promise<void> {
-  return apiFetch<void>(`/health/research/${encodeURIComponent(researchId)}`, {
-    method: "DELETE",
-  });
+export function deleteResearch(researchId: string) {
+  return apiFetch("/health/research/{research_id}", { method: "DELETE", path: { research_id: researchId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -2369,37 +1677,29 @@ export function deleteResearch(researchId: string): Promise<void> {
 /** Fetch the switchboard routing log. */
 export function getRoutingLog(
   params?: RoutingLogParams,
-): Promise<PaginatedResponse<RoutingEntry>> {
-  const sp = new URLSearchParams();
-  if (params?.source_butler) sp.set("source_butler", params.source_butler);
-  if (params?.target_butler) sp.set("target_butler", params.target_butler);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<RoutingEntry>>(
-    qs ? `/switchboard/routing-log?${qs}` : "/switchboard/routing-log",
-  );
+) {
+  const sp: ApiQuery<"/switchboard/routing-log", "GET"> = {};
+  if (params?.source_butler) sp["source_butler"] = params.source_butler;
+  if (params?.target_butler) sp["target_butler"] = params.target_butler;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/switchboard/routing-log", { query: sp });
 }
 
 /** Fetch the switchboard butler registry. */
-export function getRegistry(): Promise<ApiResponse<RegistryEntry[]>> {
-  return apiFetch<ApiResponse<RegistryEntry[]>>("/switchboard/registry");
+export function getRegistry() {
+  return apiFetch("/switchboard/registry");
 }
 
 /** Set a butler's eligibility state in the switchboard registry. */
 export function setButlerEligibility(
   name: string,
   eligibilityState: string,
-): Promise<ApiResponse<SetEligibilityResponse>> {
-  return apiFetch<ApiResponse<SetEligibilityResponse>>(
-    `/switchboard/registry/${encodeURIComponent(name)}/eligibility`,
-    {
-      method: "POST",
-      body: JSON.stringify({ eligibility_state: eligibilityState }),
-    },
-  );
+) {
+  return apiFetch("/switchboard/registry/{name}/eligibility", { method: "POST",
+      body: { eligibility_state: eligibilityState }, path: { name: name } });
 }
 
 
@@ -2408,8 +1708,8 @@ export function setButlerEligibility(
 // ---------------------------------------------------------------------------
 
 /** GET /api/general/stats — aggregated KPIs and collection size histogram. */
-export function getGeneralStats(): Promise<GeneralStats> {
-  return apiFetch<GeneralStats>("/general/stats");
+export function getGeneralStats() {
+  return apiFetch("/general/stats");
 }
 
 export interface GeneralCollectionsParams {
@@ -2421,15 +1721,12 @@ export interface GeneralCollectionsParams {
 /** GET /api/general/collections — list collections with entity counts. */
 export function getGeneralCollections(
   params?: GeneralCollectionsParams,
-): Promise<PaginatedResponse<GeneralCollection>> {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<GeneralCollection>>(
-    qs ? `/general/collections?${qs}` : "/general/collections",
-  );
+) {
+  const sp: ApiQuery<"/general/collections", "GET"> = {};
+  if (params?.q) sp["q"] = params.q;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/general/collections", { query: sp });
 }
 
 export interface GeneralEntitiesParams {
@@ -2443,17 +1740,14 @@ export interface GeneralEntitiesParams {
 /** GET /api/general/entities — search or list all entities. */
 export function getGeneralEntities(
   params?: GeneralEntitiesParams,
-): Promise<PaginatedResponse<GeneralEntity>> {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.collection) sp.set("collection", params.collection);
-  if (params?.tag) sp.set("tag", params.tag);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<GeneralEntity>>(
-    qs ? `/general/entities?${qs}` : "/general/entities",
-  );
+) {
+  const sp: ApiQuery<"/general/entities", "GET"> = {};
+  if (params?.q) sp["q"] = params.q;
+  if (params?.collection) sp["collection"] = params.collection;
+  if (params?.tag) sp["tag"] = params.tag;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/general/entities", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -2461,45 +1755,45 @@ export function getGeneralEntities(
 // ---------------------------------------------------------------------------
 
 /** Build URLSearchParams from episode query parameters. */
-function episodeSearchParams(params?: EpisodeParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.butler) sp.set("butler", params.butler);
-  if (params?.consolidated != null) sp.set("consolidated", String(params.consolidated));
-  if (params?.status) sp.set("status", params.status);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+function episodeSearchParams(params?: EpisodeParams): ApiQuery<"/memory/episodes", "GET"> {
+  const sp: ApiQuery<"/memory/episodes", "GET"> = {};
+  if (params?.butler) sp["butler"] = params.butler;
+  if (params?.consolidated != null) sp["consolidated"] = params.consolidated;
+  if (params?.status) sp["status"] = params.status;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   return sp;
 }
 
 /** Build URLSearchParams from fact query parameters. */
-function factSearchParams(params?: FactParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.scope) sp.set("scope", params.scope);
-  if (params?.validity) sp.set("validity", params.validity);
-  if (params?.permanence) sp.set("permanence", params.permanence);
-  if (params?.subject) sp.set("subject", params.subject);
+function factSearchParams(params?: FactParams): ApiQuery<"/memory/facts", "GET"> {
+  const sp: ApiQuery<"/memory/facts", "GET"> = {};
+  if (params?.q) sp["q"] = params.q;
+  if (params?.scope) sp["scope"] = params.scope;
+  if (params?.validity) sp["validity"] = params.validity;
+  if (params?.permanence) sp["permanence"] = params.permanence;
+  if (params?.subject) sp["subject"] = params.subject;
   if (params?.importance_min != null)
-    sp.set("importance_min", String(params.importance_min));
+    sp["importance_min"] = params.importance_min;
   if (params?.source_episode_id)
-    sp.set("source_episode_id", params.source_episode_id);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+    sp["source_episode_id"] = params.source_episode_id;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   return sp;
 }
 
 /** Build URLSearchParams from rule query parameters. */
-function ruleSearchParams(params?: RuleParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.held != null) sp.set("held", String(params.held));
-  if (params?.q) sp.set("q", params.q);
-  if (params?.scope) sp.set("scope", params.scope);
-  if (params?.maturity) sp.set("maturity", params.maturity);
-  if (params?.forgotten != null) sp.set("forgotten", String(params.forgotten));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+function ruleSearchParams(params?: RuleParams): ApiQuery<"/memory/rules", "GET"> {
+  const sp: ApiQuery<"/memory/rules", "GET"> = {};
+  if (params?.held != null) sp["held"] = params.held;
+  if (params?.q) sp["q"] = params.q;
+  if (params?.scope) sp["scope"] = params.scope;
+  if (params?.maturity) sp["maturity"] = params.maturity;
+  if (params?.forgotten != null) sp["forgotten"] = params.forgotten;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   return sp;
 }
 
@@ -2510,25 +1804,21 @@ function ruleSearchParams(params?: RuleParams): URLSearchParams {
  * degraded-envelope flag naming any memory pool dropped from the fan-out — is
  * typed and consumable (MemoryOverture gates its all-clear on it).
  */
-export function getMemoryStats(): Promise<MemoryStatsResponse> {
-  return apiFetch<MemoryStatsResponse>("/memory/stats");
+export function getMemoryStats() {
+  return apiFetch("/memory/stats");
 }
 
 /** Fetch a paginated list of episodes. */
 export function getEpisodes(
   params?: EpisodeParams,
-): Promise<MemoryPaginatedResponse<Episode>> {
-  const qs = episodeSearchParams(params).toString();
-  return apiFetch<MemoryPaginatedResponse<Episode>>(
-    qs ? `/memory/episodes?${qs}` : "/memory/episodes",
-  );
+) {
+  const qs = episodeSearchParams(params);
+  return apiFetch("/memory/episodes", { query: qs });
 }
 
 /** Fetch a single episode by ID. */
-export function getEpisode(episodeId: string): Promise<ApiResponse<Episode>> {
-  return apiFetch<ApiResponse<Episode>>(
-    `/memory/episodes/${encodeURIComponent(episodeId)}`,
-  );
+export function getEpisode(episodeId: string) {
+  return apiFetch("/memory/episodes/{episode_id}", { path: { episode_id: episodeId } });
 }
 
 /**
@@ -2540,39 +1830,29 @@ export function getEpisode(episodeId: string): Promise<ApiResponse<Episode>> {
  */
 export function retryEpisodeConsolidation(
   episodeId: string,
-): Promise<ApiResponse<Episode>> {
-  return apiFetch<ApiResponse<Episode>>(
-    `/memory/episodes/${encodeURIComponent(episodeId)}/requeue`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/memory/episodes/{episode_id}/requeue", { method: "POST", path: { episode_id: episodeId } });
 }
 
 /** Fetch a paginated list of facts. */
 export function getFacts(
   params?: FactParams,
-): Promise<MemoryPaginatedResponse<Fact>> {
-  const qs = factSearchParams(params).toString();
-  return apiFetch<MemoryPaginatedResponse<Fact>>(
-    qs ? `/memory/facts?${qs}` : "/memory/facts",
-  );
+) {
+  const qs = factSearchParams(params);
+  return apiFetch("/memory/facts", { query: qs });
 }
 
 /** Fetch a single fact by ID. */
-export function getFact(factId: string): Promise<ApiResponse<Fact>> {
-  return apiFetch<ApiResponse<Fact>>(
-    `/memory/facts/${encodeURIComponent(factId)}`,
-  );
+export function getFact(factId: string) {
+  return apiFetch("/memory/facts/{fact_id}", { path: { fact_id: factId } });
 }
 
 /**
  * Re-ink a fact: reset its confidence-decay timer (last_confirmed_at = now).
  * POST /api/memory/facts/{id}/confirm (bu-awo8k.3). Returns the refreshed fact.
  */
-export function confirmFact(factId: string): Promise<ApiResponse<Fact>> {
-  return apiFetch<ApiResponse<Fact>>(
-    `/memory/facts/${encodeURIComponent(factId)}/confirm`,
-    { method: "POST" },
-  );
+export function confirmFact(factId: string) {
+  return apiFetch("/memory/facts/{fact_id}/confirm", { method: "POST", path: { fact_id: factId } });
 }
 
 /**
@@ -2580,95 +1860,73 @@ export function confirmFact(factId: string): Promise<ApiResponse<Fact>> {
  * confirm. POST /api/memory/facts/{id}/retract (bu-awo8k.4). Returns the
  * refreshed fact.
  */
-export function retractFact(factId: string): Promise<ApiResponse<Fact>> {
-  return apiFetch<ApiResponse<Fact>>(
-    `/memory/facts/${encodeURIComponent(factId)}/retract`,
-    { method: "POST" },
-  );
+export function retractFact(factId: string) {
+  return apiFetch("/memory/facts/{fact_id}/retract", { method: "POST", path: { fact_id: factId } });
 }
 
 // ---------------------------------------------------------------------------
 // Lifestyle taste ledger (bu-2jtfw.10)
 // ---------------------------------------------------------------------------
 
-import type {
-  TasteSummary,
-  TasteVerdict,
-  TasteVerdictsParams,
-  TasteWork,
-  TasteWorksParams,
-} from "./types.ts";
+import type { TasteVerdictsParams, TasteWorksParams } from "./types.ts";
 
-function tasteWorksSearchParams(params?: TasteWorksParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.kind) sp.set("kind", params.kind);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+function tasteWorksSearchParams(params?: TasteWorksParams): ApiQuery<"/lifestyle/taste/works", "GET"> {
+  const sp: ApiQuery<"/lifestyle/taste/works", "GET"> = {};
+  if (params?.kind) sp["kind"] = params.kind;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   return sp;
 }
 
 /** Fetch ledger-wide taste counts. GET /api/lifestyle/taste/summary. */
-export function getLifestyleTasteSummary(): Promise<ApiResponse<TasteSummary>> {
-  return apiFetch<ApiResponse<TasteSummary>>("/lifestyle/taste/summary");
+export function getLifestyleTasteSummary() {
+  return apiFetch("/lifestyle/taste/summary");
 }
 
 /** Fetch a paginated list of taste-ledger works. */
 export function getLifestyleTasteWorks(
   params?: TasteWorksParams,
-): Promise<PaginatedResponse<TasteWork>> {
-  const qs = tasteWorksSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<TasteWork>>(
-    qs ? `/lifestyle/taste/works?${qs}` : "/lifestyle/taste/works",
-  );
+) {
+  const qs = tasteWorksSearchParams(params);
+  return apiFetch("/lifestyle/taste/works", { query: qs });
 }
 
 /** Fetch a paginated list of owner-asserted taste verdicts. */
 export function getLifestyleTasteVerdicts(
   params?: TasteVerdictsParams,
-): Promise<PaginatedResponse<TasteVerdict>> {
-  const sp = new URLSearchParams();
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<TasteVerdict>>(
-    qs ? `/lifestyle/taste/verdicts?${qs}` : "/lifestyle/taste/verdicts",
-  );
+) {
+  const sp: ApiQuery<"/lifestyle/taste/verdicts", "GET"> = {};
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/lifestyle/taste/verdicts", { query: sp });
 }
 
 /** Fetch a paginated list of rules. */
 export function getRules(
   params?: RuleParams,
-): Promise<MemoryPaginatedResponse<MemoryRule>> {
-  const qs = ruleSearchParams(params).toString();
-  return apiFetch<MemoryPaginatedResponse<MemoryRule>>(
-    qs ? `/memory/rules?${qs}` : "/memory/rules",
-  );
+) {
+  const qs = ruleSearchParams(params);
+  return apiFetch("/memory/rules", { query: qs });
 }
 
 /** Fetch a single rule by ID. */
-export function getRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
-  return apiFetch<ApiResponse<MemoryRule>>(
-    `/memory/rules/${encodeURIComponent(ruleId)}`,
-  );
+export function getRule(ruleId: string) {
+  return apiFetch("/memory/rules/{rule_id}", { path: { rule_id: ruleId } });
 }
 
 /**
  * Retire a rule: it stops firing but stays on the books (retired_at set).
  * PATCH /api/memory/rules/{id}/retire (bu-6t8ix.3). Returns the refreshed rule.
  */
-export function retireRule(ruleId: string): Promise<ApiResponse<MemoryRule>> {
-  return apiFetch<ApiResponse<MemoryRule>>(
-    `/memory/rules/${encodeURIComponent(ruleId)}/retire`,
-    { method: "PATCH" },
-  );
+export function retireRule(ruleId: string) {
+  return apiFetch("/memory/rules/{rule_id}/retire", { method: "PATCH", path: { rule_id: ruleId } });
 }
 
 /** Fetch recent memory activity. */
 export function getMemoryActivity(
   limit?: number,
-): Promise<ApiResponse<MemoryActivity[]>> {
-  const params = limit != null ? `?limit=${limit}` : "";
-  return apiFetch<ApiResponse<MemoryActivity[]>>(`/memory/activity${params}`);
+) {
+  return apiFetch("/memory/activity", { query: { limit: limit ?? undefined } });
 }
 
 // ---------------------------------------------------------------------------
@@ -2676,158 +1934,127 @@ export function getMemoryActivity(
 // ---------------------------------------------------------------------------
 
 /** Fetch all retention policies. */
-export function getMemoryRetentionPolicies(): Promise<ApiResponse<MemoryRetentionPolicy[]>> {
-  return apiFetch<ApiResponse<MemoryRetentionPolicy[]>>("/memory/retention-policies");
+export function getMemoryRetentionPolicies() {
+  return apiFetch("/memory/retention-policies");
 }
 
 /** Bulk-update retention policies. */
 export function updateMemoryRetentionPolicies(
   body: UpdateRetentionPoliciesRequest,
-): Promise<ApiResponse<MemoryRetentionPolicy[]>> {
-  return apiFetch<ApiResponse<MemoryRetentionPolicy[]>>("/memory/retention-policies", {
-    method: "PUT",
+) {
+  return apiFetch("/memory/retention-policies", { method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body });
 }
 
 /** Fetch recent compaction log entries. */
 export function getMemoryCompactionLog(
   limit?: number,
-): Promise<ApiResponse<CompactionLogEntry[]>> {
-  const params = limit != null ? `?limit=${limit}` : "";
-  return apiFetch<ApiResponse<CompactionLogEntry[]>>(`/memory/compaction-log${params}`);
+) {
+  return apiFetch("/memory/compaction-log", { query: { limit: limit ?? undefined } });
 }
 
 /** Count stale embeddings per tier — GET /api/memory/reembed/pending. */
 export function getReembedPending(
   butler?: string,
   currentModel?: string,
-): Promise<ApiResponse<ReembedPendingCounts>> {
-  const sp = new URLSearchParams();
-  if (butler) sp.set("butler", butler);
-  if (currentModel) sp.set("current_model", currentModel);
-  const qs = sp.toString();
-  return apiFetch<ApiResponse<ReembedPendingCounts>>(
-    qs ? `/memory/reembed/pending?${qs}` : "/memory/reembed/pending",
-  );
+) {
+  const sp: ApiQuery<"/memory/reembed/pending", "GET"> = {};
+  if (butler) sp["butler"] = butler;
+  if (currentModel) sp["current_model"] = currentModel;
+  return apiFetch("/memory/reembed/pending", { query: sp });
 }
 
 /** Trigger a synchronous re-embedding run — POST /api/memory/reembed. */
 export function runReembed(
   body: ReembedRunRequest,
-): Promise<ApiResponse<ReembedRunResult>> {
-  return apiFetch<ApiResponse<ReembedRunResult>>("/memory/reembed", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/memory/reembed", { method: "POST",
+    body: body });
 }
 
 /** Search memory (inspect). */
 export function inspectMemory(
   params?: MemoryInspectParams,
-): Promise<MemoryPaginatedResponse<MemoryInspectResult>> {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.kind) sp.set("kind", params.kind);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<MemoryPaginatedResponse<MemoryInspectResult>>(
-    qs ? `/memory/inspect?${qs}` : "/memory/inspect",
-  );
+) {
+  const sp: ApiQuery<"/memory/inspect", "GET"> = {};
+  if (params?.q) sp["q"] = params.q;
+  if (params?.kind) sp["kind"] = params.kind;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/memory/inspect", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
 // Entities (Knowledge Graph)
 // ---------------------------------------------------------------------------
 
-function entitySearchParams(params?: EntityParams): URLSearchParams {
-  const sp = new URLSearchParams();
-  if (params?.q) sp.set("q", params.q);
-  if (params?.entity_type) sp.set("entity_type", params.entity_type);
-  if (params?.unidentified != null) sp.set("unidentified", String(params.unidentified));
-  if (params?.archived != null) sp.set("archived", String(params.archived));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
+function entitySearchParams(params?: EntityParams): ApiQuery<"/memory/entities", "GET"> {
+  const sp: ApiQuery<"/memory/entities", "GET"> = {};
+  if (params?.q) sp["q"] = params.q;
+  if (params?.entity_type) sp["entity_type"] = params.entity_type;
+  if (params?.unidentified != null) sp["unidentified"] = params.unidentified;
+  if (params?.archived != null) sp["archived"] = params.archived;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
   return sp;
 }
 
 /** Fetch a paginated list of entities. */
 export function getEntities(
   params?: EntityParams,
-): Promise<PaginatedResponse<EntitySummary>> {
-  const qs = entitySearchParams(params).toString();
-  return apiFetch<PaginatedResponse<EntitySummary>>(
-    qs ? `/memory/entities?${qs}` : "/memory/entities",
-  );
+) {
+  const qs = entitySearchParams(params);
+  return apiFetch("/memory/entities", { query: qs });
 }
 
 /** Fetch a single entity by ID. */
 export function getEntity(
   entityId: string,
   params?: EntityDetailParams,
-): Promise<ApiResponse<EntityDetail>> {
-  const qs = new URLSearchParams();
-  if (params?.facts_offset != null) qs.set("facts_offset", String(params.facts_offset));
-  if (params?.facts_limit != null) qs.set("facts_limit", String(params.facts_limit));
-  const path = qs.size
-    ? `/memory/entities/${encodeURIComponent(entityId)}?${qs.toString()}`
-    : `/memory/entities/${encodeURIComponent(entityId)}`;
-  return apiFetch<ApiResponse<EntityDetail>>(
-    path,
-  );
+) {
+  const qs: ApiQuery<"/memory/entities/{entity_id}", "GET"> = {};
+  if (params?.facts_offset != null) qs["facts_offset"] = params.facts_offset;
+  if (params?.facts_limit != null) qs["facts_limit"] = params.facts_limit;
+
+  return apiFetch("/memory/entities/{entity_id}", { path: { entity_id: entityId }, query: qs });
 }
 
 /** Update entity core fields (name, aliases). */
 export function updateEntity(
   entityId: string,
   request: UpdateEntityRequest,
-): Promise<ApiResponse<EntitySummary>> {
-  return apiFetch<ApiResponse<EntitySummary>>(
-    `/memory/entities/${encodeURIComponent(entityId)}`,
-    { method: "PATCH", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/memory/entities/{entity_id}", { method: "PATCH", body: request, path: { entity_id: entityId } });
 }
 
 /** Promote a transitory (unidentified) entity by clearing the unidentified flag. */
 export function promoteEntity(
   entityId: string,
-): Promise<ApiResponse<EntitySummary>> {
-  return apiFetch<ApiResponse<EntitySummary>>(
-    `/memory/entities/${encodeURIComponent(entityId)}/promote`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/memory/entities/{entity_id}/promote", { method: "POST", path: { entity_id: entityId } });
 }
 
 /** Archive an entity (hide from default views, preserves all data). */
 /** @public knip mis-traces this import (live consumer exists); remove tag when bu-9jvhm fixes the tracing gap. */
-export function archiveEntity(entityId: string): Promise<void> {
-  return apiFetch<void>(
-    `/memory/entities/${encodeURIComponent(entityId)}/archive`,
-    { method: "POST" },
-  );
+export function archiveEntity(entityId: string) {
+  return apiFetch("/memory/entities/{entity_id}/archive", { method: "POST", path: { entity_id: entityId } });
 }
 
 /** Create an entity_info entry for an entity. */
 export function createEntityInfo(
   entityId: string,
   request: CreateEntityInfoRequest,
-): Promise<CreateEntityInfoResponse> {
-  return apiFetch<CreateEntityInfoResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/info`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/info", { method: "POST", body: request, path: { entity_id: entityId } });
 }
 
 /** Reveal the actual value of a secured entity_info entry. */
 export function revealEntitySecret(
   entityId: string,
   infoId: string,
-): Promise<EntityInfoEntry> {
-  return apiFetch<EntityInfoEntry>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/secrets/${encodeURIComponent(infoId)}`,
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/secrets/{info_id}", { path: { entity_id: entityId, info_id: infoId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -2846,11 +2073,8 @@ export function revealEntitySecret(
 export function addEntityContact(
   entityId: string,
   request: AddEntityContactRequest,
-): Promise<AddEntityContactResponse> {
-  return apiFetch<AddEntityContactResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/contacts`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/contacts", { method: "POST", body: request, path: { entity_id: entityId } });
 }
 
 /**
@@ -2864,11 +2088,8 @@ export function deleteEntityContact(
   entityId: string,
   predicate: string,
   valueHash: string,
-): Promise<DeleteEntityContactResponse> {
-  return apiFetch<DeleteEntityContactResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}", { method: "DELETE", path: { entity_id: entityId, predicate: predicate, value_hash: valueHash } });
 }
 
 /**
@@ -2883,11 +2104,8 @@ export function markEntityContactVerified(
   entityId: string,
   predicate: string,
   valueHash: string,
-): Promise<MarkEntityContactVerifiedResponse> {
-  return apiFetch<MarkEntityContactVerifiedResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}/verify`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}/verify", { method: "POST", path: { entity_id: entityId, predicate: predicate, value_hash: valueHash } });
 }
 
 /**
@@ -2903,11 +2121,8 @@ export function updateEntityContact(
   predicate: string,
   valueHash: string,
   request: UpdateEntityContactRequest,
-): Promise<UpdateEntityContactResponse> {
-  return apiFetch<UpdateEntityContactResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/contacts/${encodeURIComponent(predicate)}/${encodeURIComponent(valueHash)}`,
-    { method: "PUT", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/contacts/{predicate}/{value_hash}", { method: "PUT", body: request, path: { entity_id: entityId, predicate: predicate, value_hash: valueHash } });
 }
 
 /**
@@ -2921,11 +2136,8 @@ export function updateEntityContact(
 export function setEntityPreferredChannel(
   entityId: string,
   request: SetPreferredChannelRequest,
-): Promise<SetPreferredChannelResponse> {
-  return apiFetch<SetPreferredChannelResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/preferred-channel`,
-    { method: "PUT", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/preferred-channel", { method: "PUT", body: request, path: { entity_id: entityId } });
 }
 
 /**
@@ -2934,11 +2146,8 @@ export function setEntityPreferredChannel(
  */
 export function clearEntityPreferredChannel(
   entityId: string,
-): Promise<ClearPreferredChannelResponse> {
-  return apiFetch<ClearPreferredChannelResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/preferred-channel`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/preferred-channel", { method: "DELETE", path: { entity_id: entityId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -2946,38 +2155,32 @@ export function clearEntityPreferredChannel(
 // ---------------------------------------------------------------------------
 
 /** Fetch all contacts linked to a relationship entity. */
-export function getEntityLinkedContacts(entityId: string): Promise<LinkedContactSummary[]> {
-  return apiFetch<LinkedContactSummary[]>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/linked-contacts`,
-  );
+export function getEntityLinkedContacts(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/linked-contacts", { path: { entity_id: entityId } });
 }
 
 /** Fetch gifts tab data for a relationship entity. */
 export function getEntityGifts(
   entityId: string,
   params?: { limit?: number; offset?: number },
-): Promise<EntityGift[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/gifts?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/gifts`;
-  return apiFetch<EntityGift[]>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/gifts", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+  if (params?.offset != null) qs["offset"] = params.offset;
+
+  return apiFetch("/relationship/entities/{entity_id}/gifts", { path: { entity_id: entityId }, query: qs });
 }
 
 /** Fetch interaction facts for a relationship entity, newest first. */
 export function getEntityInteractions(
   entityId: string,
   params?: { limit?: number; offset?: number },
-): Promise<EntityInteraction[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/interactions?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/interactions`;
-  return apiFetch<EntityInteraction[]>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/interactions", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+  if (params?.offset != null) qs["offset"] = params.offset;
+
+  return apiFetch("/relationship/entities/{entity_id}/interactions", { path: { entity_id: entityId }, query: qs });
 }
 
 // ---------------------------------------------------------------------------
@@ -2997,99 +2200,83 @@ export function getEntityInteractions(
 export function createEntityNote(
   entityId: string,
   request: CreateEntityNoteRequest,
-): Promise<EntityNote> {
-  return apiFetch<EntityNote>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/notes`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/notes", { method: "POST", body: request, path: { entity_id: entityId } });
 }
 
 /** Log an interaction with a relationship entity. */
 export function createEntityInteraction(
   entityId: string,
   request: CreateEntityInteractionRequest,
-): Promise<EntityInteraction> {
-  return apiFetch<EntityInteraction>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/interactions`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/interactions", { method: "POST", body: request, path: { entity_id: entityId } });
 }
 
 /** Capture a gift idea for a relationship entity. */
 export function createEntityGift(
   entityId: string,
   request: CreateEntityGiftRequest,
-): Promise<EntityGift> {
-  return apiFetch<EntityGift>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/gifts`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/gifts", { method: "POST", body: request, path: { entity_id: entityId } });
 }
 
 /** Fetch loans tab data for a relationship entity. */
 export function getEntityLoans(
   entityId: string,
   params?: { limit?: number; offset?: number },
-): Promise<EntityLoan[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/loans?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/loans`;
-  return apiFetch<EntityLoan[]>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/loans", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+  if (params?.offset != null) qs["offset"] = params.offset;
+
+  return apiFetch("/relationship/entities/{entity_id}/loans", { path: { entity_id: entityId }, query: qs });
 }
 
 /** Fetch unified timeline data for a relationship entity. */
 export function getEntityTimeline(
   entityId: string,
   params?: { limit?: number; offset?: number },
-): Promise<EntityTimelineItem[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/timeline?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/timeline`;
-  return apiFetch<EntityTimelineItem[]>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/timeline", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+  if (params?.offset != null) qs["offset"] = params.offset;
+
+  return apiFetch("/relationship/entities/{entity_id}/timeline", { path: { entity_id: entityId }, query: qs });
 }
 
 /** Fetch the canonical merged entity activity stream with cancellable pagination. */
 export function getEntityActivity(
   entityId: string,
   params?: { limit?: number; offset?: number; signal?: AbortSignal },
-): Promise<EntityActivityResponse> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.offset != null) qs.set("offset", String(params.offset));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/activity`;
-  return apiFetch<EntityActivityResponse>(path, { signal: params?.signal });
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/activity", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+  if (params?.offset != null) qs["offset"] = params.offset;
+
+  return apiFetch("/relationship/entities/{entity_id}/activity", { signal: params?.signal, path: { entity_id: entityId }, query: qs }).then((response) => {
+    if (!("items" in response)) throw new ApiError("INVALID_RESPONSE", "Activity stream is unavailable.", 200);
+    return response;
+  });
 }
 
 /** Fetch completeness-tagged interaction evidence for a rolling window. */
 export function getEntityCadence(
   entityId: string,
   windowDays: number,
-): Promise<EntityCadenceResponse> {
-  const qs = new URLSearchParams({ window_days: String(windowDays) });
-  return apiFetch<EntityCadenceResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/cadence?${qs.toString()}`,
-  );
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/cadence", "GET"> = { window_days: windowDays };
+  return apiFetch("/relationship/entities/{entity_id}/cadence", { path: { entity_id: entityId }, query: qs });
 }
 
 /** Fetch message thread summaries for a relationship entity. */
 export function getEntityMessageThreads(
   entityId: string,
   params?: { limit?: number },
-): Promise<MessageThreadSummary[]> {
-  const qs = new URLSearchParams();
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/message-threads?${qs}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/message-threads`;
-  return apiFetch<MessageThreadSummary[]>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/message-threads", "GET"> = {};
+  if (params?.limit != null) qs["limit"] = params.limit;
+
+  return apiFetch("/relationship/entities/{entity_id}/message-threads", { path: { entity_id: entityId }, query: qs });
 }
 
 /**
@@ -3106,14 +2293,15 @@ export function getEntityMessageThreads(
 export function getEntityActivityBins(
   entityId: string,
   params?: { window?: string },
-): Promise<ActivityBinsResponse> {
-  const qs = new URLSearchParams();
-  qs.set("bins", "daily");
-  qs.set("bins_only", "true");
-  if (params?.window != null) qs.set("window", params.window);
-  return apiFetch<ActivityBinsResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs.toString()}`,
-  );
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/activity", "GET"> = { "bins": "daily", "bins_only": true };
+
+
+  if (params?.window != null) qs["window"] = params.window;
+  return apiFetch("/relationship/entities/{entity_id}/activity", { path: { entity_id: entityId }, query: qs }).then((response) => {
+    if (!("bins" in response)) throw new ApiError("INVALID_RESPONSE", "Activity bins are unavailable.", 200);
+    return response;
+  });
 }
 
 /**
@@ -3126,10 +2314,8 @@ export function getEntityActivityBins(
  *
  * Returns owner-only gate 403 when no owner entity is registered.
  */
-export function getEntityDeltaFacts(entityId: string): Promise<DeltaFactsResponse> {
-  return apiFetch<DeltaFactsResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/delta-facts`,
-  );
+export function getEntityDeltaFacts(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/delta-facts", { path: { entity_id: entityId } });
 }
 
 /**
@@ -3142,11 +2328,8 @@ export function getEntityDeltaFacts(entityId: string): Promise<DeltaFactsRespons
  *
  * Returns owner-only gate 403 when no owner entity is registered.
  */
-export function markEntityView(entityId: string): Promise<ViewMarkResponse> {
-  return apiFetch<ViewMarkResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/view-mark`,
-    { method: "POST" },
-  );
+export function markEntityView(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/view-mark", { method: "POST", path: { entity_id: entityId } });
 }
 
 /**
@@ -3160,10 +2343,8 @@ export function markEntityView(entityId: string): Promise<ViewMarkResponse> {
  *
  * Returns owner-only gate 403 when no owner entity is registered.
  */
-export function getEntityCoreDates(entityId: string): Promise<CoreDatesResponse> {
-  return apiFetch<CoreDatesResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/core-dates`,
-  );
+export function getEntityCoreDates(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/core-dates", { path: { entity_id: entityId } });
 }
 
 /** Forget (hard-delete with tombstone) a relationship entity.
@@ -3172,22 +2353,16 @@ export function getEntityCoreDates(entityId: string): Promise<CoreDatesResponse>
  * Retracts all active entity_facts and tombstones the entity row.
  * Irreversible. Owner-only (returns 403 if no owner entity).
  */
-export function forgetRelationshipEntity(entityId: string): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/entities/${encodeURIComponent(entityId)}`,
-    { method: "DELETE" },
-  );
+export function forgetRelationshipEntity(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}", { method: "DELETE", path: { entity_id: entityId } });
 }
 
 /** Pin or clear an entity's Dunbar tier. tier=null clears the pin. */
 export function updateEntityDunbarTier(
   entityId: string,
   tier: number | null,
-): Promise<DunbarTierOverrideResponse> {
-  return apiFetch<DunbarTierOverrideResponse>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/dunbar-tier`,
-    { method: "PATCH", body: JSON.stringify({ tier }) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/dunbar-tier", { method: "PATCH", body: { tier }, path: { entity_id: entityId } });
 }
 
 /** Search relationship entities using rule-based ranking (deterministic Finder, bu-xfjwk).
@@ -3199,12 +2374,10 @@ export function updateEntityDunbarTier(
 export function searchRelationshipEntities(
   q: string,
   limit?: number,
-): Promise<EntityFinderSearchResponse> {
-  const sp = new URLSearchParams({ q });
-  if (limit != null) sp.set("limit", String(limit));
-  return apiFetch<EntityFinderSearchResponse>(
-    `/relationship/entities/search?${sp.toString()}`,
-  );
+) {
+  const sp: ApiQuery<"/relationship/entities/search", "GET"> = { q };
+  if (limit != null) sp["limit"] = limit;
+  return apiFetch("/relationship/entities/search", { query: sp });
 }
 
 /**
@@ -3216,32 +2389,29 @@ export function searchRelationshipEntities(
  */
 export function listRelationshipEntities(
   params?: RelationshipEntityListParams,
-): Promise<RelationshipEntityListResponse> {
-  const sp = new URLSearchParams();
+) {
+  const sp: ApiQuery<"/relationship/entities", "GET"> = {};
   if (params?.entity_type) {
     if (params.entity_type.length === 0) {
-      sp.append("entity_type", "__none__");
+      (sp["entity_type"] ??= []).push("__none__");
     } else {
-      params.entity_type.forEach((type) => sp.append("entity_type", type));
+      params.entity_type.forEach((type) => (sp["entity_type"] ??= []).push(type));
     }
   }
-  if (params?.state) sp.set("state", params.state);
-  if (params?.has) sp.set("has", params.has);
+  if (params?.state) sp["state"] = params.state;
+  if (params?.has) sp["has"] = params.has;
   if (params?.ids) {
     // Always emit the param when ids is provided — an empty array must reach the
     // backend as a present-but-empty filter (→ empty result set), not absence.
     if (params.ids.length === 0) {
-      sp.append("ids", "");
+      (sp["ids"] ??= []).push("");
     } else {
-      params.ids.forEach((id) => sp.append("ids", id));
+      params.ids.forEach((id) => (sp["ids"] ??= []).push(id));
     }
   }
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  const qs = sp.toString();
-  return apiFetch<RelationshipEntityListResponse>(
-    `/relationship/entities${qs ? `?${qs}` : ""}`,
-  );
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  return apiFetch("/relationship/entities", { query: sp });
 }
 
 /**
@@ -3253,62 +2423,46 @@ export function listRelationshipEntities(
 export function getRelationshipEntityQueue(params?: {
   limit?: number;
   offset?: number;
-}): Promise<RelationshipQueueResponse> {
-  const sp = new URLSearchParams();
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  const qs = sp.toString();
-  return apiFetch<RelationshipQueueResponse>(
-    `/relationship/entities/queue${qs ? `?${qs}` : ""}`,
-  );
+}) {
+  const sp: ApiQuery<"/relationship/entities/queue", "GET"> = {};
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  return apiFetch("/relationship/entities/queue", { query: sp });
 }
 
 /** Promote an existing unidentified relationship entity in-place. */
 export function promoteRelationshipEntity(
   request: PromoteRelationshipEntityRequest,
-): Promise<RelationshipEntityDetail> {
-  return apiFetch<RelationshipEntityDetail>("/relationship/entities", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/relationship/entities", { method: "POST",
+    body: request });
 }
 
 /** Create a brand-new canonical entity through the relationship API (create path — no entity_id). */
 export function createRelationshipEntity(
   request: CreateRelationshipEntityRequest,
-): Promise<RelationshipEntityDetail> {
-  return apiFetch<RelationshipEntityDetail>("/relationship/entities", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/relationship/entities", { method: "POST",
+    body: request });
 }
 
 /** Archive a relationship entity, hiding it from default entity views. */
-export function archiveRelationshipEntity(entityId: string): Promise<void> {
-  return apiFetch<void>(
-    `/relationship/entities/${encodeURIComponent(entityId)}/archive`,
-    { method: "POST" },
-  );
+export function archiveRelationshipEntity(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/archive", { method: "POST", path: { entity_id: entityId } });
 }
 
 /** Dismiss a relationship entity from the curation queue. */
 export function dismissRelationshipEntityQueueItem(
   entityId: string,
-): Promise<DismissRelationshipEntityQueueResponse> {
-  return apiFetch<DismissRelationshipEntityQueueResponse>(
-    "/relationship/entities/queue/dismiss",
-    { method: "POST", body: JSON.stringify({ entity_id: entityId }) },
-  );
+) {
+  return apiFetch("/relationship/entities/queue/dismiss", { method: "POST", body: { entity_id: entityId } });
 }
 
 /** Merge two relationship entities, keeping the requested survivor. */
 export function mergeRelationshipEntities(
   request: MergeRelationshipEntitiesRequest,
-): Promise<MergeRelationshipEntitiesResponse> {
-  return apiFetch<MergeRelationshipEntitiesResponse>(
-    `/relationship/entities/${encodeURIComponent(request.entityA)}/merge`,
-    { method: "POST", body: JSON.stringify(request) },
-  );
+) {
+  return apiFetch("/relationship/entities/{entity_id}/merge", { method: "POST", body: request, path: { entity_id: request.entityA } });
 }
 
 /**
@@ -3326,11 +2480,9 @@ export function mergeRelationshipEntities(
  */
 export function compareRelationshipEntities(
   request: CompareEntitiesRequest,
-): Promise<CompareEntitiesResponse> {
-  return apiFetch<CompareEntitiesResponse>("/relationship/entities/compare", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/relationship/entities/compare", { method: "POST",
+    body: request });
 }
 
 /**
@@ -3344,11 +2496,9 @@ export function compareRelationshipEntities(
  */
 export function dismissRelationshipEntityPair(
   request: DismissEntityPairRequest,
-): Promise<DismissEntityPairResponse> {
-  return apiFetch<DismissEntityPairResponse>("/relationship/entities/dismiss-pair", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/relationship/entities/dismiss-pair", { method: "POST",
+    body: request });
 }
 
 /** Fetch relational neighbours grouped by predicate for an entity (§9.2, bu-4wn79).
@@ -3365,14 +2515,12 @@ export function dismissRelationshipEntityPair(
 export function getEntityNeighbours(
   entityId: string,
   params?: NeighboursParams,
-): Promise<NeighboursResponse> {
-  const qs = new URLSearchParams();
-  if (params?.rank != null) qs.set("rank", params.rank);
-  if (params?.per_predicate != null) qs.set("per_predicate", String(params.per_predicate));
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/neighbours?${qs.toString()}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/neighbours`;
-  return apiFetch<NeighboursResponse>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/neighbours", "GET"> = {};
+  if (params?.rank != null) qs["rank"] = params.rank;
+  if (params?.per_predicate != null) qs["per_predicate"] = params.per_predicate;
+
+  return apiFetch("/relationship/entities/{entity_id}/neighbours", { path: { entity_id: entityId }, query: qs });
 }
 
 /**
@@ -3383,10 +2531,9 @@ export function getEntityNeighbours(
  * Hits GET /api/butlers/relationship/plex/halo. Owner-only gate 403 when no
  * owner entity is registered.
  */
-export function getPlexHalo(perType?: number): Promise<HaloResponse> {
-  const path =
-    perType != null ? `/relationship/plex/halo?per_type=${perType}` : "/relationship/plex/halo";
-  return apiFetch<HaloResponse>(path);
+export function getPlexHalo(perType?: number) {
+
+  return apiFetch("/relationship/plex/halo", { query: { per_type: perType ?? undefined } });
 }
 
 /**
@@ -3408,17 +2555,15 @@ export function getPlexHalo(perType?: number): Promise<HaloResponse> {
 export function getEntityFacts(
   entityId: string,
   params?: EntityFactsParams,
-): Promise<CursorPage<EntityFact>> {
-  const qs = new URLSearchParams();
-  if (params?.predicate != null) qs.set("predicate", params.predicate);
-  if (params?.validity != null) qs.set("validity", params.validity);
-  if (params?.store != null) qs.set("store", params.store);
-  if (params?.limit != null) qs.set("limit", String(params.limit));
-  if (params?.cursor != null) qs.set("cursor", params.cursor);
-  const path = qs.size
-    ? `/relationship/entities/${encodeURIComponent(entityId)}/facts?${qs.toString()}`
-    : `/relationship/entities/${encodeURIComponent(entityId)}/facts`;
-  return apiFetch<CursorPage<EntityFact>>(path);
+) {
+  const qs: ApiQuery<"/relationship/entities/{entity_id}/facts", "GET"> = {};
+  if (params?.predicate != null) qs["predicate"] = params.predicate;
+  if (params?.validity != null) qs["validity"] = params.validity;
+  if (params?.store != null) qs["store"] = params.store;
+  if (params?.limit != null) qs["limit"] = params.limit;
+  if (params?.cursor != null) qs["cursor"] = params.cursor;
+
+  return apiFetch("/relationship/entities/{entity_id}/facts", { path: { entity_id: entityId }, query: qs });
 }
 
 /**
@@ -3432,96 +2577,82 @@ export function getEntityFacts(
  * Returns owner-only gate 403 when no owner entity is registered.
  * Defaults to predicate ``'knows'`` when ``pred`` is omitted.
  */
-export function getEntityConcentration(pred?: string): Promise<ConcentrationResponse> {
-  const qs = pred ? `?pred=${encodeURIComponent(pred)}` : "";
-  return apiFetch<ConcentrationResponse>(`/relationship/entities/concentration${qs}`);
+export function getEntityConcentration(pred?: string) {
+  return apiFetch("/relationship/entities/concentration", { query: { pred: pred || undefined } });
 }
 
 // ---------------------------------------------------------------------------
 // Approvals
 // ---------------------------------------------------------------------------
 
-function approvalActionSearchParams(params?: ApprovalActionParams): URLSearchParams {
-  const qs = new URLSearchParams();
-  if (params?.tool_name) qs.set("tool_name", params.tool_name);
-  if (params?.status) qs.set("status", params.status);
-  if (params?.butler) qs.set("butler", params.butler);
-  if (params?.offset != null) qs.set("offset", params.offset.toString());
-  if (params?.limit != null) qs.set("limit", params.limit.toString());
+function approvalActionSearchParams(params?: ApprovalActionParams): ApiQuery<"/approvals/actions", "GET"> {
+  const qs: ApiQuery<"/approvals/actions", "GET"> = {};
+  if (params?.tool_name) qs["tool_name"] = params.tool_name;
+  if (params?.status) qs["status"] = params.status;
+  if (params?.butler) qs["butler"] = params.butler;
+  if (params?.offset != null) qs["offset"] = params.offset;
+  if (params?.limit != null) qs["limit"] = params.limit;
   return qs;
 }
 
-function approvalRuleSearchParams(params?: ApprovalRuleParams): URLSearchParams {
-  const qs = new URLSearchParams();
-  if (params?.tool_name) qs.set("tool_name", params.tool_name);
-  if (params?.active != null) qs.set("active", params.active.toString());
-  if (params?.butler) qs.set("butler", params.butler);
-  if (params?.offset != null) qs.set("offset", params.offset.toString());
-  if (params?.limit != null) qs.set("limit", params.limit.toString());
+function approvalRuleSearchParams(params?: ApprovalRuleParams): ApiQuery<"/approvals/rules", "GET"> {
+  const qs: ApiQuery<"/approvals/rules", "GET"> = {};
+  if (params?.tool_name) qs["tool_name"] = params.tool_name;
+  if (params?.active != null) qs["active"] = params.active;
+  if (params?.butler) qs["butler"] = params.butler;
+  if (params?.offset != null) qs["offset"] = params.offset;
+  if (params?.limit != null) qs["limit"] = params.limit;
   return qs;
 }
 
 export function getApprovalActions(
   params?: ApprovalActionParams,
-): Promise<ApprovalActionsResponse> {
-  const qs = approvalActionSearchParams(params).toString();
-  return apiFetch<ApprovalActionsResponse>(
-    qs ? `/approvals/actions?${qs}` : "/approvals/actions",
-  );
+) {
+  const qs = approvalActionSearchParams(params);
+  return apiFetch("/approvals/actions", { query: qs });
 }
 
 export function getApprovalRules(
   params?: ApprovalRuleParams,
-): Promise<PaginatedResponse<ApprovalRule>> {
-  const qs = approvalRuleSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<ApprovalRule>>(
-    qs ? `/approvals/rules?${qs}` : "/approvals/rules",
-  );
+) {
+  const qs = approvalRuleSearchParams(params);
+  return apiFetch("/approvals/rules", { query: qs });
 }
 
-export function getApprovalGatedTools(): Promise<ApiResponse<ApprovalGatedTool[]>> {
-  return apiFetch<ApiResponse<ApprovalGatedTool[]>>("/approvals/gated-tools");
+export function getApprovalGatedTools() {
+  return apiFetch("/approvals/gated-tools");
 }
 
 export async function createApprovalRule(
   request: ApprovalRuleCreateRequest,
-): Promise<ApiResponse<ApprovalRule>> {
+) {
   const proof = await standingRuleHeaders("create", request);
-  return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules", {
-    method: "POST",
+  return apiFetch("/approvals/rules", { method: "POST",
     headers: { "Content-Type": "application/json", ...proof },
-    body: JSON.stringify(request),
-  });
+    body: request });
 }
 
 export function getApprovalRuleSuggestions(
   actionId: string,
-): Promise<ApiResponse<RuleConstraintSuggestion>> {
-  return apiFetch<ApiResponse<RuleConstraintSuggestion>>(
-    `/approvals/rules/suggestions/${encodeURIComponent(actionId)}`,
-  );
+) {
+  return apiFetch("/approvals/rules/suggestions/{action_id}", { path: { action_id: actionId } });
 }
 
 export async function createApprovalRuleFromAction(
   request: ApprovalRuleFromActionRequest,
-): Promise<ApiResponse<ApprovalRule>> {
+) {
   const proof = await standingRuleHeaders("from_action", request);
-  return apiFetch<ApiResponse<ApprovalRule>>("/approvals/rules/from-action", {
-    method: "POST",
+  return apiFetch("/approvals/rules/from-action", { method: "POST",
     headers: { "Content-Type": "application/json", ...proof },
-    body: JSON.stringify(request),
-  });
+    body: request });
 }
 
-export function revokeApprovalRule(ruleId: string): Promise<ApiResponse<ApprovalRule>> {
-  return apiFetch<ApiResponse<ApprovalRule>>(
-    `/approvals/rules/${encodeURIComponent(ruleId)}/revoke`,
-    { method: "POST" },
-  );
+export function revokeApprovalRule(ruleId: string) {
+  return apiFetch("/approvals/rules/{rule_id}/revoke", { method: "POST", path: { rule_id: ruleId } });
 }
 
-export function getApprovalMetrics(): Promise<ApprovalMetricsResponse> {
-  return apiFetch<ApprovalMetricsResponse>("/approvals/metrics");
+export function getApprovalMetrics() {
+  return apiFetch("/approvals/metrics");
 }
 
 // ---------------------------------------------------------------------------
@@ -3539,110 +2670,79 @@ export function getApprovalMetrics(): Promise<ApprovalMetricsResponse> {
 export function getApprovalsFlat(
   state?: "waiting" | "decided" | "stalled" | "all",
   limit?: number,
-): Promise<ApprovalsFlatListResponse> {
-  const qs = new URLSearchParams();
-  if (state) qs.set("state", state);
-  if (limit != null) qs.set("limit", String(limit));
-  const s = qs.toString();
-  return apiFetch<ApprovalsFlatListResponse>(s ? `/approvals?${s}` : "/approvals");
+) {
+  const qs: ApiQuery<"/approvals", "GET"> = {};
+  if (state) qs["state"] = state;
+  if (limit != null) qs["limit"] = limit;
+  return apiFetch("/approvals", { query: qs });
 }
 
-export function getUnroutableAttention(): Promise<ApiResponse<UnroutableAttentionItem[]>> {
-  return apiFetch<ApiResponse<UnroutableAttentionItem[]>>("/approvals/unroutable");
+export function getUnroutableAttention() {
+  return apiFetch("/approvals/unroutable");
 }
 
 export function retryUnroutableAttention(
   deadLetterId: string,
-): Promise<ApiResponse<UnroutableRetryResult>> {
-  return apiFetch<ApiResponse<UnroutableRetryResult>>(
-    `/approvals/unroutable/${encodeURIComponent(deadLetterId)}/retry`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/approvals/unroutable/{dead_letter_id}/retry", { method: "POST", path: { dead_letter_id: deadLetterId } });
 }
 
-export function getApprovalDetail(actionId: string, reviewSource?: string): Promise<ApiResponse<ApprovalDetail>> {
-  return apiFetch<ApiResponse<ApprovalDetail>>(
-    `/approvals/${encodeURIComponent(actionId)}${reviewSource !== undefined ? `?review_source=${encodeURIComponent(reviewSource)}` : ""}`,
-  );
+export function getApprovalDetail(actionId: string, reviewSource?: string) {
+  return apiFetch("/approvals/{action_id}", { path: { action_id: actionId }, query: { review_source: reviewSource } });
 }
 
 export function approveApproval(
   actionId: string,
   request: ApprovalApproveRequest,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/${encodeURIComponent(actionId)}/approve`,
-    {
-      method: "POST",
+) {
+  return apiFetch("/approvals/{action_id}/approve", { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request ?? {}),
-    },
-  );
+      body: request ?? {}, path: { action_id: actionId } });
 }
 
 export function retryApproval(
   actionId: string,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/${encodeURIComponent(actionId)}/retry`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/approvals/{action_id}/retry", { method: "POST", path: { action_id: actionId } });
 }
 
 export function abandonApproval(
   actionId: string,
   request: ApprovalAbandonRequest,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/${encodeURIComponent(actionId)}/abandon`,
-    {
-      method: "POST",
+) {
+  return apiFetch("/approvals/{action_id}/abandon", { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-  );
+      body: request, path: { action_id: actionId } });
 }
 
 export function denyApproval(
   actionId: string,
   request?: ApprovalDenyRequest,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/${encodeURIComponent(actionId)}/deny`,
-    {
-      method: "POST",
+) {
+  return apiFetch("/approvals/{action_id}/deny", { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request ?? {}),
-    },
-  );
+      body: request ?? {}, path: { action_id: actionId } });
 }
 
 export function deferApproval(
   actionId: string,
   request: ApprovalDeferRequest,
-): Promise<ApiResponse<ApprovalAction>> {
-  return apiFetch<ApiResponse<ApprovalAction>>(
-    `/approvals/${encodeURIComponent(actionId)}/defer`,
-    {
-      method: "POST",
+) {
+  return apiFetch("/approvals/{action_id}/defer", { method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-  );
+      body: request, path: { action_id: actionId } });
 }
 
-export function getApprovalsPolicy(): Promise<ApiResponse<ApprovalsPolicy>> {
-  return apiFetch<ApiResponse<ApprovalsPolicy>>("/approvals/policy");
+export function getApprovalsPolicy() {
+  return apiFetch("/approvals/policy");
 }
 
 export function updateApprovalsPolicy(
   policy: ApprovalsPolicy,
-): Promise<ApiResponse<ApprovalsPolicy>> {
-  return apiFetch<ApiResponse<ApprovalsPolicy>>("/approvals/policy", {
-    method: "PUT",
+) {
+  return apiFetch("/approvals/policy", { method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(policy),
-  });
+    body: policy });
 }
 
 /**
@@ -3656,124 +2756,94 @@ export function updateApprovalsPolicy(
 export function getApprovalsHistory(
   since?: string,
   limit?: number,
-): Promise<ApprovalsListResponse> {
-  const qs = new URLSearchParams();
-  if (since) qs.set("since", since);
-  if (limit != null) qs.set("limit", String(limit));
-  const s = qs.toString();
-  return apiFetch<ApprovalsListResponse>(s ? `/approvals/history?${s}` : "/approvals/history");
+) {
+  const qs: ApiQuery<"/approvals/history", "GET"> = {};
+  if (since) qs["since"] = since;
+  if (limit != null) qs["limit"] = limit;
+  return apiFetch("/approvals/history", { query: qs });
 }
 
-function autonomySuggestionSearchParams(params?: AutonomySuggestionParams): URLSearchParams {
-  const qs = new URLSearchParams();
-  if (params?.status) qs.set("status", params.status);
-  if (params?.suggestion_type) qs.set("suggestion_type", params.suggestion_type);
-  if (params?.limit !== undefined) qs.set("limit", String(params.limit));
-  if (params?.offset !== undefined) qs.set("offset", String(params.offset));
+function autonomySuggestionSearchParams(params?: AutonomySuggestionParams): ApiQuery<"/approvals/suggestions", "GET"> {
+  const qs: ApiQuery<"/approvals/suggestions", "GET"> = {};
+  if (params?.status) qs["status"] = params.status;
+  if (params?.suggestion_type) qs["suggestion_type"] = params.suggestion_type;
+  if (params?.limit !== undefined) qs["limit"] = params.limit;
+  if (params?.offset !== undefined) qs["offset"] = params.offset;
   return qs;
 }
 
 export function getAutonomySuggestions(
   params?: AutonomySuggestionParams,
-): Promise<PaginatedResponse<AutonomySuggestion>> {
-  const qs = autonomySuggestionSearchParams(params).toString();
-  return apiFetch<PaginatedResponse<AutonomySuggestion>>(
-    qs ? `/approvals/suggestions?${qs}` : "/approvals/suggestions",
-  );
+) {
+  const qs = autonomySuggestionSearchParams(params);
+  return apiFetch("/approvals/suggestions", { query: qs });
 }
 
 export async function confirmAutonomySuggestion(
   suggestionId: string,
-): Promise<ApiResponse<AutonomySuggestion>> {
+) {
   const proof = await standingRuleHeaders("promotion", { suggestion_id: suggestionId });
-  return apiFetch<ApiResponse<AutonomySuggestion>>(
-    `/approvals/suggestions/${encodeURIComponent(suggestionId)}/confirm`,
-    { method: "POST", headers: proof },
-  );
+  return apiFetch("/approvals/suggestions/{suggestion_id}/confirm", { method: "POST", headers: proof, path: { suggestion_id: suggestionId } });
 }
 
 export function dismissAutonomySuggestion(
   suggestionId: string,
   request?: AutonomySuggestionDismissRequest,
-): Promise<ApiResponse<AutonomySuggestion>> {
-  return apiFetch<ApiResponse<AutonomySuggestion>>(
-    `/approvals/suggestions/${encodeURIComponent(suggestionId)}/dismiss`,
-    {
-      method: "POST",
-      body: JSON.stringify(request ?? {}),
-    },
-  );
+) {
+  return apiFetch("/approvals/suggestions/{suggestion_id}/dismiss", { method: "POST",
+      body: request ?? {}, path: { suggestion_id: suggestionId } });
 }
 
 // ---------------------------------------------------------------------------
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
 // ---------------------------------------------------------------------------
 
-export function getRulePromotionSuggestions(): Promise<RulePromotionSurfaceResponse> {
-  return apiFetch<RulePromotionSurfaceResponse>("/switchboard/rule-promotion-suggestions");
+export function getRulePromotionSuggestions() {
+  return apiFetch("/switchboard/rule-promotion-suggestions");
 }
 
 /** Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6). */
-export function getRulePromotionStats(): Promise<RulePromotionStatsResponse> {
-  return apiFetch<RulePromotionStatsResponse>("/switchboard/rule-promotion-stats");
+export function getRulePromotionStats() {
+  return apiFetch("/switchboard/rule-promotion-stats");
 }
 
 export function confirmRulePromotionSuggestion(
   suggestionId: string,
-): Promise<ApiResponse<IngestionRule>> {
-  return apiFetch<ApiResponse<IngestionRule>>(
-    `/switchboard/rule-promotion-suggestions/${encodeURIComponent(suggestionId)}/confirm`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/switchboard/rule-promotion-suggestions/{suggestion_id}/confirm", { method: "POST", path: { suggestion_id: suggestionId } });
 }
 
 export function dismissRulePromotionSuggestion(
   suggestionId: string,
   request?: RulePromotionDismissRequest,
-): Promise<ApiResponse<{ id: string; status: string }>> {
-  return apiFetch<ApiResponse<{ id: string; status: string }>>(
-    `/switchboard/rule-promotion-suggestions/${encodeURIComponent(suggestionId)}/dismiss`,
-    { method: "POST", body: JSON.stringify(request ?? {}) },
-  );
+) {
+  return apiFetch("/switchboard/rule-promotion-suggestions/{suggestion_id}/dismiss", { method: "POST", body: request ?? {}, path: { suggestion_id: suggestionId } });
 }
 
 export function setRulePromotionRuleEnabled(
   suggestionId: string,
   enabled: boolean,
-): Promise<ApiResponse<{ rule_id: string; enabled: boolean }>> {
-  return apiFetch<ApiResponse<{ rule_id: string; enabled: boolean }>>(
-    `/switchboard/rule-promotion-suggestions/${encodeURIComponent(suggestionId)}/rule-enabled`,
-    { method: "POST", body: JSON.stringify({ enabled }) },
-  );
+) {
+  return apiFetch("/switchboard/rule-promotion-suggestions/{suggestion_id}/rule-enabled", { method: "POST", body: { enabled }, path: { suggestion_id: suggestionId } });
 }
 
 // ---------------------------------------------------------------------------
 // OAuth / Secrets management API functions
 // ---------------------------------------------------------------------------
 
-import type {
-  DisconnectAccountResponse,
-  GoogleAccount,
-  GoogleAccountStatus,
-  GoogleCredentialStatusResponse,
-  SetPrimaryAccountResponse,
-  UpsertAppCredentialsRequest,
-  UpsertAppCredentialsResponse,
-} from "./types.ts";
+import type { UpsertAppCredentialsRequest } from "./types.ts";
 
 /** Fetch the masked credential status (presence only, no secret values). */
-export function getGoogleCredentialStatus(): Promise<GoogleCredentialStatusResponse> {
-  return apiFetch<GoogleCredentialStatusResponse>("/oauth/google/credentials");
+export function getGoogleCredentialStatus() {
+  return apiFetch("/oauth/google/credentials");
 }
 
 /** Store Google app credentials (client_id + client_secret). */
 export function upsertGoogleCredentials(
   request: UpsertAppCredentialsRequest,
-): Promise<UpsertAppCredentialsResponse> {
-  return apiFetch<UpsertAppCredentialsResponse>("/oauth/google/credentials", {
-    method: "PUT",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/oauth/google/credentials", { method: "PUT",
+    body: request });
 }
 
 /** Build the URL to start an OAuth flow for a new or existing Google account.
@@ -3850,41 +2920,34 @@ export function getProviderOAuthStartUrl(
 }
 
 /** Fetch all connected Google accounts. */
-export function getGoogleAccounts(): Promise<GoogleAccount[]> {
-  return apiFetch<GoogleAccount[]>("/oauth/google/accounts");
+export function getGoogleAccounts() {
+  return apiFetch("/oauth/google/accounts");
 }
 
 /** Set a Google account as the primary account. */
-export function setPrimaryAccount(accountId: string): Promise<SetPrimaryAccountResponse> {
-  return apiFetch<SetPrimaryAccountResponse>(`/oauth/google/accounts/${accountId}/primary`, {
-    method: "PUT",
-  });
+export function setPrimaryAccount(accountId: string) {
+  return apiFetch("/oauth/google/accounts/{account_id}/primary", { method: "PUT", path: { account_id: accountId } });
 }
 
 /** Disconnect (or hard-delete) a Google account. */
 export function disconnectAccount(
   accountId: string,
   hardDelete?: boolean,
-): Promise<DisconnectAccountResponse> {
-  const url = hardDelete
-    ? `/oauth/google/accounts/${accountId}?hard_delete=true`
-    : `/oauth/google/accounts/${accountId}`;
-  return apiFetch<DisconnectAccountResponse>(url, { method: "DELETE" });
+) {
+
+  return apiFetch("/oauth/google/accounts/{account_id}", { method: "DELETE", path: { account_id: accountId }, query: { hard_delete: hardDelete ? true : undefined } });
 }
 
 /** Fetch per-account credential status. */
-export function getAccountStatus(accountId: string): Promise<GoogleAccountStatus> {
-  return apiFetch<GoogleAccountStatus>(`/oauth/google/accounts/${accountId}/status`);
+export function getAccountStatus(accountId: string) {
+  return apiFetch("/oauth/google/accounts/{account_id}/status", { path: { account_id: accountId } });
 }
 
 // ---------------------------------------------------------------------------
 // Google Health connector API functions
 // ---------------------------------------------------------------------------
 
-import type {
-  GoogleHealthDisconnectResponse,
-  GoogleHealthStatusResponse,
-} from "./types.ts";
+
 
 /**
  * Google may report the broader non-`.readonly` variant of a googlehealth
@@ -3918,8 +2981,8 @@ export function grantedGoogleHealthFamilies(scopes: readonly string[]): Set<stri
 }
 
 /** Fetch the Google Health connector status (state, scopes, counts, flags). */
-export function getGoogleHealthStatus(): Promise<GoogleHealthStatusResponse> {
-  return apiFetch<GoogleHealthStatusResponse>("/connectors/google-health/status");
+export function getGoogleHealthStatus() {
+  return apiFetch("/connectors/google-health/status");
 }
 
 /**
@@ -3930,68 +2993,50 @@ export function getGoogleHealthStatus(): Promise<GoogleHealthStatusResponse> {
  */
 export function disconnectGoogleHealth(opts?: {
   accountEmail?: string;
-}): Promise<GoogleHealthDisconnectResponse> {
-  const params = new URLSearchParams();
-  if (opts?.accountEmail != null) params.set("account_email", opts.accountEmail);
-  const qs = params.toString();
-  return apiFetch<GoogleHealthDisconnectResponse>(
-    `/connectors/google-health/disconnect${qs ? `?${qs}` : ""}`,
-    { method: "DELETE" },
-  );
+}) {
+  const params: ApiQuery<"/connectors/google-health/disconnect", "DELETE"> = {};
+  if (opts?.accountEmail != null) params["account_email"] = opts.accountEmail;
+  return apiFetch("/connectors/google-health/disconnect", { method: "DELETE", query: params });
 }
 
 // ---------------------------------------------------------------------------
 // CLI auth (device-code flow) API functions
 // ---------------------------------------------------------------------------
 
-import type {
-  CLIAuthApiKeyResponse,
-  CLIAuthProvider,
-  CLIAuthSessionResponse,
-  CLIAuthStartResponse,
-  CLIAuthTestResponse,
-} from "./types.ts";
+
 
 /** List available CLI auth providers and their current auth status. */
-export function listCLIAuthProviders(): Promise<CLIAuthProvider[]> {
-  return apiFetch<CLIAuthProvider[]>("/cli-auth/providers");
+export function listCLIAuthProviders() {
+  return apiFetch("/cli-auth/providers");
 }
 
 /** Start a device-code auth flow for a CLI provider. */
-export function startCLIAuth(provider: string): Promise<CLIAuthStartResponse> {
-  return apiFetch<CLIAuthStartResponse>(`/cli-auth/${provider}/start`, {
-    method: "POST",
-  });
+export function startCLIAuth(provider: string) {
+  return apiFetch("/cli-auth/{provider}/start", { method: "POST", path: { provider: provider } });
 }
 
 /** Poll the status of an in-flight CLI auth session. */
-export function getCLIAuthSession(sessionId: string): Promise<CLIAuthSessionResponse> {
-  return apiFetch<CLIAuthSessionResponse>(`/cli-auth/sessions/${sessionId}`);
+export function getCLIAuthSession(sessionId: string) {
+  return apiFetch("/cli-auth/sessions/{session_id}", { path: { session_id: sessionId } });
 }
 
 /** Cancel a running CLI auth session. */
-export function cancelCLIAuthSession(sessionId: string): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>(`/cli-auth/sessions/${sessionId}`, {
-    method: "DELETE",
-  });
+export function cancelCLIAuthSession(sessionId: string) {
+  return apiFetch("/cli-auth/sessions/{session_id}", { method: "DELETE", path: { session_id: sessionId } });
 }
 
 /** Save an API key for an api_key-mode CLI auth provider. */
 export function saveCLIAuthApiKey(
   provider: string,
   apiKey: string,
-): Promise<CLIAuthApiKeyResponse> {
-  return apiFetch<CLIAuthApiKeyResponse>(`/cli-auth/${provider}/api-key`, {
-    method: "PUT",
-    body: JSON.stringify({ api_key: apiKey }),
-  });
+) {
+  return apiFetch("/cli-auth/{provider}/api-key", { method: "PUT",
+    body: { api_key: apiKey }, path: { provider: provider } });
 }
 
 /** Delete a stored API key for an api_key-mode CLI auth provider. */
-export function deleteCLIAuthApiKey(provider: string): Promise<{ status: string }> {
-  return apiFetch<{ status: string }>(`/cli-auth/${provider}/api-key`, {
-    method: "DELETE",
-  });
+export function deleteCLIAuthApiKey(provider: string) {
+  return apiFetch("/cli-auth/{provider}/api-key", { method: "DELETE", path: { provider: provider } });
 }
 
 /** Test a stored API key by running the provider's test command.
@@ -4000,11 +3045,9 @@ export function deleteCLIAuthApiKey(provider: string): Promise<{ status: string 
  * api_key providers, a live auth probe for device_code providers) with a 30s
  * budget — the default 15s apiFetch timeout would abort legitimate runs.
  */
-export function testCLIAuthApiKey(provider: string): Promise<CLIAuthTestResponse> {
-  return apiFetch<CLIAuthTestResponse>(`/cli-auth/${provider}/test`, {
-    method: "POST",
-    timeoutMs: 45_000,
-  });
+export function testCLIAuthApiKey(provider: string) {
+  return apiFetch("/cli-auth/{provider}/test", { method: "POST",
+    timeoutMs: 45_000, path: { provider: provider } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4016,59 +3059,37 @@ export function testCLIAuthApiKey(provider: string): Promise<CLIAuthTestResponse
 // Backfill job API
 // ---------------------------------------------------------------------------
 
-import type {
-  ConnectorProfile,
-} from "./types.ts";
+
 
 /** Fetch available connector profiles (independent of connector_registry).
  *
  * Returns the catalog of connector types the framework can deploy.
  * Safe to cache for at least 60s (per spec §3.5).
  */
-export function listAvailableConnectors(): Promise<{ data: ConnectorProfile[] }> {
-  return apiFetch<{ data: ConnectorProfile[] }>("/ingestion/connectors/available");
+export function listAvailableConnectors() {
+  return apiFetch("/ingestion/connectors/available");
 }
 
 // ---------------------------------------------------------------------------
 // Education
 // ---------------------------------------------------------------------------
 
-import type {
-  AnalyticsSnapshot,
-  AnalyticsTrendResponse,
-  CrossTopicAnalytics,
-  CurriculumRequestBody,
-  CurriculumRequestResponse,
-  CurriculumRequestStatusResponse,
-  EducationSourceMaterial,
-  MasterySummary,
-  MindMap,
-  MindMapListParams,
-  MindMapNode,
-  PendingReviewNode,
-  QuizResponse,
-  QuizResponseParams,
-} from "./types.ts";
+import type { CurriculumRequestBody, MindMapListParams, QuizResponseParams } from "./types.ts";
 
 /** List mind maps with optional status filter and pagination. */
 export function getEducationMindMaps(
   params?: MindMapListParams,
-): Promise<PaginatedResponse<MindMap>> {
-  const sp = new URLSearchParams();
-  if (params?.status) sp.set("status", params.status);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<MindMap>>(
-    qs ? `/education/mind-maps?${qs}` : "/education/mind-maps",
-  );
+) {
+  const sp: ApiQuery<"/education/mind-maps", "GET"> = {};
+  if (params?.status) sp["status"] = params.status;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/education/mind-maps", { query: sp });
 }
 
 /** Get a single mind map with full node and edge DAG. */
-export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
-  return apiFetch<MindMap>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}`,
-  );
+export function getEducationMindMap(mindMapId: string) {
+  return apiFetch("/education/mind-maps/{mind_map_id}", { path: { mind_map_id: mindMapId } });
 }
 
 /**
@@ -4082,33 +3103,28 @@ export function getEducationMindMap(mindMapId: string): Promise<MindMap> {
  */
 export function getEducationSources(
   sourceIds: string[],
-): Promise<EducationSourceMaterial[]> {
+) {
   if (sourceIds.length === 0) return Promise.resolve([]);
-  const sp = new URLSearchParams();
-  sp.set("source_ids", sourceIds.join(","));
-  return apiFetch<EducationSourceMaterial[]>(`/education/sources?${sp.toString()}`);
+  const sp: ApiQuery<"/education/sources", "GET"> = { "source_ids": sourceIds.join(",") };
+
+  return apiFetch("/education/sources", { query: sp });
 }
 
 /** Get frontier nodes for a mind map. */
 export function getEducationMindMapFrontier(
   mindMapId: string,
-): Promise<MindMapNode[]> {
-  return apiFetch<MindMapNode[]>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/frontier`,
-  );
+) {
+  return apiFetch("/education/mind-maps/{mind_map_id}/frontier", { path: { mind_map_id: mindMapId } });
 }
 
 /** Get analytics snapshot (with optional trend) for a mind map. */
 export function getEducationMindMapAnalytics(
   mindMapId: string,
   trendDays?: number,
-): Promise<AnalyticsSnapshot> {
-  const sp = new URLSearchParams();
-  if (trendDays != null) sp.set("trend_days", String(trendDays));
-  const qs = sp.toString();
-  return apiFetch<AnalyticsSnapshot>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/analytics${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const sp: ApiQuery<"/education/mind-maps/{mind_map_id}/analytics", "GET"> = {};
+  if (trendDays != null) sp["trend_days"] = trendDays;
+  return apiFetch("/education/mind-maps/{mind_map_id}/analytics", { path: { mind_map_id: mindMapId }, query: sp });
 }
 
 /** Get nodes pending (and optionally upcoming) spaced-repetition review.
@@ -4120,52 +3136,41 @@ export function getEducationMindMapAnalytics(
 export function getEducationPendingReviews(
   mindMapId: string,
   horizonDays?: number,
-): Promise<PendingReviewNode[]> {
-  const url =
-    horizonDays !== undefined
-      ? `/education/mind-maps/${encodeURIComponent(mindMapId)}/pending-reviews?horizon_days=${horizonDays}`
-      : `/education/mind-maps/${encodeURIComponent(mindMapId)}/pending-reviews`;
-  return apiFetch<PendingReviewNode[]>(url);
+) {
+
+  return apiFetch("/education/mind-maps/{mind_map_id}/pending-reviews", { path: { mind_map_id: mindMapId }, query: { horizon_days: horizonDays } });
 }
 
 /** Get aggregate mastery summary for a mind map. */
 export function getEducationMasterySummary(
   mindMapId: string,
-): Promise<MasterySummary> {
-  return apiFetch<MasterySummary>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/mastery-summary`,
-  );
+) {
+  return apiFetch("/education/mind-maps/{mind_map_id}/mastery-summary", { path: { mind_map_id: mindMapId } });
 }
 
 /** List quiz responses with optional filters. */
 export function getEducationQuizResponses(
   params?: QuizResponseParams,
-): Promise<PaginatedResponse<QuizResponse>> {
-  const sp = new URLSearchParams();
-  if (params?.mind_map_id) sp.set("mind_map_id", params.mind_map_id);
-  if (params?.node_id) sp.set("node_id", params.node_id);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<QuizResponse>>(
-    qs ? `/education/quiz-responses?${qs}` : "/education/quiz-responses",
-  );
+) {
+  const sp: ApiQuery<"/education/quiz-responses", "GET"> = {};
+  if (params?.mind_map_id) sp["mind_map_id"] = params.mind_map_id;
+  if (params?.node_id) sp["node_id"] = params.node_id;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/education/quiz-responses", { query: sp });
 }
 
 /** Get cross-topic comparative analytics. */
-export function getEducationCrossTopicAnalytics(): Promise<CrossTopicAnalytics> {
-  return apiFetch<CrossTopicAnalytics>("/education/analytics/cross-topic");
+export function getEducationCrossTopicAnalytics() {
+  return apiFetch("/education/analytics/cross-topic");
 }
 
 /** Update a mind map's status. */
 export function updateEducationMindMapStatus(
   mindMapId: string,
   status: string,
-): Promise<MindMap> {
-  return apiFetch<MindMap>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/status`,
-    { method: "PUT", body: JSON.stringify({ status }) },
-  );
+) {
+  return apiFetch("/education/mind-maps/{mind_map_id}/status", { method: "PUT", body: { status }, path: { mind_map_id: mindMapId } });
 }
 
 /** Submit a curriculum request for the butler to process.
@@ -4175,27 +3180,21 @@ export function updateEducationMindMapStatus(
  */
 export function requestEducationCurriculum(
   body: CurriculumRequestBody,
-): Promise<CurriculumRequestResponse> {
-  return apiFetch<CurriculumRequestResponse>("/education/curriculum-requests", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/education/curriculum-requests", { method: "POST",
+    body: body });
 }
 
 /** Read one curriculum request receipt by its immutable request ID. */
 export function getEducationCurriculumRequest(
   requestId: string,
-): Promise<CurriculumRequestStatusResponse> {
-  return apiFetch<CurriculumRequestStatusResponse>(
-    `/education/curriculum-requests/${encodeURIComponent(requestId)}`,
-  );
+) {
+  return apiFetch("/education/curriculum-requests/{request_id}", { path: { request_id: requestId } });
 }
 
 /** Read the most recent curriculum request receipt, if any. */
-export function getEducationLatestCurriculumRequest(): Promise<CurriculumRequestStatusResponse> {
-  return apiFetch<CurriculumRequestStatusResponse>(
-    "/education/curriculum-requests/latest",
-  );
+export function getEducationLatestCurriculumRequest() {
+  return apiFetch("/education/curriculum-requests/latest");
 }
 
 /** Get analytics trend time-series for a mind map (dedicated /analytics/trend endpoint).
@@ -4206,10 +3205,8 @@ export function getEducationLatestCurriculumRequest(): Promise<CurriculumRequest
 export function getEducationMindMapAnalyticsTrend(
   mindMapId: string,
   days: number = 7,
-): Promise<AnalyticsTrendResponse> {
-  return apiFetch<AnalyticsTrendResponse>(
-    `/education/mind-maps/${encodeURIComponent(mindMapId)}/analytics/trend?days=${days}`,
-  );
+) {
+  return apiFetch("/education/mind-maps/{mind_map_id}/analytics/trend", { path: { mind_map_id: mindMapId }, query: { days } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4266,53 +3263,12 @@ export type {
 // ---------------------------------------------------------------------------
 
 /** Flat connector detail payload returned by the canonical detail routes. */
-export interface _ConnectorDetailPayload {
-  connector_type: string;
-  endpoint_identity: string;
-  instance_id: string | null;
-  version: string | null;
-  state: string;
-  error_message: string | null;
-  uptime_s: number | null;
-  last_heartbeat_at: string | null;
-  first_seen_at: string;
-  registered_via: string;
-  counter_messages_ingested: number;
-  counter_messages_failed: number;
-  counter_source_api_calls: number;
-  counter_checkpoint_saves: number;
-  counter_dedupe_accepted: number;
-  today_messages_ingested: number;
-  today_messages_failed: number;
-  checkpoint_cursor: string | null;
-  checkpoint_updated_at: string | null;
-  settings: Record<string, unknown> | null;
-  /** OAuth scope surface — connector-oauth-scope-surface capability. */
-  auth?: ConnectorAuthBlock | null;
-  /** OAuth scopes — connector-oauth-scope-surface capability. */
-  scopes?: ConnectorScopeEntry[] | null;
-  /** Present only on endpoints that compute hourly timeseries (e.g. /api/ingestion/connectors/summaries). */
-  hourly_events?: number[];
-}
+export type _ConnectorDetailPayload = import("./schema.gen").components["schemas"]["ConnectorDetailEntry"] &
+  Pick<Partial<import("./schema.gen").components["schemas"]["ConnectorSummary"]>, "hourly_events">;
 
-/** Raw timeseries row returned by the canonical connector stats route. */
-export interface _BackendStatsRow {
-  connector_type: string;
-  endpoint_identity: string;
-  /** ISO string for hourly rollup (period=24h). */
-  hour?: string;
-  /** ISO date string for daily rollup (period=7d|30d). */
-  day?: string;
-  messages_ingested: number;
-  messages_failed: number;
-  /** Skip-routed volume for this bucket (bu-c48im), from connectors.filtered_events. */
-  messages_filtered: number;
-  heartbeat_count: number;
-  healthy_count: number;
-  degraded_count: number;
-  error_count: number;
-  uptime_pct?: number | null;
-}
+/** Actual generated hourly/daily payloads, projected by the existing view adapter. */
+export type _BackendStatsRow = import("./schema.gen").components["schemas"]["ConnectorStatsHourly"] |
+  import("./schema.gen").components["schemas"]["ConnectorStatsDaily"];
 
 /**
  * Derive liveness string from last heartbeat timestamp.
@@ -4397,7 +3353,7 @@ function _toConnectorStats(
   hourlyEventsAvailable: boolean,
 ): ConnectorStats {
   const timeseries: ConnectorStatsBucket[] = rows.map((r) => ({
-    bucket: (r.hour ?? r.day ?? ""),
+    bucket: ("hour" in r ? r.hour : r.day),
     messages_ingested: r.messages_ingested,
     messages_failed: r.messages_failed,
     // ?? 0 guards older cached backend rows that predate the filtered series.
@@ -4441,10 +3397,8 @@ function _toConnectorStats(
 export async function getConnectorDetail(
   connectorType: string,
   endpointIdentity: string,
-): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}`,
-  );
+) {
+  const resp = await apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}", { path: { connector_type: connectorType, endpoint_identity: endpointIdentity } });
   return {
     ...resp,
     data: _toConnectorDetail(resp.data),
@@ -4456,10 +3410,8 @@ export async function getConnectorStats(
   connectorType: string,
   endpointIdentity: string,
   period: IngestionPeriod = "24h",
-): Promise<ApiResponse<ConnectorStats>> {
-  const resp = await apiFetch<ApiResponse<_BackendStatsRow[]>>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/stats?period=${period}`,
-  );
+) {
+  const resp = await apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/stats", { path: { connector_type: connectorType, endpoint_identity: endpointIdentity }, query: { period } });
   // meta.hourly_events_available is false only on a genuine backend DB-query
   // failure (bu-c48im). Absent (older cached response) must NOT read as false.
   const hourlyEventsAvailable = resp.meta?.hourly_events_available !== false;
@@ -4480,12 +3432,8 @@ export async function getConnectorStats(
  * Returns the connector list. Every field is DB-sourced — no Prometheus
  * dependency, so no `aggregates_available` flag on this response.
  */
-export async function getConnectorSummaries(): Promise<
-  ApiResponse<ConnectorSummariesResponse>
-> {
-  const resp = await apiFetch<ApiResponse<ConnectorSummariesResponse>>(
-    `/ingestion/connectors/summaries`,
-  );
+export async function getConnectorSummaries() {
+  const resp = await apiFetch("/ingestion/connectors/summaries");
   return resp;
 }
 
@@ -4496,8 +3444,8 @@ export async function getConnectorSummaries(): Promise<
  */
 export async function getPipelineStats(
   window: "1h" | "24h" | "7d" = "24h",
-): Promise<PipelineStats> {
-  return apiFetch<PipelineStats>(`/ingestion/pipeline?window=${window}`);
+) {
+  return apiFetch("/ingestion/pipeline", { query: { window } });
 }
 
 /**
@@ -4509,10 +3457,8 @@ export async function getPipelineStats(
  */
 export async function getConnectorFanout(
   period: IngestionPeriod = "7d",
-): Promise<ConnectorFanoutResponse> {
-  return apiFetch<ConnectorFanoutResponse>(
-    `/switchboard/ingestion/fanout?period=${period}`,
-  );
+) {
+  return apiFetch("/switchboard/ingestion/fanout", { query: { period } });
 }
 
 /**
@@ -4522,12 +3468,10 @@ export async function getConnectorFanout(
  */
 export async function bulkRetryEvents(
   eventIds: string[],
-): Promise<BulkRetryEventsResponse> {
-  return apiFetch<BulkRetryEventsResponse>(`/ingestion/events/retry/bulk`, {
-    method: "POST",
+) {
+  return apiFetch("/ingestion/events/retry/bulk", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ event_ids: eventIds }),
-  });
+    body: { event_ids: eventIds } });
 }
 
 /**
@@ -4539,10 +3483,8 @@ export async function getConnectorEvents(
   connectorType: string,
   endpointIdentity: string,
   limit = 20,
-): Promise<ConnectorEventsResponse> {
-  return apiFetch<ConnectorEventsResponse>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/events?limit=${limit}`,
-  );
+) {
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/events", { path: { connector_type: connectorType, endpoint_identity: endpointIdentity }, query: { limit } });
 }
 
 /**
@@ -4554,10 +3496,8 @@ export async function getConnectorIncidents(
   connectorType: string,
   endpointIdentity: string,
   limit = 10,
-): Promise<ConnectorIncidentsResponse> {
-  return apiFetch<ConnectorIncidentsResponse>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/incidents?limit=${limit}`,
-  );
+) {
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/incidents", { path: { connector_type: connectorType, endpoint_identity: endpointIdentity }, query: { limit } });
 }
 
 /**
@@ -4568,10 +3508,8 @@ export async function getConnectorIncidents(
 export async function getConnectorRoutingRules(
   connectorType: string,
   endpointIdentity: string,
-): Promise<ConnectorRoutingRulesResponse> {
-  return apiFetch<ConnectorRoutingRulesResponse>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/routing-rules`,
-  );
+) {
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/routing-rules", { path: { connector_type: connectorType, endpoint_identity: endpointIdentity } });
 }
 
 /** Update connector settings (shallow merge). */
@@ -4579,15 +3517,10 @@ export async function updateConnectorSettings(
   connectorType: string,
   endpointIdentity: string,
   settings: Record<string, unknown>,
-): Promise<ApiResponse<ConnectorDetail>> {
-  const resp = await apiFetch<ApiResponse<_ConnectorDetailPayload>>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/settings`,
-    {
-      method: "PATCH",
+) {
+  const resp = await apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/settings", { method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ settings }),
-    },
-  );
+      body: { settings }, path: { connector_type: connectorType, endpoint_identity: endpointIdentity } });
   return {
     ...resp,
     data: _toConnectorDetail(resp.data),
@@ -4604,11 +3537,8 @@ export async function updateConnectorSettings(
 export async function archiveConnector(
   connectorType: string,
   endpointIdentity: string,
-): Promise<ApiResponse<ConnectorArchiveResult>> {
-  return apiFetch<ApiResponse<ConnectorArchiveResult>>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/archive`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/archive", { method: "POST", path: { connector_type: connectorType, endpoint_identity: endpointIdentity } });
 }
 
 /**
@@ -4623,11 +3553,8 @@ export async function archiveConnector(
 export async function unarchiveConnector(
   connectorType: string,
   endpointIdentity: string,
-): Promise<ApiResponse<ConnectorArchiveResult>> {
-  return apiFetch<ApiResponse<ConnectorArchiveResult>>(
-    `/ingestion/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(endpointIdentity)}/unarchive`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/ingestion/connectors/{connector_type}/{endpoint_identity}/unarchive", { method: "POST", path: { connector_type: connectorType, endpoint_identity: endpointIdentity } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4637,61 +3564,42 @@ export async function unarchiveConnector(
 /** List active ingestion rules with optional filters. */
 export function getIngestionRules(
   params?: IngestionRuleListParams,
-): Promise<ApiResponse<IngestionRule[]>> {
-  const qs = params
-    ? Object.entries(params)
-        .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
-        .join("&")
-    : "";
-  return apiFetch<ApiResponse<IngestionRule[]>>(
-    qs ? `/switchboard/ingestion-rules?${qs}` : "/switchboard/ingestion-rules",
-  );
+) {
+
+  return apiFetch("/switchboard/ingestion-rules", { query: params });
 }
 
 /** Create a new ingestion rule. */
 export function createIngestionRule(
   body: IngestionRuleCreate,
-): Promise<ApiResponse<IngestionRule>> {
-  return apiFetch<ApiResponse<IngestionRule>>("/switchboard/ingestion-rules", {
-    method: "POST",
+) {
+  return apiFetch("/switchboard/ingestion-rules", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body });
 }
 
 /** Partially update an ingestion rule. */
 export function updateIngestionRule(
   ruleId: string,
   body: IngestionRuleUpdate,
-): Promise<ApiResponse<IngestionRule>> {
-  return apiFetch<ApiResponse<IngestionRule>>(
-    `/switchboard/ingestion-rules/${encodeURIComponent(ruleId)}`,
-    {
-      method: "PATCH",
+) {
+  return apiFetch("/switchboard/ingestion-rules/{rule_id}", { method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
+      body: body, path: { rule_id: ruleId } });
 }
 
 /** Soft-delete an ingestion rule. */
-export function deleteIngestionRule(ruleId: string): Promise<void> {
-  return apiFetch<void>(
-    `/switchboard/ingestion-rules/${encodeURIComponent(ruleId)}`,
-    { method: "DELETE" },
-  );
+export function deleteIngestionRule(ruleId: string) {
+  return apiFetch("/switchboard/ingestion-rules/{rule_id}", { method: "DELETE", path: { rule_id: ruleId } });
 }
 
 /** Dry-run: evaluate a test envelope against active ingestion rules. */
 export function testIngestionRule(
   body: IngestionRuleTestRequest,
-): Promise<IngestionRuleTestResponse> {
-  return apiFetch<IngestionRuleTestResponse>("/switchboard/ingestion-rules/test", {
-    method: "POST",
+) {
+  return apiFetch("/switchboard/ingestion-rules/test", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body });
 }
 
 // ---------------------------------------------------------------------------
@@ -4702,25 +3610,18 @@ export function testIngestionRule(
 // ---------------------------------------------------------------------------
 
 /** Fetch a channel's default policy. Throws ApiError with status 404 if unset. */
-export function getChannelDefault(channel: string): Promise<ChannelDefaultEntry> {
-  return apiFetch<ChannelDefaultEntry>(
-    `/ingestion/channel-defaults/${encodeURIComponent(channel)}`,
-  );
+export function getChannelDefault(channel: string) {
+  return apiFetch("/ingestion/channel-defaults/{channel}", { path: { channel: channel } });
 }
 
 /** Upsert a channel's default policy. */
 export function updateChannelDefault(
   channel: string,
   body: ChannelDefaultUpdate,
-): Promise<ChannelDefaultEntry> {
-  return apiFetch<ChannelDefaultEntry>(
-    `/ingestion/channel-defaults/${encodeURIComponent(channel)}`,
-    {
-      method: "PATCH",
+) {
+  return apiFetch("/ingestion/channel-defaults/{channel}", { method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
+      body: body, path: { channel: channel } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4732,33 +3633,25 @@ export function updateChannelDefault(
 /** List priority contacts (global — butler-agnostic). */
 export function getPriorityContacts(
   params?: PriorityContactListParams,
-): Promise<PaginatedResponse<PriorityContactEntry>> {
-  const sp = new URLSearchParams();
-  if (params?.offset !== undefined) sp.set("offset", String(params.offset));
-  if (params?.limit !== undefined) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<PriorityContactEntry>>(
-    qs ? `/ingestion/priority-contacts?${qs}` : "/ingestion/priority-contacts",
-  );
+) {
+  const sp: ApiQuery<"/ingestion/priority-contacts", "GET"> = {};
+  if (params?.offset !== undefined) sp["offset"] = params.offset;
+  if (params?.limit !== undefined) sp["limit"] = params.limit;
+  return apiFetch("/ingestion/priority-contacts", { query: sp });
 }
 
 /** Add a priority contact (global — butler-agnostic). */
 export function addPriorityContact(
   body: PriorityContactAddRequest,
-): Promise<PriorityContactAddResponse> {
-  return apiFetch<PriorityContactAddResponse>("/ingestion/priority-contacts", {
-    method: "POST",
+) {
+  return apiFetch("/ingestion/priority-contacts", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body });
 }
 
 /** Remove a priority contact (global — butler-agnostic). */
-export function removePriorityContact(contactId: string): Promise<void> {
-  return apiFetch<void>(
-    `/ingestion/priority-contacts/${encodeURIComponent(contactId)}`,
-    { method: "DELETE" },
-  );
+export function removePriorityContact(contactId: string) {
+  return apiFetch("/ingestion/priority-contacts/{contact_id}", { method: "DELETE", path: { contact_id: contactId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4773,12 +3666,10 @@ export function removePriorityContact(contactId: string): Promise<void> {
 export function searchContacts(
   q: string,
   options?: { limit?: number; signal?: AbortSignal },
-): Promise<ContactSearchResponse> {
-  const sp = new URLSearchParams({ q });
-  if (options?.limit !== undefined) sp.set("limit", String(options.limit));
-  return apiFetch<ContactSearchResponse>(`/contacts/search?${sp.toString()}`, {
-    signal: options?.signal,
-  });
+) {
+  const sp: ApiQuery<"/contacts/search", "GET"> = { q };
+  if (options?.limit !== undefined) sp["limit"] = options.limit;
+  return apiFetch("/contacts/search", { signal: options?.signal, query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -4789,23 +3680,19 @@ export function searchContacts(
 export async function listIngestionEvents(
   params?: IngestionEventsParams,
   signal?: AbortSignal,
-): Promise<CursorPage<IngestionEventSummary>> {
-  const sp = new URLSearchParams();
-  if (params?.limit !== undefined) sp.set("limit", String(params.limit));
-  if (params?.cursor) sp.set("cursor", params.cursor);
-  if (params?.channels) sp.set("channels", params.channels);
-  if (params?.status) sp.set("status", params.status);
-  if (params?.statuses) sp.set("statuses", params.statuses);
-  if (params?.q) sp.set("q", params.q);
-  if (params?.from) sp.set("from", params.from);
-  if (params?.to) sp.set("to", params.to);
-  if (params?.sort) sp.set("sort", params.sort);
-  if (params?.trace_id) sp.set("trace_id", params.trace_id);
-  const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<CursorPage<IngestionEventSummary>>(
-    `/ingestion/events${qs}`,
-    { signal },
-  );
+) {
+  const sp: ApiQuery<"/ingestion/events", "GET"> = {};
+  if (params?.limit !== undefined) sp["limit"] = params.limit;
+  if (params?.cursor) sp["cursor"] = params.cursor;
+  if (params?.channels) sp["channels"] = params.channels;
+  if (params?.status) sp["status"] = params.status;
+  if (params?.statuses) sp["statuses"] = params.statuses;
+  if (params?.q) sp["q"] = params.q;
+  if (params?.from) sp["from"] = params.from;
+  if (params?.to) sp["to"] = params.to;
+  if (params?.sort) sp["sort"] = params.sort;
+  if (params?.trace_id) sp["trace_id"] = params.trace_id;
+  return apiFetch("/ingestion/events", { signal, query: sp });
 }
 
 /**
@@ -4819,16 +3706,15 @@ export async function listIngestionEvents(
 export async function getIngestionWindowRollup(
   params?: IngestionWindowRollupParams,
   signal?: AbortSignal,
-): Promise<IngestionWindowRollup> {
-  const sp = new URLSearchParams();
-  if (params?.from) sp.set("from", params.from);
-  if (params?.to) sp.set("to", params.to);
-  if (params?.channels) sp.set("channels", params.channels);
-  if (params?.statuses) sp.set("statuses", params.statuses);
-  if (params?.q) sp.set("q", params.q);
-  if (params?.trace_id) sp.set("trace_id", params.trace_id);
-  const qs = sp.toString() ? `?${sp.toString()}` : "";
-  return apiFetch<IngestionWindowRollup>(`/ingestion/rollup${qs}`, { signal });
+) {
+  const sp: ApiQuery<"/ingestion/rollup", "GET"> = {};
+  if (params?.from) sp["from"] = params.from;
+  if (params?.to) sp["to"] = params.to;
+  if (params?.channels) sp["channels"] = params.channels;
+  if (params?.statuses) sp["statuses"] = params.statuses;
+  if (params?.q) sp["q"] = params.q;
+  if (params?.trace_id) sp["trace_id"] = params.trace_id;
+  return apiFetch("/ingestion/rollup", { signal, query: sp });
 }
 
 /**
@@ -4850,19 +3736,16 @@ export async function getIngestionWindowRollup(
 export async function getIngestionEventsHistogram(
   params: IngestionHistogramParams,
   signal?: AbortSignal,
-): Promise<IngestionHistogramResponse> {
-  const sp = new URLSearchParams();
-  if (params.from) sp.set("from", params.from);
-  if (params.to) sp.set("to", params.to);
-  if (params.bucket) sp.set("bucket", params.bucket);
-  if (params.channels) sp.set("channels", params.channels);
-  if (params.statuses) sp.set("statuses", params.statuses);
-  if (params.q) sp.set("q", params.q);
-  if (params.trace_id) sp.set("trace_id", params.trace_id);
-  return apiFetch<IngestionHistogramResponse>(
-    `/ingestion/events/histogram?${sp.toString()}`,
-    { signal },
-  );
+) {
+  const sp: ApiQuery<"/ingestion/events/histogram", "GET"> = {};
+  if (params.from) sp["from"] = params.from;
+  if (params.to) sp["to"] = params.to;
+  if (params.bucket) sp["bucket"] = params.bucket;
+  if (params.channels) sp["channels"] = params.channels;
+  if (params.statuses) sp["statuses"] = params.statuses;
+  if (params.q) sp["q"] = params.q;
+  if (params.trace_id) sp["trace_id"] = params.trace_id;
+  return apiFetch("/ingestion/events/histogram", { signal, query: sp });
 }
 
 /**
@@ -4874,33 +3757,24 @@ export async function getIngestionEventsHistogram(
 export async function getIngestionDroppedKnown(
   window: "1h" | "24h" | "7d" = "24h",
   signal?: AbortSignal,
-): Promise<IngestionDroppedKnownSummary> {
-  return apiFetch<IngestionDroppedKnownSummary>(
-    `/ingestion/events/dropped-known?window=${window}`,
-    { signal },
-  );
+) {
+  return apiFetch("/ingestion/events/dropped-known", { signal, query: { window } });
 }
 
 /** Get a single ingestion event by request_id (GET /api/ingestion/events/{id}). */
 export async function getIngestionEvent(
   requestId: string,
   signal?: AbortSignal,
-): Promise<ApiResponse<IngestionEventDetail>> {
-  return apiFetch<ApiResponse<IngestionEventDetail>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}`,
-    { signal },
-  );
+) {
+  return apiFetch("/ingestion/events/{request_id}", { signal, path: { request_id: requestId } });
 }
 
 /** Get sessions for an ingestion event (GET /api/ingestion/events/{id}/sessions). */
 export async function getIngestionEventSessions(
   requestId: string,
   signal?: AbortSignal,
-): Promise<ApiResponse<IngestionEventSession[]>> {
-  return apiFetch<ApiResponse<IngestionEventSession[]>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/sessions`,
-    { signal },
-  );
+) {
+  return apiFetch("/ingestion/events/{request_id}/sessions", { signal, path: { request_id: requestId } });
 }
 
 /**
@@ -4912,11 +3786,8 @@ export async function getIngestionEventSessions(
  */
 export async function replayIngestionEvent(
   requestId: string,
-): Promise<IngestionEventReplayResponse> {
-  return apiFetch<IngestionEventReplayResponse>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/replay`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/ingestion/events/{event_id}/replay", { method: "POST", path: { event_id: requestId } });
 }
 
 /**
@@ -4926,11 +3797,8 @@ export async function replayIngestionEvent(
 export async function getIngestionEventReplays(
   requestId: string,
   signal?: AbortSignal,
-): Promise<ApiResponse<IngestionEventReplayHistoryEntry[]>> {
-  return apiFetch<ApiResponse<IngestionEventReplayHistoryEntry[]>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/replays`,
-    { signal },
-  );
+) {
+  return apiFetch("/ingestion/events/{event_id}/replays", { signal, path: { event_id: requestId } });
 }
 
 /**
@@ -4940,11 +3808,8 @@ export async function getIngestionEventReplays(
 export async function getIngestionEventSenderContact(
   requestId: string,
   signal?: AbortSignal,
-): Promise<ApiResponse<IngestionEventSenderContact>> {
-  return apiFetch<ApiResponse<IngestionEventSenderContact>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/sender-contact`,
-    { signal },
-  );
+) {
+  return apiFetch("/ingestion/events/{event_id}/sender-contact", { signal, path: { event_id: requestId } });
 }
 
 /**
@@ -4958,11 +3823,8 @@ export async function getIngestionEventSenderContact(
 export async function getIngestionEventPayload(
   requestId: string,
   signal?: AbortSignal,
-): Promise<ApiResponse<IngestionEventPayload>> {
-  return apiFetch<ApiResponse<IngestionEventPayload>>(
-    `/ingestion/events/${encodeURIComponent(requestId)}/payload`,
-    { signal },
-  );
+) {
+  return apiFetch("/ingestion/events/{event_id}/payload", { signal, path: { event_id: requestId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -4970,83 +3832,65 @@ export async function getIngestionEventPayload(
 // ---------------------------------------------------------------------------
 
 /** GET /api/settings/pricing — fetch per-model pricing map */
-export function fetchPricingMap(): Promise<ApiResponse<PricingMap>> {
-  return apiFetch<ApiResponse<PricingMap>>("/settings/pricing");
+export function fetchPricingMap() {
+  return apiFetch("/settings/pricing");
 }
 
 /** GET /api/settings/models — list all catalog entries */
-export function listModelCatalog(): Promise<ApiResponse<ModelCatalogEntry[]>> {
-  return apiFetch<ApiResponse<ModelCatalogEntry[]>>("/settings/models");
+export function listModelCatalog() {
+  return apiFetch("/settings/models");
 }
 
 /** POST /api/settings/models — create a catalog entry */
 export function createModelCatalogEntry(
   body: ModelCatalogCreate,
-): Promise<ApiResponse<ModelCatalogEntry>> {
-  return apiFetch<ApiResponse<ModelCatalogEntry>>("/settings/models", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/settings/models", { method: "POST",
+    body: body });
 }
 
 /** PUT /api/settings/models/{id} — update a catalog entry */
 export function updateModelCatalogEntry(
   id: string,
   body: ModelCatalogUpdate,
-): Promise<ApiResponse<ModelCatalogEntry>> {
-  return apiFetch<ApiResponse<ModelCatalogEntry>>(
-    `/settings/models/${encodeURIComponent(id)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}", { method: "PUT",
+      body: body, path: { entry_id: id } });
 }
 
 /** POST /api/settings/models/{id}/test — test a model config */
 export function testModelCatalogEntry(
   id: string,
-): Promise<ApiResponse<ModelTestResult>> {
-  return apiFetch<ApiResponse<ModelTestResult>>(
-    `/settings/models/${encodeURIComponent(id)}/test`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}/test", { method: "POST", path: { entry_id: id } });
 }
 
-export function getModelAttention(): Promise<ApiResponse<ModelAttentionObservation>> {
-  return apiFetch<ApiResponse<ModelAttentionObservation>>("/settings/models/attention");
+export function getModelAttention() {
+  return apiFetch("/settings/models/attention");
 }
 
-export function getModelAllowance(): Promise<ApiResponse<AllowanceObservation>> {
-  return apiFetch<ApiResponse<AllowanceObservation>>("/settings/models/allowance");
+export function getModelAllowance() {
+  return apiFetch("/settings/models/allowance");
 }
 
 export function reissueModelAttention(
   episodeId: string,
-): Promise<ApiResponse<ModelAttentionReissueResult>> {
-  return apiFetch<ApiResponse<ModelAttentionReissueResult>>(
-    `/settings/models/attention/${encodeURIComponent(episodeId)}/reissue`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/settings/models/attention/{episode_id}/reissue", { method: "POST", path: { episode_id: episodeId } });
 }
 
 /** DELETE /api/settings/models/{id} — delete a catalog entry */
 export function deleteModelCatalogEntry(
   id: string,
-): Promise<ApiResponse<{ deleted: boolean; id: string }>> {
-  return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
-    `/settings/models/${encodeURIComponent(id)}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}", { method: "DELETE", path: { entry_id: id } });
 }
 
 /** GET /api/settings/models/{id}/delete-impact — current cascade count */
 export function getModelCatalogDeleteImpact(
   id: string,
-): Promise<ApiResponse<ModelDeleteImpact>> {
-  return apiFetch<ApiResponse<ModelDeleteImpact>>(
-    `/settings/models/${encodeURIComponent(id)}/delete-impact`,
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}/delete-impact", { path: { entry_id: id } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5056,24 +3900,17 @@ export function getModelCatalogDeleteImpact(
 /** GET /api/butlers/{name}/model-overrides — list overrides for a butler */
 export function listButlerModelOverrides(
   butlerName: string,
-): Promise<ApiResponse<ButlerModelOverride[]>> {
-  return apiFetch<ApiResponse<ButlerModelOverride[]>>(
-    `/butlers/${encodeURIComponent(butlerName)}/model-overrides`,
-  );
+) {
+  return apiFetch("/butlers/{name}/model-overrides", { path: { name: butlerName } });
 }
 
 /** PUT /api/butlers/{name}/model-overrides — batch upsert overrides */
 export function upsertButlerModelOverrides(
   butlerName: string,
   body: ButlerModelOverridesWrite,
-): Promise<ApiResponse<ButlerModelOverride[]>> {
-  return apiFetch<ApiResponse<ButlerModelOverride[]>>(
-    `/butlers/${encodeURIComponent(butlerName)}/model-overrides`,
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/butlers/{name}/model-overrides", { method: "PUT",
+      body: body, path: { name: butlerName } });
 }
 
 /** DELETE /api/butlers/{name}/model-overrides/{overrideId} — remove a single override */
@@ -5081,79 +3918,55 @@ export function deleteButlerModelOverride(
   butlerName: string,
   overrideId: string,
   body: ButlerModelOverrideReason,
-): Promise<ApiResponse<{ deleted: boolean; id: string }>> {
-  return apiFetch<ApiResponse<{ deleted: boolean; id: string }>>(
-    `/butlers/${encodeURIComponent(butlerName)}/model-overrides/${encodeURIComponent(overrideId)}`,
-    { method: "DELETE", body: JSON.stringify(body) },
-  );
+) {
+  return apiFetch("/butlers/{name}/model-overrides/{override_id}", { method: "DELETE", body: body, path: { name: butlerName, override_id: overrideId } });
 }
 
 /** GET /api/butlers/{name}/resolve-model?complexity=X — preview model resolution */
 export function resolveButlerModel(
   butlerName: string,
   complexity: string,
-): Promise<ApiResponse<ResolveModelResponse>> {
-  return apiFetch<ApiResponse<ResolveModelResponse>>(
-    `/butlers/${encodeURIComponent(butlerName)}/resolve-model?complexity=${encodeURIComponent(complexity)}`,
-  );
+) {
+  return apiFetch("/butlers/{name}/resolve-model", { path: { name: butlerName }, query: { complexity } });
 }
 
 /** PUT /api/settings/models/{id}/limits — set or update token limits */
 export function setModelTokenLimits(
   id: string,
   body: TokenLimitsRequest,
-): Promise<ApiResponse<TokenLimitsResponse>> {
-  return apiFetch<ApiResponse<TokenLimitsResponse>>(
-    `/settings/models/${encodeURIComponent(id)}/limits`,
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}/limits", { method: "PUT",
+      body: body, path: { entry_id: id } });
 }
 
 /** POST /api/settings/models/{id}/reset-usage — reset usage window(s) */
 export function resetModelUsage(
   id: string,
   body: ResetUsageRequest,
-): Promise<ApiResponse<{ catalog_entry_id: string; window: string; reset: boolean }>> {
-  return apiFetch<ApiResponse<{ catalog_entry_id: string; window: string; reset: boolean }>>(
-    `/settings/models/${encodeURIComponent(id)}/reset-usage`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}/reset-usage", { method: "POST",
+      body: body, path: { entry_id: id } });
 }
 
 /** GET /api/settings/models/{id}/usage — detailed usage for a single entry */
 export function getModelUsageDetail(
   id: string,
-): Promise<ApiResponse<TokenUsageDetail>> {
-  return apiFetch<ApiResponse<TokenUsageDetail>>(
-    `/settings/models/${encodeURIComponent(id)}/usage`,
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}/usage", { path: { entry_id: id } });
 }
 
 /** PUT /api/settings/models/{id}/priority — adjust priority by delta */
 export function updateModelPriority(
   id: string,
   body: ModelPriorityDelta,
-): Promise<ApiResponse<ModelCatalogEntry>> {
-  return apiFetch<ApiResponse<ModelCatalogEntry>>(
-    `/settings/models/${encodeURIComponent(id)}/priority`,
-    {
-      method: "PUT",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/settings/models/{entry_id}/priority", { method: "PUT",
+      body: body, path: { entry_id: id } });
 }
 
 /** POST /api/settings/models/verify-all — re-verify every enabled model */
-export function verifyAllModels(): Promise<ApiResponse<VerifyAllResult>> {
-  return apiFetch<ApiResponse<VerifyAllResult>>("/settings/models/verify-all", {
-    method: "POST",
-  });
+export function verifyAllModels() {
+  return apiFetch("/settings/models/verify-all", { method: "POST" });
 }
 
 // ---------------------------------------------------------------------------
@@ -5165,32 +3978,28 @@ export function verifyAllModels(): Promise<ApiResponse<VerifyAllResult>> {
 // ---------------------------------------------------------------------------
 
 /** GET /api/connectors/whatsapp/status — current connection state */
-export function getWhatsAppStatus(): Promise<WhatsAppStatusResponse> {
-  return apiFetch<WhatsAppStatusResponse>("/connectors/whatsapp/status");
+export function getWhatsAppStatus() {
+  return apiFetch("/connectors/whatsapp/status");
 }
 
 /** POST /api/connectors/whatsapp/pair/start — initiate QR pairing */
-export function startWhatsAppPairing(): Promise<WhatsAppPairStartResponse> {
-  return apiFetch<WhatsAppPairStartResponse>("/connectors/whatsapp/pair/start", {
-    method: "POST",
-  });
+export function startWhatsAppPairing() {
+  return apiFetch("/connectors/whatsapp/pair/start", { method: "POST" });
 }
 
 /** GET /api/connectors/whatsapp/pair/poll — poll pairing progress */
-export function pollWhatsAppPairing(): Promise<WhatsAppPairPollResponse> {
-  return apiFetch<WhatsAppPairPollResponse>("/connectors/whatsapp/pair/poll");
+export function pollWhatsAppPairing() {
+  return apiFetch("/connectors/whatsapp/pair/poll");
 }
 
 /** POST /api/connectors/whatsapp/disconnect — gracefully disconnect */
-export function disconnectWhatsApp(): Promise<WhatsAppDisconnectResponse> {
-  return apiFetch<WhatsAppDisconnectResponse>("/connectors/whatsapp/disconnect", {
-    method: "POST",
-  });
+export function disconnectWhatsApp() {
+  return apiFetch("/connectors/whatsapp/disconnect", { method: "POST" });
 }
 
 /** GET /api/relationship/dunbar/ranking — Dunbar tier ranking for the Plex and contacts views. */
-export function getDunbarRanking(): Promise<DunbarRankingResponse> {
-  return apiFetch<DunbarRankingResponse>("/relationship/dunbar/ranking");
+export function getDunbarRanking() {
+  return apiFetch("/relationship/dunbar/ranking");
 }
 
 // ---------------------------------------------------------------------------
@@ -5198,31 +4007,25 @@ export function getDunbarRanking(): Promise<DunbarRankingResponse> {
 // ---------------------------------------------------------------------------
 
 /** GET /api/spotify/status — current Spotify connection state */
-export function getSpotifyStatus(): Promise<SpotifyStatusResponse> {
-  return apiFetch<SpotifyStatusResponse>("/connectors/spotify/status");
+export function getSpotifyStatus() {
+  return apiFetch("/connectors/spotify/status");
 }
 
 /** POST /api/spotify/oauth/start — initiate PKCE OAuth flow, returns authorization URL */
-export function startSpotifyOAuth(): Promise<SpotifyOAuthStartResponse> {
-  return apiFetch<SpotifyOAuthStartResponse>("/connectors/spotify/oauth/start", {
-    method: "POST",
-  });
+export function startSpotifyOAuth() {
+  return apiFetch("/connectors/spotify/oauth/start", { method: "POST" });
 }
 
 /** POST /api/spotify/config — store Spotify client_id */
-export function saveSpotifyConfig(data: SpotifyConfigRequest): Promise<SpotifyConfigResponse> {
-  return apiFetch<SpotifyConfigResponse>("/connectors/spotify/config", {
-    method: "POST",
+export function saveSpotifyConfig(data: SpotifyConfigRequest) {
+  return apiFetch("/connectors/spotify/config", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
+    body: data });
 }
 
 /** POST /api/connectors/spotify/disconnect — clear locally stored OAuth tokens and scopes */
-export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
-  return apiFetch<SpotifyDisconnectResponse>("/connectors/spotify/disconnect", {
-    method: "POST",
-  });
+export function disconnectSpotify() {
+  return apiFetch("/connectors/spotify/disconnect", { method: "POST" });
 }
 
 // ---------------------------------------------------------------------------
@@ -5230,20 +4033,18 @@ export function disconnectSpotify(): Promise<SpotifyDisconnectResponse> {
 // ---------------------------------------------------------------------------
 
 /** GET /api/connectors/owntracks/status — connection state, last event, event count */
-export function getOwnTracksStatus(): Promise<OwnTracksStatusResponse> {
-  return apiFetch<OwnTracksStatusResponse>("/connectors/owntracks/status");
+export function getOwnTracksStatus() {
+  return apiFetch("/connectors/owntracks/status");
 }
 
 /** GET /api/connectors/owntracks/config — webhook URL and setup metadata */
-export function getOwnTracksConfig(): Promise<OwnTracksConfigResponse> {
-  return apiFetch<OwnTracksConfigResponse>("/connectors/owntracks/config");
+export function getOwnTracksConfig() {
+  return apiFetch("/connectors/owntracks/config");
 }
 
 /** POST /api/connectors/owntracks/token/generate — generate/regenerate bearer token */
-export function generateOwnTracksToken(): Promise<OwnTracksTokenResponse> {
-  return apiFetch<OwnTracksTokenResponse>("/connectors/owntracks/token/generate", {
-    method: "POST",
-  });
+export function generateOwnTracksToken() {
+  return apiFetch("/connectors/owntracks/token/generate", { method: "POST" });
 }
 
 // ---------------------------------------------------------------------------
@@ -5251,38 +4052,32 @@ export function generateOwnTracksToken(): Promise<OwnTracksTokenResponse> {
 // ---------------------------------------------------------------------------
 
 /** GET /api/settings/home-assistant — current HA connection state */
-export function getHomeAssistantStatus(): Promise<HomeAssistantStatusResponse> {
-  return apiFetch<HomeAssistantStatusResponse>("/settings/home-assistant");
+export function getHomeAssistantStatus() {
+  return apiFetch("/settings/home-assistant");
 }
 
 /** POST /api/settings/home-assistant — validate and save HA URL + token */
 export function configureHomeAssistant(
   data: HomeAssistantConfigRequest,
-): Promise<HomeAssistantConfigResponse> {
-  return apiFetch<HomeAssistantConfigResponse>("/settings/home-assistant", {
-    method: "POST",
+) {
+  return apiFetch("/settings/home-assistant", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
+    body: data });
 }
 
 /** DELETE /api/settings/home-assistant — remove stored HA credentials */
-export function deleteHomeAssistantConfig(): Promise<HomeAssistantDeleteResponse> {
-  return apiFetch<HomeAssistantDeleteResponse>("/settings/home-assistant", {
-    method: "DELETE",
-  });
+export function deleteHomeAssistantConfig() {
+  return apiFetch("/settings/home-assistant", { method: "DELETE" });
 }
 
 /** Submit exact private HA-person mappings as one atomic batch. */
 export function submitHomePersonMappings(
   mappings: HomePersonMappingInput[],
   idempotencyKey: string,
-): Promise<ApiResponse<HomePersonMappingReceipt>> {
-  return apiFetch<ApiResponse<HomePersonMappingReceipt>>("/home/person-mappings", {
-    method: "POST",
+) {
+  return apiFetch("/home/person-mappings", { method: "POST",
     headers: { "Idempotency-Key": idempotencyKey },
-    body: JSON.stringify({ mappings }),
-  });
+    body: { mappings } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5293,11 +4088,8 @@ export function submitHomePersonMappings(
 export function listConversations(
   butlerName: string,
   params?: ConversationListParams,
-): Promise<ApiResponse<ConversationSummary[]>> {
-  const qs = params ? `?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)])).toString()}` : "";
-  return apiFetch<ApiResponse<ConversationSummary[]>>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversations${qs}`,
-  );
+) {
+  return apiFetch("/butlers/{name}/conversations", { path: { name: butlerName }, query: params });
 }
 
 /**
@@ -5307,18 +4099,16 @@ export function listConversations(
  * Raw (unwrapped) body — the response model carries no `data` envelope.
  * Throws `ApiError` with `status === 404` when the id is unknown.
  */
-export function getConversationById(conversationId: string): Promise<ConversationSummary> {
-  return apiFetch<ConversationSummary>(`/conversations/${encodeURIComponent(conversationId)}`);
+export function getConversationById(conversationId: string) {
+  return apiFetch("/conversations/{conversation_id}", { path: { conversation_id: conversationId } });
 }
 
 /** GET /api/butlers/{name}/conversations/{id}/messages — message list for a conversation. */
 export function getConversationMessages(
   butlerName: string,
   conversationId: string,
-): Promise<ApiResponse<Message[]>> {
-  return apiFetch<ApiResponse<Message[]>>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}/messages`,
-  );
+) {
+  return apiFetch("/butlers/{name}/conversations/{conversation_id}/messages", { path: { name: butlerName, conversation_id: conversationId } });
 }
 
 /**
@@ -5327,10 +4117,8 @@ export function getConversationMessages(
 export function searchConversations(
   butlerName: string,
   query: string,
-): Promise<ApiResponse<ConversationSummary[]>> {
-  return apiFetch<ApiResponse<ConversationSummary[]>>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversations/search?q=${encodeURIComponent(query)}`,
-  );
+) {
+  return apiFetch("/butlers/{name}/conversations/search", { path: { name: butlerName }, query: { q: query } });
 }
 
 /**
@@ -5340,18 +4128,16 @@ export function searchConversations(
  */
 export function searchMessages(
   params: MessageSearchParams,
-): Promise<CursorPage<MessageSearchResult>> {
-  const sp = new URLSearchParams();
-  sp.set("q", params.q);
-  if (params.limit !== undefined) sp.set("limit", String(params.limit));
-  if (params.cursor) sp.set("cursor", params.cursor);
-  if (params.channel) sp.set("channel", params.channel);
-  if (params.butler) sp.set("butler", params.butler);
-  if (params.from) sp.set("from", params.from);
-  if (params.to) sp.set("to", params.to);
-  return apiFetch<CursorPage<MessageSearchResult>>(
-    `/conversations/messages/search?${sp.toString()}`,
-  );
+) {
+  const sp: ApiQuery<"/conversations/messages/search", "GET"> = { "q": params.q };
+
+  if (params.limit !== undefined) sp["limit"] = params.limit;
+  if (params.cursor) sp["cursor"] = params.cursor;
+  if (params.channel) sp["channel"] = params.channel;
+  if (params.butler) sp["butler"] = params.butler;
+  if (params.from) sp["from"] = params.from;
+  if (params.to) sp["to"] = params.to;
+  return apiFetch("/conversations/messages/search", { query: sp });
 }
 
 /**
@@ -5402,11 +4188,8 @@ export function sendMessage(
 export function cancelConversationMessageTurn(
   butlerName: string,
   messageId: string,
-): Promise<ConversationCancelResponse> {
-  return apiFetch<ConversationCancelResponse>(
-    `/butlers/${encodeURIComponent(butlerName)}/conversation-turns/${encodeURIComponent(messageId)}/cancel`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/butlers/{name}/conversation-turns/{message_id}/cancel", { method: "POST", path: { name: butlerName, message_id: messageId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5416,26 +4199,22 @@ export function cancelConversationMessageTurn(
 /** POST /api/telegram/session/send-code — start Telegram login, send OTP */
 export function telegramSendCode(
   request: TelegramSendCodeRequest,
-): Promise<TelegramSendCodeResponse> {
-  return apiFetch<TelegramSendCodeResponse>("/telegram/session/send-code", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/telegram/session/send-code", { method: "POST",
+    body: request });
 }
 
 /** POST /api/telegram/session/verify — verify OTP code and persist session */
 export function telegramVerifyCode(
   request: TelegramVerifyCodeRequest,
-): Promise<TelegramVerifyCodeResponse> {
-  return apiFetch<TelegramVerifyCodeResponse>("/telegram/session/verify", {
-    method: "POST",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/telegram/session/verify", { method: "POST",
+    body: request });
 }
 
 /** GET /api/telegram/session/status — check Telegram credentials and scope consent */
-export function getTelegramSessionStatus(): Promise<TelegramSessionStatusResponse> {
-  return apiFetch<TelegramSessionStatusResponse>("/telegram/session/status");
+export function getTelegramSessionStatus() {
+  return apiFetch("/telegram/session/status");
 }
 
 // ---------------------------------------------------------------------------
@@ -5443,8 +4222,8 @@ export function getTelegramSessionStatus(): Promise<TelegramSessionStatusRespons
 // ---------------------------------------------------------------------------
 
 /** GET /api/settings/general — fetch shared prompt defaults */
-export function getGeneralSettings(): Promise<ApiResponse<GeneralSettings>> {
-  return apiFetch<ApiResponse<GeneralSettings>>("/settings/general");
+export function getGeneralSettings() {
+  return apiFetch("/settings/general");
 }
 
 // ---------------------------------------------------------------------------
@@ -5456,24 +4235,20 @@ export function getGeneralSettings(): Promise<ApiResponse<GeneralSettings>> {
 // ---------------------------------------------------------------------------
 
 /** GET /api/steam/accounts — list all connected Steam accounts */
-export function listSteamAccounts(): Promise<SteamAccountListResponse> {
-  return apiFetch<SteamAccountListResponse>("/steam/accounts");
+export function listSteamAccounts() {
+  return apiFetch("/steam/accounts");
 }
 
 /** POST /api/steam/accounts — connect a new Steam account */
-export function connectSteamAccount(data: SteamConnectRequest): Promise<SteamConnectResponse> {
-  return apiFetch<SteamConnectResponse>("/steam/accounts", {
-    method: "POST",
+export function connectSteamAccount(data: SteamConnectRequest) {
+  return apiFetch("/steam/accounts", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
+    body: data });
 }
 
 /** DELETE /api/steam/accounts/{id} — disconnect (soft-revoke) a Steam account */
-export function disconnectSteamAccount(accountId: string): Promise<SteamDisconnectResponse> {
-  return apiFetch<SteamDisconnectResponse>(`/steam/accounts/${encodeURIComponent(accountId)}`, {
-    method: "DELETE",
-  });
+export function disconnectSteamAccount(accountId: string) {
+  return apiFetch("/steam/accounts/{account_id}", { method: "DELETE", path: { account_id: accountId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5485,163 +4260,139 @@ export function disconnectSteamAccount(accountId: string): Promise<SteamDisconne
 // ---------------------------------------------------------------------------
 
 /** GET /api/qa/summary — QA staffer status, last patrol, 24h/all-time stats */
-export function getQaSummary(): Promise<ApiResponse<QaSummary>> {
-  return apiFetch<ApiResponse<QaSummary>>("/qa/summary");
+export function getQaSummary() {
+  return apiFetch("/qa/summary");
 }
 
 /** GET /api/qa/cases — paginated QA case summaries */
-export function getQaCases(params?: QaCasesParams): Promise<PaginatedResponse<QaCaseSummary>> {
-  const query = new URLSearchParams();
-  if (params?.sev) query.set("sev", params.sev);
-  if (params?.state) query.set("state", params.state);
-  if (params?.since) query.set("since", params.since);
+export function getQaCases(params?: QaCasesParams) {
+  const query: ApiQuery<"/qa/cases", "GET"> = {};
+  if (params?.sev) query["sev"] = params.sev;
+  if (params?.state) query["state"] = params.state;
+  if (params?.since) query["since"] = params.since;
   if (params?.butler != null) {
     const butlers = Array.isArray(params.butler) ? params.butler : [params.butler];
     butlers.forEach((name) => {
       const trimmed = name?.trim();
       if (trimmed != null && trimmed !== "") {
-        query.append("butler", trimmed);
+        (query["butler"] ??= []).push(trimmed);
       }
     });
   }
-  if (params?.offset !== undefined) query.set("offset", String(params.offset));
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<QaCaseSummary>>(`/qa/cases${qs ? `?${qs}` : ""}`);
+  if (params?.offset !== undefined) query["offset"] = params.offset;
+  if (params?.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/qa/cases", { query: query });
 }
 
 /** GET /api/qa/cases/:caseId — full case dossier */
-export function getQaCase(caseId: string): Promise<ApiResponse<QaCaseDossier>> {
-  return apiFetch<ApiResponse<QaCaseDossier>>(`/qa/cases/${encodeURIComponent(caseId)}`);
+export function getQaCase(caseId: string) {
+  return apiFetch("/qa/cases/{case_id}", { path: { case_id: caseId } });
 }
 
 /** GET /api/qa/cases/:caseId/journal — paginated journal events */
 export function getQaCaseJournal(
   caseId: string,
   params?: QaCaseJournalParams,
-): Promise<PaginatedResponse<QaJournalEvent>> {
-  const query = new URLSearchParams();
-  if (params?.cursor) query.set("cursor", params.cursor);
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<QaJournalEvent>>(
-    `/qa/cases/${encodeURIComponent(caseId)}/journal${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/qa/cases/{case_id}/journal", "GET"> = {};
+  if (params?.cursor) query["cursor"] = params.cursor;
+  if (params?.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/qa/cases/{case_id}/journal", { path: { case_id: caseId }, query: query });
 }
 
 /** GET /api/qa/patrols — paginated patrol list */
-export function getQaPatrols(params?: QaPatrolsParams): Promise<PaginatedResponse<QaPatrolSummary>> {
-  const query = new URLSearchParams();
-  if (params?.offset !== undefined) query.set("offset", String(params.offset));
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  if (params?.status) query.set("status", params.status);
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<QaPatrolSummary>>(`/qa/patrols${qs ? `?${qs}` : ""}`);
+export function getQaPatrols(params?: QaPatrolsParams) {
+  const query: ApiQuery<"/qa/patrols", "GET"> = {};
+  if (params?.offset !== undefined) query["offset"] = params.offset;
+  if (params?.limit !== undefined) query["limit"] = params.limit;
+  if (params?.status) query["status"] = params.status;
+  return apiFetch("/qa/patrols", { query: query });
 }
 
 /** GET /api/qa/patrols/:patrolId — full patrol with nested findings */
-export function getQaPatrol(patrolId: string): Promise<ApiResponse<QaPatrolDetail>> {
-  return apiFetch<ApiResponse<QaPatrolDetail>>(`/qa/patrols/${encodeURIComponent(patrolId)}`);
+export function getQaPatrol(patrolId: string) {
+  return apiFetch("/qa/patrols/{patrol_id}", { path: { patrol_id: patrolId } });
 }
 
 /** POST /api/qa/known-issues/:fingerprint/dismiss — dismiss a known issue */
 export function dismissQaKnownIssue(
   fingerprint: string,
   body?: QaDismissRequest,
-): Promise<ApiResponse<QaDismissal>> {
-  return apiFetch<ApiResponse<QaDismissal>>(
-    `/qa/known-issues/${encodeURIComponent(fingerprint)}/dismiss`,
-    {
-      method: "POST",
-      body: body ? JSON.stringify(body) : "{}",
-    },
-  );
+) {
+  return apiFetch("/qa/known-issues/{fingerprint}/dismiss", { method: "POST",
+      body: body ?? {}, path: { fingerprint: fingerprint } });
 }
 
 /** DELETE /api/qa/dismissals/:fingerprint — remove an active dismissal */
 export function removeQaDismissal(
   fingerprint: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/qa/dismissals/${encodeURIComponent(fingerprint)}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/qa/dismissals/{fingerprint}", { method: "DELETE", path: { fingerprint: fingerprint } });
 }
 
 /** GET /api/qa/investigations — paginated investigation pipeline */
 export function getQaInvestigations(
   params?: QaInvestigationsParams,
-): Promise<PaginatedResponse<QaInvestigation>> {
-  const query = new URLSearchParams();
-  if (params?.status) query.set("status", params.status);
-  if (params?.offset !== undefined) query.set("offset", String(params.offset));
-  if (params?.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<QaInvestigation>>(`/qa/investigations${qs ? `?${qs}` : ""}`);
+) {
+  const query: ApiQuery<"/qa/investigations", "GET"> = {};
+  if (params?.status) query["status"] = params.status;
+  if (params?.offset !== undefined) query["offset"] = params.offset;
+  if (params?.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/qa/investigations", { query: query });
 }
 
 /** POST /api/qa/force-patrol — request an immediate patrol cycle */
-export function forceQaPatrol(): Promise<ApiResponse<ForcePatrolResponse>> {
-  return apiFetch<ApiResponse<ForcePatrolResponse>>("/qa/force-patrol", { method: "POST" });
+export function forceQaPatrol() {
+  return apiFetch("/qa/force-patrol", { method: "POST" });
 }
 
 /** GET /api/qa/circuit-breaker — current circuit breaker state */
-export function getQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerStatus>> {
-  return apiFetch<ApiResponse<CircuitBreakerStatus>>("/qa/circuit-breaker");
+export function getQaCircuitBreaker() {
+  return apiFetch("/qa/circuit-breaker");
 }
 
 /** POST /api/qa/circuit-breaker/reset — reset a tripped circuit breaker */
-export function resetQaCircuitBreaker(): Promise<ApiResponse<CircuitBreakerResetResponse>> {
-  return apiFetch<ApiResponse<CircuitBreakerResetResponse>>("/qa/circuit-breaker/reset", {
-    method: "POST",
-  });
+export function resetQaCircuitBreaker() {
+  return apiFetch("/qa/circuit-breaker/reset", { method: "POST" });
 }
 
 /** GET /api/qa/settings/repo — current repo configuration */
-export function getQaRepoConfig(): Promise<ApiResponse<QaRepoConfig>> {
-  return apiFetch<ApiResponse<QaRepoConfig>>("/qa/settings/repo");
+export function getQaRepoConfig() {
+  return apiFetch("/qa/settings/repo");
 }
 
 /** PUT /api/qa/settings/repo — update repo URL */
 export function updateQaRepoConfig(
   body: QaRepoConfigUpdate,
-): Promise<ApiResponse<QaRepoConfig>> {
-  return apiFetch<ApiResponse<QaRepoConfig>>("/qa/settings/repo", {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/qa/settings/repo", { method: "PUT",
+    body: body });
 }
 
 /** POST /api/qa/settings/repo/sync — trigger immediate sync */
-export function syncQaRepo(): Promise<ApiResponse<QaRepoSyncResponse>> {
-  return apiFetch<ApiResponse<QaRepoSyncResponse>>("/qa/settings/repo/sync", {
-    method: "POST",
-  });
+export function syncQaRepo() {
+  return apiFetch("/qa/settings/repo/sync", { method: "POST" });
 }
 
 /** PUT /api/qa/settings/git-author — store git author identity (name + email) */
 export function updateQaGitAuthor(
   body: QaGitAuthorUpdate,
-): Promise<ApiResponse<QaGitAuthorStatus>> {
-  return apiFetch<ApiResponse<QaGitAuthorStatus>>("/qa/settings/git-author", {
-    method: "PUT",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/qa/settings/git-author", { method: "PUT",
+    body: body });
 }
 
 /** GET /api/qa/settings/allowed-repos — list allowed repositories */
-export function getQaAllowedRepos(): Promise<PaginatedResponse<QaAllowedRepo>> {
-  return apiFetch<PaginatedResponse<QaAllowedRepo>>("/qa/settings/allowed-repos?limit=200");
+export function getQaAllowedRepos() {
+  return apiFetch("/qa/settings/allowed-repos");
 }
 
 /** POST /api/qa/settings/allowed-repos — add a repository */
 export function addQaAllowedRepo(
   body: QaAllowedRepoCreate,
-): Promise<ApiResponse<QaAllowedRepo>> {
-  return apiFetch<ApiResponse<QaAllowedRepo>>("/qa/settings/allowed-repos", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/qa/settings/allowed-repos", { method: "POST",
+    body: body });
 }
 
 /** PATCH /api/qa/settings/allowed-repos/{owner}/{repo} — toggle enabled */
@@ -5649,22 +4400,16 @@ export function patchQaAllowedRepo(
   owner: string,
   repo: string,
   body: QaAllowedRepoPatch,
-): Promise<ApiResponse<QaAllowedRepo>> {
-  return apiFetch<ApiResponse<QaAllowedRepo>>(
-    `/qa/settings/allowed-repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
-    { method: "PATCH", body: JSON.stringify(body) },
-  );
+) {
+  return apiFetch("/qa/settings/allowed-repos/{owner}/{repo}", { method: "PATCH", body: body, path: { owner: owner, repo: repo } });
 }
 
 /** DELETE /api/qa/settings/allowed-repos/{owner}/{repo} — remove */
 export function deleteQaAllowedRepo(
   owner: string,
   repo: string,
-): Promise<ApiResponse<Record<string, unknown>>> {
-  return apiFetch<ApiResponse<Record<string, unknown>>>(
-    `/qa/settings/allowed-repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/qa/settings/allowed-repos/{owner}/{repo}", { method: "DELETE", path: { owner: owner, repo: repo } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5674,25 +4419,18 @@ export function deleteQaAllowedRepo(
 /** Fetch runtime config for a specific butler. */
 export function getRuntimeConfig(
   name: string,
-): Promise<RuntimeConfigResponse> {
-  return apiFetch<RuntimeConfigResponse>(
-    `/butlers/${encodeURIComponent(name)}/runtime-config`,
-  );
+) {
+  return apiFetch("/butlers/{name}/runtime-config", { path: { name: name } });
 }
 
 /** Partially update runtime config for a butler. */
 export function patchRuntimeConfig(
   name: string,
   body: RuntimeConfigPatch,
-): Promise<RuntimeConfigPatchResponse> {
-  return apiFetch<RuntimeConfigPatchResponse>(
-    `/butlers/${encodeURIComponent(name)}/runtime-config`,
-    {
-      method: "PATCH",
+) {
+  return apiFetch("/butlers/{name}/runtime-config", { method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
+      body: body, path: { name: name } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5702,49 +4440,48 @@ export function patchRuntimeConfig(
 /** Fetch paginated chronicler episodes. Defaults: include_tombstoned=false. */
 export function getChroniclerEpisodes(
   params?: ChroniclerEpisodesParams,
-): Promise<{ data: ChroniclerEpisode[]; meta: { total: number; offset: number; limit: number; has_more: boolean } }> {
-  const sp = new URLSearchParams();
-  if (params?.source_name) sp.set("source_name", params.source_name);
-  if (params?.episode_type) sp.set("episode_type", params.episode_type);
-  if (params?.start_from) sp.set("start_from", params.start_from);
-  if (params?.start_to) sp.set("start_to", params.start_to);
-  if (params?.overlaps_start) sp.set("overlaps_start", params.overlaps_start);
-  if (params?.overlaps_end) sp.set("overlaps_end", params.overlaps_end);
+) {
+  const sp: ApiQuery<"/chronicler/episodes", "GET"> = {};
+  if (params?.source_name) sp["source_name"] = params.source_name;
+  if (params?.episode_type) sp["episode_type"] = params.episode_type;
+  if (params?.start_from) sp["start_from"] = params.start_from;
+  if (params?.start_to) sp["start_to"] = params.start_to;
+  if (params?.overlaps_start) sp["overlaps_start"] = params.overlaps_start;
+  if (params?.overlaps_end) sp["overlaps_end"] = params.overlaps_end;
   if (params?.include_tombstoned != null)
-    sp.set("include_tombstoned", String(params.include_tombstoned));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch(qs ? `/chronicler/episodes?${qs}` : "/chronicler/episodes");
+    sp["include_tombstoned"] = params.include_tombstoned;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/chronicler/episodes", { query: sp });
 }
 
 /** Fetch category aggregates for a time window. Restricted excluded by default. */
 export function getChroniclerAggregateByCategory(
   params: ChroniclerAggregateByCategoryParams,
-): Promise<{ data: ChroniclerCategoryBuckets; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
-  if (params.tz) sp.set("tz", params.tz);
-  if (params.privacy_tier) sp.set("privacy_tier", params.privacy_tier);
+) {
+  const sp: ApiQuery<"/chronicler/aggregate/by-category", "GET"> = { start_at: params.start_at, end_at: params.end_at };
+  if (params.tz) sp["tz"] = params.tz;
+  if (params.privacy_tier) sp["privacy_tier"] = params.privacy_tier;
   if (params.include_tombstoned != null)
-    sp.set("include_tombstoned", String(params.include_tombstoned));
-  return apiFetch(`/chronicler/aggregate/by-category?${sp.toString()}`);
+    sp["include_tombstoned"] = params.include_tombstoned;
+  return apiFetch("/chronicler/aggregate/by-category", { query: sp });
 }
 
 /** Fetch time-bucketed episode durations grouped by (day, category). */
 export function getChroniclerAggregateByDay(
   params: ChroniclerAggregateByDayParams,
-): Promise<ChroniclerAggregateByDayRow[]> {
-  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
-  if (params.tz) sp.set("tz", params.tz);
-  if (params.category) sp.set("category", params.category);
-  if (params.privacy_tier) sp.set("privacy_tier", params.privacy_tier);
+) {
+  const sp: ApiQuery<"/chronicler/aggregate/by-day", "GET"> = { start_at: params.start_at, end_at: params.end_at };
+  if (params.tz) sp["tz"] = params.tz;
+  if (params.category) sp["category"] = params.category;
+  if (params.privacy_tier) sp["privacy_tier"] = params.privacy_tier;
   if (params.include_tombstoned != null)
-    sp.set("include_tombstoned", String(params.include_tombstoned));
-  return apiFetch(`/chronicler/aggregate/by-day?${sp.toString()}`);
+    sp["include_tombstoned"] = params.include_tombstoned;
+  return apiFetch("/chronicler/aggregate/by-day", { query: sp });
 }
 
 /** Fetch source adapter state joined with projection checkpoints (singleton, sorted by source_name). */
-export function getChroniclerSourceState(): Promise<{ data: ChroniclerSourceStateRow[]; meta: Record<string, unknown> }> {
+export function getChroniclerSourceState() {
   return apiFetch("/chronicler/source-state");
 }
 
@@ -5754,10 +4491,10 @@ export function getChroniclerSourceState(): Promise<{ data: ChroniclerSourceStat
  */
 export function getChroniclerBalance(
   params: ChroniclerBalanceParams,
-): Promise<{ data: ChroniclerBalanceResponse; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams({ date: params.date });
-  if (params.lookback_days != null) sp.set("lookback_days", String(params.lookback_days));
-  return apiFetch(`/chronicler/balance?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/chronicler/balance", "GET"> = { date: params.date };
+  if (params.lookback_days != null) sp["lookback_days"] = params.lookback_days;
+  return apiFetch("/chronicler/balance", { query: sp });
 }
 
 /**
@@ -5766,13 +4503,12 @@ export function getChroniclerBalance(
  */
 export function getChroniclerTrends(
   params?: ChroniclerTrendsParams,
-): Promise<{ data: ChroniclerTrendsResponse; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams();
-  if (params?.window) sp.set("window", params.window);
-  if (params?.end_date) sp.set("end_date", params.end_date);
-  if (params?.lookback_days != null) sp.set("lookback_days", String(params.lookback_days));
-  const qs = sp.toString();
-  return apiFetch(qs ? `/chronicler/trends?${qs}` : "/chronicler/trends");
+) {
+  const sp: ApiQuery<"/chronicler/trends", "GET"> = {};
+  if (params?.window) sp["window"] = params.window;
+  if (params?.end_date) sp["end_date"] = params.end_date;
+  if (params?.lookback_days != null) sp["lookback_days"] = params.lookback_days;
+  return apiFetch("/chronicler/trends", { query: sp });
 }
 
 /**
@@ -5782,12 +4518,12 @@ export function getChroniclerTrends(
  */
 export function getChroniclerRollups(
   params: ChroniclerRollupsParams,
-): Promise<{ data: ChroniclerRollupsResponse; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams();
-  if (params.date) sp.set("date", params.date);
-  if (params.start_date) sp.set("start_date", params.start_date);
-  if (params.end_date) sp.set("end_date", params.end_date);
-  return apiFetch(`/chronicler/rollups?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/chronicler/rollups", "GET"> = {};
+  if (params.date) sp["date"] = params.date;
+  if (params.start_date) sp["start_date"] = params.start_date;
+  if (params.end_date) sp["end_date"] = params.end_date;
+  return apiFetch("/chronicler/rollups", { query: sp });
 }
 
 /**
@@ -5796,10 +4532,10 @@ export function getChroniclerRollups(
  */
 export function getChroniclerWhoYouWereWith(
   params: ChroniclerWhoYouWereWithParams,
-): Promise<{ data: ChroniclerWhoYouWereWithResponse; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
-  if (params.tz) sp.set("tz", params.tz);
-  return apiFetch(`/chronicler/who-you-were-with?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/chronicler/who-you-were-with", "GET"> = { start_at: params.start_at, end_at: params.end_at };
+  if (params.tz) sp["tz"] = params.tz;
+  return apiFetch("/chronicler/who-you-were-with", { query: sp });
 }
 
 /**
@@ -5808,8 +4544,8 @@ export function getChroniclerWhoYouWereWith(
  */
 export function getChroniclerEvidenceChain(
   episodeId: string,
-): Promise<ChroniclerActivityEvidenceChain> {
-  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/evidence-chain`);
+) {
+  return apiFetch("/chronicler/episodes/{episode_id}/evidence-chain", { path: { episode_id: episodeId } });
 }
 
 /**
@@ -5818,11 +4554,11 @@ export function getChroniclerEvidenceChain(
  */
 export function getChroniclerCorrectionPrompts(
   params: ChroniclerCorrectionPromptsParams,
-): Promise<{ data: ChroniclerCorrectionPrompts; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams({ start_at: params.start_at, end_at: params.end_at });
-  if (params.tz) sp.set("tz", params.tz);
-  if (params.limit != null) sp.set("limit", String(params.limit));
-  return apiFetch(`/chronicler/correction-prompts?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/chronicler/correction-prompts", "GET"> = { start_at: params.start_at, end_at: params.end_at };
+  if (params.tz) sp["tz"] = params.tz;
+  if (params.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/chronicler/correction-prompts", { query: sp });
 }
 
 /**
@@ -5832,9 +4568,9 @@ export function getChroniclerCorrectionPrompts(
  */
 export function getChroniclerDayClose(
   params: ChroniclerDayCloseParams,
-): Promise<ChroniclerDayCloseResponse> {
-  const sp = new URLSearchParams({ date: params.date, tz: params.tz });
-  return apiFetch(`/chronicler/aggregate/day-close?${sp.toString()}`);
+) {
+  const sp: ApiQuery<"/chronicler/aggregate/day-close", "GET"> = { date: params.date, tz: params.tz };
+  return apiFetch("/chronicler/aggregate/day-close", { query: sp });
 }
 
 /**
@@ -5843,20 +4579,18 @@ export function getChroniclerDayClose(
  */
 export function postChroniclerDayCloseRefresh(
   body: ChroniclerDayCloseRefreshRequest,
-): Promise<ChroniclerDayCloseRefreshResult> {
-  return apiFetch("/chronicler/aggregate/day-close/refresh", {
-    method: "POST",
-    body: JSON.stringify(body),
+) {
+  return apiFetch("/chronicler/aggregate/day-close/refresh", { method: "POST",
+    body: body,
     // The endpoint awaits the existing reasoning-tier day-close session. Keep
     // the browser aligned with the dashboard's 120s butler-trigger budget
     // instead of aborting at the generic 15s read-request timeout.
-    timeoutMs: 120_000,
-  });
+    timeoutMs: 120_000 });
 }
 
 /** Fetch a single Chronicler episode by ID (corrected view). 404 if not found. */
-export function getChroniclerEpisode(episodeId: string): Promise<ChroniclerEpisode> {
-  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}`);
+export function getChroniclerEpisode(episodeId: string) {
+  return apiFetch("/chronicler/episodes/{episode_id}", { path: { episode_id: episodeId } });
 }
 
 /**
@@ -5864,8 +4598,8 @@ export function getChroniclerEpisode(episodeId: string): Promise<ChroniclerEpiso
  * Returns an empty list if the episode has no linked events.
  * 404 if the episode does not exist.
  */
-export function getChroniclerEpisodeEvents(episodeId: string): Promise<ChroniclerPointEvent[]> {
-  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/events`);
+export function getChroniclerEpisodeEvents(episodeId: string) {
+  return apiFetch("/chronicler/episodes/{episode_id}/events", { path: { episode_id: episodeId } });
 }
 
 /**
@@ -5875,8 +4609,8 @@ export function getChroniclerEpisodeEvents(episodeId: string): Promise<Chronicle
  */
 export function getChroniclerEpisodeCorrections(
   episodeId: string,
-): Promise<ChroniclerOverride[]> {
-  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/corrections`);
+) {
+  return apiFetch("/chronicler/episodes/{episode_id}/corrections", { path: { episode_id: episodeId } });
 }
 
 /**
@@ -5892,11 +4626,9 @@ export function getChroniclerEpisodeCorrections(
 export function submitChroniclerEpisodeCorrection(
   episodeId: string,
   body: SubmitCorrectionRequest,
-): Promise<ChroniclerOverride> {
-  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/corrections`, {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/chronicler/episodes/{episode_id}/corrections", { method: "POST",
+    body: body, path: { episode_id: episodeId } });
 }
 
 /**
@@ -5911,27 +4643,24 @@ export function submitChroniclerEpisodeCorrection(
  */
 export function postChroniclerEpisodeExplain(
   episodeId: string,
-): Promise<ChroniclerEpisodeExplainResponse> {
-  return apiFetch(`/chronicler/episodes/${encodeURIComponent(episodeId)}/explain`, {
-    method: "POST",
-  });
+) {
+  return apiFetch("/chronicler/episodes/{episode_id}/explain", { method: "POST", path: { episode_id: episodeId } });
 }
 
 /** Fetch paginated Chronicler point events. Defaults: include_tombstoned=false. */
 export function getChroniclerEvents(
   params?: ChroniclerEventsParams,
-): Promise<{ data: ChroniclerPointEvent[]; meta: { total: number; offset: number; limit: number; has_more: boolean } }> {
-  const sp = new URLSearchParams();
-  if (params?.source_name) sp.set("source_name", params.source_name);
-  if (params?.event_type) sp.set("event_type", params.event_type);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
+) {
+  const sp: ApiQuery<"/chronicler/events", "GET"> = {};
+  if (params?.source_name) sp["source_name"] = params.source_name;
+  if (params?.event_type) sp["event_type"] = params.event_type;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
   if (params?.include_tombstoned != null)
-    sp.set("include_tombstoned", String(params.include_tombstoned));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch(qs ? `/chronicler/events?${qs}` : "/chronicler/events");
+    sp["include_tombstoned"] = params.include_tombstoned;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/chronicler/events", { query: sp });
 }
 
 // ── Chronicler routines (bu-whhll.9 / bu-whhll.11) ─────────────────────────
@@ -5939,21 +4668,18 @@ export function getChroniclerEvents(
 /** List owner-reviewable weekly routines (mined + declared). */
 export function getChroniclerRoutines(
   params?: { enabled_only?: boolean },
-): Promise<{ data: ChroniclerRoutine[]; meta: Record<string, unknown> }> {
-  const sp = new URLSearchParams();
-  if (params?.enabled_only) sp.set("enabled_only", "true");
-  const qs = sp.toString();
-  return apiFetch(qs ? `/chronicler/routines?${qs}` : "/chronicler/routines");
+) {
+  const sp: ApiQuery<"/chronicler/routines", "GET"> = {};
+  if (params?.enabled_only) sp["enabled_only"] = true;
+  return apiFetch("/chronicler/routines", { query: sp });
 }
 
 /** Declare an owner work schedule (origin='declared'). Returns the created row. */
 export function createChroniclerRoutine(
   body: ChroniclerCreateRoutineRequest,
-): Promise<ChroniclerRoutine> {
-  return apiFetch("/chronicler/routines", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/chronicler/routines", { method: "POST",
+    body: body });
 }
 
 /**
@@ -5963,18 +4689,14 @@ export function createChroniclerRoutine(
 export function updateChroniclerRoutine(
   routineId: string,
   body: ChroniclerUpdateRoutineRequest,
-): Promise<ChroniclerRoutine> {
-  return apiFetch(`/chronicler/routines/${encodeURIComponent(routineId)}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/chronicler/routines/{routine_id}", { method: "PATCH",
+    body: body, path: { routine_id: routineId } });
 }
 
 /** Delete a declared routine. Returns undefined on success (HTTP 204). */
-export function deleteChroniclerRoutine(routineId: string): Promise<undefined> {
-  return apiFetch(`/chronicler/routines/${encodeURIComponent(routineId)}`, {
-    method: "DELETE",
-  });
+export function deleteChroniclerRoutine(routineId: string) {
+  return apiFetch("/chronicler/routines/{routine_id}", { method: "DELETE", path: { routine_id: routineId } });
 }
 
 // ---------------------------------------------------------------------------
@@ -5982,18 +4704,18 @@ export function deleteChroniclerRoutine(routineId: string): Promise<undefined> {
 // ---------------------------------------------------------------------------
 
 /** Fetch software version, process uptime, and start timestamp. */
-export function getInstanceFacts(): Promise<ApiResponse<InstanceFacts>> {
-  return apiFetch<ApiResponse<InstanceFacts>>("/system/instance");
+export function getInstanceFacts() {
+  return apiFetch("/system/instance");
 }
 
 /** Fetch PostgreSQL catalog size facts: total size, per-schema breakdown, largest tables. */
-export function getDatabaseFacts(): Promise<ApiResponse<DatabaseFacts>> {
-  return apiFetch<ApiResponse<DatabaseFacts>>("/system/database");
+export function getDatabaseFacts() {
+  return apiFetch("/system/database");
 }
 
 /** Fetch backup recency and source reachability. Degrades gracefully (never 503). */
-export function getBackupFacts(): Promise<ApiResponse<BackupFacts>> {
-  return apiFetch<ApiResponse<BackupFacts>>("/system/backups");
+export function getBackupFacts() {
+  return apiFetch("/system/backups");
 }
 
 /**
@@ -6002,13 +4724,13 @@ export function getBackupFacts(): Promise<ApiResponse<BackupFacts>> {
  * Returns HTTP 403 for non-owner callers. Callers should handle `ApiError`
  * with `status === 403` gracefully rather than treating it as an unexpected error.
  */
-export function getEgressCatalog(): Promise<ApiResponse<EgressCatalog>> {
-  return apiFetch<ApiResponse<EgressCatalog>>("/system/egress");
+export function getEgressCatalog() {
+  return apiFetch("/system/egress");
 }
 
 /** Fetch per-butler liveness registry snapshots and session facts. */
-export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
-  return apiFetch<ApiResponse<HeartbeatFacts>>("/system/butlers/heartbeat");
+export function getButlerHeartbeats() {
+  return apiFetch("/system/butlers/heartbeat");
 }
 
 /**
@@ -6020,8 +4742,8 @@ export function getButlerHeartbeats(): Promise<ApiResponse<HeartbeatFacts>> {
  * no delivery activity has occurred yet — that is an honest empty state, not
  * an error.
  */
-export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliveryState>> {
-  return apiFetch<ApiResponse<InsightDeliveryState>>("/system/insights/delivery-state");
+export function getInsightDeliveryState() {
+  return apiFetch("/system/insights/delivery-state");
 }
 
 /**
@@ -6030,8 +4752,8 @@ export function getInsightDeliveryState(): Promise<ApiResponse<InsightDeliverySt
  * Always returns HTTP 200. `drift_check_available: false` means the
  * comparison itself failed -- treat that as "unknown", not "clean".
  */
-export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
-  return apiFetch<ApiResponse<DriftFacts>>("/system/drift");
+export function getDriftFacts() {
+  return apiFetch("/system/drift");
 }
 
 /**
@@ -6040,8 +4762,8 @@ export function getDriftFacts(): Promise<ApiResponse<DriftFacts>> {
  * Always returns HTTP 200. `stored_function_check_available: false` means the
  * comparison itself failed -- treat that as "unknown", not "clean".
  */
-export function getStoredFunctionFacts(): Promise<ApiResponse<StoredFunctionFacts>> {
-  return apiFetch<ApiResponse<StoredFunctionFacts>>("/system/stored-functions");
+export function getStoredFunctionFacts() {
+  return apiFetch("/system/stored-functions");
 }
 
 /** Params for getSystemConditions(). */
@@ -6069,15 +4791,14 @@ export interface SystemConditionsParams {
  */
 export function getSystemConditions(
   params: SystemConditionsParams = {},
-): Promise<ApiResponse<ConditionsFacts>> {
-  const query = new URLSearchParams();
-  if (params.ledger) query.set("ledger", params.ledger);
-  if (params.source) query.set("source", params.source);
-  if (params.state) query.set("state", params.state);
-  if (params.offset !== undefined) query.set("offset", String(params.offset));
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<ApiResponse<ConditionsFacts>>(`/system/conditions${qs ? `?${qs}` : ""}`);
+) {
+  const query: ApiQuery<"/system/conditions", "GET"> = {};
+  if (params.ledger) query["ledger"] = params.ledger;
+  if (params.source) query["source"] = params.source;
+  if (params.state) query["state"] = params.state;
+  if (params.offset !== undefined) query["offset"] = params.offset;
+  if (params.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/system/conditions", { query: query });
 }
 
 /** Params for listDelegationLedger(). */
@@ -6098,18 +4819,15 @@ export interface DelegationLedgerParams {
  */
 export function listDelegationLedger(
   params: DelegationLedgerParams = {},
-): Promise<PaginatedResponse<DelegationLedgerEntry>> {
-  const query = new URLSearchParams();
-  if (params.status) query.set("status", params.status);
-  if (params.asking_butler) query.set("asking_butler", params.asking_butler);
-  if (params.target_butler) query.set("target_butler", params.target_butler);
-  if (params.wake_stuck) query.set("wake_stuck", "true");
-  if (params.offset !== undefined) query.set("offset", String(params.offset));
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<DelegationLedgerEntry>>(
-    `/delegation/ledger${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/delegation/ledger", "GET"> = {};
+  if (params.status) query["status"] = params.status;
+  if (params.asking_butler) query["asking_butler"] = params.asking_butler;
+  if (params.target_butler) query["target_butler"] = params.target_butler;
+  if (params.wake_stuck) query["wake_stuck"] = true;
+  if (params.offset !== undefined) query["offset"] = params.offset;
+  if (params.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/delegation/ledger", { query: query });
 }
 
 /** Params for listDomainEventSubscriptions(). */
@@ -6125,15 +4843,12 @@ export interface DomainEventSubscriptionsParams {
  */
 export function listDomainEventSubscriptions(
   params: DomainEventSubscriptionsParams = {},
-): Promise<ApiResponse<SubscriptionEntry[]>> {
-  const query = new URLSearchParams();
-  if (params.subscriber_butler) query.set("subscriber_butler", params.subscriber_butler);
-  if (params.event_type) query.set("event_type", params.event_type);
-  if (params.active_only) query.set("active_only", "true");
-  const qs = query.toString();
-  return apiFetch<ApiResponse<SubscriptionEntry[]>>(
-    `/domain-events/subscriptions${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/domain-events/subscriptions", "GET"> = {};
+  if (params.subscriber_butler) query["subscriber_butler"] = params.subscriber_butler;
+  if (params.event_type) query["event_type"] = params.event_type;
+  if (params.active_only) query["active_only"] = true;
+  return apiFetch("/domain-events/subscriptions", { query: query });
 }
 
 /** Params for listDomainEventDeliveries(). */
@@ -6152,27 +4867,21 @@ export interface DomainEventDeliveriesParams {
  */
 export function listDomainEventDeliveries(
   params: DomainEventDeliveriesParams = {},
-): Promise<PaginatedResponse<DeliveryEntry>> {
-  const query = new URLSearchParams();
-  if (params.subscriber_butler) query.set("subscriber_butler", params.subscriber_butler);
-  if (params.source_butler) query.set("source_butler", params.source_butler);
-  if (params.status) query.set("status", params.status);
-  if (params.offset !== undefined) query.set("offset", String(params.offset));
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<DeliveryEntry>>(
-    `/domain-events/deliveries${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/domain-events/deliveries", "GET"> = {};
+  if (params.subscriber_butler) query["subscriber_butler"] = params.subscriber_butler;
+  if (params.source_butler) query["source_butler"] = params.source_butler;
+  if (params.status) query["status"] = params.status;
+  if (params.offset !== undefined) query["offset"] = params.offset;
+  if (params.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/domain-events/deliveries", { query: query });
 }
 
 /** Atomically requeue one failed_permanent domain-event delivery. */
 export function replayDomainEventDelivery(
   deliveryId: string,
-): Promise<ApiResponse<{ delivery_id: string; status: string }>> {
-  return apiFetch<ApiResponse<{ delivery_id: string; status: string }>>(
-    `/domain-events/deliveries/${encodeURIComponent(deliveryId)}/replay`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/domain-events/deliveries/{delivery_id}/replay", { method: "POST", path: { delivery_id: deliveryId } });
 }
 
 /**
@@ -6182,10 +4891,8 @@ export function replayDomainEventDelivery(
  */
 export function listDomainEventReactions(
   eventId: string,
-): Promise<ApiResponse<ReactionEntry[]>> {
-  return apiFetch<ApiResponse<ReactionEntry[]>>(
-    `/domain-events/events/${encodeURIComponent(eventId)}/reactions`,
-  );
+) {
+  return apiFetch("/domain-events/events/{event_id}/reactions", { path: { event_id: eventId } });
 }
 
 /** Params for listDomainEventContracts(). */
@@ -6199,13 +4906,10 @@ export interface DomainEventContractsParams {
  */
 export function listDomainEventContracts(
   params: DomainEventContractsParams = {},
-): Promise<ApiResponse<ContractEntry[]>> {
-  const query = new URLSearchParams();
-  if (params.publisher) query.set("publisher", params.publisher);
-  const qs = query.toString();
-  return apiFetch<ApiResponse<ContractEntry[]>>(
-    `/domain-events/contracts${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/domain-events/contracts", "GET"> = {};
+  if (params.publisher) query["publisher"] = params.publisher;
+  return apiFetch("/domain-events/contracts", { query: query });
 }
 
 /** Params for getHealingDispatchEvents(). */
@@ -6225,16 +4929,13 @@ export interface HealingDispatchEventsParams {
  */
 export function getHealingDispatchEvents(
   params: HealingDispatchEventsParams = {},
-): Promise<PaginatedResponse<HealingDispatchEvent>> {
-  const query = new URLSearchParams();
-  if (params.decision) query.set("decision", params.decision);
-  if (params.fingerprint) query.set("fingerprint", params.fingerprint);
-  if (params.offset !== undefined) query.set("offset", String(params.offset));
-  if (params.limit !== undefined) query.set("limit", String(params.limit));
-  const qs = query.toString();
-  return apiFetch<PaginatedResponse<HealingDispatchEvent>>(
-    `/healing/dispatch-events${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const query: ApiQuery<"/healing/dispatch-events", "GET"> = {};
+  if (params.decision) query["decision"] = params.decision;
+  if (params.fingerprint) query["fingerprint"] = params.fingerprint;
+  if (params.offset !== undefined) query["offset"] = params.offset;
+  if (params.limit !== undefined) query["limit"] = params.limit;
+  return apiFetch("/healing/dispatch-events", { query: query });
 }
 
 /**
@@ -6246,8 +4947,8 @@ export function getHealingDispatchEvents(
  * means the GitHub compare comparison failed -- treat as "unknown", not
  * "up to date".
  */
-export function getDeploymentFacts(): Promise<ApiResponse<DeploymentFacts>> {
-  return apiFetch<ApiResponse<DeploymentFacts>>("/system/deployments");
+export function getDeploymentFacts() {
+  return apiFetch("/system/deployments");
 }
 
 // ---------------------------------------------------------------------------
@@ -6264,8 +4965,8 @@ export function getDeploymentFacts(): Promise<ApiResponse<DeploymentFacts>> {
  * templated paragraph and `source` reflects which path produced the
  * elaboration. The response is per-owner cached for 5 minutes server-side.
  */
-export function getDashboardBriefing(): Promise<Briefing> {
-  return apiFetch<ApiResponse<Briefing>>("/dashboard/briefing").then((response) => response.data);
+export function getDashboardBriefing() {
+  return apiFetch("/dashboard/briefing").then((response) => response.data);
 }
 
 // ---------------------------------------------------------------------------
@@ -6278,24 +4979,23 @@ interface ChroniclesEditorialParams {
   tz?: string;
 }
 
-function _chroniclesQs(params: ChroniclesEditorialParams | undefined): string {
-  const sp = new URLSearchParams();
-  if (params?.date) sp.set("date", params.date);
-  if (params?.tz) sp.set("tz", params.tz);
-  const qs = sp.toString();
-  return qs ? `?${qs}` : "";
+function _chroniclesQs(params: ChroniclesEditorialParams | undefined): ApiQuery<"/chronicler/kpi", "GET"> {
+  const sp: ApiQuery<"/chronicler/kpi", "GET"> = {};
+  if (params?.date) sp["date"] = params.date;
+  if (params?.tz) sp["tz"] = params.tz;
+  return sp;
 }
 
 export function getChroniclesBriefing(
   params?: ChroniclesEditorialParams,
-): Promise<ChroniclesBriefing> {
-  return apiFetch<ChroniclesBriefing>(`/chronicler/briefing${_chroniclesQs(params)}`);
+) {
+  return apiFetch("/chronicler/briefing", { query: _chroniclesQs(params) });
 }
 
 export function getChroniclesKpi(
   params?: ChroniclesEditorialParams,
-): Promise<{ data: ChroniclesKpi; meta?: Record<string, unknown> }> {
-  return apiFetch(`/chronicler/kpi${_chroniclesQs(params)}`);
+) {
+  return apiFetch("/chronicler/kpi", { query: _chroniclesQs(params) });
 }
 
 // ---------------------------------------------------------------------------
@@ -6305,86 +5005,71 @@ export function getChroniclesKpi(
 /** List transactions with optional filters. */
 export function getFinanceTransactions(
   params?: FinanceTransactionListParams,
-): Promise<PaginatedResponse<FinanceTransaction>> {
-  const sp = new URLSearchParams();
-  if (params?.category) sp.set("category", params.category);
-  if (params?.merchant) sp.set("merchant", params.merchant);
-  if (params?.since) sp.set("since", params.since);
-  if (params?.until) sp.set("until", params.until);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<FinanceTransaction>>(
-    qs ? `/finance/transactions?${qs}` : "/finance/transactions",
-  );
+) {
+  const sp: ApiQuery<"/finance/transactions", "GET"> = {};
+  if (params?.category) sp["category"] = params.category;
+  if (params?.merchant) sp["merchant"] = params.merchant;
+  if (params?.since) sp["since"] = params.since;
+  if (params?.until) sp["until"] = params.until;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/finance/transactions", { query: sp });
 }
 
 /** List subscriptions with optional status filter. */
 export function getFinanceSubscriptions(
   params?: FinanceSubscriptionListParams,
-): Promise<PaginatedResponse<FinanceSubscription>> {
-  const sp = new URLSearchParams();
-  if (params?.status) sp.set("status", params.status);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<FinanceSubscription>>(
-    qs ? `/finance/subscriptions?${qs}` : "/finance/subscriptions",
-  );
+) {
+  const sp: ApiQuery<"/finance/subscriptions", "GET"> = {};
+  if (params?.status) sp["status"] = params.status;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/finance/subscriptions", { query: sp });
 }
 
 /** Read state-only Finance recurrence measurability. */
-export function getFinanceExpectedSignals(): Promise<FinanceExpectedSignalsResponse> {
-  return apiFetch<FinanceExpectedSignalsResponse>("/finance/expected-signals");
+export function getFinanceExpectedSignals() {
+  return apiFetch("/finance/expected-signals");
 }
 
 /** List the forward obligation ledger (bu-8cdl1.10): warn-by dates,
  * cancellation-door status, and pre-charge price-change flags per
  * subscription. Explicitly degraded (never a fabricated all-clear) when the
  * ledger read fails. */
-export function getFinanceObligations(): Promise<FinanceObligationsResponse> {
-  return apiFetch<FinanceObligationsResponse>("/finance/obligations");
+export function getFinanceObligations() {
+  return apiFetch("/finance/obligations");
 }
 
 /** List upcoming bills with urgency classification. */
 export function getFinanceUpcomingBills(
   params?: FinanceUpcomingBillsParams,
-): Promise<FinanceUpcomingBillsResponse> {
-  const sp = new URLSearchParams();
-  if (params?.days_ahead != null) sp.set("days_ahead", String(params.days_ahead));
-  if (params?.include_overdue != null) sp.set("include_overdue", String(params.include_overdue));
-  const qs = sp.toString();
-  return apiFetch<FinanceUpcomingBillsResponse>(
-    qs ? `/finance/upcoming-bills?${qs}` : "/finance/upcoming-bills",
-  );
+) {
+  const sp: ApiQuery<"/finance/upcoming-bills", "GET"> = {};
+  if (params?.days_ahead != null) sp["days_ahead"] = params.days_ahead;
+  if (params?.include_overdue != null) sp["include_overdue"] = params.include_overdue;
+  return apiFetch("/finance/upcoming-bills", { query: sp });
 }
 
 /** Aggregate spending summary over a date range. */
 export function getFinanceSpendingSummary(
   params?: FinanceSpendingSummaryParams,
-): Promise<FinanceSpendingSummary> {
-  const sp = new URLSearchParams();
-  if (params?.start_date) sp.set("start_date", params.start_date);
-  if (params?.end_date) sp.set("end_date", params.end_date);
-  if (params?.group_by) sp.set("group_by", params.group_by);
-  const qs = sp.toString();
-  return apiFetch<FinanceSpendingSummary>(
-    qs ? `/finance/spending-summary?${qs}` : "/finance/spending-summary",
-  );
+) {
+  const sp: ApiQuery<"/finance/spending-summary", "GET"> = {};
+  if (params?.start_date) sp["start_date"] = params.start_date;
+  if (params?.end_date) sp["end_date"] = params.end_date;
+  if (params?.group_by) sp["group_by"] = params.group_by;
+  return apiFetch("/finance/spending-summary", { query: sp });
 }
 
 /** List financial accounts with an optional type filter. */
 export function getFinanceAccounts(
   params?: FinanceAccountListParams,
-): Promise<PaginatedResponse<FinanceAccount>> {
-  const sp = new URLSearchParams();
-  if (params?.type) sp.set("type", params.type);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<FinanceAccount>>(
-    qs ? `/finance/accounts?${qs}` : "/finance/accounts",
-  );
+) {
+  const sp: ApiQuery<"/finance/accounts", "GET"> = {};
+  if (params?.type) sp["type"] = params.type;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/finance/accounts", { query: sp });
 }
 
 /**
@@ -6394,11 +5079,9 @@ export function getFinanceAccounts(
  */
 export function patchFinanceBulkMetadata(
   request: FinanceBulkUpdateRequest,
-): Promise<FinanceBulkUpdateResponse> {
-  return apiFetch<FinanceBulkUpdateResponse>("/finance/transactions/bulk-metadata", {
-    method: "PATCH",
-    body: JSON.stringify(request),
-  });
+) {
+  return apiFetch("/finance/transactions/bulk-metadata", { method: "PATCH",
+    body: request });
 }
 
 // ---------------------------------------------------------------------------
@@ -6409,57 +5092,52 @@ export function patchFinanceBulkMetadata(
 /** List trips with optional status and date range filters, paginated. */
 export function getTravelTrips(
   params?: TravelTripsParams,
-): Promise<TravelTripsResponse> {
-  const sp = new URLSearchParams();
-  if (params?.status) sp.set("status", params.status);
-  if (params?.from_date) sp.set("from_date", params.from_date);
-  if (params?.to_date) sp.set("to_date", params.to_date);
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  const qs = sp.toString();
-  return apiFetch<TravelTripsResponse>(qs ? `/travel/trips?${qs}` : "/travel/trips");
+) {
+  const sp: ApiQuery<"/travel/trips", "GET"> = {};
+  if (params?.status) sp["status"] = params.status;
+  if (params?.from_date) sp["from_date"] = params.from_date;
+  if (params?.to_date) sp["to_date"] = params.to_date;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  if (params?.limit != null) sp["limit"] = params.limit;
+  return apiFetch("/travel/trips", { query: sp });
 }
 
 /** Fetch full trip summary (legs, accommodations, reservations, docs, timeline, alerts). */
-export function getTravelTripSummary(tripId: string): Promise<TravelTripSummary> {
-  return apiFetch<TravelTripSummary>(`/travel/trips/${encodeURIComponent(tripId)}`);
+export function getTravelTripSummary(tripId: string) {
+  return apiFetch("/travel/trips/{trip_id}", { path: { trip_id: tripId } });
 }
 
 /** Fetch upcoming travel with urgency-ranked pre-trip action items. */
-export function getTravelUpcoming(withinDays?: number): Promise<TravelUpcomingModel> {
-  const qs = withinDays != null ? `?within_days=${withinDays}` : "";
-  return apiFetch<TravelUpcomingModel>(`/travel/upcoming${qs}`);
+export function getTravelUpcoming(withinDays?: number) {
+  return apiFetch("/travel/upcoming", { query: { within_days: withinDays ?? undefined } });
 }
 
 /** Fetch documents expiring within the given look-ahead window (default: 180 days). */
 export function getTravelExpiringDocuments(
   days?: number,
-): Promise<TravelExpiringDocumentsResponse> {
-  const qs = days != null ? `?days=${days}` : "";
-  return apiFetch<TravelExpiringDocumentsResponse>(`/travel/documents/expiring${qs}`);
+) {
+  return apiFetch("/travel/documents/expiring", { query: { days: days ?? undefined } });
 }
 
 // ---------------------------------------------------------------------------
 // Home butler endpoints
 // ---------------------------------------------------------------------------
 
-export function getHomeSnapshotStatus(): Promise<HomeSnapshotStatus> {
-  return apiFetch<HomeSnapshotStatus>("/home/snapshot-status");
+export function getHomeSnapshotStatus() {
+  return apiFetch("/home/snapshot-status");
 }
 
 /** Fetch the saved Home atmosphere location and the latest feed health. */
-export function getHomeAtmosphereCurrent(): Promise<HomeAtmosphereCurrentResponse> {
-  return apiFetch<HomeAtmosphereCurrentResponse>("/home/atmosphere/current");
+export function getHomeAtmosphereCurrent() {
+  return apiFetch("/home/atmosphere/current");
 }
 
 /** Save Home atmosphere coordinates for the next scheduled feed refresh. */
 export function updateHomeAtmosphereLocation(
   coordinates: HomeAtmosphereLocationUpdate,
-): Promise<HomeAtmosphereLocationUpdate> {
-  return apiFetch<HomeAtmosphereLocationUpdate>("/home/atmosphere/location", {
-    method: "PATCH",
-    body: JSON.stringify(coordinates),
-  });
+) {
+  return apiFetch("/home/atmosphere/location", { method: "PATCH",
+    body: coordinates });
 }
 
 export function getHomeDevices(params?: {
@@ -6468,63 +5146,56 @@ export function getHomeDevices(params?: {
   health?: "healthy" | "offline";
   page?: number;
   page_size?: number;
-}): Promise<HomeDeviceInventoryResponse> {
-  const sp = new URLSearchParams();
-  if (params?.domain) sp.set("domain", params.domain);
-  if (params?.area) sp.set("area", params.area);
-  if (params?.health) sp.set("health", params.health);
-  if (params?.page != null) sp.set("page", String(params.page));
-  if (params?.page_size != null) sp.set("page_size", String(params.page_size));
-  const qs = sp.toString();
-  return apiFetch<HomeDeviceInventoryResponse>(`/home/devices${qs ? `?${qs}` : ""}`);
+}) {
+  const sp: ApiQuery<"/home/devices", "GET"> = {};
+  if (params?.domain) sp["domain"] = params.domain;
+  if (params?.area) sp["area"] = params.area;
+  if (params?.health) sp["health"] = params.health;
+  if (params?.page != null) sp["page"] = params.page;
+  if (params?.page_size != null) sp["page_size"] = params.page_size;
+  return apiFetch("/home/devices", { query: sp });
 }
 
 export function getHomeMaintenance(params?: {
   category?: string;
   status?: "overdue" | "due" | "upcoming" | "ok";
-}): Promise<HomeMaintenanceItem[]> {
-  const sp = new URLSearchParams();
-  if (params?.category) sp.set("category", params.category);
-  if (params?.status) sp.set("status", params.status);
-  const qs = sp.toString();
-  return apiFetch<HomeMaintenanceItem[]>(`/home/maintenance${qs ? `?${qs}` : ""}`);
+}) {
+  const sp: ApiQuery<"/home/maintenance", "GET"> = {};
+  if (params?.category) sp["category"] = params.category;
+  if (params?.status) sp["status"] = params.status;
+  return apiFetch("/home/maintenance", { query: sp });
 }
 
 export function getHomeEnergy(params?: {
   period?: "day" | "hour";
   start?: string;
   end?: string;
-}): Promise<HomeEnergyDataPoint[]> {
-  const sp = new URLSearchParams();
-  if (params?.period) sp.set("period", params.period);
-  if (params?.start) sp.set("start", params.start);
-  if (params?.end) sp.set("end", params.end);
-  const qs = sp.toString();
-  return apiFetch<HomeEnergyDataPoint[]>(`/home/energy${qs ? `?${qs}` : ""}`);
+}) {
+  const sp: ApiQuery<"/home/energy", "GET"> = {};
+  if (params?.period) sp["period"] = params.period;
+  if (params?.start) sp["start"] = params.start;
+  if (params?.end) sp["end"] = params.end;
+  return apiFetch("/home/energy", { query: sp });
 }
 
 export function getHomeEnergyTopConsumers(params?: {
   start?: string;
   end?: string;
-}): Promise<HomeTopConsumer[]> {
-  const sp = new URLSearchParams();
-  if (params?.start) sp.set("start", params.start);
-  if (params?.end) sp.set("end", params.end);
-  const qs = sp.toString();
-  return apiFetch<HomeTopConsumer[]>(`/home/energy/top-consumers${qs ? `?${qs}` : ""}`);
+}) {
+  const sp: ApiQuery<"/home/energy/top-consumers", "GET"> = {};
+  if (params?.start) sp["start"] = params.start;
+  if (params?.end) sp["end"] = params.end;
+  return apiFetch("/home/energy/top-consumers", { query: sp });
 }
 
 export function getHomeCommandLog(params?: {
   limit?: number;
   domain?: string;
-}): Promise<{ data: HomeCommandLogEntry[]; meta?: Record<string, unknown> }> {
-  const sp = new URLSearchParams();
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.domain) sp.set("domain", params.domain);
-  const qs = sp.toString();
-  return apiFetch<{ data: HomeCommandLogEntry[]; meta?: Record<string, unknown> }>(
-    `/home/command-log${qs ? `?${qs}` : ""}`,
-  );
+}) {
+  const sp: ApiQuery<"/home/command-log", "GET"> = {};
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.domain) sp["domain"] = params.domain;
+  return apiFetch("/home/command-log", { query: sp });
 }
 
 // ---------------------------------------------------------------------------
@@ -6532,64 +5203,55 @@ export function getHomeCommandLog(params?: {
 // ---------------------------------------------------------------------------
 
 /** GET /api/butlers/{name}/prompt — current versioned system prompt. */
-export function getButlerPrompt(name: string): Promise<ApiResponse<PromptVersion>> {
-  return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`);
+export function getButlerPrompt(name: string) {
+  return apiFetch("/butlers/{name}/prompt", { path: { name: name } });
 }
 
 /** GET /api/butlers/{name}/prompt/effective — protected composed prompt + drift truth. */
 export function getButlerEffectivePrompt(
   name: string,
-): Promise<ApiResponse<ButlerEffectivePrompt>> {
-  return apiFetch<ApiResponse<ButlerEffectivePrompt>>(
-    `/butlers/${encodeURIComponent(name)}/prompt/effective`,
-  );
+) {
+  return apiFetch("/butlers/{name}/prompt/effective", { path: { name: name } });
 }
 
 /** PUT /api/butlers/{name}/prompt — update prompt, snapshots prior version. */
 export function updateButlerPrompt(
   name: string,
   body: PromptUpdateRequest,
-): Promise<ApiResponse<PromptVersion>> {
-  return apiFetch<ApiResponse<PromptVersion>>(`/butlers/${name}/prompt`, {
-    method: "PUT",
+) {
+  return apiFetch("/butlers/{name}/prompt", { method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body, path: { name: name } });
 }
 
 /** GET /api/butlers/{name}/prompt/history — version history newest-first. */
 export function getButlerPromptHistory(
   name: string,
   params?: { limit?: number; offset?: number },
-): Promise<PaginatedResponse<PromptVersion>> {
-  const sp = new URLSearchParams();
-  if (params?.limit != null) sp.set("limit", String(params.limit));
-  if (params?.offset != null) sp.set("offset", String(params.offset));
-  const qs = sp.toString();
-  return apiFetch<PaginatedResponse<PromptVersion>>(
-    `/butlers/${name}/prompt/history${qs ? `?${qs}` : ""}`,
-  );
+) {
+  const sp: ApiQuery<"/butlers/{name}/prompt/history", "GET"> = {};
+  if (params?.limit != null) sp["limit"] = params.limit;
+  if (params?.offset != null) sp["offset"] = params.offset;
+  return apiFetch("/butlers/{name}/prompt/history", { path: { name: name }, query: sp });
 }
 
 /** GET /api/butlers/{name}/memory-access — memory tier access metadata. */
-export function getButlerMemoryAccess(name: string): Promise<ApiResponse<MemoryAccess>> {
-  return apiFetch<ApiResponse<MemoryAccess>>(`/butlers/${name}/memory-access`);
+export function getButlerMemoryAccess(name: string) {
+  return apiFetch("/butlers/{name}/memory-access", { path: { name: name } });
 }
 
 /** POST /api/butlers/{name}/kill — initiate graceful shutdown. */
-export function killButler(name: string, body: KillRequest): Promise<ApiResponse<KillResponse>> {
-  return apiFetch<ApiResponse<KillResponse>>(`/butlers/${name}/kill`, {
-    method: "POST",
+export function killButler(name: string, body: KillRequest) {
+  return apiFetch("/butlers/{name}/kill", { method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+    body: body, path: { name: name } });
 }
 
 // ---------------------------------------------------------------------------
 // Secrets v2 — breaks catalogue (bu-qo3sf)
 // ---------------------------------------------------------------------------
 
-import type { BreaksCatalogueParams, BreaksCatalogueResponse } from "./types.ts";
+import type { BreaksCatalogueParams } from "./types.ts";
 
 /**
  * GET /api/secrets/breaks-catalogue
@@ -6603,20 +5265,9 @@ import type { BreaksCatalogueParams, BreaksCatalogueResponse } from "./types.ts"
  */
 export function getBreaksCatalogue(
   params?: BreaksCatalogueParams,
-): Promise<BreaksCatalogueResponse> {
-  const qs = params?.provider
-    ? `?provider=${encodeURIComponent(params.provider)}`
-    : "";
-  return apiFetch<BreaksCatalogueResponse>(`/secrets/breaks-catalogue${qs}`);
-}
+) {
 
-// ---------------------------------------------------------------------------
-// Secrets v2 — user credential mutations [bu-f1loa]
-// ---------------------------------------------------------------------------
-
-/** Response payload for POST /api/secrets/user/<provider>/reauthorize. */
-export interface UserReauthorizeResponse {
-  redirect_url: string;
+  return apiFetch("/secrets/breaks-catalogue", { query: { provider: params?.provider || undefined } });
 }
 
 /**
@@ -6632,12 +5283,8 @@ export interface UserReauthorizeResponse {
 export function reauthorizeUserCredential(
   provider: string,
   identity: string,
-): Promise<ApiResponse<UserReauthorizeResponse>> {
-  const qs = `?identity=${encodeURIComponent(identity)}`;
-  return apiFetch<ApiResponse<UserReauthorizeResponse>>(
-    `/secrets/user/${encodeURIComponent(provider)}/reauthorize${qs}`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/secrets/user/{provider}/reauthorize", { method: "POST", path: { provider: provider }, query: { identity } });
 }
 
 // ---------------------------------------------------------------------------
@@ -6645,16 +5292,8 @@ export function reauthorizeUserCredential(
 // ---------------------------------------------------------------------------
 
 import type {
-  SecretsInventoryData,
-  SecretsInventoryMeta,
   SecretsInventoryParams,
 } from "./types.ts";
-
-/** Full inventory response envelope from GET /api/secrets/inventory. */
-export interface SecretsInventoryResponse {
-  data: SecretsInventoryData;
-  meta: SecretsInventoryMeta;
-}
 
 /**
  * GET /api/secrets/inventory?identity=<uuid>
@@ -6669,27 +5308,16 @@ export interface SecretsInventoryResponse {
  */
 export function getSecretsInventory(
   params?: SecretsInventoryParams,
-): Promise<SecretsInventoryResponse> {
-  const qs =
-    params?.identity
-      ? `?identity=${encodeURIComponent(params.identity)}`
-      : "";
-  return apiFetch<SecretsInventoryResponse>(`/secrets/inventory${qs}`);
+) {
+
+  return apiFetch("/secrets/inventory", { query: { identity: params?.identity || undefined } });
 }
 
 // ---------------------------------------------------------------------------
 // Secrets v2 — per-credential reads (bu-ayp6v.1)
 // ---------------------------------------------------------------------------
 
-import type {
-  SecretsAuditEvent,
-  SecretsAuditParams,
-  SecretsCliDetail,
-  SecretsProbeAllResponse,
-  SecretsProbeResult,
-  SecretsSystemCredentialDetail,
-  SecretsUserDetail,
-} from "./types.ts";
+import type { SecretsAuditParams } from "./types.ts";
 
 /**
  * GET /api/secrets/user/<provider>?identity=<uuid>
@@ -6702,11 +5330,8 @@ import type {
 export function getUserCredential(
   provider: string,
   identity?: string,
-): Promise<ApiResponse<SecretsUserDetail>> {
-  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
-  return apiFetch<ApiResponse<SecretsUserDetail>>(
-    `/secrets/user/${encodeURIComponent(provider)}${qs}`,
-  );
+) {
+  return apiFetch("/secrets/user/{provider}", { path: { provider: provider }, query: { identity: identity || undefined } });
 }
 
 /**
@@ -6720,10 +5345,8 @@ export function getUserCredential(
  */
 export function getSystemCredential(
   key: string,
-): Promise<ApiResponse<SecretsSystemCredentialDetail>> {
-  return apiFetch<ApiResponse<SecretsSystemCredentialDetail>>(
-    `/secrets/system/${encodeURIComponent(key)}`,
-  );
+) {
+  return apiFetch("/secrets/system/{key}", { path: { key: key } });
 }
 
 /**
@@ -6735,10 +5358,8 @@ export function getSystemCredential(
  *
  * Returns 404 when no matching token exists.
  */
-export function getCliCredential(id: string): Promise<ApiResponse<SecretsCliDetail>> {
-  return apiFetch<ApiResponse<SecretsCliDetail>>(
-    `/secrets/cli/${encodeURIComponent(id)}`,
-  );
+export function getCliCredential(id: string) {
+  return apiFetch("/secrets/cli/{credential_id}", { path: { credential_id: id } });
 }
 
 /**
@@ -6757,21 +5378,15 @@ export function getCredentialAudit(
   scope: "user" | "system" | "cli",
   key: string,
   params?: SecretsAuditParams,
-): Promise<ApiResponse<SecretsAuditEvent[]>> {
-  const qs = params?.limit != null ? `?limit=${String(params.limit)}` : "";
-  return apiFetch<ApiResponse<SecretsAuditEvent[]>>(
-    `/secrets/audit/${encodeURIComponent(scope)}/${encodeURIComponent(key)}${qs}`,
-  );
+) {
+  return apiFetch("/secrets/audit/{scope}/{key}", { path: { scope: scope, key: key }, query: { limit: params?.limit ?? undefined } });
 }
 
 // ---------------------------------------------------------------------------
 // Secrets v2 — user credential mutations (bu-ayp6v.1)
 // ---------------------------------------------------------------------------
 
-import type {
-  SecretsDisconnectStatus,
-  SecretsRotateUserRequest,
-} from "./types.ts";
+import type { SecretsRotateUserRequest } from "./types.ts";
 
 /**
  * POST /api/secrets/user/<provider>/rotate?identity=<uuid>
@@ -6788,15 +5403,9 @@ export function rotateUserCredential(
   provider: string,
   body: SecretsRotateUserRequest,
   identity?: string,
-): Promise<ApiResponse<SecretsUserDetail>> {
-  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
-  return apiFetch<ApiResponse<SecretsUserDetail>>(
-    `/secrets/user/${encodeURIComponent(provider)}/rotate${qs}`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/secrets/user/{provider}/rotate", { method: "POST",
+      body: body, path: { provider: provider }, query: { identity: identity || undefined } });
 }
 
 /**
@@ -6812,12 +5421,8 @@ export function rotateUserCredential(
 export function disconnectUserCredential(
   provider: string,
   identity?: string,
-): Promise<ApiResponse<SecretsDisconnectStatus>> {
-  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
-  return apiFetch<ApiResponse<SecretsDisconnectStatus>>(
-    `/secrets/user/${encodeURIComponent(provider)}/disconnect${qs}`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/secrets/user/{provider}/disconnect", { method: "POST", path: { provider: provider }, query: { identity: identity || undefined } });
 }
 
 /**
@@ -6835,12 +5440,8 @@ export function disconnectUserCredential(
 export function probeUserCredential(
   provider: string,
   identity?: string,
-): Promise<ApiResponse<SecretsProbeResult>> {
-  const qs = identity ? `?identity=${encodeURIComponent(identity)}` : "";
-  return apiFetch<ApiResponse<SecretsProbeResult>>(
-    `/secrets/user/${encodeURIComponent(provider)}/probe${qs}`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/secrets/user/{provider}/probe", { method: "POST", path: { provider: provider }, query: { identity: identity || undefined } });
 }
 
 // ---------------------------------------------------------------------------
@@ -6849,7 +5450,7 @@ export function probeUserCredential(
 
 // SecretsSystemCredentialDetail is imported by the read block above; the
 // write route publishes the same payload.
-import type { SecretsSystemDeleteStatus, SecretsSystemSetRequest } from "./types.ts";
+import type { SecretsSystemSetRequest } from "./types.ts";
 
 /**
  * POST /api/secrets/system/<key>
@@ -6870,14 +5471,9 @@ import type { SecretsSystemDeleteStatus, SecretsSystemSetRequest } from "./types
 export function setSystemCredential(
   key: string,
   body: SecretsSystemSetRequest,
-): Promise<ApiResponse<SecretsSystemCredentialDetail>> {
-  return apiFetch<ApiResponse<SecretsSystemCredentialDetail>>(
-    `/secrets/system/${encodeURIComponent(key)}`,
-    {
-      method: "POST",
-      body: JSON.stringify(body),
-    },
-  );
+) {
+  return apiFetch("/secrets/system/{key}", { method: "POST",
+      body: body, path: { key: key } });
 }
 
 /**
@@ -6891,11 +5487,8 @@ export function setSystemCredential(
  * Returns 404 when no credential exists for the given key.
  * Returns 429 when the rate limit is exceeded.
  */
-export function probeSystemCredential(key: string): Promise<ApiResponse<SecretsProbeResult>> {
-  return apiFetch<ApiResponse<SecretsProbeResult>>(
-    `/secrets/system/${encodeURIComponent(key)}/probe`,
-    { method: "POST" },
-  );
+export function probeSystemCredential(key: string) {
+  return apiFetch("/secrets/system/{key}/probe", { method: "POST", path: { key: key } });
 }
 
 /**
@@ -6909,10 +5502,8 @@ export function probeSystemCredential(key: string): Promise<ApiResponse<SecretsP
  * Returns ApiResponse<SecretsProbeAllResponse>.
  * Returns 429 when a sweep is already in progress.
  */
-export function probeAllCredentials(): Promise<ApiResponse<SecretsProbeAllResponse>> {
-  return apiFetch<ApiResponse<SecretsProbeAllResponse>>("/secrets/probe-all", {
-    method: "POST",
-  });
+export function probeAllCredentials() {
+  return apiFetch("/secrets/probe-all", { method: "POST" });
 }
 
 /**
@@ -6928,19 +5519,15 @@ export function probeAllCredentials(): Promise<ApiResponse<SecretsProbeAllRespon
 export function deleteSystemCredential(
   key: string,
   target: "shared" | string = "shared",
-): Promise<ApiResponse<SecretsSystemDeleteStatus>> {
-  const qs = `?target=${encodeURIComponent(target)}`;
-  return apiFetch<ApiResponse<SecretsSystemDeleteStatus>>(
-    `/secrets/system/${encodeURIComponent(key)}${qs}`,
-    { method: "DELETE" },
-  );
+) {
+  return apiFetch("/secrets/system/{key}", { method: "DELETE", path: { key: key }, query: { target } });
 }
 
 // ---------------------------------------------------------------------------
 // Secrets v2 — CLI runtime mutations (bu-ayp6v.1)
 // ---------------------------------------------------------------------------
 
-import type { SecretsCliRotateResult, SecretsCliRevokeResult, SecretsCliReauthorizeResult } from "./types.ts";
+
 
 /**
  * POST /api/secrets/cli/<id>/rotate
@@ -6961,14 +5548,9 @@ import type { SecretsCliRotateResult, SecretsCliRevokeResult, SecretsCliReauthor
 export function rotateCliCredential(
   id: string,
   value?: string,
-): Promise<ApiResponse<SecretsCliRotateResult>> {
-  return apiFetch<ApiResponse<SecretsCliRotateResult>>(
-    `/secrets/cli/${encodeURIComponent(id)}/rotate`,
-    {
-      method: "POST",
-      ...(value !== undefined ? { body: JSON.stringify({ value }) } : {}),
-    },
-  );
+) {
+  return apiFetch("/secrets/cli/{credential_id}/rotate", { method: "POST",
+      ...(value !== undefined ? { body: { value } } : {}), path: { credential_id: id } });
 }
 
 /**
@@ -6981,11 +5563,8 @@ export function rotateCliCredential(
  * Returns ApiResponse<SecretsCliRevokeResult>.
  * Returns 404 when no matching CLI token exists.
  */
-export function revokeCliCredential(id: string): Promise<ApiResponse<SecretsCliRevokeResult>> {
-  return apiFetch<ApiResponse<SecretsCliRevokeResult>>(
-    `/secrets/cli/${encodeURIComponent(id)}/revoke`,
-    { method: "POST" },
-  );
+export function revokeCliCredential(id: string) {
+  return apiFetch("/secrets/cli/{credential_id}/revoke", { method: "POST", path: { credential_id: id } });
 }
 
 /**
@@ -7005,11 +5584,8 @@ export function revokeCliCredential(id: string): Promise<ApiResponse<SecretsCliR
  */
 export function reauthorizeCliCredential(
   id: string,
-): Promise<ApiResponse<SecretsCliReauthorizeResult>> {
-  return apiFetch<ApiResponse<SecretsCliReauthorizeResult>>(
-    `/secrets/cli/${encodeURIComponent(id)}/reauthorize`,
-    { method: "POST" },
-  );
+) {
+  return apiFetch("/secrets/cli/{credential_id}/reauthorize", { method: "POST", path: { credential_id: id } });
 }
 
 // ---------------------------------------------------------------------------
@@ -7023,8 +5599,8 @@ export function reauthorizeCliCredential(
  * Returns an empty list when none exist.
  * Returns 503 when the shared database is unavailable.
  */
-export function listTimelineSavedViews(): Promise<ApiResponse<TimelineSavedViewEntry[]>> {
-  return apiFetch<ApiResponse<TimelineSavedViewEntry[]>>("/timeline/saved-views");
+export function listTimelineSavedViews() {
+  return apiFetch("/timeline/saved-views");
 }
 
 /**
@@ -7034,11 +5610,9 @@ export function listTimelineSavedViews(): Promise<ApiResponse<TimelineSavedViewE
  */
 export function createTimelineSavedView(
   body: TimelineSavedViewCreateRequest,
-): Promise<TimelineSavedViewEntry> {
-  return apiFetch<TimelineSavedViewEntry>("/timeline/saved-views", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/timeline/saved-views", { method: "POST",
+    body: body });
 }
 
 /**
@@ -7050,11 +5624,9 @@ export function createTimelineSavedView(
 export function updateTimelineSavedView(
   id: string,
   body: TimelineSavedViewUpdateRequest,
-): Promise<TimelineSavedViewEntry> {
-  return apiFetch<TimelineSavedViewEntry>(`/timeline/saved-views/${encodeURIComponent(id)}`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+) {
+  return apiFetch("/timeline/saved-views/{view_id}", { method: "PATCH",
+    body: body, path: { view_id: id } });
 }
 
 /**
@@ -7063,25 +5635,19 @@ export function updateTimelineSavedView(
  * Deletes a saved view. Returns undefined on success (HTTP 204).
  * Returns 404 when the view does not exist.
  */
-export function deleteTimelineSavedView(id: string): Promise<void> {
-  return apiFetch<void>(`/timeline/saved-views/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+export function deleteTimelineSavedView(id: string) {
+  return apiFetch("/timeline/saved-views/{view_id}", { method: "DELETE", path: { view_id: id } });
 }
 
 
-export function getIdentityCandidates(entityId: string): Promise<{ facts: CandidateIdentityFact[] }> {
-  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-candidates`);
+export function getIdentityCandidates(entityId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/identity-candidates", { path: { entity_id: entityId } });
 }
 
-export function decideIdentityCandidate(entityId: string, factId: string, decision: "adopt" | "reject"):
-  Promise<{ fact_id: string; decision: string; decided_at: string; replayed: boolean }> {
-  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/${decision}`,
-    { method: "POST" });
+export function decideIdentityCandidate(entityId: string, factId: string, decision: "adopt" | "reject") {
+  return apiFetch("/relationship/entities/{entity_id}/identity-facts/{fact_id}/{decision}", { method: "POST", path: { entity_id: entityId, fact_id: factId, decision: decision } });
 }
 
-export function getIdentityDecision(entityId: string, factId: string): Promise<{
-  fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
-}> {
-  return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
+export function getIdentityDecision(entityId: string, factId: string) {
+  return apiFetch("/relationship/entities/{entity_id}/identity-facts/{fact_id}/decision", { path: { entity_id: entityId, fact_id: factId } });
 }

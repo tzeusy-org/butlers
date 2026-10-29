@@ -27,7 +27,7 @@ import {
 } from "@/hooks/use-system";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
-import { ApiError } from "@/api/index";
+import { ApiError } from "@/api/client.ts";
 
 // ---------------------------------------------------------------------------
 // Mock all hooks used by SystemPage

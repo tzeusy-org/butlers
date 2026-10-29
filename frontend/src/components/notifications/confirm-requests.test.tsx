@@ -4,13 +4,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { apiFetch, ApiError } from "@/api/client";
+import { ApiError } from "@/api/client";
+import { clearOwnerSession, rememberOwnerCsrf } from "@/api/owner-session";
 import { ConfirmRequests } from "@/components/notifications/confirm-requests";
 
-vi.mock("@/api/client", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/api/client")>(),
-  apiFetch: vi.fn(),
-}));
+// Keep the actual generated client, owner boundary and request serialization.
+// Only HTTP response data is synthetic.
+const respond = vi.fn<(path: string) => Promise<unknown>>();
+const fetcher = vi.fn<typeof fetch>();
 
 const request = {
   id: "42071b76-5215-423b-b4eb-06c1dd296f56",
@@ -30,11 +31,29 @@ function page(data: unknown[]) {
 let client: QueryClient;
 beforeEach(() => {
   vi.resetAllMocks();
+  clearOwnerSession();
+  rememberOwnerCsrf({ csrf_token: "synthetic-confirm-test", csrf_expires_at: new Date(Date.now() + 60_000).toISOString() });
+  fetcher.mockImplementation(async (input) => {
+    const url = new URL(String(input), location.href);
+    const path = url.pathname.replace(/^\/api(?=\/|$)/, "") + url.search;
+    try {
+      const value = await respond(path);
+      return new Response(JSON.stringify(value), { status: 200, headers: { "Content-Type": "application/json" } });
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return new Response(JSON.stringify({ error: { code: error.code, message: error.message } }), { status: error.status });
+      }
+      throw error;
+    }
+  });
+  vi.stubGlobal("fetch", fetcher);
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
 });
 afterEach(() => {
   cleanup();
   client.clear();
+  clearOwnerSession();
+  vi.unstubAllGlobals();
 });
 
 function mount() {
@@ -48,7 +67,7 @@ describe("dashboard confirmation requests", () => {
     const older = { ...request, id: olderId, text: olderText };
     let answered = false;
     let finishRefresh!: (result: unknown) => void;
-    vi.mocked(apiFetch).mockImplementation(async (path) => {
+    respond.mockImplementation(async (path) => {
       if (path.endsWith("/answer")) {
         answered = true;
         return { data: { status: "answered", application_status: "pending" } };
@@ -64,7 +83,7 @@ describe("dashboard confirmation requests", () => {
     expect(screen.queryByText(olderText)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Load more" }));
     expect(await screen.findByText(olderText)).toBeTruthy();
-    expect(apiFetch).toHaveBeenCalledWith(`/confirms?before=${request.id}`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(fetcher).toHaveBeenCalledWith(`/api/confirms?before=${request.id}`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(screen.getByText(request.text)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
     const choices = screen.getAllByRole("button", { name: "Not work" });
@@ -72,9 +91,9 @@ describe("dashboard confirmation requests", () => {
     expect(await screen.findByText("Your answer: Not work")).toBeTruthy();
     expect(await screen.findByText("Answer recorded. Waiting for it to be applied.")).toBeTruthy();
     expect((screen.getAllByRole("button", { name: "Not work" })[1] as HTMLButtonElement).disabled).toBe(true);
-    expect(apiFetch).toHaveBeenCalledWith(`/confirms/${olderId}/answer`, {
+    expect(fetcher).toHaveBeenCalledWith(`/api/confirms/${olderId}/answer`, expect.objectContaining({
       method: "POST", body: JSON.stringify({ option_index: 1 }),
-    });
+    }));
     await waitFor(() => expect(finishRefresh).toBeTypeOf("function"));
     await act(async () => { finishRefresh(page([{ ...older, status: "answered", answer_index: 1, application_status: "pending" }])); });
     expect(screen.getByText("Your answer: Not work")).toBeTruthy();
@@ -85,7 +104,7 @@ describe("dashboard confirmation requests", () => {
     let applicationStatus = "pending";
     let answered = false;
     let finishAnswer!: (result: unknown) => void;
-    vi.mocked(apiFetch).mockImplementation(async (path) => {
+    respond.mockImplementation(async (path) => {
       if (path.endsWith("/answer")) {
         return new Promise((resolve) => { finishAnswer = resolve; });
       }
@@ -100,10 +119,10 @@ describe("dashboard confirmation requests", () => {
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
     expect(screen.queryByText(/Answer recorded/)).toBeNull();
-    await waitFor(() => expect(apiFetch).toHaveBeenCalledWith(`/confirms/${request.id}/answer`, {
+    await waitFor(() => expect(fetcher).toHaveBeenCalledWith(`/api/confirms/${request.id}/answer`, expect.objectContaining({
       method: "POST", body: JSON.stringify({ option_index: 1 }),
-    }));
-    expect(vi.mocked(apiFetch).mock.calls.filter(([path]) => path.endsWith("/answer"))).toHaveLength(1);
+    })));
+    expect(respond.mock.calls.filter(([path]) => path.endsWith("/answer"))).toHaveLength(1);
     answered = true;
     await act(async () => { finishAnswer({ data: { status: "answered", application_status: "pending" } }); });
     expect(await screen.findByText("Answer recorded. Waiting for it to be applied.")).toBeTruthy();
@@ -115,7 +134,7 @@ describe("dashboard confirmation requests", () => {
   });
 
   it.each(["unavailable", "refused"])("keeps a %s submission honest and permits a deliberate retry", async (failure) => {
-    vi.mocked(apiFetch).mockImplementation(async (path) => {
+    respond.mockImplementation(async (path) => {
       if (path.endsWith("/answer")) {
         if (failure === "refused") return { data: { status: "refused" } };
         throw new ApiError("TEMPORARY_FAILURE", "Try again later", 503);
@@ -127,12 +146,12 @@ describe("dashboard confirmation requests", () => {
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", expect.stringContaining("Could not confirm whether your answer was recorded."));
     expect(screen.queryByText(/Answer recorded/)).toBeNull();
     await waitFor(() => expect((screen.getByRole("button", { name: "Not work" }) as HTMLButtonElement).disabled).toBe(false));
-    expect(vi.mocked(apiFetch).mock.calls.filter(([path]) => path.endsWith("/answer"))).toHaveLength(1);
+    expect(respond.mock.calls.filter(([path]) => path.endsWith("/answer"))).toHaveLength(1);
   });
 
   it("shows the authoritative answer when a different choice was already recorded elsewhere", async () => {
     let answered = false;
-    vi.mocked(apiFetch).mockImplementation(async (path) => {
+    respond.mockImplementation(async (path) => {
       if (path.endsWith("/answer")) {
         answered = true;
         return { data: { status: "already_handled", state: "answered", application_status: "applied" } };
@@ -148,7 +167,7 @@ describe("dashboard confirmation requests", () => {
 
   it("recovers a committed answer after its POST response was lost", async () => {
     let answered = false;
-    vi.mocked(apiFetch).mockImplementation(async (path) => {
+    respond.mockImplementation(async (path) => {
       if (path.endsWith("/answer")) {
         answered = true;
         throw new TypeError("Network response lost");
@@ -160,41 +179,41 @@ describe("dashboard confirmation requests", () => {
     expect(await screen.findByText("Your answer: Not work")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
     expect((screen.getByRole("button", { name: "Not work" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(vi.mocked(apiFetch).mock.calls.filter(([path]) => path.endsWith("/answer"))).toHaveLength(1);
+    expect(respond.mock.calls.filter(([path]) => path.endsWith("/answer"))).toHaveLength(1);
   });
 
   it.each([
     { status: "expired", expires_at: request.expires_at },
     { status: "pending", expires_at: "2020-01-01T00:00:00Z" },
   ])("disables expired choices for $status server state", async (expiry) => {
-    vi.mocked(apiFetch).mockResolvedValue(page([{ ...request, ...expiry }]));
+    respond.mockResolvedValue(page([{ ...request, ...expiry }]));
     mount();
     expect(await screen.findByText("This question has expired.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Not work" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("distinguishes a recorded answer whose application needs attention", async () => {
-    vi.mocked(apiFetch).mockResolvedValue(page([{ ...request, status: "answered", answer_index: 1, application_status: "error" }]));
+    respond.mockResolvedValue(page([{ ...request, status: "answered", answer_index: 1, application_status: "error" }]));
     mount();
     expect(await screen.findByText("Answer recorded. Applying it failed; it will be retried.")).toBeTruthy();
     expect((screen.getByRole("button", { name: "Not work" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("omits the dark runtime and replaces cached controls if a refresh becomes unavailable", async () => {
-    vi.mocked(apiFetch).mockResolvedValue(page([request]));
+    respond.mockResolvedValue(page([request]));
     const { container } = mount();
     await screen.findByRole("button", { name: "Not work" });
-    vi.mocked(apiFetch).mockRejectedValue(new ApiError("UNKNOWN_ERROR", "confirm_runtime_unavailable", 503));
+    respond.mockRejectedValue(new ApiError("UNKNOWN_ERROR", "confirm_runtime_unavailable", 503));
     await act(async () => { await client.invalidateQueries({ queryKey: ["confirms"] }); });
     await waitFor(() => expect(container.textContent).toBe(""));
   });
 
   it("shows a real loading failure with a working read retry", async () => {
-    vi.mocked(apiFetch).mockRejectedValue(new ApiError("UNKNOWN_ERROR", "Database unavailable", 503));
+    respond.mockRejectedValue(new ApiError("UNKNOWN_ERROR", "Database unavailable", 503));
     mount();
     expect(await screen.findByText("Questions could not be loaded.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Not work" })).toBeNull();
-    vi.mocked(apiFetch).mockResolvedValue(page([request]));
+    respond.mockResolvedValue(page([request]));
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("button", { name: "Not work" })).toBeTruthy();
   });

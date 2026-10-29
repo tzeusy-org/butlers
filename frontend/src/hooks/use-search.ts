@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import { searchAll } from "@/api/index.ts";
+import { searchAll } from "@/api/client.ts";
 
 const DEBOUNCE_MS = 300;
 const MIN_QUERY_LENGTH = 2;

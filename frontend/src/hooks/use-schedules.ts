@@ -4,14 +4,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  createButlerSchedule,
-  deleteButlerSchedule,
-  getButlerSchedules,
-  toggleButlerSchedule,
-  triggerButlerSchedule,
-  updateButlerSchedule,
-} from "@/api/index.ts";
+import { createButlerSchedule, deleteButlerSchedule, getButlerSchedules, toggleButlerSchedule, triggerButlerSchedule, updateButlerSchedule } from "@/api/client.ts";
 import type { ScheduleCreate, ScheduleUpdate } from "@/api/types.ts";
 import type { ScheduleToggleRequest } from "@/api/types.ts";
 

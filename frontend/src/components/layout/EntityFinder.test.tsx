@@ -33,7 +33,8 @@ import {
 } from "@/hooks/use-entities";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
-import { getOwnerSetupStatus, type NeighbourEntry } from "@/api/index.ts";
+import { getOwnerSetupStatus } from "@/api/client.ts";
+import type { NeighbourEntry } from "@/api/types.ts";
 
 /** Renders the current location path+search for navigation assertions. */
 function LocationProbe() {
@@ -79,7 +80,7 @@ vi.mock("@/hooks/use-butlers", () => ({
   useButlers: vi.fn(),
 }));
 
-vi.mock("@/api/index", () => ({
+vi.mock("@/api/client", () => ({
   getOwnerSetupStatus: vi.fn(async () => ({ entity_id: null })),
 }));
 

@@ -3,6 +3,7 @@
 import ast
 import json
 import sys
+from pathlib import Path
 
 CONTRACTS = {
     "PermissionSetResponse": ("/{butler}/{perm}", "/api/permissions"),
@@ -11,7 +12,30 @@ CONTRACTS = {
 PRIMITIVES = {"str": "string", "datetime": "string", "float": "number", "bool": "boolean"}
 
 
-def project(source, route, model):
+def response_schema_base(source):
+    """Admit only the shipped serialization-schema flag, never inherited fields."""
+    tree = ast.parse(source)
+    expected = ast.parse(
+        "from pydantic import BaseModel, ConfigDict\n"
+        "class ResponseSchemaModel(BaseModel):\n"
+        "    model_config = ConfigDict(json_schema_serialization_defaults_required=True)\n"
+    )
+    # Documentation does not alter the exact executable class/import population.
+    for owner in (tree, *(n for n in tree.body if isinstance(n, ast.ClassDef))):
+        owner.body = [
+            n
+            for n in owner.body
+            if not (
+                isinstance(n, ast.Expr)
+                and isinstance(n.value, ast.Constant)
+                and isinstance(n.value.value, str)
+            )
+        ]
+    if ast.dump(tree) != ast.dump(expected):
+        raise ValueError("Unsupported serialization-only response base")
+
+
+def project(source, route, model, base_source=None):
     if model not in CONTRACTS or route != CONTRACTS[model][0]:
         raise ValueError("Unsupported response contract")
     tree = ast.parse(source)
@@ -55,7 +79,15 @@ def project(source, route, model):
             raise ValueError(f"Unsupported imported authority: {name}")
         return parent
 
-    protected = {model, "BaseModel", "ApiResponse", "APIRouter", "router", *PRIMITIVES}
+    protected = {
+        model,
+        "BaseModel",
+        "ResponseSchemaModel",
+        "ApiResponse",
+        "APIRouter",
+        "router",
+        *PRIMITIVES,
+    }
     for node in nodes:
         if isinstance(node, ast.alias) and node.name == "*":
             raise ValueError("Unsupported wildcard authority")
@@ -93,9 +125,16 @@ def project(source, route, model):
     if (
         len(cls.bases) != 1
         or not isinstance(cls.bases[0], ast.Name)
-        or cls.bases[0].id != "BaseModel"
+        or cls.bases[0].id not in {"BaseModel", "ResponseSchemaModel"}
     ):
         raise ValueError(f"Unsupported model inheritance: {model}")
+    if cls.bases[0].id == "ResponseSchemaModel":
+        base_import = imported("ResponseSchemaModel", "butlers.api.models.base")
+        if base_source is None:
+            base_source = (
+                Path(__file__).resolve().parents[2] / "src/butlers/api/models/base.py"
+            ).read_text()
+        response_schema_base(base_source)
     if base_import.lineno >= cls.lineno:
         raise ValueError("Unsupported model authority ordering")
     fields = {}
@@ -198,7 +237,7 @@ def project(source, route, model):
         if not isinstance(node, ast.Name) or not isinstance(node.ctx, ast.Load):
             continue
         parent = parents[node]
-        if node.id == "BaseModel":
+        if node.id in {"BaseModel", "ResponseSchemaModel"}:
             if not isinstance(parent, ast.ClassDef) or node not in parent.bases:
                 raise ValueError("Unsupported BaseModel alias or indirect authority")
         elif node.id == "APIRouter":
@@ -239,7 +278,16 @@ def project(source, route, model):
 if __name__ == "__main__":
     try:
         request = json.load(sys.stdin)
-        print(json.dumps(project(request["source"], request["route"], request["model"])))
+        print(
+            json.dumps(
+                project(
+                    request["source"],
+                    request["route"],
+                    request["model"],
+                    request.get("base_source"),
+                )
+            )
+        )
     except (ValueError, TypeError, KeyError, SyntaxError) as exc:
         print(f"Unsupported backend response contract: {exc}", file=sys.stderr)
         sys.exit(1)

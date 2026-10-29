@@ -93,7 +93,7 @@ async function mockIngestionApis(
       status: 200,
       contentType: "application/json",
       body: mockJson("getApprovalMetrics", {
-        data: { total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
+        data: { avg_decision_latency_seconds: null, callback_secret_configured: null, delivery_due_count: 0, delivery_retry_wait_count: 0, delivery_expired_lease_count: 0, delivery_ambiguous_count: 0, delivery_stuck_count: 0, delivery_oldest_due_age_seconds: null, delivery_by_state: {}, delivery_by_reason: {}, delivery_sources_complete: false, total_pending: 0, total_approved_today: 0, total_rejected_today: 0, total_auto_approved_today: 0, total_expired_today: 0, auto_approval_rate: 0, rejection_rate: 0, failure_count_today: 0, active_rules_count: 0 },
         meta: {},
       }),
     });
@@ -104,7 +104,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: mockJson("getConnectorSummaries", { meta: {}, data: { connectors: [] } }),
+      body: mockJson("getConnectorSummaries", { meta: {}, data: { connector_registry_available: true, connectors: [] } }),
     });
   });
 
@@ -147,7 +147,7 @@ async function mockIngestionApis(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: mockJson("listIngestionEvents", { items: events, next_cursor: null, limit: 50 }),
+      body: mockJson("listIngestionEvents", { sources_degraded: null, items: events, next_cursor: null, limit: 50 }),
     });
   });
 }

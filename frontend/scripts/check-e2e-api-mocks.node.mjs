@@ -8,7 +8,7 @@ const route = "/{butler}/{perm}";
 const model = "PermissionSetResponse";
 const project = (text) => projectModel(text, route, model);
 function changeField(replacement) {
-  const start = source.indexOf(`class ${model}(BaseModel):`);
+  const start = source.indexOf(`class ${model}(ResponseSchemaModel):`);
   assert.notEqual(start, -1);
   return source.slice(0, start) + source.slice(start).replace("    granted: bool", replacement);
 }
@@ -43,11 +43,20 @@ for (const [name, replacement] of [
 }
 
 test("refuses inheritance, decorated models and shadowed declarations", () => {
+  const base = readFileSync(new URL("../../src/butlers/api/models/base.py", import.meta.url), "utf8");
+  assert.equal(projectModel(source, route, model, base), project(source));
+  for (const poisonedBase of [
+    base.replace("json_schema_serialization_defaults_required=True", "json_schema_serialization_defaults_required=False"),
+    base.replace("json_schema_serialization_defaults_required=True", "extra=\"allow\""),
+    base + "\nResponseSchemaModel = BaseModel\n",
+    base + "\nclass Other(BaseModel): pass\n",
+    base.replace("    model_config", "    extra_field: str\n    model_config"),
+  ]) assert.throws(() => projectModel(source, route, model, poisonedBase), /Unsupported/);
   for (const changed of [
-    source.replace(`class ${model}(BaseModel):`, `class ${model}(OtherModel):`),
-    source.replace(`class ${model}(BaseModel):`, `@custom\nclass ${model}(BaseModel):`),
-    source.replace(`class ${model}(BaseModel):`, `@custom(\n    option=True,\n)\n# retained comment\n\nclass ${model}(BaseModel):`),
-    source + `\nclass ${model}(BaseModel):\n    other: str\n`,
+    source.replace(`class ${model}(ResponseSchemaModel):`, `class ${model}(OtherModel):`),
+    source.replace(`class ${model}(ResponseSchemaModel):`, `@custom\nclass ${model}(ResponseSchemaModel):`),
+    source.replace(`class ${model}(ResponseSchemaModel):`, `@custom(\n    option=True,\n)\n# retained comment\n\nclass ${model}(ResponseSchemaModel):`),
+    source + `\nclass ${model}(ResponseSchemaModel):\n    other: str\n`,
     source + `\n${model} = OtherModel\n`,
   ]) assert.throws(() => project(changed), /Unsupported/);
   for (const [module, name, path] of [
@@ -55,7 +64,7 @@ test("refuses inheritance, decorated models and shadowed declarations", () => {
     ["spend", "SpendCeiling", "/ceiling"],
   ]) {
     const actual = readFileSync(new URL(`../../src/butlers/api/routers/${module}.py`, import.meta.url), "utf8");
-    const declaration = `class ${name}(BaseModel):`;
+    const declaration = `class ${name}(ResponseSchemaModel):`;
     const start = actual.indexOf(declaration);
     const end = actual.indexOf("\n\n@router.put", start);
     assert.notEqual(start, -1);
@@ -73,6 +82,9 @@ test("refuses inheritance, decorated models and shadowed declarations", () => {
       actual + `\nAlias = ${name}\n`,
       actual + `\nmatch {}:\n    case {**${name}}:\n        pass\n`,
       actual + "\nAlias = BaseModel\n",
+      actual + "\nAlias = ResponseSchemaModel\n",
+      actual + "\nResponseSchemaModel = BaseModel\n",
+      actual + "\nfrom elsewhere import ResponseSchemaModel\n",
       actual + "\nAlias = ApiResponse\n",
       actual + "\nAlias = APIRouter\n",
       actual + "\nAlias = router\n",

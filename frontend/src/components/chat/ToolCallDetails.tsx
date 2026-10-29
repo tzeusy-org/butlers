@@ -12,7 +12,7 @@ import type { MessageToolCall } from "@/api/types.ts";
 // ---------------------------------------------------------------------------
 
 interface ToolCallEntryProps {
-  toolCall: MessageToolCall;
+  toolCall: MessageToolCall | Record<string, unknown>;
 }
 
 function ToolCallEntry({ toolCall }: ToolCallEntryProps) {
@@ -22,6 +22,7 @@ function ToolCallEntry({ toolCall }: ToolCallEntryProps) {
   const argsSummary = (() => {
     try {
       const s = JSON.stringify(toolCall.arguments);
+      if (typeof s !== "string") return "";
       return s.length > 80 ? `${s.slice(0, 80)}…` : s;
     } catch {
       return "";
@@ -41,7 +42,7 @@ function ToolCallEntry({ toolCall }: ToolCallEntryProps) {
           <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
         )}
         <WrenchIcon className="size-3 shrink-0 text-muted-foreground" />
-        <span className="font-mono font-medium">{toolCall.name}</span>
+        <span className="font-mono font-medium">{typeof toolCall.name === "string" ? toolCall.name : "Unknown tool"}</span>
         {!expanded && argsSummary && (
           <span className="text-muted-foreground truncate ml-1">{argsSummary}</span>
         )}
@@ -78,7 +79,7 @@ function ToolCallEntry({ toolCall }: ToolCallEntryProps) {
 // ---------------------------------------------------------------------------
 
 interface ToolCallDetailsProps {
-  toolCalls: MessageToolCall[];
+  toolCalls: readonly (MessageToolCall | Record<string, unknown>)[];
 }
 
 export function ToolCallDetails({ toolCalls }: ToolCallDetailsProps) {
@@ -109,7 +110,7 @@ export function ToolCallDetails({ toolCalls }: ToolCallDetailsProps) {
       {open && (
         <div className="mt-1.5 space-y-1">
           {toolCalls.map((tc, i) => (
-            <ToolCallEntry key={tc.id ?? i} toolCall={tc} />
+            <ToolCallEntry key={typeof tc.id === "string" || typeof tc.id === "number" ? tc.id : i} toolCall={tc} />
           ))}
         </div>
       )}

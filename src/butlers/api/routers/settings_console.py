@@ -36,7 +36,6 @@ from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
@@ -49,6 +48,7 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.routers.events import emit_event
 from butlers.core.model_routing import price_mtd_from_ledger
 from butlers.core.pricing import PricingConfig
@@ -73,7 +73,7 @@ _cache_lock = asyncio.Lock()
 _ATTENTION_TONE = str  # "red" | "amber"
 
 
-class AttentionItem(BaseModel):
+class AttentionItem(ResponseSchemaModel):
     """A single attention item surfaced in the console strip."""
 
     id: str
@@ -83,7 +83,7 @@ class AttentionItem(BaseModel):
     action_route: str
 
 
-class HeaderCounts(BaseModel):
+class HeaderCounts(ResponseSchemaModel):
     """Aggregate header counts for the console overview.
 
     Each field is ``None`` when its subsystem aggregation failed -- a
@@ -101,7 +101,7 @@ class HeaderCounts(BaseModel):
     models_total: int | None
 
 
-class ConsoleResponse(BaseModel):
+class ConsoleResponse(ResponseSchemaModel):
     """Full response for GET /api/settings/console."""
 
     header_counts: HeaderCounts

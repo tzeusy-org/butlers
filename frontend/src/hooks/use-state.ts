@@ -5,7 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { deleteButlerState, getButlerState, setButlerState } from "@/api/index.ts";
+import { deleteButlerState, getButlerState, setButlerState } from "@/api/client.ts";
 
 /**
  * Primary poll interval for butler state store queries (bu-ep4ks.15).

@@ -8,21 +8,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { waitFor } from "@testing-library/react";
 
 import { inspectMemory } from "@/api/client";
-import type { MemoryInspectResult, MemoryPaginatedResponse } from "@/api/types";
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
 import SearchResults from "@/components/memory/SearchResults";
 
 vi.mock("@/api/client", async (original) => ({
   ...await original<typeof import("@/api/client")>(),
-  inspectMemory: vi.fn(),
+  inspectMemory: vi.fn((await original<typeof import("@/api/client")>()).inspectMemory),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 describe("search refetch failure after a cached response", () => {
-  afterEach(() => vi.mocked(inspectMemory).mockReset());
+  afterEach(() => { vi.mocked(inspectMemory).mockClear(); vi.mocked(ownerFetch).mockReset(); });
 
   it.each(["empty", "non-empty"] as const)("replaces cached %s results with a retryable error, then recovers", async (population) => {
-    const rows: MemoryInspectResult[] = population === "empty" ? [] : [{
+    const rows = population === "empty" ? [] : [{
       id: "search-episode",
       kind: "episode",
       content: "Retained search episode",
@@ -30,7 +31,7 @@ describe("search refetch failure after a cached response", () => {
       created_at: "2026-02-19T01:00:00Z",
       metadata: {},
     }];
-    const cached: MemoryPaginatedResponse<MemoryInspectResult> = {
+    const cached = {
       data: rows,
       meta: { total: rows.length, offset: 0, limit: 50, has_more: false },
     };
@@ -40,10 +41,10 @@ describe("search refetch failure after a cached response", () => {
     };
     const initialText = population === "empty" ? "Nothing in the books." : "Retained search episode";
     const recoveredText = population === "empty" ? "Nothing in the books." : "Recovered search episode";
-    vi.mocked(inspectMemory)
-      .mockResolvedValueOnce(cached)
+    vi.mocked(ownerFetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify(cached)))
       .mockRejectedValueOnce(new Error("inspect unavailable"))
-      .mockResolvedValueOnce(recovered);
+      .mockResolvedValueOnce(new Response(JSON.stringify(recovered)));
 
     // Use the real hook/cache: refetch errors retain successful data in React Query.
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

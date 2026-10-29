@@ -10,8 +10,10 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class TransactionModel(BaseModel):
+
+class TransactionModel(ResponseSchemaModel):
     """A recorded financial transaction."""
 
     id: str
@@ -34,7 +36,7 @@ class TransactionModel(BaseModel):
     updated_at: str
 
 
-class SubscriptionModel(BaseModel):
+class SubscriptionModel(ResponseSchemaModel):
     """A tracked recurring subscription commitment."""
 
     id: str
@@ -63,7 +65,7 @@ class SubscriptionModel(BaseModel):
     updated_at: str
 
 
-class BillModel(BaseModel):
+class BillModel(ResponseSchemaModel):
     """A tracked payable bill obligation."""
 
     id: str
@@ -84,7 +86,7 @@ class BillModel(BaseModel):
     updated_at: str
 
 
-class AccountModel(BaseModel):
+class AccountModel(ResponseSchemaModel):
     """A tracked financial account."""
 
     id: str
@@ -101,7 +103,7 @@ class AccountModel(BaseModel):
     updated_at: str
 
 
-class CostClaimModel(BaseModel):
+class CostClaimModel(ResponseSchemaModel):
     """One shared typed claim with Finance's latest honest verdict."""
 
     id: str
@@ -129,7 +131,7 @@ class CostClaimModel(BaseModel):
     decided_at: str | None = None
 
 
-class SpendingGroupModel(BaseModel):
+class SpendingGroupModel(ResponseSchemaModel):
     """A spending aggregation bucket (category, merchant, week, or month)."""
 
     key: str
@@ -137,7 +139,7 @@ class SpendingGroupModel(BaseModel):
     count: int
 
 
-class CurrencySpendingSummaryModel(BaseModel):
+class CurrencySpendingSummaryModel(ResponseSchemaModel):
     """One non-converted spending aggregate for a single ISO currency."""
 
     currency: str
@@ -145,7 +147,7 @@ class CurrencySpendingSummaryModel(BaseModel):
     groups: list[SpendingGroupModel] = []
 
 
-class SpendingSummaryModel(BaseModel):
+class SpendingSummaryModel(ResponseSchemaModel):
     """Aggregated spending summary over a date range."""
 
     start_date: str
@@ -158,7 +160,7 @@ class SpendingSummaryModel(BaseModel):
     degraded_reason: Literal["multiple_currencies_unconverted"] | None = None
 
 
-class FinanceExpectedSignalModel(BaseModel):
+class FinanceExpectedSignalModel(ResponseSchemaModel):
     """Content-blind Finance recurrence measurability state."""
 
     signal_key: str
@@ -171,7 +173,7 @@ class FinanceExpectedSignalModel(BaseModel):
     evaluated_at: str
 
 
-class FinanceExpectedSignalsResponse(BaseModel):
+class FinanceExpectedSignalsResponse(ResponseSchemaModel):
     """Explicitly degraded envelope; unavailable state is never an all-clear."""
 
     signals: list[FinanceExpectedSignalModel] | None
@@ -179,7 +181,7 @@ class FinanceExpectedSignalsResponse(BaseModel):
     degraded_reason: str | None = None
 
 
-class ObligationModel(BaseModel):
+class ObligationModel(ResponseSchemaModel):
     """One forward obligation ledger row (bu-8cdl1.10 slice 3), denormalized
     with its subscription's service/amount and cancellation-door status."""
 
@@ -198,7 +200,7 @@ class ObligationModel(BaseModel):
     days_remaining_to_act: int | None = None
 
 
-class ObligationsResponse(BaseModel):
+class ObligationsResponse(ResponseSchemaModel):
     """Response envelope for GET /obligations. Explicitly degraded, never a
     fabricated all-clear when the ledger read fails (response-conventions
     fleet-wide rule)."""
@@ -217,7 +219,7 @@ class UpcomingBillItemModel(BaseModel):
     days_until_due: int
 
 
-class DistinctMerchantModel(BaseModel):
+class DistinctMerchantModel(ResponseSchemaModel):
     """Aggregate row from the distinct-merchants query."""
 
     merchant: str
@@ -246,7 +248,7 @@ class BulkUpdateOpModel(BaseModel):
     set: BulkUpdateSetModel
 
 
-class BulkUpdateOpResultModel(BaseModel):
+class BulkUpdateOpResultModel(ResponseSchemaModel):
     """Result of a single bulk-update op."""
 
     pattern: str
@@ -261,7 +263,7 @@ class BulkUpdateRequestModel(BaseModel):
     ops: list[BulkUpdateOpModel]
 
 
-class BulkUpdateResponseModel(BaseModel):
+class BulkUpdateResponseModel(ResponseSchemaModel):
     """Response from the bulk-metadata-update endpoint."""
 
     updated_total: int
@@ -296,14 +298,14 @@ class BulkTransactionRequest(BaseModel):
     source: str | None = None  # stored as import_source in fact metadata
 
 
-class BulkTransactionErrorDetail(BaseModel):
+class BulkTransactionErrorDetail(ResponseSchemaModel):
     """Per-row error detail in a bulk ingestion response."""
 
     index: int
     reason: str  # "duplicate", "invalid_date", "invalid_amount", or other
 
 
-class BulkTransactionResponse(BaseModel):
+class BulkTransactionResponse(ResponseSchemaModel):
     """Response from the bulk transaction ingestion endpoint."""
 
     total: int

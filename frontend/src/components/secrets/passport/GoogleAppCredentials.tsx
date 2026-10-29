@@ -15,11 +15,7 @@ import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import {
-  getGoogleCredentialStatus,
-  getGoogleOAuthStartUrl,
-  upsertGoogleCredentials,
-} from "@/api/index.ts";
+import { getGoogleCredentialStatus, getGoogleOAuthStartUrl, upsertGoogleCredentials } from "@/api/client.ts";
 import type { GoogleCredentialStatusResponse } from "@/api/types.ts";
 
 import { Mono, PillBtn, BlockHead } from "./atoms.tsx";

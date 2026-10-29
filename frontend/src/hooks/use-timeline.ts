@@ -4,7 +4,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { getTimeline, getTimelineAttention, getTimelineHistogram } from "@/api/index.ts";
+import { getTimeline, getTimelineAttention, getTimelineHistogram } from "@/api/client.ts";
 import type {
   TimelineAttentionParams,
   TimelineHistogramParams,

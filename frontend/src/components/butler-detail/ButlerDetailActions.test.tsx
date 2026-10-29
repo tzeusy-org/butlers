@@ -30,7 +30,7 @@ vi.mock("react-router", async () => {
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
-vi.mock("@/api/index.ts", () => ({ triggerButler: vi.fn() }));
+vi.mock("@/api/client.ts", () => ({ triggerButler: vi.fn() }));
 
 vi.mock("@/hooks/use-general", () => ({
   useRegistry: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
@@ -47,7 +47,7 @@ import {
   ButlerCommandBarPrefillProvider,
   useCommandBarPrefill,
 } from "./command-bar-prefill";
-import { triggerButler } from "@/api/index.ts";
+import { triggerButler } from "@/api/client.ts";
 import { toast } from "sonner";
 import { useRegistry } from "@/hooks/use-general";
 import type { RegistryEntry } from "@/api/types";
@@ -126,11 +126,11 @@ describe("ButlerDetailActions — Force-Run session linking", () => {
   afterEach(() => cleanup());
 
   it("navigates to /sessions/:id with the returned session_id", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({
+    vi.mocked(triggerButler).mockResolvedValue({ data: {
       success: true,
       session_id: "sess-123",
       output: "",
-    });
+    } });
 
     renderActions();
     fireEvent.click(screen.getByTestId("butler-force-run"));
@@ -141,11 +141,11 @@ describe("ButlerDetailActions — Force-Run session linking", () => {
   });
 
   it("does not navigate when no session_id is returned", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({
+    vi.mocked(triggerButler).mockResolvedValue({ data: {
       success: true,
       session_id: "",
       output: "",
-    });
+    } });
 
     renderActions();
     fireEvent.click(screen.getByTestId("butler-force-run"));
@@ -160,11 +160,11 @@ describe("ButlerDetailActions — unified command bar (bu-86c4c.18)", () => {
   afterEach(() => cleanup());
 
   it("submits the default scheduler prompt when the input is left empty", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({
+    vi.mocked(triggerButler).mockResolvedValue({ data: {
       success: true,
       session_id: "",
       output: "",
-    });
+    } });
 
     renderActions("general");
     fireEvent.click(screen.getByTestId("butler-force-run"));
@@ -179,11 +179,11 @@ describe("ButlerDetailActions — unified command bar (bu-86c4c.18)", () => {
   });
 
   it("submits a custom prompt typed into the command bar (replaces the Trigger tab)", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({
+    vi.mocked(triggerButler).mockResolvedValue({ data: {
       success: true,
       session_id: "",
       output: "",
-    });
+    } });
 
     renderActions("general");
     fireEvent.change(screen.getByTestId("butler-command-input"), {
@@ -201,11 +201,11 @@ describe("ButlerDetailActions — unified command bar (bu-86c4c.18)", () => {
   });
 
   it("submits on Enter in the command input", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({
+    vi.mocked(triggerButler).mockResolvedValue({ data: {
       success: true,
       session_id: "",
       output: "",
-    });
+    } });
 
     renderActions("general");
     const input = screen.getByTestId("butler-command-input");
@@ -283,7 +283,7 @@ describe("ButlerDetailActions — skill prefill (bu-9ppi0z)", () => {
   });
 
   it("submits the prefilled prompt on Run at the selected complexity", async () => {
-    vi.mocked(triggerButler).mockResolvedValue({ success: true, session_id: "", output: "" });
+    vi.mocked(triggerButler).mockResolvedValue({ data: { success: true, session_id: "", output: "" } });
 
     renderActionsWithPrefill();
     fireEvent.click(screen.getByTestId("request-prefill"));
@@ -307,7 +307,7 @@ describe("ButlerDetailActions — skill prefill (bu-9ppi0z)", () => {
       () => {};
     vi.mocked(triggerButler).mockReturnValue(
       new Promise((resolve) => {
-        finishRun = resolve;
+        finishRun = (value) => resolve({ data: value });
       }),
     );
 

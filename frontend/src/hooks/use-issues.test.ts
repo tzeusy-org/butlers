@@ -47,8 +47,8 @@ vi.mock("@/hooks/use-optimistic-mutation.ts", () => ({
   useOptimisticListMutation: mockUseOptimisticListMutation,
 }));
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     getIssues: vi.fn(() => Promise.resolve({ data: [] })),
@@ -57,7 +57,7 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
   };
 });
 
-import { dismissIssue, getIssues, undismissIssue } from "@/api/index.ts";
+import { dismissIssue, getIssues, undismissIssue } from "@/api/client.ts";
 import type { Issue } from "@/api/types";
 import { useDismissIssue, useIssues, useUndismissIssue } from "./use-issues";
 
@@ -99,6 +99,12 @@ function lastListMutationOptions<TVariables = string>(): CapturedListMutationOpt
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
+error_message: null,
+occurrences: 1,
+first_seen_at: null,
+last_seen_at: null,
+recurrence_at: null,
+butlers: [],
     severity: "warning",
     type: "audit_error_group:boom",
     butler: "general",

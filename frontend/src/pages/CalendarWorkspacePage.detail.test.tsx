@@ -123,8 +123,13 @@ describe("CalendarWorkspacePage detail panel", () => {
     setWorkspaceState({
       data: {
         data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
           entries: [
             {
+linked_people: [],
               entry_id: "entry-prov",
               event_id: "evt-entry-prov",
               view: "user" as const,
@@ -195,8 +200,13 @@ describe("CalendarWorkspacePage detail panel", () => {
     setWorkspaceState({
       data: {
         data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
           entries: [
             {
+linked_people: [],
               entry_id: "instance-entry-1",
               event_id: "evt-backing-1",
               view: "user" as const,

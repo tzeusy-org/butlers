@@ -5,14 +5,14 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router";
 
-import * as api from "@/api/index.ts";
+import * as api from "@/api/client.ts";
 import * as confirms from "@/api/confirms";
 import type { NotificationStats } from "@/api/types";
 import { CommandRegistryProvider } from "@/lib/command-registry";
 import NotificationsPage from "@/pages/NotificationsPage";
 
-vi.mock("@/api/index.ts", async (original) => ({
-  ...await original<typeof import("@/api/index.ts")>(),
+vi.mock("@/api/client.ts", async (original) => ({
+  ...await original<typeof import("@/api/client.ts")>(),
   getNotifications: vi.fn(),
   getNotificationStats: vi.fn(),
 }));
@@ -26,7 +26,8 @@ vi.mock("@/hooks/use-bus-aware-poll-interval", () => ({ useBusAwarePollInterval:
 type StatsResponse = Awaited<ReturnType<typeof api.getNotificationStats>>;
 const clients: QueryClient[] = [];
 const stats = (overrides: Partial<NotificationStats> = {}): StatsResponse => ({
-  data: { total: 10, sent: 8, failed: 2, by_channel: {}, by_butler: {}, ...overrides },
+  data: {
+source_available: true, total: 10, sent: 8, failed: 2, by_channel: {}, by_butler: {}, ...overrides },
   meta: {},
 });
 let allTime: () => Promise<StatsResponse>;
@@ -51,7 +52,8 @@ beforeEach(() => {
   vi.mocked(confirms.getConfirms).mockResolvedValue({ data: [], meta: { next_cursor: null } });
   allTime = () => Promise.resolve(stats());
   vi.mocked(api.getNotificationStats).mockImplementation((params) => params === undefined ? allTime() : Promise.resolve(stats({ failed: 0 })));
-  vi.mocked(api.getNotifications).mockResolvedValue({ data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } });
+  vi.mocked(api.getNotifications).mockResolvedValue({
+source_available: true, data: [], meta: { total: 0, offset: 0, limit: 20, has_more: false } });
 });
 afterEach(() => {
   cleanup();

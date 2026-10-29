@@ -104,19 +104,19 @@ const MOCK_RULES = {
 // summary/top-sessions/by-schedule endpoints the merged page also queries.
 const MOCK_DAILY: ResponseOf<"getDailyCosts"> = {
   data: [
-    { date: "2026-05-16", cost_usd: 0.6, sessions: 20, input_tokens: 50000, output_tokens: 25000, by_butler: { inbox: 0.6 } },
-    { date: "2026-05-17", cost_usd: 0.7, sessions: 22, input_tokens: 52000, output_tokens: 26000, by_butler: { inbox: 0.4, calendar: 0.3 } },
+    { cached_input_tokens: 0, cache_creation_tokens: 0, cache_read_cost_usd: 0, cache_hit_rate: null, unpriced_models: [], date: "2026-05-16", cost_usd: 0.6, sessions: 20, input_tokens: 50000, output_tokens: 25000, by_butler: { inbox: 0.6 } },
+    { cached_input_tokens: 0, cache_creation_tokens: 0, cache_read_cost_usd: 0, cache_hit_rate: null, unpriced_models: [], date: "2026-05-17", cost_usd: 0.7, sessions: 22, input_tokens: 52000, output_tokens: 26000, by_butler: { inbox: 0.4, calendar: 0.3 } },
   ],
-  meta: {},
+  meta: { historical_attribution_note: null },
 };
 
 const MOCK_SUMMARY = {
-  data: { total_cost_usd: 2.2, total_sessions: 42, total_input_tokens: 100000, total_output_tokens: 50000, by_butler: { inbox: 1.5, calendar: 0.7 }, by_model: {} },
+  data: { period: "today", measured_usd: 0, unmeasurable_attempts: 0, total_cached_input_tokens: 0, total_cache_creation_tokens: 0, cache_read_cost_usd: 0, cache_hit_rate: null, unpriced_models: [], no_cache_price_models: [], divergences: [], divergence_source_error: false, historical_attribution_note: null, source_error: false, unavailable_butlers: [], total_cost_usd: 2.2, total_sessions: 42, total_input_tokens: 100000, total_output_tokens: 50000, by_butler: { inbox: 1.5, calendar: 0.7 }, by_model: {} },
   meta: {},
 };
 
 const MOCK_TOP_SESSIONS = { data: [], meta: {} };
-const MOCK_BY_SCHEDULE = { data: [], meta: {} };
+const MOCK_BY_SCHEDULE = { data: [], meta: { forecast_basis: "Projected runs are the cron expression's own cadence over an average Gregorian calendar month (30.436875 days), sampled from a fixed anchor so the forecast does not change with the time of the request." } };
 
 // ---------------------------------------------------------------------------
 // Helper: install all baseline API mocks

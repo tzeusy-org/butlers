@@ -21,7 +21,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
-import type { IngestionEventSummary, IngestionEventSession } from "@/api/index.ts";
+import type { IngestionEventSummary } from "@/api/types.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;
@@ -30,8 +30,8 @@ import type { IngestionEventSummary, IngestionEventSession } from "@/api/index.t
 // Mock API and hooks
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     replayIngestionEvent: vi.fn(),
@@ -68,7 +68,14 @@ import {
   useIngestionWindowRollup,
   useIngestionEventsHistogram,
 } from "@/hooks/use-ingestion-events";
-import { getIngestionEvent } from "@/api/index.ts";
+import { getIngestionEvent, getIngestionEventSessions } from "@/api/client.ts";
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+
+async function rawSessions(sessions: unknown[]) {
+  vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify({ data: sessions })));
+  return getIngestionEventSessions("legacy-session-fixture");
+}
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
 import { TimelineTab } from "../TimelineTab";
 
@@ -87,6 +94,10 @@ function makeQueryClient() {
 
 function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEventSummary {
   return {
+replay_safe: false,
+replay_block_reason: null,
+unpriced_session_count: 0,
+no_usage_session_count: 0,
     id: "aaaaaaaa-0000-0000-0000-000000000001",
     received_at: "2026-05-17T10:30:00Z",
     source_channel: "email",
@@ -129,7 +140,7 @@ function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
   };
 }
 
-function makeSessions(n = 1): IngestionEventSession[] {
+function makeSessions(n = 1) {
   return Array.from({ length: n }, (_, i) => ({
     id: `ssssssss-0000-0000-0000-${String(i + 1).padStart(12, "0")}`,
     butler_name: `butler-${i + 1}`,
@@ -813,9 +824,9 @@ describe("TimelineTab — drawer URL state", () => {
     expect(drawer).toBeNull();
   });
 
-  it("shows drawer session index when event has sessions", () => {
+  it("shows drawer session index when event has sessions", async () => {
     vi.mocked(useIngestionEventSessions).mockReturnValue({
-        data: { data: makeSessions(2) },
+        data: await rawSessions(makeSessions(2)),
         isLoading: false,
         isError: false,
       } as unknown as ReturnType<typeof useIngestionEventSessions>);
@@ -871,7 +882,7 @@ describe("EventDrawer — raw payload tab gated state", () => {
   });
 
   it("shows gated state when payload API returns 403", async () => {
-    const { ApiError } = await import("@/api/index.ts");
+    const { ApiError } = await import("@/api/client.ts");
     vi.mocked(useIngestionEventPayload).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -946,10 +957,10 @@ describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () =
     sessionStorage.clear();
   });
 
-  it("renders flamegraph bars for in-progress sessions with width <= 100%", () => {
+  it("renders flamegraph bars for in-progress sessions with width <= 100%", async () => {
     // A completed session and an in-progress session (completed_at = null).
     // The in-progress session's bar must not overflow the flamegraph container.
-    const completedSession: IngestionEventSession = {
+    const completedSession = {
       id: "sess-0001-0000-0000-0000-000000000001",
       butler_name: "butler-a",
       trigger_source: null,
@@ -962,7 +973,7 @@ describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () =
       trace_id: null,
       model: "claude-sonnet",
     };
-    const inProgressSession: IngestionEventSession = {
+    const inProgressSession = {
       id: "sess-0002-0000-0000-0000-000000000002",
       butler_name: "butler-a",
       trigger_source: null,
@@ -977,7 +988,7 @@ describe("EventDrawer — flamegraph in-progress span clamping (bu-rncqs)", () =
     };
 
     vi.mocked(useIngestionEventSessions).mockReturnValue({
-        data: { data: [completedSession, inProgressSession] },
+        data: await rawSessions([completedSession, inProgressSession]),
         isLoading: false,
         isError: false,
       } as unknown as ReturnType<typeof useIngestionEventSessions>);

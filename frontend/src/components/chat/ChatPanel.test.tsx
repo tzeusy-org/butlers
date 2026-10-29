@@ -43,20 +43,19 @@ vi.mock("@/hooks/use-conversations.ts", () => ({
   })),
 }));
 
-vi.mock("@/api/client.ts", () => ({
-  fetchPricingMap: vi.fn().mockResolvedValue({ data: {} }),
-}));
+
 
 const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
 const getConversationMessagesMock = vi.fn();
-vi.mock("@/api/index.ts", () => ({
-  createConversation: (...args: unknown[]) => createConversationMock(...args),
-  sendMessage: (...args: unknown[]) => sendMessageMock(...args),
-  cancelConversationMessageTurn: (...args: unknown[]) =>
+vi.mock("@/api/client.ts", () => ({
+fetchPricingMap: vi.fn().mockResolvedValue({ data: {} }),
+createConversation: (...args: unknown[]) => createConversationMock(...args),
+sendMessage: (...args: unknown[]) => sendMessageMock(...args),
+cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
-  getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
+getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args)
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
@@ -303,6 +302,12 @@ const SWITCHING_CONVERSATIONS = [
 ];
 
 const CURRENT_THREAD_MESSAGE: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
   id: "current-thread-message",
   conversation_id: "conv-current",
   role: "user",
@@ -319,6 +324,12 @@ const CURRENT_THREAD_MESSAGE: Message = {
 };
 
 const NEXT_THREAD_MESSAGE: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
   ...CURRENT_THREAD_MESSAGE,
   id: "next-thread-message",
   conversation_id: "conv-next",
@@ -459,6 +470,12 @@ describe("ChatContent — conversation_created SSE handling", () => {
 function mockHistoryReadFailureAfterInitialLoad() {
   const refetchMessages = vi.fn();
   const historyMessage: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
     id: "history-message-1",
     conversation_id: "conv-1",
     role: "assistant",
@@ -1195,6 +1212,12 @@ describe("ChatContent — message-search jump-to-message scroll parity (bu-qaisp
   ];
 
   const MESSAGE_A: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
     id: "msg-a",
     conversation_id: "conv-a",
     role: "user",
@@ -1211,6 +1234,12 @@ describe("ChatContent — message-search jump-to-message scroll parity (bu-qaisp
   };
 
   const MESSAGE_TARGET: Message = {
+model_name: null,
+sources: [],
+citations: [],
+routed_butler: null,
+page_context: null,
+captured_at: null,
     ...MESSAGE_A,
     id: "msg-target",
     conversation_id: "conv-b",

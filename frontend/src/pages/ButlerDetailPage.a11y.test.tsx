@@ -137,8 +137,8 @@ vi.mock("@/components/chat/ChatPanel", () => ({
   ),
 }));
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     triggerButler: vi.fn(() => Promise.resolve({ success: true, session_id: null, output: "" })),
@@ -154,6 +154,10 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 type UseButlerResult = ReturnType<typeof useButler>;
 
 const BASE_BUTLER: ButlerSummary = {
+db: "",
+description: null,
+modules: [],
+last_session_started_at: null,
   name: "general",
   status: "ok",
   port: 8001,
@@ -236,7 +240,8 @@ describe("a11y (real page): Overview tab, status ok", () => {
 
 describe("a11y (real page): Overview tab, status down", () => {
   it("has zero axe violations", async () => {
-    setButlerState({ ...BASE_BUTLER, status: "down" });
+    setButlerState({
+...BASE_BUTLER, status: "down" });
     await checkA11y();
   });
 });

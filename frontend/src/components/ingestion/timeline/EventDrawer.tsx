@@ -37,12 +37,12 @@ import {
   useIngestionEventPayload,
   useIngestionEventDetail,
 } from '@/hooks/use-ingestion-events'
-import { replayIngestionEvent } from '@/api/index.ts'
-import { ApiError } from '@/api/index.ts'
+import { replayIngestionEvent } from "@/api/client.ts";
+import { ApiError } from "@/api/client.ts";
 import { Tip } from '@/components/ui/tip'
 import { StatusBadge } from '../StatusBadge'
 import { isReplaySafe } from '../bulkEligibility'
-import type { IngestionEventSession, IngestionEventSummary, IngestionEventStatus } from '@/api/index.ts'
+import type { IngestionEventSession, IngestionEventSummary, IngestionEventStatus } from "@/api/types.ts";
 import { formatDurationTicks } from '@/lib/format-duration'
 import { formatCostUsdPrecise } from '@/lib/format-cost'
 

@@ -15,10 +15,10 @@ import logging
 import uuid
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.core.entity_graph_edges import (
     DOSSIER_RECEIPT_LIMIT,
     DOSSIER_RECEIPT_LIMIT_MAX,
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/entities", tags=["entities"])
 
 
-class DossierReceipt(BaseModel):
+class DossierReceipt(ResponseSchemaModel):
     """One live relationship and where it came from."""
 
     edge_id: str
@@ -43,7 +43,7 @@ class DossierReceipt(BaseModel):
     updated_at: str
 
 
-class DossierSource(BaseModel):
+class DossierSource(ResponseSchemaModel):
     """Live receipts for one canonical source (schema + table)."""
 
     source_schema: str
@@ -52,7 +52,7 @@ class DossierSource(BaseModel):
     receipts: list[DossierReceipt]
 
 
-class EntityDossier(BaseModel):
+class EntityDossier(ResponseSchemaModel):
     """Per-source receipts and the known/withheld coverage statement for one entity."""
 
     entity_id: str

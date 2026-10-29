@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.config import ConfigError, load_config
 from butlers.core.runtime_config import resolve_effective_core_groups
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
@@ -56,7 +57,7 @@ FIELD_TIERS: dict[str, str] = {
 TOOL_EXPOSURE_POLICIES: frozenset[str] = frozenset({"eager_filtered", "auto"})
 
 
-class RuntimeConfigResponse(BaseModel):
+class RuntimeConfigResponse(ResponseSchemaModel):
     """Response model for GET /api/butlers/{name}/runtime-config."""
 
     butler_name: str
@@ -288,7 +289,7 @@ async def get_runtime_config(
     return response.model_copy(update=await _tool_surface_snapshot(mcp_manager, name))
 
 
-class PatchResponse(BaseModel):
+class PatchResponse(ResponseSchemaModel):
     """Response model for PATCH /api/butlers/{name}/runtime-config."""
 
     config: RuntimeConfigResponse

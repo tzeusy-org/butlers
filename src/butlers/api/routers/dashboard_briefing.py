@@ -63,7 +63,6 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
 from butlers.api.audit_grouping import attention_item_from_audit_group_row, build_audit_group_query
 from butlers.api.briefing.cache import BriefingCache, get_cache
@@ -81,6 +80,7 @@ from butlers.api.deps import (
     get_pricing,
 )
 from butlers.api.models import ApiResponse
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.core.general_settings import load_general_settings
 from butlers.core.pricing import PricingConfig
 from butlers.core.qa.patrol_status import is_valid_patrol_status
@@ -96,7 +96,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard-briefing"])
 # ---------------------------------------------------------------------------
 
 
-class Briefing(BaseModel):
+class Briefing(ResponseSchemaModel):
     """The six-field dashboard briefing object returned by the endpoint."""
 
     greet: str

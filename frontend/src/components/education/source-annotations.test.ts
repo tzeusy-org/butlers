@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { EducationSourceMaterial } from "@/api/index.ts";
+import type { EducationSourceMaterial } from "@/api/types.ts";
 import {
   indexSources,
   parseConceptType,

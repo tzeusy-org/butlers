@@ -82,6 +82,10 @@ const OWNER_ID = "ent-owner";
 
 function entry(overrides: Partial<DunbarEntry> & { entity_id: string; canonical_name: string }): DunbarEntry {
   const result: DunbarEntry = {
+avatar_url: null,
+aliases: [],
+warmth: null,
+effective_cadence_days: null,
     contact_id: `contact-${overrides.entity_id}`,
     dunbar_tier: 50,
     dunbar_score: 1,
@@ -92,7 +96,7 @@ function entry(overrides: Partial<DunbarEntry> & { entity_id: string; canonical_
   };
   result.effective_cadence_days ??= ({ 5: 7, 15: 30, 50: 90, 150: 180, 500: 365 })[
     result.dunbar_tier
-  ];
+  ] ?? null;
   return result;
 }
 

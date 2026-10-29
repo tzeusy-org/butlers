@@ -11,14 +11,14 @@ import type { SessionSummary } from "@/api/types";
 import { NAV_INTENT_DELAY_MS } from "@/hooks/use-nav-intent";
 import { SessionTable } from "@/components/sessions/SessionTable";
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   getApprovalDetail: vi.fn(),
   getIngestionEvent: vi.fn(),
   getSession: vi.fn(() => Promise.resolve({ data: {} })),
   getTimeline: vi.fn(),
 }));
 
-import { getSession } from "@/api/index.ts";
+import { getSession } from "@/api/client.ts";
 
 expect.extend(toHaveNoViolations);
 
@@ -26,6 +26,8 @@ afterEach(cleanup);
 
 function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
+purpose_lane: null,
+cost_usd: null,
     id: "sess-abc123",
     butler: "health",
     prompt: "Summarize today's routing failures",

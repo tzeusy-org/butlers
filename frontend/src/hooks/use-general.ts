@@ -4,22 +4,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  getGeneralCollections,
-  getGeneralEntities,
-  getGeneralStats,
-  getRegistry,
-  getRoutingLog,
-  setButlerEligibility,
-} from "@/api/index.ts";
-import type {
-  ApiResponse,
-  GeneralCollectionsParams,
-  GeneralEntitiesParams,
-  RegistryEntry,
-  RoutingLogParams,
-  SetEligibilityResponse,
-} from "@/api/index.ts";
+import { getGeneralCollections, getGeneralEntities, getGeneralStats, getRegistry, getRoutingLog, setButlerEligibility } from "@/api/client.ts";
+import type { ApiResponse, RegistryEntry, RoutingLogParams, SetEligibilityResponse } from "@/api/types.ts";
+import type { GeneralCollectionsParams, GeneralEntitiesParams } from "@/api/client.ts";
 import {
   rollbackLists,
   snapshotAndUpdateQueries,

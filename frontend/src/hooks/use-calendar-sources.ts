@@ -6,7 +6,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getCalendarAccounts, setPrimaryCalendar, toggleCalendarSource } from "@/api/index.ts";
+import { getCalendarAccounts, setPrimaryCalendar, toggleCalendarSource } from "@/api/client.ts";
 import type {
   ApiResponse,
   CalendarSourceToggleRequest,

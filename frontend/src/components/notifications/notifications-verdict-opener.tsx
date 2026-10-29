@@ -17,7 +17,7 @@
 // counts must never render as a truthful "no failures" all-clear.
 // ---------------------------------------------------------------------------
 
-import type { NotificationStats } from "@/api/index.ts";
+import type { NotificationStats } from "@/api/types.ts";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 
 /** Lookback window for the windowed verdict (matches the Overview page's

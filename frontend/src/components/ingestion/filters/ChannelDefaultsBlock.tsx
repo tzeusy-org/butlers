@@ -23,7 +23,7 @@
 
 import { useState } from 'react'
 import type { IngestionRule } from '@/api/types'
-import type { ChannelDefaultPolicy, ChannelDefaultPriorityAction } from '@/api/index.ts'
+import type { ChannelDefaultPolicy, ChannelDefaultPriorityAction, ChannelDefaultEntry } from "@/api/types.ts";
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 
 // ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ export interface ChannelDefaultEditorState {
   notFound: boolean
   /** True on a real fetch failure (not a 404). */
   error: boolean
-  policy: ChannelDefaultPolicy | null
+  policy: ChannelDefaultEntry["default_policy_json"] | null
 }
 
 function ChannelDefaultEditor({
@@ -114,8 +114,8 @@ function ChannelDefaultEditor({
   onCancel: () => void
 }) {
   const initial = state.policy ?? { priority_action: 'pass_through' as ChannelDefaultPriorityAction }
-  const [priorityAction, setPriorityAction] = useState<ChannelDefaultPriorityAction>(
-    initial.priority_action,
+  const [priorityAction, setPriorityAction] = useState(
+    typeof initial.priority_action === "string" ? initial.priority_action : "",
   )
   const [maxAgeDays, setMaxAgeDays] = useState<string>(
     initial.max_age_days !== undefined ? String(initial.max_age_days) : '',
@@ -126,7 +126,12 @@ function ChannelDefaultEditor({
 
   function handleSave() {
     setLocalError(null)
-    const policy: ChannelDefaultPolicy = { priority_action: priorityAction }
+    const selectedAction = PRIORITY_ACTIONS.find((entry) => entry.value === priorityAction)
+    if (!selectedAction) {
+      setLocalError("Select a priority action.")
+      return
+    }
+    const policy: ChannelDefaultPolicy = { priority_action: selectedAction.value }
     if (isEmail && maxAgeDays.trim() !== '') {
       const parsed = Number(maxAgeDays)
       if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {

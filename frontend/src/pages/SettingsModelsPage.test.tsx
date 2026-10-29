@@ -116,6 +116,8 @@ type AnyMock = any;
 
 function makeModel(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry {
   return {
+allowance_account: null,
+capabilities: {},
     id: "model-1",
     alias: "claude-sonnet",
     runtime_type: "claude",
@@ -1216,7 +1218,7 @@ describe("SettingsModelsPage — AddModelDialog", () => {
 
   it("surfaces a duplicate-alias (409) error via toast and keeps dialog open", async () => {
     const { toast } = await import("sonner");
-    const { ApiError } = await import("@/api/index.ts");
+    const { ApiError } = await import("@/api/client.ts");
     let savedCallbacks: { onSuccess?: () => void; onError?: (err: unknown) => void } = {};
     const mutate = vi.fn((_payload, callbacks) => {
       savedCallbacks = callbacks;

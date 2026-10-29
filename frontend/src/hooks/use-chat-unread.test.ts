@@ -25,7 +25,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook } from "@testing-library/react";
 import type { ConversationSummary } from "@/api/types.ts";
 
-const conversationsRef: { current: ConversationSummary[] } = { current: [] };
+type RawConversation = Omit<ConversationSummary, "title"> & { title: string | null };
+const conversationsRef: { current: RawConversation[] } = { current: [] };
 
 vi.mock("./use-conversations.ts", () => ({
   useConversations: () => ({
@@ -43,8 +44,8 @@ import {
 function conv(
   id: string,
   latestAssistantReplyAt: string | null,
-  overrides: Partial<ConversationSummary> = {},
-): ConversationSummary {
+  overrides: Partial<RawConversation> = {},
+): RawConversation {
   return {
     id,
     butler_name: "switchboard",

@@ -86,6 +86,22 @@ describe("actual approval HTTP snapshot handoff", () => {
 // A cached call is not a shown call while the source-bound dossier is hidden.
 describe("dossier keyboard visibility at the actual HTTP boundary", () => {
   const detail: ApprovalDetail = {
+expires_at: null,
+why: null,
+evidence: [],
+blast_radius: null,
+reversibility: null,
+decided_by: null,
+decided_at: null,
+denial_reason: null,
+execution_result: null,
+target_contact: null,
+session_id: null,
+referenced_entities: [],
+origin: null,
+push_outcome: null,
+push_failed: false,
+delivery: null,
     id: "action-1", title: "Send message", butler: "general", status: "pending",
     created_at: "2026-10-01T12:00:00Z",
     proposed_action: { tool_name: shown.tool_name, tool_args: {} },

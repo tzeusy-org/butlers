@@ -13,6 +13,8 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, BaseModel, StrictBool, model_validator
 
+from butlers.api.models.base import ResponseSchemaModel
+
 _DISPATCH_MODE_PROMPT: Literal["prompt"] = "prompt"
 _DISPATCH_MODE_JOB: Literal["job"] = "job"
 DispatchMode = Literal["prompt", "job"]
@@ -43,7 +45,7 @@ def _validate_projection_strings(
         raise ValueError(f"{context}.display_title must be non-empty when set")
 
 
-class Schedule(BaseModel):
+class Schedule(ResponseSchemaModel):
     """Full scheduled task record from the ``scheduled_tasks`` table."""
 
     id: UUID
@@ -166,7 +168,7 @@ class ScheduleToggleRequest(BaseModel):
     enabled: StrictBool
 
 
-class ScheduleToggleAudit(BaseModel):
+class ScheduleToggleAudit(ResponseSchemaModel):
     """Safe, server-derived audit evidence for a successful toggle."""
 
     action: Literal["schedule.toggle"]
@@ -174,7 +176,7 @@ class ScheduleToggleAudit(BaseModel):
     target: str
 
 
-class ScheduleToggleResult(BaseModel):
+class ScheduleToggleResult(ResponseSchemaModel):
     """Observed result returned after the butler persists a requested state."""
 
     id: UUID

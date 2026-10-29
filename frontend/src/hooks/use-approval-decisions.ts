@@ -36,8 +36,8 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { approveApproval, deferApproval, denyApproval, getApprovalDetail } from "@/api/index.ts";
-import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/index.ts";
+import { approveApproval, deferApproval, denyApproval, getApprovalDetail } from "@/api/client.ts";
+import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/types.ts";
 import type { ApprovalCallPreview, DisplayedApprovalCall } from "@/api/types";
 import { toast } from "sonner";
 

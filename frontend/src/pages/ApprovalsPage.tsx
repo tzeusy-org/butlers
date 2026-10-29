@@ -38,25 +38,12 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-import {
-  getApprovalDetail,
-  getApprovalsFlat,
-  getApprovalsHistory,
-  getApprovalsPolicy,
-  abandonApproval,
-  retryApproval,
-  updateApprovalsPolicy,
-} from "@/api/index.ts";
+import { getApprovalDetail, getApprovalsFlat, getApprovalsHistory, getApprovalsPolicy, abandonApproval, retryApproval, updateApprovalsPolicy } from "@/api/client.ts";
 import type { DisplayedApprovalCall } from "@/api/types";
 import { useListTriage, type ListTriageVerb } from "@/hooks/use-list-triage";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
 import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy";
-import type {
-  ApprovalDeliveryTruth,
-  ApprovalDetail,
-  ApprovalSummary,
-  ApprovalsPolicy,
-} from "@/api/index.ts";
+import type { ApprovalDeliveryTruth, ApprovalDetail, ApprovalSummary, ApprovalsPolicy } from "@/api/types.ts";
 import {
   approvalRuleMetricSourcesDegraded,
   pendingApprovalMetricSourcesDegraded,
@@ -311,8 +298,14 @@ interface PredicateDigest {
   object: string;
 }
 
+function isToolArguments(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function predicateDigest(detail: ApprovalDetail): PredicateDigest | null {
-  const args = detail.proposed_action?.tool_args ?? {};
+  const rawArgs = detail.proposed_action?.tool_args;
+  if (!isToolArguments(rawArgs)) return null;
+  const args = rawArgs;
   const predicate = args.predicate;
   if (typeof predicate !== "string" || !predicate) return null;
 
@@ -1178,9 +1171,9 @@ function Dossier({
           </div>
           <div className="font-mono text-sm">
             <span className="text-foreground font-medium">
-              {detail.proposed_action.tool_name}
+              {typeof detail.proposed_action.tool_name === "string" ? detail.proposed_action.tool_name : "Unknown tool"}
             </span>
-            {detail.proposed_action.agent_summary && (
+            {typeof detail.proposed_action.agent_summary === "string" && detail.proposed_action.agent_summary && (
               <div className="mt-1 text-xs text-muted-foreground">
                 {detail.proposed_action.agent_summary}
               </div>

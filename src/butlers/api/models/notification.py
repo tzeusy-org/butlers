@@ -10,12 +10,11 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel
-
 from butlers.api.models import PaginatedResponse
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class NotificationSummary(BaseModel):
+class NotificationSummary(ResponseSchemaModel):
     """Notification record matching the Switchboard ``notifications`` table schema."""
 
     id: UUID
@@ -46,7 +45,7 @@ class NotificationListResponse(PaginatedResponse[NotificationSummary]):
     source_available: bool = True
 
 
-class NotificationStats(BaseModel):
+class NotificationStats(ResponseSchemaModel):
     """Aggregated notification statistics for the dashboard overview.
 
     Provides total counts, sent/failed breakdowns, and per-channel /
@@ -67,14 +66,14 @@ class NotificationStats(BaseModel):
     source_available: bool = True
 
 
-class AckFailedResult(BaseModel):
+class AckFailedResult(ResponseSchemaModel):
     """Result of a bulk acknowledge-failed-notifications operation."""
 
     acknowledged: int
     """Number of notifications that were flipped from ``failed`` to ``read``."""
 
 
-class NotificationActionResult(BaseModel):
+class NotificationActionResult(ResponseSchemaModel):
     """Result of a manual retry or escalate action on a failed notification.
 
     The original notification is flipped to ``status='read'`` (it has been

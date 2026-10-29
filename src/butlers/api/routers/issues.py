@@ -15,6 +15,8 @@ from urllib.parse import urlencode
 import anyio
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.audit_grouping import (
     build_audit_group_for_row_query,
@@ -35,6 +37,7 @@ from butlers.api.deps import (
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
+    ApiResponseWithMeta,
     AuditIssueGroupRef,
     DismissIssueRequest,
     Issue,
@@ -47,6 +50,13 @@ from butlers.api.reachability_ledger import (
     open_condition_onset,
     record_probe,
 )
+
+
+@with_config(ConfigDict(extra="allow"))
+class IssuesListMeta(TypedDict, total=False):
+    sources_degraded: list[str]
+    truncated: bool
+
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +363,7 @@ async def _check_butler_reachability(
     )
 
 
-@router.get("", response_model=ApiResponse[list[Issue]])
+@router.get("", response_model=ApiResponseWithMeta[list[Issue], IssuesListMeta])
 async def list_issues(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),

@@ -20,7 +20,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   };
 });
 
-vi.mock("@/api/index.ts", () => ({
+vi.mock("@/api/client.ts", () => ({
   searchAll: vi.fn(),
 }));
 

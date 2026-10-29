@@ -5,10 +5,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter } from "react-router";
 
 import { DebriefCard } from "@/components/calendar/DebriefCard";
-import { getPendingMeetingDebriefs } from "@/api/index.ts";
+import { getPendingMeetingDebriefs } from "@/api/client.ts";
 import { sendDebriefReply } from "@/lib/debrief-reply.ts";
 
-vi.mock("@/api/index.ts", () => ({ getPendingMeetingDebriefs: vi.fn() }));
+vi.mock("@/api/client.ts", () => ({ getPendingMeetingDebriefs: vi.fn() }));
 vi.mock("@/lib/debrief-reply.ts", () => ({ sendDebriefReply: vi.fn() }));
 
 const DEBRIEF = {
@@ -143,7 +143,9 @@ describe("DebriefCard", () => {
   it("sends each duplicate-numbered debrief with its own record", async () => {
     const other = { ...DEBRIEF, debrief_id: "d2", event_title: "Other sync" };
     vi.mocked(getPendingMeetingDebriefs).mockResolvedValue({
-      debriefs: [{ ...DEBRIEF, number: 1 }, { ...other, number: 1 }],
+      debriefs: [{
+...DEBRIEF, number: 1 }, {
+...other, number: 1 }],
       debriefs_available: true,
     });
     vi.mocked(sendDebriefReply).mockResolvedValue("conv-1");

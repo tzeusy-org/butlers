@@ -6,6 +6,8 @@ import { SessionTable } from "@/components/sessions/SessionTable";
 
 function makeSession(overrides: Partial<SessionSummary>): SessionSummary {
   return {
+purpose_lane: null,
+cost_usd: null,
     id: "sess-abc123",
     butler: "switchboard",
     prompt: "Summarize today's routing failures",

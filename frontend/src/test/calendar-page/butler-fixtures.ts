@@ -6,8 +6,15 @@ export function setButlerWorkspaceFixtures() {
   setWorkspaceState({
     data: {
       data: {
+entries_source_available: true,
+people_source_available: true,
+sources_available: true,
+has_domain_context: false,
         entries: [
           {
+linked_people: [],
+source_butler: null,
+source_session_id: null,
             entry_id: "entry-butler-1",
             event_id: "evt-entry-butler-1",
             view: "butler",
@@ -34,6 +41,9 @@ export function setButlerWorkspaceFixtures() {
             },
           },
           {
+linked_people: [],
+source_butler: null,
+source_session_id: null,
             entry_id: "entry-butler-2",
             event_id: "evt-entry-butler-2",
             view: "butler",
@@ -132,6 +142,7 @@ export function setButlerWorkspaceFixtures() {
   setWorkspaceMetaState({
     data: {
       data: {
+sources_available: true,
         capabilities: {
           views: ["user", "butler"],
           filters: { butlers: true, sources: true, timezone: true },

@@ -6,17 +6,19 @@ import type {
   SecretsSystemCredentialDetail,
 } from "./types.ts";
 
+// These retained assertions target the original content-blind keys. Derive
+// that projection from native wire types; other serialized fields stay strict.
 const SYSTEM_TEST_OUTCOME = {
   ok: true,
   code: null,
   at: null,
-} satisfies NonNullable<SecretsSystemCredentialDetail["test"]>;
+} satisfies Pick<NonNullable<SecretsSystemCredentialDetail["test"]>, "ok" | "code" | "at">;
 
 const CLI_TEST_OUTCOME = {
   ok: true,
   code: null,
   at: null,
-} satisfies NonNullable<SecretsCliDetail["test"]>;
+} satisfies Pick<NonNullable<SecretsCliDetail["test"]>, "ok" | "code" | "at">;
 
 describe("content-blind credential detail outcome types", () => {
   it("uses the same outcome shape for system and CLI detail consumers", () => {
@@ -28,12 +30,12 @@ describe("content-blind credential detail outcome types", () => {
       ok: false,
       code: 503,
       at: null,
-    } satisfies SecretsCredentialTestOutcome;
+    } satisfies Pick<SecretsCredentialTestOutcome, "ok" | "code" | "at">;
 
     // @ts-expect-error code is always serialized, even when null
-    const missingCode: SecretsCredentialTestOutcome = { ok: true, at: null };
+    const missingCode: Pick<SecretsCredentialTestOutcome, "ok" | "code" | "at"> = { ok: true, at: null };
     // @ts-expect-error at is always serialized, even when null
-    const missingAt: SecretsCredentialTestOutcome = { ok: true, code: null };
+    const missingAt: Pick<SecretsCredentialTestOutcome, "ok" | "code" | "at"> = { ok: true, code: null };
 
     expect(completeOutcome).toEqual({ ok: false, code: 503, at: null });
     expect(missingCode).toEqual({ ok: true, at: null });

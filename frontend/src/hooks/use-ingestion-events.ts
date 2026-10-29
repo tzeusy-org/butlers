@@ -18,27 +18,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  listIngestionEvents,
-  getIngestionEvent,
-  getIngestionEventSessions,
-  getIngestionWindowRollup,
-  getIngestionEventsHistogram,
-  getIngestionDroppedKnown,
-  getIngestionEventReplays,
-  getIngestionEventSenderContact,
-  getIngestionEventPayload,
-} from "@/api/index.ts";
-import type {
-  CursorPage,
-  IngestionEventsParams,
-  IngestionEventSummary,
-  IngestionHistogramBucketSize,
-  IngestionHistogramParams,
-  IngestionHistogramResponse,
-  IngestionWindowRollup,
-  IngestionWindowRollupParams,
-} from "@/api/index.ts";
+import { listIngestionEvents, getIngestionEvent, getIngestionEventSessions, getIngestionWindowRollup, getIngestionEventsHistogram, getIngestionDroppedKnown, getIngestionEventReplays, getIngestionEventSenderContact, getIngestionEventPayload } from "@/api/client.ts";
+import type { CursorPage, IngestionEventsParams, IngestionEventSummary, IngestionHistogramBucketSize, IngestionHistogramParams, IngestionHistogramResponse, IngestionWindowRollup, IngestionWindowRollupParams } from "@/api/types.ts";
 
 // ---------------------------------------------------------------------------
 // Query key factory
@@ -440,8 +421,16 @@ export function useIngestionEventsHistogram(
   params: IngestionHistogramParams,
   options?: IngestionAggregateQueryOptions,
 ) {
-  return useQuery<IngestionHistogramResponse>({
+  return useQuery<IngestionHistogramResponse, Error,
+    Omit<IngestionHistogramResponse, "bucket"> & { bucket: IngestionHistogramBucketSize }>({
     queryKey: ingestionEventKeys.histogram(params, options?.timeScope),
+    select: (response) => {
+      const { bucket } = response;
+      if (bucket !== "1m" && bucket !== "5m" && bucket !== "1h") {
+        throw new Error("Unknown histogram bucket.");
+      }
+      return { ...response, bucket };
+    },
     queryFn: async ({ signal }) => {
       const resolvedParams = resolveAggregateWindow(params, options?.timeScope);
       try {

@@ -35,6 +35,7 @@ describe("CalendarWorkspacePage sources", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -117,6 +118,7 @@ describe("CalendarWorkspacePage sources", () => {
     setWorkspaceMetaState({
       data: {
         data: {
+sources_available: true,
           capabilities: {
             views: ["user", "butler"],
             filters: { butlers: true, sources: true, timezone: true },
@@ -195,6 +197,7 @@ describe("CalendarWorkspacePage sources", () => {
       setWorkspaceMetaState({
         data: {
           data: {
+sources_available: true,
             capabilities: {
               views: ["user", "butler"],
               filters: { butlers: true, sources: true, timezone: true },

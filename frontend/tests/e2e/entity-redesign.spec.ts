@@ -44,7 +44,7 @@ const TIMEOUT_MS = 10_000;
 
 /** Minimal valid EntityDetail wrapped in an ApiResponse envelope. */
 const MOCK_ENTITY_DETAIL = {
-  data: {
+  data: { rebind_receipts: [],
     id: ENTITY_ID,
     canonical_name: "Alice Fixture",
     entity_type: "person",
@@ -118,7 +118,7 @@ const MOCK_ENTITY_DETAIL_WITH_FACTS = {
 
 /** Timeline items covering interaction, note, gift, loan kinds. */
 const MOCK_TIMELINE_POPULATED: ResponseOf<"getEntityTimeline"> = [
-  {
+  { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
     kind: "interaction",
     id: "tl-p-001",
     content: "Met for lunch on the waterfront",
@@ -126,7 +126,7 @@ const MOCK_TIMELINE_POPULATED: ResponseOf<"getEntityTimeline"> = [
     predicate: "interaction_in_person",
     metadata: {},
   },
-  {
+  { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
     kind: "note",
     id: "tl-p-002",
     content: "Prefers tea over coffee",
@@ -134,7 +134,7 @@ const MOCK_TIMELINE_POPULATED: ResponseOf<"getEntityTimeline"> = [
     predicate: "note",
     metadata: {},
   },
-  {
+  { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
     kind: "gift",
     id: "tl-p-003",
     content: "Birthday flowers",
@@ -142,7 +142,7 @@ const MOCK_TIMELINE_POPULATED: ResponseOf<"getEntityTimeline"> = [
     predicate: "gift",
     metadata: {},
   },
-  {
+  { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
     kind: "loan",
     id: "tl-p-004",
     content: "Borrowed umbrella",
@@ -154,7 +154,7 @@ const MOCK_TIMELINE_POPULATED: ResponseOf<"getEntityTimeline"> = [
 
 /** Non-empty gifts array for GiftsPanel. */
 const MOCK_GIFTS_POPULATED: ResponseOf<"getEntityGifts"> = [
-  {
+  { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
     id: "gift-001",
     description: "Birthday flowers",
     occasion: "Birthday",
@@ -165,7 +165,7 @@ const MOCK_GIFTS_POPULATED: ResponseOf<"getEntityGifts"> = [
 
 /** Non-empty loans array for LoansPanel. */
 const MOCK_LOANS_POPULATED: ResponseOf<"getEntityLoans"> = [
-  {
+  { claim_id: null, resolution_state: null, unverifiable_reason: null, src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
     id: "loan-001",
     description: "Borrowed umbrella",
     amount_cents: null,
@@ -211,7 +211,7 @@ const MOCK_MESSAGE_THREADS_POPULATED: ResponseOf<"getEntityMessageThreads"> = [
 // contact detail tests below.
 
 /** A dunbar_tier_override timeline event. */
-const MOCK_DUNBAR_TIER_OVERRIDE_ITEM = {
+const MOCK_DUNBAR_TIER_OVERRIDE_ITEM = { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
   kind: "dunbar_tier_override",
   id: "tl-001",
   content: "Tier set to 2",
@@ -221,7 +221,7 @@ const MOCK_DUNBAR_TIER_OVERRIDE_ITEM = {
 };
 
 /** A generic interaction timeline item. */
-const MOCK_INTERACTION_ITEM = {
+const MOCK_INTERACTION_ITEM = { src: "memory_module_legacy", conf: null, last_seen: null, weight: null, verified: false, primary: false,
   kind: "interaction",
   id: "tl-002",
   content: "Caught up over coffee",
@@ -556,7 +556,7 @@ test.describe("entity-redesign: entity detail page", () => {
  * destination (`/entities/index?has=contact`) renders cleanly without a real backend.
  */
 async function installEntitiesIndexStubs(page: Page) {
-  const emptyList = { items: [], total: 0, limit: 50, offset: 0 };
+  const emptyList = { has_more: false, items: [], total: 0, limit: 50, offset: 0 };
 
   // Matches both the entity list (/api/relationship/entities?…) and the
   // curation queue (/api/relationship/entities/queue?…) — both return an empty

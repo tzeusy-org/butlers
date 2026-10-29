@@ -17,6 +17,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
+import { getMemoryStats } from "@/api/client";
+import { ownerFetch } from "@/api/owner-session";
+
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+
 import MemoryOverture from "@/components/memory/MemoryOverture";
 import { useMemoryStats } from "@/hooks/use-memory";
 import type { MemoryStats, MemoryStatsMeta } from "@/api/types";
@@ -57,12 +62,15 @@ function makeStats(overrides: Partial<MemoryStats> = {}): MemoryStats {
   };
 }
 
-function setStats(stats: MemoryStats | undefined, meta: MemoryStatsMeta = {}) {
+async function setStats(stats: MemoryStats | undefined, meta: Partial<MemoryStatsMeta> = {}) {
+  // Legacy missing metadata stays missing at the real HTTP decoding boundary.
+  if (stats != null) vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify({ data: stats, meta })));
+  const response = stats == null ? undefined : await getMemoryStats();
   // useMemoryStats() resolves to MemoryStatsResponse = { data, meta }, so the
   // component reads response.data and response.meta.pools_failed. Mirror that
   // envelope here.
   vi.mocked(useMemoryStats).mockReturnValue({
-    data: stats == null ? undefined : { data: stats, meta },
+    data: response,
     isLoading: stats == null,
     refetch: vi.fn(),
   } as unknown as UseMemoryStatsResult);
@@ -111,16 +119,16 @@ describe("MemoryOverture", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders the static display headline", () => {
-    setStats(makeStats());
+  it("renders the static display headline", async () => {
+    await setStats(makeStats());
     act(() => {
       root.render(<MemoryOverture />);
     });
     expect(container.textContent).toContain("What the house believes.");
   });
 
-  it("renders the templated Voice sentence (pending > 0)", () => {
-    setStats(makeStats({ unconsolidated_episodes: 41, last_consolidation_facts_produced: 12 }));
+  it("renders the templated Voice sentence (pending > 0)", async () => {
+    await setStats(makeStats({ unconsolidated_episodes: 41, last_consolidation_facts_produced: 12 }));
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -129,24 +137,24 @@ describe("MemoryOverture", () => {
     );
   });
 
-  it("renders the idle Voice sentence (pending == 0)", () => {
-    setStats(makeStats({ unconsolidated_episodes: 0 }));
+  it("renders the idle Voice sentence (pending == 0)", async () => {
+    await setStats(makeStats({ unconsolidated_episodes: 0 }));
     act(() => {
       root.render(<MemoryOverture />);
     });
     expect(container.textContent).toContain("The pipeline is idle. Nothing pending since 06:00.");
   });
 
-  it("renders the never-run Voice sentence", () => {
-    setStats(makeStats({ last_consolidation_at: null, last_consolidation_facts_produced: null }));
+  it("renders the never-run Voice sentence", async () => {
+    await setStats(makeStats({ last_consolidation_at: null, last_consolidation_facts_produced: null }));
     act(() => {
       root.render(<MemoryOverture />);
     });
     expect(container.textContent).toContain("The first write-up has not run yet.");
   });
 
-  it("renders the four KPI strip values", () => {
-    setStats(makeStats({ unconsolidated_episodes: 41, active_facts: 3182, proven_rules: 9 }));
+  it("renders the four KPI strip values", async () => {
+    await setStats(makeStats({ unconsolidated_episodes: 41, active_facts: 3182, proven_rules: 9 }));
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -162,16 +170,16 @@ describe("MemoryOverture", () => {
     expect(text).toContain("· 12 facts");
   });
 
-  it("renders an em-dash for LAST WRITE-UP when consolidation has never run", () => {
-    setStats(makeStats({ last_consolidation_at: null, last_consolidation_facts_produced: null }));
+  it("renders an em-dash for LAST WRITE-UP when consolidation has never run", async () => {
+    await setStats(makeStats({ last_consolidation_at: null, last_consolidation_facts_produced: null }));
     act(() => {
       root.render(<MemoryOverture />);
     });
     expect(container.textContent).toContain("—");
   });
 
-  it("renders the pipeline band numerals", () => {
-    setStats(makeStats());
+  it("renders the pipeline band numerals", async () => {
+    await setStats(makeStats());
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -187,8 +195,8 @@ describe("MemoryOverture", () => {
     expect(text).toContain("dead letters");
   });
 
-  it("keeps the dead-letter fragment muted (no red) when dead_letter == 0", () => {
-    setStats(makeStats({ dead_letter_episodes: 0 }));
+  it("keeps the dead-letter fragment muted (no red) when dead_letter == 0", async () => {
+    await setStats(makeStats({ dead_letter_episodes: 0 }));
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -203,8 +211,8 @@ describe("MemoryOverture", () => {
     expect(reds).toHaveLength(0);
   });
 
-  it("turns ONLY the dead-letter fragment red when dead_letter > 0", () => {
-    setStats(makeStats({ dead_letter_episodes: 3 }));
+  it("turns ONLY the dead-letter fragment red when dead_letter > 0", async () => {
+    await setStats(makeStats({ dead_letter_episodes: 3 }));
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -218,7 +226,7 @@ describe("MemoryOverture", () => {
     expect(reds[0]).toBe(el);
   });
 
-  it("renders an error state (not a blank calm band) when stats fail to load", () => {
+  it("renders an error state (not a blank calm band) when stats fail to load", async () => {
     // bu-mkd5r three-way contract: a first-load outage must surface an honest
     // error-with-retry, never render the blank KPI/pipeline bands (which read
     // as still-loading forever).
@@ -234,12 +242,12 @@ describe("MemoryOverture", () => {
     expect(container.textContent).not.toContain("dead letters");
   });
 
-  it("names the failed pools inline (not an all-clear) when meta.pools_failed is set", () => {
+  it("names the failed pools inline (not an all-clear) when meta.pools_failed is set", async () => {
     // Degraded fan-out: the backend answered 200 with partial totals and named
     // the dropped pools in meta.pools_failed. The overture must surface a named
     // SourceDegradedNote so the confident KPI/pipeline totals are not read as a
     // complete verdict — never suppress the missing source (bu-jad4j.1).
-    setStats(makeStats(), { pools_failed: ["relationship", "finance"] });
+    await setStats(makeStats(), { pools_failed: ["relationship", "finance"] });
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -254,10 +262,10 @@ describe("MemoryOverture", () => {
     expect(container.textContent).toContain("dead letters");
   });
 
-  it("shows no degraded note on the happy path (meta.pools_failed absent)", () => {
+  it("shows no degraded note on the happy path (meta.pools_failed absent)", async () => {
     // Mutation guard: the degraded note must depend on the flag. With every pool
     // answering, the note is absent and the band renders its all-clear totals.
-    setStats(makeStats());
+    await setStats(makeStats());
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -267,8 +275,8 @@ describe("MemoryOverture", () => {
     expect(container.textContent).toContain("dead letters");
   });
 
-  it("names an expired-retention source and its retained count when degraded", () => {
-    setStats(makeStats(), {
+  it("names an expired-retention source and its retained count when degraded", async () => {
+    await setStats(makeStats(), {
       retention_status: "degraded",
       retention_sources: [
         {
@@ -294,10 +302,10 @@ describe("MemoryOverture", () => {
     expect(note!.querySelector("button")).toBeNull();
   });
 
-  it("keeps a Retry affordance on the retryable unknown-coverage note", () => {
+  it("keeps a Retry affordance on the retryable unknown-coverage note", async () => {
     // Contrast with the degraded note above: unreachable pools genuinely can
     // recover on refetch, so this note must keep its Retry button.
-    setStats(makeStats(), {
+    await setStats(makeStats(), {
       retention_status: "unknown",
       retention_sources: [],
       retention_pools_failed: ["relationship"],
@@ -310,8 +318,8 @@ describe("MemoryOverture", () => {
     expect(note!.querySelector("button")).not.toBeNull();
   });
 
-  it("does not render a retention alarm for a complete healthy observation", () => {
-    setStats(makeStats(), {
+  it("does not render a retention alarm for a complete healthy observation", async () => {
+    await setStats(makeStats(), {
       retention_status: "healthy",
       retention_sources: [
         {
@@ -330,8 +338,8 @@ describe("MemoryOverture", () => {
     expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).toBeNull();
   });
 
-  it("names incomplete expired-retention coverage without a healthy claim", () => {
-    setStats(makeStats(), {
+  it("names incomplete expired-retention coverage without a healthy claim", async () => {
+    await setStats(makeStats(), {
       retention_status: "unknown",
       retention_sources: [],
       retention_pools_failed: ["relationship", "finance"],
@@ -347,8 +355,8 @@ describe("MemoryOverture", () => {
     expect(note!.textContent).not.toContain("healthy");
   });
 
-  it("renders retention coverage separately from ordinary and catalog degradation", () => {
-    setStats(makeStats(), {
+  it("renders retention coverage separately from ordinary and catalog degradation", async () => {
+    await setStats(makeStats(), {
       pools_failed: ["general"],
       catalog_pools_failed: ["atlas"],
       retention_status: "unknown",
@@ -363,8 +371,8 @@ describe("MemoryOverture", () => {
     expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).not.toBeNull();
   });
 
-  it("renders complete graph-health coverage without calling the graph healthy", () => {
-    setStats(
+  it("renders complete graph-health coverage without calling the graph healthy", async () => {
+    await setStats(
       makeStats(),
       {
         graph_health: {
@@ -393,8 +401,8 @@ describe("MemoryOverture", () => {
     expect(coverage!.querySelector("button")).toBeNull();
   });
 
-  it("keeps graph-health incomplete evidence distinct from retention and ordinary failures", () => {
-    setStats(
+  it("keeps graph-health incomplete evidence distinct from retention and ordinary failures", async () => {
+    await setStats(
       makeStats(),
       {
         pools_failed: ["general"],
@@ -438,8 +446,8 @@ describe("MemoryOverture", () => {
     expect(container.querySelector('[data-testid="memory-overture-retention-unknown"]')).not.toBeNull();
   });
 
-  it("renders unknown graph-health coverage when no memory pool returns evidence", () => {
-    setStats(
+  it("renders unknown graph-health coverage when no memory pool returns evidence", async () => {
+    await setStats(
       makeStats(),
       {
         graph_health: {
@@ -465,8 +473,8 @@ describe("MemoryOverture", () => {
   // Catalog-drift gauge (bu-i8jlt)
   // -------------------------------------------------------------------------
 
-  it("renders the catalog gauge counts from meta (healthy: drift muted, no red)", () => {
-    setStats(makeStats(), {
+  it("renders the catalog gauge counts from meta (healthy: drift muted, no red)", async () => {
+    await setStats(makeStats(), {
       catalog_live: 812,
       catalog_stale: 14,
       catalog_drifted: 0,
@@ -492,8 +500,8 @@ describe("MemoryOverture", () => {
     ).toBeNull();
   });
 
-  it("turns ONLY the drift fragment red when catalog_drifted > 0", () => {
-    setStats(makeStats({ dead_letter_episodes: 0 }), {
+  it("turns ONLY the drift fragment red when catalog_drifted > 0", async () => {
+    await setStats(makeStats({ dead_letter_episodes: 0 }), {
       catalog_live: 800,
       catalog_stale: 20,
       catalog_drifted: 5,
@@ -511,11 +519,11 @@ describe("MemoryOverture", () => {
     expect(reds[0]).toBe(el);
   });
 
-  it("names failed catalog pools inline (not a clean gauge) when meta.catalog_pools_failed is set", () => {
+  it("names failed catalog pools inline (not a clean gauge) when meta.catalog_pools_failed is set", async () => {
     // Degraded catalog fan-out: the backend answered 200 but a catalog pool
     // errored, so the drift counts undercount. The gauge must NOT read as a
     // clean all-clear; name the dropped pools inline (bu-i8jlt).
-    setStats(makeStats(), {
+    await setStats(makeStats(), {
       catalog_live: 400,
       catalog_stale: 3,
       catalog_drifted: 0,
@@ -535,9 +543,9 @@ describe("MemoryOverture", () => {
     expect(catalogNoteText).not.toContain("—");
   });
 
-  it("shows no catalog degraded note on the happy path (catalog_pools_failed absent)", () => {
+  it("shows no catalog degraded note on the happy path (catalog_pools_failed absent)", async () => {
     // Mutation guard: the catalog note must depend on the flag.
-    setStats(makeStats(), { catalog_live: 100, catalog_stale: 0, catalog_drifted: 0 });
+    await setStats(makeStats(), { catalog_live: 100, catalog_stale: 0, catalog_drifted: 0 });
     act(() => {
       root.render(<MemoryOverture />);
     });
@@ -547,8 +555,8 @@ describe("MemoryOverture", () => {
     expect(container.textContent).toContain("catalog live");
   });
 
-  it("renders the headline while stats are still loading (reserved height, no shift)", () => {
-    setStats(undefined);
+  it("renders the headline while stats are still loading (reserved height, no shift)", async () => {
+    await setStats(undefined);
     act(() => {
       root.render(<MemoryOverture />);
     });

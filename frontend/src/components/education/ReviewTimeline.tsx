@@ -9,7 +9,7 @@ import { useAllPendingReviews, useMindMaps } from "@/hooks/use-education";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { Time } from "@/components/ui/time";
 import { classifyReviewBucket, type ReviewBucket } from "@/lib/review-buckets";
-import type { PendingReviewNode } from "@/api/index.ts";
+import type { PendingReviewNode } from "@/api/types.ts";
 import type { EducationNodeSelection } from "./types";
 
 interface ReviewEntry extends PendingReviewNode {

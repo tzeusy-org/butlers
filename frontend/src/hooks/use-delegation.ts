@@ -10,7 +10,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import { listDelegationLedger, type DelegationLedgerParams } from "@/api/index.ts";
+import { listDelegationLedger } from "@/api/client.ts";
+import type { DelegationLedgerParams } from "@/api/client.ts";
 
 // No fleet event type covers delegation ledger rows, so this local poll is the primary path.
 const DELEGATION_LEDGER_POLL_MS = 30_000;

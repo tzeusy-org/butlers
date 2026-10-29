@@ -36,7 +36,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { cn } from "@/lib/utils";
 import type { ConversationSummary } from "@/api/types.ts";
-import { ApiError } from "@/api/index.ts";
+import { ApiError } from "@/api/client.ts";
 import { ConversationHeader } from "@/components/chat/ConversationHeader.tsx";
 import { ConversationReadError } from "@/components/chat/ConversationReadError.tsx";
 import {

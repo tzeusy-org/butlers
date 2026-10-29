@@ -241,7 +241,7 @@ export function StatusBoardCell({
 
       {/* Top row: ButlerMark + name + activity chip */}
       <div className="flex items-center gap-3">
-        <ButlerMark name={name} size={28} tone={markTone} type={type} />
+        <ButlerMark name={name} size={28} tone={markTone} type={type === "butler" || type === "staffer" ? type : undefined} />
 
         <span className="text-base font-medium capitalize flex-1 min-w-0 truncate">
           {name}

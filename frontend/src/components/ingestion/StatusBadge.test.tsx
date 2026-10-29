@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import { StatusBadge } from "./StatusBadge";
-import type { IngestionEventStatus } from "@/api/index.ts";
+import type { IngestionEventStatus } from "@/api/types.ts";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
   true;

@@ -203,7 +203,8 @@ describe("PageUser: test button (probe)", () => {
     // `message` is a PROBE_FAILURE_VOCABULARY member since bu-nz4sn, never the
     // provider's words -- the fixture mirrors the real wire.
     mockProbe.mockResolvedValue({
-      data: { ok: false, code: 401, message: "rejected", at: "just now" },
+      data: {
+latency_ms: null, ok: false, code: 401, message: "rejected", at: "just now" },
       meta: {},
     })
     renderGoogle()
@@ -220,7 +221,8 @@ describe("PageUser: test button (probe)", () => {
 
   it("renders the probe failure category as prose, not the bare token (bu-vpdkk)", async () => {
     mockProbe.mockResolvedValue({
-      data: { ok: false, code: 429, message: "rate_limited", at: "just now" },
+      data: {
+latency_ms: null, ok: false, code: 429, message: "rate_limited", at: "just now" },
       meta: {},
     })
     renderGoogle()

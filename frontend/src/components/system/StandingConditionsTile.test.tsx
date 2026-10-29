@@ -166,6 +166,7 @@ describe("StandingConditionsTile -- empty ledger", () => {
 
 describe("StandingConditionsTile -- populated", () => {
   const openCondition = {
+attention: null,
     ledger: "infra",
     id: "11111111-1111-1111-1111-111111111111",
     source: "infra_state",
@@ -240,6 +241,7 @@ describe("StandingConditionsTile -- populated", () => {
 
 describe("StandingConditionsTile -- resolved condition (auto-resolve provenance)", () => {
   const resolvedCondition = {
+attention: null,
     ledger: "infra",
     id: "22222222-2222-2222-2222-222222222222",
     source: "deploy_drift",
@@ -305,6 +307,7 @@ describe("StandingConditionsTile -- resolved condition (auto-resolve provenance)
 
 describe("StandingConditionsTile -- ledger badge", () => {
   const infraCondition = {
+attention: null,
     ledger: "infra",
     id: "33333333-3333-3333-3333-333333333333",
     source: "deploy_drift",
@@ -322,6 +325,7 @@ describe("StandingConditionsTile -- ledger badge", () => {
     metadata: null,
   }
   const ownerCondition = {
+attention: null,
     ledger: "owner",
     id: "44444444-4444-4444-4444-444444444444",
     source: "finance:bill-overdue",

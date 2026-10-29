@@ -18,6 +18,7 @@ import type { NotificationStats } from "@/api/types";
 
 function makeStats(overrides: Partial<NotificationStats> = {}): NotificationStats {
   return {
+source_available: true,
     total: 34,
     sent: 29,
     failed: 5,

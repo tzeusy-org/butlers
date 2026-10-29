@@ -1,5 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import type { EducationSourceMaterial } from "@/api/index.ts";
+import type { EducationSourceMaterial } from "@/api/types.ts";
 import {
   indexSources,
   parseSourceRefs,

@@ -199,20 +199,22 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NotRequired
 from urllib.parse import quote, urlencode
 from uuid import UUID
 
 import httpx
 from asyncpg.exceptions import InvalidSchemaNameError, PostgresError, UndefinedTableError
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, with_config
+from typing_extensions import TypedDict
 
 from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
 from butlers.api.deps import Db
-from butlers.api.models import ApiMeta, ApiResponse
+from butlers.api.models import ApiMeta, ApiResponse, ApiResponseWithMeta
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
@@ -227,6 +229,13 @@ from butlers.credential_store import CredentialStore
 from butlers.google_credentials import KEY_CLIENT_ID, KEY_CLIENT_SECRET
 from butlers.secrets_provider_catalog import PROVIDER_CATALOG, ProviderMetadata
 from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
+
+
+@with_config(ConfigDict(extra="allow"))
+class BreaksCatalogueMeta(TypedDict, total=False):
+    catalogue_available: bool
+    by_provider: dict[str, list[BreakEntry]]
+
 
 logger = logging.getLogger(__name__)
 
@@ -336,7 +345,7 @@ def _capability_name(capability: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class TestResult(BaseModel):
+class TestResult(ResponseSchemaModel):
     """Most recent probe outcome for a credential."""
 
     ok: bool
@@ -466,7 +475,7 @@ class CliRuntime(BaseModel):
     test: TestResult | None = None
 
 
-class IdentityInfo(BaseModel):
+class IdentityInfo(ResponseSchemaModel):
     """Identity metadata for one entity referenced by the inventory.
 
     Returned as a top-level ``identities`` array alongside the credential
@@ -493,7 +502,7 @@ class IdentityInfo(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CredentialTestOutcome(BaseModel):
+class CredentialTestOutcome(ResponseSchemaModel):
     """Content-blind projection of a probe result for credential detail.
 
     Carries only the machine-checkable outcome. The probe's free-text
@@ -507,14 +516,14 @@ class CredentialTestOutcome(BaseModel):
     latency_ms: int | None = None
 
 
-class CredentialCapabilityOutcome(BaseModel):
+class CredentialCapabilityOutcome(ResponseSchemaModel):
     """Latest probe outcome for one capability family, content-blind."""
 
     capability: str  # always a CAPABILITY_VOCABULARY member
     test: CredentialTestOutcome | None = None
 
 
-class CredentialAuditOutcome(BaseModel):
+class CredentialAuditOutcome(ResponseSchemaModel):
     """One audit-log entry for a credential, without its free-text ``note``.
 
     Used for every credential namespace this router publishes — ``u:`` user
@@ -545,7 +554,7 @@ class CredentialAuditOutcome(BaseModel):
     action: str
 
 
-class UserSecretDetail(BaseModel):
+class UserSecretDetail(ResponseSchemaModel):
     """Content-blind evidence payload for a single user credential.
 
     Returned by GET /api/secrets/user/<provider> and by the rotate mutation.
@@ -720,7 +729,7 @@ def _content_blind_detail(record: _UserCredentialRecord) -> UserSecretDetail:
 # ---------------------------------------------------------------------------
 
 
-class UserSecretSummary(BaseModel):
+class UserSecretSummary(ResponseSchemaModel):
     """Content-blind inventory row for one user credential.
 
     The list-shaped sibling of ``UserSecretDetail``: same contract, same fixed
@@ -810,7 +819,7 @@ def _content_blind_summary(record: UserSecret) -> UserSecretSummary:
     )
 
 
-class SystemSecretSummary(BaseModel):
+class SystemSecretSummary(ResponseSchemaModel):
     """Content-blind inventory row for one system credential.
 
     The published projection of ``SystemSecret``, which stays internal so the
@@ -879,7 +888,7 @@ def _content_blind_system(record: SystemSecret) -> SystemSecretSummary:
     )
 
 
-class CliRuntimeSummary(BaseModel):
+class CliRuntimeSummary(ResponseSchemaModel):
     """Content-blind inventory row for one CLI runtime token.
 
     ``CliRuntime``'s published projection. Carries no ``audit`` array because
@@ -919,7 +928,19 @@ def _content_blind_cli(record: CliRuntime) -> CliRuntimeSummary:
     )
 
 
-class InventoryData(BaseModel):
+@with_config(ConfigDict(extra="allow"))
+class InventoryMeta(TypedDict):
+    """Counts emitted from the exact deduplicated inventory and failed sources."""
+
+    failing_count: int
+    unverified_count: int
+    failing_count_by_family: dict[str, int]
+    unverified_count_by_family: dict[str, int]
+    severity: dict[str, int]
+    sources_degraded: NotRequired[list[str]]
+
+
+class InventoryData(ResponseSchemaModel):
     """Payload returned by GET /api/secrets/inventory."""
 
     cli: list[CliRuntimeSummary] = Field(default_factory=list)
@@ -1022,7 +1043,7 @@ class CliRuntimeDetail(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class SystemCredentialDetail(BaseModel):
+class SystemCredentialDetail(ResponseSchemaModel):
     """Content-blind evidence payload for a single system credential.
 
     Returned by ``GET /api/secrets/system/{key}`` and by
@@ -1124,7 +1145,7 @@ def _content_blind_system_detail(record: SystemSecretDetail) -> SystemCredential
 _CLI_CAPABILITY_PROVIDER = "cli"
 
 
-class CliCredentialDetail(BaseModel):
+class CliCredentialDetail(ResponseSchemaModel):
     """Content-blind evidence payload for a single CLI runtime token.
 
     Returned by ``GET /api/secrets/cli/{credential_id}``. ``CliRuntimeDetail``
@@ -2782,7 +2803,7 @@ def _cancel_detached_inventory_tasks(tasks: list[asyncio.Task[Any]]) -> None:
 
 @router.get(
     "/inventory",
-    response_model=ApiResponse[InventoryData],
+    response_model=ApiResponseWithMeta[InventoryData, InventoryMeta],
 )
 async def get_inventory(
     identity: UUID | None = Query(
@@ -2976,7 +2997,7 @@ async def get_inventory(
     # fetch genuinely failed (fleet-wide degraded-envelope convention — see
     # CLAUDE.md "API Conventions"); only set when non-empty so the common
     # all-healthy case keeps the leaner envelope the existing tests assert on.
-    meta_kwargs: dict[str, Any] = {
+    meta_kwargs: InventoryMeta = {
         "failing_count": failing,
         "unverified_count": unverified,
         "failing_count_by_family": failing_by_family,
@@ -3583,7 +3604,7 @@ _AUDIT_DEFAULT_LIMIT = 10
 _AUDIT_MAX_LIMIT = 50
 
 
-class AuditEvent(BaseModel):
+class AuditEvent(ResponseSchemaModel):
     """A single content-blind audit event for a credential.
 
     Per spec §Audit history endpoint:
@@ -3748,7 +3769,7 @@ async def get_audit_history(
 # ---------------------------------------------------------------------------
 
 
-class BreakEntry(BaseModel):
+class BreakEntry(ResponseSchemaModel):
     """A single feature entry from public.provider_feature_catalogue.
 
     Per spec §Breaks-catalogue endpoint:
@@ -3809,6 +3830,7 @@ def _catalogue_row_capability_or_none(provider: str, required_scopes: list[str])
 @router.get(
     "/breaks-catalogue",
     response_model=ApiResponse[list[BreakEntry]],
+    responses={200: {"model": ApiResponseWithMeta[list[BreakEntry], BreaksCatalogueMeta]}},
 )
 async def get_breaks_catalogue(
     provider: str | None = Query(
@@ -3945,13 +3967,13 @@ class RotateRequest(BaseModel):
     """New secret value to store."""
 
 
-class DisconnectStatus(BaseModel):
+class DisconnectStatus(ResponseSchemaModel):
     """Response payload for POST /api/secrets/user/<provider>/disconnect."""
 
     status: str = "disconnected"
 
 
-class ReauthorizeResponse(BaseModel):
+class ReauthorizeResponse(ResponseSchemaModel):
     """Response payload for POST /api/secrets/user/<provider>/reauthorize."""
 
     redirect_url: str
@@ -6019,7 +6041,7 @@ class SystemSetRequest(BaseModel):
     """
 
 
-class SystemDeleteStatus(BaseModel):
+class SystemDeleteStatus(ResponseSchemaModel):
     """Response payload for DELETE /api/secrets/system/<key>."""
 
     status: str
@@ -6928,7 +6950,7 @@ async def _write_cli_audit(
 # ---------------------------------------------------------------------------
 
 
-class CliRotateResult(BaseModel):
+class CliRotateResult(ResponseSchemaModel):
     """Response payload for POST /api/secrets/cli/<id>/rotate.
 
     Per spec §CLI runtime mutations: the raw value is returned EXACTLY ONCE
@@ -6958,7 +6980,7 @@ class CliRotateRequest(BaseModel):
     """Owner-supplied token to persist verbatim, or ``None`` to auto-generate."""
 
 
-class CliRevokeResult(BaseModel):
+class CliRevokeResult(ResponseSchemaModel):
     """Response payload for POST /api/secrets/cli/<id>/revoke."""
 
     status: str = "revoked"
@@ -7267,7 +7289,7 @@ async def revoke_cli_credential(
 # ---------------------------------------------------------------------------
 
 
-class CliReauthorizeResponse(BaseModel):
+class CliReauthorizeResponse(ResponseSchemaModel):
     """Response payload for POST /api/secrets/cli/<id>/reauthorize.
 
     Covers both auth modes.  The caller inspects ``auth_mode`` to decide
@@ -7483,7 +7505,7 @@ async def reauthorize_cli_credential(
 # ---------------------------------------------------------------------------
 
 
-class ProbeAllResult(BaseModel):
+class ProbeAllResult(ResponseSchemaModel):
     """One credential's outcome from a probe-all sweep."""
 
     key: str  # canonical credential key, e.g. "u:google" / "s:KEY" / "c:cli-auth/codex"
@@ -7499,7 +7521,7 @@ class ProbeAllResult(BaseModel):
     skip_reason: str | None = None
 
 
-class ProbeAllResponse(BaseModel):
+class ProbeAllResponse(ResponseSchemaModel):
     """Aggregate outcome of a probe-all sweep."""
 
     results: list[ProbeAllResult] = Field(default_factory=list)

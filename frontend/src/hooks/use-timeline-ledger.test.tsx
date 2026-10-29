@@ -18,11 +18,19 @@ import type { ReactNode } from "react";
 
 import type { TimelineEvent, TimelineResponse } from "@/api/types.ts";
 
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+
 const mockGetTimeline = vi.fn();
 
-vi.mock("@/api/index.ts", () => ({
-  getTimeline: (...args: unknown[]) => mockGetTimeline(...args),
-}));
+vi.mock("@/api/client.ts", async (original) => {
+  const actual = await original<typeof import("@/api/client.ts")>();
+  return { ...actual, getTimeline: async (...args: Parameters<typeof actual.getTimeline>) => {
+    const raw: Response = await mockGetTimeline(...args);
+    vi.mocked(ownerFetch).mockResolvedValueOnce(raw.clone());
+    return actual.getTimeline(...args);
+  } };
+});
 
 // useTimelineLedger's underlying useTimeline now calls useBusAwarePollInterval
 // (bu-01r64.3), which reads the shared EventBusProvider context -- stub it
@@ -52,17 +60,19 @@ function makeEvent(id: string, timestamp: string, overrides: Partial<TimelineEve
   };
 }
 
-function response(events: TimelineEvent[], meta: Partial<TimelineResponse["meta"]> = {}): TimelineResponse {
-  return {
+function response(events: TimelineEvent[], meta: Partial<TimelineResponse["meta"]> = {}): Response {
+  // Preserve omitted legacy machine_class on the raw response, never fill it.
+  return new Response(JSON.stringify({
     data: events,
     meta: {
+degraded_butlers: [],
       cursor: null,
       has_more: false,
       heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
       degraded_sources: [],
       ...meta,
     },
-  };
+  }));
 }
 
 function makeWrapper() {
@@ -302,8 +312,8 @@ describe("useTimelineLedger", () => {
   });
 
   it("keeps the newest interval and filters when an earlier request resolves late", async () => {
-    const stale = deferred<TimelineResponse>();
-    const destination = deferred<TimelineResponse>();
+    const stale = deferred<Response>();
+    const destination = deferred<Response>();
     mockGetTimeline.mockImplementation((params: { since?: string }) =>
       params.since === "2026-07-04T14:01:00Z" ? stale.promise : destination.promise,
     );

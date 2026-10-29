@@ -9,7 +9,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { disconnectGoogleHealth, getGoogleHealthStatus } from "@/api/index.ts";
+import { disconnectGoogleHealth, getGoogleHealthStatus } from "@/api/client.ts";
 
 import { googleAccountsKeys } from "./use-secrets";
 

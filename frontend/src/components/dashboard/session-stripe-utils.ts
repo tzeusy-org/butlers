@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { useQuery } from "@tanstack/react-query"
-import { getSessions } from "@/api/index.ts"
+import { getSessions } from "@/api/client.ts";
 import type { KeysetMeta, SessionParams } from "@/api/types.ts"
 import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval"
 
@@ -85,7 +85,7 @@ export function formatBucketKey(key: string, unit: "hour" | "day"): string {
 
 /** Aggregate raw session list into per-bucket per-butler counts. */
 export function pivotSessionsIntoRows(
-  sessions: Array<{ butler?: string; started_at: string }>,
+  sessions: Array<{ butler?: string | null; started_at: string }>,
   from: Date,
   to: Date,
   unit: "hour" | "day",
@@ -119,7 +119,7 @@ export const SESSIONS_HARD_CAP = 1000
 
 /** Shape returned by useSessionStripeData — keyset list plus a backpressure flag. */
 export interface SessionStripeResult {
-  data: Array<{ butler?: string; started_at: string }>
+  data: Array<{ butler?: string | null; started_at: string }>
   meta: KeysetMeta
   /** True when more rows exist beyond SESSIONS_HARD_CAP (results are truncated). */
   truncated: boolean

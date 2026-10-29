@@ -8,21 +8,8 @@
 
 import { useQuery } from "@tanstack/react-query";
 
-import {
-  ApiError,
-  getBackupFacts,
-  getButlerHeartbeats,
-  getDatabaseFacts,
-  getDeploymentFacts,
-  getDriftFacts,
-  getEgressCatalog,
-  getHealth,
-  getInsightDeliveryState,
-  getInstanceFacts,
-  getStoredFunctionFacts,
-  getSystemConditions,
-  type SystemConditionsParams,
-} from "@/api/index.ts";
+import { ApiError, getBackupFacts, getButlerHeartbeats, getDatabaseFacts, getDeploymentFacts, getDriftFacts, getEgressCatalog, getHealth, getInsightDeliveryState, getInstanceFacts, getStoredFunctionFacts, getSystemConditions } from "@/api/client.ts";
+import type { SystemConditionsParams } from "@/api/client.ts";
 
 /**
  * Primary poll intervals for system queries (bu-ep4ks.15). No fleet-bus event

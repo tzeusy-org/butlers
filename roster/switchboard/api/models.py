@@ -11,8 +11,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from butlers.api.models.base import ResponseSchemaModel
 
-class RoutingEntry(BaseModel):
+
+class RoutingEntry(ResponseSchemaModel):
     """A single entry in the switchboard routing log."""
 
     id: str
@@ -25,7 +27,7 @@ class RoutingEntry(BaseModel):
     created_at: str
 
 
-class RegistryEntry(BaseModel):
+class RegistryEntry(ResponseSchemaModel):
     """A butler entry in the switchboard registry.
 
     ``eligibility_state`` is the raw stored ``butler_registry`` column --
@@ -67,7 +69,7 @@ class HeartbeatRequest(BaseModel):
     type: str = "butler"  # agent type: 'butler' or 'staffer'
 
 
-class HeartbeatResponse(BaseModel):
+class HeartbeatResponse(ResponseSchemaModel):
     """Response body for the POST /api/heartbeat endpoint."""
 
     status: str
@@ -89,7 +91,7 @@ class SetEligibilityRequest(BaseModel):
         return v
 
 
-class SetEligibilityResponse(BaseModel):
+class SetEligibilityResponse(ResponseSchemaModel):
     """Response body for POST /api/switchboard/registry/{name}/eligibility."""
 
     name: str
@@ -102,7 +104,7 @@ class SetEligibilityResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class FanoutRow(BaseModel):
+class FanoutRow(ResponseSchemaModel):
     """A single row in the connector × butler fanout matrix.
 
     One row per (connector_type, endpoint_identity, target_butler) tuple,
@@ -400,7 +402,7 @@ def validate_rule_type_for_scope(rule_type: str, scope: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class IngestionRule(BaseModel):
+class IngestionRule(ResponseSchemaModel):
     """A persisted ingestion rule returned from the API."""
 
     id: str
@@ -524,7 +526,7 @@ class IngestionRuleTestRequest(BaseModel):
         return validate_scope(v)
 
 
-class IngestionRuleTestResult(BaseModel):
+class IngestionRuleTestResult(ResponseSchemaModel):
     """Result of a dry-run ingestion rule test."""
 
     matched: bool
@@ -535,7 +537,7 @@ class IngestionRuleTestResult(BaseModel):
     reason: str
 
 
-class IngestionRuleTestResponse(BaseModel):
+class IngestionRuleTestResponse(ResponseSchemaModel):
     """Response envelope for POST /api/switchboard/ingestion-rules/test."""
 
     data: IngestionRuleTestResult
@@ -553,7 +555,7 @@ _BULK_MAX_IDS = 100
 # ---------------------------------------------------------------------------
 
 
-class BackfillJobEntry(BaseModel):
+class BackfillJobEntry(ResponseSchemaModel):
     """A single backfill job row from switchboard.backfill_jobs.
 
     Exposes all fields required for the backfill job management dashboard.
@@ -579,7 +581,7 @@ class BackfillJobEntry(BaseModel):
     updated_at: str
 
 
-class BackfillJobSummary(BaseModel):
+class BackfillJobSummary(ResponseSchemaModel):
     """Summarised view of a backfill job for list endpoints.
 
     Omits cursor to keep list responses lightweight.
@@ -616,7 +618,7 @@ class CreateBackfillJobRequest(BaseModel):
     daily_cost_cap_cents: int = 500
 
 
-class BackfillLifecycleResponse(BaseModel):
+class BackfillLifecycleResponse(ResponseSchemaModel):
     """Response body for backfill lifecycle actions (pause/cancel/resume).
 
     Returns the job's updated status after the action.
@@ -631,7 +633,7 @@ class BackfillLifecycleResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ThreadAffinitySettings(BaseModel):
+class ThreadAffinitySettings(ResponseSchemaModel):
     """Global thread-affinity settings row from thread_affinity_settings."""
 
     enabled: bool = True
@@ -676,7 +678,7 @@ class ThreadOverrideUpsert(BaseModel):
         raise ValueError("mode must be 'disabled' or 'force:<butler>' with a non-empty butler name")
 
 
-class ThreadOverrideEntry(BaseModel):
+class ThreadOverrideEntry(ResponseSchemaModel):
     """A single per-thread override entry."""
 
     thread_id: str
@@ -688,7 +690,7 @@ class ThreadOverrideEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class RoutingInstruction(BaseModel):
+class RoutingInstruction(ResponseSchemaModel):
     """A persisted routing instruction returned from the API."""
 
     id: str
@@ -749,7 +751,7 @@ class RoutingInstructionUpdate(BaseModel):
         return v
 
 
-class InsightCandidate(BaseModel):
+class InsightCandidate(ResponseSchemaModel):
     """A single proactive-insight candidate row from ``public.insight_candidates``.
 
     Read-only projection used by ``GET /api/switchboard/insights``.  Mirrors the
@@ -776,7 +778,7 @@ class InsightCandidate(BaseModel):
     prepared_action_id: str | None = None
 
 
-class InsightFeedbackResponse(BaseModel):
+class InsightFeedbackResponse(ResponseSchemaModel):
     """Content-blind result of one bounded insight-feedback decision.
 
     The feedback store retains semantic family data so Switchboard can enforce
@@ -794,7 +796,7 @@ class InsightFeedbackResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class FleetCaseSummary(BaseModel):
+class FleetCaseSummary(ResponseSchemaModel):
     """A single fleet case row from ``public.fleet_cases`` (RFC 0032).
 
     Read-only projection used by ``GET /api/switchboard/cases``. Every butler
@@ -813,7 +815,7 @@ class FleetCaseSummary(BaseModel):
     closed_at: str | None = None
 
 
-class FleetCaseEvidenceEntry(BaseModel):
+class FleetCaseEvidenceEntry(ResponseSchemaModel):
     """A single contribution row from ``public.fleet_case_evidence``."""
 
     id: str
@@ -825,7 +827,7 @@ class FleetCaseEvidenceEntry(BaseModel):
     contributed_at: str | None = None
 
 
-class FleetCaseLinkEntry(BaseModel):
+class FleetCaseLinkEntry(ResponseSchemaModel):
     """A single ledger-binding row from ``public.fleet_case_links``."""
 
     id: str
@@ -853,7 +855,7 @@ class FleetCaseDetail(FleetCaseSummary):
 # ---------------------------------------------------------------------------
 
 
-class RulePromotionSuggestion(BaseModel):
+class RulePromotionSuggestion(ResponseSchemaModel):
     """A pending rule-promotion suggestion needing owner action (a confirm card).
 
     Covers every ``route_to:<butler>`` suggestion and any non-automated
@@ -874,7 +876,7 @@ class RulePromotionSuggestion(BaseModel):
     created_at: str
 
 
-class RulePromotionAutoApplied(BaseModel):
+class RulePromotionAutoApplied(ResponseSchemaModel):
     """An auto-applied (auto-minted) rule-promotion, shown informationally.
 
     The owner did not confirm this — the clearly-automated skip/metadata_only
@@ -893,7 +895,7 @@ class RulePromotionAutoApplied(BaseModel):
     decided_by: str | None = None
 
 
-class RulePromotionSurface(BaseModel):
+class RulePromotionSurface(ResponseSchemaModel):
     """The rule-promotion approvals banner payload: cards + auto-applied info."""
 
     pending: list[RulePromotionSuggestion]
@@ -920,7 +922,7 @@ class RulePromotionRuleEnabledRequest(BaseModel):
     enabled: bool
 
 
-class RulePromotionStats(BaseModel):
+class RulePromotionStats(ResponseSchemaModel):
     """Aggregate rule-promotion metrics for the approvals dashboard tile.
 
     Closes the loop on measuring the promotion win (design bead 6): how many

@@ -17,7 +17,7 @@ import {
   SessionsVerdictOpener,
   SESSIONS_VERDICT_WINDOW_HOURS,
 } from "@/components/sessions/SessionsVerdictOpener";
-import type { SessionAggregate, SessionSummary } from "@/api/index.ts";
+import type { SessionAggregate, SessionSummary } from "@/api/types.ts";
 
 function render(ui: React.ReactElement): string {
   return renderToStaticMarkup(<MemoryRouter>{ui}</MemoryRouter>);
@@ -41,6 +41,11 @@ function aggregate(overrides: Partial<SessionAggregate> = {}): SessionAggregate 
 
 function runningSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
+request_id: null,
+model: null,
+complexity: null,
+purpose_lane: null,
+cost_usd: null,
     id: "s-1",
     butler: "chronicler",
     prompt: "p",

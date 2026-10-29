@@ -38,6 +38,8 @@ function renderCard(status: GoogleHealthStatusResponse) {
 // ---------------------------------------------------------------------------
 
 const BASE_STATUS: GoogleHealthStatusResponse = {
+token_expiry_estimate_at: null,
+
   connected: false,
   scopes_granted: [],
   last_ingest_at: null,

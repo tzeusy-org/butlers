@@ -158,6 +158,7 @@ vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 type UseEntityResult = ReturnType<typeof useEntity>;
 
 const BASE_ENTITY: EntityDetail = {
+  rebind_receipts: [],
   id: "entity-001",
   canonical_name: "Test Owner",
   entity_type: "person",
@@ -372,7 +373,8 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      entity_info: [],
+      rebind_receipts: [],
+    entity_info: [],
     });
 
     const html = renderPage();
@@ -385,7 +387,8 @@ describe("EntityDetailPage — credentials moved to /secrets", () => {
     setEntityState({
       ...BASE_ENTITY,
       roles: ["owner"],
-      entity_info: [
+      rebind_receipts: [],
+    entity_info: [
         {
           id: "info-1",
           type: "telegram",
@@ -420,6 +423,18 @@ describe("EntityDetailPage — facts section", () => {
       recent_facts_has_more: true,
       recent_facts: [
         {
+authority_entity_id: null,
+authority_entity_name: null,
+content_authority: null,
+idempotency_key: null,
+invalid_at: null,
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+source_episode_status: null,
+superseded_by: null,
+tenant_id: "owner",
+valid_at: null,
           id: "fact-1",
           subject: "user",
           predicate: "prefers",
@@ -467,6 +482,18 @@ describe("EntityDetailPage — facts section", () => {
       recent_facts_total: 1,
       recent_facts: [
         {
+authority_entity_id: null,
+authority_entity_name: null,
+content_authority: null,
+idempotency_key: null,
+invalid_at: null,
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+source_episode_status: null,
+superseded_by: null,
+tenant_id: "owner",
+valid_at: null,
           id: "fact-changed",
           subject: "user",
           predicate: "prefers",
@@ -541,6 +568,18 @@ describe("EntityDetailPage — Profile snapshot subject scoping", () => {
       recent_facts_total: 1,
       recent_facts: [
         {
+authority_entity_id: null,
+authority_entity_name: null,
+content_authority: null,
+idempotency_key: null,
+invalid_at: null,
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+source_episode_status: null,
+superseded_by: null,
+tenant_id: "owner",
+valid_at: null,
           id: "fact-role-other",
           subject: "doctor-uuid",
           predicate: "role",
@@ -583,6 +622,18 @@ describe("EntityDetailPage — Profile snapshot subject scoping", () => {
       recent_facts_total: 1,
       recent_facts: [
         {
+authority_entity_id: null,
+authority_entity_name: null,
+content_authority: null,
+idempotency_key: null,
+invalid_at: null,
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+source_episode_status: null,
+superseded_by: null,
+tenant_id: "owner",
+valid_at: null,
           id: "fact-role-own",
           subject: "entity-001",
           predicate: "role",

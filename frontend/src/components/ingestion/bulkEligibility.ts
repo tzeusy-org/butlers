@@ -16,7 +16,7 @@
  *   filtered / error / replay_complete / replay_failed / ingested → filtered_events
  */
 
-import type { IngestionEventSummary } from "@/api/index.ts";
+import type { IngestionEventSummary } from "@/api/types.ts";
 
 export type ReplayEligibilityEvent = Pick<
   IngestionEventSummary,

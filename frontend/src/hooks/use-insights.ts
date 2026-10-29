@@ -18,12 +18,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { getInsightCandidates, submitInsightFeedback } from "@/api/index.ts";
-import type {
-  InsightCandidate,
-  InsightCandidatesParams,
-  InsightFeedbackVerdict,
-} from "@/api/index.ts";
+import { getInsightCandidates, submitInsightFeedback } from "@/api/client.ts";
+import type { InsightCandidate, InsightCandidatesParams, InsightFeedbackVerdict } from "@/api/types.ts";
 
 export const insightKeys = {
   all: (params?: InsightCandidatesParams) =>
@@ -51,15 +47,12 @@ export function useInsights(params?: InsightCandidatesParams) {
 export function useInsightFeedback() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      insightId,
-      verdict,
-      snoozeUntil,
-    }: {
-      insightId: string;
-      verdict: InsightFeedbackVerdict;
-      snoozeUntil?: string;
-    }) => submitInsightFeedback(insightId, verdict, snoozeUntil),
+    mutationFn: (feedback:
+      | { insightId: string; verdict: "not_now"; snoozeUntil: string }
+      | { insightId: string; verdict: Exclude<InsightFeedbackVerdict, "not_now">; snoozeUntil?: string }
+    ) => feedback.verdict === "not_now"
+      ? submitInsightFeedback(feedback.insightId, feedback.verdict, feedback.snoozeUntil)
+      : submitInsightFeedback(feedback.insightId, feedback.verdict, feedback.snoozeUntil),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["insights"] }),
   });
 }

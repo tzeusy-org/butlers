@@ -29,9 +29,10 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 from butlers.api.deps import Db
+from butlers.api.models.base import ResponseSchemaModel
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ _TELEGRAM_HANDLE_PREFIX = "telegram:"
 # ---------------------------------------------------------------------------
 
 
-class MatchedIdentifier(BaseModel):
+class MatchedIdentifier(ResponseSchemaModel):
     """A non-secret channel identifier that matched the query.
 
     Surfaced so the frontend can render the matched identifier (email, phone,
@@ -59,7 +60,7 @@ class MatchedIdentifier(BaseModel):
     value: str = Field(..., description="The non-secret identifier value that matched")
 
 
-class ContactSearchResult(BaseModel):
+class ContactSearchResult(ResponseSchemaModel):
     """A single person-entity match for the typeahead."""
 
     entity_id: str = Field(..., description="public.entities.id (UUID as string)")
@@ -73,7 +74,7 @@ class ContactSearchResult(BaseModel):
     )
 
 
-class ContactSearchResponse(BaseModel):
+class ContactSearchResponse(ResponseSchemaModel):
     """Envelope for contact typeahead search results."""
 
     results: list[ContactSearchResult] = Field(default_factory=list)

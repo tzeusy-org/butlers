@@ -8,8 +8,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   };
 });
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...actual,
     getApprovalMetrics: vi.fn(),
@@ -26,14 +26,33 @@ vi.mock("@/lib/event-bus", () => ({
 }));
 
 import { useQuery } from "@tanstack/react-query";
-import { getApprovalMetrics } from "@/api/index.ts";
+import { getApprovalMetrics } from "@/api/client.ts";
 import {
   isCompleteApprovalMetricsResponse,
   useApprovalMetrics,
 } from "@/hooks/use-approvals";
 
 const completeMetricsResponse = {
-  data: { total_pending: 0 },
+  data: {
+total_approved_today: 0,
+total_rejected_today: 0,
+total_auto_approved_today: 0,
+total_expired_today: 0,
+avg_decision_latency_seconds: null,
+auto_approval_rate: 0,
+rejection_rate: 0,
+failure_count_today: 0,
+active_rules_count: 0,
+callback_secret_configured: null,
+delivery_due_count: 0,
+delivery_retry_wait_count: 0,
+delivery_expired_lease_count: 0,
+delivery_ambiguous_count: 0,
+delivery_stuck_count: 0,
+delivery_oldest_due_age_seconds: null,
+delivery_by_state: {},
+delivery_by_reason: {},
+delivery_sources_complete: false, total_pending: 0 },
   meta: {},
 };
 

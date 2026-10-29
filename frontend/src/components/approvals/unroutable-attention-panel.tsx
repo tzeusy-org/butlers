@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
-import { getUnroutableAttention, retryUnroutableAttention } from "@/api/index.ts";
+import { getUnroutableAttention, retryUnroutableAttention } from "@/api/client.ts";
 import { SourceDegradedNote } from "@/components/ui/query-boundary.tsx";
 import { Time } from "@/components/ui/time.tsx";
 

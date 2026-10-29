@@ -27,6 +27,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
+from pydantic import ConfigDict, with_config
+from typing_extensions import TypedDict
 
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
@@ -35,6 +37,7 @@ from butlers.api.deps import Db
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
+    ApiResponseWithMeta,
     PaginatedResponse,
     PaginationMeta,
 )
@@ -51,7 +54,18 @@ from butlers.tools.switchboard.registry.registry import (
     set_operator_policy as _set_operator_policy,
 )
 
+
 # Dynamically load models module from the same directory
+@with_config(ConfigDict(extra="allow"))
+class ConnectorFanoutMeta(TypedDict):
+    aggregates_available: bool
+
+
+@with_config(ConfigDict(extra="allow"))
+class RulePromotionMeta(TypedDict, total=False):
+    sources_degraded: list[str]
+
+
 _models = roster_module("switchboard", "api/models", api_source=__file__)
 
 RegistryEntry = _models.RegistryEntry
@@ -1119,7 +1133,9 @@ async def _ingestion_fanout_from_db(
     return data, bool(fan_results) and not failed
 
 
-@router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])
+@router.get(
+    "/ingestion/fanout", response_model=ApiResponseWithMeta[list[FanoutRow], ConnectorFanoutMeta]
+)
 async def get_ingestion_fanout(
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
     *,
@@ -2673,7 +2689,7 @@ def _row_to_rule_promotion_auto_applied(r: Any) -> RulePromotionAutoApplied:
 
 @router.get(
     "/rule-promotion-suggestions",
-    response_model=ApiResponse[RulePromotionSurface],
+    response_model=ApiResponseWithMeta[RulePromotionSurface, RulePromotionMeta],
 )
 async def list_rule_promotion_suggestions(
     *,
@@ -2749,7 +2765,7 @@ async def list_rule_promotion_suggestions(
 
 @router.get(
     "/rule-promotion-stats",
-    response_model=ApiResponse[RulePromotionStats],
+    response_model=ApiResponseWithMeta[RulePromotionStats, RulePromotionMeta],
 )
 async def get_rule_promotion_stats(
     *,

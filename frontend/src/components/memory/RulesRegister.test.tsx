@@ -38,6 +38,19 @@ type UseRulesResult = ReturnType<typeof useRules>;
 
 function makeRule(overrides: Partial<MemoryRule> = {}): MemoryRule {
   return {
+source_episode_status: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "rule",
+sensitivity: "normal",
+last_confirmed_at: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+endorsed_by: null,
+endorsed_by_name: null,
+endorsed_at: null,
+held: false,
     id: "rule-1",
     content: "Suggest a sleep study when fatigue is reported three days running.",
     scope: "lifestyle",

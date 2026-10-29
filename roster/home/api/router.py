@@ -574,7 +574,7 @@ def _set_partial_energy_headers(response: Response, omitted_count: int) -> None:
         response.headers[_ENERGY_OMITTED_SENSORS_HEADER] = str(omitted_count)
 
 
-@router.get("/energy")
+@router.get("/energy", responses={200: {"model": list[EnergyDataPoint]}})
 async def get_energy(
     response: Response,
     period: str = Query("day", description="Aggregation period: 'day' or 'hour'"),
@@ -697,7 +697,7 @@ async def get_energy(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/energy/top-consumers")
+@router.get("/energy/top-consumers", responses={200: {"model": list[TopConsumerEntry]}})
 async def get_energy_top_consumers(
     response: Response,
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
@@ -878,7 +878,7 @@ def _row_to_maintenance_item(row: Any) -> MaintenanceItemResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.get("/maintenance")
+@router.get("/maintenance", responses={200: {"model": list[MaintenanceItemResponse]}})
 async def list_maintenance(
     category: str | None = Query(None, description="Filter by category"),
     status: str | None = Query(

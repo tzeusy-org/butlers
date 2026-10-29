@@ -35,12 +35,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import {
-  cancelConversationMessageTurn,
-  createConversation,
-  getConversationMessages,
-  sendMessage,
-} from "@/api/index.ts";
+import { cancelConversationMessageTurn, createConversation, getConversationMessages, sendMessage } from "@/api/client.ts";
 import type {
   ApiResponse,
   ConversationSseMessageCompleteData,

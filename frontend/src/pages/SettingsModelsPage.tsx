@@ -21,7 +21,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { RotateCcw } from "lucide-react";
 
-import { ApiError } from "@/api/index.ts";
+import { ApiError } from "@/api/client.ts";
 import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry";
 import type {
   ComplexityTier,
@@ -476,7 +476,7 @@ function EditModelForm({
   const [runtimeType, setRuntimeType] = useState(model.runtime_type);
   const [modelId, setModelId] = useState(model.model_id);
   const [allowanceAccount, setAllowanceAccount] = useState(model.allowance_account ?? "");
-  const [complexityTier, setComplexityTier] = useState<ComplexityTier>(model.complexity_tier);
+  const [complexityTier, setComplexityTier] = useState(model.complexity_tier);
   const [priority, setPriority] = useState(String(model.priority));
   const [sessionTimeoutS, setSessionTimeoutS] = useState(String(model.session_timeout_s));
   const [enabled, setEnabled] = useState(model.enabled);
@@ -493,7 +493,7 @@ function EditModelForm({
     if (!runtimeType.trim()) errors.runtime_type = "Runtime type is required";
     if (!modelId.trim()) errors.model_id = "Model ID is required";
     if (accountError) errors.allowance_account = accountError;
-    if (!TIER_ORDER.includes(complexityTier))
+    if (!TIER_ORDER.some((tier) => tier === complexityTier))
       errors.complexity_tier = "Must be one of the six canonical tiers";
     const parsedPriority = parseInt(priority, 10);
     if (isNaN(parsedPriority) || parsedPriority < 0)
@@ -820,7 +820,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
     if (!runtimeType.trim()) errors.runtime_type = "Runtime type is required";
     if (!modelId.trim()) errors.model_id = "Model ID is required";
     if (accountError) errors.allowance_account = accountError;
-    if (!TIER_ORDER.includes(complexityTier))
+    if (!TIER_ORDER.some((tier) => tier === complexityTier))
       errors.complexity_tier = "Must be one of the six canonical tiers";
     const parsedPriority = parseInt(priority, 10);
     if (isNaN(parsedPriority) || parsedPriority < 0)
@@ -1366,7 +1366,7 @@ function UsageCell({
               </div>
               <div>{percent !== null ? `${Math.round(percent)}% used` : "no limit set"}</div>
               <div>{windowLabel}</div>
-              {resetAt && <div>Last reset: {relativeTimeAgo(resetAt)}</div>}
+              {typeof resetAt === "string" && resetAt && <div>Last reset: {relativeTimeAgo(resetAt)}</div>}
             </div>
           </TooltipContent>
         </Tooltip>
@@ -1853,8 +1853,9 @@ export default function SettingsModelsPage() {
 
   for (const entry of entries) {
     const tier = entry.complexity_tier;
-    if (grouped[tier]) {
-      grouped[tier].push(entry);
+    const group = Object.entries(grouped).find(([key]) => key === tier)?.[1];
+    if (group) {
+      group.push(entry);
     }
   }
 

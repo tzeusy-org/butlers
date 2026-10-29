@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from butlers.api.models.base import ResponseSchemaModel
+
 CalendarWorkspaceView = Literal["user", "butler", "proposals", "overlays"]
 UnifiedCalendarSourceType = Literal[
     "provider_event",
@@ -20,7 +22,7 @@ UnifiedCalendarSourceType = Literal[
 CalendarSyncState = Literal["fresh", "stale", "syncing", "failed"]
 
 
-class CalendarLinkedPerson(BaseModel):
+class CalendarLinkedPerson(ResponseSchemaModel):
     """A person linked to a calendar event via ``calendar_event_entities``.
 
     Carries the identity-layer ``entity_id`` plus a resolved ``display_label``
@@ -37,7 +39,7 @@ class CalendarLinkedPerson(BaseModel):
     )
 
 
-class UnifiedCalendarEntry(BaseModel):
+class UnifiedCalendarEntry(ResponseSchemaModel):
     """Normalized calendar workspace row for user/butler views."""
 
     entry_id: UUID
@@ -100,7 +102,7 @@ class CalendarProposalAcceptRequest(BaseModel):
     location: str | None = None
 
 
-class CalendarProposalActionResponse(BaseModel):
+class CalendarProposalActionResponse(ResponseSchemaModel):
     """Result of an accept/dismiss action on a calendar proposal."""
 
     proposal_id: UUID
@@ -109,7 +111,7 @@ class CalendarProposalActionResponse(BaseModel):
     butler_name: str | None = None
 
 
-class CalendarWorkspaceSourceFreshness(BaseModel):
+class CalendarWorkspaceSourceFreshness(ResponseSchemaModel):
     """Per-source freshness metadata for workspace rendering."""
 
     source_id: UUID
@@ -145,7 +147,7 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     sync_applicable: bool = True
 
 
-class CalendarWorkspaceLaneDefinition(BaseModel):
+class CalendarWorkspaceLaneDefinition(ResponseSchemaModel):
     """Butler-lane metadata used by calendar workspace layouts."""
 
     lane_id: str
@@ -154,7 +156,7 @@ class CalendarWorkspaceLaneDefinition(BaseModel):
     source_keys: list[str] = Field(default_factory=list)
 
 
-class CalendarWorkspaceReadResponse(BaseModel):
+class CalendarWorkspaceReadResponse(ResponseSchemaModel):
     """Read payload for GET /api/calendar/workspace.
 
     ``next_cursor`` / ``has_more`` implement keyset (cursor) pagination over the
@@ -205,7 +207,7 @@ class CalendarWorkspaceReadResponse(BaseModel):
     sources_available: bool = True
 
 
-class DayBriefingKindGroup(BaseModel):
+class DayBriefingKindGroup(ResponseSchemaModel):
     """One ``kind`` bucket inside a butler's day-briefing group.
 
     Holds the overlay entries of a single ``kind`` (e.g. ``bill_due``,
@@ -217,7 +219,7 @@ class DayBriefingKindGroup(BaseModel):
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
 
 
-class DayBriefingButlerGroup(BaseModel):
+class DayBriefingButlerGroup(ResponseSchemaModel):
     """All of one specialist butler's overlay entries for the target date.
 
     Grouped first by ``source_butler`` then by ``kind`` so the card renders a
@@ -230,7 +232,7 @@ class DayBriefingButlerGroup(BaseModel):
     kinds: list[DayBriefingKindGroup] = Field(default_factory=list)
 
 
-class CalendarDayBriefingResponse(BaseModel):
+class CalendarDayBriefingResponse(ResponseSchemaModel):
     """Structured "tomorrow at a glance" day-briefing card payload.
 
     Assembled from the cached ``calendar.v_overlay_contributions`` view for a
@@ -259,7 +261,7 @@ class CalendarDayBriefingResponse(BaseModel):
     entries: list[UnifiedCalendarEntry] = Field(default_factory=list)
 
 
-class CalendarPrepNote(BaseModel):
+class CalendarPrepNote(ResponseSchemaModel):
     """A single durable relationship note surfaced on the meeting-prep rail."""
 
     kind: str
@@ -277,7 +279,7 @@ CalendarPrepCommitmentDirection = Literal["owner_to_other", "other_to_owner", "s
 CalendarPrepCommitmentEscalationLevel = Literal["L0", "L1", "L2", "L3"]
 
 
-class CalendarPrepCommitment(BaseModel):
+class CalendarPrepCommitment(ResponseSchemaModel):
     """An active owner commitment surfaced for a meeting attendee."""
 
     kind: CalendarPrepCommitmentKind
@@ -289,7 +291,7 @@ class CalendarPrepCommitment(BaseModel):
     fingerprint: str
 
 
-class CalendarPrepAttendee(BaseModel):
+class CalendarPrepAttendee(ResponseSchemaModel):
     """Precomputed prep context for one resolved attendee of a selected event.
 
     All fields are drawn from contribution-sourced cached data (the relationship
@@ -312,7 +314,7 @@ class CalendarPrepAttendee(BaseModel):
     commitments: list[CalendarPrepCommitment] = Field(default_factory=list)
 
 
-class CalendarPrepResponse(BaseModel):
+class CalendarPrepResponse(ResponseSchemaModel):
     """Meeting-prep rail payload for GET /api/calendar/workspace/prep/{event_id}.
 
     Assembled exclusively from the cached ``calendar.v_prep_contributions`` view —
@@ -336,7 +338,7 @@ class CalendarPrepResponse(BaseModel):
     source_butlers: list[str] = Field(default_factory=list)
 
 
-class CalendarWorkspaceSearchResponse(BaseModel):
+class CalendarWorkspaceSearchResponse(ResponseSchemaModel):
     """Read payload for GET /api/calendar/workspace/search.
 
     ``entries`` are ``UnifiedCalendarEntry`` rows ranked by trigram relevance
@@ -355,14 +357,14 @@ class CalendarWorkspaceSearchResponse(BaseModel):
     available: bool = True
 
 
-class CalendarWorkspaceCapabilitiesSync(BaseModel):
+class CalendarWorkspaceCapabilitiesSync(ResponseSchemaModel):
     """Sync capabilities for the calendar workspace."""
 
     global_: bool = Field(default=True, alias="global")
     by_source: bool = True
 
 
-class CalendarWorkspaceCapabilities(BaseModel):
+class CalendarWorkspaceCapabilities(ResponseSchemaModel):
     """Top-level capability switches for workspace UX."""
 
     views: list[CalendarWorkspaceView] = Field(default_factory=lambda: ["user", "butler"])
@@ -378,7 +380,7 @@ class CalendarWorkspaceCapabilities(BaseModel):
     )
 
 
-class CalendarWorkspaceWritableCalendar(BaseModel):
+class CalendarWorkspaceWritableCalendar(ResponseSchemaModel):
     """Writable provider calendar descriptor for user-view create/edit flows."""
 
     source_key: str
@@ -388,7 +390,7 @@ class CalendarWorkspaceWritableCalendar(BaseModel):
     butler_name: str | None = None
 
 
-class CalendarWorkspaceMetaResponse(BaseModel):
+class CalendarWorkspaceMetaResponse(ResponseSchemaModel):
     """Payload for GET /api/calendar/workspace/meta."""
 
     capabilities: CalendarWorkspaceCapabilities = Field(
@@ -432,7 +434,7 @@ class CalendarWorkspaceSyncRequest(BaseModel):
         return self
 
 
-class CalendarWorkspaceSyncTarget(BaseModel):
+class CalendarWorkspaceSyncTarget(ResponseSchemaModel):
     """One queued sync-command acknowledgement/result."""
 
     butler_name: str
@@ -452,7 +454,7 @@ class CalendarWorkspaceSyncTarget(BaseModel):
     coalesced: bool = False
 
 
-class CalendarWorkspaceSyncResponse(BaseModel):
+class CalendarWorkspaceSyncResponse(ResponseSchemaModel):
     """Response payload for POST /api/calendar/workspace/sync."""
 
     scope: Literal["all", "source"]
@@ -473,7 +475,7 @@ class SetPrimaryCalendarRequest(BaseModel):
     calendar_id: str
 
 
-class SetPrimaryCalendarResponse(BaseModel):
+class SetPrimaryCalendarResponse(ResponseSchemaModel):
     """Response payload for PUT /api/calendar/workspace/primary."""
 
     old_calendar_id: str | None = None
@@ -481,7 +483,7 @@ class SetPrimaryCalendarResponse(BaseModel):
     persisted: bool = False
 
 
-class CalendarConflictEntry(BaseModel):
+class CalendarConflictEntry(ResponseSchemaModel):
     """A conflicting calendar event returned by a mutation conflict check."""
 
     event_id: str
@@ -491,7 +493,7 @@ class CalendarConflictEntry(BaseModel):
     timezone: str
 
 
-class CalendarSuggestedSlot(BaseModel):
+class CalendarSuggestedSlot(ResponseSchemaModel):
     """A suggested alternative time slot returned alongside a conflict response."""
 
     start_at: datetime
@@ -507,7 +509,7 @@ ConflictKind = Literal["overlap", "back_to_back", "overloaded_day"]
 ConflictSeverity = Literal["info", "warning"]
 
 
-class ConflictEventRef(BaseModel):
+class ConflictEventRef(ResponseSchemaModel):
     """An event contributing to a detected conflict/overcommitment issue."""
 
     entry_id: str
@@ -518,7 +520,7 @@ class ConflictEventRef(BaseModel):
     status: str  # "confirmed" | "tentative"
 
 
-class ConflictIssue(BaseModel):
+class ConflictIssue(ResponseSchemaModel):
     """A single scheduling problem detected in the scanned window."""
 
     kind: ConflictKind
@@ -532,14 +534,14 @@ class ConflictIssue(BaseModel):
     proposal_ids: list[str] = Field(default_factory=list)
 
 
-class ConflictScanWindow(BaseModel):
+class ConflictScanWindow(ResponseSchemaModel):
     """The requested scan window echoed back in the response."""
 
     start: datetime
     end: datetime
 
 
-class ConflictScanResponse(BaseModel):
+class ConflictScanResponse(ResponseSchemaModel):
     """Response payload for GET /api/calendar/workspace/conflicts.
 
     Honest degraded contract (fail-open, never HTTP 500): the radar reads the
@@ -559,7 +561,7 @@ class ConflictScanResponse(BaseModel):
     issues_available: bool = True
 
 
-class CalendarInvitationEntry(BaseModel):
+class CalendarInvitationEntry(ResponseSchemaModel):
     """One explicit unanswered provider occurrence; no RSVP/mutation authority."""
 
     entry_id: UUID
@@ -574,7 +576,7 @@ class CalendarInvitationEntry(BaseModel):
     response_configured: bool = False
 
 
-class CalendarInvitationsResponse(BaseModel):
+class CalendarInvitationsResponse(ResponseSchemaModel):
     entries: list[CalendarInvitationEntry] = Field(default_factory=list)
     issues_available: bool = True
     conflicts_available: bool = True
@@ -608,7 +610,7 @@ class CalendarButlerEventPreviewRequest(BaseModel):
         return self
 
 
-class CalendarButlerEventPreviewResponse(BaseModel):
+class CalendarButlerEventPreviewResponse(ResponseSchemaModel):
     """Response payload for the recurrence dry-run preview.
 
     ``occurrences`` is the capped list (at most ``limit``) of projected start
@@ -627,7 +629,7 @@ class CalendarButlerEventPreviewResponse(BaseModel):
     notes: list[str] = Field(default_factory=list)
 
 
-class CalendarWorkspaceMutationResponse(BaseModel):
+class CalendarWorkspaceMutationResponse(ResponseSchemaModel):
     """Typed response payload for calendar workspace mutation endpoints.
 
     Surfaces ``conflicts`` and ``suggested_slots`` as first-class typed fields
@@ -654,7 +656,7 @@ class CalendarWorkspaceMutationResponse(BaseModel):
 CalendarActionStatus = Literal["pending", "applied", "failed", "noop"]
 
 
-class CalendarAuditEntry(BaseModel):
+class CalendarAuditEntry(ResponseSchemaModel):
     """One row from ``calendar_action_log``, enriched with provenance from ``calendar_events``.
 
     ``source_butler`` and ``source_session_id`` come from the associated
@@ -679,7 +681,7 @@ class CalendarAuditEntry(BaseModel):
     source_session_id: str | None = None
 
 
-class CalendarAuditResponse(BaseModel):
+class CalendarAuditResponse(ResponseSchemaModel):
     """Response payload for GET /api/calendar/workspace/audit."""
 
     entries: list[CalendarAuditEntry] = Field(default_factory=list)
@@ -704,7 +706,7 @@ class CalendarAuditResponse(BaseModel):
 CalendarAccountHealthState = Literal["healthy", "degraded", "error", "unknown"]
 
 
-class CalendarAccountHealth(BaseModel):
+class CalendarAccountHealth(ResponseSchemaModel):
     """Per-account Google Calendar connector health.
 
     ``state == "unknown"`` is the graceful-degradation value used when the
@@ -721,7 +723,7 @@ class CalendarAccountHealth(BaseModel):
     last_ingest_at: datetime | None = None
 
 
-class CalendarAccountEntry(BaseModel):
+class CalendarAccountEntry(ResponseSchemaModel):
     """One connected Google account with its calendar connector health."""
 
     account_id: UUID
@@ -732,7 +734,7 @@ class CalendarAccountEntry(BaseModel):
     health: CalendarAccountHealth = Field(default_factory=CalendarAccountHealth)
 
 
-class CalendarAccountsResponse(BaseModel):
+class CalendarAccountsResponse(ResponseSchemaModel):
     """Response payload for GET /api/calendar/accounts.
 
     ``health_available`` is ``False`` when the connector health surface could
@@ -772,7 +774,7 @@ class CalendarSourceToggleRequest(BaseModel):
         return self
 
 
-class CalendarSourceToggleResponse(BaseModel):
+class CalendarSourceToggleResponse(ResponseSchemaModel):
     """Response payload for POST /api/calendar/sources."""
 
     butler: str
@@ -822,7 +824,7 @@ class QuickAddParseRequest(BaseModel):
         return normalized or None
 
 
-class QuickAddDraft(BaseModel):
+class QuickAddDraft(ResponseSchemaModel):
     """A parsed draft event — advisory only, never auto-written.
 
     Field names mirror the ``calendar_create_event`` create payload so the
@@ -838,7 +840,7 @@ class QuickAddDraft(BaseModel):
     description: str | None = None
 
 
-class QuickAddParseResponse(BaseModel):
+class QuickAddParseResponse(ResponseSchemaModel):
     """Response payload for POST /api/calendar/workspace/parse-quick-add.
 
     ``parse_available`` is ``false`` when no cheap-tier model is configured or
@@ -862,7 +864,7 @@ class CalendarRespondRequest(BaseModel):
     send_updates: Literal["none", "all", "externalOnly"] = "none"
 
 
-class CalendarRespondResponse(BaseModel):
+class CalendarRespondResponse(ResponseSchemaModel):
     status: Literal[
         "pending_approval", "approved", "rejected", "uncertain", "noop", "applied", "failed"
     ]

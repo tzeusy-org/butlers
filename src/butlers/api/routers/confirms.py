@@ -4,10 +4,13 @@ The trusted goal-runtime composition installs app.state.confirm_service only at 
 canonical switch. An absent composition fails explicitly; no anonymous fallback exists.
 """
 
+from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from typing_extensions import TypedDict
 
 from butlers.core.confirm_service import ConfirmCursorError, ConfirmService
 from butlers.core.owner_auth_context import verified_http_principal
@@ -25,6 +28,54 @@ class Callback(BaseModel):
 class Answer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     option_index: StrictInt = Field(ge=0, le=3)
+
+
+ConfirmStatus = Literal["pending", "answered", "expired"]
+ApplicationStatus = Literal["idle", "pending", "applied", "error"]
+
+
+class ConfirmOptionOutput(TypedDict):
+    value: str
+    label: str
+
+
+class ConfirmCardOutput(TypedDict):
+    id: str
+    text: str
+    options: list[ConfirmOptionOutput]
+    status: ConfirmStatus
+    answer_index: int | None
+    application_status: ApplicationStatus
+    expires_at: datetime
+    created_at: datetime
+
+
+class ConfirmPageMeta(TypedDict):
+    next_cursor: str | None
+
+
+class ConfirmPageOutput(TypedDict):
+    data: list[ConfirmCardOutput]
+    meta: ConfirmPageMeta
+
+
+class ConfirmHandledOutput(TypedDict):
+    status: Literal["answered", "expired"]
+    application_status: ApplicationStatus
+
+
+class ConfirmAlreadyHandledOutput(TypedDict):
+    status: Literal["already_handled"]
+    state: ConfirmStatus
+    application_status: ApplicationStatus
+
+
+class ConfirmRefusedOutput(TypedDict):
+    status: Literal["refused"]
+
+
+class ConfirmAnswerOutput(TypedDict):
+    data: ConfirmHandledOutput | ConfirmAlreadyHandledOutput | ConfirmRefusedOutput
 
 
 def _service(request: Request) -> ConfirmService:
@@ -54,7 +105,7 @@ def _card(row):
     }
 
 
-@router.post("/callback")
+@router.post("/callback", responses={200: {"model": ConfirmAnswerOutput}})
 async def callback(body: Callback, request: Request):
     if not getattr(request.state, "confirm_callback_authenticated", False):
         raise HTTPException(403, detail="connector_required")
@@ -65,7 +116,7 @@ async def callback(body: Callback, request: Request):
     }
 
 
-@router.get("")
+@router.get("", responses={200: {"model": ConfirmPageOutput}})
 async def cards(request: Request, before: UUID | None = None):
     _owner()
     try:
@@ -78,7 +129,7 @@ async def cards(request: Request, before: UUID | None = None):
     }
 
 
-@router.post("/{confirm_id}/answer")
+@router.post("/{confirm_id}/answer", responses={200: {"model": ConfirmAnswerOutput}})
 async def answer(confirm_id: UUID, body: Answer, request: Request):
     _owner()
     return {"data": await _service(request).answer_owner(confirm_id, body.option_index)}

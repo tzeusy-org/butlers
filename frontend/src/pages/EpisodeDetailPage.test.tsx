@@ -34,6 +34,10 @@ type UseEpisodeResult = ReturnType<typeof useEpisode>;
 type UseFactsByEpisodeResult = ReturnType<typeof useFactsByEpisode>;
 
 const BASE_EPISODE: Episode = {
+tenant_id: "owner",
+request_id: null,
+retention_class: "transient",
+sensitivity: "normal",
   id: "ep001abc-0000-0000-0000-000000000000",
   butler: "general",
   session_id: "sess-abc",
@@ -54,6 +58,18 @@ const BASE_EPISODE: Episode = {
 
 function makeFact(overrides: Partial<Fact> = {}): Fact {
   return {
+source_episode_status: null,
+superseded_by: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+valid_at: null,
+invalid_at: null,
+idempotency_key: null,
     id: "f1aaaaaa-0000-0000-0000-000000000000",
     subject: "Alice",
     predicate: "prefers",
@@ -129,13 +145,15 @@ describe("EpisodeDetailPage", () => {
   });
 
   it("falls back to the truncated episode id when the episode has no session", () => {
-    setEpisode({ ...BASE_EPISODE, session_id: null });
+    setEpisode({
+...BASE_EPISODE, session_id: null });
     const out = html();
     expect(out).toContain(`Episode ${BASE_EPISODE.id.slice(0, 8)}`);
   });
 
   it("renders the metadata as a mono code block when non-empty", () => {
-    setEpisode({ ...BASE_EPISODE, metadata: { source: "telegram", chat_id: 42 } });
+    setEpisode({
+...BASE_EPISODE, metadata: { source: "telegram", chat_id: 42 } });
     const out = html();
     expect(out).toContain("METADATA");
     expect(out).toContain("<pre");
@@ -144,7 +162,8 @@ describe("EpisodeDetailPage", () => {
   });
 
   it("omits the metadata block when the bag is empty", () => {
-    setEpisode({ ...BASE_EPISODE, metadata: {} });
+    setEpisode({
+...BASE_EPISODE, metadata: {} });
     const out = html();
     expect(out).not.toContain("METADATA");
     expect(out).not.toContain("<pre");

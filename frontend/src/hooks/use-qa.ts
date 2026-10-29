@@ -7,39 +7,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  addQaAllowedRepo,
-  deleteQaAllowedRepo,
-  dismissQaKnownIssue,
-  forceQaPatrol,
-  getQaAllowedRepos,
-  getQaCase,
-  getQaCaseJournal,
-  getQaCases,
-  getQaCircuitBreaker,
-  getQaInvestigations,
-  getQaRepoConfig,
-  getQaPatrol,
-  getQaPatrols,
-  getQaSummary,
-  patchQaAllowedRepo,
-  removeQaDismissal,
-  resetQaCircuitBreaker,
-  syncQaRepo,
-  updateQaGitAuthor,
-  updateQaRepoConfig,
-} from "@/api/index.ts";
-import type {
-  QaAllowedRepoCreate,
-  QaCaseJournalParams,
-  QaCasesParams,
-  QaDismissRequest,
-  QaGitAuthorUpdate,
-  QaInvestigationsParams,
-  QaKnownIssue,
-  QaPatrolsParams,
-  QaRepoConfigUpdate,
-} from "@/api/index.ts";
+import { addQaAllowedRepo, deleteQaAllowedRepo, dismissQaKnownIssue, forceQaPatrol, getQaAllowedRepos, getQaCase, getQaCaseJournal, getQaCases, getQaCircuitBreaker, getQaInvestigations, getQaRepoConfig, getQaPatrol, getQaPatrols, getQaSummary, patchQaAllowedRepo, removeQaDismissal, resetQaCircuitBreaker, syncQaRepo, updateQaGitAuthor, updateQaRepoConfig } from "@/api/client.ts";
+import type { QaAllowedRepoCreate, QaCaseJournalParams, QaCasesParams, QaDismissRequest, QaGitAuthorUpdate, QaInvestigationsParams, QaKnownIssue, QaPatrolsParams, QaRepoConfigUpdate } from "@/api/types.ts";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 const STALE_TIME = 30_000;

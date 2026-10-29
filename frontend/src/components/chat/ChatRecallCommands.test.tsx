@@ -28,11 +28,16 @@ vi.mock("@/lib/command-registry.tsx", () => ({
   },
 }));
 
+import { ownerFetch } from "@/api/owner-session";
+vi.mock("@/api/owner-session", async (original) => ({ ...await original<typeof import("@/api/owner-session")>(), ownerFetch: vi.fn() }));
+import { listConversations } from "@/api/client";
 import { ChatRecallCommands } from "./ChatRecallCommands";
 import { useConversations } from "@/hooks/use-conversations.ts";
 
 function makeConversation(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
   return {
+routed_butler: null,
+latest_assistant_reply_at: null,
     id: "conversation-1",
     butler_name: "switchboard",
     title: "Landlord follow-up",
@@ -82,9 +87,11 @@ describe("ChatRecallCommands — recent-thread recall (bu-0ynlk.11)", () => {
     expect(registeredCommands).toEqual([]);
   });
 
-  it("falls back to 'Untitled conversation' when a thread has no title", () => {
+  it("falls back to 'Untitled conversation' when a thread has no title", async () => {
+    vi.mocked(ownerFetch).mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ ...makeConversation({ id: "conversation-2" }), title: null }], meta: {} })));
+    const raw = await listConversations("switchboard");
     vi.mocked(useConversations).mockReturnValue({
-      data: { data: [makeConversation({ id: "conversation-2", title: null })] },
+      data: raw,
     } as unknown as ReturnType<typeof useConversations>);
 
     renderRecall();

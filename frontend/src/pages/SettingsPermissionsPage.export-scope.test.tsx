@@ -17,11 +17,8 @@ import {
 } from "@/lib/command-registry";
 import { clearOwnerSession, rememberOwnerCsrf } from "@/api/owner-session";
 
-const apiFetch = vi.hoisted(() => vi.fn());
-vi.mock("@/api/client", () => ({
-  apiFetch,
-  resolveApiHref: (path: string) => `/api${path}`,
-}));
+// Keep the real apiFetch/ownerFetch serializers; observe only the HTTP boundary.
+const fetchMock = vi.fn();
 vi.mock("@/hooks/use-audit-log", () => ({
   useAuditLog: () => ({ data: { data: [] }, isLoading: false }),
 }));
@@ -29,6 +26,7 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 afterEach(() => {
   cleanup();
   clearOwnerSession();
+  vi.unstubAllGlobals();
 });
 
 function RegisteredActions() {
@@ -40,18 +38,17 @@ function RegisteredActions() {
 }
 
 it("describes finite supported scopes and exports all through the rendered and palette actions", async () => {
-  apiFetch.mockImplementation(async (path: string) => {
-    if (path === "/data/export")
-      return {
-        data: {
-          signed_url: "/data/export/download/synthetic",
-          expires_at: "later",
-        },
-      };
-    if (path === "/permissions")
-      return { data: { butlers: [], permissions: [], cells: {} } };
-    return { data: [] };
+  fetchMock.mockReset();
+  fetchMock.mockImplementation(async (url: string) => {
+    const data = url === "/api/data/export"
+      ? { signed_url: "/data/export/download/synthetic", expires_at: "later" }
+      : url === "/api/permissions"
+        ? { butlers: [], permissions: [], cells: {} } : [];
+    return new Response(JSON.stringify({ data }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    });
   });
+  vi.stubGlobal("fetch", fetchMock);
   rememberOwnerCsrf({
     csrf_token: "synthetic-export-scope-csrf",
     csrf_expires_at: new Date(Date.now() + 60_000).toISOString(),
@@ -101,11 +98,11 @@ it("describes finite supported scopes and exports all through the rendered and p
   fireEvent.click(screen.getByRole("button", { name: "Export" }));
   await waitFor(() =>
     expect(
-      apiFetch.mock.calls.filter(([path]) => path === "/data/export"),
+      fetchMock.mock.calls.filter(([path]) => path === "/api/data/export"),
     ).toHaveLength(2),
   );
-  for (const [, init] of apiFetch.mock.calls.filter(
-    ([path]) => path === "/data/export",
+  for (const [, init] of fetchMock.mock.calls.filter(
+    ([path]) => path === "/api/data/export",
   )) {
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body)).toEqual({ scope: "all" });

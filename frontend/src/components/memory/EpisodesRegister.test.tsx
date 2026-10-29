@@ -42,6 +42,10 @@ const NOW = new Date("2026-06-13T12:00:00");
 
 function makeEpisode(overrides: Partial<Episode> = {}): Episode {
   return {
+tenant_id: "owner",
+request_id: null,
+retention_class: "transient",
+sensitivity: "normal",
     id: "ep-1",
     butler: "health",
     session_id: null,

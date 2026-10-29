@@ -14,16 +14,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import {
-  addPriorityContact,
-  getPriorityContacts,
-  removePriorityContact,
-} from "@/api/index.ts";
-import type {
-  PriorityContactAddRequest,
-  PriorityContactEntry,
-  PriorityContactListParams,
-} from "@/api/index.ts";
+import { addPriorityContact, getPriorityContacts, removePriorityContact } from "@/api/client.ts";
+import type { PriorityContactAddRequest, PriorityContactEntry, PriorityContactListParams } from "@/api/types.ts";
 import { useOptimisticListMutation } from "@/hooks/use-optimistic-mutation.ts";
 
 // ---------------------------------------------------------------------------

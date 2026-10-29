@@ -25,10 +25,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { IngestionEventStatus } from "@/api/index.ts";
+import type { IngestionEventStatus } from "@/api/types.ts";
 
 interface StatusBadgeProps {
-  status: IngestionEventStatus;
+  status: string;
   filterReason?: string | null;
   errorDetail?: string | null;
 }
@@ -44,7 +44,7 @@ const STATUS_LABELS: Record<IngestionEventStatus, string> = {
   replay_failed: "replay failed",
 };
 
-function BadgeInner({ status }: { status: IngestionEventStatus }) {
+function BadgeInner({ status }: { status: string }) {
   switch (status) {
     case "ingested":
       return (
@@ -150,7 +150,7 @@ export function StatusBadge({ status, filterReason, errorDetail }: StatusBadgePr
 // list — "one vocabulary" is enforced by sharing the constant, not by
 // convention.
 // eslint-disable-next-line react-refresh/only-export-components
-export const ROW_STATUS_WORDS: Record<IngestionEventStatus, string> = {
+export const ROW_STATUS_WORDS: Partial<Record<string, string>> = {
   ingested: "ingested",
   skipped: "skipped",
   filtered: "filtered",
@@ -170,7 +170,7 @@ interface RowStatusStyle {
   tone?: keyof typeof TONE_COLORS;
 }
 
-const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
+const ROW_STATUS_STYLE: Partial<Record<string, RowStatusStyle>> = {
   ingested: { dot: "bg-[var(--green)]", text: "text-[var(--green)]" },
   skipped: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
   filtered: { dot: "border border-muted-foreground/40", text: "text-muted-foreground" },
@@ -182,13 +182,13 @@ const ROW_STATUS_STYLE: Record<IngestionEventStatus, RowStatusStyle> = {
 };
 
 export interface RowStatusProps {
-  status: IngestionEventStatus;
+  status: string;
   className?: string;
 }
 
 /** Quiet 6px-dot + mono status word for ledger rows. Never a filled pill. */
 export function RowStatus({ status, className }: RowStatusProps) {
-  const style = ROW_STATUS_STYLE[status];
+  const style = ROW_STATUS_STYLE[status] ?? { dot: "border border-muted-foreground/40", text: "text-muted-foreground" };
   const toneColor = style.tone ? TONE_COLORS[style.tone] : undefined;
   return (
     <span
@@ -208,7 +208,7 @@ export function RowStatus({ status, className }: RowStatusProps) {
         style={toneColor ? { borderColor: toneColor } : undefined}
         aria-hidden
       />
-      {ROW_STATUS_WORDS[status]}
+      {ROW_STATUS_WORDS[status] ?? status}
     </span>
   );
 }

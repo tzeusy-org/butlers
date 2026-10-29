@@ -11,7 +11,7 @@
 // status text anywhere -- see ApprovalsPage's statusLabel doctrine comment.)
 // ---------------------------------------------------------------------------
 
-import type { ApprovalSummary } from "@/api/index.ts";
+import type { ApprovalSummary } from "@/api/types.ts";
 import { DispatchVerdict, type VerdictClause } from "@/components/ui/dispatch-verdict";
 
 const HOUR_MS = 3_600_000;

@@ -257,7 +257,7 @@ check-duplicate-names:
 # GUARDS_BASE is the fork point the frontend guard diffs against.
 GUARDS_BASE ?= origin/main
 export GUARDS_BASE
-check-guards: check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
+check-guards: check-api-contract check-lock lint check-format check-for-update-joins check-em-dashes check-spec-overwrites check-requirement-trace check-countable-tasks check-duplicate-names check-session-links
 	python3 scripts/check_archived_requirements_landed.py
 	python3 scripts/check_owner_emails.py
 	python3 scripts/check_cited_requirements_resolve.py
@@ -325,3 +325,9 @@ install-hooks:
 
 uninstall-hooks:
 	.venv/bin/python scripts/pre_push.py uninstall
+
+# Native server schema drift and all client path/query contracts. Static app only.
+.PHONY: check-api-contract
+check-api-contract:
+	npm --prefix frontend run check:api
+	npm --prefix frontend run check:api-contract

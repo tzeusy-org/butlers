@@ -108,9 +108,34 @@ function applyFilters(sp: URLSearchParams, f: FilterState): void {
 // SessionsPage
 // ---------------------------------------------------------------------------
 
+type SessionStatus = NonNullable<SessionParams["status"]>;
+
+function isSessionStatus(value: string): value is SessionStatus {
+  return value === "all" || value === "success" || value === "failed" || value === "running";
+}
+
 export default function SessionsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const filters = parseFilters(searchParams);
+  const status = searchParams.get("status") ?? "all";
+  if (!isSessionStatus(status)) {
+    return (
+      <Page title="Sessions" archetype="list">
+        <div role="alert">Invalid status filter: {status}</div>
+        <Button onClick={() => setSearchParams((previous) => {
+          const next = new URLSearchParams(previous);
+          next.delete("status");
+          next.delete("cursor");
+          return next;
+        })}>Clear invalid status filter</Button>
+      </Page>
+    );
+  }
+  return <SessionsPageContent status={status} />;
+}
+
+function SessionsPageContent({ status }: { status: SessionStatus }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = { ...parseFilters(searchParams), status };
   const cursor = searchParams.get("cursor") ?? undefined;
   // URL state remains immediate and shareable; only the expensive list query
   // waits for a pause in free-text typing.

@@ -13,7 +13,21 @@ The frontend talks to the dashboard API over REST through `frontend/src/api/clie
 - Base URL:
   - `import.meta.env.VITE_API_URL` if set
   - otherwise `/api`
-- All requests are JSON and typed.
+- All requests are JSON and typed. The single `apiFetch` transport derives mounted
+  paths, methods, path bindings, query keys, JSON request bodies and responses from
+  `frontend/src/api/schema.gen.ts`. Domain wrappers in `client.ts` own serialization
+  and any explicit view adaptation; they do not add another fetch mechanism.
+- Import API functions from `api/client` and types from `api/types`. The former
+  `api/index.ts` barrel is removed. `types.ts` contains generated aliases and
+  frontend view types, rather than a second handwritten wire schema.
+- Run `npm run generate:api` from `frontend/` after changing a native response or
+  request model. `npm run check:api` regenerates in memory and fails on drift.
+  Generation calls the real static `create_app().openapi()` without entering the
+  application lifespan or contacting a database/provider.
+- Generated required fields describe serialized output, including emitted nulls
+  and defaults. Input validation schemas retain their own requiredness. A UI view
+  that intentionally supports older incomplete payloads must name that boundary;
+  do not weaken the generated wire type or invent unavailable observations.
 - Non-2xx responses throw `ApiError` with:
   - `code`
   - `message`

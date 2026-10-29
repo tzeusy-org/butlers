@@ -8,10 +8,10 @@ domain_event_deliveries``.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class ReactionSummary(BaseModel):
+class ReactionSummary(ResponseSchemaModel):
     """The latest reaction receipt for one wake, as shown beside a delivery."""
 
     status: str
@@ -20,7 +20,7 @@ class ReactionSummary(BaseModel):
     recorded_at: str
 
 
-class SubscriptionEntry(BaseModel):
+class SubscriptionEntry(ResponseSchemaModel):
     """One row of ``public.butler_subscriptions`` — a standing
     ``(subscriber_butler, event_type)`` registration."""
 
@@ -32,7 +32,7 @@ class SubscriptionEntry(BaseModel):
     updated_at: str
 
 
-class DeliveryEntry(BaseModel):
+class DeliveryEntry(ResponseSchemaModel):
     """One ``public.domain_event_deliveries`` row joined with its event.
 
     ``event_type``/``source_butler``/``occurred_at`` come from the joined
@@ -66,14 +66,14 @@ class DeliveryEntry(BaseModel):
     """
 
 
-class DeliveryReplayResult(BaseModel):
+class DeliveryReplayResult(ResponseSchemaModel):
     """Durable result of requeueing one permanently failed delivery."""
 
     delivery_id: str
     status: str
 
 
-class ReactionEntry(BaseModel):
+class ReactionEntry(ResponseSchemaModel):
     """One ``public.domain_event_reactions`` row -- a step in the trace."""
 
     id: str
@@ -87,7 +87,7 @@ class ReactionEntry(BaseModel):
     recorded_at: str
 
 
-class ContractEntry(BaseModel):
+class ContractEntry(ResponseSchemaModel):
     """One ``public.domain_event_contracts`` row -- a publisher's declaration.
 
     A projection of ``roster/<butler>/domain_events.toml``, materialized at

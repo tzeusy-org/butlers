@@ -194,7 +194,7 @@ interface OverrideDialogProps {
   onOpenChange: (open: boolean) => void;
   catalogEntries: ModelCatalogEntry[];
   existingOverride?: ButlerModelOverride | null;
-  onSubmit: (catalogEntryId: string, complexityTier: ComplexityTier | null, reason: string, unavailable: boolean) => void;
+  onSubmit: (catalogEntryId: string, complexityTier: ButlerModelOverride["complexity_tier"], reason: string, unavailable: boolean) => void;
   price: Omit<PricePreviewProps, "before" | "after">;
   isSubmitting: boolean;
 }
@@ -244,7 +244,7 @@ function OverrideFormFields({
 }: {
   catalogEntries: ModelCatalogEntry[];
   existingOverride?: ButlerModelOverride | null;
-  onSubmit: (catalogEntryId: string, complexityTier: ComplexityTier | null, reason: string, unavailable: boolean) => void;
+  onSubmit: (catalogEntryId: string, complexityTier: ButlerModelOverride["complexity_tier"], reason: string, unavailable: boolean) => void;
   price: Omit<PricePreviewProps, "before" | "after">;
   onCancel: () => void;
   isSubmitting: boolean;
@@ -252,7 +252,7 @@ function OverrideFormFields({
   const [catalogEntryId, setCatalogEntryId] = useState(
     existingOverride?.catalog_entry_id ?? "",
   );
-  const [complexityTier, setComplexityTier] = useState<ComplexityTier | "inherit">(
+  const [complexityTier, setComplexityTier] = useState<string>(
     existingOverride?.complexity_tier ?? "inherit",
   );
 
@@ -304,7 +304,7 @@ function OverrideFormFields({
         <Label htmlFor="override-complexity-tier">Complexity Override</Label>
         <Select
           value={complexityTier}
-          onValueChange={(v) => setComplexityTier(v as ComplexityTier | "inherit")}
+          onValueChange={(v) => setComplexityTier(v)}
           disabled={isSubmitting}
         >
           <SelectTrigger id="override-complexity-tier">
@@ -491,7 +491,7 @@ export default function ButlerModelOverridesTab({
 
   function handleOverrideSubmit(
     catalogEntryId: string,
-    complexityTier: ComplexityTier | null,
+    complexityTier: ButlerModelOverride["complexity_tier"],
     reason: string,
     unavailable: boolean,
   ) {

@@ -39,6 +39,10 @@ const EPISODE_CONTENT = "Owner mentioned fatigue again during the afternoon chec
 
 function makeEpisode(overrides: Partial<Episode> = {}): Episode {
   return {
+tenant_id: "owner",
+request_id: null,
+retention_class: "transient",
+sensitivity: "normal",
     id: "episode-1",
     butler: "general",
     session_id: null,
@@ -163,6 +167,8 @@ describe("MemoryBrowser", () => {
     // results render real belief/maturity data identical to browse mode.
     const results: MemoryInspectResult[] = [
       {
+episode: null,
+rule: null,
         id: "fact-1",
         kind: "fact",
         content: "ibuprofen, after meals",
@@ -170,6 +176,18 @@ describe("MemoryBrowser", () => {
         created_at: "2026-06-13T00:00:00Z",
         metadata: {},
         fact: {
+source_episode_status: null,
+superseded_by: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "operational",
+sensitivity: "normal",
+valid_at: null,
+invalid_at: null,
+idempotency_key: null,
           id: "fact-1",
           subject: "Owner",
           predicate: "preferred_pain_relief",
@@ -197,6 +215,8 @@ describe("MemoryBrowser", () => {
         },
       },
       {
+episode: null,
+fact: null,
         id: "rule-1",
         kind: "rule",
         content: "Suggest a sleep study when fatigue is reported.",
@@ -204,6 +224,19 @@ describe("MemoryBrowser", () => {
         created_at: "2026-06-13T00:00:00Z",
         metadata: {},
         rule: {
+source_episode_status: null,
+tenant_id: "owner",
+request_id: null,
+retention_class: "rule",
+sensitivity: "normal",
+last_confirmed_at: null,
+content_authority: null,
+authority_entity_id: null,
+authority_entity_name: null,
+endorsed_by: null,
+endorsed_by_name: null,
+endorsed_at: null,
+held: false,
           id: "rule-1",
           content: "Suggest a sleep study when fatigue is reported.",
           scope: "health",

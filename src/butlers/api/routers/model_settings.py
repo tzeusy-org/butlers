@@ -31,6 +31,7 @@ from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_pri
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import Db, get_pricing
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.core.model_capabilities import CapabilityDescriptorError, parse_capability_descriptor
 from butlers.core.model_routing import (
@@ -68,7 +69,7 @@ _verify_all_in_flight = False
 # ---------------------------------------------------------------------------
 
 
-class ModelCatalogEntry(BaseModel):
+class ModelCatalogEntry(ResponseSchemaModel):
     """A single entry in the shared model catalog."""
 
     id: UUID
@@ -123,14 +124,14 @@ class ModelPriorityDelta(BaseModel):
     delta: int
 
 
-class ModelDeleteImpact(BaseModel):
+class ModelDeleteImpact(ResponseSchemaModel):
     """Current content-blind blast radius for deleting one catalog entry."""
 
     id: UUID
     override_count: int = Field(ge=0)
 
 
-class VerifyAllResult(BaseModel):
+class VerifyAllResult(ResponseSchemaModel):
     """Response from POST /api/settings/models/verify-all.
 
     ``failed`` counts models that were probed and did not answer.  Models the
@@ -146,7 +147,7 @@ class VerifyAllResult(BaseModel):
     unavailable: int = 0
 
 
-class FailureEntry(BaseModel):
+class FailureEntry(ResponseSchemaModel):
     """A single model failure record from GET /api/settings/models/{id}/failures."""
 
     ts: datetime
@@ -156,7 +157,7 @@ class FailureEntry(BaseModel):
     session_id: str | None = None
 
 
-class DispatchAttemptEntry(BaseModel):
+class DispatchAttemptEntry(ResponseSchemaModel):
     """A single attempt record from GET /api/settings/models/{id}/attempts.
 
     Tracks intermediate failover provenance: quota skips, runtime failures,
@@ -222,7 +223,7 @@ class ModelCatalogUpdate(_AllowanceAccountInput):
     capabilities: dict[str, bool] | None = None
 
 
-class ButlerModelOverride(BaseModel):
+class ButlerModelOverride(ResponseSchemaModel):
     """A single per-butler model override joined with catalog alias."""
 
     id: UUID
@@ -263,7 +264,7 @@ class ButlerModelOverridesWrite(ButlerModelOverrideReason):
     overrides: list[ButlerModelOverrideUpsert]
 
 
-class ResolveModelResponse(BaseModel):
+class ResolveModelResponse(ResponseSchemaModel):
     """Response from the resolve-model preview endpoint."""
 
     butler_name: str
@@ -294,7 +295,7 @@ class TokenLimitsRequest(BaseModel):
             raise ValueError("limit_30d must be >= 1 when not null")
 
 
-class TokenLimitsResponse(BaseModel):
+class TokenLimitsResponse(ResponseSchemaModel):
     """Response for PUT /api/settings/models/{entry_id}/limits."""
 
     catalog_entry_id: UUID
@@ -313,7 +314,7 @@ class ResetUsageRequest(BaseModel):
             raise ValueError("window must be '24h', '30d', or 'both'")
 
 
-class TokenUsageResponse(BaseModel):
+class TokenUsageResponse(ResponseSchemaModel):
     """Response for GET /api/settings/models/{entry_id}/usage."""
 
     catalog_entry_id: UUID
@@ -327,7 +328,7 @@ class TokenUsageResponse(BaseModel):
     percent_30d: float | None = None
 
 
-class ModelTestResult(BaseModel):
+class ModelTestResult(ResponseSchemaModel):
     """Response from the model test endpoint.
 
     Carries no provider reply text: the probe runs on Switchboard and the
@@ -339,7 +340,7 @@ class ModelTestResult(BaseModel):
     duration_ms: int = 0
 
 
-class ModelAttentionEpisode(BaseModel):
+class ModelAttentionEpisode(ResponseSchemaModel):
     """Content-blind lifecycle projection for one model attention episode."""
 
     episode_id: UUID
@@ -353,21 +354,21 @@ class ModelAttentionEpisode(BaseModel):
     reissue_eligible: bool = False
 
 
-class ModelAttentionObservation(BaseModel):
+class ModelAttentionObservation(ResponseSchemaModel):
     """Batched attention source state, distinct from a proven empty result."""
 
     available: bool
     episodes: dict[UUID, ModelAttentionEpisode] = Field(default_factory=dict)
 
 
-class AllowanceEntry(BaseModel):
+class AllowanceEntry(ResponseSchemaModel):
     """One catalog entry that shares a provider allowance account."""
 
     id: UUID
     alias: str
 
 
-class AllowanceAccount(BaseModel):
+class AllowanceAccount(ResponseSchemaModel):
     """Content-blind projection of one ``public.provider_allowance_states`` row."""
 
     account_key: str
@@ -379,14 +380,14 @@ class AllowanceAccount(BaseModel):
     entries: list[AllowanceEntry] = Field(default_factory=list)
 
 
-class AllowanceObservation(BaseModel):
+class AllowanceObservation(ResponseSchemaModel):
     """Allowance state per account, distinct from a proven empty result."""
 
     available: bool
     accounts: list[AllowanceAccount] = Field(default_factory=list)
 
 
-class ModelAttentionReissueResult(BaseModel):
+class ModelAttentionReissueResult(ResponseSchemaModel):
     """The one atomic successor result returned for an original episode."""
 
     original_episode_id: UUID
@@ -395,7 +396,7 @@ class ModelAttentionReissueResult(BaseModel):
     created: bool
 
 
-class ModelPricingResponse(BaseModel):
+class ModelPricingResponse(ResponseSchemaModel):
     """Per-model pricing entry (USD per 1M tokens).
 
     Cache fields are ``None`` when the model has no configured discount

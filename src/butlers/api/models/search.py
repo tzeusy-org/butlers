@@ -7,10 +7,12 @@ contacts across butler databases and the shared schema.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from butlers.api.models.base import ResponseSchemaModel
 
 
-class SearchResult(BaseModel):
+class SearchResult(ResponseSchemaModel):
     """A single search result rendered in the command palette.
 
     Attributes
@@ -37,7 +39,7 @@ class SearchResult(BaseModel):
     url: str
 
 
-class SearchResponse(BaseModel):
+class SearchResponse(ResponseSchemaModel):
     """Grouped search results from a cross-butler fan-out search.
 
     Results are grouped by category: entities, contacts, sessions, and

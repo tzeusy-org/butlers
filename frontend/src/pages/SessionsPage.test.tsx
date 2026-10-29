@@ -78,6 +78,8 @@ import SessionsPage from "@/pages/SessionsPage";
 
 function makeSession(overrides: Partial<SessionSummary> = {}): SessionSummary {
   return {
+purpose_lane: null,
+cost_usd: null,
     id: "sess-1",
     butler: "health",
     prompt: "Roll up stats",
@@ -101,7 +103,8 @@ function keysetResponse(
   hasMore: boolean,
   nextCursor: string | null,
 ): KeysetResponse<SessionSummary> {
-  return { data, meta: { limit: 20, next_cursor: nextCursor, has_more: hasMore } };
+  return { data, meta: {
+sources_degraded: null, limit: 20, next_cursor: nextCursor, has_more: hasMore } };
 }
 
 function setSessions(result: {
@@ -174,6 +177,18 @@ describe("SessionsPage — URL state round-trip", () => {
       since: "2026-01-01",
       until: "2026-02-01",
     });
+
+    cleanup();
+    mockUseSessions.mockClear();
+    const invalid = renderPage("/sessions?butler=health&status=not-a-status&cursor=old");
+    expect(invalid.getByRole("alert").textContent).toContain("not-a-status");
+    expect(mockUseSessions).not.toHaveBeenCalled();
+    fireEvent.click(invalid.getByRole("button", { name: "Clear invalid status filter" }));
+    const corrected = invalid.getByTestId("location-search").textContent ?? "";
+    expect(corrected).toContain("butler=health");
+    expect(corrected).not.toContain("status=");
+    expect(corrected).not.toContain("cursor=");
+    expect(mockUseSessions).toHaveBeenCalled();
   });
 
   it("writes filter changes back into the querystring and clears the cursor", () => {

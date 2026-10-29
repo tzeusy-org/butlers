@@ -39,6 +39,7 @@
 
 import fs from "node:fs"
 import path from "node:path"
+import { tmpdir } from "node:os"
 import { describe, expect, it } from "vitest"
 
 // ---------------------------------------------------------------------------
@@ -47,7 +48,7 @@ import { describe, expect, it } from "vitest"
 
 const API_DIR = path.resolve(__dirname) // frontend/src/api
 const SRC_DIR = path.resolve(__dirname, "..") // frontend/src
-const TYPES_FILE = path.join(API_DIR, "types.ts")
+const TYPES_FILE = path.join(API_DIR, "schema.gen.ts")
 
 // ---------------------------------------------------------------------------
 // Registry
@@ -201,16 +202,15 @@ const REGISTRY: DegradedFlagEntry[] = [
 /**
  * Files that only ever *describe* a flag, never *read* it, so a mention
  * there must not count as consumption:
- *   - types.ts: the type declaration file itself — the registry's own
- *     "declared in types.ts" check already covers this file; excluding it
- *     here stops a bare interface-field declaration from also counting as
- *     "consumption".
+ *   - types.ts and schema.gen.ts: type-only declarations. The registry's
+ *     generated declaration check already covers schema.gen.ts; neither a
+ *     compatibility alias nor a generated field counts as consumption.
  * client.ts is intentionally NOT special-cased here (see stripComments
  * below) — its flag mentions live inside JSDoc `/** *\/` blocks, which
  * comment-stripping already neutralizes for every scanned file, not just
  * this one.
  */
-const EXCLUDED_BASENAMES = new Set(["types.ts"])
+const EXCLUDED_BASENAMES = new Set(["types.ts", "schema.gen.ts"])
 
 /**
  * Best-effort removal of `/* ... *\/` block comments and `// ...` line
@@ -259,11 +259,49 @@ function listSourceFiles(dir: string): string[] {
   return out
 }
 
+function unconsumedFlags(entries: DegradedFlagEntry[], sourceFiles: string[]): DegradedFlagEntry[] {
+  const contentByFile = new Map<string, string>(
+    sourceFiles.map((file) => [file, stripComments(fs.readFileSync(file, "utf-8"))]),
+  )
+  return entries.filter((entry) => !entry.pending).filter((entry) => {
+    const pattern = entry.consumerPattern ?? new RegExp(`\\b${entry.flag}\\b`)
+    // Scope to consumerFiles (matched as path suffixes) when given, else the
+    // whole tree. Scoping is what makes this per-endpoint: the sessions-list
+    // flag must be read in a sessions-list file, not merely somewhere.
+    const scoped = entry.consumerFiles
+      ? sourceFiles.filter((file) =>
+          entry.consumerFiles!.some((suffix) => toPosix(file).endsWith(suffix)),
+        )
+      : sourceFiles
+    return !scoped.some((file) => pattern.test(contentByFile.get(file) ?? ""))
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
+  it("type-only declarations cannot replace a real flag consumer", () => {
+    const fixture = fs.mkdtempSync(path.join(tmpdir(), "butlers-degraded-flags-"))
+    const entry: DegradedFlagEntry = { flag: "pools_failed", emittedBy: "fixture source" }
+    try {
+      for (const basename of ["types.ts", "schema.gen.ts"]) {
+        fs.writeFileSync(path.join(fixture, basename), "export interface Meta { pools_failed: string[] }\n")
+      }
+      expect(unconsumedFlags([entry], listSourceFiles(fixture))).toEqual([entry])
+      fs.writeFileSync(
+        path.join(fixture, "reader.ts"),
+        "export const hasFailure = (meta: { pools_failed: string[] }) => meta.pools_failed.length > 0\n",
+      )
+      expect(unconsumedFlags([entry], listSourceFiles(fixture))).toEqual([])
+      fs.unlinkSync(path.join(fixture, "reader.ts"))
+      expect(unconsumedFlags([entry], listSourceFiles(fixture))).toEqual([entry])
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true })
+    }
+  })
+
   it("api/types.ts exists and is readable", () => {
     expect(fs.existsSync(TYPES_FILE)).toBe(true)
   })
@@ -299,7 +337,7 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
     ).toEqual([])
   })
 
-  it("every registry entry names a field actually declared in api/types.ts", () => {
+  it("every registry entry names a field actually declared in generated schema.gen.ts", () => {
     const typesContent = fs.readFileSync(TYPES_FILE, "utf-8")
     const missing = REGISTRY.filter(
       (entry) => !new RegExp(`\\b${entry.flag}\\??:\\s`).test(typesContent),
@@ -307,7 +345,7 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
 
     expect(
       missing.map((entry) => entry.flag),
-      "Registry entries not found as declared fields in frontend/src/api/types.ts.\n" +
+      "Registry entries not found as declared fields in frontend/src/api/schema.gen.ts.\n" +
         "A registry entry must name a field that is actually typed there — remove or\n" +
         "fix the stale entry:\n\n" +
         missing.map((entry) => `  - ${entry.flag} (${entry.emittedBy})`).join("\n"),
@@ -337,28 +375,13 @@ describe("degraded-envelope FE flag-consumption registry (bu-tpudw.5)", () => {
 
   it("every non-pending registry flag has at least one real, correctly-scoped consumer", () => {
     const sourceFiles = listSourceFiles(SRC_DIR)
-    const contentByFile = new Map<string, string>(
-      sourceFiles.map((file) => [file, stripComments(fs.readFileSync(file, "utf-8"))]),
-    )
-
-    const unconsumed = REGISTRY.filter((entry) => !entry.pending).filter((entry) => {
-      const pattern = entry.consumerPattern ?? new RegExp(`\\b${entry.flag}\\b`)
-      // Scope to consumerFiles (matched as path suffixes) when given, else the
-      // whole tree. Scoping is what makes this per-endpoint: the sessions-list
-      // flag must be read in a sessions-list file, not merely somewhere.
-      const scoped = entry.consumerFiles
-        ? sourceFiles.filter((file) =>
-            entry.consumerFiles!.some((suffix) => toPosix(file).endsWith(suffix)),
-          )
-        : sourceFiles
-      return !scoped.some((file) => pattern.test(contentByFile.get(file) ?? ""))
-    })
+    const unconsumed = unconsumedFlags(REGISTRY, sourceFiles)
 
     expect(
       unconsumed.map((entry) => `${entry.flag}${entry.surface ? `/${entry.surface}` : ""}`),
       "Degraded-envelope flag(s) have ZERO real consumer in their scoped file(s)\n" +
         "(consumerFiles), or anywhere under frontend/src for unscoped flags\n" +
-        "(excluding api/types.ts and *.test.ts).\n" +
+        "(excluding api/types.ts, api/schema.gen.ts and *.test.ts).\n" +
         "An emitted flag nobody reads means a real source failure can render as a\n" +
         "silent all-clear in the UI — wire a consumer on that surface, or if the flag\n" +
         "is mid-rollout, mark it `pending` in REGISTRY with a tracking note.\n\n" +

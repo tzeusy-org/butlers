@@ -61,7 +61,7 @@ function DefinerSearchPathSection({ facts }: { facts: StoredFunctionFacts }) {
         {facts.unpinned_definers.map((entry) => (
           <li key={entry.function} className="font-mono text-xs">
             {entry.function} (owner {entry.owner}, search_path{" "}
-            {entry.search_path ?? "unset"}): {REMEDY_TEXT[entry.remedy]}
+            {entry.search_path ?? "unset"}): {entry.remedy === "migrations" ? REMEDY_TEXT.migrations : entry.remedy === "init_db" ? REMEDY_TEXT.init_db : undefined}
           </li>
         ))}
       </ul>

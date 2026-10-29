@@ -4,7 +4,7 @@ import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Time } from "@/components/ui/time";
 import { Eyebrow } from "@/components/ui/Eyebrow";
 import { useQaPatrol } from "@/hooks/use-qa";
-import type { QaFindingRecord } from "@/api/index.ts";
+import type { QaFindingRecord } from "@/api/types.ts";
 import { getQaPatrolStatusPresentation } from "@/lib/qa-patrol-status";
 
 // ---------------------------------------------------------------------------

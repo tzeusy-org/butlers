@@ -402,6 +402,7 @@ function runtimeStateForActivity(
     case "quarantined":
       return "degraded";
     case "unknown":
+    default:
       return "unknown";
   }
 }

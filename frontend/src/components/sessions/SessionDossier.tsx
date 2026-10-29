@@ -29,8 +29,12 @@ import { formatDurationMs } from "@/lib/format-duration";
 // being dropped entirely (the drawer used to show only process_log.runtime_type).
 // ---------------------------------------------------------------------------
 
+/** The existing partial/legacy dossier view; native API SessionDetail remains complete. */
+type DossierSession = Omit<SessionDetail, "correction_count" | "linked_message" | "resolution_receipt"> &
+  Partial<Pick<SessionDetail, "correction_count" | "linked_message" | "resolution_receipt">>;
+
 export interface SessionDossierProps {
-  session: SessionDetail;
+  session: DossierSession;
   className?: string;
 }
 
@@ -44,7 +48,7 @@ function formatTokens(n: number | null): string {
 }
 
 /** True while a session has not yet reached a terminal state (StatusBadge's own convention). */
-function isSessionRunning(session: SessionDetail): boolean {
+function isSessionRunning(session: Pick<SessionDetail, "success">): boolean {
   return session.success === null;
 }
 
@@ -233,6 +237,16 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
   // only shown for a session that actually failed (success === false); a
   // running or successful session's process_log (if any) is uninteresting
   // evidence and stays out of the way.
+  const receipt = session.resolution_receipt;
+  const isObject = (value: unknown): value is Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value);
+  const winner = isObject(receipt?.winner) ? receipt.winner : undefined;
+  const failover = isObject(receipt?.failover) &&
+    typeof receipt.failover.from_attempt_index === "number" &&
+    typeof receipt.failover.failure_class === "string" ? receipt.failover : undefined;
+  const candidates = Array.isArray(receipt?.candidates)
+    ? receipt.candidates.filter(isObject) : [];
+
   const hasRootEvidence =
     session.success === false &&
     session.process_log != null &&
@@ -247,12 +261,14 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
         </h3>
         <div className="rounded-md border p-3">
           <MetadataRow label="Butler">
-            <Link
-              to={`/butlers/${encodeURIComponent(session.butler)}`}
-              className="text-primary underline-offset-4 hover:underline"
-            >
-              {session.butler}
-            </Link>
+            {session.butler ? (
+              <Link
+                to={`/butlers/${encodeURIComponent(session.butler)}`}
+                className="text-primary underline-offset-4 hover:underline"
+              >
+                {session.butler}
+              </Link>
+            ) : <span className="text-muted-foreground">Unknown butler</span>}
           </MetadataRow>
           <MetadataRow label="Trigger">{session.trigger_source}</MetadataRow>
           <MetadataRow label="Purpose">
@@ -307,37 +323,37 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
           <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Why this model?
           </summary>
-          {session.resolution_receipt ? (
+          {receipt ? (
             <div className="mt-3 space-y-2 text-xs">
               <p>
                 <span className="text-muted-foreground">Winner: </span>
                 <span className="font-mono">
-                  {session.resolution_receipt.winner?.model_id ?? session.model ?? "Unknown"}
+                  {typeof winner?.model_id === "string" ? winner.model_id : session.model ?? "Unknown"}
                 </span>
-                {session.resolution_receipt.winner?.reason
-                  ? ` · ${session.resolution_receipt.winner.reason.replaceAll("_", " ")}`
+                {typeof winner?.reason === "string" && winner.reason
+                  ? ` · ${winner.reason.replaceAll("_", " ")}`
                   : null}
               </p>
-              {session.resolution_receipt.failover && (
+              {failover && (
                 <p data-testid="model-resolution-failover">
                   Failover after attempt{" "}
-                  {session.resolution_receipt.failover.from_attempt_index + 1}:{" "}
-                  {session.resolution_receipt.failover.failure_class}
+                  {typeof failover.from_attempt_index === "number" ? failover.from_attempt_index + 1 : "Unknown"}:{" "}
+                  {typeof failover.failure_class === "string" ? failover.failure_class : "Unknown"}
                 </p>
               )}
               <ul className="space-y-1">
-                {(session.resolution_receipt.candidates ?? []).map((candidate) => (
-                  <li key={candidate.catalog_entry_id} className="flex justify-between gap-3">
-                    <span className="font-mono">{candidate.model_id}</span>
+                {candidates.map((candidate, index) => (
+                  <li key={typeof candidate.catalog_entry_id === "string" ? candidate.catalog_entry_id : index} className="flex justify-between gap-3">
+                    <span className="font-mono">{typeof candidate.model_id === "string" ? candidate.model_id : "Unknown model"}</span>
                     <span className="text-muted-foreground">
-                      {candidate.exclusion ?? candidate.outcome.replaceAll("_", " ")}
+                      {typeof candidate.exclusion === "string" ? candidate.exclusion : typeof candidate.outcome === "string" ? candidate.outcome.replaceAll("_", " ") : "Unknown outcome"}
                     </span>
                   </li>
                 ))}
               </ul>
-              {session.resolution_receipt.truncated && (
+              {receipt.truncated === true && (
                 <p className="text-muted-foreground">
-                  Candidate list truncated; {session.resolution_receipt.candidate_count ?? "more"}{" "}
+                  Candidate list truncated; {typeof receipt.candidate_count === "number" ? receipt.candidate_count : "more"}{" "}
                   were considered.
                 </p>
               )}

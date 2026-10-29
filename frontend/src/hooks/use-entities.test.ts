@@ -37,8 +37,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 // Mock API client functions used by the hooks under test.
 // ---------------------------------------------------------------------------
 
-vi.mock("@/api/index.ts", async (importOriginal) => {
-  const original = await importOriginal<typeof import("@/api/index.ts")>();
+vi.mock("@/api/client.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/api/client.ts")>();
   return {
     ...original,
     getEntityActivity: vi.fn(),
@@ -67,13 +67,13 @@ import {
   useMergeRelationshipEntities,
   useForgetRelationshipEntity,
 } from "@/hooks/use-entities.ts";
-import type { MergeRelationshipEntitiesRequest } from "@/api/index.ts";
+import type { MergeRelationshipEntitiesRequest } from "@/api/types.ts";
 
 const mockUseMutation = vi.mocked(useMutation);
 
 describe("useEntityCadence", () => {
   it("requeries the selected window while the page stays open", async () => {
-    const { getEntityCadence } = await import("@/api/index.ts");
+    const { getEntityCadence } = await import("@/api/client.ts");
     mockUseQuery.mockClear();
     useEntityCadence("entity-001", 30);
 
@@ -99,7 +99,7 @@ describe("useEntityActivity", () => {
   });
 
   it("uses the canonical cache key and forwards TanStack cancellation", async () => {
-    const { getEntityActivity } = await import("@/api/index.ts");
+    const { getEntityActivity } = await import("@/api/client.ts");
     const activity = vi.mocked(getEntityActivity);
     activity.mockResolvedValue({
       items: [],

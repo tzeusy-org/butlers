@@ -13,7 +13,7 @@ const SCROLL_FIXTURE_STYLE_ID = "shell-scroll-memory-route-fixture";
 const SCROLL_RESTORATION_TOLERANCE = 4;
 
 function sessionSummary() {
-  return {
+  return { cost_usd: null,
     id: SESSION_ID,
     butler: "home",
     prompt: "Scroll memory fixture",
@@ -76,7 +76,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: mockJson("getSession", { data: {
+        body: mockJson("getSession", { data: { correction_count: 0, resolution_receipt: null,
           ...sessionSummary(),
           butler: "home",
           result: "fixture result",
@@ -98,7 +98,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: mockJson("getTimeline", { data: [
+        body: JSON.stringify({ data: [
             {
               id: TIMELINE_EVENT_ID,
               type: "notification",
@@ -139,7 +139,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: mockJson("getMemoryStats", { data: {
+        body: JSON.stringify({ data: {
           total_episodes: 0,
           unconsolidated_episodes: 0,
           total_facts: 1,
@@ -166,7 +166,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
         status: 200,
         contentType: "application/json",
         body: mockJson("getFacts", { data: [
-          {
+          { content_authority: null, authority_entity_id: null, authority_entity_name: null, tenant_id: "owner", request_id: null, retention_class: "operational", sensitivity: "normal", valid_at: null, invalid_at: null, idempotency_key: null,
             id: FACT_ID,
             subject: "owner",
             predicate: "prefers",
@@ -212,7 +212,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
         status: 200,
         contentType: "application/json",
         body: mockJson("getIssues", { data: [
-          {
+          { recurrence_at: null, butlers: [],
             severity: "warning",
             type: ISSUE_KEY,
             butler: "home",
@@ -234,7 +234,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
         status: 200,
         contentType: "application/json",
         body: mockJson("getIssueOccurrences", { data: [
-          {
+          { metadata: null, result: null, error: null, redacted: false,
             id: 1,
             ts: new Date().toISOString(),
             actor: "home",

@@ -29,9 +29,9 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 from butlers.api.deps import Db
+from butlers.api.models.base import ResponseSchemaModel
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def _level_rank(level: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-class LogLine(BaseModel):
+class LogLine(ResponseSchemaModel):
     """A single structured log entry from ``butler_logs``."""
 
     ts: datetime
@@ -65,7 +65,7 @@ class LogLine(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
-class LogLines(BaseModel):
+class LogLines(ResponseSchemaModel):
     """Response wrapper for the log list endpoint."""
 
     lines: list[LogLine]

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError, field_validator
+from pydantic import ConfigDict, TypeAdapter, ValidationError, field_validator
 
 from butlers.api.audit_emit import IgnoresCallerAssertedActor, authenticated_principal
 from butlers.api.db import DatabaseManager
@@ -35,6 +35,7 @@ from butlers.api.deps import (
     get_mcp_manager,
 )
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.api.models.base import ResponseSchemaModel
 from butlers.api.models.session import PromptProvenance
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.api.routers.audit import append as audit_append
@@ -55,7 +56,7 @@ _PROMPT_PROVENANCE_ADAPTER = TypeAdapter(list[PromptProvenance])
 # ---------------------------------------------------------------------------
 
 
-class PromptVersion(BaseModel):
+class PromptVersion(ResponseSchemaModel):
     """A versioned snapshot of a butler's system prompt."""
 
     butler_name: str
@@ -66,7 +67,7 @@ class PromptVersion(BaseModel):
     updated_by: str | None = None
 
 
-class ButlerEffectivePrompt(BaseModel):
+class ButlerEffectivePrompt(ResponseSchemaModel):
     """Owner-only composed prompt preview and roster-drift receipt."""
 
     butler_name: str
@@ -94,7 +95,7 @@ class PromptUpdateRequest(IgnoresCallerAssertedActor):
     prompt: str
 
 
-class MemoryAccess(BaseModel):
+class MemoryAccess(ResponseSchemaModel):
     """Memory tier access metadata for a butler."""
 
     read: list[str]
@@ -124,7 +125,7 @@ class KillRequest(IgnoresCallerAssertedActor):
         return v
 
 
-class KillResponse(BaseModel):
+class KillResponse(ResponseSchemaModel):
     """Response for POST /api/butlers/{name}/kill."""
 
     butler_name: str
