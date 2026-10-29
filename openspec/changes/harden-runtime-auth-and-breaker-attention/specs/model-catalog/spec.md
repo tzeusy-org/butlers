@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Dispatch-Outcome Circuit Breaker
@@ -8,6 +13,16 @@ outcomes show it is systemically failing. Breaker state SHALL be derived
 entirely from `public.model_dispatch_attempts` at query time. Qualifying
 outcomes SHALL be recorded through one serialized outcome path that uses a
 stable attempt-ID tie-breaker when timestamps are equal.
+
+In the goal runtime, qualifying dispatch outcomes SHALL be recorded by the
+deterministic goal runner/recorder for actual invocation attempts. References
+to routed work below mean that qualifying invocation execution, not a revived
+classifier, route-dispatch or domain Spawner. Canonical catalog identity,
+OpenCode mapping, aliases, failure threshold/cooldown, serialized attempt order,
+half-open behavior, explicit operator override and same-tier fallback SHALL
+retain every scenario below. Verification and benchmark probes SHALL remain
+D18 tool-less single-turn structured-output measurement functions: no broker or
+domain capabilities, synthetic qualifying success or breaker reset.
 
 ID: REQ-model-catalog-001
 Source: model-catalog Dispatch-Outcome Circuit Breaker; RFC 0001; RFC 0005; runtime-attention-outbox REQ-runtime-attention-outbox-001; design.md Decision 3
