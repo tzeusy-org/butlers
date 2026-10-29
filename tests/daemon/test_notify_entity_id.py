@@ -28,6 +28,7 @@ import pytest
 from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -323,9 +324,8 @@ def _make_pool_with_entity_facts_conn(
     mock_pool.fetch = AsyncMock(return_value=[])
     acquisition_connection = _make_transactional_connection(mock_conn)
 
-    @asynccontextmanager
-    async def mock_acquire():
-        yield acquisition_connection
+    def mock_acquire():
+        return AsyncCtx(acquisition_connection)
 
     mock_pool.acquire = mock_acquire
     return mock_pool, mock_conn
@@ -349,9 +349,8 @@ def _make_pool_with_conn(
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetch = AsyncMock(return_value=[])
 
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
+    def mock_acquire():
+        return AsyncCtx(mock_conn)
 
     mock_pool.acquire = mock_acquire
     return mock_pool, mock_conn

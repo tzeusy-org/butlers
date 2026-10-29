@@ -15,6 +15,9 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import asdict
 from unittest.mock import patch
 
 import pytest
@@ -49,6 +52,51 @@ def test_generic_oauth_rotation_needed_is_unchanged() -> None:
 
     assert auth.status == "rotation-needed"
     assert auth.recovery_reason is None
+
+
+@pytest.mark.parametrize(
+    ("connector_type", "credential_model", "kind", "remediation_path"),
+    [
+        (
+            "whatsapp_user_client",
+            "whatsmeow_session",
+            "session-validity",
+            "/secrets?focus=u:whatsapp",
+        ),
+        ("activitywatch", "environment_config", "static-token", "/ingestion/connectors"),
+        ("whatsapp", "whatsmeow_session", "session-validity", "/secrets?focus=u:whatsapp"),
+        ("live_listener", "internal", "static-token", "/ingestion/connectors"),
+        ("live-listener", "internal", "static-token", "/ingestion/connectors"),
+    ],
+)
+def test_non_oauth_public_auth_matches_actual_connector_custody(
+    connector_type: str, credential_model: str, kind: str, remediation_path: str
+) -> None:
+    """REQ-connector-oauth-scope-surface-011/015: classify without inventing enrollment."""
+    from butlers.api.routers.ingestion_connectors import _build_connector_auth_blocks
+
+    auth, scopes = _build_connector_auth_blocks(connector_type, None, None)
+    assert auth.status == "unsupported"
+    assert auth.type == credential_model
+    if credential_model == "whatsmeow_session":
+        assert auth.note == (
+            "WhatsApp managed session; QR pairing and session custody belong to"
+            " the WhatsApp Passport and connector bridge"
+        )
+    elif credential_model == "environment_config":
+        assert auth.note == (
+            "Local ActivityWatch environment configuration; no remote OAuth"
+            " or dashboard credential enrollment flow"
+        )
+    assert auth.alt_surface == {
+        "kind": kind,
+        "validity_known": False,
+        "validity_expires_at": None,
+        "remediation_path": remediation_path,
+    }
+    assert auth.expires_at is None
+    assert auth.manifest_version is None
+    assert scopes == []
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +438,23 @@ class TestScopeManifestRegistry:
             assert manifest is not None, f"{ct} should have a scope manifest"
             assert manifest.version >= 1
             assert len(manifest.required) > 0
+
+    def test_complete_manifest_metadata_is_unchanged(self) -> None:
+        # Ordered wire declarations, including copy/reasons/default categories;
+        # these are compatibility digests, not a hash of implementation source.
+        expected = {
+            "spotify": "78561ad753e8711a1c9ba9be391128136cade65ba900057c5140e61b520616f9",
+            "gmail": "bf76efcc9d834197a954a388a916cf2f9c8ef03940f0f58c6d833287c8ee16e1",
+            "google_calendar": "a671b27dc501c145ad09148078cb59c0d034f29d0c153295a8e663f6e3f860dd",
+            "google_drive": "2e4061cc4d0cccbb39f5349f894f6a3ae5b35e2fee357f281ddb457c55475454",
+            "google_health": "35d6f917bf4573dd0765205dc57fd648fe41cbb04452af3e023d2649b6f3a548",
+        }
+        from butlers.api.oauth_scope_registry import _OAUTH_MANIFESTS
+
+        assert set(_OAUTH_MANIFESTS) == set(expected)
+        for key, digest in expected.items():
+            actual = json.dumps(asdict(_OAUTH_MANIFESTS[key]), sort_keys=True)
+            assert hashlib.sha256(actual.encode()).hexdigest() == digest, key
 
     def test_non_oauth_connectors_have_no_manifest(self) -> None:
         non_oauth_types = ["telegram_bot", "owntracks", "home_assistant"]

@@ -1546,3 +1546,16 @@ async def test_provider_quotes_survive_single_batch_and_filtered_replay(connecto
         await connector._perform_backfill()
     submitted.assert_awaited_once()
     assert submitted.await_args.args[0]["payload"]["untrusted_spans"][0]["kind"] == "quoted"
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import telegram_user_client as module
+
+    monkeypatch.setattr(module, "TELETHON_AVAILABLE", True)
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.TelegramUserClientConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("telegram_user_client", "telegram")
+    assert config.max_inflight == 17

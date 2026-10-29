@@ -143,6 +143,98 @@
       "scenario": "Investigation agent sandbox"
     }
   ],
+  "consolidate-connector-descriptors/connector-base-spec/Environment Variables (Base)": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "93497d9e3ba6",
+      "excerpt": "All connectors SHALL share a common set of environment variables defining identity, transport, and operational parame..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Required base environment variables",
+      "digest": "0d6bba02c810",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL` (Switchboard SSE endpoint), `CONNECTOR_PROVIDER` (e.g., `gmail`, `telegram`), and `C..."
+    }
+  ],
+  "consolidate-connector-descriptors/connector-gmail/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "4d2937c3c0a6",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=gmail`, `CONNECTOR_CHANNEL=email` must be set"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-gmail/Multiple Concurrent Connectors": [
+    {
+      "kind": "clause",
+      "scenario": "Uniqueness boundary",
+      "digest": "b16ebdc61dfb",
+      "excerpt": "- **THEN** the boundary is `(CONNECTOR_PROVIDER, CONNECTOR_CHANNEL, endpoint_identity, external_event_id)`"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-google-calendar/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "8fce2f46ea22",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL` MUST be set. The channel and provider are fixed internally to `google_calendar` (the..."
+    }
+  ],
+  "consolidate-connector-descriptors/connector-google-drive/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "314af2f61d89",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=google_drive`, `CONNECTOR_CHANNEL=google_drive` must be set"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-home-assistant/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "de6bad22d724",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=home_assistant`, and `CONNECTOR_CHANNEL=home_assistant` MUST be..."
+    }
+  ],
+  "consolidate-connector-descriptors/connector-live-listener/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "918dac7071ac",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=live-listener`, `CONNECTOR_CHANNEL=voice`, and `LIVE_LISTENER_D..."
+    }
+  ],
+  "consolidate-connector-descriptors/connector-spotify/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required environment variables",
+      "digest": "2fdb450edbca",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL` and `CONNECTOR_PROVIDER=spotify` and `CONNECTOR_CHANNEL=spotify` SHALL be set"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-telegram-bot/Environment Variables": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "94212aff6596",
+      "excerpt": "The connector SHALL be configured via environment variables, with base connector variables plus Telegram-specific var..."
+    },
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "36aec07a045e",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_bot` must be set"
+    }
+  ],
+  "consolidate-connector-descriptors/connector-telegram-user-client/Environment Variables": [
+    {
+      "kind": "clause",
+      "scenario": "Required variables",
+      "digest": "0f95c1c6fbd3",
+      "excerpt": "- **THEN** `SWITCHBOARD_MCP_URL`, `CONNECTOR_PROVIDER=telegram`, `CONNECTOR_CHANNEL=telegram_user_client` must be set"
+    }
+  ],
   "decision-loop-one-tap-approvals/autonomy-tracker/Pattern Fingerprint Computation": [
     {
       "digest": "f8b5d2d52a29",

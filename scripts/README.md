@@ -297,6 +297,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`compose.sh`](compose.sh) | developers, `butlers deploy`, Dockerfile, Helm values | Supported Compose launcher for the local stack and protected restore-drill variants. |
 | [`base-image-input-fingerprint.sh`](base-image-input-fingerprint.sh) | `compose.sh`, `k8s/build-push.sh`, `nightly.yml` | Fingerprints the base image build inputs. |
 | [`generate_runtime_cli_sandbox_manifest.py`](generate_runtime_cli_sandbox_manifest.py) | `Dockerfile.base`, `compose.sh`, `k8s/build-push.sh`, `nightly.yml` | Generates the runtime CLI sandbox input manifest. |
+| [`render_connector_catalog.py`](render_connector_catalog.py) | developers; `tests/contracts/test_connector_catalog.py::test_generated_recovery_projection_matches_catalog_and_refuses_stale_output` | Regenerates the public connector recovery projection with `python3 scripts/render_connector_catalog.py`; `--check` refuses stale generated TypeScript. |
 | [`runtime_cli_sandbox_init.c`](runtime_cli_sandbox_init.c) | `Dockerfile.base` | Source of the sandbox init binary. |
 | [`dev_entrypoint.sh`](dev_entrypoint.sh) | `docker-compose.yml`, Helm templates | Container entrypoint for dev services. |
 | [`dashboard_proxy_peer.py`](dashboard_proxy_peer.py) | `compose.sh` | Measures the host-published API's TCP peer for the dashboard-proxy readiness check. |

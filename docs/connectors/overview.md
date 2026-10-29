@@ -168,8 +168,6 @@ Connectors self-register on their first heartbeat -- no manual pre-configuration
 | Variable | Required | Description |
 |---|---|---|
 | `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint URL for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes | Provider name (`telegram`, `gmail`, etc.) |
-| `CONNECTOR_CHANNEL` | Yes | Canonical channel (`telegram`, `email`, `voice`, etc.) |
 | `CONNECTOR_POLL_INTERVAL_S` | For poll connectors | Poll interval in seconds |
 | `CONNECTOR_MAX_INFLIGHT` | No (default: 8) | Ingest concurrency cap |
 | `CONNECTOR_HEARTBEAT_INTERVAL_S` | No (default: 120) | Heartbeat interval in seconds |
@@ -182,6 +180,21 @@ Provider-specific credentials must come from environment or secret manager, neve
 Connector authentication uses bearer tokens issued by the Switchboard. Token scope must match the connector's source identity (`channel`, `provider`, `endpoint_identity`). See [API Authentication](../identity_and_secrets/cli-runtime-auth.md) for token lifecycle details.
 
 ## Available Connectors
+
+Static discovery and buffered-preview fallback labels derive from the frozen data
+in `src/butlers/connectors/catalog.py`. `GET /api/ingestion/connectors/available`
+returns exactly `connector_type`, `channel`, `provider` and `display_name` for each
+framework-deployable connector, independently of registered instances. Its
+channel/provider fields use the connector's canonical emitted identity, including
+local/Compose Live Listener even though the Helm chart has no Live Listener entry.
+
+Canonical connector identities, legacy safe display labels, accepted ingress
+pairs and deployment targets are distinct projections. A display alias does not
+register a connector or authorize OAuth. The catalog contains no credentials.
+This is the first consolidation slice: connector configuration, OAuth/default
+registries and health/deployment wiring retain their existing mechanisms until
+their own verified slices land. The environment table above still describes the
+current runtime configuration.
 
 - [Telegram Bot](telegram-bot.md) -- Bot API polling/webhook connector
 - [Telegram User Client](telegram-user-client.md) -- MTProto user-client live stream
@@ -374,6 +387,39 @@ existing whole-text rule. Filter/error/replay privacy rewrites collapse retained
 kinds onto their actual replacement text; they do not retain hidden quote bodies.
 Unmarked pasted text remains the RFC 0038 D5 known limit. These normalizers do not
 invoke providers or grant accepted-source authentication (.9 owns that boundary).
+
+
+### Static consumer projections (S2)
+
+The catalog now supplies the unchanged accepted wire pairs, heartbeat types,
+channel-default policy keys, stored-history strategies, OAuth manifests and
+closed public recovery metadata. API scope/auth dataclasses remain adapters;
+status computation, redaction and credential custody are unchanged. Connector,
+provider and channel selectors are distinct: Telegram preserves both connector
+members, email preserves unsupported IMAP, and wellness preserves both sources.
+Auth aliases do not register a connector. Historical Discord remains readable
+without an active registration or recovery surface.
+
+Canonical/legacy WhatsApp point to existing Passport pairing, ActivityWatch is
+local environment configuration with no remote enrollment, and Live Listener
+needs no remote authorization. No expiry or grant is inferred from static data.
+The small frontend recovery file is generated with
+`python scripts/render_connector_catalog.py`; `--check` verifies its exact bytes.
+It is separate from API DTO generation. Google Health remains explicit opt-in;
+all consent sets and manifest versions remain unchanged, including the disclosed
+pre-existing Spotify identity-scope mismatch.
+
+Connector runtimes now obtain their fixed channel/provider/type from a strict
+canonical descriptor lookup. Identity environment variables and their redundant
+Compose leaves are removed; aliases cannot select a runtime row. Home Assistant
+retains its wellness emission, and Live Listener retains its underscore runtime
+type and hyphenated stored-event identity. Endpoint, cursor, event and idempotency
+keys retain their existing spellings. Operational, secret and per-account
+configuration remains with its runtime consumer. Gmail shares parser stages while
+preserving each entrypoint's boolean rules and validation order; per-account
+metadata, DB-resolved credentials and account health port zero are unchanged.
+Spotify no longer carries its two unused identity settings. S4 health-kit,
+service/bind and deployment work remains required and unfinished.
 
 ## Ingestion replay and missing delivery plans
 

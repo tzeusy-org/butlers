@@ -82,13 +82,15 @@ Needed only to seed the first OAuth flow; afterwards the client credentials live
 
 ## Connectors
 
+Static connector type, channel and provider come from `butlers.connectors.catalog`;
+`CONNECTOR_PROVIDER` and `CONNECTOR_CHANNEL` are no longer operator settings.
+The operational and credential variables below retain their existing behavior.
+
 Connectors are independent processes that submit events to the Switchboard.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SWITCHBOARD_MCP_URL` | (required) | Switchboard MCP SSE endpoint, e.g. `http://butlers-up:41100/sse` in Compose |
-| `CONNECTOR_PROVIDER` | per connector | Provider name: `telegram`, `gmail`, `imap`, ... |
-| `CONNECTOR_CHANNEL` | per connector | Canonical channel: `telegram`, `email`, ... |
 | `CONNECTOR_POLL_INTERVAL_S` | `1.0` | Poll interval in seconds (polling connectors) |
 | `CONNECTOR_MAX_INFLIGHT` | `8` | Maximum concurrent ingest submissions |
 | `CONNECTOR_HEALTH_PORT` | per connector | Port for `/health` and `/metrics` |

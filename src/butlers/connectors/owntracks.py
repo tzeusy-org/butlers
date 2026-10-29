@@ -69,6 +69,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -88,6 +89,8 @@ from butlers.ingestion_bearer_scrub import scrub_evidence_json
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.ingestion_spans import CHANNEL_KIND_FEED
 
+_DESCRIPTOR = connector_descriptor("owntracks")
+
 if TYPE_CHECKING:
     import asyncpg
 
@@ -97,9 +100,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "owntracks"
-_CONNECTOR_CHANNEL = "owntracks"
-_CONNECTOR_PROVIDER = "owntracks"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Default configuration
 _DEFAULT_HEALTH_PORT = 40083
@@ -253,8 +254,8 @@ class OwnTracksConnectorConfig:
     """Configuration for the OwnTracks connector runtime."""
 
     switchboard_mcp_url: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
 
     # OwnTracks-specific
     tracker_id_override: str | None = None
@@ -298,8 +299,8 @@ class OwnTracksConnectorConfig:
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
+            provider=_DESCRIPTOR.provider,
+            channel=_DESCRIPTOR.channel,
             tracker_id_override=tracker_id_override,
             retention_days=retention_days,
             ingestion_tier=ingestion_tier,
@@ -678,8 +679,8 @@ def build_location_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -718,8 +719,8 @@ def build_transition_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -757,8 +758,8 @@ def build_waypoints_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -1320,7 +1321,7 @@ class OwnTracksConnector:
 
         # Apply source filter gate (task 6.6)
         ingest_envelope = IngestionEnvelope(
-            source_channel=_CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             raw_key=device.endpoint_identity,
         )
         decision = device.ingestion_policy.evaluate(ingest_envelope)
@@ -1338,7 +1339,7 @@ class OwnTracksConnector:
 
             device.filtered_event_buffer.record(
                 external_message_id=external_event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=device.endpoint_identity,
                 subject_or_preview=f"OwnTracks {payload_type} event",
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1347,8 +1348,8 @@ class OwnTracksConnector:
                     rule_type=decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=device.endpoint_identity,
                     external_event_id=external_event_id,
                     external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
