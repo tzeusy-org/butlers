@@ -51,6 +51,7 @@ import {
 } from '@/components/ingestion/connectors/connector-auth'
 import { Page, type Breadcrumb } from '@/components/ui/page'
 import { usePageSubject } from '@/lib/page-context.tsx'
+import { useConnectorLifecycle } from '@/hooks/use-connector-lifecycle'
 
 /** Map backend ConnectorScopeEntry[] to the OAuthScope[] shape ScopeList consumes. */
 function _toOAuthScopes(scopes: ConnectorScopeEntry[] | null | undefined): OAuthScope[] | null {
@@ -130,6 +131,7 @@ export default function ConnectorDetailPage() {
 
   const connector = detailResp?.data
   const stats = statsResp?.data
+  const lifecycle = useConnectorLifecycle(connectorType ?? '', endpointIdentity ?? '')
 
   // Surface ?oauth_error= from a failed reauth redirect and strip it from the URL.
   // no_primary_account is NOT an auth error — it needs "set primary account" guidance.
@@ -202,7 +204,7 @@ export default function ConnectorDetailPage() {
     )
   }
 
-  if (detailError) {
+  if (detailError && !connector) {
     return (
       <Page
         archetype="detail"
@@ -238,6 +240,11 @@ export default function ConnectorDetailPage() {
     <DispatchLayout>
       <IngestionSubNav />
       <DispatchSurface>
+        {detailError && (
+          <p role="alert" className="mb-4 text-sm text-muted-foreground">
+            Connector detail could not refresh. The last confirmed state is shown.
+          </p>
+        )}
         <ConnectorDetailView
           connector={connector}
           stats={stats}
@@ -267,6 +274,10 @@ export default function ConnectorDetailPage() {
           }}
           recovery={recovery}
           onReauth={canRecover ? handleReauth : undefined}
+          onPause={() => lifecycle.perform('pause', connector.state)}
+          onRunNow={() => lifecycle.perform('resume', connector.state)}
+          lifecyclePending={lifecycle.isPending}
+          lifecycleError={lifecycle.error}
         />
         {BATCH_CONNECTOR_TYPES.has(connector.connector_type) && (
           <div className="mt-8" data-testid="batch-settings-section">

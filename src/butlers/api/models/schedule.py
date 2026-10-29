@@ -72,6 +72,7 @@ class ScheduleCreate(BaseModel):
     """Request body for creating a new scheduled task."""
 
     name: str
+    interrupt_owner: StrictBool = False
     cron: str
     dispatch_mode: DispatchMode = _DISPATCH_MODE_PROMPT
     prompt: str | None = None

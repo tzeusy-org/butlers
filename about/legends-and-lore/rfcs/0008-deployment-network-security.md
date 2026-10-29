@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session spawn and sandbox rules, and the container layout, which gains `butlers-control` and the session host; network, port and firewall contracts remain).
 
 ## Summary
 

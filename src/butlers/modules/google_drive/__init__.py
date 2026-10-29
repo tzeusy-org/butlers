@@ -509,17 +509,11 @@ class GoogleDriveModule(Module):
     # Module ABC properties (spec §3.1)
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "google_drive"
+    name = "google_drive"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return GoogleDriveConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     def migration_revisions(self) -> str | None:
         """Return Alembic branch label for this module's migrations."""

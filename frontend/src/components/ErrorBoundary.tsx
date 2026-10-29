@@ -10,6 +10,21 @@ interface State {
   error: Error | null
 }
 
+/** The shared "Something went wrong" fallback, used by the boundary and the route errorElement. */
+export function ErrorFallback({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
+      <h2 className="text-lg font-semibold text-destructive">Something went wrong</h2>
+      <p className="text-sm text-muted-foreground max-w-md text-center">
+        {error?.message ?? 'An unexpected error occurred'}
+      </p>
+      <Button variant="outline" onClick={onRetry}>
+        Try again
+      </Button>
+    </div>
+  )
+}
+
 export class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
     super(props)
@@ -27,18 +42,10 @@ export class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
-          <h2 className="text-lg font-semibold text-destructive">Something went wrong</h2>
-          <p className="text-sm text-muted-foreground max-w-md text-center">
-            {this.state.error?.message ?? 'An unexpected error occurred'}
-          </p>
-          <Button
-            variant="outline"
-            onClick={() => this.setState({ hasError: false, error: null })}
-          >
-            Try again
-          </Button>
-        </div>
+        <ErrorFallback
+          error={this.state.error}
+          onRetry={() => this.setState({ hasError: false, error: null })}
+        />
       )
     }
 

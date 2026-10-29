@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 import asyncpg
@@ -23,6 +24,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 
 from alembic import command
+from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError, check_bootstrap_connection
 from butlers.jobs.backup_health import get_last_restore_drill
 from butlers.migrations import _build_alembic_config, run_migrations
 from butlers.testing.migration import bootstrap_extensions, migration_db_name
@@ -635,11 +637,17 @@ def test_untrusted_admin_bootstrap_cannot_supply_a_noop_core_196_installer(
         shared_engine.dispose()
 
     config = _build_alembic_config(shared_url, chains=["core"])
-    command.stamp(config, "core_195")
-    with pytest.raises(
-        Exception, match="restore-drill bootstrap installer is missing or untrusted"
-    ):
+    with pytest.raises(BootstrapPrerequisiteError):
         command.upgrade(config, "core_196")
+    # Retain the independent applied guard species under a narrowly neutralized
+    # early-admission control. This stamp is an old guard fixture, NOT historical
+    # core195 reproduction (the separate owning-node helper applies the chain).
+    with patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None):
+        command.stamp(config, "core_195")
+        with pytest.raises(
+            Exception, match="restore-drill bootstrap installer is missing or untrusted"
+        ):
+            command.upgrade(config, "core_196")
 
     for _ in range(2):
         with pytest.raises(subprocess.CalledProcessError) as bootstrap_error:
@@ -836,6 +844,8 @@ def test_normal_migration_role_temp_catalog_shadow_cannot_subvert_restore_instal
                     """
                 )
             )
+            # Qualified admission must not execute the malicious temp catalog view.
+            check_bootstrap_connection(connection)
             connection.execute(text("SELECT restore_drill_executor_admin.install_interface()"))
             gained_owner_membership = connection.execute(
                 text("SELECT pg_has_role('butlers', 'restore_drill_executor_owner', 'USAGE')")
@@ -1247,9 +1257,17 @@ def test_precreated_shared_ledger_rejects_core_migration_without_authority_hando
     finally:
         shared_engine.dispose()
 
-    with pytest.raises(
-        Exception,
-        match="restore-drill authority interface must be absent before fixed bootstrap installation",
+    with pytest.raises(BootstrapPrerequisiteError):
+        _run_real_core_chain_with_relationship_prerequisite(shared_url)
+    # The independent fixed installer still refuses shared-owned precreation
+    # when only the new early check is neutralized; preserve its exact old error.
+    with (
+        patch("butlers.migrations.check_bootstrap_database", return_value=None),
+        patch("butlers.bootstrap_prerequisite.check_bootstrap_connection", return_value=None),
+        pytest.raises(
+            Exception,
+            match="restore-drill authority interface must be absent before fixed bootstrap installation",
+        ),
     ):
         _run_real_core_chain_with_relationship_prerequisite(shared_url)
 
@@ -1368,6 +1386,11 @@ def test_real_core_chain_keeps_the_executor_result_authority_exclusive(
     restore-drill-shaped public row must never become the scheduling or API
     authority.
     """
+    from tests.bootstrap_prerequisite_helpers import exercise_historical_bootstrap
+
+    exercise_historical_bootstrap(
+        postgres_container, tmp_path, _create_database_before_restore_bootstrap, _run_psql_file
+    )
     admin_url, shared_url, host, port, admin_user, admin_password = _bootstrap_database(
         postgres_container
     )

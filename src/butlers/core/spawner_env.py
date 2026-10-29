@@ -36,7 +36,6 @@ def _capture_pipeline_routing_context() -> dict[str, Any] | None:
 
 async def _build_env(
     config: ButlerConfig,
-    module_credentials_env: dict[str, list[str]] | None = None,
     credential_store: CredentialStore | None = None,
 ) -> dict[str, str]:
     """Build an explicit env dict for the runtime instance.
@@ -46,12 +45,10 @@ async def _build_env(
     working in spawned subprocesses without requiring machine-specific paths.
 
     Other than `PATH`, only declared variables are included — undeclared env
-    vars do not leak through. Includes butler-level required/optional vars and
-    module credential vars. Owner-auth and administrative database variables are
-    always withheld, even if declared.
-
-    Runtime authentication is handled by CLI-level OAuth tokens (device-code
-    flow via the dashboard), not API keys.
+    vars do not leak through. Module channel credentials remain daemon-owned
+    unless explicitly declared in the butler required/optional environment.
+    Owner-auth and administrative database variables are always withheld, even
+    if declared. Selected runtime authentication is added by the invocation path.
 
     When *credential_store* is provided, credentials are resolved from the
     DB only via ``CredentialStore.resolve()`` (no env fallback).
@@ -76,14 +73,6 @@ async def _build_env(
         value = await _resolve(var)
         if value is not None:
             env[var] = value
-
-    # Module credentials (DB-first passthrough to spawned instances)
-    if module_credentials_env:
-        for _module_name, cred_vars in module_credentials_env.items():
-            for var in cred_vars:
-                value = await _resolve(var)
-                if value is not None:
-                    env[var] = value
 
     # Include traceparent for distributed tracing
     env.update(get_traceparent_env())

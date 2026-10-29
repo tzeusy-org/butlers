@@ -19,7 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -173,7 +173,7 @@ def _wire_memory_mock(
     mock_db.pool = MagicMock(side_effect=lambda name: mock_pool)
     mock_db.butler_names = ["memory"]
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_pool, mock_db
 
 
@@ -224,7 +224,7 @@ async def test_get_retention_policies_503_when_table_missing(app):
     mock_db.pool = MagicMock(return_value=mock_pool)
     mock_db.butler_names = ["memory"]
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

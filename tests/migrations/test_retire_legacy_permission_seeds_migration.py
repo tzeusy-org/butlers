@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from butlers.api.routers.permissions import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.core.permissions import PERMISSION_DEFAULT_GRANTED
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -179,7 +179,7 @@ async def test_migrated_api_serializes_inherited_and_explicit_permission_states(
         await _apply(pool, "upgrade")
 
         app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: _SwitchboardDb(pool)
+        app.dependency_overrides[get_db] = lambda: _SwitchboardDb(pool)
         try:
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://test"

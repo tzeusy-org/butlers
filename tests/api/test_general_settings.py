@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.general_settings import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -22,7 +22,7 @@ def _app_with_pool(app, *, fetchval_side_effect=None, pool_raises=None):
         mock_db.credential_shared_pool.side_effect = pool_raises
     else:
         mock_db.credential_shared_pool.return_value = mock_pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool
 
 

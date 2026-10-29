@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from unittest.mock import Mock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
@@ -256,8 +257,7 @@ class TestPolicyDecisionEmbedding:
         """route_to decision must appear in request_context for downstream pipeline."""
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,
@@ -265,6 +265,7 @@ class TestPolicyDecisionEmbedding:
             IngestSenderV1,
             IngestSourceV1,
         )
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 
         # Build a minimal envelope
         envelope = IngestEnvelopeV1(
@@ -311,8 +312,7 @@ class TestPolicyDecisionEmbedding:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,
@@ -320,6 +320,7 @@ class TestPolicyDecisionEmbedding:
             IngestSenderV1,
             IngestSourceV1,
         )
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 
         envelope = IngestEnvelopeV1(
             schema_version="ingest.v1",
@@ -354,8 +355,7 @@ class TestPolicyDecisionEmbedding:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,
@@ -363,6 +363,7 @@ class TestPolicyDecisionEmbedding:
             IngestSenderV1,
             IngestSourceV1,
         )
+        from butlers.tools.switchboard.ingestion.ingest import _build_request_context
 
         envelope = IngestEnvelopeV1(
             schema_version="ingest.v1",
@@ -436,7 +437,7 @@ class TestIngestAcceptedResponseTriageFields:
             status="accepted",
             duplicate=False,
         )
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             resp.triage_decision = "something"  # type: ignore[misc]
 
 
@@ -459,7 +460,7 @@ class TestGroupChatMetadataPropagation:
         import uuid
         from datetime import UTC, datetime
 
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             IngestControlV1,
             IngestEnvelopeV1,
             IngestEventV1,

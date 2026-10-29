@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import AsyncIterator
-from datetime import date
+from datetime import UTC, date, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -24,7 +25,11 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.jobs.briefing import _count_birthdays_on, run_relationship_briefing_contribution
 from butlers.jobs.calendar_overlay import run_relationship_calendar_overlay_contribution
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 from butlers.tools.relationship.posture import entity_set_posture
 
 pytestmark = [
@@ -44,7 +49,7 @@ def migrated_db_url(postgres_container) -> str:
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core", "memory", "relationship"],
+        chains=["core", "memory", "relationship", "contacts"],
     )
 
 
@@ -53,8 +58,9 @@ async def pool(migrated_db_url: str) -> AsyncIterator[asyncpg.Pool]:
     connection_pool = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
     )
-    # The entity-anchored important_dates arm the producers query is added by the
-    # contacts module's migration (contacts_004), which this chain set does not run.
+    # contacts_004 supplies the entity anchor AND nullable contact_id required by
+    # the contactless arm. Retain this original idempotent fixture guard as a no-op
+    # after the canonical contacts chain; do not hand-copy its schema constraints.
     await connection_pool.execute(
         "ALTER TABLE important_dates ADD COLUMN IF NOT EXISTS local_entity_id UUID"
     )
@@ -94,6 +100,101 @@ async def test_posture_gates_birthday_count_and_is_reversible(pool: asyncpg.Pool
 
     await entity_set_posture(pool, entity_id, "active")
     assert await _count_birthdays_on(pool, _TOMORROW) == 1
+
+    from fastmcp import FastMCP
+
+    from butlers.modules._roster_relationship import RelationshipModule, RelationshipModuleConfig
+    from butlers.tools.relationship import dates
+    from tests.three_seams_helpers import baseline_function
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2031, 3, 6, tzinfo=UTC)
+
+    # Position literal empty before other planted dates. Keep all original count
+    # and reversible writer assertions above, with a three-days-ahead birthday.
+    await pool.execute(
+        "UPDATE important_dates SET month=3,day=9 WHERE contact_id IN (SELECT contact_id FROM contact_entity_map WHERE entity_id=$1)",
+        entity_id,
+    )
+    await entity_set_posture(pool, entity_id, "memorial")
+    old = baseline_function("upcoming_dates", {**vars(dates), "datetime": FrozenDateTime})
+    assert len(await old(pool, 7)) == 1  # actual old SQL leaks the sole memorial
+    with patch.object(dates, "datetime", FrozenDateTime):
+        assert await dates.upcoming_dates(pool, 7) == []
+        await entity_set_posture(pool, entity_id, "active")
+        assert [r["contact_name"] for r in await dates.upcoming_dates(pool, 7)] == ["Person Count"]
+        # Both UNION arms must exclude each posture while finding planted active
+        # positives; SQL mutations independently neutralize each predicate.
+        for anchored in (False, True):
+            for posture in ("active", "memorial", "quiet", "no_contact"):
+                name = f"Arm {anchored} {posture}"
+                if anchored:
+                    target = await pool.fetchval(
+                        "INSERT INTO public.entities(canonical_name,entity_type) VALUES($1,'person') RETURNING id",
+                        name,
+                    )
+                    await pool.execute(
+                        "INSERT INTO important_dates(local_entity_id,label,month,day) VALUES($1,'Anniversary',3,9)",
+                        target,
+                    )
+                else:
+                    target = await _person_with_birthday(pool, name, date(2031, 3, 9))
+                await entity_set_posture(pool, target, posture)
+        current = await dates.upcoming_dates(pool, 7)
+        assert {r["contact_name"] for r in current} == {
+            "Person Count",
+            "Arm False active",
+            "Arm True active",
+        }
+        import inspect
+
+        for occurrence in (0, 1):
+            src = inspect.getsource(dates.upcoming_dates)
+            needle = "          AND e.posture = 'active'\n"
+            at = [i for i in range(len(src)) if src.startswith(needle, i)][occurrence]
+            changed = src[:at] + src[at + len(needle) :]
+            ns = {**vars(dates), "datetime": FrozenDateTime}
+            exec(compile(changed, "posture-arm-control", "exec"), ns)
+            wrong = await ns["upcoming_dates"](pool, 7)
+            assert any(r["contact_name"] == f"Arm {bool(occurrence)} memorial" for r in wrong)
+            assert any(r["contact_name"] == "Arm True active" for r in wrong)
+        module = RelationshipModule()
+        mcp = FastMCP("posture-control")
+        await module.register_tools(
+            mcp,
+            RelationshipModuleConfig(
+                groups=[
+                    "contacts",
+                    "contacts_extended",
+                    "interactions",
+                    "relationships",
+                    "social",
+                    "notes",
+                    "tracking",
+                    "management",
+                ]
+            ),
+            SimpleNamespace(pool=pool),
+            "relationship",
+        )
+        tool = await mcp.get_tool("upcoming_dates")
+        assert await tool.fn(days_ahead=7) == current
+        # Failed real SQL is not an empty result; restore via rollback and prove
+        # the active data is still visible from a fresh acquisition.
+        async with pool.acquire() as connection:
+            transaction = connection.transaction()
+            await transaction.start()
+            try:
+                await connection.execute(
+                    "ALTER TABLE public.entities RENAME COLUMN posture TO posture_hidden"
+                )
+                with pytest.raises(asyncpg.UndefinedColumnError):
+                    await dates.upcoming_dates(connection, 7)
+            finally:
+                await transaction.rollback()
+        assert await dates.upcoming_dates(pool, 7) == current
 
 
 async def test_briefing_has_no_birthday_highlight_for_a_memorial_person(
@@ -198,21 +299,74 @@ async def test_set_posture_rejects_unknown_values_entities_and_the_owner(
 
 
 @pytest.fixture
-async def posture_roles(pool: asyncpg.Pool) -> AsyncIterator[None]:
-    """Create the two NOLOGIN roles the trigger distinguishes; drop only what we made."""
+async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator[None]:
+    """Administer disposable roles separately from the ordinary pool under test."""
+    database = await pool.fetchval("SELECT current_database()")
+    login = await pool.fetchval("SELECT current_user")
+    quoted_login = login.replace('"', '""')
+    admin_url = migration_bootstrap_db_url(postgres_container, database)
+    admin = await asyncpg.connect(admin_url.replace("postgresql+psycopg2://", "postgresql://"))
     created: list[str] = []
+    memberships: list[tuple[str, bool | None]] = []
+    grants: list[tuple[str, str, str]] = []
+    schema_grants: list[str] = []
     try:
-        for role in (_PROBE_ROLE, _RELATIONSHIP_ROLE):
-            if not await pool.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role):
-                await pool.execute(f'CREATE ROLE "{role}" NOLOGIN')
-                created.append(role)
-            await pool.execute(f'GRANT SELECT, UPDATE ON public.entities TO "{role}"')
-    except asyncpg.InsufficientPrivilegeError:
-        pytest.skip("test DB user cannot create roles; role decision is covered separately")
-    yield
-    for role in created:
-        await pool.execute(f'DROP OWNED BY "{role}"')
-        await pool.execute(f'DROP ROLE "{role}"')
+        # Roll back all additions if setup fails partway through either role.
+        async with admin.transaction():
+            for role in (_PROBE_ROLE, _RELATIONSHIP_ROLE):
+                if not await admin.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role):
+                    await admin.execute(f'CREATE ROLE "{role}" NOLOGIN')
+                    created.append(role)
+                if not await admin.fetchval("SELECT pg_has_role($1, $2, 'SET')", login, role):
+                    previous_set = await admin.fetchval(
+                        "SELECT set_option FROM pg_auth_members "
+                        "WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname = $1) "
+                        "AND member = (SELECT oid FROM pg_roles WHERE rolname = $2) "
+                        "AND grantor = (SELECT oid FROM pg_roles WHERE rolname = current_user)",
+                        role,
+                        login,
+                    )
+                    await admin.execute(f'GRANT "{role}" TO "{quoted_login}" WITH SET TRUE')
+                    memberships.append((role, previous_set))
+                if not await admin.fetchval(
+                    "SELECT has_schema_privilege($1, 'public', 'USAGE')", role
+                ):
+                    await admin.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+                    schema_grants.append(role)
+                # Column grants suffice for the unchanged UPDATE/WHERE statements.
+                # Table-level REVOKE would also erase preexisting column grants.
+                for privilege, column in (
+                    ("SELECT", "id"),
+                    ("UPDATE", "posture"),
+                    ("UPDATE", "canonical_name"),
+                ):
+                    if not await admin.fetchval(
+                        "SELECT has_column_privilege($1, 'public.entities', $2, $3)",
+                        role,
+                        column,
+                        privilege,
+                    ):
+                        await admin.execute(
+                            f'GRANT {privilege} ({column}) ON public.entities TO "{role}"'
+                        )
+                        grants.append((role, privilege, column))
+        try:
+            yield
+        finally:
+            async with admin.transaction():
+                for role, privilege, column in reversed(grants):
+                    await admin.execute(
+                        f'REVOKE {privilege} ({column}) ON public.entities FROM "{role}"'
+                    )
+                for role, previous_set in reversed(memberships):
+                    option = "SET OPTION FOR " if previous_set is not None else ""
+                    await admin.execute(f'REVOKE {option}"{role}" FROM "{quoted_login}"')
+                for role in reversed(schema_grants):
+                    await admin.execute(f'REVOKE USAGE ON SCHEMA public FROM "{role}"')
+                for role in reversed(created):
+                    await admin.execute(f'DROP ROLE "{role}"')
+    finally:
+        await admin.close()
 
 
 @pytest.mark.parametrize(

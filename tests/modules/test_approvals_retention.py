@@ -164,6 +164,7 @@ async def _park_delivery_action(pool: asyncpg.Pool):
     return action_id
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007; retention preserves unresolved ambiguous evidence.
 async def test_delivery_retention_keeps_ambiguous_terminal_evidence(approvals_pool) -> None:
     """Terminal action age never discards an unresolved provider outcome."""
     action_id = await _park_delivery_action(approvals_pool)
@@ -205,6 +206,7 @@ async def test_delivery_retention_keeps_ambiguous_terminal_evidence(approvals_po
     )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-007; resolved cleanup retains the safe event summary.
 async def test_delivery_retention_deletes_resolved_root_after_safe_summary(approvals_pool) -> None:
     """No-attempt terminal delivery cleans in order while its safe event survives."""
     action_id = await _park_delivery_action(approvals_pool)
@@ -807,6 +809,43 @@ def _upgrade_approvals_to_head(db_url: str) -> None:
     )
 
 
+async def _mark_handoff_started_at_015(pool: asyncpg.Pool, claim) -> bool:
+    """Start a handoff with the approvals_015-era SQL (no ``args_digest`` column yet)."""
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            row = await connection.fetchrow(
+                """
+                UPDATE approval_delivery_presentations
+                   SET state = 'handoff_started', attempt_count = attempt_count + 1,
+                       claim_expires_at = clock_timestamp() + make_interval(secs => 30),
+                       updated_at = clock_timestamp()
+                 WHERE id = $1 AND presentation_generation = $2
+                   AND claim_token = $3 AND claim_fence = $4 AND state = 'claimed'
+                RETURNING attempt_count, updated_at
+                """,
+                claim.presentation_id,
+                claim.presentation_generation,
+                claim.claim_token,
+                claim.claim_fence,
+            )
+            if row is None:
+                return False
+            await connection.execute(
+                """
+                INSERT INTO approval_delivery_attempts (
+                    presentation_id, presentation_generation, attempt_number,
+                    claim_fence, started_at, outcome
+                ) VALUES ($1, $2, $3, $4, $5, 'started')
+                """,
+                claim.presentation_id,
+                claim.presentation_generation,
+                row["attempt_count"],
+                claim.claim_fence,
+                row["updated_at"],
+            )
+            return True
+
+
 async def test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_fail_closed(
     postgres_container,
 ) -> None:
@@ -823,7 +862,7 @@ async def test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_
         repository = ApprovalDeliveryRepository(pool)
         confirmed_claim = await repository.claim_next()
         assert confirmed_claim is not None
-        assert await repository.mark_handoff_started(confirmed_claim) is True
+        assert await _mark_handoff_started_at_015(pool, confirmed_claim)
         assert await repository.complete_handoff(confirmed_claim, HandoffResult("confirmed"))
         confirmed_transition = await transition_pending_action(
             pool,
@@ -838,7 +877,7 @@ async def test_approvals_016_upgrades_existing_attempt_retention_and_downgrades_
         ambiguous_id = await _park_delivery_action(pool)
         ambiguous_claim = await repository.claim_next()
         assert ambiguous_claim is not None
-        assert await repository.mark_handoff_started(ambiguous_claim) is True
+        assert await _mark_handoff_started_at_015(pool, ambiguous_claim)
         assert await repository.complete_handoff(
             ambiguous_claim,
             HandoffResult("ambiguous", "provider_outcome_unknown"),

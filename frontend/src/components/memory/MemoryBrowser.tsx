@@ -59,7 +59,7 @@ interface MemoryBrowserProps {
 
 export default function MemoryBrowser({ butlerScope }: MemoryBrowserProps) {
   const { state, setState } = useMemoryUrlState();
-  const { register, q, kind } = state;
+  const { register, q, kind, offset } = state;
 
   // While a query is set the register area renders results mode; otherwise the
   // pills + focused browse register.
@@ -70,7 +70,12 @@ export default function MemoryBrowser({ butlerScope }: MemoryBrowserProps) {
       <MemorySearch />
 
       {searching ? (
-        <SearchResults q={q} kind={kind} />
+        <SearchResults
+          q={q}
+          kind={kind}
+          offset={offset}
+          onOffset={(next) => setState({ offset: next })}
+        />
       ) : (
         <div className="flex flex-col gap-4">
           {/* Register pills — switch the browse register; reset paging. */}

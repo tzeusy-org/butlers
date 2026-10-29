@@ -21,12 +21,9 @@ from butlers.core.qa.dismissals import (
     list_active_dismissals,
     upsert_dismissal,
 )
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
-
-
-class FakeRecord(dict):
-    """dict-like substitute for asyncpg Record."""
 
 
 def _pool(fetchrow=None, fetchval=None, fetch=None):
@@ -41,7 +38,7 @@ def _pool(fetchrow=None, fetchval=None, fetch=None):
 async def test_upsert_and_is_dismissed():
     """upsert returns correct fields; is_dismissed True/False/None; list returns rows; custom duration."""
     fp = "a" * 64
-    row = FakeRecord(
+    row = Record(
         {
             "fingerprint": fp,
             "dismissed_until": "2099-01-01T00:00:00+00:00",
@@ -55,7 +52,7 @@ async def test_upsert_and_is_dismissed():
 
     # Custom duration
     await upsert_dismissal(
-        _pool(fetchrow=FakeRecord({"fingerprint": fp})), fp, "owner", duration_hours=48.0
+        _pool(fetchrow=Record({"fingerprint": fp})), fp, "owner", duration_hours=48.0
     )
     pool.fetchrow.assert_called_once()
 
@@ -69,8 +66,8 @@ async def test_upsert_and_is_dismissed():
     assert fp2 in pool2.fetchval.call_args.args
 
     # list_active_dismissals
-    row1 = FakeRecord({"fingerprint": "j" * 64, "dismissed_by": "dashboard"})
-    row2 = FakeRecord({"fingerprint": "k" * 64, "dismissed_by": "owner"})
+    row1 = Record({"fingerprint": "j" * 64, "dismissed_by": "dashboard"})
+    row2 = Record({"fingerprint": "k" * 64, "dismissed_by": "owner"})
     result2 = await list_active_dismissals(_pool(fetch=[row1, row2]))
     assert len(result2) == 2 and result2[0]["fingerprint"] == "j" * 64
     assert await list_active_dismissals(_pool(fetch=[])) == []

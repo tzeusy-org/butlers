@@ -6,8 +6,8 @@ Tier-2 LLM call.  Implements RFC 0014 §D5 requirements:
 1. **Hard caps** — events per day, episodes per day, total characters.
 2. **Field stripping** — remove low-signal payload keys before serializing.
 3. **Per-source roll-up** — collapse high-volume source bursts into summaries.
-4. **Sensitive-event masking** — ``canonical_privacy='sensitive'`` entries
-   NEVER appear in the bundle; enforced here, not by the agent.
+4. **Privacy projection** — sensitive payloads never appear; only bounded
+   four-field envelopes survive. Restricted rows contribute nothing.
 
 Usage
 -----
@@ -24,8 +24,8 @@ Design choices
 --------------
 - All functions are pure (no I/O, no LLM).  Callers pass in pre-fetched rows.
 - ``BundleConfig`` exposes all tuning knobs; defaults are conservative.
-- Sensitive masking is unconditional at the assembler boundary — the agent
-  cannot see or override it.
+- Sensitive payload masking is unconditional at the assembler boundary. The
+  agent receives only lawful time/category envelopes and cannot override it.
 - Per-source roll-up fires only when a source emits > ``rollup_threshold``
   items; below that threshold individual items pass through.
 - Field stripping is applied to ``payload`` dicts only; canonical top-level
@@ -37,11 +37,16 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from butlers.chronicler.interpretation import TierTwoInput, TierTwoPath
+from butlers.chronicler.aggregations import category_for
+from butlers.chronicler.interpretation import (
+    MAX_TIER_2_INPUT_BYTES,
+    TierTwoInput,
+    TierTwoPath,
+)
 
 # ---------------------------------------------------------------------------
 # Low-signal payload keys stripped before serialization.
@@ -129,11 +134,11 @@ class BundleConfig:
     Attributes
     ----------
     max_episodes:
-        Maximum number of episode entries in the final bundle.
+        Maximum number of normal episode entries plus masked episode envelopes.
         Prefer episodes over raw events when over budget; they are higher
         signal.
     max_events:
-        Maximum number of event entries in the final bundle.
+        Maximum number of normal event entries plus masked point envelopes.
     rollup_threshold:
         A single source emitting more than this many items within the window
         is collapsed to a per-source roll-up summary instead of emitting
@@ -250,18 +255,66 @@ def _make_rollup(source_name: str, items: list[dict[str, Any]], *, kind: str) ->
     return rollup
 
 
-def _is_sensitive(row: dict[str, Any]) -> bool:
-    """Return True when the row has canonical_privacy='sensitive'.
+def partition_day_close_rows(
+    rows: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Separate normal narration from masked envelopes before any derivation.
 
-    Accepts plain strings (most common — rows arrive via ``dataclasses.asdict``
-    which converts StrEnum members to their values) and bare Enum members (for
-    callers that pass model objects directly).
+    ``privacy`` is the effective corrected-view value. Legacy mappings with
+    only ``canonical_privacy`` remain supported. An explicit malformed value
+    never falls back to a less restrictive classification. Restricted and
+    unknown classifications are excluded from both outputs.
     """
-    privacy = row.get("canonical_privacy") or row.get("privacy")
-    if privacy is None:
-        return False
-    val = getattr(privacy, "value", privacy)
-    return str(val).lower() == "sensitive"
+    normal: list[dict[str, Any]] = []
+    sensitive: list[dict[str, Any]] = []
+    for row in rows:
+        privacy = row.get("privacy", row.get("canonical_privacy", "normal"))
+        value = str(getattr(privacy, "value", privacy)).lower()
+        if value == "normal":
+            normal.append(row)
+        elif value == "sensitive":
+            sensitive.append(row)
+    return normal, sensitive
+
+
+def _sensitive_envelopes(
+    rows: Sequence[dict[str, Any]], *, timezone: str, point_events: bool = False
+) -> list[dict[str, Any]]:
+    """Construct only lawful time/category envelopes, never copy payload fields."""
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        # Corrected-view effective timestamps take precedence over raw originals.
+        start = row.get("occurred_at" if point_events else "start_at")
+        end = start if point_events else row.get("end_at")
+        if not all(
+            isinstance(value, datetime) and value.utcoffset() is not None for value in (start, end)
+        ):
+            continue
+        duration = (end.astimezone(UTC) - start.astimezone(UTC)).total_seconds()
+        if duration < 0:
+            continue
+        payload = row.get("payload")
+        trigger_source = payload.get("trigger_source") if isinstance(payload, dict) else None
+        if not isinstance(trigger_source, str):
+            trigger_source = None
+        source_name = row.get("source_name")
+        kind = row.get("event_type" if point_events else "episode_type")
+        category = (
+            category_for(source_name, kind, trigger_source=trigger_source)
+            if isinstance(source_name, str) and isinstance(kind, str)
+            else "other"
+        )
+        # A point event has a known instant and zero duration; an open-ended
+        # episode has no lawful duration and was omitted above.
+        result.append(
+            {
+                "start_at": start.astimezone(ZoneInfo(timezone)).isoformat(),
+                "end_at": end.astimezone(ZoneInfo(timezone)).isoformat(),
+                "category": category,
+                "duration": duration,
+            }
+        )
+    return sorted(result, key=lambda item: (item["start_at"], item["end_at"], item["category"]))
 
 
 def _serialise_items(
@@ -281,8 +334,8 @@ def _serialise_items(
     citations:
         Deduplicated list of ``source_ref`` strings cited in the items.
     """
-    # --- 1. Mask sensitive rows ------------------------------------------------
-    visible: list[dict[str, Any]] = [r for r in rows if not _is_sensitive(r)]
+    # --- 1. Mask sensitive and restricted rows ---------------------------------
+    visible, _ = partition_day_close_rows(rows)
 
     # --- 2. Serialise to stripped dicts ----------------------------------------
     serialised: list[dict[str, Any]] = [
@@ -352,8 +405,8 @@ def assemble_day_close_bundle(
             ``end_at``, ``reason``). Surfaced in the bundle under
             ``dropped_intents`` so the day-close narration can mention the
             contradiction honestly without asserting attendance either way.
-            Never masked/capped — this list is already small (day-close scale)
-            by construction.
+            The registered caller constructs this only from normal rows before
+            passing it here; the same total bundle budget applies.
 
     Returns
         :class:`~butlers.chronicler.interpretation.TierTwoInput` with
@@ -366,15 +419,17 @@ def assemble_day_close_bundle(
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ValueError(f"Invalid IANA timezone: {timezone!r}") from exc
 
+    normal_episodes, sensitive_episodes = partition_day_close_rows(episodes)
+    normal_events, sensitive_events = partition_day_close_rows(events)
     episode_items, ep_citations = _serialise_items(
-        episodes,
+        normal_episodes,
         keep_fields=_EPISODE_KEEP_FIELDS,
         max_items=config.max_episodes,
         rollup_threshold=config.rollup_threshold,
         display_timezone=timezone,
     )
     event_items, ev_citations = _serialise_items(
-        events,
+        normal_events,
         keep_fields=_EVENT_KEEP_FIELDS,
         max_items=config.max_events,
         rollup_threshold=config.rollup_threshold,
@@ -389,40 +444,57 @@ def assemble_day_close_bundle(
             all_citations.append(ref)
             seen.add(ref)
 
+    episode_envelopes = _sensitive_envelopes(sensitive_episodes, timezone=timezone)
+    event_envelopes = _sensitive_envelopes(sensitive_events, timezone=timezone, point_events=True)
+    # Share each existing cardinality cap with the normal entries. No extra
+    # unbounded path is created by adding a masked representation.
+    episode_slots = max(0, config.max_episodes - len(episode_items))
+    event_slots = max(0, config.max_events - len(event_items))
+
     bundle_payload: dict[str, Any] = {
         "date": date_label,
         "timezone": timezone,
         "episodes": episode_items,
         "events": event_items,
-        "episodes_truncated": len([r for r in episodes if not _is_sensitive(r)])
-        > config.max_episodes,
-        "events_truncated": len([r for r in events if not _is_sensitive(r)]) > config.max_events,
+        "sensitive_envelopes": episode_envelopes[:episode_slots] + event_envelopes[:event_slots],
+        "episodes_truncated": len(normal_episodes) > config.max_episodes,
+        "events_truncated": len(normal_events) > config.max_events,
+        "sensitive_envelopes_truncated": len(episode_envelopes) > episode_slots
+        or len(event_envelopes) > event_slots,
     }
-
-    # --- Apply max_total_chars budget by trimming tails -----------------------
-    # Prefer keeping episodes; trim events first, then episodes.
-    # Use a single initial serialization to measure size, then subtract
-    # per-item sizes to avoid re-serializing the full bundle each iteration.
-    if config.max_total_chars > 0:
-        import json
-
-        serialized = json.dumps(bundle_payload, default=str)
-        current_len = len(serialized)
-        while current_len > config.max_total_chars:
-            if bundle_payload["events"]:
-                removed = bundle_payload["events"].pop()
-                # Subtract the item + its JSON separator (`, ` or surrounding brackets).
-                current_len -= len(json.dumps(removed, default=str)) + 2
-                bundle_payload["events_truncated"] = True
-            elif bundle_payload["episodes"]:
-                removed = bundle_payload["episodes"].pop()
-                current_len -= len(json.dumps(removed, default=str)) + 2
-                bundle_payload["episodes_truncated"] = True
-            else:
-                break
 
     if dropped_intents:
         bundle_payload["dropped_intents"] = list(dropped_intents)
+
+    # --- Apply max_total_chars budget by trimming tails -----------------------
+    # Keep normal episode preference. Include envelopes and derived summaries
+    # in the same budget, and retain citations only for surviving normal rows.
+    if config.max_total_chars > 0:
+        import json
+
+        while (
+            len(json.dumps(bundle_payload, default=str)) > config.max_total_chars
+            or len(
+                TierTwoInput(
+                    path=TierTwoPath.DAY_CLOSE, bundle=bundle_payload, citations=all_citations
+                ).encoded()
+            )
+            > MAX_TIER_2_INPUT_BYTES
+        ):
+            for key in ("sensitive_envelopes", "dropped_intents", "events", "episodes"):
+                if bundle_payload.get(key):
+                    bundle_payload[key].pop()
+                    bundle_payload[f"{key}_truncated"] = True
+                    break
+            else:
+                raise ValueError("Day-close metadata exceeds the configured input budget")
+            all_citations = list(
+                dict.fromkeys(
+                    row["source_ref"]
+                    for row in bundle_payload["episodes"] + bundle_payload["events"]
+                    if isinstance(row.get("source_ref"), str) and row["source_ref"]
+                )
+            )
 
     return TierTwoInput(
         path=TierTwoPath.DAY_CLOSE,
@@ -434,4 +506,5 @@ def assemble_day_close_bundle(
 __all__ = [
     "BundleConfig",
     "assemble_day_close_bundle",
+    "partition_day_close_rows",
 ]

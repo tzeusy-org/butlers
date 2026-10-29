@@ -14,16 +14,31 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import ValidationError
 
 from butlers.modules.base import Module
 from butlers.modules.email import EmailConfig, EmailModule
+from butlers.testing.mcp import registered_tools
 
+# The retained historical permission-test narratives describe the original enforcement.
+# Effects now refuse unavailable state; the real-lookup availability test below covers
+# bu-30sah4's effect stage, before bu-svqpzo.3 changes remaining shared callers.
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _allow_effects_for_provider_tests(request, monkeypatch):
+    """Provider-only unit tests assume an available grant; gate tests use real reads."""
+    if request.cls is not TestEmailSendPermissionEnforcement:
+        monkeypatch.setattr(
+            "butlers.modules.email.require_permission", AsyncMock(return_value=None)
+        )
+
 
 # Default config registers read-only tools; send_tools=True adds send/reply
 EXPECTED_EMAIL_READ_TOOLS = {
@@ -32,28 +47,40 @@ EXPECTED_EMAIL_READ_TOOLS = {
 }
 
 
+async def test_inert_delivery_defangs_plain_text_mail_and_subject():
+    from email import message_from_string
+
+    module = EmailModule()
+    smtp = MagicMock()
+    with (
+        patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+        patch.object(module, "_get_credentials", return_value=("owner@test.invalid", "synthetic")),
+        patch("butlers.modules.email.smtplib.SMTP", return_value=smtp),
+    ):
+        await module._reply_to_thread(
+            "recipient@test.invalid",
+            "thread-1",
+            "https://example.test bare.test user@test.test",
+            "See https://example.test",
+            render_links_inert=True,
+        )
+    message = message_from_string(smtp.sendmail.call_args.args[2])
+    assert message.get_content_type() == "text/plain"
+    assert message["Subject"] == "See https[:]//example[.]test"
+    assert message.get_payload(decode=True).decode() == (
+        "https[:]//example[.]test bare[.]test user[@]test[.]test"
+    )
+    assert smtp.sendmail.call_args.args[1] == ["recipient@test.invalid"]
+
+
 @pytest.fixture
 def email_module() -> EmailModule:
     return EmailModule()
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-email-tools")
 
 
 class TestModuleABCCompliance:
@@ -86,7 +113,7 @@ class TestToolRegistration:
         await email_module.register_tools(
             mcp=mock_mcp, config={}, db=None, butler_name="test-butler"
         )
-        registered = set(mock_mcp._registered_tools.keys())
+        registered = set((await registered_tools(mock_mcp)).keys())
         assert EXPECTED_EMAIL_READ_TOOLS.issubset(registered)
         # Send tools NOT registered by default
         assert "email_send_message" not in registered
@@ -151,7 +178,7 @@ class TestSendEmailBehavior:
         )
         # No credentials resolved → raises RuntimeError with actionable message
         with pytest.raises(RuntimeError, match="email credentials"):
-            await mock_mcp._registered_tools["email_send_message"](
+            await (await registered_tools(mock_mcp))["email_send_message"](
                 to="alice@example.com",
                 subject="Test",
                 body="Hello",
@@ -212,6 +239,38 @@ class TestEmailSendPermissionEnforcement:
 
         assert result["status"] == "sent"
         mock_smtp.assert_called_once()
+
+    async def test_send_rechecks_unavailable_permissions_before_smtp(self) -> None:
+        """Real lookup failures prevent both fresh sends and reply callbacks."""
+        mod = EmailModule()
+        mod._butler_name = "test-butler"
+        pool = AsyncMock()
+        with (
+            patch("butlers.modules.email.write_audit_entry", new_callable=AsyncMock),
+            patch.object(mod, "_smtp_send", return_value={"status": "sent"}) as smtp,
+        ):
+            for failure in ("missing", "query", "malformed"):
+                mod._pool = None if failure == "missing" else pool
+                pool.fetchrow.side_effect = (
+                    OSError("private-database-error") if failure == "query" else None
+                )
+                pool.fetchrow.return_value = {"granted": "false", "reason": "private-row-reason"}
+                results = await asyncio.gather(
+                    mod._send_email("recipient@example.com", "private-subject", "private-body"),
+                    mod._reply_to_thread("recipient@example.com", "thread", "private-body"),
+                    return_exceptions=True,
+                )
+                smtp.assert_not_called()
+                from butlers.core.permissions import PermissionUnavailable
+
+                assert all(isinstance(result, PermissionUnavailable) for result in results)
+
+            # There is no cached denial or grant: a fresh retry re-reads the store.
+            for row in (None, {"granted": True, "reason": "owner grant"}):
+                pool.fetchrow.return_value = row
+                result = await mod._send_email("recipient@example.com", "Subject", "Body")
+                assert result["status"] == "sent"
+            assert smtp.call_count == 2
 
 
 class TestEmailModuleExtraStatusFields:

@@ -30,7 +30,13 @@ type HookResult = Partial<{
 let mockResult: HookResult = { isPending: false }
 
 vi.mock("@/hooks/use-system", () => ({
-  useInstanceFacts: () => mockResult,
+  useInstanceFacts: () => ({
+    ...mockResult,
+    status: mockResult.isPending ? "pending" : mockResult.isError ? "error" : "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
+  }),
   useDatabaseFacts: () => ({ isPending: false }),
 }))
 

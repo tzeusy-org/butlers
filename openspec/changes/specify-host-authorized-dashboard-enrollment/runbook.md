@@ -1,8 +1,11 @@
-# Owner access operations: proposed runbook
+# Owner access operations: reviewed interface runbook
 
 Reader: the host operator. Purpose: enroll, sign in and recover without exposing
-authentication material. These commands are a specified interface to implement,
-not commands that exist today. This artifact authorizes no operation.
+authentication material. The host CLI and browser interfaces below were delivered
+in PR4164 and refined in PR4196. The current operator procedure is
+[Dashboard owner authentication](../../../docs/identity_and_secrets/dashboard-owner-auth.md).
+This artifact authorizes no operation; each live operation still requires its
+separately bounded authorization and preflight.
 
 ## Before any live operation
 

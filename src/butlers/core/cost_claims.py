@@ -7,7 +7,6 @@ this ledger is a cross-butler projection for deterministic Finance matching.
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import date
 from decimal import Decimal
@@ -226,7 +225,7 @@ async def resolve_claim(
         state,
         matched_amount,
         matched_currency,
-        json.dumps(match_refs or []),
+        match_refs or [],
         unmatched_reason,
         unverifiable_reason,
         evidence_horizon_at,

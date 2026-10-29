@@ -4,6 +4,14 @@
 > type scale, components, and motion live in
 > `openspec/specs/dashboard-design-language/spec.md`. Em-dashes in this file
 > appear only inside code spans, which are exempt from the ban.
+>
+> Future D19 design: [RFC 0038](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+> and the `dashboard-one-mind-goal-surface` change specify one assistant with
+> domain regions. Existing behavior remains before the separately gated M6
+> cutover. Owner item 2 B retains the operator/resident distinction and a
+> read-only region Operator view; it supersedes unit tabs, not that split.
+> The completed-goals hero and final experience remain subject to bu-xmd7yu
+> signoff after the complete PR, mockups and fresh independent review.
 
 The Butlers dashboard is the human window into a system that mostly runs
 without humans watching. It is read first, controlled second. The design
@@ -22,10 +30,10 @@ which framework or visual style we land on.
 ## What the Dashboard Is
 
 The dashboard is a **read-mostly observability surface for a personal
-multi-agent system**. It exists so the owner can:
+assistant with specialized domain regions**. It exists so the owner can:
 
-1. Trust that butlers are alive and behaving.
-2. Investigate when one of them isn't.
+1. Trust that the assistant is doing useful work and services are healthy.
+2. Investigate a goal, effect or service when its outcome is uncertain.
 3. Override or correct behavior when needed.
 4. Understand what the system *did with their data* (episodes, contacts,
    memory facts, notifications, costs).
@@ -44,9 +52,10 @@ that assumes multi-user SaaS conventions (avatars in nav, role badges,
   owner, but their channel is messaging, not the dashboard. The dashboard
   is the *operator's* surface (the same person, but in a different mode).
 - **Not a chat app.** Messaging channels stay the owner's primary
-  conversational interface. The dashboard carries two operator chat lanes,
-  a Switchboard-routed global surface and a per-butler panel on butler
-  detail, as one more input channel, never the primary one. The dashboard
+  conversational interface. After the signed M6 cutover, optional dashboard
+  input addresses one assistant through durable goal and thread receipts.
+  In-thread failure, read-only answers, QA filing, safe dead-letter recovery
+  and continuity survive; provider resumption and per-unit chat lanes retire. The dashboard
   stays read-first: it *shows what happened*, and it is also where the
   operator acts when something needs correcting.
 - **Not a generic admin template.** The dashboard's structure should be
@@ -300,23 +309,24 @@ legend or direct label; relying on color alone is not allowed in light mode.
    per-butler last-touch timestamps, etc. Sovereignty becomes a
    page, not a sprinkle.
 4. **Operator and resident modes are different projections.**
-   Workspace-grade record pages may carry high tab counts when the
-   operator surface needs them. Butler detail preserves the ten
-   spec-mandated base tabs in operator mode: Overview, Sessions,
-   Config, Skills, Schedules, Trigger, MCP, State, CRM, and Memory.
-   It also preserves non-spec operator tabs that already carry
-   capability, including Models.
-   Resident mode may be the default narrow view and may use the
-   Dispatch vocabulary, but it is a filtered projection of the
-   operator surface, not a replacement for it. Deep links and
-   conditional tabs must preserve access to the fuller operator
-   surface.
-5. **Hero metric: butler sessions.** The single number that tells
-   the owner whether their system is doing its job today is
-   **sessions**: how many times butlers spun up to act on the
-   owner's behalf. Cost, health, and pending approvals stay on the
-   home page as supporting context, but session count is the one
-   that gets visual primacy.
+   After the signed M6 cutover, Region workspaces expose domain records,
+   standing obligations, capabilities and recent related goals. A separate,
+   discoverable Operator projection remains read-only: state, configuration,
+   service failures, health and source provenance. It contains no tool-call
+   console, Trigger, Sessions tab, routing log or delegation panel. Existing
+   domain-native actions keep their named authenticated control-plane and
+   exact-call approval contracts. Service infrastructure belongs in System
+   and Settings. URL doors and command-palette recall preserve access to
+   the full read-only operator projection.
+5. **Proposed successor hero: completed goals today.**
+   After the signed M6 cutover, the primary number counts actual D11
+   completed goals in the stated day and timezone. Owner-message goals
+   count only with a delivered reply receipt. Invocations, children,
+   retries, partial/stopped/budget-exhausted goals and unknown effects do
+   not count as successes. Incomplete sources render unavailable or partial,
+   never a confident zero. Active goals, owner decisions, due obligations,
+   spend and service health remain supporting context. This hero choice is
+   included in the separate final D19 experience signoff.
 
 ## Voice and Copy
 

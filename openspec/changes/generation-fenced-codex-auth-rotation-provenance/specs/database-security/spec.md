@@ -2,7 +2,7 @@
 
 ### Requirement: Reserved Codex Authority Provenance Boundary
 
-The core schema SHALL reserve the public `cli-auth/codex` credential row for
+The control-plane core schema SHALL reserve the public `cli-auth/codex` credential row for
 the generation-fenced authority mutation boundary.  It SHALL add a singleton
 authority state, opaque generation records, short-lived operation records, and
 an opaque generation binding on the existing credential row.  The new records
@@ -29,6 +29,15 @@ needed for non-Codex CRUD. No normal role may read the reserved row or its
 generation binding directly. The fixed definer owner alone may cross that RLS
 policy; a migration owner or trigger is not sufficient isolation.
 
+The goal runner's control-plane authority caller SHALL be the database-facing
+runtime/prewarm/probe principal. Its guarded methods SHALL NOT grant a domain
+daemon or session host access to provider credentials or provenance relations.
+The session host SHALL have no database or credential-store access; staging,
+launch marking, and returned validated results cross the authenticated control
+channel while the trusted control-plane caller retains its redacted lease.
+Existing deny tests for runtime roles, connectors, and unrelated principals
+SHALL remain mandatory; delegated execution is not a new database role grant.
+
 The normal runtime/prewarm/probe prepare operation SHALL have no bootstrap
 parameter. A distinct device-auth bootstrap function SHALL be executable only
 by the dashboard API's no-`SET ROLE` shared-authority path, not any effective
@@ -38,6 +47,10 @@ direct write access to the state, generation, or operation relations. The
 reserved-row direct-DML guard SHALL make an attempted legacy/raw mutation
 unprovable or reject it rather than silently retaining a stale generation
 binding. Existing non-Codex credential storage semantics remain unchanged.
+
+ID: REQ-database-security-014
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Non-Codex credential writes remain available
 - **WHEN** an effective runtime role performs an authorized ordinary
@@ -61,8 +74,9 @@ binding. Existing non-Codex credential storage semantics remain unchanged.
 - **AND** a later fence-aware launch cannot treat the raw row as current
 
 #### Scenario: Guarded authority mutation has narrow execution rights
-- **WHEN** an authorized dashboard shared-authority path or designated Codex
-  runtime path invokes a guarded mutation with valid internal inputs
+- **WHEN** an authorized dashboard shared-authority path or designated
+  control-plane Codex authority path invokes a guarded mutation with valid
+  internal inputs
 - **THEN** it may atomically update the reserved credential row and opaque
   provenance state
 - **AND** unrelated runtime roles, connectors, and `PUBLIC` cannot invoke the

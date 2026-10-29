@@ -20,6 +20,9 @@
  */
 
 import { useState } from "react";
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import { DraftDismissBoundary } from "@/components/ui/draft-dismiss";
 
 import { verbErrorMessage } from "@/components/relationship/verb-error-message";
 import { Button } from "@/components/ui/button";
@@ -85,24 +88,29 @@ function VerbStatus({
 function LogInteractionForm({ entityId }: { entityId: string }) {
   const [type, setType] = useState<string>(INTERACTION_TYPES[0]);
   const [summary, setSummary] = useState("");
+  const draft = useDraft("relationship.interaction", [entityId], { type, summary }, (v) => { setType(v.type); setSummary(v.summary); });
   const logInteraction = useCreateEntityInteraction();
 
-  const canSubmit = !logInteraction.isPending;
+  const canSubmit = !logInteraction.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     logInteraction.mutate(
       {
         entityId,
         request: { type, summary: summary.trim() || null },
       },
-      { onSuccess: () => setSummary("") },
+      { onSuccess: () => { void draft.submitted(submission, () => setSummary("")); }, onSettled: draft.finish },
     );
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Log an interaction">
+      <DraftNotice session={draft.session} />
       <div className="flex gap-2">
         <Select value={type} onValueChange={setType}>
           <SelectTrigger
@@ -146,30 +154,33 @@ function LogInteractionForm({ entityId }: { entityId: string }) {
 function GiftIdeaForm({ entityId }: { entityId: string }) {
   const [description, setDescription] = useState("");
   const [occasion, setOccasion] = useState("");
+  const draft = useDraft("relationship.gift", [entityId], { description, occasion }, (v) => { setDescription(v.description); setOccasion(v.occasion); });
   const addGift = useCreateEntityGift();
 
   const trimmed = description.trim();
-  const canSubmit = trimmed.length > 0 && !addGift.isPending;
+  const canSubmit = trimmed.length > 0 && !addGift.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     addGift.mutate(
       {
         entityId,
         request: { description: trimmed, occasion: occasion.trim() || null },
       },
       {
-        onSuccess: () => {
-          setDescription("");
-          setOccasion("");
-        },
+        onSuccess: () => { void draft.submitted(submission, () => { setDescription(""); setOccasion(""); }); },
+        onSettled: draft.finish,
       },
     );
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Capture a gift idea">
+      <DraftNotice session={draft.session} />
       <div className="flex gap-2">
         <Input
           aria-label="Gift idea"
@@ -203,22 +214,27 @@ function GiftIdeaForm({ entityId }: { entityId: string }) {
 /** Record a note about the entity. */
 function NoteForm({ entityId }: { entityId: string }) {
   const [content, setContent] = useState("");
+  const draft = useDraft("relationship.note", [entityId], { content }, (v) => setContent(v.content));
   const addNote = useCreateEntityNote();
 
   const trimmed = content.trim();
-  const canSubmit = trimmed.length > 0 && !addNote.isPending;
+  const canSubmit = trimmed.length > 0 && !addNote.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup;
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     addNote.mutate(
       { entityId, request: { content: trimmed } },
-      { onSuccess: () => setContent("") },
+      { onSuccess: () => { void draft.submitted(submission, () => setContent("")); }, onSettled: draft.finish },
     );
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Add a note">
+      <DraftNotice session={draft.session} />
       <Textarea
         aria-label="Note"
         value={content}
@@ -266,7 +282,7 @@ export function EntityVerbRail({
   const [open, setOpen] = useState<VerbKey | null>(null);
 
   return (
-    <section className="space-y-2" data-testid="entity-verb-rail">
+    <DraftDismissBoundary>{(dismiss) => <section className="space-y-2" data-testid="entity-verb-rail">
       {!compact && (
         <h3 className="text-sm font-semibold uppercase tracking-wide">Record something</h3>
       )}
@@ -279,15 +295,15 @@ export function EntityVerbRail({
             size="sm"
             aria-expanded={open === verb.key}
             data-testid={`verb-chip-${verb.key}`}
-            onClick={() => setOpen((current) => (current === verb.key ? null : verb.key))}
+            onClick={() => dismiss(() => setOpen((current) => (current === verb.key ? null : verb.key)))}
           >
             {verb.label}
           </Button>
         ))}
       </div>
-      {open === "log-interaction" && <LogInteractionForm entityId={entityId} />}
-      {open === "gift-idea" && <GiftIdeaForm entityId={entityId} />}
-      {open === "note" && <NoteForm entityId={entityId} />}
-    </section>
+      {open === "log-interaction" && <LogInteractionForm key={entityId} entityId={entityId} />}
+      {open === "gift-idea" && <GiftIdeaForm key={entityId} entityId={entityId} />}
+      {open === "note" && <NoteForm key={entityId} entityId={entityId} />}
+    </section>}</DraftDismissBoundary>
   );
 }

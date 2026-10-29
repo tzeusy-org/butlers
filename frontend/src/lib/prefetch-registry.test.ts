@@ -1,7 +1,7 @@
 /**
  * Tests for the route -> prefetch-target map (bu-qvnce.14 slice 4, deferred
  * from PR #2927). Covers mapped routes plus the unmapped no-op contract
- * usePrefetchOnIntent relies on.
+ * useNavIntent relies on.
  */
 
 import { describe, expect, it, vi } from "vitest";

@@ -1,3 +1,12 @@
+## Goal-runtime scope
+
+This active change is re-scoped before archive by
+`generalist-lead-focused-delegation/collision-dispositions.md` and that change's
+task 4.2. RFC 0038 D1-D3, D7 and D18 govern the target below. This is a spec
+amendment, not evidence of a switched runtime. Historical implementation and
+owner-run evidence remain dated; no credential use, key mount, provider call,
+probe, deployment, archive or task completion is authorized by this text.
+
 ## Why
 
 The runtime can currently disagree with the dashboard about whether a model is
@@ -14,7 +23,41 @@ bounded, explainable alert per actual outage episode. A dashboard probe,
 best-effort telemetry write, or a different butler's stale local secret must
 not change that answer.
 
-## What Changes
+## Goal-runtime amendment
+
+- The goal runner resolves the explicit system-global Codex authority. Device
+  authentication and runtime OAuth synchronization reach the session host's
+  credential volume through the control-plane service listener. Neither the
+  host nor its invocations read the database or credential store. Domain daemons
+  hold no provider credential for launching reasoning sessions.
+- Each goal invocation receives only its staged model credential, its own
+  broker MCP config and permitted adapter-owned non-secret file pointers inside
+  its isolated domain. The dashboard has no direct inbound path to the session
+  host. Stale local credentials, unknown post-crash files and concurrent rotations
+  cannot become authority; the existing atomicity, conditional persistence,
+  health fencing and no-replay guarantees survive the move.
+- Verification and benchmark probes remain D18 model functions: deterministic,
+  tool-less, single-turn structured-output measurements using fixed prompts.
+  They share the applicable provider credential, adapter/model mapping and
+  generated configuration with invocation execution, not its broker access.
+  They neither admit goals nor call domain capabilities, and never manufacture
+  qualifying dispatch success or close a breaker.
+- Canonical model identity, OpenCode provider/model mapping, serialized breaker
+  edges, Switchboard-owned attention delivery, no ambiguous replay, explicit
+  idempotent reissue and best-effort post-send observations remain unchanged.
+  Goal execution supplies the qualifying dispatch evidence; attention remains
+  deterministic service-plane work rather than a model tool or reasoning goal.
+- The existing Models/Spend fact and degraded-source contracts remain in force
+  until their separately governed D19 successor is verified at the switch.
+  This amendment designs no replacement UI and changes no recipient approval.
+
+## Retained pre-switch reliability work
+
+The following original delivery scope records the reliability work and its
+invariants. Its daemon/shared-home actor references describe the pre-switch
+implementation; the goal-runtime owner and credential placement are those
+above and in the amended deltas. None is a license to retain per-domain
+reasoning or move domain credentials to the session host.
 
 - Establish an explicit authoritative shared credential scope for
   `cli-auth/codex`. Runtime restore and rotation persistence will use that

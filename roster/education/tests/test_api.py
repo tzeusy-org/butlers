@@ -11,9 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Mapping
 from datetime import UTC, date, datetime
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -21,7 +19,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
+from butlers.api.deps import get_db, get_mcp_manager
+from butlers.testing.records import Record as _MockRecord
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -29,29 +28,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Mock Record helper
 # ---------------------------------------------------------------------------
-
-
-class _MockRecord(Mapping):
-    """Minimal asyncpg.Record-like Mapping object backed by a dict.
-
-    Must extend Mapping so that dict(record) works correctly — Python's
-    dict() constructor uses the Mapping protocol (keys() + __getitem__).
-    """
-
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._data.get(key, default)
 
 
 # ---------------------------------------------------------------------------
@@ -184,9 +160,9 @@ def _app_with_mock_pool(
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     # Override the dependency for the dynamically-loaded education router
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "education" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "education":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app
@@ -1266,6 +1242,40 @@ class TestUpdateMindMapStatus:
 
         assert resp.status_code == 200
         assert resp.json()["status"] == "active"
+
+    async def test_lifecycle_refusal_is_409_with_reason_and_no_success_read(self):
+        from butlers.tools.education.mind_maps import MindMapLifecycleError
+
+        app = _app_with_mock_pool(AsyncMock())
+        edu = _get_education_module(app)
+        for target, reason in [
+            ("active", "A curriculum with no concepts cannot be activated"),
+            ("completed", "Cannot transition from draft to completed"),
+        ]:
+            with (
+                patch.object(
+                    edu,
+                    "mind_map_update_status",
+                    AsyncMock(side_effect=MindMapLifecycleError(reason)),
+                ),
+                patch.object(edu, "mind_map_get", AsyncMock()) as read,
+            ):
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    response = await client.put(
+                        f"/api/education/mind-maps/{_MAP_ID}/status", json={"status": target}
+                    )
+                assert response.status_code == 409
+                assert response.json()["detail"] == reason
+                read.assert_not_awaited()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put(
+                f"/api/education/mind-maps/{_MAP_ID}/status", json={"status": "draft"}
+            )
+        assert response.status_code == 422
 
     async def test_invalid_status_returns_422(self):
         """Invalid status value should return 422."""

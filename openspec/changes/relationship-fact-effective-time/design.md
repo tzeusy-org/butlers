@@ -363,3 +363,103 @@ Rollback is bounded by the same compatibility facts:
 
 None within the proposal. Every decision above remains subject to exact owner acceptance before
 implementation.
+
+
+## Contacts P1/P2 preserving composition
+
+# Design
+
+## Existing authority and new authority
+RFC0006 and relationship-facts already require schema isolation, central writes and MCP owning reads. Existing candidate, immutable evidence, server-admitted context, temporal and owner executor rules are binding. Central writer is reconstructed from the complete published active relationship-fact-effective-time REQ-relationship-facts-002, preserving all23 scenarios, existing metadata and full normative paragraphs. Baseline original is retained with its whole physical inverse. This private composition replaces the prior second carrier with one complete existing active MODIFIED002 on current publisheda066; no temporal cutover/adoption scope is released. They do not yet register a known-contact contacts report producer; this candidate explicitly adds that bounded server-fixed third_party adapter, never an unidentified exemption or owner witness. Implementation is unearned.
+
+## Selected bounded transport
+Use the hosting daemon's configured Switchboard client with fixed destination Relationship and a registered contacts-specific report operation. The target accepts subject/channel_type/channel_value/primary only, uses its own ordinary pool, server-maps supported channels, sets contacts-backfill plus fresh third_party context and restores it in finally. No arbitrary tool, URL, source or approval field is part of the report API. Public calls produce third-party claims only; registration/ordinary MCP policy remains required. This route neither identifies the provider as an authenticated reporter nor claims per-butler cryptographic isolation. Existing owner and candidate gates decide effects. No authority is transported by copying ContextVars.
+
+The reader reuses identity_resolve_channels only if exact contacts normalization/eligibility/ambiguity and successful-empty/degraded distinctions are preserved. Its current exact canonical routing lookup does not automatically prove normalized-email and digits-phone equivalence; use a narrow contacts-specific owner read if needed. Its typed per-request response covers unique eligible, completed empty, ambiguous, unavailable; complete matches are checked before choosing an entity. This is not a new predicate-coverage absence receipt. Source-link stays local/first; empty alone permits email→phone→name→new fallback. Denied/malformed/unavailable never certifies absence or creates a duplicate. Existing generic consumers remain unchanged.
+
+## Outcomes and lifetime
+Local entity/source-link transaction remains the local idempotency anchor. Owner child calls are outside that transaction; no distributed atomicity. Existing central inserted/unchanged/superseded/candidate/pending results remain truthful, including candidate and parked non-completion. Possible-commit timeout is uncertain. Ordinary replay/readback preserves original evidence, occurrence, supersession, lock order and actual approved executor binding; no new automatic retry. Real owning roles/catalog/bootstrap/commit/rollback/concurrency require the separately released SQL stage.
+
+## Preservation and privacy
+All old channels/order/primary, Telegram canonicalization/external-id and no-chat-id collection, liveness, manual edits/tombstones/provider/account isolation and context reset survive. P2 safe-warning repair shares the serialized method but retains independent criteria and closure; this candidate does not erase logs or implement privacy. Required unrelated CRM event fields remain unchanged.
+
+## Evidence and remaining requirements
+Native installed strict validation/generation/disposable application/no-op/refusal/restored/inverse verifies this private candidate only. Reference transport controls are prospective software; current source controls remain current-source scope. No SQL/runtime/deployed or source implementation credit. All original P1seven and P2six remain UNMET. No baseline/archive/task future tick, ID allocation, push or PR. After genuine review ROOT separately releases tracked governing and source implementation; actual current normal, distinct source review, protected union and squash remain mandatory before closure.
+
+
+## Complete future normalized owning lookup representation
+
+This executable-shape design is prospective, not installed SQL or transport proof. The current Contacts resolver strips/lowercases email and strips phone, with a second phone candidate made by retaining isdigit characters and plus signs. Keep that exact source selection: primary email (or first email), then phones in original order; local source-link lookup precedes every owner child call and local conservative name lookup follows only completed empty channel reads. Generic identity_resolve_channels currently returns None for both complete empty and ambiguous candidates and does not enforce the Contacts person/normalization representation. It cannot be declared equivalent without changing its separate consumers. Select a narrow fixed registered Relationship contacts lookup, with request kind email/phone and one bounded channel value; no caller pool, destination, query, predicate or roles field.
+
+For each individual lookup, the target normalizes email by strip().lower(), or phone by strip() plus the existing digits/plus alternative. On its ordinary pool it selects the COMPLETE distinct eligible subjects (no first-match LIMIT), using the parameterized relational shape below. This is a design query only.
+
+```sql
+SELECT DISTINCT ef.subject AS entity_id
+FROM relationship.entity_facts ef
+JOIN public.entities e ON e.id = ef.subject
+WHERE ef.predicate = $1 AND ef.object_kind = 'literal'
+  AND ef.validity = 'active' AND e.entity_type = 'person'
+  AND e.metadata->>'merged_into' IS NULL
+  AND e.metadata->>'deleted_at' IS NULL
+  AND (($1 = 'has-email' AND lower(ef.object) = $2)
+       OR ($1 = 'has-phone' AND ef.object = ANY($3::text[])))
+ORDER BY ef.subject
+```
+
+The target fixes $1 from email/phone, binds normalized email or exact/digits-plus phone alternatives, and does not use generic routing suffix expansion. Duplicate fact versions for one subject remain one match; distinct subjects are ambiguous. Typed per-request outcome is unique with one canonical entity UUID, empty with no entity UUID, ambiguous with no chosen entity UUID, or unavailable with a fixed content-blind category. Successful complete query completion alone produces empty/unique/ambiguous. Missing/degraded registry, denied/query error, incomplete/stale/wrong-request/unknown result, transport refusal and malformed response produce unavailable. A caller validates the expected fixed target/tool and current request correlation before consuming the typed result; those transport locators do not authenticate an owner/reporter. No roles, raw contact operands, exception or query body is returned/logged as failure diagnostics. Empty is only this completed lookup, never global negative coverage. No suffix matching, first match, name fallback/new person on unavailable, new retries, authority, cryptographic-isolation or distributed-atomicity claim is introduced. Real role/catalog/registered dispatch/migration/readback/concurrency and exact wire/privacy contracts must be separately implemented and proved.
+
+## Future enforcing source and tests
+
+- CRM owner route/report: src/butlers/modules/contacts/backfill.py and module registration, src/butlers/core_tools/_switchboard_route_dispatch.py and existing Relationship registered closures; future tests retain every old contacts callback and route validation, ordinary third_party candidate/owner parked/forged refusal and healthy eligible companions.
+- Lookup: actual ContactBackfillResolver.resolve/_match_email/_match_phone; future owning query and typed-response tests cover normalized mixed-case email, phone order/exact/digits-plus, duplicate same subject, distinct ambiguity, candidate/non-person/merged/deleted exclusion, complete empty and denied/stale/malformed refusal. Existing generic identity and temporary-sender consumers stay unchanged.
+- Central report: roster/relationship/tools/relationship_assert_fact.py and src/butlers/modules/relationships.py; future registered tests prove server-fixed fresh third_party, exact predicate mapping, context reset, candidate/pending distinctions, decision/executor preservation and temporal packets.
+- Real roles and SQL: full migrated core/contacts/Relationship plus fresh bootstrap, actual runtime role/path on acquisition, denied direct foreign SQL beside owning commit, separate-acquisition readback, rollback/concurrent exact replay/evidence/projection/locks. No model or this query text earns any SQL outcome.
+- P2 warning: current shared catch branch retains complete unrelated CRM events; future raw LogRecord/full formatter exception-chain sentinels and positive useful warning/healthy writer are separate privacy proof.
+
+All actual transport/auth/private-context source boundaries and current baseline normative bodies remain governing. This prep does not install the query, report adapter, warning, grant, role or credential.
+
+
+## Contacts source stage — explicit ROOT release
+
+The preparation statements above remain dated, verbatim history. ROOT released
+Contacts P1/P2 source implementation at 2026-10-11T16:12:12.859408Z against published
+0d35. The actual registered owner is `roster/relationship/modules/tools.py`; the
+earlier absent `src/butlers/modules/relationships.py` locator is not an implementation
+path. The fixed owner operations are `contacts_report_channel` and
+`contacts_resolve_channel`. Standard Switchboard `trace_context` is inert transport
+plumbing, discarded before these report/read adapters; it is neither report data
+nor an authority field. Lookup request UUIDs correlate complete responses only.
+
+Source and modeled registered controls do not qualify runtime roles, PostgreSQL
+catalog/transactions, deployed routing, temporal cutover, native baseline application
+or archive. Contacts source does not change any earlier temporal-owner task or
+acceptance hold. Real owning/foreign-denial, separate-acquisition commit/readback,
+candidate/owner parking, concurrent replay and rollback are separately authored
+in the owning integration node and remain unqualified until actual execution.
+
+
+### Explicit additive ingress group (source-stage engineering accounting)
+
+The standard core Tool Group Filtering contract permits a named `contacts_ingress`
+group. Production Relationship config explicitly selects it, with exactly the two
+Contacts owner operations; the previous eight groups retain their entire actual
+registered membership. The original eight-group test is restored byte for byte.
+A separate current-production-config test checks the complete union and executes
+the registered closures. Neither the reviewed Contacts/central clauses nor the
+manifesto requires these new tools to be present in every explicitly restricted
+legacy configuration. The unconditional central approval writer stays unconditional,
+and the held mixed entity group stays disabled. This is real config selection, not
+a rebinding of old test names or a condensation admission exemption.
+
+The old baseline Relationship registered-inventory paragraph's 58+1=59 scalar is
+already inconsistent with the actual preserved eight-group test's 61+2 identity
+handlers=63. That inherited baseline discrepancy is retained and disclosed; this
+source stage does not rewrite its old requirement or count it as newly satisfied.
+The current production surface is the old actual 63 plus two ingress handlers.
+
+
+## Single current inventory and reversible historical transfers
+
+The baseline lacks permanent metadata for the existing Registered Tool Surface. ROOT serially reserved REQ-butler-relationship-002 with the exact Source/Scope in this private current delta. Only one active MODIFIED operation targets that requirement: this carrier. The obsolete meeting and future-Entity MODIFIED operations are physically retained verbatim in their original design documents and separate packet files. Each removal is inverted by those exact bytes, never by a scalar reconstruction. Every unrelated operation, all meeting scenarios, all five held Entity scenarios, Source References, original proposal/design prefixes and whole tasks are preserved.
+
+Published53d3 has60 domain+2identity+1unconditional=63. Immutable source804 additionally selects two contacts_ingress handlers for65; that source candidate does not turn unpublished native bookkeeping into public adoption. Conditional future69/71 are derived from the full named union of the exact eight-group/Contacts sets with the six held reads, never permission to activate them. The future mixed-group source includes two writes; its unchanged owner task0.1 and implementation tasks must precede selecting only the split reads. The earlier future65 comprised a different historical population and stays verbatim in history. No source, memory-module taxonomy, writer approval or Entity ownership changes are part of this candidate.

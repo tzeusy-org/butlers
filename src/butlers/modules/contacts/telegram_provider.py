@@ -18,6 +18,7 @@ from .sync import (
     ContactBatch,
     ContactPhone,
     ContactsProvider,
+    ContactsSyncError,
     ContactsTokenRefreshError,
     ContactUsername,
     GroupBatch,
@@ -29,6 +30,7 @@ try:
     from telethon.sessions import StringSession
     from telethon.tl.functions.contacts import GetContactsRequest
     from telethon.tl.types import User
+    from telethon.tl.types.contacts import Contacts as TelegramContacts
 
     TELETHON_AVAILABLE = True
 except ImportError:
@@ -37,6 +39,7 @@ except ImportError:
     StringSession = None  # type: ignore[assignment,misc]
     GetContactsRequest = None  # type: ignore[assignment,misc]
     User = None  # type: ignore[assignment,misc]
+    TelegramContacts = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +156,13 @@ class TelegramContactsProvider(ContactsProvider):
 
         client = await self._ensure_client()
         result = await client(GetContactsRequest(hash=0))
+        if not isinstance(result, TelegramContacts):
+            raise ContactsSyncError(
+                "Telegram full fetch did not return a complete contacts response"
+            )
+        user_ids = {getattr(user, "id", None) for user in result.users}
+        if any(contact.user_id not in user_ids for contact in result.contacts):
+            raise ContactsSyncError("Telegram full fetch omitted referenced users")
 
         contacts: list[CanonicalContact] = []
         for user in result.users:
@@ -172,6 +182,7 @@ class TelegramContactsProvider(ContactsProvider):
             contacts=contacts,
             next_page_token=None,
             next_sync_cursor=cursor,
+            checkpoint={"complete_full_fetch": True},
         )
 
     async def incremental_sync(

@@ -25,7 +25,7 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnectorConfig,
     _classify_source_api_error,
 )
-from butlers.tools.switchboard.routing.contracts import IngestAttachment
+from butlers.tools.switchboard.contracts import IngestAttachment
 
 _ENDPOINT = "telegram:bot:123456789"
 
@@ -132,9 +132,32 @@ async def test_text_message_event_fields(connector: TelegramBotConnector) -> Non
     env = await connector._normalize_to_ingest_v1(update)
     assert env is not None
     assert env["event"]["external_event_id"] == "456"
+    assert env["event"]["external_conversation_id"] == "telegram:200"
+    assert env["event"]["reply_target_ref"] == "200:7"
     assert env["sender"]["identity"] == "777"
     assert "Hello Bot!" not in env["payload"]["normalized_text"]
     assert "Test message" in env["payload"]["normalized_text"]
+
+
+async def test_two_messages_share_conversation_but_keep_distinct_reply_targets(
+    connector: TelegramBotConnector,
+) -> None:
+    first = await connector._normalize_to_ingest_v1(
+        {
+            "update_id": 1,
+            "message": {"message_id": 7, "from": {"id": 1}, "chat": {"id": 200}, "text": "one"},
+        }
+    )
+    second = await connector._normalize_to_ingest_v1(
+        {
+            "update_id": 2,
+            "message": {"message_id": 8, "from": {"id": 1}, "chat": {"id": 200}, "text": "two"},
+        }
+    )
+
+    assert first is not None and second is not None
+    assert first["event"]["external_conversation_id"] == second["event"]["external_conversation_id"]
+    assert first["event"]["reply_target_ref"] != second["event"]["reply_target_ref"]
 
 
 async def test_channel_post_produces_envelope(connector: TelegramBotConnector) -> None:
@@ -464,3 +487,35 @@ def test_telegram_health_reports_auth_failure_as_error_and_api_failure_as_degrad
     connector._record_source_api_failure(_telegram_http_error(401, "Unauthorized"))
 
     assert connector._get_health_state() == ("error", "HTTP 401: Unauthorized")
+
+
+async def test_static_identity_env_cannot_relabel_real_bot_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Operator identity settings cannot relabel the actual ingest producer."""
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    config = TelegramBotConnectorConfig.from_env()
+    config.endpoint_identity = _ENDPOINT
+    runtime = TelegramBotConnector(config, cursor_pool=MagicMock())
+    update = {
+        "update_id": 123,
+        "message": {
+            "message_id": 1,
+            "from": {"id": 987},
+            "chat": {"id": 100},
+            "text": "Hello Bot!",
+        },
+    }
+    first = await runtime._normalize_to_ingest_v1(update)
+    replay = await runtime._normalize_to_ingest_v1(update)
+    assert first is not None and replay is not None
+    assert first["source"] == {
+        "channel": "telegram_bot",
+        "provider": "telegram",
+        "endpoint_identity": _ENDPOINT,
+    }
+    assert first["event"]["external_event_id"] == "123"
+    assert first["control"]["idempotency_key"] == replay["control"]["idempotency_key"]
+    assert first["event"]["external_conversation_id"] == "telegram:100"

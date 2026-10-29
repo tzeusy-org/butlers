@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-25
+Governing doctrine: [architecture.md, The Staffer Archetype](../../heart-and-soul/architecture.md#the-staffer-archetype-infrastructure-specialization) and [vision.md rule 6, a staffer's governing document is its infrastructure contract](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 

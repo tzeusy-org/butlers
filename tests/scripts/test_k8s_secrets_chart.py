@@ -16,13 +16,17 @@ _SCRIPT = _REPO_ROOT / "scripts" / "k8s" / "bootstrap-secrets.sh"
 _FIXTURE_VALUE = "fixture-secret-value-d41d8cd9"
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
+# What site-helm-args.sh supplies for the retained runtime tracker boundary.
+_SITE = [
+    "--set", "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}",
+]  # fmt: skip
 
 
 def _render(env: str, *extra: str) -> list[dict]:
     result = subprocess.run(
         ["helm", "template", "butlers", str(_CHART), "-f", str(_CHART / "values.yaml"),
          "-f", str(_CHART / f"values.{env}.yaml"), "--set", "image.tag=t",
-         "--set", "frontendImage.tag=t", *extra],
+         "--set", "frontendImage.tag=t", *_SITE, *extra],
         capture_output=True, text=True, check=True,
     )  # fmt: skip
     return [d for d in yaml.safe_load_all(result.stdout) if d]

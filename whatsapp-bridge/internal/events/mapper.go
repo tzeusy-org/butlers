@@ -53,6 +53,9 @@ func MapMessage(evt *waEvents.Message, participantCount int) *BridgeEvent {
 	if be.Type == "" {
 		return nil // unknown/unsupported type
 	}
+	if isForwarded(msg) {
+		be.Content = withForwarded(be.Content)
+	}
 
 	// Raw is a minimal summary (we don't include full protobuf bytes — just key info).
 	rawSummary := map[string]any{
@@ -228,6 +231,40 @@ func mediaContent(msgType, mimeType string, durationSec uint32, caption, filenam
 	}
 	_ = msgType
 	return m
+}
+
+// isForwarded reports whether WhatsApp marked the message as forwarded. Plain
+// conversation messages carry no context info; a forward always arrives as an
+// extended text or media message.
+func isForwarded(msg *waE2E.Message) bool {
+	for _, ctx := range []*waE2E.ContextInfo{
+		msg.GetExtendedTextMessage().GetContextInfo(),
+		msg.GetImageMessage().GetContextInfo(),
+		msg.GetVideoMessage().GetContextInfo(),
+		msg.GetAudioMessage().GetContextInfo(),
+		msg.GetDocumentMessage().GetContextInfo(),
+		msg.GetStickerMessage().GetContextInfo(),
+	} {
+		if ctx.GetIsForwarded() {
+			return true
+		}
+	}
+	return false
+}
+
+// withForwarded adds "is_forwarded": true to a JSON content object, so the
+// Python connector can mark the forwarded text as untrusted (bu-xmueeq).
+func withForwarded(content json.RawMessage) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(content, &m); err != nil {
+		return content
+	}
+	m["is_forwarded"] = true
+	out, err := json.Marshal(m)
+	if err != nil {
+		return content
+	}
+	return out
 }
 
 // quotedID extracts the quoted message ID from context info if present.

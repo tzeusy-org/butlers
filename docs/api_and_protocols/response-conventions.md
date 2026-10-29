@@ -8,11 +8,18 @@
 
 The shared wrappers live in `src/butlers/api/models/__init__.py`: `ApiResponse[T]`
 (`{"data": T, "meta": {...}}`), `PaginatedResponse[T]` (offset/limit with `meta.total`),
-`CursorPaginatedResponse[T]` (see below), and `ErrorResponse` (`{"error": {"code", "message",
+`Page[T]` from `src/butlers/api/pagination.py` (cursor lists, see below), and `ErrorResponse` (`{"error": {"code", "message",
 "butler"?, "details"?}}`). New endpoints use these wrappers. A few domain routers (for example
 timeline and relationship) return unwrapped typed payloads; each route's `response_model` is the
 authority, surfaced in the generated OpenAPI schema. Error codes are stable machine strings;
 clients branch on `error.code`, never on `message`.
+
+Shared query and persistence primitives live below the API package. The insights read-model
+re-exports `butlers.insight_delivery_state`; sessions re-exports its unchanged legacy cursor from
+`butlers.session_cursor`; `butlers.api.conversations` re-exports shared message/reply writers from
+`butlers.conversation_messages`. Request-scoped NOTIFY publication lives in
+`butlers.chat_stream_events`, while SSE listening remains in `butlers.api.chat_stream`.
+These API facades retain existing consumers without making modules depend on the HTTP layer.
 
 API routes do not redirect on a trailing slash (`redirect_slashes = False` in
 `src/butlers/api/app.py`): register and call the exact path.
@@ -29,23 +36,51 @@ Frontend requests use `apiFetch`; browser navigation or download links returned 
 
 ## Cursor pagination
 
-`GET /api/ingestion/events` uses **cursor pagination** — the `page` and `offset` params are gone
-(use `limit` and the opaque `cursor` from the preceding response instead). For the default
-recent sort, the cursor is a keyset position ordered by `received_at DESC, id DESC`.
-
-Response envelope:
+Every cursor-paginated list returns the one **`Page[T]`** envelope and builds its cursor with the
+one codec, both in `src/butlers/api/pagination.py`. A new list endpoint uses them; it does not add a
+second envelope or a second codec.
 
 ```json
-{"data": [...], "meta": {"next_cursor": "<opaque>", "has_more": true}}
+{"items": [...], "next_cursor": "<opaque>", "limit": 50}
 ```
 
-- Pass `cursor=<next_cursor>` to fetch the next page; `next_cursor` is `null` on the last page.
-- `has_more: false` means you are at the last page.
-- No `total` or `offset` field is returned.
-- The optional `sort=cost` view keeps this cursor-shaped envelope but its opaque cursor encodes
-  a page offset; do not mix cursors between sort modes.
-- `GET /api/memory/gaps` follows the same keyset shape (`asked_at DESC, id DESC`, merged across
-  memory pools) and adds `meta.limit` and `meta.sources_degraded` for pools that failed.
+- Pass `cursor=<next_cursor>` to fetch the next page. `next_cursor` is `null` on the last page, so
+  "is there more" is `next_cursor !== null`; there is no `has_more`, `total` or `offset`.
+- `limit` echoes the effective page size. `sources_degraded` (omitted when every source answered)
+  names fan-out sources that failed, so a partial page never reads as the whole truth.
+- An endpoint that returns more than the page subclasses `Page` and adds sibling fields; it does
+  not wrap the page in a second object.
+- The canonical API facade is `butlers.api.pagination`; its one shared codec implementation
+  lives in transport-neutral `butlers.pagination`, which core queries can use without importing
+  the API. The facade translates only its specific cursor error (`ValueError` in core) to HTTP
+  400 and preserves the public functions and `Page` envelope.
+- The cursor is `encode_cursor(values)` / `decode_cursor(cursor, shape)`: a versioned, URL-safe,
+  checksummed token over the last row's keyset values (`datetime`, `UUID`, `str`, numbers).
+  `decode_cursor` returns the same types it was given and raises `InvalidCursorError`, a 400, for
+  anything malformed, edited, from another codec version, or minted by an endpoint with a
+  different receiver scope or exact `shape`. Each producer and receiver supplies a fixed
+  server-owned scope; caller query parameters cannot choose it. The shared decoder requires
+  canonical unpadded URL-safe base64 and exact scalar types (a boolean is not an integer offset).
+  The scoped token layout is version 2. Treat cursors as opaque; they are not stable across deployments that change
+  the codec version, and a 400 means "start again from the first page". Before the shared codec,
+  fleet cases, message search and ingestion `sort=cost` answered an invalid cursor with 422; they
+  now answer 400 like every other cursor route, and cursors minted before the change are invalid.
+- `GET /api/ingestion/events` orders by `received_at DESC, id DESC`. Its optional `sort=cost` view
+  keeps the same envelope but its cursor encodes a page offset, so a cursor from one sort mode is a
+  400 in the other.
+- `GET /api/memory/gaps` orders by `asked_at DESC, id DESC`, merged across memory pools.
+
+**Offset pagination** (`PaginatedResponse[T]`, `meta.total/offset/limit`) stays on the many list
+endpoints whose pages are random-access with an exact `total` (health and finance registers,
+approvals, audit log and the like). A new offset endpoint uses `PaginatedResponse`; a new
+cursor endpoint uses `Page`.
+
+**Routes still off `Page`** are listed, with reasons, in
+`tests/api/test_pagination.py` (`test_every_paginated_route_uses_page_or_a_listed_exception`), which
+fails when a paginated route uses any other envelope or when a listed route converts without
+dropping its entry. Today that is `GET /api/sessions` (`KeysetResponse`, retires at the RFC 0038
+D19 switch), `GET /api/timeline`, the calendar workspace read and invitations routes, and the QA
+case journal tail-follow, plus a handful of bespoke offset envelopes.
 
 Channel filtering uses `channels` (comma-separated); there is no single-value channel alias.
 
@@ -141,8 +176,46 @@ remain numeric for wire compatibility, but when more than one currency contribut
 as if it had one denomination. A single-currency result carries that real currency; an empty result
 does not invent USD.
 
+## Notification metadata: one-layer object-or-null compatibility
+
+`NotificationSummary.metadata` uses the same normalizer in all three response paths:
+`GET /api/notifications`, `GET /api/butlers/{name}/notifications`, and
+`PATCH /api/notifications/{id}/read`. The field remains an object or `null`; it does not expose
+arbitrary JSON values or infer missing provenance.
+
+| Decoded database value | Response `metadata` |
+| --- | --- |
+| Mapping/object | A shallow object copy. |
+| `null` | `null`. |
+| JSONB string whose one JSON parse yields an object | That parsed object. |
+| Malformed string, or a string whose single parse cannot complete because of a JSON decoder safety limit | `{"_raw": <the exact original outer string>}`. |
+| String whose one parse yields an array, string, number, boolean or `null` | `{"_raw": <the exact original outer string>}`. |
+| Actual non-string, non-object JSONB value, such as an array, number or boolean | `null`, without an `_raw` wrapper. |
+
+The normalizer parses at most once. An outer string that parses to another JSON-looking string
+retains the original outer string under `_raw`; it is not decoded again. Decoder-limit failures
+(`ValueError` or `RecursionError`, including JSON decoder failures) use the same fallback. This is
+read compatibility, not a database rewrite or a change to delivery, retries, effective status,
+pagination, source availability, degraded-source handling, mark-read behavior or authorization.
+Only the existing authenticated API response may carry `_raw`; operational evidence must never
+print that content.
+
+The existing executable owners are the direct and three-path regressions in
+`tests/api/test_notifications.py`. The writer is a separate seam: the registered production JSONB
+codec must receive a JSON-safe mapping once, including `None` and empty-metadata handling, as
+covered by `roster/switchboard/tests/test_tools.py`. The cross-schema delivery test alone does not
+prove that normalization. Historical repair remains blocked by the separate
+[serving-writer evidence procedure](../operations/notification-metadata-repair.md); a green API or
+writer regression is not serving-deployment evidence.
+
 ## Implementation Notes
 
+- Connector summaries are owned by `ApiResponse[ConnectorSummaryResponse]` and its explicit nested
+  wire models in `api/routers/ingestion_connectors.py`. Keep the existing derivation helpers as the
+  authority for liveness, operational roles and source availability. This route excludes unset
+  fields so registry failure retains only `connectors` and `connector_registry_available` in data,
+  while explicitly supplying `meta` preserves the existing empty outer metadata object. Do not
+  materialize secondary-source defaults as evidence when the primary registry read failed.
 - `GET /api/audit-log` treats `UndefinedTableError` on `dashboard_audit_log` as an empty page
   (`data=[]`, `total=0`), not a 500, because the dashboard can start against an unmigrated or
   offline switchboard schema.
@@ -158,8 +231,40 @@ does not invent USD.
   field). When unpinned, commit current rows and cursor before fetching older data, so a failed page
   stays visible and retries the same cursor.
 
+### Known-contact harm availability
+
+`GET /api/ingestion/events/dropped-known` returns `available`, `counts_available`, `classification_available`, nullable `uncertain_drops`, and a closed `availability_reason` alongside counts/window. Overall availability requires both complete reads, valid fresh last-admitted evidence for every applicable Gmail runtime, and zero historical uncertainty. The authoritative registry read uses the owning Switchboard pool; the filtered store uses its shared pool. Checkpoint/archived/deleted/foreign rows do not certify runtime classification; unknown roles, legacy/missing/invalid metadata or read failures are unknown. Only a successful complete read proves no applicable accounts.
+
+Readable positive counts remain lower bounds when classification is unknown. A failed filtered read returns zero placeholders with `counts_available=false`; those are not evidence of no harm. A registry failure preserves readable counts with classification unavailable. Open uncertain Gmail history includes filtered, replay_failed and replay_pending in the received-at window; recovered current evidence does not rewrite old uncertainty. Replay completion or leaving the window may resolve that uncertainty. The actual query/opener retains the count door plus unknown on partial/error states, renders loading status, and shows calm zero only with proven availability. No automatic replay is added.
+
 ## Related Pages
 
 - [Dashboard API](dashboard-api.md) --- application factory, router discovery, SSE streaming
 - `openspec/specs/dashboard-*` --- required per-domain endpoint behavior
 - `src/butlers/api/app.py` and `roster/{butler}/api/router.py` --- the routers and their response models
+
+
+### Independent bearer scrub availability
+
+`GET /api/ingestion/pipeline?window=1h|24h|7d` adds optional-compatible
+`bearer_scrub_counts: {auth_code: number, reset_link: number, magic_link: number} | null`
+and `bearer_scrub_available: boolean`. The endpoint preserves the existing flat
+funnel and backlog fields and their independent availability flags. Scrub counts
+are finite, non-negative estimates of fresh Switchboard scrub operations,
+including attempts, rather than unique messages. Fractional Prometheus
+`increase` values are preserved.
+
+Only a readable source, including an empty vector, sets scrub availability true;
+empty means three measured zeros. Unconfigured, unreadable, negative,
+non-finite or unexpected-kind results return HTTP200 with null scrub counts and
+false availability without discarding independently healthy funnel or backlog
+sections. Prometheus fields share the existing 60-second cache keyed by window;
+backlog reads remain fresh on every request.
+
+The Timeline section follows the selected range through the existing API client
+and query hook. It names Prometheus, acknowledges loading without blocking the
+ledger, and renders a source-unavailable note on request errors, false flags or
+absent legacy fields. Retained stale query data during an error does not certify
+current scrub availability. An unavailable source never becomes a zero or an
+all-clear. No raw metric labels or upstream diagnostic text is exposed in the
+scrub projection.

@@ -86,7 +86,7 @@ class RuntimeAdapter(abc.ABC):
         model: str | None = None,
         runtime_args: list[str] | None = None,
         cwd: Path | None = None,
-        timeout: int | None = None,
+        timeout: int | None = None,  # noqa: ASYNC109 - spawner and every adapter pass timeout=
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the runtime with the given prompt and configuration.
 

@@ -68,11 +68,26 @@ Standard `ingest.v1` envelope with full normalized text and provider payload.
 Slim envelope that preserves identity and threading while minimizing payload size:
 
 - `payload.raw` MUST be `null` (enforced by the Switchboard envelope contract in
-  `roster/switchboard/tools/routing/contracts.py`).
+  `roster/switchboard/tools/contracts.py`).
 - `payload.normalized_text` MUST contain subject-only text (no full body).
 - `control.ingestion_tier` MUST be `"metadata"`.
 - Switchboard MUST bypass LLM classification. It persists the event in `switchboard.message_inbox`
   like any other ingress, with `lifecycle_state = 'metadata_ref'` instead of `accepted`.
+
+Automated replies and bounces are assigned Tier 2 from headers alone, before any global rule
+(`detect_automated_reply` in `src/butlers/connectors/gmail_policy.py`):
+
+- Bounce: `Content-Type: multipart/report` with `report-type=delivery-status`, or a
+  `mailer-daemon`/`postmaster` sender with a `message/delivery-status` part.
+- Auto-reply: `Auto-Submitted: auto-replied`, `X-Autoreply`, `X-Autorespond`, or
+  `Precedence: auto_reply`. `Auto-Submitted: auto-generated` (alerts, receipts), `Precedence: bulk`
+  and `list`, and list mail are not automated replies; the owner's ingestion rules route them.
+- The slim envelope carries `control.automated_kind` (`auto_reply` or `bounce`), and the tier
+  counter reason is the same value. A global `skip` still wins; `route_to`,
+  `low_priority_queue` and `pass_through` do not raise the message to Tier 1. Missing or
+  malformed headers are ordinary mail.
+- `automated_kind` is asserted by the sender's headers: a hint for admission, not evidence.
+  Anything that acts on it must authenticate and bind the message first.
 
 ### Tier 3
 
@@ -116,10 +131,25 @@ Ingestion rules are user-managed at `/ingestion/filters` (backed by the Switchbo
 `/ingestion-rules` API in `roster/switchboard/api/router.py`): rule priority, enable/disable,
 dry-run testing (`/ingestion-rules/test`), and include/exclude label configuration.
 
+A `block` or `skip` rule can carry the per-rule option "except people I know"
+(`except_known_contacts: true` in the rule's condition, off by default). The Gmail connector then
+passes a sender found in its loaded known-contact snapshot through that rule; later rules still
+apply. If the snapshot is not loaded the rule stays in force and the drop keeps its unknown
+classification. WhatsApp and Drive apply the rule as written until they carry a known-contact
+signal (bu-q7vx1q.42).
+
+The connector also sends the classification to the Switchboard as `control.known_contact` (only
+when the snapshot is loaded) so a flagged global `skip` rule is passed over there as well; an absent
+value leaves the rule in force. The classification comes from the raw `From` header with no SPF,
+DKIM or DMARC check (Gmail filters upstream), so a forged known-contact `From` on a domain without
+DMARC enforcement can bypass an "except people I know" rule, whether it matches on content, header
+or label. The impact is ingestion only: it grants no action authority.
+
 ## Metrics
 
 `src/butlers/connectors/gmail_policy.py` emits `butlers_connector_gmail_tier_assigned_total`
-(labels `endpoint_identity`, `ingestion_tier`, `reason`) alongside the priority-tier and
+(labels `endpoint_identity`, `ingestion_tier`, `reason`; `reason` is the triage action, or
+`auto_reply`/`bounce` for automated messages) alongside the priority-tier and
 label-filter counters. Rule evaluation itself emits the `butlers.ingestion.rule_*` counters from
 `src/butlers/ingestion_policy_metrics.py`.
 
@@ -153,3 +183,10 @@ curl -s "http://localhost:41200/api/switchboard/ingestion-rules" | python3 -m js
 - [Connector Interface Contract](../api_and_protocols/ingestion-envelope.md) -- Full `ingest.v1` envelope spec
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Metrics](metrics.md) -- Connector statistics and dashboard API
+
+
+## Implementation Notes
+
+The compatibility contact-set getter retains cached positives on failed refresh. The immutable query snapshot additionally reports loaded/unloaded/stale/failed, a closed reason, generation, and the last successful refresh. A refresh lock prevents older completion from overwriting newer evidence. Cancellation of an unfinished query is failed/refresh_cancelled; cancellation of publication after actual query success leaves that success intact. Publication and provider health are separate truths.
+
+Gmail freezes classification on known and stranger drops at label exclusion, connector block and global skip. A retained known marker is a lower bound, not a completeness claim. The new metadata contains no contact identities, contact list, provider payload, error tails or credentials; existing authorized sender/preview metadata is unchanged. Historical loaded evidence must satisfy `last_success_at <= classification.observed_at <= last_success_at + 900s`. Classification observation is actual UTC at the decision, not provider event time or flush time. Legacy/malformed/unknown context remains uncertain after recovery; neither queueing replay nor a new successful snapshot retroactively certifies it. Replay strips all context.

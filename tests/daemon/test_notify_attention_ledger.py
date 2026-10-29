@@ -7,8 +7,7 @@ quiet-hours gate:
     instead of vanishing without a trace
   - context-bus dnd/sleeping signals are consulted deterministically,
     alongside (not instead of) the existing hour-based quiet-hours policy
-  - priority="high" always fails open — bypasses both quiet hours and the
-    context bus, consistent with existing notify() semantics
+  - a model-assigned priority="high" cannot bypass owner attention policy
   - a successfully delivered notification is recorded as outcome="delivered"
 
 These tests boot a real ``ButlerDaemon`` with every I/O boundary mocked
@@ -22,7 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -144,7 +143,7 @@ def _patch_infra(mock_pool: Any) -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     mock_credential_store = AsyncMock()
     mock_credential_store.resolve = AsyncMock(return_value=None)
@@ -179,7 +178,9 @@ def _patch_infra(mock_pool: Any) -> dict[str, Any]:
             new_callable=AsyncMock,
             return_value=mock_credential_store,
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
     }
 
@@ -216,7 +217,7 @@ async def _start_daemon_with_notify(
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
         patches["build_credential_store"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
     ):
         daemon = ButlerDaemon(butler_dir)
@@ -227,13 +228,22 @@ async def _start_daemon_with_notify(
 def _make_mock_pool(*, approvals_policy_row: dict | None) -> AsyncMock:
     mock_conn = AsyncMock()
     mock_conn.execute = AsyncMock(return_value=None)
+    # Git defaults and the runtime row agree: no conditional update or audit append.
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
 
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn
+
     mock_pool = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = mock_acquire
     mock_pool.fetchval = AsyncMock(return_value=str(uuid.uuid4()))
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(
@@ -426,10 +436,10 @@ class TestQuietHoursLedgerRecording:
         assert outcome == "deferred"
         assert reason == "policy_quiet_hours"
 
-    async def test_explicit_recipient_skips_owner_default_quiet_hours_parking(
+    async def test_explicit_recipient_obeys_owner_quiet_hours_parking(
         self, butler_dir: Path
     ) -> None:
-        """An explicit owner recipient must deliver despite an active owner quiet window."""
+        """An explicit owner recipient follows the same owner quiet window."""
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -456,17 +466,15 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "deferred"
         owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "explicit-owner-chat")
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert len(_deferred_notification_insert_calls(mock_pool)) == 1
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        notify_request = _deferred_notification_insert_calls(mock_pool)[0][5]
         assert notify_request["delivery"]["recipient"] == "explicit-owner-chat"
 
-    async def test_entity_target_skips_owner_default_quiet_hours_parking(
-        self, butler_dir: Path
-    ) -> None:
-        """An explicit entity target must not be treated as an implicit owner default."""
+    async def test_entity_target_obeys_owner_quiet_hours_parking(self, butler_dir: Path) -> None:
+        """An explicit entity target cannot escape the owner quiet window."""
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -500,16 +508,16 @@ class TestQuietHoursLedgerRecording:
                 _evidence=[],
             )
 
-        assert result["status"] == "ok"
+        assert result["status"] == "deferred"
         entity_resolver.assert_awaited_once_with(
             entity_id=entity_id,
             channel="telegram",
             msg_context=None,
         )
         owner_resolver.assert_awaited_once_with(mock_pool, "telegram", "entity-owner-chat")
-        assert _deferred_notification_insert_calls(mock_pool) == []
-        daemon.switchboard_client.call_tool.assert_awaited_once()
-        notify_request = daemon.switchboard_client.call_tool.await_args.args[1]["notify_request"]
+        assert len(_deferred_notification_insert_calls(mock_pool)) == 1
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        notify_request = _deferred_notification_insert_calls(mock_pool)[0][5]
         assert notify_request["delivery"]["recipient"] == "entity-owner-chat"
 
     async def test_reply_intent_skips_owner_default_quiet_hours_parking(
@@ -721,7 +729,7 @@ class TestQuietHoursLedgerRecording:
             == 1
         )
 
-    async def test_context_lookup_failure_fails_open(self, butler_dir: Path) -> None:
+    async def test_context_lookup_failure_refuses_without_delivery(self, butler_dir: Path) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
@@ -736,11 +744,13 @@ class TestQuietHoursLedgerRecording:
         ):
             result = await notify_fn(channel="telegram", message="Weekly report")
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "error"
+        assert result["error"]["code"] == "attention_context_unavailable"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
-    async def test_high_priority_bypasses_quiet_hours_and_context_bus(
-        self, butler_dir: Path
+    @pytest.mark.parametrize("owner_started", [False, True])
+    async def test_model_priority_label_cannot_bypass_quiet_hours_and_context_bus(
+        self, butler_dir: Path, owner_started: bool
     ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
@@ -755,35 +765,62 @@ class TestQuietHoursLedgerRecording:
             expires_at=datetime.now(UTC) + timedelta(hours=1),
             confidence=1.0,
         )
+        from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+        # Owner content authority is not a creation flag or persisted clause.
+        origin_token = _current_origin.set(
+            AttentionOrigin(entity_id=uuid.uuid4()) if owner_started else None
+        )
         with (
             _configured_owner_default_recipient(daemon),
             patch(
                 "butlers.context_bus.get_active_context", new=AsyncMock(return_value=[dnd_signal])
             ),
         ):
-            result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
+            try:
+                result = await notify_fn(channel="telegram", message="Urgent!", priority="high")
+            finally:
+                _current_origin.reset(origin_token)
 
-        assert result["status"] == "ok"
-        daemon.switchboard_client.call_tool.assert_awaited_once()
+        assert result["status"] == "deferred"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         outcomes = [c[8] for c in ledger_calls]
         assert "suppressed" not in outcomes
-        assert "delivered" in outcomes
+        assert "deferred" in outcomes
 
-    async def test_successful_delivery_records_delivered_ledger_row(self, butler_dir: Path) -> None:
+        event = json.loads(_ledger_row_of(mock_pool, "deferred")[11])
+        assert event["attention_cause"] == "routine"
+        assert event["downgrade"] == "unverified_urgency"
+        assert "Urgent!" not in json.dumps(event)
+
+    # Spec: REQ-core-fleet-events-007, REQ-core-fleet-events-008
+    @pytest.mark.parametrize("publish_failure", [False, True])
+    async def test_successful_delivery_records_delivered_ledger_row(
+        self, butler_dir: Path, publish_failure: bool
+    ) -> None:
         mock_pool = _make_mock_pool(approvals_policy_row=_NO_QUIET_POLICY)
         patches = _patch_infra(mock_pool)
         daemon, notify_fn = await _start_daemon_with_notify(butler_dir, patches)
         daemon.switchboard_client = _make_mock_client()
 
+        publish = AsyncMock(
+            side_effect=RuntimeError("publication unavailable") if publish_failure else None
+        )
         with (
+            patch("butlers.fleet_events.publish_fleet_event", new=publish),
             _configured_owner_default_recipient(daemon),
             patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
         ):
             result = await notify_fn(channel="telegram", message="All good")
 
         assert result["status"] == "ok"
+        publish.assert_awaited_once_with(
+            mock_pool,
+            "notification",
+            {"butler": "test-butler", "channel": "telegram", "intent": "send"},
+        )
 
         ledger_calls = _ledger_insert_calls(mock_pool)
         assert len(ledger_calls) == 1
@@ -1070,3 +1107,49 @@ class TestRuntimeSessionCorrelation:
         metadata_json = ledger_calls[0][11]
         metadata = json.loads(metadata_json) if metadata_json else {}
         assert ATTENTION_LEDGER_SESSION_KEY not in metadata
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+async def test_verified_cause_is_rechecked_before_actual_notify_dispatch(butler_dir, revoked):
+    """Consumer proof only: real current SQL/provenance is owned by PG cases."""
+    from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+    pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
+    daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(pool))
+    daemon.switchboard_client = _make_mock_client()
+    cause_ref = str(uuid.uuid4())
+    reads = 0
+
+    async def fetchval(sql, *args):
+        nonlocal reads
+        if "dashboard_attention.evaluate" in sql:
+            reads += 1
+            return (
+                {"cause": "routine"}
+                if revoked and reads > 2
+                else {
+                    "cause": "owner_clause",
+                    "ref": cause_ref,
+                }
+            )
+        return str(uuid.uuid4())
+
+    pool.fetchval.side_effect = fetchval
+    token = _current_origin.set(AttentionOrigin(entity_id=uuid.uuid4()))
+    try:
+        with _configured_owner_default_recipient(daemon):
+            result = await notify_fn(channel="telegram", message="PRIVATE_CAUSE_BODY_CANARY")
+    finally:
+        _current_origin.reset(token)
+    if revoked:
+        assert result["error"]["code"] == "attention_cause_changed"
+        daemon.switchboard_client.call_tool.assert_not_awaited()
+        event = _ledger_row_of(pool, "failed")
+    else:
+        assert result["status"] == "ok"
+        daemon.switchboard_client.call_tool.assert_awaited_once()
+        event = _ledger_row_of(pool, "delivered")
+    assert reads >= 3
+    metadata = json.loads(event[11])
+    assert metadata["attention_cause"] == "owner_clause" and metadata["cause_ref"] == cause_ref
+    assert "PRIVATE_CAUSE_BODY_CANARY" not in json.dumps(metadata)

@@ -800,7 +800,7 @@ async def test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_sch
                 "SELECT event_type FROM memory_events WHERE memory_id = $1",
                 episode_id,
             )
-            == "episode_consolidation_retry_requested"
+            == "episode_consolidation_requeued"
         )
 
         # The proof: the real scheduler claims it on the very next sweep,

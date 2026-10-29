@@ -1,10 +1,8 @@
-"""Helm render and exporter-script guard for the beads export bridge (bu-viat6h.1)."""
+"""Retired bridge stays absent; tracker isolation and fleet capacity remain enforced."""
 
 from __future__ import annotations
 
-import os
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 
@@ -13,13 +11,8 @@ import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CHART = _REPO_ROOT / "deploy" / "helm" / "butlers"
-_SCRIPT = _CHART / "files" / "beads_export.sh"
-_ENABLE = [
-    "--set", "beadsExport.enabled=true",
-    "--set", "beadsExport.image=registry.invalid/bd:test",
-    "--set", "beadsExport.doltHost=dolt.invalid",
-    "--set", "beadsExport.credentialSecretName=beads-export-dolt",
-]  # fmt: skip
+# Site CIDRs are documentation addresses, never real host or credential values.
+_SITE = ["--set", "trackerEgress.deniedCidrs={192.0.2.1/32,192.0.2.2/32}"]
 
 needs_helm = pytest.mark.skipif(shutil.which("helm") is None, reason="helm not installed")
 
@@ -46,12 +39,12 @@ def _pod_spec(doc: dict) -> dict:
 
 @needs_helm
 @pytest.mark.parametrize("env", ["dev", "prod"])
-def test_disabled_renders_no_beads_export_and_no_bead_mounts(env: str) -> None:
-    docs = _render(env)
+def test_retired_bridge_cannot_render_or_mount_even_with_legacy_values(env: str) -> None:
+    docs = _render(env, "--set", "beadsExport.enabled=true", *_SITE)
     names = _by_kind_name(docs)
     assert ("CronJob", "butlers-beads-export") not in names
     assert ("PersistentVolumeClaim", "butlers-beads-export") not in names
-    for deploy in ("dashboard-api", "butlers-up"):
+    for deploy in ("dashboard-api", "butlers-up", *(["butlers-control"] if env == "dev" else [])):
         spec = _pod_spec(names[("Deployment", deploy)])
         assert all(v["name"] != "beads-export" for v in spec["volumes"])
         assert all(
@@ -59,87 +52,77 @@ def test_disabled_renders_no_beads_export_and_no_bead_mounts(env: str) -> None:
             for c in spec["containers"]
             for m in c.get("volumeMounts", [])
         )
-    # The explicit default is the same render as omitting the flag.
-    assert _render(env, "--set", "beadsExport.enabled=false") == docs
-
-
-@needs_helm
-@pytest.mark.parametrize("env", ["dev", "prod"])
-def test_enabled_mounts_pvc_read_only_as_directory_for_runtime_pods(env: str) -> None:
-    names = _by_kind_name(_render(env, *_ENABLE))
-    assert ("CronJob", "butlers-beads-export") in names
-    assert ("PersistentVolumeClaim", "butlers-beads-export") in names
-    for deploy in ("dashboard-api", "butlers-up"):
-        spec = _pod_spec(names[("Deployment", deploy)])
-        mounts = [
-            m for c in spec["containers"] for m in c.get("volumeMounts", [])
-            if m["mountPath"] == "/app/.beads"
-        ]  # fmt: skip
-        assert mounts == [{"name": "beads-export", "mountPath": "/app/.beads", "readOnly": True}]
-        (volume,) = [v for v in spec["volumes"] if v["name"] == "beads-export"]
-        assert volume["persistentVolumeClaim"]["claimName"] == "butlers-beads-export"
-
-
-@needs_helm
-@pytest.mark.parametrize("env", ["dev", "prod"])
-def test_enabled_keeps_dolt_credential_and_host_paths_out_of_runtime_pods(env: str) -> None:
-    docs = _render(env, *_ENABLE)
+    assert ("ExternalSecret", "butlers-beads-dolt") not in names
     for doc in docs:
-        if doc["kind"] not in ("Deployment", "CronJob"):
-            continue
-        is_exporter = doc["metadata"]["name"] == "butlers-beads-export"
-        spec = _pod_spec(doc)
-        text = yaml.safe_dump(spec)
-        assert (
-            "beads-export-dolt" in text or "BEADS_DOLT" in text or "DOLT" in text
-        ) == is_exporter, doc["metadata"]["name"]
-        assert ".beads-credential-key" not in text
-        assert all("hostPath" not in v for v in spec.get("volumes", []))
+        if doc["kind"] in {"Deployment", "CronJob"}:
+            spec = _pod_spec(doc)
+            text = yaml.safe_dump(spec)
+            assert "DOLT" not in text
+            assert "beads-dolt" not in text
+            assert ".beads-credential-key" not in text
+            assert all("hostPath" not in v for v in spec.get("volumes", []))
+    # Existing environment policy remains: dev denied, production setting unchanged.
+    assert (("NetworkPolicy", "butlers-tracker-egress") in names) == (env == "dev")
+    if env == "prod":
+        # Prod's default is off: the explicit flag renders the same as omitting it.
+        assert _render(env, *_SITE) == docs
 
 
 @needs_helm
-def test_enabled_requires_image_host_and_secret() -> None:
+@pytest.mark.parametrize("env", ["dev", "prod"])
+def test_butlers_up_runs_the_owner_set_fleet_session_cap(env: str) -> None:
+    # The owner total stays five: staged dev partitions it across exactly one
+    # control and one domain process; unsplit production retains its old cap.
+    names = _by_kind_name(_render(env, *_SITE))
+    domains = names[("Deployment", "butlers-up")]
+    container_env = {e["name"]: e.get("value") for e in _pod_spec(domains)["containers"][0]["env"]}
+    if env == "dev":
+        control = names[("Deployment", "butlers-control")]
+        control_env = {
+            e["name"]: e.get("value") for e in _pod_spec(control)["containers"][0]["env"]
+        }
+        capacities = [
+            int(container_env["BUTLERS_MAX_GLOBAL_SESSIONS"]),
+            int(control_env["BUTLERS_MAX_GLOBAL_SESSIONS"]),
+        ]
+        assert capacities == [4, 1]
+        assert all(capacity > 0 for capacity in capacities)
+        assert sum(capacities) == 5
+        for deployment in (domains, control):
+            assert deployment["spec"]["replicas"] == 1
+            assert deployment["spec"]["strategy"]["type"] == "Recreate"
+    else:
+        assert ("Deployment", "butlers-control") not in names
+        assert container_env["BUTLERS_MAX_GLOBAL_SESSIONS"] == "5"
+
+
+@needs_helm
+def test_dev_ships_review_jobs_on_and_one_tap_routing_off() -> None:
+    # Owner decision 2026-10-08 (bu-ckkpz): digest + P1 escalation on in dev;
+    # one-tap prompts stay off until bu-6es2sp.
+    names = _by_kind_name(_render("dev", *_SITE))
+    env = {
+        e["name"]: e.get("value")
+        for e in _pod_spec(names[("Deployment", "butlers-up")])["containers"][0]["env"]
+    }
+    assert env["BUTLERS_DECISION_REVIEW_ENABLED"] == "1"
+    assert env["BUTLERS_DECISION_ROUTING_ENABLED"] == "0"
+
+
+@needs_helm
+def test_tracker_egress_policy_covers_every_pod_without_a_bridge_exception() -> None:
+    names = _by_kind_name(_render("dev", *_SITE))
+    policy = names[("NetworkPolicy", "butlers-tracker-egress")]["spec"]
+    assert policy["podSelector"] == {}
+    assert policy["policyTypes"] == ["Egress"]
+    assert policy["egress"] == [
+        {"to": [{"namespaceSelector": {}}]},
+        {"to": [{"ipBlock": {"cidr": "0.0.0.0/0", "except": ["192.0.2.1/32", "192.0.2.2/32"]}}]},
+    ]
+
+
+@needs_helm
+def test_tracker_isolation_refuses_missing_site_cidrs() -> None:
     with pytest.raises(subprocess.CalledProcessError) as exc:
-        _render("dev", "--set", "beadsExport.enabled=true")
-    assert "beadsExport." in exc.value.stderr
-
-
-def _run_exporter(tmp_path: Path, stub_body: str) -> subprocess.CompletedProcess[str]:
-    export_dir = tmp_path / "export"
-    export_dir.mkdir(exist_ok=True)
-    stub = tmp_path / "bd"
-    stub.write_text("#!/bin/sh\n" + stub_body)
-    stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
-    return subprocess.run(
-        ["sh", str(_SCRIPT)],
-        env={**os.environ, "EXPORT_DIR": str(export_dir), "BD_BIN": str(stub)},
-        capture_output=True, text=True,
-    )  # fmt: skip
-
-
-def test_exporter_writes_final_file_via_rename(tmp_path: Path) -> None:
-    # The stub asserts the output is a temp name, never the final one.
-    body = 'case "$3" in *issues.export.jsonl) exit 9;; esac\nprintf \'{"id":"a"}\\n\' > "$3"\n'
-    result = _run_exporter(tmp_path, body)
-    assert result.returncode == 0, result.stderr
-    export_dir = tmp_path / "export"
-    assert (export_dir / "issues.export.jsonl").read_text() == '{"id":"a"}\n'
-    assert [p.name for p in export_dir.iterdir()] == ["issues.export.jsonl"]
-
-
-@pytest.mark.parametrize(
-    "stub_body",
-    ['printf partial > "$3"\nexit 3\n', "exit 0\n", ': > "$3"\n'],
-    ids=["nonzero-after-partial-write", "no-output", "empty-output"],
-)
-def test_exporter_failure_keeps_previous_file_byte_identical(
-    tmp_path: Path, stub_body: str
-) -> None:
-    export_dir = tmp_path / "export"
-    export_dir.mkdir()
-    final = export_dir / "issues.export.jsonl"
-    final.write_bytes(b'{"id":"old"}\n')
-    result = _run_exporter(tmp_path, stub_body)
-    assert result.returncode != 0
-    assert final.read_bytes() == b'{"id":"old"}\n'
-    assert [p.name for p in export_dir.iterdir()] == ["issues.export.jsonl"]
+        _render("dev")
+    assert "trackerEgress.deniedCidrs is required" in exc.value.stderr

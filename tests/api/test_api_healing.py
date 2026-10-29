@@ -10,7 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -20,8 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
-from butlers.api.routers.healing import _get_db_manager, _get_dispatch_fn
+from butlers.api.deps import get_db, get_mcp_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -123,7 +121,7 @@ def _build_app(
         mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager or _make_mcp_manager()
     return app, mock_pool
 
@@ -222,135 +220,20 @@ async def test_get_attempt_detail_404():
 # ---------------------------------------------------------------------------
 # Retry dispatch (bu-cnvg7.2)
 #
-# The retry endpoint previously *always* claimed an investigation was
-# re-dispatched even though no agent was ever spawned in the typical dashboard
-# deployment (no in-process spawner → _get_dispatch_fn returns None). These
-# tests pin the two truths:
-#   1. With NO dispatch fn: response reports dispatched=False (no agent spawned).
-#   2. With a dispatch fn override: the dispatch callable is actually invoked
-#      with the new attempt's metadata, and the response reports dispatched=True.
-# ---------------------------------------------------------------------------
+async def test_retired_retry_has_no_effects_under_replay_or_concurrency():
+    """Stale clients cannot create attempts or invoke daemons after retirement."""
+    import asyncio
 
-
-def _retry_fetchrow_sequence(
-    *,
-    original_status: str = "failed",
-) -> list[Any]:
-    """Build the 3-call fetchrow sequence the retry path consumes.
-
-    1. get_attempt(original)   -> the original (terminal) attempt row
-    2. get_active_attempt(fp)  -> None (no active row for the fingerprint)
-    3. INSERT ... RETURNING     -> the freshly-created attempt row
-    """
-    original = _make_attempt_row(status=original_status)
-    new_id = uuid.uuid4()
-    inserted = {
-        "id": new_id,
-        "fingerprint": original["fingerprint"],
-        "status": "investigating",
-    }
-    return [_MockRecord(original), None, _MockRecord(inserted)]
-
-
-async def test_retry_without_dispatch_fn_daemon_unreachable_reports_not_dispatched():
-    """No in-process spawner AND no reachable daemon → retry must NOT claim re-dispatch."""
-    # Mock manager registers a butler but its daemon is unreachable.
-    mgr = _make_mcp_manager(butler_names=["general"])
-    app, mock_pool = _build_app(mcp_manager=mgr)
-    mock_pool.fetchrow = AsyncMock(side_effect=_retry_fetchrow_sequence())
-
+    manager = _make_mcp_manager(butler_names=["general"])
+    app, pool = _build_app(mcp_manager=manager)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
-
-    assert resp.status_code == 201
-    body = resp.json()
-    # The bug: response used to omit `dispatched` and the UI always claimed
-    # "Investigation re-dispatched." Now the API tells the truth.
-    assert body["dispatched"] is False
-    assert "re-dispatched" not in body["detail"].lower()
-    assert body["status"] == "investigating"
-    # We attempted the owning butler's daemon before giving up.
-    mgr.get_client.assert_awaited()
-
-
-async def test_retry_redispatches_via_daemon_mcp_and_reports_dispatched():
-    """Cross-process path: retry invokes the daemon retry_healing MCP tool and reports True."""
-    mgr = _make_mcp_manager(butler_names=["general"])
-    app, mock_pool = _build_app(mcp_manager=mgr)
-    seq = _retry_fetchrow_sequence()
-    mock_pool.fetchrow = AsyncMock(side_effect=seq)
-    new_attempt_id = seq[2]["id"]
-
-    # The daemon's MCP client accepts the re-dispatch.
-    accepted_block = MagicMock()
-    accepted_block.text = json.dumps({"accepted": True, "reason": "dispatched"})
-    tool_result = MagicMock()
-    tool_result.is_error = False
-    tool_result.content = [accepted_block]
-
-    client_mock = MagicMock()
-    client_mock.call_tool = AsyncMock(return_value=tool_result)
-    mgr.get_client = AsyncMock(return_value=client_mock)
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
-
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["dispatched"] is True
-    assert body["detail"] == "Investigation re-dispatched."
-
-    # The regression assertion: the daemon retry_healing tool was actually
-    # called with the NEW attempt's id — not a silent no-op.
-    mgr.get_client.assert_awaited_with("general")
-    client_mock.call_tool.assert_awaited_once_with(
-        "retry_healing", {"attempt_id": str(new_attempt_id)}
-    )
-
-
-async def test_retry_with_dispatch_fn_invokes_dispatch_and_reports_dispatched():
-    """When a dispatch callable is wired, it MUST actually be invoked."""
-    app, mock_pool = _build_app()
-    seq = _retry_fetchrow_sequence()
-    mock_pool.fetchrow = AsyncMock(side_effect=seq)
-    new_attempt_id = seq[2]["id"]
-    fingerprint = seq[2]["fingerprint"]
-
-    spy = AsyncMock()
-    app.dependency_overrides[_get_dispatch_fn] = lambda: spy
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
-
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["dispatched"] is True
-
-    # The regression assertion: the dispatch fn was actually called (spawned),
-    # with the NEW attempt's id and fingerprint — not a silent no-op.
-    spy.assert_awaited_once()
-    _, kwargs = spy.await_args
-    assert kwargs["attempt_id"] == new_attempt_id
-    assert kwargs["fingerprint"] == fingerprint
-    assert kwargs["butler_name"] == "general"
-
-
-async def test_retry_rejects_non_terminal_attempt():
-    """Retry on an still-active attempt is a 409 (no row created, no dispatch)."""
-    app, mock_pool = _build_app()
-    mock_pool.fetchrow = AsyncMock(
-        return_value=_MockRecord(_make_attempt_row(status="investigating"))
-    )
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(f"/api/healing/attempts/{uuid.uuid4()}/retry")
-
-    assert resp.status_code == 409
+        url = f"/api/healing/attempts/{uuid.uuid4()}/retry"
+        responses = await asyncio.gather(*(client.post(url) for _ in range(3)))
+        responses.append(await client.post(url))
+    assert [response.status_code for response in responses] == [404] * 4
+    pool.fetchrow.assert_not_awaited()
+    pool.fetch.assert_not_awaited()
+    pool.execute.assert_not_awaited()
+    manager.get_client.assert_not_awaited()

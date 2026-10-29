@@ -163,7 +163,7 @@ def test_decorated_summary_line_is_recognised(tmp_path: Path) -> None:
 
 
 def test_errors_without_the_word_failed_are_not_a_pass(tmp_path: Path) -> None:
-    """Docker contention yields ``N errors`` and no ``N failed`` (AGENTS.md)."""
+    """Docker contention yields ``N errors`` and no ``N failed`` (docs/testing/ci.md)."""
     log = "13727 passed, 21 skipped, 10 errors in 1502.11s (0:25:02)\n"
     result = _verdict(tmp_path, log)
     assert result.returncode == FAILED, result.stdout + result.stderr

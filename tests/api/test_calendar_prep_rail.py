@@ -25,9 +25,8 @@ import pytest
 from pydantic import ValidationError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
 from butlers.api.models.calendar_workspace import CalendarPrepAttendee
-from butlers.api.routers.calendar_workspace import _get_db_manager
 
 pytestmark = pytest.mark.unit
 
@@ -139,7 +138,7 @@ def _build_prep_app(
 
     mock_mgr.get_client = AsyncMock(side_effect=_get_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_db, mock_mgr
 

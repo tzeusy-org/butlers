@@ -174,12 +174,18 @@ def _run_compose_launcher_harness(
         'if [[ "$1" == "rev-parse" ]]; then printf "test-sha\\n"; fi\n',
     )
     _write_executable(fake_bin / "bd", "#!/usr/bin/env bash\nexit 0\n")
-    # No live Kubernetes release unless a test opts in (compose.sh k8s guard).
+    # Standalone host unless a test supplies a configured release. Local
+    # configuration inspection succeeds even without a selected context.
     _write_executable(
         fake_bin / "kubectl",
         "#!/usr/bin/env bash\n"
+        'if [[ "$*" == "config view"* ]]; then\n'
+        '  [[ -z "${TEST_K8S_REPLICAS:-}" ]] || printf "offline-context"\n'
+        "  exit 0\n"
+        "fi\n"
         '[[ -n "${TEST_K8S_REPLICAS:-}" ]] || exit 1\n'
-        'printf "%s" "$TEST_K8S_REPLICAS"\n',
+        'printf "present %s" "$TEST_K8S_REPLICAS"\n'
+        '[[ "$*" != *".status.replicas"* ]] || printf " 0"\n',
     )
     _write_executable(
         fake_bin / "getent",
@@ -1774,7 +1780,7 @@ def test_private_executor_secret_is_absent_from_every_normal_runtime_service() -
     """The secret mount belongs only to the deterministic executor service."""
     compose = _compose(_BASE_COMPOSE_FILE)
 
-    for name, service in compose["services"].items():
+    for _name, service in compose["services"].items():
         assert "restore_drill_executor_password" not in repr(service.get("secrets", []))
         assert _CA_CONFIG_SOURCE not in repr(service.get("configs", []))
         assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" not in _environment_keys(service)

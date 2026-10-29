@@ -208,7 +208,7 @@ async def test_verify_code_preserves_pending_auth_when_a_credential_write_fails(
         with pytest.raises(HTTPException) as raised:
             await telegram_auth.verify_code(
                 telegram_auth.VerifyCodeRequest(session_token="token", code="12345"),
-                db,
+                db=db,
             )
 
     assert raised.value.status_code == 503
@@ -291,7 +291,7 @@ async def test_verify_code_retries_staged_verified_session_without_consuming_ano
     ):
         result = await telegram_auth.verify_code(
             telegram_auth.VerifyCodeRequest(session_token="token", code="unused"),
-            db,
+            db=db,
         )
 
     assert result.success is True
@@ -325,7 +325,7 @@ async def test_session_status_reads_shared_control_state_without_switchboard_reg
             new=AsyncMock(return_value=settings),
         ) as load_consent,
     ):
-        status = await telegram_auth.session_status(db)
+        status = await telegram_auth.session_status(db=db)
 
     assert status.ready is True
     assert status.has_scope_consent is True

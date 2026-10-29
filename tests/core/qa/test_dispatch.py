@@ -362,7 +362,7 @@ async def test_dispatch_qa_success_and_never_raises():
     branch_name = "qa/finance/abcdef123456"
     attempt_id = uuid.uuid4()
     mock_proc = MagicMock()
-    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.communicate = AsyncMock(return_value=(("c" * 40).encode(), b""))
     mock_proc.returncode = 0
 
     with (
@@ -398,7 +398,7 @@ async def test_dispatch_qa_success_and_never_raises():
             "butlers.core.qa.dispatch.create_healing_worktree",
             new_callable=AsyncMock,
             return_value=(worktree_path, branch_name),
-        ),
+        ) as create_worktree,
         patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
         patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
     ):
@@ -412,7 +412,31 @@ async def test_dispatch_qa_success_and_never_raises():
             gh_token="ghtoken",
             task_registry=task_registry,
         )
-    assert result.accepted is True and result.reason == "dispatched"
+        assert result.accepted is True and result.reason == "dispatched"
+        pinned_base = create_worktree.await_args.kwargs["base_ref"]
+        for failure in ("fetch", "resolve"):
+            create_worktree.reset_mock()
+            if failure == "fetch":
+                mock_proc.returncode = 1
+            else:
+                mock_proc.returncode = 0
+                mock_proc.communicate.return_value = (b"not-a-commit", b"")
+            refused = await dispatch_qa_investigation(
+                pool=_make_pool(),
+                triaged_finding=_make_triaged(_make_finding(severity=1)),
+                patrol_id=uuid.uuid4(),
+                config=QaDispatchConfig(),
+                repo_root=Path("/tmp/repo"),
+                spawner=MagicMock(),
+                gh_token="ghtoken",
+                task_registry=task_registry,
+            )
+            # REQ-testing-043: failure must precede both creation and spawn.
+            for task in task_registry:
+                task.cancel()
+            assert refused.accepted is False and refused.reason == "main_refresh_failed"
+            create_worktree.assert_not_awaited()
+        assert pinned_base == "c" * 40
     for task in task_registry:
         task.cancel()
         try:
@@ -462,10 +486,13 @@ async def test_capture_commit_diff_snapshot_runs_git_diff_against_worktree(tmp_p
         str(tmp_path),
         "diff",
         "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
         "HEAD~1..HEAD",
         "--unified=3",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=ANY,
     )
     assert snapshot == [
         {"kind": "meta", "text": "diff --git a/a.py b/a.py"},
@@ -493,9 +520,9 @@ async def test_run_investigation_persists_commit_diff_snapshot(tmp_path: Path):
             return_value=diff_snapshot,
         ) as capture_diff,
         patch(
-            "butlers.core.qa.dispatch._create_qa_pr",
+            "butlers.core.qa.dispatch._detect_no_op_branch",
             new_callable=AsyncMock,
-            return_value=("https://github.com/acme/repo/pull/42", 42, None, None),
+            return_value=False,
         ),
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
         patch(
@@ -518,7 +545,7 @@ async def test_run_investigation_persists_commit_diff_snapshot(tmp_path: Path):
 
     capture_diff.assert_awaited_once_with(tmp_path)
     assert persist_and_remove.await_args.kwargs["diff_snapshot"] == diff_snapshot
-    assert persist_and_remove.await_args.kwargs["delete_branch"] is False
+    assert persist_and_remove.await_args.kwargs["delete_branch"] is True
 
 
 @pytest.mark.asyncio
@@ -538,10 +565,10 @@ async def test_run_investigation_no_commit_persists_empty_snapshot_without_git_d
             new_callable=AsyncMock,
         ) as capture_diff,
         patch(
-            "butlers.core.qa.dispatch._create_qa_pr",
+            "butlers.core.qa.dispatch._detect_no_op_branch",
             new_callable=AsyncMock,
-            return_value=(None, None, None, "no_op_branch"),
-        ) as create_pr,
+            return_value=True,
+        ) as detect_no_op,
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
         patch(
             "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
@@ -562,7 +589,7 @@ async def test_run_investigation_no_commit_persists_empty_snapshot_without_git_d
         )
 
     capture_diff.assert_not_awaited()
-    create_pr.assert_awaited_once()
+    detect_no_op.assert_awaited_once()
     assert persist_and_remove.await_args.kwargs["diff_snapshot"] == []
     assert persist_and_remove.await_args.kwargs["delete_branch"] is True
 
@@ -1238,9 +1265,10 @@ async def test_dispatch_pr_review_followup_materializes_remote_ref_before_worktr
     assert "last_follow_up_at" in call_sql
 
     fetch_call, worktree_call = create_process.await_args_list
-    assert fetch_call.args[:4] == (
+    assert fetch_call.args[:5] == (
         "git",
         "fetch",
+        "--upload-pack=git-upload-pack",
         "origin",
         f"+refs/heads/{branch_name}:refs/remotes/origin/{branch_name}",
     )
@@ -1291,6 +1319,7 @@ async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_
     create_process.assert_awaited_once_with(
         "git",
         "fetch",
+        "--upload-pack=git-upload-pack",
         "origin",
         "+refs/heads/qa/general/abcdef:refs/remotes/origin/qa/general/abcdef",
         cwd="/tmp/repo",
@@ -1327,7 +1356,7 @@ async def test_review_followup_persists_content_blind_git_auth_failure(tmp_path:
             "butlers.core.qa.dispatch._push_branch_with_gh_auth",
             new_callable=AsyncMock,
             return_value=raw_error,
-        ),
+        ) as push,
         patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
     ):
         await _run_review_followup_session(
@@ -1343,7 +1372,125 @@ async def test_review_followup_persists_content_blind_git_auth_failure(tmp_path:
             sandbox_env={"PATH": "/usr/bin", "GH_TOKEN": "not-logged"},
         )
 
+    push.assert_not_awaited()
     persisted_error = pool.execute.await_args.args[3]
-    assert persisted_error.startswith("git_auth_failed: QA GitHub authentication")
+    assert persisted_error.startswith("publication_unavailable:")
     assert "Tzeusy" not in persisted_error
     assert "secret-shaped-value" not in persisted_error
+
+
+_AGENT_TOKEN = "ghp_unit_test_token_value"
+
+
+def _assert_no_credential(env: dict[str, str]) -> None:
+    assert "GH_TOKEN" not in env
+    assert not any(k.startswith(("GIT_ASKPASS", "GIT_CONFIG", "GITHUB_")) for k in env)
+    assert _AGENT_TOKEN not in env.values()
+
+
+@pytest.mark.asyncio
+async def test_investigation_agent_has_no_credential_and_publication_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Agent env carries no token; a successful run pushes nothing and records the reason."""
+    monkeypatch.setenv("GH_TOKEN", _AGENT_TOKEN)
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+    with (
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+        patch("butlers.core.qa.dispatch._create_qa_pr", new_callable=AsyncMock) as create_pr,
+        patch("butlers.core.qa.dispatch._push_branch_with_gh_auth", new_callable=AsyncMock) as push,
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as update,
+        patch(
+            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree", new_callable=AsyncMock
+        ),
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=tmp_path,
+            attempt_id=uuid.uuid4(),
+            finding_id=uuid.uuid4(),
+            branch_name="qa/finance/abcdef123456",
+            worktree_path=tmp_path,
+            finding=_make_finding(),
+            config=QaDispatchConfig(repo_whitelist=MagicMock()),
+            spawner=spawner,
+            gh_token=_AGENT_TOKEN,
+        )
+
+    _assert_no_credential(spawner.trigger.await_args.kwargs["env_override"])
+    create_pr.assert_not_awaited()
+    push.assert_not_awaited()
+    assert update.await_args.args[2] == "failed"
+    assert update.await_args.kwargs["error_detail"].startswith("publication_unavailable:")
+
+
+@pytest.mark.asyncio
+async def test_followup_agent_has_no_credential(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The review follow-up spawn env is built without the QA token."""
+    monkeypatch.setenv("GH_TOKEN", _AGENT_TOKEN)
+    captured: dict[str, dict[str, str]] = {}
+
+    async def _fake_session(**kwargs):
+        captured["env"] = kwargs["sandbox_env"]
+
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    with (
+        patch("butlers.core.qa.dispatch.anonymize", return_value="safe feedback"),
+        patch("butlers.core.qa.dispatch.validate_anonymized", return_value=(True, [])),
+        patch("butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc),
+        patch("pathlib.Path.mkdir"),
+        patch("pathlib.Path.is_dir", return_value=True),
+        patch("butlers.core.qa.dispatch._run_review_followup_session", side_effect=_fake_session),
+    ):
+        task_registry: list[asyncio.Task] = []
+        result = await _dispatch_pr_review_followup(
+            pool=_make_pool(),
+            repo_root=Path("/tmp/repo"),
+            attempt_id=uuid.uuid4(),
+            pr_number=42,
+            pr_url="https://github.com/org/repo/pull/42",
+            fingerprint="a" * 64,
+            butler_name="general",
+            pr_branch_name="qa/general/abcdef-1234",
+            feedback_summary="reviewer comment",
+            config=QaDispatchConfig(),
+            spawner=MagicMock(),
+            gh_token=_AGENT_TOKEN,
+            task_registry=task_registry,
+        )
+        await asyncio.gather(*task_registry)
+
+    assert result is True
+    _assert_no_credential(captured["env"])
+
+
+@pytest.mark.asyncio
+async def test_pr_status_polling_keeps_trusted_token():
+    """Dispatcher-only PR polling still runs gh with the trusted token."""
+    pool = _make_pool()
+    pool.fetch = AsyncMock(return_value=[_make_pr_row(attempt_id=uuid.uuid4())])
+    pr_data = {"state": "MERGED", "reviews": [], "latestReviews": [], "reviewThreads": []}
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(_test_json.dumps(pr_data).encode(), b""))
+    mock_proc.returncode = 0
+    with (
+        patch(
+            "butlers.core.qa.dispatch.asyncio.create_subprocess_exec", return_value=mock_proc
+        ) as spawn,
+        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
+    ):
+        await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token=_AGENT_TOKEN)
+
+    assert spawn.call_args.kwargs["env"]["GH_TOKEN"] == _AGENT_TOKEN

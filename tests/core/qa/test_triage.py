@@ -248,3 +248,29 @@ async def test_triage_intra_patrol_dedup_and_sorting():
     # Equal-severity group (severity=1) sorted by occurrence_count desc
     sev1 = [tf.finding.occurrence_count for tf in rs.novel_findings if tf.finding.severity == 1]
     assert sev1 == sorted(sev1, reverse=True)
+
+
+async def test_triage_holds_a_lineage_with_an_unresolved_publication():
+    """A held lineage is deduplicated as publication_held, never released as novel."""
+    pool = MagicMock()
+    with (
+        patch(
+            "butlers.core.qa.triage.insert_finding",
+            new_callable=AsyncMock,
+            return_value=uuid.uuid4(),
+        ),
+        patch(
+            "butlers.core.qa.triage.get_active_attempt", new_callable=AsyncMock, return_value=None
+        ),
+        patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
+        patch(
+            "butlers.core.qa.triage.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value={"publication_held": True, "fingerprint": "f"},
+        ),
+    ):
+        result = await triage_findings(pool, uuid.uuid4(), [_make_finding()])
+
+    assert result.all_findings[0].dedup_reason == "publication_held"
+    assert result.novel_findings == []
+    assert result.dedup_counts == {"publication_held": 1}

@@ -23,8 +23,6 @@ WebSocket is unavailable.
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required): Switchboard MCP SSE endpoint
-- CONNECTOR_PROVIDER (default: home_assistant)
-- CONNECTOR_CHANNEL (default: home_assistant)
 - CONNECTOR_HEALTH_PORT (default: 40087)
 - HA_BASE_URL: HA instance base URL (overrides entity_info)
 - HA_ACCESS_TOKEN: HA long-lived access token (overrides entity_info)
@@ -72,10 +70,18 @@ from urllib.parse import urlparse
 
 from prometheus_client import Counter, Gauge, Histogram, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.health_socket import make_health_socket
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.home_assistant_envelope import parse_time_fired
+from butlers.connectors.home_assistant_scrub import (
+    HABearerScrubError,
+    scrub_ha_envelope,
+    scrub_ha_event,
+    scrub_ha_normalized_text,
+    scrub_ha_state,
+)
 from butlers.connectors.home_assistant_wellness import (
     ClassifyResult,
     WellnessClassifier,
@@ -85,6 +91,9 @@ from butlers.connectors.home_assistant_wellness import (
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
+
+_DESCRIPTOR = connector_descriptor("home_assistant")
 
 if TYPE_CHECKING:
     pass
@@ -95,9 +104,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "home_assistant"
-_CONNECTOR_CHANNEL = "home_assistant"
-_CONNECTOR_PROVIDER = "home_assistant"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 _DEFAULT_HEALTH_PORT = 40087
 _DEFAULT_POLL_INTERVAL_S = 60
@@ -515,7 +522,7 @@ class HAWebSocketClient:
                     try:
                         msg: dict[str, Any] = json.loads(raw.data)
                     except json.JSONDecodeError:
-                        logger.warning("HAWebSocketClient: invalid JSON: %r", raw.data[:200])
+                        logger.warning("HAWebSocketClient: invalid JSON message withheld")
                         continue
                     if not isinstance(msg, dict):
                         continue
@@ -607,7 +614,7 @@ class HAWebSocketClient:
     async def _ws_command(
         self,
         command: dict[str, Any],
-        timeout: float = 10.0,
+        timeout: float = 10.0,  # noqa: ASYNC109 - command_sender keyword; rename deferred (#4816)
     ) -> dict[str, Any]:
         """Send a WebSocket command and await the correlated result.
 
@@ -915,6 +922,11 @@ class HAEventReorderBuffer:
         polled via the REST fallback keep their ``rest_fallback`` checkpoint
         tag; WebSocket events pass ``None`` and let the dispatcher infer it.
         """
+        try:
+            event = scrub_ha_event(event)
+        except HABearerScrubError:
+            logger.warning("ha-connector: event withheld after content scrub failure")
+            return
         heapq.heappush(
             self._heap,
             (
@@ -1166,8 +1178,8 @@ class HAConnectorConfig:
     """
 
     switchboard_mcp_url: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     health_port: int = _DEFAULT_HEALTH_PORT
     poll_interval_s: int = _DEFAULT_POLL_INTERVAL_S
     checkpoint_overlap_s: int = _DEFAULT_CHECKPOINT_OVERLAP_S
@@ -1227,8 +1239,8 @@ class HAConnectorConfig:
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
+            provider=_DESCRIPTOR.provider,
+            channel=_DESCRIPTOR.channel,
             health_port=_int("CONNECTOR_HEALTH_PORT", _DEFAULT_HEALTH_PORT),
             poll_interval_s=_int("HA_POLL_INTERVAL_S", _DEFAULT_POLL_INTERVAL_S),
             checkpoint_overlap_s=_int("HA_CHECKPOINT_OVERLAP_S", _DEFAULT_CHECKPOINT_OVERLAP_S),
@@ -1425,6 +1437,7 @@ class HAConnector:
             mcp_client=self._mcp_client,
             metrics=self._base_metrics,
             get_health_state=self._get_health_state,
+            channel_kind=CHANNEL_KIND_FEED,
         )
 
         logger.info(
@@ -1701,14 +1714,16 @@ async def persist_ha_history(
         recorded_at: Timezone-aware datetime for the ``recorded_at`` column.
     """
     try:
+        safe_state = scrub_ha_state({"state": state, "attributes": attributes})
+        assert safe_state is not None
         await pool.execute(
             f"""
             INSERT INTO {_HA_HISTORY_TABLE} (entity_id, state, attributes, recorded_at)
             VALUES ($1, $2, $3, $4)
             """,
             entity_id,
-            state,
-            attributes,
+            safe_state["state"],
+            safe_state["attributes"],
             recorded_at,
         )
         return True
@@ -1716,7 +1731,6 @@ async def persist_ha_history(
         logger.warning(
             "ha-connector: failed to persist history row for entity_id=%s (non-fatal)",
             entity_id,
-            exc_info=True,
         )
         return False
 
@@ -1768,7 +1782,7 @@ async def emit_with_wellness_promotion(
         if ha_envelope is None:
             raise ValueError("ha_envelope is required when emit_home_assistant=True")
         try:
-            await mcp_client.call_tool("ingest", ha_envelope)
+            await mcp_client.call_tool("ingest", scrub_ha_envelope(ha_envelope))
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "success")
         except Exception as exc:
@@ -1784,7 +1798,6 @@ async def emit_with_wellness_promotion(
                 logger.warning(
                     "ha-connector: failed to submit home_assistant envelope for entity_id=%s",
                     entity_id,
-                    exc_info=True,
                 )
             if metrics is not None:
                 metrics.inc_submission("home_assistant", "error")
@@ -1824,7 +1837,7 @@ async def emit_with_wellness_promotion(
     )
 
     try:
-        await mcp_client.call_tool("ingest", wellness_envelope)
+        await mcp_client.call_tool("ingest", scrub_ha_envelope(wellness_envelope))
         if metrics is not None:
             metrics.inc_submission("wellness", "success")
     except Exception as exc:
@@ -1841,7 +1854,6 @@ async def emit_with_wellness_promotion(
                 "ha-connector: failed to submit wellness envelope for entity_id=%s metric=%s",
                 entity_id,
                 result.metric,
-                exc_info=True,
             )
         if metrics is not None:
             metrics.inc_submission("wellness", "error")
@@ -1867,6 +1879,11 @@ async def _emit_history_wellness_measurement(
     WebSocket/REST checkpoint. ``time_fired`` is the HA ``last_updated``
     measurement timestamp supplied by the history reader.
     """
+    try:
+        event = scrub_ha_event(event)
+    except HABearerScrubError:
+        logger.warning("ha-connector: history event withheld after content scrub failure")
+        return False
     event_data = event.get("data") or {}
     new_state = event_data.get("new_state") or {}
     attributes = new_state.get("attributes") or {}
@@ -2252,6 +2269,13 @@ def _make_event_dispatcher(
             connector.on_event_received(passed_all_filters=False)
             return
 
+        try:
+            event = scrub_ha_event(event)
+        except HABearerScrubError:
+            logger.warning("ha-connector: event withheld after content scrub failure")
+            connector.on_event_received(passed_all_filters=False)
+            return
+
         # Extract common fields
         event_data: dict[str, Any] = event.get("data", {})
         time_fired: str = event.get("time_fired", "")
@@ -2312,14 +2336,13 @@ def _make_event_dispatcher(
             )
             try:
                 ingest_start = time.monotonic()
-                await connector._mcp_client.call_tool("ingest", envelope)
+                await connector._mcp_client.call_tool("ingest", scrub_ha_envelope(envelope))
                 connector._ha_metrics and connector._ha_metrics.observe_event_latency(
                     time.monotonic() - ingest_start
                 )
             except Exception:
                 logger.warning(
                     "ha-connector: failed to submit automation_triggered envelope",
-                    exc_info=True,
                 )
                 connector.on_event_received(passed_all_filters=False)
                 return
@@ -2351,6 +2374,13 @@ def _make_event_dispatcher(
             new_state=new_state_str,
             unit_of_measurement=unit_of_measurement,
         )
+
+        try:
+            normalized_text = scrub_ha_normalized_text(normalized_text)
+        except HABearerScrubError:
+            logger.warning("ha-connector: event withheld after content scrub failure")
+            connector.on_event_received(passed_all_filters=False)
+            return
 
         # Run three-layer filter pipeline
         from butlers.connectors.home_assistant_pipeline import PipelineResult
@@ -2441,7 +2471,7 @@ def _make_event_dispatcher(
         # global policy.
         if domain != "person" and global_ingestion_policy is not None:
             policy_envelope = IngestionEnvelope(
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 raw_key=entity_id,
             )
             try:

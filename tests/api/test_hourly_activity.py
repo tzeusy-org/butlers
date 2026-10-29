@@ -19,7 +19,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.sessions import _HOURLY_ACTIVITY_SQL, _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.routers.sessions import _HOURLY_ACTIVITY_SQL
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -54,7 +55,7 @@ def _make_app_with_rows(rows: list[MagicMock]) -> object:
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -64,7 +65,7 @@ def _make_app_missing_butler() -> object:
     mock_db.pool.side_effect = KeyError("No pool for butler: atlas")
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -233,7 +234,7 @@ async def test_hourly_activity_sql_uses_single_positional_arg() -> None:
     now = datetime.datetime(2026, 5, 11, 12, 0, 0, tzinfo=datetime.UTC)
     rows = [_make_hourly_row(hour_start=now, sessions_count=1)]
     app = _make_app_with_rows(rows)
-    mock_pool = app.dependency_overrides[_get_db_manager]().pool()
+    mock_pool = app.dependency_overrides[get_db]().pool()
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_BASE) as client:
         await client.get(f"{_URL}?window_hours=6")

@@ -91,9 +91,11 @@ Record a payable obligation.
 | `metadata` | JSONB dict | No | Raw context for partial data. |
 | `autopay` | bool | No | Auto-debited bill (GIRO/CPF/card). Surfaced as a no-action FYI. Omit to leave unchanged. |
 | `predicted` | bool | No | Pattern-based prediction tracked as a bill. Omit to leave unchanged; prefer not tracking predictions. |
+| `payment_destination` | string | No | The account number, IBAN or payment handle the bill asks the owner to pay, exactly as shown. Fingerprinted; Finance does not store, log or return the raw value (session tool-call records still hold raw arguments, bu-4mfhdq). The result carries `destination_verdict`: `known`, `new_for_counterparty` (differs from this payee's earlier bills: tell the owner and suggest confirming by phone before paying) or `unverifiable` (first destination for the payee, unparseable, or no key). Omit when the bill shows none. |
 
 **Notes:**
 - Dedupes on the normalized payee + `due_date`; use a consistent payee name to avoid fragmenting records.
+- Never put the raw payment destination in `metadata` or any note field; pass it only as `payment_destination`.
 - Create a calendar reminder 3 days before `due_date` (configurable via user's `bill_reminder_preference` memory fact).
 
 ---

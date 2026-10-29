@@ -34,9 +34,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_pricing
+from butlers.api.deps import Db, get_pricing
 from butlers.api.ingestion_read_budget import IngestionReadBudgetRoute
-from butlers.api.models import ApiResponse, CursorPaginatedResponse, CursorPaginationMeta
+from butlers.api.models import ApiResponse
 from butlers.api.models.ingestion_event import (
     IngestionDroppedKnownSummary,
     IngestionEventDetail,
@@ -50,8 +50,11 @@ from butlers.api.models.ingestion_event import (
     ReplayHistoryEntry,
     SenderContactResolution,
 )
+from butlers.api.pagination import InvalidCursorError, Page
 from butlers.api.routers.audit import append as _audit_append
 from butlers.core.ingestion_events import (
+    ingestion_classification_uncertainty,
+    ingestion_current_classification_available,
     ingestion_dropped_known_summary,
     ingestion_event_get,
     ingestion_event_get_inbox_lifecycle,
@@ -76,6 +79,7 @@ from butlers.identity import (
     resolve_contact_by_channel,
     resolve_contacts_by_channel_bulk,
 )
+from butlers.pagination import InvalidCursorError as CoreInvalidCursorError
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +91,6 @@ rollup_router = APIRouter(
 )
 
 _REPLAY_SAFETY_UNAVAILABLE_REASON = "Replay safety could not be confirmed"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_pricing_optional() -> PricingConfig | None:
@@ -133,7 +132,7 @@ async def _audit_replay_safety_rejection(
 # ---------------------------------------------------------------------------
 
 
-@router.get("", response_model=CursorPaginatedResponse[IngestionEventSummary])
+@router.get("", response_model=Page[IngestionEventSummary])
 async def list_ingestion_events(
     limit: int = Query(20, ge=1, le=200, description="Max records to return"),
     cursor: str | None = Query(
@@ -219,8 +218,9 @@ async def list_ingestion_events(
             "returns an empty page, not an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[IngestionEventSummary]:
+    *,
+    db: Db,
+) -> Page[IngestionEventSummary]:
     """Return a cursor-paginated unified timeline of ingestion events, newest first.
 
     Uses keyset (cursor) pagination via ``(received_at DESC, id DESC)`` — no ``total``
@@ -250,19 +250,6 @@ async def list_ingestion_events(
         pool = db.credential_shared_pool()
     except KeyError as exc:
         raise HTTPException(status_code=503, detail=f"Shared database unavailable: {exc}") from exc
-
-    if cursor is not None:
-        try:
-            if sort == "cost":
-                from butlers.core.ingestion_events import decode_cost_cursor
-
-                decode_cost_cursor(cursor)
-            else:
-                from butlers.core.ingestion_events import decode_cursor
-
-                decode_cursor(cursor)  # Validate the cursor early; raises ValueError if malformed.
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
 
     # Resolve channel filter; an empty channels= is treated as no filter.
     channel_list: list[str] | None = None
@@ -294,31 +281,30 @@ async def list_ingestion_events(
     if trace_id is not None and trace_id.strip():
         event_ids = await ingestion_events_request_ids_for_trace(db, trace_id.strip())
 
-    result = await ingestion_events_list(
-        pool,
-        limit=limit,
-        cursor=cursor,
-        channels=channel_list,
-        status=status,
-        statuses=status_list,
-        q=q,
-        from_dt=from_dt,
-        to_dt=to_dt,
-        sort=sort,
-        event_ids=event_ids,
-    )
+    try:
+        result = await ingestion_events_list(
+            pool,
+            limit=limit,
+            cursor=cursor,
+            channels=channel_list,
+            status=status,
+            statuses=status_list,
+            q=q,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            sort=sort,
+            event_ids=event_ids,
+        )
+    except CoreInvalidCursorError as exc:
+        raise InvalidCursorError() from exc
 
     summaries = [IngestionEventSummary(**row) for row in result["items"]]
 
     if summaries:
         await _enrich_list_summaries(summaries, db)
 
-    return CursorPaginatedResponse[IngestionEventSummary](
-        data=summaries,
-        meta=CursorPaginationMeta(
-            next_cursor=result["next_cursor"],
-            has_more=result["has_more"],
-        ),
+    return Page[IngestionEventSummary](
+        items=summaries, next_cursor=result["next_cursor"], limit=limit
     )
 
 
@@ -482,7 +468,8 @@ async def get_ingestion_events_histogram(
             "returns an empty histogram, not an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> IngestionHistogramResponse:
     """Return per-minute (or coarser) ingestion event counts by status.
 
@@ -616,7 +603,8 @@ _DROPPED_KNOWN_WINDOWS = {
 @router.get("/dropped-known", response_model=IngestionDroppedKnownSummary)
 async def get_ingestion_dropped_known(
     window: Literal["1h", "24h", "7d"] = Query("24h", description="Trailing window."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> IngestionDroppedKnownSummary:
     """Return how many messages from known contacts were dropped and not answered.
 
@@ -625,14 +613,39 @@ async def get_ingestion_dropped_known(
     can say the harm is unknown instead of rendering an all-clear. Registered
     before ``/{request_id}`` so the literal path is not captured.
     """
-    from_dt = _datetime.now(UTC) - _DROPPED_KNOWN_WINDOWS[window]
+    now = _datetime.now(UTC)
+    from_dt = now - _DROPPED_KNOWN_WINDOWS[window]
     try:
         pool = db.credential_shared_pool()
-        counts = await ingestion_dropped_known_summary(pool, from_dt=from_dt)
+        counts = await ingestion_dropped_known_summary(pool, from_dt=from_dt, to_dt=now)
+        uncertain = await ingestion_classification_uncertainty(pool, from_dt=from_dt, to_dt=now)
     except Exception:
-        logger.warning("dropped-known: aggregate unavailable", exc_info=True)
-        return IngestionDroppedKnownSummary(available=False, window=window)
-    return IngestionDroppedKnownSummary(available=True, window=window, **counts)
+        logger.warning("dropped-known: aggregate unavailable")
+        return IngestionDroppedKnownSummary(
+            available=False,
+            window=window,
+            availability_reason="counts_unavailable",
+        )
+    try:
+        classification = await ingestion_current_classification_available(
+            db.pool("switchboard"), now=now
+        )
+        reason = "none" if classification else "classification_unknown"
+    except Exception:
+        classification = False
+        reason = "registry_unavailable"
+        logger.warning("dropped-known: registry unavailable")
+    if classification and uncertain:
+        reason = "historical_uncertainty"
+    return IngestionDroppedKnownSummary(
+        available=classification and uncertain == 0,
+        window=window,
+        **counts,
+        counts_available=True,
+        classification_available=classification,
+        uncertain_drops=uncertain,
+        availability_reason=reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -653,7 +666,8 @@ async def get_ingestion_event(
             "Omitting this flag returns only metadata fields."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionEventDetail]:
     """Return a single ingestion event by its UUID.
 
@@ -745,7 +759,8 @@ async def get_ingestion_event(
 @router.get("/{request_id}/sessions", response_model=ApiResponse[list[IngestionEventSession]])
 async def get_ingestion_event_sessions(
     request_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> ApiResponse[list[IngestionEventSession]]:
     """Return cross-butler sessions linked to this ingestion event.
@@ -772,7 +787,8 @@ async def get_ingestion_event_sessions(
 @router.get("/{request_id}/rollup", response_model=ApiResponse[IngestionEventRollup])
 async def get_ingestion_event_rollup(
     request_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[IngestionEventRollup]:
     """Return aggregated token and cost totals for this ingestion event.
@@ -817,7 +833,8 @@ _MAX_BULK_RETRY_BATCH = 100
 async def bulk_retry_ingestion_events(
     request: Request,
     body: Annotated[dict, Body(...)],
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict:
     """Bulk retry/replay up to 100 events across both ingestion and filtered tables.
 
@@ -876,9 +893,9 @@ async def bulk_retry_ingestion_events(
     # ---------------------------------------------------------------------------
     try:
         replay_policies = await ingestion_events_replay_policy(pool, event_ids)
-    except Exception:
+    except Exception as exc:
         logger.warning("bulk_retry: replay policy pre-flight check failed", exc_info=True)
-        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON)
+        raise HTTPException(status_code=503, detail=_REPLAY_SAFETY_UNAVAILABLE_REASON) from exc
 
     unsafe_events: list[dict] = []
     for event_id in event_ids:
@@ -1029,7 +1046,8 @@ async def bulk_retry_ingestion_events(
 async def replay_ingestion_event(
     event_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict:
     """Request replay of a failed or filtered event.
 
@@ -1152,7 +1170,8 @@ async def replay_ingestion_event(
 @router.get("/{event_id}/replays", response_model=ApiResponse[list[ReplayHistoryEntry]])
 async def get_ingestion_event_replays(
     event_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ReplayHistoryEntry]]:
     """Return the replay attempt history for an ingestion event.
 
@@ -1183,7 +1202,8 @@ async def get_ingestion_event_replays(
 @router.get("/{event_id}/sender-contact", response_model=ApiResponse[SenderContactResolution])
 async def get_ingestion_event_sender_contact(
     event_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SenderContactResolution]:
     """Resolve the sender_identity for an ingestion event to a contact name.
 
@@ -1249,7 +1269,8 @@ async def get_ingestion_event_sender_contact(
 async def get_ingestion_event_payload(
     event_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionEventPayload]:
     """Return the raw inbound payload for an ingestion event.
 
@@ -1327,11 +1348,6 @@ async def get_ingestion_event_payload(
 # ---------------------------------------------------------------------------
 
 
-def _get_rollup_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/rollup
 # ---------------------------------------------------------------------------
@@ -1373,7 +1389,8 @@ async def get_ingestion_window_rollup(
             "rollup, not an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_rollup_db_manager),
+    *,
+    db: Db,
     pricing: PricingConfig | None = Depends(_get_pricing_optional),
 ) -> IngestionWindowRollup:
     """Return aggregate event/session/cost counts for the active filter window.

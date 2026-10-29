@@ -28,12 +28,12 @@ from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     CliRuntimeDetail,
     SystemSecretDetail,
     _content_blind_cli_detail,
     _content_blind_system_detail,
-    _get_db_manager,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -233,7 +233,7 @@ def _make_db_manager_for_per_credential(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 

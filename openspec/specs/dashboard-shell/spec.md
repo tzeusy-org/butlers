@@ -457,6 +457,9 @@ A read whose cache key is bus-covered (`frontend/src/lib/event-cache-registry.ts
 - **THEN** it polls at the slow reconciliation cadence (`POLL_BUS_RECONCILE_MS`) while the shared `EventBusProvider` freshness health is `"healthy"`
 - **AND** it polls at the fast fallback cadence (`POLL_BUS_DOWN_FALLBACK_MS`) while freshness health is `"late"` or `"down"`, so a dropped socket degrades to honest polling rather than silent staleness
 - **AND** a parseable but malformed fleet frame never establishes or extends `"healthy"` freshness; only a valid event or snapshot envelope may do so
+- **AND** snapshot replay coalesces registry invalidations without dropping any covered cache family or changing its refetch policy; a snapshot of 199 ingestion events and one chronicles event costs at most five invalidation calls
+- **AND** malformed snapshot entries are skipped without dropping valid siblings, while valid event callbacks retain their order and replay metadata exactly once
+- **AND** live events received during replay are applied after the complete replay in arrival order; live ingestion keeps its bounded fixed-window refresh
 - **AND** no user-facing toggle pauses or overrides this cadence
 
 #### Scenario: Hidden tab pauses polling
@@ -563,6 +566,11 @@ The router derives each page's lazy boundary from the registry, so a page path a
 - **WHEN** a legacy path from the compatibility table is visited
 - **THEN** the router replaces it with its canonical destination
 - **AND** no legacy path renders a page of its own
+
+#### Scenario: Unmatched route renders not-found inside the shell
+- **WHEN** the owner opens a path that is neither a registered page route nor a compatibility redirect
+- **THEN** the root layout renders a not-found page whose heading is "Page not found", showing the requested path and a link to `/`
+- **AND** a route whose render or loader throws renders the shell's "Something went wrong" fallback with "Try again" rather than the router's default error screen
 
 #### Scenario: Settings stays system-side
 - **WHEN** the router is configured

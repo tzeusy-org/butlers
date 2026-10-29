@@ -7,6 +7,9 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from fastmcp import FastMCP
+
+from butlers.testing.mcp import tool_fn
 
 pytestmark = pytest.mark.unit
 
@@ -130,22 +133,13 @@ async def test_health_module_registers_provider_as_an_mcp_tool() -> None:
     from butlers.modules._roster_health import HealthModuleConfig
     from butlers.modules._roster_health.tools import register_tools
 
-    registered: dict[str, object] = {}
-
-    class _Mcp:
-        def tool(self):
-            def decorator(fn):
-                registered[fn.__name__] = fn
-                return fn
-
-            return decorator
-
+    mcp = FastMCP("health-medication-travel-test")
     pool = AsyncMock()
     pool.fetch.return_value = []
     module = SimpleNamespace(_get_pool=lambda: pool)
 
-    register_tools(_Mcp(), module, HealthModuleConfig())
+    register_tools(mcp, module, HealthModuleConfig())
 
-    provider = registered["medication_travel_snapshot"]
-    result = await provider()  # type: ignore[operator]
+    provider = await tool_fn(mcp, "medication_travel_snapshot")
+    result = await provider()
     assert result["schema_version"] == "health.medication-travel.v1"

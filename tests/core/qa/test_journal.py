@@ -360,6 +360,11 @@ async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
             return_value=("https://github.com/acme/repo/pull/42", 42, pr_created_at, None),
         ),
         patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
             new_callable=AsyncMock,
             return_value=diff_snapshot,
@@ -384,16 +389,8 @@ async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
             gh_token="ghtoken",
         )
 
-    record.assert_awaited_once()
-    assert record.await_args.kwargs == {
-        "attempt_id": attempt_id,
-        "pr_number": 42,
-        "branch_name": branch_name,
-        "additions": 1,
-        "deletions": 1,
-        "file_count": 1,
-        "ts": pr_created_at,
-    }
+    # Publication fails closed: no PR is drafted, so no drafted event is recorded.
+    record.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -410,6 +407,11 @@ async def test_drafted_on_pr_creation_explicitly_falls_back_without_created_at(
             "butlers.core.qa.dispatch._create_qa_pr",
             new_callable=AsyncMock,
             return_value=("https://github.com/acme/repo/pull/42", 42, None, None),
+        ),
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
         ),
         patch(
             "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
@@ -436,8 +438,7 @@ async def test_drafted_on_pr_creation_explicitly_falls_back_without_created_at(
             gh_token="ghtoken",
         )
 
-    record.assert_awaited_once()
-    assert record.await_args.kwargs["ts"] is None
+    record.assert_not_awaited()
 
 
 @pytest.mark.asyncio

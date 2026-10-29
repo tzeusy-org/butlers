@@ -18,6 +18,7 @@ from butlers.modules.memory.consolidation_parser import (
     UpdatedFact,
     parse_consolidation_output,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -578,15 +579,7 @@ class _AtomicConnection:
         return "UPDATE 0"
 
 
-class _AtomicAcquire:
-    def __init__(self, connection: _AtomicConnection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _AtomicConnection:
-        return self._connection
-
-    async def __aexit__(self, *exc) -> bool:
-        return False
+_AtomicAcquire = AsyncCtx
 
 
 class _AtomicPool:

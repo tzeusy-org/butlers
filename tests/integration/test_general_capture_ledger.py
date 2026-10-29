@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from butlers.core.capture import (
     CaptureUnavailable,
     VerifiedAuthority,
     canonical_intake,
+    load_epoch,
     rotate_epoch,
 )
 from butlers.db import register_jsonb_codec
@@ -31,7 +33,7 @@ def capture_db_url(postgres_container):
         migration_db_name(),
         ["core", "general"],
         schemas={"general": "general"},
-        revisions={"core": "core_259"},
+        revisions={"core": "core_287"},
     )
 
 
@@ -390,6 +392,207 @@ async def seed_capture_snapshot(db_url: str, epoch_path: Path, *, historical: bo
         await pool.close()
 
 
+async def test_fixed_general_snapshot_imports_into_a_new_target(postgres_container, tmp_path):
+    """Schema transport is setup; row transport exercises the real General importer.
+
+    A migrated target seeds its own NULL-epoch control row. A schema-only restore,
+    as used by the backup data exclusions, instead starts with no control data.
+    This carrier creates that genuinely empty target, without deleting evidence,
+    copying source rows as an administrator, or replaying into existing rows.
+    The full checked-in dump/restore script positives remain separate carriers.
+    """
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    source_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "general"],
+        schemas={"general": "general"},
+        revisions={"core": "core_287"},
+    )
+    epoch_path = tmp_path / "source-epoch.json"
+    await seed_capture_snapshot(source_url, epoch_path)
+    source_name = urlparse(source_url).path.lstrip("/")
+    target_name = migration_db_name()
+    container_id = postgres_container.get_wrapped_container().id
+    bootstrap = urlparse(migration_bootstrap_db_url(postgres_container, "postgres"))
+    admin_url = bootstrap._replace(scheme="postgresql").geturl()
+    admin = await asyncpg.connect(admin_url)
+    try:
+        owner = urlparse(source_url).username
+        # Both identifiers come from migration_db_name/create_migrated_test_db.
+        await admin.execute(f'CREATE DATABASE "{target_name}" OWNER "{owner}"')
+        schema = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "docker",
+                "exec",
+                container_id,
+                "pg_dump",
+                "-U",
+                bootstrap.username,
+                "-d",
+                source_name,
+                "--schema-only",
+                "--clean",
+                "--if-exists",
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        assert schema.returncode == 0, "fixed source schema export failed"
+        installed = await asyncio.to_thread(
+            subprocess.run,
+            [
+                "docker",
+                "exec",
+                "-i",
+                container_id,
+                "psql",
+                "-U",
+                bootstrap.username,
+                "-d",
+                target_name,
+                "-X",
+                "-q",
+                "-v",
+                "ON_ERROR_STOP=1",
+            ],
+            input=schema.stdout,
+            capture_output=True,
+            timeout=120,
+        )
+        assert installed.returncode == 0, "new target schema installation failed"
+
+        source = await asyncpg.connect(source_url)
+        target = await asyncpg.connect(
+            urlparse(source_url)._replace(path=f"/{target_name}").geturl()
+        )
+        try:
+            for conn in (source, target):
+                await register_jsonb_codec(conn)
+                await conn.execute("SET ROLE butler_general_rw")
+                await conn.execute("SET search_path=general,public")
+            assert await target.fetchval("SELECT current_user") == "butler_general_rw"
+            assert await target.fetchval("SELECT count(*) FROM public.captures") == 0
+            assert await target.fetchval("SELECT count(*) FROM public.capture_operations") == 0
+            assert await target.fetchval("SELECT count(*) FROM public.capture_service_control") == 0
+            ordinary = (
+                "general.collections",
+                "general.collection_vocabulary",
+                "general.collection_vocabulary_keys",
+                "general.collection_items",
+                "general.source_versions",
+            )
+            ledger = (
+                "public.captures",
+                "public.capture_operations",
+                "public.capture_service_control",
+            )
+            exported = {}
+            async with source.transaction(isolation="repeatable_read", readonly=True):
+                snapshot = await source.fetchval("SELECT pg_export_snapshot()")
+                assert snapshot
+                for table in (*ordinary, *ledger):
+                    exported[table] = [
+                        row["payload"]
+                        for row in await source.fetch(
+                            f"SELECT to_jsonb(t) AS payload FROM {table} t ORDER BY to_jsonb(t)::text"
+                        )
+                    ]
+                async with target.transaction():
+                    await target.execute("SET LOCAL row_security=on")
+                    for table in ordinary:
+                        # Generated vocabulary keys must be computed on the target.
+                        columns = await source.fetchval(
+                            "SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) "
+                            "FROM pg_attribute WHERE attrelid=$1::regclass AND attnum>0 "
+                            "AND NOT attisdropped AND attgenerated=''",
+                            table,
+                        )
+                        for payload in exported[table]:
+                            await target.execute(
+                                f"INSERT INTO {table} ({columns}) SELECT {columns} FROM "
+                                f"jsonb_populate_record(NULL::{table},$1)",
+                                payload,
+                            )
+                    for table in ledger:
+                        for payload in exported[table]:
+                            await target.execute(
+                                "SELECT public.capture_restore_row($1,$2)",
+                                table.removeprefix("public."),
+                                payload,
+                            )
+                for table in (*ordinary, *ledger[:-1]):
+                    assert [
+                        row["payload"]
+                        for row in await target.fetch(
+                            f"SELECT to_jsonb(t) AS payload FROM {table} t ORDER BY to_jsonb(t)::text"
+                        )
+                    ] == exported[table]
+            assert exported["public.captures"] and exported["public.capture_operations"]
+            control = await target.fetchval(
+                "SELECT to_jsonb(t) FROM public.capture_service_control t"
+            )
+            assert control == {
+                **exported["public.capture_service_control"][0],
+                "admission_enabled": False,
+                "dispatch_enabled": False,
+                "recovery_required": True,
+            }
+            assert await target.fetchval(
+                "SELECT bool_and(relrowsecurity AND relforcerowsecurity) FROM pg_class "
+                "WHERE oid=ANY($1::regclass[])",
+                list(ledger),
+            )
+            routed = next(
+                row for row in exported["public.captures"] if row["disposition"] == "routed"
+            )
+
+            async def setup(conn):
+                await conn.execute("SET ROLE butler_general_rw")
+                await conn.execute("SET search_path=general,public")
+
+            runtime = await asyncpg.create_pool(
+                urlparse(source_url)._replace(path=f"/{target_name}").geturl(),
+                min_size=1,
+                max_size=1,
+                init=register_jsonb_codec,
+                setup=setup,
+            )
+            try:
+                target_service = CaptureService(runtime, epoch_path)
+                assert await target_service.verify(uuid.UUID(routed["operation_id"])) is not None
+                # Restored disablement is real, even with the original external epoch.
+                with pytest.raises(CaptureUnavailable):
+                    await target_service.admit(
+                        authority(load_epoch(epoch_path)), "Synthetic capture"
+                    )
+            finally:
+                await runtime.close()
+            # A conflicting replay rolls back rather than replacing original evidence.
+            changed = {**routed, "payload_digest": "0" * 64}
+            with pytest.raises(asyncpg.PostgresError):
+                async with target.transaction():
+                    await target.execute(
+                        "SELECT public.capture_restore_row('captures',$1)", changed
+                    )
+            assert (
+                await target.fetchval(
+                    "SELECT payload_digest FROM public.captures WHERE id=$1",
+                    uuid.UUID(routed["id"]),
+                )
+                == routed["payload_digest"]
+            )
+        finally:
+            await source.close()
+            await target.close()
+    finally:
+        await admin.execute(f'DROP DATABASE IF EXISTS "{target_name}" WITH (FORCE)')
+        await admin.close()
+
+
 async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_container):
     from sqlalchemy.exc import DBAPIError
 
@@ -401,16 +604,16 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
         postgres_container,
         migration_db_name(),
         ["core"],
-        revisions={"core": "core_259"},
+        revisions={"core": "core_287"},
     )
     config = _build_alembic_config(db_url, chains=["core"])
-    await asyncio.to_thread(command.downgrade, config, "core_258")
-    await asyncio.to_thread(command.upgrade, config, "core_259")
+    await asyncio.to_thread(command.downgrade, config, "core_282")
+    await asyncio.to_thread(command.upgrade, config, "core_287")
     sibling = _build_alembic_config(db_url, chains=["core"], target_schema="capture_replay")
-    await asyncio.to_thread(command.upgrade, sibling, "core_259")
-    await asyncio.to_thread(command.downgrade, config, "core_258")
-    await asyncio.to_thread(command.downgrade, sibling, "core_258")
-    await asyncio.to_thread(command.upgrade, config, "core_259")
+    await asyncio.to_thread(command.upgrade, sibling, "core_287")
+    await asyncio.to_thread(command.downgrade, config, "core_282")
+    await asyncio.to_thread(command.downgrade, sibling, "core_282")
+    await asyncio.to_thread(command.upgrade, config, "core_287")
     # A missing sibling table cannot erase the still-present control record.
     conn = await asyncpg.connect(db_url)
     try:
@@ -418,10 +621,10 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     finally:
         await conn.close()
     with pytest.raises(DBAPIError, match="partial ledger"):
-        await asyncio.to_thread(command.downgrade, config, "core_258")
+        await asyncio.to_thread(command.downgrade, config, "core_282")
     # Reinstall the empty missing table through the real installer, preserving
     # the existing control. A restrictive policy must not hide evidence either.
-    await asyncio.to_thread(command.upgrade, sibling, "core_259")
+    await asyncio.to_thread(command.upgrade, sibling, "core_287")
     conn = await asyncpg.connect(db_url)
     try:
         await conn.execute(
@@ -431,7 +634,7 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     finally:
         await conn.close()
     with pytest.raises(DBAPIError, match="General policy proof invalid"):
-        await asyncio.to_thread(command.downgrade, config, "core_258")
+        await asyncio.to_thread(command.downgrade, config, "core_282")
     conn = await asyncpg.connect(db_url)
     try:
         await conn.execute("DROP POLICY capture_hidden ON public.capture_service_control")
@@ -442,12 +645,12 @@ async def test_empty_rollback_and_nonempty_receipt_replay_refusal(postgres_conta
     finally:
         await conn.close()
     with pytest.raises(DBAPIError, match="capture evidence retained"):
-        await asyncio.to_thread(command.downgrade, config, "core_258")
+        await asyncio.to_thread(command.downgrade, config, "core_282")
     # A new schema's historical chain must not remove/reset the shared control.
     await asyncio.to_thread(
         command.upgrade,
         _build_alembic_config(db_url, chains=["core"], target_schema="capture_evidence_replay"),
-        "core_259",
+        "core_287",
     )
     conn = await asyncpg.connect(db_url)
     try:

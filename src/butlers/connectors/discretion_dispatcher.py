@@ -17,8 +17,8 @@ Usage::
 
 Design notes
 ------------
-- Adapter instances are cached per ``runtime_type``; instantiation is
-  handled by :func:`~butlers.core.runtimes.base.create_adapter`.
+- Adapter instances are cached per ``runtime_type`` and built by the shared
+  :class:`~butlers.core.runtimes.registry.AdapterRegistry`.
 - Model resolution is performed on every call so catalog updates take effect
   without restarting the dispatcher.
 - ``asyncio.wait_for`` enforces the per-call wall-clock timeout. The model
@@ -27,32 +27,14 @@ Design notes
 - ``mcp_servers={}``, ``max_turns=1``, and a minimal env (PATH, HOME) are
   always passed to the adapter — discretion calls are single-turn with no
   tool access.
-- Same-tier failover (bu-8fves): a failed ``adapter.invoke()`` is classified
-  via :func:`~butlers.core.failover_classifier.classify_failover_eligibility`
-  (the same default-closed classifier ``Spawner._run()`` uses) and, when
-  eligible, retried against the next same-tier candidate from
-  ``public.model_catalog`` via
-  :func:`~butlers.core.model_routing.next_same_tier_candidate`. Discretion
-  calls never carry MCP tool calls (``mcp_servers={}``), so Gate 1 of the
-  classifier (captured tool calls suppress failover) never fires here.
-  ``adapter.last_process_info`` is still passed through, since some gates
-  (e.g. OpenCode's pre-tool-call ``APIError`` envelope) key off it rather
-  than ``tool_calls``.
-- Per-catalog-entry quota skips (bu-x82cy): a quota-denied candidate is
-  skipped before adapter construction/invocation and advances through the
-  same effective-tier candidate loop. The skip consumes the existing bounded
-  failover-attempt budget and emits only bounded dispatcher log/metric
-  provenance; this session-less path does not import Spawner's session
-  provenance or other pre-spawn gates.
-- Spend routing rules (bu-m95jq): after tier resolution, the resolved model
-  is run through :func:`~butlers.core.model_routing.apply_spend_routing_rules`
-  with ``trigger_source="discretion"``, the same integration shape
-  ``Spawner._run()`` uses, so an operator-configured rule scoped to
-  ``condition={"purpose": "discretion"}`` (or ``"trigger"``) can re-route the
-  model actually dispatched. A matching rule's ``action.max_cost_per_call``
-  cap is logged for visibility but not enforced as a pre-call DENY here,
-  since discretion calls have no ``max_token_budget`` to bound a worst-case
-  cost estimate against.
+- Every attempt loop concern runs in the model-call kernel,
+  :func:`~butlers.core.model_call.call_model` (bu-m0vjeb.1): tier resolution,
+  spend routing rules (``trigger_source="discretion"``, bu-m95jq), the monthly
+  spend ceiling (bu-svqpzo.14), per-entry quota skips (bu-x82cy), same-tier
+  failover (bu-8fves), attempt rows and token usage. The dispatcher supplies
+  only the attempt itself and its auth-health bookkeeping. Discretion calls
+  never carry MCP tool calls (``mcp_servers={}``), so the classifier's
+  captured-tool-call gate never fires here.
 """
 
 from __future__ import annotations
@@ -61,7 +43,6 @@ import asyncio
 import logging
 import os
 import time
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -70,27 +51,19 @@ from prometheus_client import Counter
 
 from butlers.cli_auth.registry import providers_for_runtime
 from butlers.core.dispatch_intent import discretion_dispatch_intent
-from butlers.core.dispatch_outcomes import project_resolution_receipt, record_dispatch_attempt
-from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.metrics import ButlerMetrics
-from butlers.core.model_routing import (
-    Complexity,
-    SpendRoutingResult,
-    apply_spend_routing_rules,
-    check_token_quota,
-    next_same_tier_candidate,
-    record_token_usage,
-    resolve_model_with_effective_tier,
-)
+from butlers.core.model_call import AttemptOutcome, AttemptSink, CallSpec, Candidate, call_model
+from butlers.core.model_routing import Complexity
 from butlers.core.purpose_lane import (
     PURPOSE_LANE_PRIVATE_CONTENT,
     PURPOSE_LANE_STANDARD,
 )
 from butlers.core.runtimes.base import (
     RuntimeAdapter,
-    create_adapter,
     validated_session_timeout_overhead_s,
 )
+from butlers.core.runtimes.registry import AdapterRegistry
 from butlers.credential_store import CredentialStore
 
 logger = logging.getLogger(__name__)
@@ -99,7 +72,11 @@ _DEFAULT_MAX_CONCURRENT: int = 4
 _DEFAULT_TIMEOUT_S: float = 30.0
 
 _PURPOSE_LANES = frozenset({PURPOSE_LANE_STANDARD, PURPOSE_LANE_PRIVATE_CONTENT})
-_PRIVATE_CONTENT_RUNTIME_FAILURE = "private_content_runtime_failure"
+
+# bu-svqpzo.14 [decision]: the owner's monthly spend ceiling binds API fast lanes too, so a
+# discretion call is refused (and a fleet-halt quota_skip row written) once month-to-date
+# spend reaches it, exactly as a spawned session is.
+_ENFORCE_MONTHLY_CEILING: bool = True
 
 
 # bu-ur7go: discretion calls that fail with a provider/auth error (e.g. a
@@ -113,18 +90,6 @@ discretion_auth_failures_total = Counter(
     "Total discretion LLM calls that failed with a provider/auth error, by runtime_type",
     labelnames=["runtime_type"],
 )
-
-# Hard cap on same-tier failover slots per call() — each runtime invocation or
-# pre-invocation quota skip consumes one slot. It is a defensive backstop against
-# unbounded looping, mirroring Spawner._run()'s _MAX_FAILOVER_ATTEMPTS. Discretion
-# calls are cheap single-turn screens, but the cap still guards against a
-# pathological catalog (many same-tier entries all failing or quota-denied).
-_MAX_FAILOVER_ATTEMPTS: int = 5
-
-# Quota-skip logs are operational provenance, not a message/session transcript.
-# Bound the catalog-derived fields so a malformed catalog row cannot create an
-# unbounded log event; prompt, system prompt, and caller identity are never logged.
-_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS: int = 256
 
 # Ollama model families that default to thinking mode and need /no_think
 # prepended to the prompt for single-turn classification tasks.
@@ -152,6 +117,28 @@ def _minimal_env() -> dict[str, str]:
         if value:
             env[var] = value
     return env
+
+
+class _AuthHealthSink(AttemptSink):
+    """Kernel sink that also keeps the dispatcher's reactive auth-health bookkeeping."""
+
+    def __init__(self, dispatcher: DiscretionDispatcher) -> None:
+        super().__init__(dispatcher.pool, metrics=dispatcher._metrics)
+        self._dispatcher = dispatcher
+
+    def on_attempt_start(self, candidate: Candidate) -> None:
+        self._dispatcher._last_runtime_type = candidate.runtime_type
+
+    def on_runtime_failure(self, candidate: Candidate, decision: FailoverDecision) -> None:
+        # bu-ur7go: a genuine provider/auth-classified failure (e.g. a missing or revoked
+        # ~/.codex/auth.json — see bu-ofo3i) is recorded regardless of failover eligibility so
+        # connector /status and discretion_auth_failures_total surface it. bu-ujm9d gave
+        # connection refused / service unavailable / bad gateway the distinct
+        # "provider_unavailable" prefix, so a network blip does not match here.
+        if decision.reason.startswith("provider_auth_error"):
+            self._dispatcher._last_auth_failure_at = time.time()
+            self._dispatcher._last_auth_failure_reason = decision.reason
+            discretion_auth_failures_total.labels(runtime_type=candidate.runtime_type).inc()
 
 
 class DiscretionDispatcher:
@@ -207,8 +194,11 @@ class DiscretionDispatcher:
         self._timeout_s = timeout_s
         self._complexity_tier = complexity_tier
         self._purpose_lane = purpose_lane
-        self._adapter_cache: dict[str, RuntimeAdapter] = {}
-        self._adapter_cache_key: dict[str, str] = {}
+        self._adapters = AdapterRegistry(
+            codex_authority=codex_auth_authority,
+            butler_name=butler_name,
+            **({"credential_store": credential_store} if credential_store is not None else {}),
+        )
         # Reuses the same OTel instruments Spawner._run() records same-tier
         # failover to, keyed by the constructor's butler_name (not the
         # per-call identity= label) so per-connector identities (one per
@@ -239,38 +229,8 @@ class DiscretionDispatcher:
         runtime_type: str,
         provider_config: dict[str, dict] | None = None,
     ) -> RuntimeAdapter:
-        """Return a cached adapter for *runtime_type*, creating via
-        :func:`~butlers.core.runtimes.base.create_adapter` on cache miss.
-        """
-        cfg_str = str(provider_config) if provider_config else ""
-        if runtime_type in self._adapter_cache:
-            if self._adapter_cache_key.get(runtime_type, "") == cfg_str:
-                return self._adapter_cache[runtime_type]
-
-        constructor_kwargs: dict[str, Any] = {"butler_name": self._butler_name}
-        if runtime_type == "codex":
-            if self._codex_auth_authority is not None:
-                constructor_kwargs["credential_store"] = self._codex_auth_authority
-        elif self._credential_store is not None:
-            constructor_kwargs["credential_store"] = self._credential_store
-        if runtime_type == "codex" and provider_config:
-            # ``provider_config`` is a generic adapter-factory argument, not
-            # a Codex constructor option. Avoid its fallback path, which
-            # would otherwise discard the explicit Codex authority together
-            # with that unsupported option.
-            adapter = create_adapter(runtime_type, **constructor_kwargs)
-        else:
-            adapter = create_adapter(
-                runtime_type,
-                provider_config=provider_config,
-                **constructor_kwargs,
-            )
-        self._adapter_cache[runtime_type] = adapter
-        self._adapter_cache_key[runtime_type] = cfg_str
-        logger.debug(
-            "DiscretionDispatcher: lazily instantiated adapter runtime_type=%s", runtime_type
-        )
-        return adapter
+        """Return the cached adapter for *runtime_type* from the shared adapter registry."""
+        return self._adapters.for_runtime(runtime_type, provider_config)
 
     async def _resolve_provider_config(self, model_id: str) -> dict[str, dict] | None:
         """Look up provider base URL from ``public.provider_config``.
@@ -295,14 +255,10 @@ class DiscretionDispatcher:
     ) -> str:
         """Invoke the discretion-tier model with *prompt* and return the response text.
 
-        Resolution order:
-        1. Query ``public.model_catalog`` for ``Complexity.SPECIALTY``.
-        2. Raise ``RuntimeError`` if no enabled catalog entry matches.
-        3. Apply operator spend routing rules (``purpose="discretion"``) via
-           :func:`~butlers.core.model_routing.apply_spend_routing_rules`; a
-           matching rule may re-route the resolved model.
-        4. Acquire the concurrency semaphore.
-        5. Invoke the adapter with ``asyncio.wait_for`` enforcing ``timeout_s``.
+        Resolution, the spend gate, failover and accounting run in
+        :func:`~butlers.core.model_call.call_model` at ``complexity_tier``; this method
+        supplies the attempt: acquire the concurrency semaphore and invoke the adapter
+        single-turn, with no tools, under ``asyncio.wait_for``.
 
         Parameters
         ----------
@@ -332,480 +288,75 @@ class DiscretionDispatcher:
         Raises
         ------
         RuntimeError
-            If ``public.model_catalog`` contains no enabled entry for the
-            ``discretion`` complexity tier, or if every same-tier candidate
-            fails and same-tier failover is exhausted (see "Same-tier
-            failover" below). The final ``RuntimeError``'s message includes
-            ``same_tier_failover_exhausted`` so callers/logs can distinguish
-            "one attempt failed" from "every same-tier candidate failed".
+            If ``public.model_catalog`` contains no enabled entry for the tier
+            (:class:`~butlers.core.model_call.NoModelConfigured`), if the monthly spend
+            ceiling refuses the call (:class:`~butlers.core.model_call.SpendCeilingReached`),
+            or if every same-tier candidate fails or is quota-skipped; that message starts
+            with ``same_tier_failover_exhausted`` so callers and logs can tell "one attempt
+            failed" from "every same-tier candidate failed".
         asyncio.TimeoutError
-            If the adapter invocation exceeds ``timeout_s`` and no further
-            same-tier candidate is eligible or available.
-
-        Same-tier failover
-        -------------------
-        Mirrors ``Spawner._run()``'s same-tier failover loop (bu-8fves): a
-        quota-denied catalog entry is first treated as a pre-invocation skip,
-        then a failed ``adapter.invoke()`` is classified via
-        :func:`~butlers.core.failover_classifier.classify_failover_eligibility`.
-        Both kinds of transition retry against the next same-tier candidate
-        from ``public.model_catalog``
-        (:func:`~butlers.core.model_routing.next_same_tier_candidate`), up to
-        ``_MAX_FAILOVER_ATTEMPTS`` counted slots. Non-eligible runtime failures
-        (business errors) re-raise the original exception immediately — same as
-        a single-attempt call previously did. Every transition/suppression/
-        exhaustion is recorded via the same ``ButlerMetrics`` failover instruments
-        ``Spawner._run()`` uses
-        (``butlers.spawner.failover_*``), keyed by the constructor's
-        ``butler_name`` so per-connector ``identity=`` values never inflate
-        metric cardinality.
+            If the adapter invocation exceeds ``timeout_s`` and no further same-tier
+            candidate is eligible or available. Any other ineligible failure re-raises its
+            original exception.
         """
-        resolution_receipts = []
-        catalog_result = await resolve_model_with_effective_tier(
-            self._pool,
-            self._butler_name,
-            self._complexity_tier,
+        private = self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
+        spec = CallSpec(
+            butler_name=self._butler_name,
+            tier=self._complexity_tier,
             receipt_intent=discretion_dispatch_intent(
                 self._complexity_tier,
                 purpose_lane=self._purpose_lane,
             ),
-            receipt_sink=resolution_receipts,
+            # bu-m95jq: the same literal ``purpose`` the ledger row carries, so a spend rule
+            # scoped to condition={"purpose": "discretion"} matches.
+            spend_rule_trigger=self._purpose_lane if private else "discretion",
+            purpose_lane=self._purpose_lane,
+            usage_butler_name=self._butler_name if private else identity or self._butler_name,
+            usage_purpose=PURPOSE_LANE_PRIVATE_CONTENT if private else "discretion",
+            redact_failures=private,
+            enforce_ceiling=_ENFORCE_MONTHLY_CEILING,
+            caller="DiscretionDispatcher",
         )
-        if catalog_result is None:
-            raise RuntimeError(
-                f"No {self._complexity_tier} model configured in public.model_catalog. "
-                f"Add an enabled entry with complexity_tier={self._complexity_tier.value!r}."
+
+        async def attempt(adapter: RuntimeAdapter, candidate: Candidate) -> AttemptOutcome:
+            # Thinking models (qwen3 family) default to chain-of-thought mode which produces
+            # <think> tokens that get stripped, leaving empty output. Prepend /no_think to
+            # disable thinking for single-turn classification tasks like discretion.
+            effective_prompt = (
+                f"/no_think\n{prompt}" if _needs_no_think(candidate.model_id) else prompt
             )
-
-        (
-            runtime_type,
-            model_id,
-            extra_args,
-            catalog_entry_id,
-            session_timeout_s,
-            effective_tier,
-        ) = catalog_result
-        base_resolution_receipt = (
-            resolution_receipts[-1].describe() if resolution_receipts else None
-        )
-        receipt_selection_reason: str | None = None
-
-        # bu-m95jq: spend routing rules (public.spend_rules), model SELECTION
-        # override. Mirrors Spawner._run()'s integration (butlers/core/spawner.py)
-        # exactly: applied once, right after tier resolution and before the
-        # same-tier failover loop below, with trigger_source="discretion" (the
-        # same literal purpose= value record_token_usage stamps onto
-        # public.token_usage_ledger further down) so a rule scoped to
-        # condition={"purpose": "discretion"} matches. A matching rule can
-        # re-route the resolved model (action.model) and/or surface a per-call
-        # USD cap (action.max_cost_per_call); apply_spend_routing_rules fails
-        # open on any DB/lookup error, so a rules problem never blocks a
-        # discretion call. The per-call cap is not enforced as a pre-call DENY
-        # here (unlike the spawner path) because discretion calls have no
-        # analogous max_token_budget to bound a worst-case cost estimate
-        # against; it is logged for operator visibility instead.
-        routing_result = SpendRoutingResult(
-            resolved=(
-                runtime_type,
-                model_id,
-                extra_args,
-                catalog_entry_id,
-                session_timeout_s,
-            )
-        )
-        pre_rule_catalog_entry_id = catalog_entry_id
-        if catalog_entry_id is not None:
-            try:
-                routing_result = await apply_spend_routing_rules(
-                    self._pool,
-                    self._butler_name,
-                    effective_tier,
-                    (runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s),
-                    trigger_source=(
-                        self._purpose_lane
-                        if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                        else "discretion"
-                    ),
-                )
-                (
-                    runtime_type,
-                    model_id,
-                    extra_args,
-                    catalog_entry_id,
-                    session_timeout_s,
-                ) = routing_result.resolved
-                if routing_result.max_cost_per_call is not None:
-                    logger.info(
-                        "DiscretionDispatcher: spend rule set per-call cap $%.4f for "
-                        "model=%s (not enforced pre-call: no fixed token budget to "
-                        "estimate worst-case cost against)",
-                        routing_result.max_cost_per_call,
-                        model_id,
-                    )
-            except Exception:
-                logger.warning(
-                    "DiscretionDispatcher: spend routing-rule evaluation failed for "
-                    "butler=%s; keeping tier-resolved model=%s",
-                    self._butler_name,
-                    model_id,
-                    exc_info=True,
-                )
-        if catalog_entry_id != pre_rule_catalog_entry_id:
-            receipt_selection_reason = "spend_rule_override"
-
-        current_resolution_receipt = project_resolution_receipt(
-            base_resolution_receipt,
-            catalog_entry_id=catalog_entry_id,
-            runtime_type=runtime_type,
-            model_id=model_id,
-            effective_tier=effective_tier,
-            attempt_index=0,
-            selection_reason=receipt_selection_reason,
-        )
-
-        attempted_ids: list[uuid.UUID] = []
-        attempt_count = 0
-
-        while True:
-            attempt_count += 1
-            self._last_runtime_type = runtime_type
-
-            # Pre-call quota check: each catalog entry has its own availability
-            # cap. A denied entry is a pre-invocation same-tier skip, not a
-            # hard block for the logical discretion call.
-            quota = await check_token_quota(self._pool, catalog_entry_id)
-            if not quota.allowed:
-                windows_exceeded: list[str] = []
-                if quota.limit_24h is not None and quota.usage_24h >= quota.limit_24h:
-                    windows_exceeded.append(
-                        f"24h (used={quota.usage_24h}, limit={quota.limit_24h})"
-                    )
-                if quota.limit_30d is not None and quota.usage_30d >= quota.limit_30d:
-                    windows_exceeded.append(
-                        f"30d (used={quota.usage_30d}, limit={quota.limit_30d})"
-                    )
-                bounded_model_id = model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS]
-                bounded_effective_tier = effective_tier[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS]
-                bounded_windows = "; ".join(windows_exceeded)[
-                    :_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS
-                ]
-                quota_msg = (
-                    f"Token quota exhausted for catalog entry '{bounded_model_id}': "
-                    f"{bounded_windows}"
-                )
-                await record_dispatch_attempt(
-                    self._pool,
-                    catalog_entry_id=catalog_entry_id,
-                    butler=self._butler_name,
-                    outcome="quota_skip",
-                    attempt_index=attempt_count - 1,
-                    failure_reason=quota_msg,
-                    purpose_lane=self._purpose_lane,
-                    resolution_receipt=current_resolution_receipt,
-                )
-                # Discretion calls do not own a Spawner session/logical-session
-                # record. Keep skip provenance bounded and operational: catalog
-                # data + stable reason only, never prompt/system/identity content.
-                logger.info(
-                    "DiscretionDispatcher quota skip: model=%s tier=%s attempt=%d "
-                    "reason=quota_exhausted windows=%s",
-                    bounded_model_id,
-                    bounded_effective_tier,
-                    attempt_count,
-                    bounded_windows,
-                )
-                attempted_ids.append(catalog_entry_id)
-
-                if attempt_count >= _MAX_FAILOVER_ATTEMPTS:
-                    logger.warning(
-                        "DiscretionDispatcher same-tier failover: safety cap "
-                        "(_MAX_FAILOVER_ATTEMPTS=%d) reached for tier=%s after quota "
-                        "skip on model=%s",
-                        _MAX_FAILOVER_ATTEMPTS,
-                        bounded_effective_tier,
-                        bounded_model_id,
-                    )
-                    self._metrics.record_failover_exhausted(tier=bounded_effective_tier)
-                    raise RuntimeError(
-                        f"same_tier_failover_exhausted: tier={bounded_effective_tier} after "
-                        f"{attempt_count} attempt(s) (safety cap); last quota skip: {quota_msg}"
-                    )
-
-                next_candidate = await next_same_tier_candidate(
-                    self._pool,
-                    self._butler_name,
-                    effective_tier,
-                    attempted_ids,
-                )
-                if next_candidate is None:
-                    logger.warning(
-                        "DiscretionDispatcher same-tier failover exhausted for tier=%s "
-                        "after %d attempt(s); last quota skip on model=%s",
-                        bounded_effective_tier,
-                        attempt_count,
-                        bounded_model_id,
-                    )
-                    self._metrics.record_failover_exhausted(tier=bounded_effective_tier)
-                    raise RuntimeError(
-                        f"same_tier_failover_exhausted: tier={bounded_effective_tier} after "
-                        f"{attempt_count} attempt(s); last quota skip: {quota_msg}"
-                    )
-
-                (
-                    next_runtime_type,
-                    next_model_id,
-                    next_extra_args,
-                    next_catalog_entry_id,
-                    next_session_timeout_s,
-                ) = next_candidate
-                logger.info(
-                    "DiscretionDispatcher same-tier quota failover: %s -> %s "
-                    "(tier=%s, reason=quota_exhausted)",
-                    bounded_model_id,
-                    next_model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS],
-                    bounded_effective_tier,
-                )
-                self._metrics.record_failover_attempt(
-                    from_model=bounded_model_id,
-                    to_model=next_model_id[:_QUOTA_SKIP_PROVENANCE_FIELD_MAX_CHARS],
-                    reason="quota_exhausted",
-                )
-                runtime_type = next_runtime_type
-                model_id = next_model_id
-                extra_args = next_extra_args
-                catalog_entry_id = next_catalog_entry_id
-                session_timeout_s = next_session_timeout_s
-                current_resolution_receipt = project_resolution_receipt(
-                    base_resolution_receipt,
-                    catalog_entry_id=catalog_entry_id,
-                    runtime_type=runtime_type,
-                    model_id=model_id,
-                    effective_tier=effective_tier,
-                    attempt_index=attempt_count,
-                    previous_failure_class="quota_exhausted",
-                    selection_reason=receipt_selection_reason,
-                )
-                continue
-
-            # Resolve provider config for models using external providers
-            # (e.g. ollama/ prefix needs the base URL from public.provider_config)
-            provider_config = await self._resolve_provider_config(model_id)
-            adapter = self._get_or_create_adapter(runtime_type, provider_config)
-
-            # Thinking models (qwen3 family) default to chain-of-thought mode
-            # which produces <think> tokens that get stripped, leaving empty
-            # output.  Prepend /no_think to disable thinking for single-turn
-            # classification tasks like discretion.
-            effective_prompt = f"/no_think\n{prompt}" if _needs_no_think(model_id) else prompt
-
-            _usage_dict: dict | None = None
-
-            async def _invoke() -> str:
-                nonlocal _usage_dict
-                result_text, _tool_calls, _usage_dict = await adapter.invoke(
-                    prompt=effective_prompt,
-                    system_prompt=system_prompt,
-                    mcp_servers={},
-                    env=_minimal_env(),
-                    max_turns=1,
-                    model=model_id,
-                    runtime_args=extra_args or None,
-                    timeout=session_timeout_s,
-                )
-                return result_text or ""
-
-            attempt_exc: Exception | None = None
-            result: str = ""
-            attempt_started_at = time.monotonic()
-
             async with self._semaphore:
-                try:
-                    outer_timeout_s = session_timeout_s + validated_session_timeout_overhead_s(
-                        adapter
-                    )
-                    result = await asyncio.wait_for(_invoke(), timeout=outer_timeout_s)
-                except Exception as exc:  # noqa: BLE001 — classified below
-                    attempt_exc = exc
-                finally:
-                    # Record token usage best-effort (success and failure).
-                    # Tokens are consumed by the provider on invocation regardless of outcome.
-                    if _usage_dict:
-                        input_tokens = _usage_dict.get("input_tokens")
-                        output_tokens = _usage_dict.get("output_tokens")
-                        if input_tokens is not None:
-                            await record_token_usage(
-                                self._pool,
-                                catalog_entry_id=catalog_entry_id,
-                                butler_name=(
-                                    self._butler_name
-                                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                                    else identity or self._butler_name
-                                ),
-                                session_id=None,
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens or 0,
-                                purpose=(
-                                    PURPOSE_LANE_PRIVATE_CONTENT
-                                    if self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-                                    else "discretion"
-                                ),
-                                purpose_lane=self._purpose_lane,
-                            )
-                            logger.debug(
-                                "Discretion token usage recorded: in=%d out=%d model=%s",
-                                input_tokens,
-                                output_tokens or 0,
-                                model_id,
-                            )
-                        else:
-                            logger.debug(
-                                "Discretion adapter returned usage without input_tokens: %s",
-                                _usage_dict,
-                            )
-                    else:
-                        logger.debug(
-                            "Discretion adapter returned no usage data for model=%s",
-                            model_id,
-                        )
-
-            if attempt_exc is None:
-                await record_dispatch_attempt(
-                    self._pool,
-                    catalog_entry_id=catalog_entry_id,
-                    butler=self._butler_name,
-                    outcome="success",
-                    attempt_index=attempt_count - 1,
-                    duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
-                    purpose_lane=self._purpose_lane,
-                    resolution_receipt=current_resolution_receipt,
+                outer_timeout_s = candidate.session_timeout_s + (
+                    validated_session_timeout_overhead_s(adapter)
                 )
-                self._last_success_at = time.time()
-                return result
-
-            # Invocation failed: classify for same-tier failover eligibility.
-            # tool_calls is always [] — discretion calls pass mcp_servers={}, so
-            # Gate 1 (captured tool calls suppress failover) never fires here.
-            # process_info is still passed through: some gates (e.g. OpenCode's
-            # pre-tool-call APIError envelope) key off it, not just tool_calls.
-            decision = classify_failover_eligibility(
-                FailoverContext(exception=attempt_exc, process_info=adapter.last_process_info)
-            )
-            private_failure = self._purpose_lane == PURPOSE_LANE_PRIVATE_CONTENT
-            await record_dispatch_attempt(
-                self._pool,
-                catalog_entry_id=catalog_entry_id,
-                butler=self._butler_name,
-                outcome="runtime_failure",
-                attempt_index=attempt_count - 1,
-                failure_reason=(
-                    _PRIVATE_CONTENT_RUNTIME_FAILURE if private_failure else decision.reason
-                ),
-                error_code=None if private_failure else type(attempt_exc).__name__,
-                error_message=None if private_failure else str(attempt_exc),
-                duration_ms=int((time.monotonic() - attempt_started_at) * 1000),
-                purpose_lane=self._purpose_lane,
-                resolution_receipt=current_resolution_receipt,
-            )
-
-            # bu-ur7go: a genuine provider/auth-classified failure (e.g. a
-            # missing or revoked ~/.codex/auth.json — see bu-ofo3i) is
-            # recorded here regardless of failover eligibility so connector
-            # /status and discretion_auth_failures_total surface it instead of
-            # it disappearing into the generic fail-open/fail-closed path.
-            # bu-ujm9d split the classifier's marker buckets so a connection
-            # refused / service unavailable / bad gateway failure now carries
-            # the distinct "provider_unavailable" reason prefix and does NOT
-            # match this startswith check — a network blip must not flip the
-            # auth-health surface to "degraded" or increment this counter.
-            if decision.reason.startswith("provider_auth_error"):
-                self._last_auth_failure_at = time.time()
-                self._last_auth_failure_reason = decision.reason
-                discretion_auth_failures_total.labels(runtime_type=runtime_type).inc()
-
-            if not decision.eligible:
-                logger.debug(
-                    "DiscretionDispatcher failover suppressed for model=%s: %s",
-                    model_id,
-                    decision.reason,
+                result_text, _tool_calls, usage = await asyncio.wait_for(
+                    adapter.invoke(
+                        prompt=effective_prompt,
+                        system_prompt=system_prompt,
+                        mcp_servers={},
+                        env=_minimal_env(),
+                        max_turns=1,
+                        model=candidate.model_id,
+                        runtime_args=candidate.extra_args or None,
+                        timeout=candidate.session_timeout_s,
+                    ),
+                    timeout=outer_timeout_s,
                 )
-                self._metrics.record_failover_suppressed(reason=decision.reason)
-                raise attempt_exc
+            return AttemptOutcome(result_text or "", usage)
 
-            attempted_ids.append(catalog_entry_id)
+        result = await call_model(
+            self._pool,
+            spec,
+            attempt,
+            adapter_for=self._adapter_for,
+            sink=_AuthHealthSink(self),
+        )
+        self._last_success_at = time.time()
+        return result.text
 
-            if attempt_count >= _MAX_FAILOVER_ATTEMPTS:
-                logger.warning(
-                    "DiscretionDispatcher same-tier failover: safety cap "
-                    "(_MAX_FAILOVER_ATTEMPTS=%d) reached for tier=%s after attempt on model=%s",
-                    _MAX_FAILOVER_ATTEMPTS,
-                    effective_tier,
-                    model_id,
-                )
-                self._metrics.record_failover_exhausted(tier=effective_tier)
-                raise RuntimeError(
-                    f"same_tier_failover_exhausted: tier={effective_tier} after "
-                    f"{attempt_count} attempt(s) (safety cap); last error: "
-                    f"{type(attempt_exc).__name__}: {attempt_exc}"
-                ) from attempt_exc
-
-            next_candidate = await next_same_tier_candidate(
-                self._pool,
-                self._butler_name,
-                effective_tier,
-                attempted_ids,
-            )
-            if next_candidate is None:
-                logger.warning(
-                    "DiscretionDispatcher same-tier failover exhausted for tier=%s "
-                    "after %d attempt(s); last error on model=%s: %s",
-                    effective_tier,
-                    attempt_count,
-                    model_id,
-                    decision.reason,
-                )
-                self._metrics.record_failover_exhausted(tier=effective_tier)
-                raise RuntimeError(
-                    f"same_tier_failover_exhausted: tier={effective_tier} after "
-                    f"{attempt_count} attempt(s); last error: "
-                    f"{type(attempt_exc).__name__}: {attempt_exc}"
-                ) from attempt_exc
-
-            (
-                next_runtime_type,
-                next_model_id,
-                next_extra_args,
-                next_catalog_entry_id,
-                next_session_timeout_s,
-            ) = next_candidate
-            logger.info(
-                "DiscretionDispatcher same-tier failover: %s -> %s (tier=%s, reason=%s)",
-                model_id,
-                next_model_id,
-                effective_tier,
-                decision.reason,
-            )
-            self._metrics.record_failover_attempt(
-                from_model=model_id,
-                to_model=next_model_id,
-                reason=decision.reason.split(":")[0],
-            )
-
-            runtime_type = next_runtime_type
-            model_id = next_model_id
-            extra_args = next_extra_args
-            catalog_entry_id = next_catalog_entry_id
-            session_timeout_s = next_session_timeout_s
-            current_resolution_receipt = project_resolution_receipt(
-                base_resolution_receipt,
-                catalog_entry_id=catalog_entry_id,
-                runtime_type=runtime_type,
-                model_id=model_id,
-                effective_tier=effective_tier,
-                attempt_index=attempt_count,
-                previous_failure_class=decision.reason,
-                selection_reason=receipt_selection_reason,
-            )
-            # Loop again with the updated candidate.
+    async def _adapter_for(self, candidate: Candidate) -> RuntimeAdapter:
+        provider_config = await self._resolve_provider_config(candidate.model_id)
+        return self._get_or_create_adapter(candidate.runtime_type, provider_config)
 
     def get_auth_health(self) -> dict[str, Any]:
         """Lightweight, synchronous auth-health snapshot for connector /status.

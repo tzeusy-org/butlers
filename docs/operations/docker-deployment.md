@@ -4,6 +4,10 @@
 > **Audience:** Operators, DevOps engineers, anyone deploying Butlers.
 > **Prerequisites:** [Environment Config](environment-config.md), Docker and Docker Compose installed.
 
+> **Production path:** Use Helm on k3s in namespace `butlers`; see
+> [Kubernetes Deployment](kubernetes-deployment.md#deploy). This page covers the retained
+> pre-cutover off-cluster Compose path, pending deletion in bu-dss7he.14.
+>
 > **Note:** The live dev stack (namespace `butlers-dev`, database butlers-db-dev) no longer runs
 > under Compose. It runs on the homelab k3s cluster from the Helm chart; see [Kubernetes
 > Deployment](kubernetes-deployment.md). `./scripts/compose.sh` dev mode refuses to start while that
@@ -19,9 +23,11 @@ Butlers runs as a set of containers defined in the repository-root
 shared PostgreSQL database** (external to Compose, reached over the network) in
 which every butler owns its own schema; the butler daemon, the dashboard API,
 and the external-connector services all connect to it. There are **no per-butler
-containers** and **no local containerized Postgres** -- a single `butlers-up`
-container runs every butler in the roster, and the database lives on a remote
-host configured via `.env.dev` / `.env.prod`.
+containers** and **no local containerized Postgres**. Production keeps every
+butler in one `butlers-up` process. The prepared dev stage separates Switchboard
+into `butlers-control` and excludes it from the domain process, reserving one
+plus four session slots. The database lives on a remote host configured via
+`.env.dev` / `.env.prod`.
 
 The application image (`butlers-app`) is built on `butlers-base` (Python 3.12 +
 Node.js 22 + the LLM runtime CLIs + `uv`).
@@ -41,10 +47,12 @@ sets the per-mode host ports, and configures Tailscale serve:
 `--prod` and the default `dev` run under different Compose project names
 (`butlers` vs `butlers-dev`) and different host ports (see
 [Environment Variables](#environment-variables)), so both stacks can run on the
-same machine at once. For production **redeploys**, prefer `butlers deploy` over
-any direct Compose lifecycle command -- see [Production Deploys](#production-deploys-butlers-deploy).
+same machine at once against distinct non-live databases. For the retained pre-cutover
+Compose host, `butlers deploy` replaces direct Compose redeploy commands; see
+[Production Deploys](#production-deploys-butlers-deploy). Production uses the
+[Helm workflow](kubernetes-deployment.md#deploy).
 
-Ordinary dev deliberately uses only `docker-compose.yml`, so it does not need a
+Ordinary dev uses the base file plus `docker-compose.control-stage.yml`, so it does not need a
 restore-drill executor secret, endpoint, or root firewall wrapper. To start the
 privileged boundary in dev, pass `--with-restore-drill` after completing its
 operator bootstrap. Its selection is explicit: finding a configured secret does
@@ -52,9 +60,12 @@ not turn it on. `--prod` and `butlers deploy` always select the protected
 topology and fail closed when its prerequisites are missing.
 
 If an opted-in `butlers-dev` project is returned to ordinary dev, the launcher
-runs base-only `down --remove-orphans` before it starts the base stack. That
+runs the ordinary dev configuration's `down --remove-orphans` before startup. That
 removes the former relay and executor rather than leaving privileged services
-running as orphans. Keep passing `--with-restore-drill` on later dev launches
+running as orphans. For an ordinary unsplit Compose model, base-only `down --remove-orphans`
+performs that cleanup without evaluating protected configuration. The staged dev launcher
+includes the base and control-stage files instead; it still excludes the protected
+restore-drill fragment during ordinary cleanup. Keep passing `--with-restore-drill` on later dev launches
 when the protected services must remain enabled.
 
 ## Read-only protected-topology inspection
@@ -93,7 +104,7 @@ Two images, both pinned by digest where practical:
 
 1. A Go builder stage compiles the bundled helper binaries.
 2. Source (`pyproject.toml`, `src/`, `alembic.ini`, `alembic/`, …) is copied in
-   and installed with `uv sync --frozen --no-dev` (plus the `whatsapp` extra).
+   and installed with `uv sync --frozen --no-dev` (the Go WhatsApp bridge is included separately).
 3. Entrypoint `uv run --frozen --no-dev butlers`; default command
    `run --config /etc/butler`.
 
@@ -107,10 +118,17 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
 - **No database service.** PostgreSQL is external, reached via `POSTGRES_HOST` / `POSTGRES_PORT`,
   which `scripts/compose.sh` requires in `.env.dev` / `.env.prod`. One database holds every
   butler's schema plus the shared `public` schema, so there is no local data volume to manage.
-- **`butlers-up` runs every roster butler in one process** (`butlers up`); its published port is
-  the Switchboard `/health`. It keeps per-CLI runtime state in named volumes and runs
-  `apparmor:unconfined` so the Codex CLI's bubblewrap sandbox can create user namespaces. It
-  mounts only the runtime-probe verifier keyring, never the signing key.
+- **Dev runs Switchboard in `butlers-control` and domains in `butlers-up`.**
+  The launcher selects `docker-compose.control-stage.yml` (Compose >=2.24.4),
+  starts exactly one control/domain pair, and partitions the existing session
+  budget as 1+4. Control publishes the unchanged Switchboard service port and its `/health`;
+  domains use `butlers up --exclude switchboard`. The production launcher omits
+  the overlay and retains the original unsplit `butlers up` process with default capacity five,
+  whose published port is the Switchboard `/health`.
+  Each keeps per-CLI runtime state in named volumes and runs under Docker's default AppArmor
+  profile: runtime sessions launch Codex with `--dangerously-bypass-approvals-and-sandbox`, so
+  neither creates a user namespace (only `dashboard-api`'s CLI-auth sandbox does). Each mounts
+  only the runtime-probe verifier keyring, never the signing key.
 - **`dashboard-api` is the only signer.** It alone receives the runtime-probe *signing* key
   (secret, mode `0400`) plus the verifier keyring. Both mounts default to tracked, unprovisioned
   placeholders, so the stack boots on a machine that has provisioned neither --- with the control
@@ -121,6 +139,10 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   from provider inputs. The application rejects an old, malformed, or mismatched asset before
   allocating a sandbox identity, so upgrades and rollbacks use a matched application/base-image
   pair, never runtime dependency discovery or a provider-derived fallback.
+- **Host prerequisite for the dashboard CLI sandbox.** Hosts that run `dashboard-api` with
+  `kernel.apparmor_restrict_unprivileged_userns = 1` (typical of Ubuntu 24.04 or newer) must allow its Bubblewrap sandbox to create a user namespace, or the sandbox fails
+  closed and provider tests and auth-health probes run nothing. See
+  [Host prerequisite: unprivileged user namespaces](#host-prerequisite-unprivileged-user-namespaces).
 - **`frontend-dev` installs with `npm ci`** (never `npm install`), so startup never rewrites the
   tracked `frontend/package-lock.json`; `tests/scripts/test_compose_frontend_dev_lockfile_guard.py`
   holds that invariant. It runs only under the `dev` profile that `scripts/compose.sh` activates.
@@ -132,10 +154,112 @@ env (`x-postgres-env` anchor) from the sourced `.env.<mode>` file; every host po
   (`wa_bridge_socket`), shared with the Messenger butler; `connector-live-listener` runs only under
   the `audio` profile.
 - **`oauth-gate` blocks startup** on missing OAuth tokens (`--skip-oauth-check` bypasses it).
-- **`--hotreload`** swaps in `butlers-up-hotreload` and `dashboard-api-hotreload`, which
-  volume-mount `src/` for live edits.
+- **`--hotreload`** swaps in `butlers-up-hotreload`, `dashboard-api-hotreload` and,
+  in dev only, `butlers-control-hotreload`. The launcher scales the corresponding
+  baked processes to zero; it never runs two reservations for the same role.
+  These services volume-mount `src/` for live edits. See [the stage contract,
+  session network and rollback](../architecture/key-absent-control.md).
+
+## Host prerequisite: unprivileged user namespaces
+
+Applies to a host that runs the `dashboard-api` container. The dashboard's runtime-CLI
+authentication sandbox (`src/butlers/cli_auth/sandbox_platform.py`, Bubblewrap at `/usr/bin/bwrap`
+inside the image) creates a user namespace. When it cannot, it raises `SandboxUnavailableError`
+and runs nothing; there is no unsandboxed fallback, and this page does not change that. `butlers-up`
+is not affected: Codex runs there with `--dangerously-bypass-approvals-and-sandbox`.
+
+### Is this host affected?
+
+```bash
+. /etc/os-release && echo "$VERSION_ID"
+sysctl kernel.apparmor_restrict_unprivileged_userns
+```
+
+- The sysctl value decides, not the OS version. `VERSION_ID` is only a hint for where to look.
+- Affected: the sysctl prints `= 1` (typical of Ubuntu 24.04 or newer). `apparmor:unconfined` on the
+  container does not help, because the kernel restricts unconfined processes too.
+- Not affected: the sysctl is missing (`cannot stat ...`) or prints `= 0`. The k3s nodes probed on
+  2026-10-03 ran kernel 5.15 (22.04-era) and were in this group; that is a dated probe, not a current
+  node inventory (see [Kubernetes Deployment](kubernetes-deployment.md)).
+- Symptom when affected: `bwrap: setting up uid map: Permission denied`.
+
+### Recommended: a scoped AppArmor profile
+
+Grant `userns` to one named profile and run only `dashboard-api` under it, instead of loosening the
+whole host. Create `/etc/apparmor.d/butlers-dashboard-api`:
+
+```text
+abi <abi/4.0>,
+include <tunables/global>
+
+profile butlers-dashboard-api flags=(unconfined) {
+  userns,
+}
+```
+
+Load it, then confirm it is loaded:
+
+```bash
+sudo apparmor_parser -r /etc/apparmor.d/butlers-dashboard-api
+sudo aa-status | grep butlers-dashboard-api
+```
+
+Then set `BUTLERS_DASHBOARD_APPARMOR_PROFILE=butlers-dashboard-api` in the environment file the
+launcher sources (`.env.dev` / `.env.prod`); do not edit the tracked `docker-compose.yml`. The
+variable feeds the `apparmor` entry of the `security_opt` of BOTH the `dashboard-api` and
+`dashboard-api-hotreload` services (the launcher runs the hotreload one under `--hotreload`); the
+other two entries stay, and with the variable unset the entry remains `apparmor:unconfined`. The
+profile is otherwise unconfined, so the container's confinement is the same as today; only
+user-namespace creation is newly allowed, and only for these containers. Reload the stack with the
+launcher or `butlers deploy`.
+
+Verify from the container that is actually running, `dashboard-api` or `dashboard-api-hotreload`
+(this proves user-namespace creation only, not the full sandbox):
+
+```bash
+docker compose exec <running-service> /usr/bin/bwrap --unshare-user --ro-bind / / /usr/bin/true
+```
+
+No output and exit status 0 means the host is ready. `setting up uid map: Permission denied` means it
+is not. Then run a provider test from the dashboard to prove the real sandbox.
+
+The profile and the compose change were written from the Ubuntu AppArmor `userns` documentation and
+have not been run on a 24.04 host from this repository. Run the verify command before relying on
+them, and report the result.
+
+### Fallback: relax the sysctl
+
+```bash
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-butlers-userns.conf
+```
+
+This needs no compose change and is what the nightly `exact-image-sandbox` runner does
+(bu-3kyyyy), but it lowers a kernel hardening default for every process on the host.
+
+[decision] Prefer the scoped profile. It limits the grant to the one container that needs it, while
+`sysctl=0` is host-wide. The sysctl stays documented as the fallback and is correct for ephemeral CI
+runners.
+
+### Kubernetes
+
+The Helm chart runs `dashboardApi.privileged: true` instead (`deploy/helm/butlers/values.yaml`), and
+the k3s nodes probed on 2026-10-03 (kernel 5.15) predate the restriction, so this page's steps did not
+apply to them then. That probe is dated, not current: run the detection command above on any node,
+especially after an upgrade to Ubuntu 24.04 or newer, and re-check the sandbox; see
+[Kubernetes Deployment](kubernetes-deployment.md).
+
+### Provisioning
+
+Host provisioning (Ansible) is outside this repository. Put the profile file, the `apparmor_parser`
+step and, if used, the sysctl drop-in in that role for every host that runs `dashboard-api`.
 
 ## Production Deploys (`butlers deploy`)
+
+> Production uses Helm on k3s (`make -C deploy/helm/butlers ship-prod` or
+> `deploy-prod TAG=<tag>`); see [Kubernetes Deployment](kubernetes-deployment.md#deploy).
+> This section documents the pre-cutover Compose host only, pending deletion in
+> bu-dss7he.14. Helm deployment-ledger integration is separate work (bu-viat6h.5).
 
 `butlers deploy` (`src/butlers/core/deploy.py`) replaces the
 manual build-then-`up -d` ceremony with one idempotent command:

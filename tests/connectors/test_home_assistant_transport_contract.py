@@ -34,7 +34,7 @@ async def test_subscriptions_are_not_ready_when_state_changed_ack_times_out() ->
     client._connected = True
     requested: list[str] = []
 
-    async def respond(command: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+    async def respond(command: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:  # noqa: ASYNC109 - fakes the HA command_sender
         del timeout
         requested.append(command["event_type"])
         if command["event_type"] == "state_changed":

@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler.adapters.spotify import SOURCE_NAME, SpotifySessionAdapter
 from butlers.chronicler.models import Episode, Precision
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -200,9 +201,9 @@ def _build_app_with_episodes(rows: list[_Row]):
 
     app = create_app(api_key="")
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "chronicler" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "chronicler":
+            app.dependency_overrides[get_db] = lambda: db
             break
 
     return app, pool

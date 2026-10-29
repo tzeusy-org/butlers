@@ -30,9 +30,10 @@ owner's screen asserting it.  This migration adds the durable pieces:
   core_226's rationale (the Switchboard pool cannot read ``finance.bills``).
 
 Every statement is idempotent: the core chain runs once per butler schema
-against these shared ``public`` objects.  Downgrade folds new ledger outcomes
-and ``withdrawn`` rows back into the prior vocabulary before narrowing the
-constraints, then drops the columns and definers. ``insight_amendments`` is kept
+against these shared ``public`` objects. Downgrade retains the documented ledger
+outcome folds while keeping its CHECK cumulative for other schemas. Candidate
+``withdrawn`` rows fold back before narrowing that constraint, then the columns
+and definers are dropped. ``insight_amendments`` is kept
 (durable evidence; see downgrade).
 """
 
@@ -250,7 +251,8 @@ def downgrade() -> None:
     # on the next upgrade (possibly under a different owner) is not symmetric.
     # A later upgrade finds it through CREATE TABLE IF NOT EXISTS.
 
-    # Fold rows the narrower vocabularies reject into their nearest prior value.
+    # Retain the documented folds. The shared ledger CHECK stays cumulative;
+    # only the candidate status constraint returns to its prior vocabulary.
     op.execute(
         "UPDATE public.attention_ledger SET outcome = 'suppressed' WHERE outcome = 'withdrawn'"
     )
@@ -259,7 +261,7 @@ def downgrade() -> None:
         "UPDATE public.insight_candidates SET status = 'filtered' WHERE status = 'withdrawn'"
     )
     _set_check(
-        "public.attention_ledger", "chk_attention_ledger_outcome", "outcome", _OLD_LEDGER_OUTCOMES
+        "public.attention_ledger", "chk_attention_ledger_outcome", "outcome", _NEW_LEDGER_OUTCOMES
     )
     _set_check(
         "public.insight_candidates", "chk_insight_candidates_status", "status", _OLD_STATUSES

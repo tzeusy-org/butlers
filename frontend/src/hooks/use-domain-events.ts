@@ -17,14 +17,16 @@ import {
   type DomainEventDeliveriesParams,
   type DomainEventContractsParams,
 } from "@/api/index.ts";
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
+// Subscriptions and contracts are roster/migration configuration: they change on deploy, not
+// at runtime, so they load once and refresh on remount or focus (no interval).
+// Deliveries are an operational feed with no fleet event type, so they poll locally.
+const DOMAIN_EVENT_DELIVERIES_POLL_MS = 30_000;
 
 export function useDomainEventSubscriptions(params: DomainEventSubscriptionsParams = {}) {
-  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["domain-event-subscriptions", params],
     queryFn: () => listDomainEventSubscriptions(params),
-    refetchInterval,
   });
 }
 
@@ -34,20 +36,17 @@ export function useDomainEventSubscriptions(params: DomainEventSubscriptionsPara
  * current contract, which may belong to a different butler entirely.
  */
 export function useDomainEventContracts(params: DomainEventContractsParams = {}) {
-  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["domain-event-contracts", params],
     queryFn: () => listDomainEventContracts(params),
-    refetchInterval,
   });
 }
 
 export function useDomainEventDeliveries(params: DomainEventDeliveriesParams = {}) {
-  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["domain-event-deliveries", params],
     queryFn: () => listDomainEventDeliveries(params),
-    refetchInterval,
+    refetchInterval: DOMAIN_EVENT_DELIVERIES_POLL_MS,
   });
 }
 

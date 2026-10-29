@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from butlers.jobs.health_ha_reader import build_ha_environment_reader
+from butlers.testing.records import row
 
 pytestmark = pytest.mark.unit
 
@@ -37,18 +38,12 @@ def _make_pool(*, snapshot_rows: list[dict] | None = None) -> MagicMock:
     def _fetch_side_effect(sql: str, *args: Any, **kwargs: Any) -> list[Any]:
         if "ha_entity_snapshot" in sql:
             if snapshot_rows is not None:
-                return [_make_row(r) for r in snapshot_rows]
+                return [row(**r) for r in snapshot_rows]
             return []
         return []
 
     pool.fetch = AsyncMock(side_effect=_fetch_side_effect)
     return pool
-
-
-def _make_row(data: dict) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: data[key]
-    return row
 
 
 def _make_ha_ctx(ha_url: str | None, ha_token: str | None) -> MagicMock:

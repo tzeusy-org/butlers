@@ -435,7 +435,9 @@ async def test_run_secrets_lifecycle_check_delivers_on_new_transition():
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -489,7 +491,9 @@ async def test_run_secrets_lifecycle_check_suppressed_does_not_write_debounce_ma
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -537,7 +541,9 @@ async def test_run_secrets_lifecycle_check_no_recipient_counts_as_error_no_marke
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -600,7 +606,9 @@ async def test_run_secrets_lifecycle_check_delivery_error_records_failed_and_enq
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -682,7 +690,7 @@ async def test_run_secrets_lifecycle_check_delivery_error_supersedes_prior_pendi
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ),
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)),
+        patch("butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)),
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -738,7 +746,9 @@ async def test_run_secrets_lifecycle_check_direct_delivery_cancels_leftover_pend
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ),
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -784,7 +794,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_writes_ledger_row():
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -987,7 +999,9 @@ async def test_run_secrets_lifecycle_check_deferred_enqueues_envelope_not_delive
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1062,7 +1076,9 @@ async def test_run_secrets_lifecycle_check_defer_queue_failure_records_retryable
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1122,7 +1138,9 @@ async def test_run_secrets_lifecycle_check_delivers_when_delivery_preferences_pa
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1170,7 +1188,9 @@ async def test_run_secrets_lifecycle_check_defer_without_recipient_records_faile
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1237,7 +1257,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enq
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1293,7 +1315,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no
             "butlers.jobs.secrets_lifecycle.record_attention_event",
             new=AsyncMock(return_value="r-1"),
         ) as ledger_mock,
-        patch("butlers.api.routers.audit.append", new=AsyncMock(return_value=1)) as audit_append,
+        patch(
+            "butlers.jobs.secrets_lifecycle.audit_router.append", new=AsyncMock(return_value=1)
+        ) as audit_append,
     ):
         summary = await run_secrets_lifecycle_check(db)
 
@@ -1305,3 +1329,183 @@ async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no
     assert ledger_mock.await_args.kwargs["notification_ref"] is None
     audit_append.assert_not_called()
     assert summary["errors"] == 1
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_partial_transition_never_enqueues_or_resends_after_terminal_marker_fault(
+    terminal_field,
+):
+    from butlers.jobs import secrets_lifecycle as lifecycle
+
+    shared_pool, switchboard_pool = object(), object()
+    db = _FakeDatabaseManager(
+        butler_pools={"switchboard": switchboard_pool}, shared_pool=shared_pool
+    )
+    snapshot = CredentialSnapshot(
+        key="u:controlled", family="user", label="Controlled", state="expiring"
+    )
+    state = None
+    writes = 0
+
+    async def append(*args, **kwargs):
+        nonlocal state, writes
+        writes += 1
+        if writes == 1:
+            raise RuntimeError("controlled marker failure")
+        state = kwargs["note"]
+        return 1
+
+    with (
+        patch.object(
+            lifecycle, "_collect_snapshots", AsyncMock(side_effect=[[snapshot], [], [snapshot]])
+        ),
+        patch.object(
+            lifecycle, "_last_notified_state", AsyncMock(side_effect=lambda *_, **_kwargs: state)
+        ),
+        patch.object(lifecycle, "_delivery_preferences_deferral", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "_check_suppression", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "resolve_owner_telegram_recipient", AsyncMock(return_value="123")),
+        patch.object(
+            lifecycle, "_supersede_pending_retries", AsyncMock(return_value=0)
+        ) as supersede,
+        patch.object(lifecycle, "_enqueue_deferred_envelope", AsyncMock()) as enqueue,
+        patch.object(lifecycle, "record_attention_event", AsyncMock()) as ledger,
+        patch.object(lifecycle.audit_router, "append", append),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            AsyncMock(return_value={"status": "failed", terminal_field: True, "retryable": False}),
+        ) as deliver,
+    ):
+        first = await run_secrets_lifecycle_check(db)
+        second = await run_secrets_lifecycle_check(db)
+        third = await run_secrets_lifecycle_check(db)
+    assert first["delivered"] == second["delivered"] == third["delivered"] == 0
+    assert deliver.await_count == 1
+    enqueue.assert_not_awaited()
+    assert state == "expiring"
+    assert all(call.kwargs.get("required") is True for call in supersede.await_args_list)
+    assert all(call.kwargs["outcome"] == "failed" for call in ledger.await_args_list)
+    assert not lifecycle._PARTIAL_TRANSITIONS.contains(shared_pool, "u:controlled:expiring")
+
+    # A different credential on the same shared pool is a new logical transition.
+    fresh = CredentialSnapshot(key="u:fresh", family="user", label="Fresh", state="expired")
+    markers = {snapshot.key: state}
+
+    async def append_fresh(*args, **kwargs):
+        markers[kwargs["target"]] = kwargs["note"]
+        return 1
+
+    with (
+        patch.object(lifecycle, "_collect_snapshots", AsyncMock(return_value=[snapshot, fresh])),
+        patch.object(
+            lifecycle,
+            "_last_notified_state",
+            AsyncMock(side_effect=lambda p, key, **_kwargs: markers.get(key)),
+        ),
+        patch.object(lifecycle, "_delivery_preferences_deferral", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "_check_suppression", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "resolve_owner_telegram_recipient", AsyncMock(return_value="123")),
+        patch.object(lifecycle, "_supersede_pending_retries", AsyncMock(return_value=0)),
+        patch.object(lifecycle, "_enqueue_deferred_envelope", enqueue),
+        patch.object(lifecycle, "record_attention_event", ledger),
+        patch.object(lifecycle.audit_router, "append", append_fresh),
+        patch(
+            "butlers.tools.switchboard.notification.deliver.deliver",
+            AsyncMock(return_value={"status": "sent", "notification_id": "fresh"}),
+        ) as fresh_deliver,
+    ):
+        fourth = await run_secrets_lifecycle_check(db)
+        fifth = await run_secrets_lifecycle_check(db)
+    assert fourth["delivered"] == 1 and fifth["delivered"] == 0
+    fresh_deliver.assert_awaited_once()
+    assert fresh_deliver.await_args.kwargs["metadata"]["credential_key"] == fresh.key
+    assert markers == {snapshot.key: "expiring", fresh.key: "expired"}
+    enqueue.assert_not_awaited()
+    assert [c.kwargs["outcome"] for c in ledger.await_args_list] == ["failed", "delivered"]
+    assert not lifecycle._PARTIAL_TRANSITIONS.keys(shared_pool)
+
+
+@pytest.mark.parametrize("terminal_field", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_settled_terminal_transition_stays_closed_on_actual_audit_lookup_error(
+    terminal_field,
+):
+    import asyncpg
+
+    from butlers.jobs import secrets_lifecycle as lifecycle
+
+    marker = {}
+    fail_reads = False
+
+    class SharedPool:
+        async def fetchrow(self, sql, *args):
+            assert "SELECT note FROM public.audit_log" in sql
+            if fail_reads:
+                raise asyncpg.ConnectionDoesNotExistError("controlled audit lookup outage")
+            return {"note": marker[args[0]]} if args[0] in marker else None
+
+    shared = SharedPool()
+    db = _FakeDatabaseManager(butler_pools={"switchboard": object()}, shared_pool=shared)
+    old = CredentialSnapshot(
+        key="u:controlled", family="user", label="Controlled", state="expiring"
+    )
+    fresh = CredentialSnapshot(key="u:fresh", family="user", label="Fresh", state="expired")
+    collect = AsyncMock(return_value=[old])
+    deliver = AsyncMock(return_value={"status": "failed", terminal_field: True, "retryable": False})
+
+    async def append(*args, **kwargs):
+        marker[kwargs["target"]] = kwargs["note"]
+        return 1
+
+    with (
+        patch.object(lifecycle, "_collect_snapshots", collect),
+        # The actual _last_notified_state executes its real SELECT and error handling.
+        patch.object(lifecycle, "_delivery_preferences_deferral", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "_check_suppression", AsyncMock(return_value=None)),
+        patch.object(lifecycle, "resolve_owner_telegram_recipient", AsyncMock(return_value="123")),
+        patch.object(lifecycle, "_supersede_pending_retries", AsyncMock(return_value=0)),
+        patch.object(
+            lifecycle, "_enqueue_delivery_retry", AsyncMock(return_value="queued")
+        ) as retry,
+        patch.object(lifecycle, "record_attention_event", AsyncMock()) as ledger,
+        patch.object(lifecycle.audit_router, "append", append),
+        patch("butlers.tools.switchboard.notification.deliver.deliver", deliver),
+    ):
+        await lifecycle.run_secrets_lifecycle_check(db)
+        assert marker == {old.key: old.state}
+        assert not lifecycle._PARTIAL_TRANSITIONS.keys(shared)
+        await lifecycle.run_secrets_lifecycle_check(db)
+        assert deliver.await_count == 1
+        fail_reads = True
+        for _ in range(2):
+            result = await lifecycle.run_secrets_lifecycle_check(db)
+            assert result["errors"] == 1
+            assert deliver.await_count == 1
+        retry.assert_not_awaited()
+        fail_reads = False
+        await lifecycle.run_secrets_lifecycle_check(db)
+        assert deliver.await_count == 1
+        collect.return_value = [old, fresh]
+        deliver.return_value = {"status": "sent", "notification_id": "fresh"}
+        await lifecycle.run_secrets_lifecycle_check(db)
+        await lifecycle.run_secrets_lifecycle_check(db)
+        assert deliver.await_count == 2
+        assert deliver.await_args.kwargs["metadata"]["credential_key"] == fresh.key
+        assert marker == {old.key: old.state, fresh.key: fresh.state}
+        # A genuinely new state with no marker remains an ordinary retryable failure.
+        ordinary = CredentialSnapshot(
+            key="u:ordinary", family="user", label="Ordinary", state="expiring"
+        )
+        collect.return_value = [ordinary]
+        deliver.return_value = {"status": "failed", "error": "controlled ordinary failure"}
+        await lifecycle.run_secrets_lifecycle_check(db)
+        retry.assert_awaited_once()
+        assert ordinary.key not in marker
+        assert deliver.await_count == 3
+    assert [call.kwargs["outcome"] for call in ledger.await_args_list] == [
+        "failed",
+        "failed",
+        "failed",
+        "delivered",
+        "failed",
+    ]
+    assert not lifecycle._PARTIAL_TRANSITIONS.keys(shared)

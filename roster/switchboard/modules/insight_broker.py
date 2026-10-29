@@ -35,23 +35,11 @@ class InsightBrokerModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "insight_broker"
+    name = "insight_broker"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return InsightBrokerConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # insight tables are created via the shared Alembic migration for
-        # public.insight_candidates / insight_settings / insight_cooldowns /
-        # insight_engagement — no separate branch label needed here.
-        return None
 
     async def on_startup(
         self,
@@ -83,7 +71,6 @@ class InsightBrokerModule(Module):
 
         @mcp.tool()
         async def propose_insight_candidate(
-            origin_butler: str,
             priority: int,
             category: str,
             dedup_key: str,
@@ -100,10 +87,13 @@ class InsightBrokerModule(Module):
             Candidates compete for delivery slots during the daily
             ``insight-delivery-cycle`` job based on priority and global budget.
 
+            The producing butler is not an argument: the origin is the identity of
+            the daemon that registered this tool, so a session cannot attribute a
+            candidate to another butler.  A butler-scoped dedup key must name that
+            origin.
+
             Parameters
             ----------
-            origin_butler:
-                Name of the butler producing this insight.
             priority:
                 Delivery priority, 1-100. Higher = more important.
                 90-100: time-critical; 70-89: actionable-soon;
@@ -113,7 +103,8 @@ class InsightBrokerModule(Module):
             dedup_key:
                 Semantic dedup key. Format:
                 ``{category}:{entity}:{time-scope}`` (cross-butler) or
-                ``{butler}:{category}:{entity}:{time-scope}`` (butler-specific).
+                ``{butler}:{category}:{entity}:{time-scope}`` (butler-specific;
+                ``{butler}`` must be this butler's name).
             message:
                 Human-readable insight text to deliver.
             expires_at:
@@ -139,9 +130,15 @@ class InsightBrokerModule(Module):
                 or ``{"status": "error", "reason": "<description>"}`` on validation
                 failure.
             """
+            segments = dedup_key.split(":")
+            if len(segments) == 4 and segments[0] != butler_name:
+                return {
+                    "status": "error",
+                    "reason": f"a butler-scoped dedup_key must start with '{butler_name}:'",
+                }
             return await _propose(
                 self._get_pool(),
-                origin_butler=origin_butler,
+                origin_butler=butler_name,
                 priority=priority,
                 category=category,
                 dedup_key=dedup_key,

@@ -200,6 +200,39 @@ Complete Fleet recovery needs an adopted data-admission and offline write
 authority contract; PUBLIC read permission does not admit the restoring login's
 INSERT through Switchboard-only FORCE RLS.
 
+### Confidential signed-confirm history
+
+`public.pending_confirms` is durable application state. A backup preserves the
+whole immutable prompt, accepted answer, application receipt, claim and delivery
+state; losing these rows could send another prompt or apply a recorded choice
+again. The table remains protected by enabled and forced RLS. Its schema,
+ownership, policies and functions travel through ordinary `pg_dump`, while its
+rows use a separate hex-wrapped JSON staging block bound to the same exported
+snapshot as the ordinary dump and cost-claim export.
+
+The confirm export uses `confirm_backup_read`, whose condition allows only
+`CURRENT_USER` equal to the actual table owner. It does not expose prompts to
+all runtime roles or use a public unconditional read policy. Before either
+stream is published, the snapshot-bound catalogue proof requires enabled and
+forced RLS, the exact owner-conditional read expression, and no extra or
+restrictive SELECT-applying policy. Policy drift fails the backup loudly.
+
+Restore calls only `public.confirm_restore_row(jsonb)`. This fixed
+`SECURITY INVOKER` importer checks the exact current table-owner identity before
+inserting the full row, has a fixed `pg_catalog` search path, and accepts no
+relation selector. It sets `row_security=on` for replay because the ordinary
+dump deliberately sets it off. Execution grants are revoked from public and runtime roles;
+the identity check still refuses them after a later broad bootstrap grant. No
+role receives `BYPASSRLS` or a runtime restore capability.
+
+A populated confirm staging block requires membership in the source table's
+owner role and explicitly exits nonzero if membership is absent. An empty
+block needs no history replay. The existing ownership audit remains necessary
+for the rest of the dump. PostgreSQL backup/restore contracts compare complete
+source and restored confirm rows, enabled and forced RLS, ownership, and runtime
+read/import refusal. Ambiguous sends and pending application remain ambiguous
+or pending after restore; replay does not reset their fences.
+
 A restore of one of these dumps therefore reconstitutes the application schema
 and data only. Re-run the managed bootstrap procedure to restore the executor
 boundary itself.
@@ -322,8 +355,12 @@ repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
 container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
 LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
-`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
-the normal-role `NOCREATEDB` boundary.
+`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS` and
+maintains the normal-role `NOCREATEDB` boundary. Every normal role it normalizes
+(the migration login, `butler_*_rw`, `connector_writer`, the optional calendar role
+and the restore-drill roles) also ends bootstrap `NOBYPASSRLS`, so forced
+row-level security binds them; online migration admission refuses with a bounded "missing or untrusted" error
+if any of them still has `BYPASSRLS`. Rerun `scripts/init-db.sql` to repair.
 
 When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
 `verify-full`, configure a separate, noncredential CA-root source file as
@@ -381,6 +418,18 @@ the public projection, which is an availability denial: the enclosing
 retaining a partial or false recovery result. Repair the audited trigger through
 normal privileged database governance; never bypass the boundary by granting
 the private owner public-audit DML.
+
+The core audit-integrity stage (`core_279`) adds an insert-bound `writer_role`:
+the fixed definer projection above records
+`restore_drill_executor_audit_writer`, the role actually executing its INSERT.
+A normal runtime cannot supply that writer identity. Logical `actor` and event
+text remain descriptive and do not certify a restore result. The private
+executor ledger remains the sole authority. UPDATE/DELETE and TRUNCATE guards
+survive bootstrap's public-table grant replay, but the shared table owner can
+still alter those guards. Removing that hostile-owner capability belongs to
+the separate managed-topology security work; this stage does not certify it.
+See [audit writer integrity](../data_and_storage/audit-log.md) for transaction,
+rollback and stage boundaries.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared
@@ -564,6 +613,12 @@ procedures for any privilege remediation. A rollback must never restore a dump
 into the live application database or manually erase recovery evidence.
 
 ## Implementation Notes
+
+- The reviewed bootstrap prerequisite applies to all supported online migrations,
+  including ordinary dev. [The operator procedure](../data_and_storage/reviewed-bootstrap.md)
+  separates configured privileged bootstrap from normal migrations and genuine
+  core195 repair. It neither enables this executor nor supplies its secret;
+  existing protected downgrade and data-preservation constraints still apply.
 
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the

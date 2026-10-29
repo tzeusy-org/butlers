@@ -82,6 +82,7 @@ from butlers.context_bus import (
     ContextSignal,
     clear_context,
     is_user_in_context,
+    set_calendar_context,
     set_context,
 )
 from butlers.core.approvals_policy import (
@@ -173,18 +174,14 @@ async def run_calendar_context_producer(
     signal = classify_calendar_signal(row["title"])
     other = ContextSignal.focused if signal is ContextSignal.meeting else ContextSignal.meeting
 
-    await set_context(
-        pool,
-        butler_name="general",
-        signal_type=signal.value,
-        value=row["title"],
-        expires_at=row["ends_at"],
-        confidence=1.0,
-        metadata={"source": "calendar", "title": row["title"]},
-    )
+    await set_calendar_context(pool, signal.value, expires_at=row["ends_at"])
     # Clear the sibling signal so a meeting→focus transition is immediate.
     await clear_context(pool, "general", other.value)
-    return {"signal": signal.value, "value": row["title"], "cleared": [other.value]}
+    return {
+        "signal": signal.value,
+        "value": "focused" if signal is ContextSignal.focused else "busy",
+        "cleared": [other.value],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -741,10 +738,10 @@ async def run_sleep_window_context_producer(
         policy = await get_approvals_policy_quiet_hours(pool)
     except Exception:
         logger.warning(
-            "sleep producer: approvals_policy unavailable; clearing sleep signal",
+            "sleep producer: approvals_policy unavailable; retaining only original bounded state",
             exc_info=True,
         )
-        policy = None
+        return {"signal": None, "reason": "policy_unavailable"}
 
     now = datetime.now(UTC)
     expires_at = policy_quiet_hours_deliver_at(policy, now=now)

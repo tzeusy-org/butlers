@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Fleet-Halt Visibility
@@ -8,6 +13,15 @@ page, not silence. The ceiling is enforced by `check_monthly_ceiling` / the
 spawner, which writes an `outcome='quota_skip'` row to
 `public.model_dispatch_attempts` with `failure_reason` starting `Monthly spend
 ceiling reached` for every denied dispatch.
+
+In the goal runtime, the deterministic goal runner SHALL retain the existing
+ceiling decision, canonical attempt evidence and same-transaction fleet-halt
+attention producer. Switchboard alone SHALL deliver the episode as service-plane
+work. No model function, goal or ledger observer gains a second delivery path.
+All once-per-window, failure-isolation, owner-control and degraded-source
+scenarios below remain mandatory. Existing session doors describe retained
+pre-switch history; this amendment SHALL NOT invent goal/region URLs or alter
+the separately governed D19 owner-surface switch.
 
 ID: REQ-dashboard-spend-dashboard-001
 Source: dashboard-spend-dashboard Fleet-Halt Visibility; runtime-attention-outbox REQ-runtime-attention-outbox-001; design.md Decisions 3-5

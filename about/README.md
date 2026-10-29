@@ -1,10 +1,15 @@
 # About Butlers
 
-Butlers is a personal AI agent system where specialized, long-running daemons
-handle the recurring mental labor of daily life. Each butler owns a life
-domain — health, relationships, finance, education, travel, home, lifestyle —
-and acts autonomously on schedules and in response to incoming messages. One
-user. One instance. Full sovereignty over data, credentials, and LLM keys.
+Butlers absorbs the recurring mental labor of one person's life through durable
+domain responsibilities, proactive work, and goal-directed assistance. One user.
+One instance. Full sovereignty over data, credentials, and model choices.
+
+Domain butlers own data, schedules, obligations, and capabilities. Reasoning
+happens in goals: one generalist lead per goal, searchable capabilities, and
+optional focused children at maximum depth one, all brokered by the Switchboard
+control plane ([RFC 0038](legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)).
+The code reaches this design in one hard cutover; until it lands, the
+classify-and-route runtime is frozen to fixes only.
 
 ## The Five-Pillar Knowledge Architecture
 
@@ -105,12 +110,15 @@ a contract test that projects from the highest-level artefact downward.
 - **One daemon per `roster/` entry** — staffers carry `type = "staffer"` in
   `butler.toml`, the rest are domain butlers; each is a FastMCP server on its
   own port.
-- **MCP everywhere** — LLM-to-butler, butler-to-butler (via Switchboard),
-  and connector-to-Switchboard all use MCP.
+- **MCP everywhere** — session-to-capability (via the Switchboard broker),
+  butler-to-butler (via Switchboard), and connector-to-Switchboard all use MCP.
+- **Goals, not routes** — every reasoning session is a lead or depth-1 child
+  of an admitted goal, with authority derived from the goal's origin.
 - **Single PostgreSQL, per-butler schemas** — Logical isolation without
   physical overhead. Cross-butler data lives in the `public` schema.
 - **Deterministic daemon, intelligent sessions** — The daemon manages
-  lifecycle; reasoning happens exclusively in ephemeral LLM sessions.
+  lifecycle; reasoning happens exclusively in ephemeral, sandboxed goal
+  invocations.
 - **Modules only add tools** — They never touch core infrastructure.
 
 For a narrative introduction, see the

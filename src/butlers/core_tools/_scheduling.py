@@ -43,7 +43,7 @@ def _resolve_schedule_tool_id(
 # Imported in notify tool - re-exported here for use by _notifications.py
 # (the type alias must match what daemon.py defines)
 try:
-    from butlers.tools.switchboard.routing.contracts import parse_notify_request  # noqa: F401
+    from butlers.tools.switchboard.contracts import parse_notify_request  # noqa: F401
 except ImportError:
     pass
 

@@ -21,6 +21,7 @@ import pytest
 from butlers.core.ingestion_events import ingestion_event_replay_request
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -247,20 +248,23 @@ async def _wait_until_replay_waits_on_registry_lock(
     """Prove the replay task is blocked on the live policy row lock for one mutation."""
     async with pool.acquire() as observer:
         async with asyncio.timeout(5):
-            while not await observer.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM pg_stat_activity
-                    WHERE datname = current_database()
-                      AND wait_event_type = 'Lock'
-                      AND wait_event = 'transactionid'
-                      AND query LIKE $1
+
+            async def _condition_met() -> bool:
+                return await observer.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_stat_activity
+                        WHERE datname = current_database()
+                          AND wait_event_type = 'Lock'
+                          AND wait_event = 'transactionid'
+                          AND query LIKE $1
+                    )
+                    """,
+                    f"%UPDATE {update_relation}%",
                 )
-                """,
-                f"%UPDATE {update_relation}%",
-            ):
-                await asyncio.sleep(0.01)
+
+            await poll_until(_condition_met, interval_s=0.01)
 
 
 @pytest.mark.parametrize("policy", ["email", "missing", "unsafe", "ambiguous"])

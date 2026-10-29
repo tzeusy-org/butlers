@@ -13,7 +13,6 @@ import errno
 import logging
 import shutil
 import uuid
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -33,6 +32,7 @@ from butlers.core_tools._domain_events import (
     run_domain_event_reconciliation_sweep,
 )
 from butlers.db import register_jsonb_codec
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = pytest.mark.unit
@@ -80,9 +80,8 @@ class _SweepLockPool:
             side_effect=[lock_acquired, True] if lock_acquired else [False]
         )
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self.connection
+    def acquire(self):
+        return AsyncCtx(self.connection)
 
 
 # ---------------------------------------------------------------------------

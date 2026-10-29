@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 import uuid
 from contextlib import contextmanager
@@ -36,15 +36,7 @@ from butlers.tools.relationship.relationship_assert_fact import (
 
 def _load_relationship_api_models():  # noqa: ANN201
     """Return the roster/relationship/api/models module (loaded on demand)."""
-    module_name = "relationship_api_models"
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-    models_path = Path(__file__).parents[2] / "roster" / "relationship" / "api" / "models.py"
-    spec = importlib.util.spec_from_file_location(module_name, models_path)
-    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    return module
+    return importlib.import_module("butlers.api._roster.relationship.models")
 
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
@@ -158,6 +150,14 @@ async def test_supersession_insert_is_conflict_safe() -> None:
             "conf": 1.0,
             "verified": False,
             "last_seen": None,
+            "content_authority": None,
+            "authority_entity_id": None,
+            "authority_original_entity_id": None,
+            "authority_entity_created_at": None,
+            "confirmed_by_entity_id": None,
+            "confirmed_by_original_entity_id": None,
+            "confirmed_at": None,
+            "confirmation_source": None,
             **TemporalPacket().wire(),
         }
     )
@@ -389,19 +389,16 @@ def test_mcp_tool_wrapper_has_no_src_parameter() -> None:
     # We use a lazy importlib load that mirrors what conftest does so that
     # this test remains isolated and does not depend on module registration
     # order.
-    module_name = "relationship_mcp_tools_wrapper"
+    module_name = "butlers.modules._roster_relationship.tools"
     if module_name not in sys.modules:
         tools_path = Path(__file__).parents[2] / "roster" / "relationship" / "modules" / "tools.py"
-        spec = importlib.util.spec_from_file_location(module_name, tools_path)
-        mod = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
-        sys.modules[module_name] = mod
         try:
-            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            importlib.import_module(module_name)
         except Exception:
             # The module performs DB/pool setup on exec which may fail in unit
             # tests.  We only need the source text, so fall back to a raw
             # source inspection if exec fails.
-            del sys.modules[module_name]
+            sys.modules.pop(module_name, None)
             source = tools_path.read_text()
             assert "src: str" not in source or "src=.relationship." in source, (
                 "relationship MCP tools wrapper unexpectedly exposes 'src' as a "

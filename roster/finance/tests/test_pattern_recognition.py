@@ -26,6 +26,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+_THIS_FILE = Path(__file__).resolve()
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -170,13 +172,8 @@ async def _insert_subscription(
 def _load_finance_008_upgrade_sql() -> tuple[str, ...]:
     """Load the finance_008 migration's UPGRADE_SQL (module name starts with a digit)."""
     import importlib.util
-    from pathlib import Path
 
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "008_recurring_groups_schema_reconcile.py"
-    )
+    path = _THIS_FILE.parents[1] / "migrations" / "008_recurring_groups_schema_reconcile.py"
     spec = importlib.util.spec_from_file_location("finance_008_migration", path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
@@ -187,7 +184,7 @@ def _load_finance_008_upgrade_sql() -> tuple[str, ...]:
 async def _apply_core_expected_signal_migrations(pool) -> None:
     import importlib.util
 
-    root = Path(__file__).resolve().parents[3]
+    root = _THIS_FILE.parents[3]
     for filename in (
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",

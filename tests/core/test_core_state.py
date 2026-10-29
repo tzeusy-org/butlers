@@ -8,6 +8,7 @@ import shutil
 import asyncpg
 import pytest
 
+from butlers.core.state import CASConflictError
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
@@ -144,11 +145,11 @@ async def test_state_cas_success_and_failure(pool):
     assert new_v == v1 + 1
 
     # Wrong version fails
-    with pytest.raises(Exception):
+    with pytest.raises(CASConflictError):
         await state_compare_and_set(pool, "cas-key", v1, "bad")
 
     # Missing key fails
-    with pytest.raises(Exception):
+    with pytest.raises(CASConflictError):
         await state_compare_and_set(pool, "no-such-key", 1, "val")
 
 

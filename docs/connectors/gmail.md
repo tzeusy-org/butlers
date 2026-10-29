@@ -44,7 +44,8 @@ Polling mode is simpler to set up (no Pub/Sub topic or webhook endpoint required
 | `source.provider` | `gmail` |
 | `source.endpoint_identity` | Auto-resolved from account email (e.g., `gmail:user:alice@gmail.com`) |
 | `event.external_event_id` | Gmail message ID |
-| `event.external_thread_id` | Gmail `threadId` |
+| `event.external_conversation_id` | Gmail `threadId` |
+| `event.reply_target_ref` | Gmail `threadId` |
 | `event.observed_at` | Connector-observed timestamp (RFC 3339) |
 | `sender.identity` | Normalized sender address from `From` header |
 | `payload.raw` | Full Gmail API payload (or safe subset per policy) |
@@ -76,6 +77,52 @@ The connector applies tiered processing rules before submission (see [Gmail Inge
 Tier assignment happens in the connector before classification: the label filter, then
 connector-scope and global-scope Switchboard ingestion rules evaluated in priority order. Default is
 Tier 1 for safety.
+
+## Bearer-Material Scrubbing
+
+The Gmail connector withholds detected one-time authentication codes (OTPs),
+password-reset links, and magic links before submitting Tier 1 or Tier 2
+`ingest.v1` envelopes. It scrubs subject-derived text, normalized body text, and
+base64url-decoded Gmail `body.data` inside `payload.raw`, re-encoding changed
+body blobs. The shared detector also handles Telegram login codes from service
+sender `777000`, described in the [Telegram user-client guide](telegram-user-client.md#bearer-material-scrubbing).
+
+| Detected material | Replacement in message content |
+|---|---|
+| One-time authentication code, including a Telegram login code | `[auth-code withheld: <provider-domain>]` |
+| Password-reset link | `[reset-link withheld: <provider-domain>]` |
+| Magic link | `[magic-link withheld: <provider-domain>]` |
+
+For codes, the domain label comes from the sender's email domain, or the source
+provider when there is no email domain (`telegram` for Telegram service codes).
+For links, it is the URL hostname. These are descriptive labels, not proof of
+sender identity. The original code or URL is replaced, while the rest of the
+message remains. Already-scrubbed placeholders are unchanged on repeat passes.
+Ordinary numbers, dates, and amounts outside authentication wording or bearer
+links survive. The known exception is aggressive Telegram `777000` handling:
+code-shaped 4–8 digit numbers in message text can be withheld even when benign;
+date/time-shaped runs are excluded from that aggressive numeric rule.
+
+Scrubbing rewrites message content, never envelope metadata: existing `source`,
+`event`, `sender`, and `control` identities, event IDs, timestamps, and idempotency
+keys are preserved. A hit adds `control.bearer_scrubbed=true`. Switchboard scrubs
+again before inbox persistence and records `raw_payload.bearer_artifacts` with
+`kind`, `provider_domain`, and `observed_at` (plus `expires_hint` when detected),
+without storing the withheld value. The scrub does not change the existing
+policy decision.
+
+If the Switchboard scrubber raises, it fails closed: the persisted row has
+lifecycle state `metadata_ref` and `raw_payload.payload.raw=null`. Both
+`raw_payload.payload.normalized_text` and `message_inbox.normalized_text` contain
+`[content withheld: bearer scrub failed]` instead of the original text. It sets `control.bearer_scrubbed=true` and
+`control.bearer_scrub_failed=true`; envelope metadata remains intact.
+
+This describes the connector envelope and Switchboard inbox scrub, as required
+by [Bearer material never persists](../../openspec/specs/connector-gmail/spec.md#requirement-bearer-material-never-persists)
+and the [security constraints](../../about/heart-and-soul/security.md#constraints).
+The [custody audit](bearer-material-custody-audit.md) separately records gaps in
+filtered payloads/replay, earlier prompts/logs, alternate writers, and readers;
+this scrub is not evidence that those paths or a deployed fleet are protected.
 
 ## Label Filtering
 
@@ -125,6 +172,22 @@ The Gmail connector implements the optional backfill polling protocol for dashbo
 - Tracks estimated cost and reports via `cost_spent_cents` on each progress call.
 - Switchboard enforces the job's `daily_cost_cap_cents` and transitions it to `cost_capped` when
   exceeded (`roster/switchboard/tools/backfill/connector.py`).
+
+### Lifecycle Controls
+
+HTTP and MCP pause/cancel/resume delegate to
+`roster/switchboard/tools/backfill/controls.py`. Each transition compares the
+observed status atomically, so a concurrent terminal transition cannot be overwritten.
+
+| Action | Allowed current states | Result | Idempotent current state |
+| --- | --- | --- | --- |
+| Pause | pending, active | paused | paused |
+| Cancel | pending, active, paused, error, cost_capped | cancelled (sets completed_at) | cancelled |
+| Resume | paused | pending | none |
+
+Resume refuses cost-capped jobs on both surfaces; it cannot bypass the cost cap.
+HTTP malformed IDs return 422, missing jobs 404, state conflicts 409 and database
+failures 503. Successful HTTP lifecycle requests retain dashboard audit events.
 
 ### Backfill Modes
 
@@ -235,16 +298,27 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 
 ## Implementation Notes
 
-- `run_gmail_connector` is DB-only for Google OAuth credentials: it reads `butler_secrets` and never
-  falls back to credential env vars; `GmailConnectorConfig.from_env(...)` takes the DB credentials
-  as arguments and reads only non-secret env. The DB lookup
-  (`src/butlers/connectors/gmail.py::_resolve_gmail_credentials_from_db`) tries the
-  local schema, then the shared schema (`BUTLER_SHARED_DB_SCHEMA`, default `public`), each pool with
-  a schema-scoped `search_path`; without it `butler_secrets` does not resolve in the one-DB topology.
+- `run_gmail_connector` discovers accounts from `public.google_accounts` and resolves each account's
+  Google OAuth credentials through `GmailConnectorManager._resolve_credentials_for_account` and
+  `load_google_credentials`. App credentials come from `butler_secrets` through `CredentialStore`;
+  the refresh token comes from the account's companion entity in `public.entity_info`. OAuth
+  credentials never fall back to environment variables. `_create_shared_db_pool` keeps the
+  schema-scoped `search_path` needed to resolve the credential store in the one-DB topology.
 - `src/butlers/connectors/gmail.py::_format_google_error` is the connector's one parser for Google
   API and OAuth error payloads. Log its compact
   `code/status/reason/message` for `history.list` 404 cursor resets, other non-2xx `history.list`
   responses and failed token refreshes, before raising; never dump full payloads.
+- Source health reports actionable reauthorization only for a literal top-level
+  `invalid_grant` or `unauthorized_client` on the actual response-bound POST to
+  `https://oauth2.googleapis.com/token`. Data-API failures and missing or ambiguous request
+  provenance remain visible as degraded health, with Gmail's existing diagnostics and
+  successful reset. This classification never changes shared accounts or credentials.
+
+### Known-contact query evidence
+
+`GmailPolicyEvaluator` exposes an immutable local snapshot independently of provider health. Successful empty and nonempty queries are loaded; no pool, failed/cancelled unfinished queries and the existing 900-second TTL are unknown. Failed refreshes retain cached contacts and their last successful timestamp for lower-bound positive classification. A per-message assigner and frozen `drop_context.classification` use one snapshot. Its UTC observation is captured at the drop decision, independently of Gmail `internalDate`, `event.observed_at`, and the persisted `received_at` window. All three drop paths retain `raw={}`; replay removes the entire context.
+
+When heartbeat is enabled, startup attempts an unloaded publication with a two-second bound before provider work. Refresh transitions publish through the same serialized source-owned heartbeat path. Query success remains loaded when publication fails; publication never changes priority tiers, rules or provider/auth health. Current dashboard availability separately requires all last-admitted applicable runtime accounts plus complete historical classification. No server read can discover an entirely unobserved restart or failed send. Prior admitted evidence remains bounded by 300-second heartbeat and 900-second query freshness; source delivery does not imply deployment or provider verification.
 
 ## Related Pages
 
@@ -254,3 +328,13 @@ curl -s "http://localhost:9090/api/v1/query?query=butlers_connector_gmail_priori
 - [Attachment Handling](attachment-handling.md) -- Attachment fetch policy
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+### Shared configuration parsing
+
+The process manager and legacy runtime loader share parser stages for their
+fifteen common non-secret settings. Each keeps its original boolean spellings
+and validation order. Four runtime-only settings and the process-only account
+rescan interval remain separate. Account metadata overrides process defaults;
+OAuth credentials still come from the injected DB-backed resolver, and account
+workers keep health port zero. Static provider `gmail` and channel `email` come
+from the canonical descriptor, not identity environment variables.

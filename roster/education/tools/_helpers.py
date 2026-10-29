@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
@@ -34,3 +35,15 @@ def _row_to_dict(row: asyncpg.Record) -> dict[str, Any]:
             except (json.JSONDecodeError, ValueError):
                 pass
     return d
+
+
+@asynccontextmanager
+async def _transaction(pool):
+    """Use one acquisition, or a savepoint when already on a connection."""
+    if hasattr(pool, "acquire"):
+        async with pool.acquire() as connection:
+            async with connection.transaction():
+                yield connection
+    else:
+        async with pool.transaction():
+            yield pool

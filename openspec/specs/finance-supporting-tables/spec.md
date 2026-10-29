@@ -118,12 +118,28 @@ The `finance.budgets` table SHALL store budget targets with configurable thresho
 
 #### Scenario: Budget structure
 - **WHEN** a budget is created
-- **THEN** it SHALL include `category TEXT`, `amount NUMERIC(14,2)`, `currency CHAR(3)` (default `'USD'`), `period TEXT` (one of `'weekly'`, `'monthly'`, `'yearly'`, `'daily'`, enforced by the `budgets_period_check` CHECK constraint in `finance_006`), `warn_threshold FLOAT` (default `0.8`), and `alert_threshold FLOAT` (default `1.0`)
+- **THEN** it SHALL include `category TEXT`, `amount NUMERIC(14,2)`, `currency CHAR(3)` (default `'USD'`), `period TEXT` (one of `'weekly'`, `'monthly'`, `'yearly'`, `'daily'`, `'quarterly'`, enforced by the `budgets_period_check` CHECK constraint installed in `finance_006` and widened in `finance_016`), `warn_threshold FLOAT` (default `0.8`), and `alert_threshold FLOAT` (default `1.0`)
 
 #### Scenario: Budget uniqueness
 - **WHEN** a budget is created for a category and period
 - **THEN** `uq_budget_category_period` SHALL enforce `UNIQUE (category, period)` with partial condition `WHERE is_active = true`
 - **AND** deactivated budgets SHALL NOT conflict with new active budgets
+
+#### Scenario: Budget period repair preserves existing data
+- **WHEN** a database with the historical `finance_006` daily/weekly/monthly/yearly CHECK is upgraded through the forward budget period repair
+- **THEN** the current CHECK SHALL additionally admit `quarterly` without deleting, renaming, converting or changing any active or inactive budget row
+- **AND** the category foreign key and partial active-budget uniqueness SHALL remain enforced
+- **AND** fresh migration replay and repeated repair application SHALL produce the same supported periods and preserve existing rows
+
+#### Scenario: Budget period downgrade refuses quarterly history
+- **WHEN** the period repair is downgraded while any quarterly budget exists, including inactive history
+- **THEN** downgrade SHALL refuse with an actionable error and preserve all data, the current CHECK and the migration revision stamp
+- **AND** concurrent writes SHALL NOT permit a quarterly row to escape this refusal and constraint enforcement
+
+#### Scenario: Budget period downgrade preserves legacy periods
+- **WHEN** the period repair is downgraded and no quarterly row exists
+- **THEN** it SHALL restore precisely the historical daily/weekly/monthly/yearly CHECK without changing existing rows
+- **AND** quarterly SHALL again be rejected by the database until re-upgrade restores quarterly admission
 
 ### Requirement: Transaction corrections audit trail
 The `finance.transaction_corrections` table SHALL record all edits to transaction data for audit compliance.
@@ -208,3 +224,41 @@ Source: RFC 0012 §Expected-signal producer provenance; RFC 0029 §Initial adopt
   subscription table rather than that property fact
 - **AND** any future recurrence consumer of the property fact MUST classify it as `unmeasurable`
   unless reserved server producer and endpoint attestation is present
+
+### Requirement: Finance field origins and claims survive atomic writes and rollback
+
+Finance MUST persist server-derived origins and value revisions for renewal date, complete amount/currency pair, service and bill payee, with immutable claims and confirmation epochs for date and price disagreements. Missing legacy evidence SHALL be extracted, and migration or rollback MUST NOT erase the authority or unresolved history needed to prevent the two security gaps.
+
+ID: REQ-finance-supporting-tables-002
+Source: bu-svqpzo.19 proposed storage contract; RFC 0038 D6; REQ-finance-supporting-tables-001
+Scope: v1-mandatory
+
+#### Scenario: W07 Concurrent owner and extracted writers preserve one logical subscription
+
+- **WHEN** owner and extracted updates race in either order, including concurrent creation for the same service and frequency
+- **THEN** one logical subscription MUST remain and its baseline, complete pair, origins, revision and claims MUST commit atomically
+- **AND** owner state MUST survive; a subsequent extracted disagreement MAY add pending history but MUST NOT replace owner state; an independent committed read MUST observe no partial pair
+
+#### Scenario: W08 Missing or forged attestation cannot manufacture owner origin
+
+- **WHEN** server-held writer attestation is absent, unreadable or contradicted by caller metadata or arguments
+- **THEN** the write MUST be extracted and MUST NOT derive owner authority from a caller source label
+- **AND** field origins MUST NOT confer expected-signal producer measurability or replace the separate endpoint-attestation contract
+
+#### Scenario: W12 Identical price replay adds no authority
+
+- **WHEN** the same complete price pair and source binding are replayed in the same confirmation epoch
+- **THEN** the stored claim MUST be idempotent and MUST NOT create another warning or promote its origin
+- **AND** distinct claims MUST retain their exact typed values and available authenticated source bindings; a missing source binding MUST NOT be invented
+
+#### Scenario: W15 Legacy values retain content without fabricated origin
+
+- **WHEN** existing subscription or bill rows are upgraded or read without trustworthy per-field origins
+- **THEN** date, price pair and display-name origins MUST read as extracted while raw values remain intact
+- **AND** last-writer metadata MUST NOT upgrade them; existing cancellation URL and status provenance from finance_017 MUST remain unchanged
+
+#### Scenario: W16 Rollback preserves unresolved and owner authority
+
+- **WHEN** upgrade, reapply, failed transaction, downgrade or a concurrent writer encounters stored field origins or claims
+- **THEN** history, owner state and earlier-warning eligibility MUST survive; an unsafe downgrade MUST refuse atomically or retain the required data and enforcement
+- **AND** rollback MUST NOT restore an unprotected writer or active extracted rendering; roles, row ownership and existing expected-signal authority MUST remain unchanged

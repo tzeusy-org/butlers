@@ -180,13 +180,22 @@ function SymptomRow({
 // SymptomTracker
 // ---------------------------------------------------------------------------
 
-export default function SymptomTracker() {
-  const [nameFilter, setNameFilter] = useState("");
+export default function SymptomTracker({ nameFromQuery = "" }: { nameFromQuery?: string }) {
+  const [nameFilter, setNameFilter] = useState(nameFromQuery);
+  const [previousQueryName, setPreviousQueryName] = useState(nameFromQuery);
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [page, setPage] = useState(0);
   // `null` = closed; `undefined` = add mode; a Symptom = edit mode.
   const [formTarget, setFormTarget] = useState<Symptom | null | undefined>(null);
+
+  // Follow navigation to a different insight without erasing manual edits on
+  // ordinary data refreshes or unrelated page rerenders.
+  if (previousQueryName !== nameFromQuery) {
+    setPreviousQueryName(nameFromQuery);
+    setNameFilter(nameFromQuery);
+    setPage(0);
+  }
 
   const params: SymptomParams = {
     name: nameFilter || undefined,

@@ -15,6 +15,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -69,9 +70,9 @@ def _app_with_mock_db(app: FastAPI, *, fetch_rows=None, fetchval_result=0, pool_
     else:
         mock_db.pool.side_effect = KeyError("No pool for butler: home")
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "home" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "home":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool

@@ -15,11 +15,10 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.api.routers.qa import (
     _fetch_model_from_catalog,
     _get_credentials_status_fn,
-    _get_db_manager,
     _get_force_patrol_fn,
     _get_staffer_info_fn,
     make_credentials_status_fn,
@@ -205,7 +204,7 @@ def _build_app(
     mock_db.credential_shared_pool.return_value = mock_pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager or _make_mcp_manager()
     return app, mock_pool
 
@@ -325,7 +324,7 @@ def _make_503_app() -> Any:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.side_effect = KeyError("no pool")
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -368,15 +367,15 @@ class TestCredentialsStatusProductionWiring:
     async def test_summary_reports_real_credentials_via_daemon_wiring(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Exercise the real wire_db_dependencies path (not a test override):
+        """Exercise the real wire_qa_credentials path (not a test override):
         gh token + author name present, author email absent → endpoint reflects
         the live CredentialStore presence booleans, no secret values leaked."""
         from butlers.api import deps as deps_mod
-        from butlers.api.deps import wire_db_dependencies
+        from butlers.api.deps import wire_qa_credentials
         from butlers.api.routers import qa as qa_router
 
         app, pool = _build_summary_app()
-        mock_db = app.dependency_overrides[_get_db_manager]()
+        mock_db = app.dependency_overrides[get_db]()
 
         _wire_credential_acquire(pool, {"BUTLERS_QA_GH_TOKEN", "BUTLERS_QA_GIT_AUTHOR_NAME"})
 
@@ -390,7 +389,7 @@ class TestCredentialsStatusProductionWiring:
         )
 
         # Run the SAME wiring the daemon/app runs at startup.
-        wire_db_dependencies(app)
+        wire_qa_credentials(app)
         assert qa_router._get_credentials_status_fn in app.dependency_overrides
 
         creds = (await _call(app, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
@@ -415,14 +414,14 @@ class TestCredentialsStatusProductionWiring:
         reports gh_token_present=False and the endpoint adds a provisioning
         hint (honest "missing" rather than null "unknown")."""
         from butlers.api import deps as deps_mod
-        from butlers.api.deps import wire_db_dependencies
+        from butlers.api.deps import wire_qa_credentials
 
         app, pool = _build_summary_app()
-        mock_db = app.dependency_overrides[_get_db_manager]()
+        mock_db = app.dependency_overrides[get_db]()
         _wire_credential_acquire(pool, set())  # nothing present
         monkeypatch.setattr(deps_mod, "_db_manager", mock_db)
 
-        wire_db_dependencies(app)
+        wire_qa_credentials(app)
 
         creds = (await _call(app, "get", "/api/qa/summary")).json()["data"]["credentials_status"]
         assert creds["gh_token_present"] is False

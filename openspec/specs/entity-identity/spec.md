@@ -211,6 +211,19 @@ union. `memory_entity_merge` is a compatibility dispatch to that single authorit
 - **WHEN** both source and target have `roles = []`
 - **THEN** after merge, target MUST have `roles = []`
 
+#### Scenario: Owner source becomes a tombstone without duplicating the owner
+
+- **WHEN** the source is the singleton owner and an authorized merge keeps a different live target
+- **THEN** the target MUST receive the ordered, deduplicated role union including owner
+- **AND** the source tombstone MUST retain its other roles and MUST no longer hold owner
+- **AND** the owner singleton constraint MUST remain enabled without a committed ownerless state
+
+#### Scenario: Downstream merge failure restores the original owner
+
+- **WHEN** a merge fails after owner roles and references have moved inside its transaction
+- **THEN** the original source and target roles, metadata, aliases and references MUST be restored
+- **AND** no successful merge audit, rebind receipt cohort or post-commit fleet event MUST be emitted
+
 ### Requirement: Entity merge rebinds fleet references with durable receipts
 
 Entity merge SHALL have one relationship-owned implementation. It SHALL rebind
@@ -843,3 +856,17 @@ body or grant the unknown sender any role or approval authority.
   unresolved sender
 - **AND** the system MUST NOT claim to the owner that an entity is available
   for review
+
+### Requirement: Candidate channel reports are not resolved identity
+
+Single/bulk/normalized inbound lookup, recipient selection and owner-channel corroboration SHALL consume eligible active handles only. Third-party known-person candidates SHALL never become sender/recipient identity before actual owner adoption. Legacy NULL active handles and deterministic transitory dedup SHALL retain existing resolution; active ambiguity, canonicalization, entity liveness and temporal reader semantics SHALL remain unchanged.
+
+ID: REQ-entity-identity-003
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; adopted owner-auth request admission; existing relationship/entity contracts
+Scope: v1-mandatory
+
+#### Scenario: Candidate exclusion has a reachable positive
+
+- **WHEN** actual resolver SQL sees a candidate plus a distinct planted active/legacy-NULL handle
+- **THEN** candidate SHALL not resolve and the active companion SHALL resolve under its real role
+- **AND** genuine owner adoption SHALL make only its intended compatible survivor eligible

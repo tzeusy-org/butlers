@@ -8,7 +8,7 @@ Predicate taxonomy (mem_003):
   sleep_session, sleep_stage_summary,
   measurement_resting_hr, measurement_hrv, measurement_spo2,
   measurement_breathing_rate, measurement_steps, measurement_active_minutes,
-  measurement_vo2_max, workout_session
+  measurement_vo2_max, measurement_weight, measurement_body_fat, workout_session
 
 Fan-out: the ``activity`` resource emits two facts per envelope —
   ``measurement_steps`` and ``measurement_active_minutes`` — with distinct
@@ -71,6 +71,8 @@ _RESOURCE_TO_PREDICATES: dict[str, tuple[str, ...]] = {
     "spo2": ("measurement_spo2",),
     "breathing_rate": ("measurement_breathing_rate",),
     "vo2_max": ("measurement_vo2_max",),
+    "weight": ("measurement_weight",),
+    "body_fat": ("measurement_body_fat",),
     "workout_session": ("workout_session",),
 }
 
@@ -216,6 +218,8 @@ _PREDICATE_UNIT: dict[str, str] = {
     "measurement_steps": "steps",
     "measurement_active_minutes": "min",
     "measurement_vo2_max": "ml/kg/min",
+    "measurement_weight": "kg",
+    "measurement_body_fat": "%",
     "sleep_stage_summary": "",
 }
 
@@ -248,8 +252,22 @@ def _extract_active_minutes_metadata(raw: dict[str, Any]) -> dict[str, Any]:
     return meta
 
 
+def _extract_body_measurement_metadata(predicate: str, raw: dict[str, Any]) -> dict[str, Any]:
+    """Extract ``{value, unit}`` for a device weight / body-fat reading.
+
+    A reading without a numeric value is malformed (``{}``), unlike the daily scalars, which
+    tolerate a missing value: a stored weight with no value would shadow nothing and show blank.
+    """
+    value = raw.get("value")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return {}
+    return {"unit": _PREDICATE_UNIT[predicate], "value": value}
+
+
 def _extract_metadata(predicate: str, raw: dict[str, Any]) -> dict[str, Any]:
     """Dispatch metadata extraction to the appropriate extractor for *predicate*."""
+    if predicate in _SAMPLE_TIME_PREDICATES:
+        return _extract_body_measurement_metadata(predicate, raw)
     if predicate == "sleep_session":
         return _extract_sleep_session_metadata(raw)
     if predicate == "workout_session":
@@ -269,6 +287,10 @@ def _extract_metadata(predicate: str, raw: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+# Device body measurements keyed on the sample's physical time (bu-q7vx1q.35).
+_SAMPLE_TIME_PREDICATES: frozenset[str] = frozenset({"measurement_weight", "measurement_body_fat"})
+
+
 def _extract_valid_at(predicate: str, raw: dict[str, Any], observed_at: str) -> str:
     """Extract the most appropriate valid_at ISO string for a record.
 
@@ -278,6 +300,12 @@ def _extract_valid_at(predicate: str, raw: dict[str, Any], observed_at: str) -> 
     """
     if predicate in ("sleep_session", "sleep_stage_summary", "workout_session"):
         for key in ("startTime", "start_time", "startAt", "start"):
+            val = raw.get(key)
+            if val:
+                return str(val)
+    elif predicate in _SAMPLE_TIME_PREDICATES:
+        # Body measurement — the reading's own sample time, not a day.
+        for key in ("sampleTime", "date"):
             val = raw.get(key)
             if val:
                 return str(val)

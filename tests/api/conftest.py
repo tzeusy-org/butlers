@@ -23,11 +23,11 @@ from butlers.api.deps import (
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db,
     get_mcp_manager,
 )
 from butlers.api.routers import oauth as oauth_router
 from butlers.api.routers.butlers import _get_roster_dir
-from butlers.api.routers.notifications import _get_db_manager
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 # ---------------------------------------------------------------------------
@@ -107,7 +107,7 @@ def build_notifications_app(
 
     if app is None:
         app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool, mock_db
 
@@ -166,7 +166,7 @@ def build_stats_app(
 
     if app is None:
         app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool, mock_db
 
@@ -182,7 +182,7 @@ def build_app_missing_switchboard(app: FastAPI | None = None) -> object:
 
     if app is None:
         app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 

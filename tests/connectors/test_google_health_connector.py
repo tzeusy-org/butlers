@@ -57,7 +57,8 @@ from butlers.connectors.google_health_client import (
     exponential_backoff_delay,
 )
 from butlers.google_account_registry import GoogleAccount, HealthScopedAccount
-from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+from butlers.testing.clock import FakeClock
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 _OWNER_EMAIL = "owner@example.com"
 _ENDPOINT = _endpoint_identity_for_user(_OWNER_EMAIL)
@@ -87,6 +88,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate",
         "vo2_max",
         "workout",
+        "weight",
+        "body_fat",
     }
     assert {bundle.resource: bundle.endpoint_path for bundle in RESOURCE_BUNDLES} == {
         "sleep": "/users/me/dataTypes/sleep/dataPoints:reconcile",
@@ -97,6 +100,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
         "workout": "/users/me/dataTypes/exercise/dataPoints:reconcile",
+        "weight": "/users/me/dataTypes/weight/dataPoints",
+        "body_fat": "/users/me/dataTypes/body-fat/dataPoints",
     }
 
 
@@ -609,12 +614,17 @@ async def test_poll_resource_emits_envelope_for_new_record(
     """Per-Resource Polling emits stable, schema-valid sleep and daily envelopes."""
     from datetime import UTC, datetime
 
+    poll_clock = FakeClock(datetime(2026, 4, 24, 10, 0, tzinfo=UTC))
+
     class _PollClock(datetime):
-        values = iter(datetime(2026, 4, 24, 10, minute, tzinfo=UTC) for minute in range(30))
+        values = iter(range(30))
 
         @classmethod
         def now(cls, _tz: object = None) -> datetime:
-            return next(cls.values)
+            next(cls.values)
+            instant = poll_clock.now()
+            poll_clock.advance(60)
+            return instant
 
     connector, ctx = _make_connector_with_account()
     sleep_state = connector._resources[(ctx.account_id, "sleep")]
@@ -2472,3 +2482,15 @@ def test_poll_workout_scope_is_already_requested() -> None:
         GOOGLE_HEALTH_SCOPES
     )
     assert len(GOOGLE_HEALTH_SCOPES) == 3
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import google_health as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_MAX_INFLIGHT", "17")
+    config = module.GoogleHealthConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("wellness", "google_health")
+    assert config.max_inflight == 17

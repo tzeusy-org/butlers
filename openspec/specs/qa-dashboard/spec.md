@@ -107,7 +107,7 @@ The dashboard SHALL have a drill-down page at `/qa/investigations/:attemptId` th
 - **WHEN** a user navigates to `/qa/investigations/:attemptId`
 - **THEN** the page renders the Case Dossier layout (header + two-column diagnosis/PR + patrol journal) as defined by the Case Dossier Layout requirement
 - **AND** the page includes a top eyebrow "QA Investigation · #<short_id>" and a back-link to `/qa`
-- **AND** the existing `Retry` and `Dismiss` actions remain available as pill buttons in the dossier header
+- **AND** Dismiss and remove-dismissal remain available in their eligible states; no Retry action, client helper or mutation hook is exposed
 
 #### Scenario: Investigation not found
 - **WHEN** the attempt ID does not exist or has no `qa_patrol_id`
@@ -246,13 +246,14 @@ The QA dashboard SHALL render any single case (either as the right-pane on `/qa?
 #### Scenario: Active dismissal display
 - **WHEN** the Case Dossier renders a case whose fingerprint has an active dismissal record (`qa_dismissals` row with `dismissed_until > now()`)
 - **THEN** the header renders a mono caption "dismissed until <dismissed_until>" beneath the sev/id/butler row
-- **AND** a "remove dismissal" pill action is rendered alongside the existing `Retry` / `Dismiss` pills
+- **AND** a "remove dismissal" pill action is rendered alongside the eligible Dismiss action, without a Retry control
 - **AND** clicking "remove dismissal" calls `DELETE /api/qa/dismissals/{fingerprint}` and triggers a re-fetch of the case so the caption and pill disappear
 
-#### Scenario: Terminal states offer Retry, never Dismiss
-- **WHEN** the Case Dossier renders a case whose `state_track_stage` is `landed`, `escalated`, or `failed`
-- **THEN** a "Retry" pill is rendered (calling `POST /api/healing/attempts/{id}/retry`, which the backend already accepts for any terminal `healing_attempts.status` including `failed`/`timeout`/`anonymization_failed`) and the "Dismiss" pill is withheld — a terminal case, whether landed, escalated, or crashed, is not a candidate for false-positive dismissal
-- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss (when a fingerprint is linked and no dismissal is active) and withholds Retry, since the investigation is still active
+#### Scenario: Terminal history has neither Retry nor Dismiss
+- **WHEN** the case's derived `stage` is terminal (`landed`, `escalated`, or `failed`)
+- **THEN** neither Retry nor Dismiss is rendered; terminal history is not a false-positive dismissal candidate
+- **AND** every other stage (`detect`, `diagnose`, `pr`) offers Dismiss when a fingerprint is linked and no dismissal is active
+- **AND** every stage withholds Retry, while existing dismissal removal and history remain available
 
 #### Scenario: Failure banner quotes the crash
 - **WHEN** the Case Dossier renders a case whose `state_track_stage` is `failed`

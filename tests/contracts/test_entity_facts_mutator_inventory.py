@@ -52,24 +52,32 @@ _INVENTORY: dict[tuple[str, str], str] = {
     (_WRITER, "_supersede_and_replace"): (
         "central writer: exact-row version replacement, entity rows locked first"
     ),
+    (_WRITER, "_upsert_candidate"): (
+        "candidate writer: selected occurrence and complete stored packet preserved; "
+        "candidate remains outside active identity/projection/coverage"
+    ),
+    ("roster/relationship/tools/fact_identity_decisions.py", "decide_identity_fact"): (
+        "owner decision: exact candidate and compatible occurrence survivor under entity/slot/row "
+        "locks; packet/history/evidence preserved, incompatible survivor refuses before effects"
+    ),
     (_WRITER, "retract_contact_info_fact._retract"): (
         "SPO retraction: one occurrence or refuse; no FK column write, no entity lock"
     ),
     (_WRITER, "_supersede_active_prefers_channel"): "prefers-channel: fenced singleton only",
-    (_WRITER, "assert_prefers_channel._do"): (
-        "prefers-channel: fenced singleton only, entity row locked before the fence"
-    ),
     ("src/butlers/owner_bootstrap.py", "_seed_owner_telegram_handle"): (
         "owner bootstrap: insert-only unknown default, no sibling"
     ),
     ("roster/relationship/tools/entity_merge.py", "merge_entity_pair"): (
         "entity merge: lock+plan, repoint intact, collision refused"
     ),
+    ("roster/relationship/tools/entity_merge.py", "_move_candidate_reports"): (
+        "entity merge: candidate reports repointed under the locked merge plan; complete "
+        "occurrence/packet/report retained, candidates do not become active identities"
+    ),
     ("roster/relationship/tools/contacts.py", "_repoint_entity_facts"): (
         "legacy contact merge: fence re-run under locks, one all-or-nothing transaction"
     ),
     (_ROUTER, "delete_entity_contact"): "hash selector: one occurrence or 409, exact-id retract",
-    (_ROUTER, "verify_entity_contact"): "hash selector: one occurrence or 409, exact-id verify",
     (_ROUTER, "update_entity_contact"): (
         "hash selector; entity then row locked before retract, temporal value edit refused"
     ),
@@ -166,6 +174,7 @@ def test_every_entity_facts_mutator_is_inventoried() -> None:
 # ---------------------------------------------------------------------------
 
 _LOCK_HELPER = "_lock_fact_entities"
+_REPORT_LOCK_HELPER = "locked_report"
 #: Writer functions that open an insert/replace path and must take the entity
 #: lock before anything that reads-to-write or locks a fact row.
 _LOCKED_ENTRIES = {"_upsert_fact", "assert_prefers_channel._do"}
@@ -177,6 +186,7 @@ _FACT_TOUCHING_CALLS = {
     "_insert_active_fact",
     "_fence_prefers_channel",
     "_supersede_active_prefers_channel",
+    "_upsert_candidate",
 }
 _INSERT_RE = re.compile(r"\bINSERT\s+INTO\s+relationship\.entity_facts\b", re.IGNORECASE)
 
@@ -214,13 +224,13 @@ def _own_calls(function: ast.AST) -> list[ast.Call]:
 
 
 def _is_bare_lock_statement(stmt: ast.stmt) -> bool:
-    """``await _lock_fact_entities(...)`` as a statement of its own."""
+    """An unconditional entity lock or complete report-lock assignment."""
+    value = stmt.value if isinstance(stmt, ast.Expr | ast.Assign | ast.AnnAssign) else None
     return (
-        isinstance(stmt, ast.Expr)
-        and isinstance(stmt.value, ast.Await)
-        and isinstance(stmt.value.value, ast.Call)
-        and isinstance(stmt.value.value.func, ast.Name)
-        and stmt.value.value.func.id == _LOCK_HELPER
+        isinstance(value, ast.Await)
+        and isinstance(value.value, ast.Call)
+        and isinstance(value.value.func, ast.Name)
+        and value.value.func.id in {_LOCK_HELPER, _REPORT_LOCK_HELPER}
     )
 
 
@@ -232,10 +242,29 @@ def test_every_writer_insert_path_locks_entities_before_facts() -> None:
     so a new insert path that bypasses the entries fails here.
     """
     functions = _writer_functions()
+    # The newer attribution seam owns the full subject/object/reporter/confirm
+    # FK union. Accept that actual helper only while it still performs the
+    # unconditional batch lock; a same-named no-op cannot satisfy this guard.
+    report_tree = ast.parse(
+        (_REPO_ROOT / "roster/relationship/tools/fact_authority.py").read_text()
+    )
+    report_lock = next(
+        node
+        for node in report_tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == _REPORT_LOCK_HELPER
+    )
+    assert any(
+        isinstance(stmt, ast.Expr)
+        and isinstance(stmt.value, ast.Await)
+        and isinstance(stmt.value.value, ast.Call)
+        and isinstance(stmt.value.value.func, ast.Name)
+        and stmt.value.value.func.id == "_lock_fact_entities_batch"
+        for stmt in report_lock.body
+    ), "locked_report must unconditionally lock its complete entity union"
 
     for entry in sorted(_LOCKED_ENTRIES):
         # Statement-level, not line-level: the lock must be an unconditional
-        # top-level ``await _lock_fact_entities(...)`` statement that precedes
+        # top-level entity/report lock statement that precedes
         # the first top-level statement touching a fact. A lock nested in one
         # branch (say, only the correction path) leaves the others unlocked
         # while still sitting on an earlier line.
@@ -259,10 +288,21 @@ def test_every_writer_insert_path_locks_entities_before_facts() -> None:
         if entry == "_upsert_fact":
             # bu-cbpakv: the writer's lock must cover the entity object too, or an
             # object-side insert is left unlocked against a merge.
-            passed = [a.id for a in body[lock_at].value.value.args if isinstance(a, ast.Name)]
-            assert passed[1:] == ["subject", "object", "object_kind"], (
-                f"_upsert_fact must lock subject, object and object_kind, not {passed[1:]}"
-            )
+            call = body[lock_at].value.value
+            if call.func.id == _REPORT_LOCK_HELPER:
+                passed = {
+                    kw.arg: kw.value.id for kw in call.keywords if isinstance(kw.value, ast.Name)
+                }
+                assert {key: passed.get(key) for key in ("subject", "object", "object_kind")} == {
+                    "subject": "subject",
+                    "object": "object",
+                    "object_kind": "object_kind",
+                }, "_upsert_fact report lock must cover its subject and entity object"
+            else:
+                passed = [a.id for a in call.args if isinstance(a, ast.Name)]
+                assert passed[1:] == ["subject", "object", "object_kind"], (
+                    f"_upsert_fact must lock subject, object and object_kind, not {passed[1:]}"
+                )
 
     callers: dict[str, set[str]] = {name: set() for name in functions}
     for name, function in functions.items():

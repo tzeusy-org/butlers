@@ -20,11 +20,12 @@ or nudges the owner to reconnect with them is the clearest trust failure the sys
 - `notify(entity_id=...)` refuses with code `recipient_posture` for memorial and no_contact
   recipients, and when the posture cannot be read, before any identifier lookup, approval parking or
   delivery row.
+- Finance's cost-claim reconciliation sweep raises one owner question (retract or keep) for an open
+  loan claim against a memorial counterparty, once per claim, and never changes the claim
+  (REQ-butler-finance-002).
 
 ## Deferred
 
-- Finance cost-claim reconciliation raising one owner question for an open loan claim against a
-  memorial counterparty.
 - The anniversary-of-passing occasion (waits for the occasion engine's loss tone).
 - A dashboard surface for posture (`dashboard-relationship`).
 - An owner opt-in toggle for the remembrance entry; the first slice always emits it for memorial.

@@ -3,7 +3,7 @@
 // ButlerMark tests — bu-myje9
 //
 // Coverage:
-//   - each known butler maps to a distinct, stable --category-N token
+//   - each known butler maps to a distinct, stable hue slot
 //   - unknown butler names fall back to a hash-derived slot (deterministic)
 //   - the twelve canonical slots are all reachable
 //   - ButlerMark renders the correct initial glyph
@@ -13,10 +13,16 @@
 import { describe, expect, it } from "vitest"
 import { renderToStaticMarkup } from "react-dom/server"
 
+import { VISUAL_TOKEN_ROLE_REGISTRY } from "@/lib/visual-token-roles"
+
 import { ButlerMark, KNOWN_BUTLERS } from "./ButlerMark"
 
-// eslint-disable-next-line visual-role/no-private-identity-token -- Verifies the identity owner's rendered public contract.
-const categoryToken = (slot: number) => `var(--category-${slot})`
+// The identity palette is private to ButlerMark, so the rendered theme-aware
+// colour is the public contract: one `light-dark()` oklch pair per slot.
+const HUE_PATTERN = /light-dark\(oklch\([^)]*\), oklch\([^)]*\)\)/
+const hueOf = (name: string, tone?: "fill" | "neutral") =>
+  renderToStaticMarkup(<ButlerMark name={name} tone={tone} />).match(HUE_PATTERN)?.[0]
+const hasHue = (html: string) => HUE_PATTERN.test(html)
 
 // ---------------------------------------------------------------------------
 // Identity resolution is private to ButlerMark; exercise it through the
@@ -24,16 +30,21 @@ const categoryToken = (slot: number) => `var(--category-${slot})`
 // ---------------------------------------------------------------------------
 
 describe("ButlerMark: known butler identity mapping", () => {
-  // Verify that each known butler maps to one of the twelve canonical tokens
+  // Verify that each known butler maps to one of the twelve canonical hues
   // and that the mapping is stable (idempotent calls return the same value).
-  const VALID_TOKENS = new Set(
-    Array.from({ length: 12 }, (_, index) => categoryToken(index + 1)),
-  )
+  it("keeps twelve hue slots, matching the visual-role registry", () => {
+    const hues = new Set(Array.from({ length: 400 }, (_, index) => hueOf(`unknown-${index}`)))
+    expect(hues.size).toBe(VISUAL_TOKEN_ROLE_REGISTRY["butler-identity"].slotCount)
+  })
+
+  it("keeps Health and General on their distinct permanent slots", () => {
+    expect(hueOf("health")).toBe("light-dark(oklch(0.641 0.140 11.2), oklch(0.695 0.140 11.2))")
+    expect(hueOf("general")).toBe("light-dark(oklch(0.706 0.120 183.5), oklch(0.758 0.115 183.5))")
+  })
 
   for (const name of KNOWN_BUTLERS) {
-    it(`${name} maps to a valid --category-N token`, () => {
-      const html = renderToStaticMarkup(<ButlerMark name={name} />)
-      expect([...VALID_TOKENS].some((token) => html.includes(token))).toBe(true)
+    it(`${name} maps to a valid hue slot`, () => {
+      expect(hasHue(renderToStaticMarkup(<ButlerMark name={name} />))).toBe(true)
     })
 
     it(`${name} mapping is stable across repeated calls`, () => {
@@ -49,11 +60,7 @@ describe("ButlerMark: known butler identity mapping", () => {
     // silently reused the 1st-3rd butler's hue (chronicler, education,
     // finance). With 12 slots and 11 known butlers, every entry must now
     // get its own distinct token.
-    const tokens = KNOWN_BUTLERS.map((name) => {
-      const html = renderToStaticMarkup(<ButlerMark name={name} />)
-      return [...VALID_TOKENS].find((token) => html.includes(token))
-    })
-    const uniqueTokens = new Set(tokens)
+    const uniqueTokens = new Set(KNOWN_BUTLERS.map((name) => hueOf(name)))
     expect(uniqueTokens.size).toBe(KNOWN_BUTLERS.length)
   })
 })
@@ -63,9 +70,9 @@ describe("ButlerMark: known butler identity mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("ButlerMark: unknown butler names", () => {
-  it("returns a valid --category-N token for an unknown name", () => {
+  it("returns a valid hue slot for an unknown name", () => {
     const html = renderToStaticMarkup(<ButlerMark name="definitely-unknown-butler" />)
-    expect(html).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
+    expect(hasHue(html)).toBe(true)
   })
 
   it("the same unknown name always resolves to the same token (deterministic multiplier-31 hash)", () => {
@@ -82,13 +89,13 @@ describe("ButlerMark: unknown butler names", () => {
     const b = renderToStaticMarkup(<ButlerMark name="omega-z" />)
     // We cannot guarantee they differ (12 slots, many names), but we CAN assert
     // that both are valid tokens, which is the real invariant.
-    expect(a).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
-    expect(b).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
+    expect(hasHue(a)).toBe(true)
+    expect(hasHue(b)).toBe(true)
   })
 
   it("empty string falls back deterministically", () => {
     const html = renderToStaticMarkup(<ButlerMark name="" />)
-    expect(html).toMatch(/var\(--category-(?:[1-9]|1[0-2])\)/)
+    expect(hasHue(html)).toBe(true)
   })
 })
 
@@ -125,7 +132,7 @@ describe("ButlerMark: tone=fill", () => {
     const html = renderToStaticMarkup(<ButlerMark name="chronicler" tone="fill" />)
     // The fill tone sets backgroundColor to the hue and color to white.
     expect(html).toContain("white")
-    expect(html).toContain(categoryToken(1))
+    expect(html).toContain(hueOf("chronicler")!)
   })
 })
 
@@ -134,7 +141,7 @@ describe("ButlerMark: tone=neutral (default)", () => {
     const html = renderToStaticMarkup(<ButlerMark name="chronicler" />)
     // Neutral tone has transparent background and uses hue as text + border color.
     expect(html).toContain("transparent")
-    expect(html).toContain(categoryToken(1))
+    expect(html).toContain(hueOf("chronicler")!)
   })
 })
 

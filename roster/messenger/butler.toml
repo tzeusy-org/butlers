@@ -30,8 +30,9 @@ dispatch_mode = "job"
 job_name = "calendar_prep_contribution"
 
 [modules.calendar]
+response_enabled = true
 provider = "google"
-groups = ["core"]
+groups = ["response"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
@@ -104,3 +105,8 @@ risk_tier = "medium"
 # account = ""              # Google account email (default: primary account)
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.
+
+[modules.approvals.gated_tools.calendar_respond]
+risk_tier = "medium"

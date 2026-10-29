@@ -82,6 +82,18 @@ const ACTIONS: { value: string; label: string }[] = [
 
 const DEFAULT_ACTION = 'skip'
 
+/** Condition key for the per-rule "except people I know" option (bu-q7vx1q.88.3). */
+const EXCEPT_KNOWN_KEY = 'except_known_contacts'
+
+/** Verdicts that can carry the option; the backend refuses it on any other. */
+const EXCEPT_KNOWN_ACTIONS = new Set(['skip', 'block'])
+
+function withoutExceptKnown(condition: Record<string, unknown>): Record<string, unknown> {
+  const rest = { ...condition }
+  delete rest[EXCEPT_KNOWN_KEY]
+  return rest
+}
+
 /**
  * Split a stored `action` string into the editor's (action, target) pair.
  *
@@ -558,13 +570,24 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
 
   function handleRuleTypeChange(newType: string) {
     setRuleType(newType)
-    setCondition(defaultConditionForType(newType))
+    setCondition({
+      ...defaultConditionForType(newType),
+      ...(condition[EXCEPT_KNOWN_KEY] === true ? { [EXCEPT_KNOWN_KEY]: true } : {}),
+    })
+  }
+
+  function handleActionChange(next: string) {
+    setAction(next)
+    if (!EXCEPT_KNOWN_ACTIONS.has(next)) setCondition((c) => withoutExceptKnown(c))
   }
 
   async function handleSave() {
     setError(null)
 
     const condError = validateCondition(ruleType, condition)
+    const savedCondition = EXCEPT_KNOWN_ACTIONS.has(action)
+      ? condition
+      : withoutExceptKnown(condition)
     if (condError) {
       setError(condError)
       return
@@ -585,7 +608,7 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
         await updateRule.mutateAsync({
           id: rule.id,
           body: {
-            condition,
+            condition: savedCondition,
             action: composedAction,
             priority,
             name: name.trim() || null,
@@ -596,7 +619,7 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
         await createRule.mutateAsync({
           scope: 'global',
           rule_type: ruleType,
-          condition,
+          condition: savedCondition,
           action: composedAction,
           priority,
           name: name.trim() || null,
@@ -678,7 +701,7 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
             <select
               className={inputCls}
               value={action}
-              onChange={(e) => setAction(e.target.value)}
+              onChange={(e) => handleActionChange(e.target.value)}
               data-testid="rule-editor-action"
             >
               {ACTIONS.map((a) => (
@@ -688,6 +711,30 @@ export function RuleEditor({ mode, rule, onClose, onSaved }: RuleEditorProps) {
               ))}
             </select>
           </label>
+
+          {EXCEPT_KNOWN_ACTIONS.has(action) && (
+            <label className="block" data-testid="rule-editor-except-known">
+              <span className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={condition[EXCEPT_KNOWN_KEY] === true}
+                  onChange={(e) =>
+                    setCondition(
+                      e.target.checked
+                        ? { ...condition, [EXCEPT_KNOWN_KEY]: true }
+                        : withoutExceptKnown(condition),
+                    )
+                  }
+                  data-testid="rule-editor-except-known-input"
+                />
+                <span className={labelCls}>except people I know</span>
+              </span>
+              <span className="block mt-1 text-[12px] text-muted-foreground">
+                Mail from a known contact passes this rule; later rules still apply. Checked on
+                Gmail today; other channels apply the rule as written.
+              </span>
+            </label>
+          )}
 
           {action === ROUTE_TO_VALUE && (
             <TextField

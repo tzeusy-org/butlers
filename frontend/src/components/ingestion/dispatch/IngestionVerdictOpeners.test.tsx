@@ -62,7 +62,7 @@ beforeEach(() => {
     isError: false,
   } as never);
   vi.mocked(useIngestionDroppedKnown).mockReturnValue({
-    data: { available: true, window: "24h", dropped: 0, episodes: 0 },
+    data: { available: true, counts_available: true, classification_available: true, uncertain_drops: 0, availability_reason: "none", window: "24h", dropped: 0, episodes: 0 },
     isLoading: false,
     isError: false,
   } as never);
@@ -222,7 +222,7 @@ describe("Ingestion verdict openers", () => {
 
   it("names drops from known contacts as a door and never renders all clear over them", () => {
     vi.mocked(useIngestionDroppedKnown).mockReturnValue({
-      data: { available: true, window: "24h", dropped: 3, episodes: 2 },
+      data: { available: true, counts_available: true, classification_available: true, uncertain_drops: 0, availability_reason: "none", window: "24h", dropped: 3, episodes: 2 },
       isLoading: false,
       isError: false,
     } as never);
@@ -232,6 +232,26 @@ describe("Ingestion verdict openers", () => {
     expect(html).toContain("3 dropped from people you know");
     expect(html).toContain('href="/ingestion?statuses=filtered&amp;range=24h"');
     expect(html).not.toContain("ingestion-filters-verdict-all-clear");
+    for (const isError of [false, true]) {
+      vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+        data: { available: false, counts_available: true, classification_available: false,
+          uncertain_drops: 1, availability_reason: "classification_unknown",
+          window: "24h", dropped: 3, episodes: 2 },
+        isLoading: false, isError,
+      } as never);
+      const partial = render(<IngestionFiltersVerdictOpener />);
+      expect(partial).toContain("3 dropped from people you know");
+      expect(partial).toContain("gate harm unknown");
+      expect(partial).toContain('href="/ingestion?statuses=filtered&amp;range=24h"');
+      expect(partial).not.toContain("ingestion-filters-verdict-all-clear");
+    }
+    vi.mocked(useIngestionDroppedKnown).mockReturnValue({
+      data: undefined, isLoading: true, isError: false,
+    } as never);
+    const loading = render(<IngestionFiltersVerdictOpener />);
+    expect(loading).toContain("ingestion-filters-verdict-skeleton");
+    expect(loading).not.toContain("All gates clear");
+
   });
 
   it.each([

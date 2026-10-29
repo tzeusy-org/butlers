@@ -15,6 +15,7 @@ No live DB or network required.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.core.logging import _NOISE_LOGGERS, _butler_context
+
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging_state() -> Iterator[None]:
+    """Undo configure_logging() so its butler name and handlers end with the test."""
+    loggers = [logging.getLogger(), *(logging.getLogger(name) for name in _NOISE_LOGGERS)]
+    saved = [(each, list(each.handlers), list(each.filters), each.level) for each in loggers]
+    token = _butler_context.set(None)
+    try:
+        yield
+    finally:
+        _butler_context.reset(token)
+        for each, handlers, filters, level in saved:
+            for handler in each.handlers:
+                if handler not in handlers:
+                    handler.close()
+            each.handlers[:] = handlers
+            each.filters[:] = filters
+            each.setLevel(level)
 
 
 # ===========================================================================
@@ -742,8 +764,7 @@ class TestStep8cBlobStorageDegradation:
             db_schema="test_butler",
         )
         daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
+        daemon._registry.load_from_config.return_value = []
         daemon._validate_module_configs.return_value = {}
         daemon._collect_module_credentials.return_value = {}
         daemon._module_statuses = {}
@@ -874,8 +895,7 @@ class TestStep8c2CodexAuthorityWiring:
             db_schema="test_butler",
         )
         daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
+        daemon._registry.load_from_config.return_value = []
         daemon._validate_module_configs.return_value = {}
         daemon._collect_module_credentials.return_value = {}
         daemon._module_statuses = {}

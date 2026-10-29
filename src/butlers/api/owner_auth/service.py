@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -61,6 +61,7 @@ class OptionsResult:
 class Authority:
     method: str
     expires_at: str | None
+    session_digest: str | None = field(default=None, repr=False)
 
 
 def _token() -> str:
@@ -103,6 +104,30 @@ class OwnerAuthService:
         }
 
     async def _call(self, action: str, **values: Any) -> dict:
+        return await self._capability_call(
+            "SELECT dashboard_auth.api($1, $2::jsonb)", action, values
+        )
+
+    async def attention_call(
+        self, action: str, authority: Authority, csrf: str, **values: Any
+    ) -> dict:
+        """Closed cookie-only authoring surface, independent of D13 factor kinds."""
+        if action not in {"issue", "clause_create", "clause_revoke"}:
+            raise AuthError("INVALID_REQUEST")
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        return await self._capability_call(
+            "SELECT dashboard_attention.api($1,$2::jsonb)",
+            action,
+            values | {"session_digest": authority.session_digest, "csrf_digest": _digest(csrf)},
+        )
+
+    async def _stepup_call(self, action: str, **values: Any) -> dict:
+        return await self._capability_call(
+            "SELECT dashboard_stepup.ceremony($1, $2::jsonb)", action, values
+        )
+
+    async def _capability_call(self, sql: str, action: str, values: dict) -> dict:
         if self.pool is None:
             raise AuthError()
         try:
@@ -112,7 +137,7 @@ class OwnerAuthService:
                     await connection.execute("SET LOCAL ROLE dashboard_auth_api")
                     await register_jsonb_codec(connection)
                     raw = await connection.fetchval(
-                        "SELECT dashboard_auth.api($1, $2::jsonb)",
+                        sql,
                         action,
                         self._config() | values,
                     )
@@ -360,7 +385,60 @@ class OwnerAuthService:
                 csrf_digest=_digest(csrf_token),
                 unsafe=unsafe,
             )
-        return Authority(data["method"], data["expires_at"])
+        return Authority(
+            data["method"],
+            data["expires_at"],
+            _digest(session_token) if api_key is None and data["method"] == "cookie" else None,
+        )
+
+    async def stepup_options(self, session_digest: str, binding) -> dict:
+        """A fresh assertion for one server-derived intent, never a new login."""
+        data = await self._stepup_call(
+            "options",
+            session_digest=session_digest,
+            kind=binding.kind,
+            target=binding.target,
+            request_digest=binding.request_digest,
+            action_digest=binding.action_digest,
+            namespace=binding.namespace,
+            ceremony_id=_token(),
+            challenge=_token(),
+        )
+        return self._options(data)
+
+    async def finish_stepup(
+        self,
+        session_token: str,
+        csrf_token: str,
+        ceremony_id: str,
+        credential: dict,
+    ) -> dict:
+        authority = await self.authorize(session_token, csrf_token=csrf_token, unsafe=True)
+        if authority.method != "cookie" or not authority.session_digest:
+            raise AuthError("FORBIDDEN")
+        proof = dict(session_digest=authority.session_digest, ceremony_id=_locator(ceremony_id))
+        snapshot = await self._stepup_call("snapshot", **proof)
+        if self.verifier is None:
+            raise AuthError()
+        try:
+            verified = await asyncio.to_thread(
+                self.verifier.verify, snapshot["ceremony"], credential, snapshot["credential"]
+            )
+        except InvalidProof:
+            raise AuthError("UNAUTHORIZED") from None
+        nonce = _token()
+        result = await self._stepup_call(
+            "finish",
+            **proof,
+            challenge=snapshot["ceremony"]["challenge"],
+            credential_epoch=snapshot["ceremony"]["credential_epoch"],
+            credential_id=verified.credential_id,
+            counter=verified.counter,
+            backup_eligible=verified.backup_eligible,
+            backup_state=verified.backup_state,
+            nonce_digest=_digest(nonce),
+        )
+        return {"nonce": nonce, "expires_at": result["expires_at"]}
 
     async def csrf(self, session_token: str) -> dict:
         csrf = _token()

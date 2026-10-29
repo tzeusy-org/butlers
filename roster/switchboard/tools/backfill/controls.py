@@ -8,11 +8,10 @@ Tools exposed:
 - create_backfill_job  — create a new backfill job in pending state
 - backfill_pause       — pause an active backfill job
 - backfill_cancel      — cancel a job (any non-terminal state)
-- backfill_resume      — re-queue a paused or cost_capped job
+- backfill_resume      — re-queue a paused job
 - backfill_list        — list jobs with optional filtering
 
-See docs/connectors/email_backfill.md §5 and docs/roles/switchboard_butler.md §16.1
-for the full contract.
+See docs/connectors/gmail.md for the shared HTTP/MCP lifecycle contract.
 """
 
 from __future__ import annotations
@@ -26,10 +25,6 @@ from uuid import UUID
 import asyncpg
 
 logger = logging.getLogger(__name__)
-
-# Lifecycle states
-_TERMINAL_STATES = frozenset({"completed", "cancelled", "error", "cost_capped"})
-_RESUMABLE_STATES = frozenset({"paused", "cost_capped"})
 
 # Default configuration
 _DEFAULT_RATE_LIMIT_PER_HOUR = 100
@@ -170,172 +165,105 @@ async def create_backfill_job(
     return {"job_id": job_id, "status": status}
 
 
-async def backfill_pause(
-    pool: asyncpg.Pool,
-    *,
-    job_id: UUID | str,
-) -> dict[str, Any]:
-    """Pause an active backfill job.
+class BackfillJobNotFound(ValueError):
+    """The requested job does not exist."""
 
-    Sets the job status to ``paused``. The connector will stop processing
-    on the next ``backfill.progress`` call once it receives the updated status.
 
-    Args:
-        pool: Database connection pool.
-        job_id: UUID of the backfill job to pause.
+class BackfillStateConflict(ValueError):
+    """The job no longer permits this transition."""
 
-    Returns:
-        ``{status: str}``
+    def __init__(self, message: str, *, http_detail: str | None = None) -> None:
+        super().__init__(message)
+        self.http_detail = http_detail or message
 
-    Raises:
-        ValueError: If the job is not found or is in a terminal state.
-        RuntimeError: If the database update fails.
-    """
+
+class BackfillDatabaseError(RuntimeError):
+    """A database failure with the established HTTP read/write distinction."""
+
+    def __init__(self, message: str, *, http_detail: str) -> None:
+        super().__init__(message)
+        self.http_detail = http_detail
+
+
+_TRANSITIONS = {
+    "pause": (frozenset({"pending", "active"}), "paused"),
+    "cancel": (frozenset({"pending", "active", "paused", "error", "cost_capped"}), "cancelled"),
+    "resume": (frozenset({"paused"}), "pending"),
+}
+
+
+async def _transition(pool: asyncpg.Pool, job_id: UUID | str, action: str) -> dict[str, Any]:
     job_id_val = UUID(str(job_id))
-
-    row = await pool.fetchrow(
-        "SELECT id, status FROM backfill_jobs WHERE id = $1",
-        job_id_val,
-    )
-    if row is None:
-        raise ValueError(f"Backfill job {job_id_val} not found")
-
-    current_status = row["status"]
-    if current_status in _TERMINAL_STATES:
-        raise ValueError(
-            f"Backfill job {job_id_val} is in terminal state {current_status!r} "
-            "and cannot be paused"
-        )
-    if current_status == "paused":
-        return {"status": "paused"}
-
+    allowed, target = _TRANSITIONS[action]
+    database_operation = "fetch"
     try:
-        result = await pool.fetchrow(
-            """
-            UPDATE backfill_jobs
-            SET status = 'paused', updated_at = now()
-            WHERE id = $1
-            RETURNING status
-            """,
-            job_id_val,
-        )
+        row = await pool.fetchrow("SELECT id, status FROM backfill_jobs WHERE id = $1", job_id_val)
+        if row is None:
+            raise BackfillJobNotFound(f"Backfill job {job_id_val} not found")
+        current = row["status"]
+        # Re-pause/re-cancel are idempotent; resume from pending still refuses.
+        if action != "resume" and current == target:
+            return {"status": target}
+        if current not in allowed:
+            raise BackfillStateConflict(
+                (
+                    f"Backfill job {job_id_val} is in terminal state {current!r} "
+                    f"and cannot be {target}"
+                )
+                if action != "resume"
+                else f"Backfill job {job_id_val} cannot be resumed from {current!r}",
+                http_detail=(
+                    f"Cannot {action} job in status '{current}'. Must be one of: {sorted(allowed)}"
+                ),
+            )
+        database_operation = action
+        if action == "cancel":
+            result = await pool.fetchrow(
+                "UPDATE backfill_jobs SET status=$2, completed_at=now(), updated_at=now() "
+                "WHERE id=$1 AND status=ANY($3::text[]) RETURNING status",
+                job_id_val,
+                target,
+                [current],
+            )
+        else:
+            result = await pool.fetchrow(
+                "UPDATE backfill_jobs SET status=$2, updated_at=now() "
+                "WHERE id=$1 AND status=ANY($3::text[]) RETURNING status",
+                job_id_val,
+                target,
+                [current],
+            )
+        if result is None:
+            row = await pool.fetchrow(
+                "SELECT id, status FROM backfill_jobs WHERE id=$1", job_id_val
+            )
+            if action != "resume" and row is not None and row["status"] == target:
+                return {"status": target}
+            raise BackfillStateConflict(f"Backfill job {job_id_val} changed during {action}")
+        return {"status": result["status"]}
+    except (BackfillJobNotFound, BackfillStateConflict):
+        raise
     except Exception as exc:
-        logger.error("Failed to pause backfill job %s: %s", job_id_val, exc, exc_info=True)
-        raise RuntimeError(f"Failed to pause backfill job: {exc}") from exc
-
-    logger.info("Paused backfill job job_id=%s", job_id_val)
-    return {"status": result["status"]}
-
-
-async def backfill_cancel(
-    pool: asyncpg.Pool,
-    *,
-    job_id: UUID | str,
-) -> dict[str, Any]:
-    """Cancel a backfill job.
-
-    Sets the job status to ``cancelled``. Can be called on any non-terminal job.
-
-    Args:
-        pool: Database connection pool.
-        job_id: UUID of the backfill job to cancel.
-
-    Returns:
-        ``{status: str}``
-
-    Raises:
-        ValueError: If the job is not found or is already in a terminal state.
-        RuntimeError: If the database update fails.
-    """
-    job_id_val = UUID(str(job_id))
-
-    row = await pool.fetchrow(
-        "SELECT id, status FROM backfill_jobs WHERE id = $1",
-        job_id_val,
-    )
-    if row is None:
-        raise ValueError(f"Backfill job {job_id_val} not found")
-
-    current_status = row["status"]
-    if current_status == "cancelled":
-        return {"status": "cancelled"}
-    if current_status in _TERMINAL_STATES:
-        raise ValueError(
-            f"Backfill job {job_id_val} is in terminal state {current_status!r} "
-            "and cannot be cancelled"
-        )
-
-    try:
-        result = await pool.fetchrow(
-            """
-            UPDATE backfill_jobs
-            SET status = 'cancelled', completed_at = now(), updated_at = now()
-            WHERE id = $1
-            RETURNING status
-            """,
-            job_id_val,
-        )
-    except Exception as exc:
-        logger.error("Failed to cancel backfill job %s: %s", job_id_val, exc, exc_info=True)
-        raise RuntimeError(f"Failed to cancel backfill job: {exc}") from exc
-
-    logger.info("Cancelled backfill job job_id=%s", job_id_val)
-    return {"status": result["status"]}
+        logger.exception("Failed to %s backfill job %s", action, job_id_val)
+        raise BackfillDatabaseError(
+            f"Failed to {action} backfill job",
+            http_detail=f"Failed to {database_operation} backfill job",
+        ) from exc
 
 
-async def backfill_resume(
-    pool: asyncpg.Pool,
-    *,
-    job_id: UUID | str,
-) -> dict[str, Any]:
-    """Resume a paused or cost_capped backfill job.
+async def backfill_pause(pool: asyncpg.Pool, *, job_id: UUID | str) -> dict[str, Any]:
+    """Pause pending/active work, or return an already-paused job unchanged."""
+    return await _transition(pool, job_id, "pause")
 
-    Re-queues the job by transitioning its status back to ``pending``.
-    Only valid from ``paused`` or ``cost_capped`` states.
 
-    Args:
-        pool: Database connection pool.
-        job_id: UUID of the backfill job to resume.
+async def backfill_cancel(pool: asyncpg.Pool, *, job_id: UUID | str) -> dict[str, Any]:
+    """Cancel unfinished work, including errors/capped jobs; cancellation is idempotent."""
+    return await _transition(pool, job_id, "cancel")
 
-    Returns:
-        ``{status: str}``
 
-    Raises:
-        ValueError: If the job is not found or is not in a resumable state.
-        RuntimeError: If the database update fails.
-    """
-    job_id_val = UUID(str(job_id))
-
-    row = await pool.fetchrow(
-        "SELECT id, status FROM backfill_jobs WHERE id = $1",
-        job_id_val,
-    )
-    if row is None:
-        raise ValueError(f"Backfill job {job_id_val} not found")
-
-    current_status = row["status"]
-    if current_status not in _RESUMABLE_STATES:
-        raise ValueError(
-            f"Backfill job {job_id_val} is in state {current_status!r} and cannot be resumed. "
-            f"Only {sorted(_RESUMABLE_STATES)} jobs can be resumed."
-        )
-
-    try:
-        result = await pool.fetchrow(
-            """
-            UPDATE backfill_jobs
-            SET status = 'pending', updated_at = now()
-            WHERE id = $1
-            RETURNING status
-            """,
-            job_id_val,
-        )
-    except Exception as exc:
-        logger.error("Failed to resume backfill job %s: %s", job_id_val, exc, exc_info=True)
-        raise RuntimeError(f"Failed to resume backfill job: {exc}") from exc
-
-    logger.info("Resumed backfill job job_id=%s (was %s)", job_id_val, current_status)
-    return {"status": result["status"]}
+async def backfill_resume(pool: asyncpg.Pool, *, job_id: UUID | str) -> dict[str, Any]:
+    """Resume only paused work. Cost-capped work never resumes spending."""
+    return await _transition(pool, job_id, "resume")
 
 
 async def backfill_list(
@@ -357,7 +285,7 @@ async def backfill_list(
 
     Returns:
         List of job summary dicts, ordered by created_at descending.
-        Each summary includes all fields from docs/roles/switchboard_butler.md §16.1.
+        Summary fields follow the backfill contract in docs/connectors/gmail.md.
     """
     conditions: list[str] = []
     params: list[Any] = []

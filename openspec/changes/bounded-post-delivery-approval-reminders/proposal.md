@@ -63,11 +63,30 @@ overwriting unrelated clauses.
 ## Authority and impact
 
 Owner Direction B is settled. RFC 0023 adoption and its prior repository
-implementation release are settled. This exact successor is not adopted yet.
-It requires independent security and product review followed by owner adoption
-of the reviewed artifact.
+implementation release are settled. On 2026-10-27, the owner adopted Choice A
+of the independently reviewed conformance resolution (`bu-4zqomm`). This
+amendment applies the exact approved specification, RFC 0035, and design
+artifacts. Their retained draft metadata is historical; this record establishes
+specification adoption, with implementation review and activation authority
+still separate.
 
 This change is specification-only. It performs no source implementation,
 migration, notification/provider call, credential access, action decision,
 deployment, runtime activation, rollout-flag change, OpenSpec archive, or live
 effect. Tests: +0 ~0 -0.
+
+## Review record and open owner questions
+
+Independent security and product review (bu-8cdl1.23) covered commit
+`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2`; all findings S1-S7 and P1-P7 are
+resolved in this change. The post-resolution text was independently re-reviewed
+at the exact head of the resolution PR (second pass bu-ijsbde; the exact SHA is
+in the bead and the PR, since a commit cannot name itself). That review remains
+provenance for the later independently reviewed Choice A conformance successor
+adopted on 2026-10-27 as recorded above.
+
+Owner questions (not adopted here):
+
+1. Should a reminder ever carry one-tap approve/reject/defer controls? This
+   draft proposes link-only, content-blind reminders because a reminder lands on
+   a different channel than the original and email is a weaker trust surface.

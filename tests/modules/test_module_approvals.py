@@ -159,7 +159,7 @@ class MockDB:
                 if row is None:
                     return None
                 # Apply status update if present (status is the first str arg)
-                for i, a in enumerate(args):
+                for _i, a in enumerate(args):
                     if isinstance(a, str) and a in (
                         "pending",
                         "approved",
@@ -171,7 +171,7 @@ class MockDB:
                         row["status"] = a
                         break
                 # Apply decision provenance and time if present.
-                for i, a in enumerate(args):
+                for _i, a in enumerate(args):
                     if isinstance(a, str) and (
                         "user:" in a or "human:" in a or a == "system:expiry"
                     ):

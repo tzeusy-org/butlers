@@ -52,6 +52,7 @@ from butlers.core.expected_signals import (
     upsert_expected_signal,
 )
 from butlers.core.general_settings import resolve_general_timezone
+from butlers.core.health_baseline_metrics import METRICS
 from butlers.core.insight_premise import owner_condition_premise
 from butlers.core.owner_conditions import reconcile_snapshot
 
@@ -68,27 +69,6 @@ _EXPECTED_CADENCE = timedelta(days=2)
 _MS_PER_HOUR = 3_600_000.0
 
 
-def _metric(
-    key: str,
-    unit: str,
-    concern: str,
-    min_dispersion: float,
-) -> BaselineMetric:
-    return BaselineMetric(
-        key=key,
-        unit=unit,
-        bucket="day",
-        window_days=60,
-        min_n=14,
-        min_coverage=0.5,
-        k_mad=2.6,
-        k_consecutive=3,
-        concern=concern,  # type: ignore[arg-type]
-        min_dispersion=min_dispersion,
-        expected_signal_key=f"health:baseline:{key}",
-    )
-
-
 @dataclass(frozen=True, slots=True)
 class _Source:
     metric: BaselineMetric
@@ -101,25 +81,21 @@ class _Source:
 
 _SOURCES: tuple[_Source, ...] = (
     _Source(
-        _metric("resting_hr", "bpm", "above", 1.0),
+        METRICS[0],
         "measurement_resting_hr",
         "Resting heart rate",
         0,
         "resting_hr",
     ),
+    _Source(METRICS[1], "measurement_hrv", "Heart rate variability", 0, "hrv"),
     _Source(
-        _metric("hrv", "ms", "below", 3.0), "measurement_hrv", "Heart rate variability", 0, "hrv"
-    ),
-    _Source(
-        _metric("sleep_duration", "h", "both", 0.25),
+        METRICS[2],
         "sleep_session",
         "Sleep duration",
         1,
         None,
     ),
 )
-
-METRICS: tuple[BaselineMetric, ...] = tuple(source.metric for source in _SOURCES)
 
 
 @dataclass(frozen=True, slots=True)

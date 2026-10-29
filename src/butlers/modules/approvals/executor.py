@@ -4,8 +4,7 @@ Provides a standalone executor that:
 1. Calls the original tool function with the deserialized args
 2. Captures the result or exception
 3. Updates the PendingAction with execution_result and status='executed'
-4. Increments rule use_count for auto-approved actions
-5. Returns an ExecutionResult for the caller
+4. Returns an ExecutionResult for the caller
 
 Both manual approval (from module.py) and auto-approval (from gate.py)
 should use this executor for consistent audit logging.
@@ -165,8 +164,8 @@ async def execute_approved_action(
     """Execute an approved action and persist the result.
 
     Calls ``tool_fn(**tool_args)``, captures the result or exception,
-    updates the ``pending_actions`` table, and increments rule ``use_count``
-    if auto-approved.
+    and updates the ``pending_actions`` table.  Rule ``use_count`` is claimed
+    by the gate (``rules.claim_rule_use``) before the action is approved, never here.
 
     Parameters
     ----------
@@ -181,8 +180,8 @@ async def execute_approved_action(
     tool_fn:
         The original tool function to invoke.
     approval_rule_id:
-        If set, the action was auto-approved by this rule; its use_count
-        will be incremented.
+        If set, the action was auto-approved by this rule (its use was already
+        claimed by the gate; the executor does not count it again).
     decision_memory_writer:
         Optional owning-memory writer invoked after the execution outcome is
         committed and audited. Its failures are intentionally non-blocking.
@@ -207,12 +206,14 @@ async def execute_approved_action(
         # update waits here instead of marking the row terminal while a handler
         # is already allowed to perform its side effect.
         failed_execution: ExecutionResult | None = None
+        execution_result: ExecutionResult | None = None
         action_origin: str | None = None
         now = datetime.now(UTC)
         try:
             async with _approval_write_transaction(pool) as write_target:
                 existing_row = await write_target.fetchrow(
-                    "SELECT status, execution_result, session_id, decided_by, origin "
+                    "SELECT status, execution_result, session_id, decided_by, origin, "
+                    "tool_name, tool_args "
                     "FROM pending_actions WHERE id = $1 FOR UPDATE",
                     action_id,
                 )
@@ -242,6 +243,27 @@ async def execute_approved_action(
                         ),
                     )
 
+                dispatch_args = tool_args
+                if tool_name == "relationship_assert_fact":
+                    stored_args = existing_row.get("tool_args")
+                    if isinstance(stored_args, str):
+                        stored_args = json.loads(stored_args)
+                    if (
+                        existing_row.get("tool_name") != tool_name
+                        or not isinstance(stored_args, dict)
+                        or approval_tool_args_digest(stored_args)
+                        != approval_tool_args_digest(tool_args)
+                    ):
+                        return ExecutionResult(
+                            success=False, error="approved original argument binding mismatch"
+                        )
+                    # Legacy keyword retirement is private and happens only AFTER
+                    # binding the exact locked stored approval arguments. The
+                    # execution context continues to hash the ORIGINAL record.
+                    dispatch_args = {
+                        key: value for key, value in stored_args.items() if key != "verified"
+                    }
+
                 try:
                     authorized_task = asyncio.current_task()
                     if authorized_task is None:
@@ -256,7 +278,7 @@ async def execute_approved_action(
                     )
                     context_token = set_approval_execution_context(execution_context)
                     try:
-                        raw_result = tool_fn(**tool_args)
+                        raw_result = tool_fn(**dispatch_args)
                         if inspect.isawaitable(raw_result):
                             raw_result = await raw_result
                     finally:
@@ -326,12 +348,6 @@ async def execute_approved_action(
                         metadata={"tool_name": tool_name},
                         occurred_at=now,
                     )
-
-                    if approval_rule_id is not None:
-                        await write_target.execute(
-                            "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-                            approval_rule_id,
-                        )
         except Exception as exc:
             logger.error(
                 "Could not persist successful execution for action %s (%s): %s",
@@ -339,6 +355,23 @@ async def execute_approved_action(
                 tool_name,
                 exc,
             )
+            if tool_name == "relationship_assert_fact" and execution_result is not None:
+                # The owning fact writer commits on its own connection. A
+                # terminal approval acknowledgement failure cannot roll that
+                # fact back or truthfully report that the write failed. Preserve
+                # a readback locator and leave the pending action nonterminal.
+                return ExecutionResult(
+                    success=False,
+                    result={
+                        "outcome": "unknown",
+                        "fact_id": (execution_result.result or {}).get("fact_id"),
+                    },
+                    error=(
+                        "Fact write returned, but approval acknowledgement is unknown. "
+                        "Check the stored fact and action before retrying."
+                    ),
+                    executed_at=now,
+                )
             return ExecutionResult(
                 success=False,
                 error=f"Could not persist execution outcome: {exc}",

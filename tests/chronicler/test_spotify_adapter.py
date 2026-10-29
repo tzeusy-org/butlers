@@ -68,7 +68,7 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
     conn.fetch = AsyncMock(
-        return_value=[MagicMock(**r, **{"__getitem__": lambda s, k: r[k]}) for r in rows]
+        return_value=[MagicMock(**r, **{"__getitem__": lambda s, k, r=r: r[k]}) for r in rows]
     )
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))

@@ -166,8 +166,8 @@ async def deadline_create(
             deadline_status,
             _jsonb_encode(depends_on or []),
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"Deadline name {name!r} already exists")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(f"Deadline name {name!r} already exists") from exc
 
     logger.info("Created deadline task: %s (%s)", name, task_id)
     return task_id
@@ -209,8 +209,8 @@ async def deadline_update(
     if isinstance(task_id, str):
         try:
             task_id = uuid.UUID(task_id)
-        except ValueError:
-            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID")
+        except ValueError as exc:
+            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",
@@ -365,8 +365,8 @@ async def deadline_delete(
     if isinstance(task_id, str):
         try:
             task_id = uuid.UUID(task_id)
-        except ValueError:
-            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID")
+        except ValueError as exc:
+            raise ValueError(f"Invalid task_id: {task_id!r} is not a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id, task_type, source FROM scheduled_tasks WHERE id = $1",

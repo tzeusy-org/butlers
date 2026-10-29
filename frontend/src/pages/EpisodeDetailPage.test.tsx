@@ -46,6 +46,10 @@ const BASE_EPISODE: Episode = {
   last_referenced_at: "2025-01-15T12:00:00Z",
   expires_at: null,
   metadata: {},
+  consolidation_attempts: 0,
+  last_consolidation_error: null,
+  dead_letter_reason: null,
+  next_consolidation_retry_at: null,
 };
 
 function makeFact(overrides: Partial<Fact> = {}): Fact {

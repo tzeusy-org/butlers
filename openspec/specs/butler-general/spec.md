@@ -16,7 +16,7 @@ The general butler SHALL handle ad-hoc user requests without specialist schema a
 
 #### Scenario: Module profile
 - **WHEN** the general butler starts
-- **THEN** it loads modules: `general` (the custom module that registers the collection and item management tools), `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), `memory`, and `steam` (lifestyle gaming-activity capture available to the catch-all butler)
+- **THEN** it loads modules: `general` (the custom module that registers the collection and item management tools), `calendar` (Google provider, suggest conflicts policy), `contacts` (Google provider, sync enabled, 15-minute interval, 6-day full sync), and `memory`
 
 ### Requirement: General Butler Tool Surface
 The general butler SHALL provide collection and item management tools for organizing freeform data.

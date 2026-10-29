@@ -12,7 +12,6 @@ dependencies = [
     "asyncpg",
     "fido2==2.2.1",
     "croniter",
-    "icalendar>=5.0.0",
     "opentelemetry-sdk",
     "opentelemetry-exporter-otlp",
     "opentelemetry-instrumentation-fastapi",
@@ -27,7 +26,7 @@ dependencies = [
     "httpx",
     "aiohttp>=3.9",
     "sentence-transformers",
-    "pgvector",
+    "torch==2.12.0",
     "structlog",
     "prometheus-client",
     "pillow>=10.0.0",
@@ -35,8 +34,8 @@ dependencies = [
     "wyoming>=1.8.0",
     "aioboto3>=13.0.0",
     "cryptography>=42.0.0",
-    "markdown>=3.10.2",
     "anthropic>=0.40.0",
+    "rfc8785==0.1.4",
 ]
 
 [tool.uv]
@@ -49,6 +48,14 @@ dependencies = [
 # hint can be removed.
 required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
 [project.optional-dependencies]
 connectors = [
 ]
@@ -56,9 +63,6 @@ live-listener = [
     "sounddevice>=0.4.6",
     "onnxruntime>=1.17.0",
     "numpy>=1.26.0",
-]
-whatsapp = [
-    "qrcode[pil]>=7.4.2",
 ]
 
 [dependency-groups]
@@ -71,6 +75,8 @@ dev = [
     "pytest-cov>=7.0.0",
     "moto[s3,server]>=5.0.0",
     "pytest-timeout>=2.4.0",
+    "import-linter>=2.15",
+    "pytest-split>=0.11.0",
 ]
 
 [project.scripts]
@@ -79,7 +85,6 @@ google-calendar-connector = "butlers.connectors.google_calendar:main"
 google-drive-connector = "butlers.connectors.google_drive:main"
 steam-connector = "butlers.connectors.steam:main"
 telegram-user-client-connector = "butlers.connectors.telegram_user_client:run_telegram_user_client_connector"
-discord-user-connector = "butlers.connectors.discord_user:run_discord_user_connector"
 butlers = "butlers.cli:cli"
 
 [tool.ruff]
@@ -88,6 +93,19 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+# Bug-class rules (bu-28av8x.4): bugbear and async-correctness.
+extend-select = ["B", "ASYNC"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency/parameter markers are evaluated per request, not shared
+# mutable defaults; B008 stays enabled for every other call in a default.
+extend-immutable-calls = [
+  "fastapi.Body",
+  "fastapi.Depends",
+  "fastapi.File",
+  "fastapi.Header",
+  "fastapi.Query",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests use long descriptive docstrings and SQL literals; formatting keeps
@@ -107,6 +125,7 @@ select = ["E", "F", "I", "UP"]
 known-first-party = ["butlers"]
 
 [tool.pytest.ini_options]
+timeout = 300
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests", "roster"]
@@ -123,7 +142,11 @@ pythonpath = ["."]
 # --dist loadfile: keeps tests from the same file on the same worker so that
 #   module-scoped fixtures (e.g. shared FastAPI app, module-scoped DB pools)
 #   are not torn down and recreated across workers mid-module.
-addopts = "--import-mode=importlib -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
+# -p tests.quarantine: deselects the flaky tests listed in
+#   tests/quarantine.json; `--quarantined` runs only them (docs/testing/quarantine.md).
+# -p tests.log_isolation: detaches butler DB log handlers a test attached to the
+#   root logger and never shut down, so they cannot leak into later tests.
+addopts = "--import-mode=importlib -p tests.quarantine -p tests.log_isolation -m 'not nightly and not bench and not perf' -n 3 --dist loadfile --ignore=tests/benchmarks"
 markers = [
     "unit: Pure unit tests — no Docker, no external services",
     "smoke: Fast operational smoke gate — no real LLM spawned; Docker allowed for DB-backed assertions",
@@ -142,15 +165,14 @@ markers = [
     # pg_clock: tests whose pass/fail hinges on comparing a Postgres-clock
     # timestamp (a column DEFAULT now(), an inline SQL now()/CURRENT_TIMESTAMP,
     # or a PG-computed age/decay/window band) against a Python-clock value
-    # (datetime.now() used to build a cutoff or assertion). These pass normally
-    # because both clocks are the same wall time, but they FALSE-FAIL under the
-    # nightly faketime matrix legs (.github/workflows/nightly.yml): libfaketime
-    # shifts only the Python process clock (+45d/+120d), not the Postgres
-    # testcontainer, so the two sides skew by the offset. They are NOT
-    # wall-clock time-bombs (nothing breaks in prod, where both clocks are real
-    # and synced), so the faketime legs deselect them via `-m "not pg_clock"`;
-    # they stay in every other job (default CI, regular nightly). See bu-szgi9.
-    "pg_clock: Test mixes Postgres-clock and Python-clock time; deselected only from the faketime matrix legs (see bu-szgi9)",
+    # (datetime.now() used to build a cutoff or assertion). bu-szgi9 excluded
+    # these from the nightly faketime legs when only Python shifted, because
+    # the clocks disagreed by +45d/+120d. Since bu-29wkwj.6 the root conftest
+    # shifts the shared Postgres testcontainer by the same offset; bu-29wkwj.12
+    # re-admits the existing marked cases to both legs. The marker documents
+    # sensitive clock comparisons, not an exclusion or a requirement for new
+    # DB tests. Independent bench/perf/nightly/faketime_fragile exclusions stay.
+    "pg_clock: Test compares Postgres-clock and Python-clock time; included in both shifted-Postgres faketime legs (see bu-29wkwj.12)",
     # faketime_fragile: tests whose progress DEPENDS on a timed thread-sync
     # primitive actually EXPIRING — threading.Event.wait(timeout)/Lock.acquire(
     # timeout)/Thread.join(timeout)/Future.result(timeout). CPython implements
@@ -161,7 +183,14 @@ markers = [
     # are pure concurrency/thread-safety tests with no time semantics, so they
     # carry zero value under faketime; the legs deselect them via
     # `-m "not faketime_fragile"` while every other job keeps running them.
-    "faketime_fragile: Test relies on a timed thread-sync primitive expiring; deselected only from the faketime matrix legs (see bu-tegqi)",
+    # bu-29wkwj.6 adds the second case: a test that needs a live TLS handshake
+    # (uv fetching from PyPI). Certificate validity is checked against the
+    # shifted clock, so a +120d leg fails once the real certificate expires
+    # inside the offset -- an artifact of the leg, not of the code under test.
+    # Third case: a test that needs a PostgreSQL statement_timeout/lock_timeout
+    # to fire. Once the shared container runs under the offset, those server
+    # timers never expire (even with FAKETIME_DONT_FAKE_MONOTONIC=1).
+    "faketime_fragile: Test relies on a timed thread-sync primitive expiring, a PostgreSQL statement/lock timeout firing, or a live TLS certificate check; deselected only from the faketime matrix legs (see bu-tegqi, bu-29wkwj.6)",
 ]
 filterwarnings = [
     # Third-party websockets/uvicorn deprecation: tracked upstream, not actionable here
@@ -192,3 +221,39 @@ source = ["src/butlers"]
 [tool.coverage.report]
 show_missing = true
 skip_empty = true
+
+# Package layering (about/craft-and-care/interfaces-and-dependencies.md). Direct imports only
+# (allow_indirect_imports): these state "must not import", the way the AST tests they replace did.
+# Roster butlers are not importable packages (they load by path), so a core -> roster rule is not
+# expressible here; the loader slice of bu-m0vjeb.4 covers that edge.
+[tool.importlinter]
+root_package = "butlers"
+exclude_type_checking_imports = true
+
+[[tool.importlinter.contracts]]
+name = "core does not import api, connectors or modules"
+type = "forbidden"
+source_modules = ["butlers.core"]
+forbidden_modules = ["butlers.api", "butlers.connectors", "butlers.modules"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "core_tools does not import modules"
+type = "forbidden"
+source_modules = ["butlers.core_tools"]
+forbidden_modules = ["butlers.modules"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "connectors and modules do not import api"
+type = "forbidden"
+source_modules = ["butlers.connectors", "butlers.modules"]
+forbidden_modules = ["butlers.api"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+name = "modules do not import the spawner"
+type = "forbidden"
+source_modules = ["butlers.modules"]
+forbidden_modules = ["butlers.core.spawner"]
+allow_indirect_imports = true

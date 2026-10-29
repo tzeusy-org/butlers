@@ -12,6 +12,7 @@ from butlers.spotify_credentials import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_MANAGED_ENTITY_INFO_TYPES,
 )
+from butlers.testing.records import row as _make_row
 
 pytestmark = pytest.mark.unit
 
@@ -28,12 +29,6 @@ def _make_pool(*, fetchrow_return=None, execute_return: str = "DELETE 0") -> Mag
     pool.acquire.return_value = cm
     pool._conn = conn
     return pool
-
-
-def _make_row(**kwargs) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = lambda self, key: kwargs[key]
-    return row
 
 
 async def test_credential_store_owns_only_spotify_client_configuration() -> None:

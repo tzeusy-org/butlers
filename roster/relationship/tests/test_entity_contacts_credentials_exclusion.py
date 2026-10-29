@@ -28,6 +28,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -73,6 +74,7 @@ def _make_entity_fact_row(**kwargs) -> MagicMock:
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -105,9 +107,9 @@ def _app_with_pool(
     app = create_app()
 
     # Find the relationship router module to override its _get_db_manager.
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool

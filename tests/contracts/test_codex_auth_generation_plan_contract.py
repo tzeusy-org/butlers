@@ -15,9 +15,7 @@ pytestmark = pytest.mark.contract
 
 _ROOT = Path(__file__).resolve().parents[2]
 _CHANGE = _ROOT / "openspec/changes/generation-fenced-codex-auth-rotation-provenance"
-_PLAN = (
-    _ROOT / "docs/superpowers/plans/2026-08-13-generation-fenced-codex-auth-rotation-provenance.md"
-)
+_PLAN = _ROOT / "docs/plans/2026-08-13-generation-fenced-codex-auth-rotation-provenance.md"
 
 
 def _read(path: Path) -> str:

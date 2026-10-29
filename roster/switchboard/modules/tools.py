@@ -7,13 +7,18 @@ Called by ``SwitchboardModule.register_tools`` via
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
-from fastmcp.server.dependencies import get_access_token
+from butlers.core.approval_delivery_authority import (
+    guard_registered_approval_tool,
+    verify_switchboard_recovery,
+)
+from butlers.core.tool_call_capture import get_current_runtime_session_id
+from butlers.modules.base import tool_registrar
 
-from butlers.core.approval_delivery_transport import authenticated_daemon_name
-from butlers.modules.base import group_enabled
+logger = logging.getLogger(__name__)
 
 
 def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: C901
@@ -31,10 +36,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     from butlers.tools.switchboard.routing import correct_route as _correct_route
     from butlers.tools.switchboard.routing import route as _route
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # =================================================================
     # Registry tools
@@ -79,7 +81,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         allow_stale: bool = False,
         allow_quarantined: bool = False,
     ) -> dict[str, Any]:
-        """Route a tool call to a target butler via its MCP endpoint."""
+        """Route a daemon tool call; runtime sessions receive a non-retryable refusal."""
+        session_id = get_current_runtime_session_id()
+        if session_id is not None:
+            logger.warning("Refused generic route from runtime session %s", session_id)
+            return {"error": "route_refused_for_session", "retryable": False}
         return await _route(
             module._get_pool(),
             target_butler,
@@ -151,6 +157,24 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     # Notification delivery tools
     # =================================================================
 
+    async def preauthorize_deliver(arguments: dict[str, Any]) -> dict[str, Any] | None:
+        payload = arguments.get("notify_request")
+        if not isinstance(payload, dict) or payload.get("recovery") is None:
+            return None
+        trusted = await verify_switchboard_recovery(module, payload)
+        if (
+            trusted is None
+            or trusted.issuer != arguments.get("source_butler")
+            or not callable(getattr(module, "_approval_recovery_call", None))
+        ):
+            return {
+                "status": "failed",
+                "error": "Approval recovery authority rejected.",
+                "retryable": False,
+            }
+        return None
+
+    @guard_registered_approval_tool(mcp, preauthorize_deliver)
     @_tool("routing")
     async def deliver(
         channel: str | None = None,
@@ -161,12 +185,13 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         notify_request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Deliver a notification through the specified channel."""
-        trusted_source = None
+        verified_context = None
+        recovery_call = None
         if isinstance(notify_request, dict) and notify_request.get("recovery") is not None:
-            trusted_source = authenticated_daemon_name(
-                get_access_token(),
-                required_scope="approval-recovery:source",
-            )
+            verified_context = await verify_switchboard_recovery(module, notify_request)
+            recovery_call = getattr(module, "_approval_recovery_call", None)
+            if not callable(recovery_call):
+                verified_context = None
         return await _deliver_notification(
             module._get_pool(),
             channel=channel,
@@ -175,7 +200,8 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             metadata=metadata,
             source_butler=source_butler,
             notify_request=notify_request,
-            trusted_source=trusted_source,
+            verified_context=verified_context,
+            call_fn=recovery_call if verified_context is not None else None,
         )
 
     # =================================================================

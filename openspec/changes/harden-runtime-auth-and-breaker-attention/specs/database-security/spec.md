@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## ADDED Requirements
 
 ### Requirement: Runtime-Probe Replay Receipt Is Switchboard-Owned
@@ -14,6 +19,15 @@ runtime launch, or verification persistence. Only Switchboard's runtime role
 may create, inspect for replay, or remove expired receipt rows; ordinary
 butler, connector, and dashboard runtime roles receive no direct receipt-table
 grant. Expired-row cleanup SHALL not remove a row before its retention bound.
+
+The goal-runtime move SHALL NOT grant the session host or invocations database,
+credential-store or private-schema access. Trusted deterministic control-plane
+code SHALL retain the source-validated producer and Switchboard replay/claim
+boundaries below, including receipt-before-work, narrow effective-role grants,
+no arbitrary payload authority, finite evidence and no peer-schema shortcut.
+Broker authorization SHALL NOT stand in for these database checks, and this
+amendment SHALL NOT promote the existing shared-login SET ROLE proof into an
+independently authenticated principal claim or change any migration/ACL.
 
 ID: REQ-database-security-008
 Source: heart-and-soul/security.md; craft-and-care/security-and-secrets.md; RFC 0003; core-credentials REQ-core-credentials-002; design.md Decision 2

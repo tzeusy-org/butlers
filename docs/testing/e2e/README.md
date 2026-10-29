@@ -36,7 +36,12 @@ make test-e2e-validate                                          # -m "e2e and no
 make test-e2e-benchmark BENCHMARK_MODELS=claude-sonnet-4-5,gpt-4o
 uv run pytest tests/e2e/ -v -s -n 0 --scenarios=smoke           # scenarios tagged "smoke"
 uv run pytest tests/e2e/test_state.py -v -s -n 0                # one file
+uv run pytest tests/e2e/test_scenario_runner.py -v -s -n 0 -k "telegram-health-query"  # one scenario
+uv run pytest tests/e2e/ -v -s -n 0 --log-cli-level=DEBUG --tb=long   # everything to the console
 ```
+
+A scenario's pytest id is `<scenario.id>[<sorted tags>]` (`_scenario_id` in `test_scenario_runner.py`),
+so `-k` matches the `id=` of its `Scenario` in `scenarios.py`.
 
 **Validate mode** (default) uses whatever model each butler resolves today and fails on the first
 routing or tool-call mismatch; a scenario that times out is recorded, not failed.
@@ -48,6 +53,56 @@ crashed run can be cleaned up with one `DELETE`. Only one corpus path is collect
 per-model routing, tool-call and cost scorecards to `.tmp/e2e-scorecards/<timestamp>/`
 (`tests/e2e/reporting.py`), pricing tokens from the repo-root `pricing.toml` (unknown models cost
 zero).
+
+## Layout
+
+```
+pytest (-n 0)
+  tests/e2e/conftest.py     ecosystem bootstrap + fixtures
+  tests/e2e/scenarios.py    Scenario registry (declarative)
+  tests/e2e/test_*_flow.py  multi-step, per-butler or cross-butler flows
+        |
+        v
+butler_ecosystem (session-scoped): one in-process ButlerDaemon per roster butler
+  FastMCP over /mcp and /sse, spawner, DB pool; port = roster port + 11000
+        |
+        v
+PostgreSQL testcontainer (session-scoped): one `butlers` database,
+  one schema per butler plus shared `public`
+```
+
+## Debugging
+
+The ecosystem fixture is session-scoped, so a breakpoint inside a test leaves every butler and
+database running.
+
+- **Inspect the database.** The container's host port is random and is logged at session start
+  (`PostgreSQL testcontainer started: host=... port=...`; run with `-s` or `--log-cli-level=INFO`).
+  Connect with the testcontainer's default credentials to the `butlers` database, then pick a
+  butler's schema: `psql -h localhost -p <port> -U test -d butlers`, then
+  `SET search_path TO health, public;`.
+- **Call a tool by hand.** From a breakpoint, connect to a butler on its offset port (roster port
+  plus `E2E_PORT_OFFSET`, e.g. health 41103 becomes 52103) at `/sse`:
+
+  ```python
+  from fastmcp import Client as MCPClient
+
+  async with MCPClient("http://localhost:52103/sse") as client:
+      print(await client.call_tool("status", {}))
+  ```
+
+- **Read the logs.** Butler logs go to `.tmp/e2e-logs/e2e-<timestamp>.log` once a test requests the
+  `e2e_log_path` fixture (`test_observability.py` does); otherwise use `--log-cli-level=DEBUG`.
+  Useful filters:
+
+  ```bash
+  LOG=$(ls -t .tmp/e2e-logs/e2e-*.log | head -1)
+  grep -i 'error\|exception\|traceback' "$LOG"       # all errors
+  grep 'spawner.*trigger\|ClaudeCodeAdapter' "$LOG"   # LLM invocations
+  grep 'tool_span\|call_tool' "$LOG"                  # MCP tool calls
+  grep 'Module.*disabled\|Module.*failed' "$LOG"      # expected for telegram, email, calendar
+  grep 'classify_message\|route.*target' "$LOG"       # routing decisions
+  ```
 
 ## Writing tests
 

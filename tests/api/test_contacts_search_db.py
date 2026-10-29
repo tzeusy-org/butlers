@@ -31,7 +31,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.contacts import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -78,7 +78,7 @@ def search_app(pool: asyncpg.Pool) -> FastAPI:
     mock_db.credential_shared_pool.return_value = pool
 
     application = create_app()
-    application.dependency_overrides[_get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 
@@ -186,6 +186,8 @@ async def test_alias_match(search_app, pool):
 # ---------------------------------------------------------------------------
 
 
+# REQ-contacts-identity-001: real non-secret search SQL; the adjacent real
+# secret/person/blank controls retain the full existing matching contract.
 async def test_non_secret_identifier_match(search_app, pool):
     ids = await _seed(pool)
     results = await _search(search_app, "bob.secret@")

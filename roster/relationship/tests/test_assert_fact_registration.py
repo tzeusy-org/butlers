@@ -17,7 +17,9 @@ breaking dispatch. It is now registered unconditionally; this test guards that.
 
 from __future__ import annotations
 
+import tomllib
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,8 +30,8 @@ from butlers.modules._roster_relationship import (
     RelationshipModuleConfig,
 )
 
-# Groups the production Relationship butler currently enables. The mixed entity
-# group stays pruned until its adopted six-read/two-write split is implemented.
+# Explicit legacy eight-group pruned configuration. Keep its original inventory
+# assertions separate from the actual current roster loaded below.
 _PRODUCTION_GROUPS = [
     "contacts",
     "contacts_extended",
@@ -74,7 +76,8 @@ async def test_assert_fact_resolvable_via_get_tool():
 async def test_approved_groups_register_expected_relationship_surface():
     """Eight approved groups expose 60 tools plus the mandatory fact writer."""
     names = await _register(_PRODUCTION_GROUPS)
-    assert len(names) == 61
+    assert len(names - {"identity_resolve_channels", "identity_assert_sender_channel"}) == 61
+    assert {"identity_resolve_channels", "identity_assert_sender_channel"} <= names
     assert {
         "address_add",
         "upcoming_dates",
@@ -131,6 +134,73 @@ async def test_assert_fact_closure_invokes_library_writer(monkeypatch):
     writer.assert_awaited_once()
     assert writer.await_args.kwargs.get("src") == "relationship"
     assert result == outcome.as_dict.return_value
+
+
+_READS = {
+    "entity_resolve",
+    "entity_get",
+    "entity_neighbors",
+    "relationship_fact_evidence",
+    "relationship_predicate_coverage",
+    "relationship_lookup",
+}
+_WRITES = {"entity_update", "relationship_record_coverage", "entity_set_posture"}
+
+
+def _roster_modules():
+    return tomllib.loads((Path(__file__).parents[1] / "butler.toml").read_text())["modules"]
+
+
+@pytest.mark.parametrize("groups,expected", [(["entity"], _READS), (["entity_write"], _WRITES)])
+async def test_entity_groups_register_exact_membership(groups, expected):
+    names = await _register(groups)
+    assert names == expected | {"relationship_assert_fact"}
+    assert "entity_create" not in names
+
+
+async def test_actual_roster_adds_only_six_reads_to_current_approved_surface():
+    groups = _roster_modules()["relationship"]["groups"]
+    assert set(groups) == set(_PRODUCTION_GROUPS) | {"contacts_ingress", "entity"}
+    assert "entity_write" not in groups
+    current_pruned = await _register([g for g in groups if g != "entity"])
+    active = await _register(groups)
+    assert active - current_pruned == _READS
+    assert current_pruned <= active
+    assert len(current_pruned) == 65
+    assert len(active) == 71
+    assert _WRITES.isdisjoint(active)
+    assert "relationship_assert_fact" in active
+
+
+async def test_omitting_entity_groups_keeps_unconditional_writer():
+    names = await _register(["contacts"])
+    assert (_READS | _WRITES).isdisjoint(names)
+    assert "relationship_assert_fact" in names
+
+
+async def test_actual_roster_preserves_memory_entity_creation_owner():
+    from butlers.modules.memory import MemoryModule, MemoryModuleConfig
+
+    modules = _roster_modules()
+    mcp = FastMCP("test-relationship-and-memory")
+    await RelationshipModule().register_tools(
+        mcp,
+        RelationshipModuleConfig.model_validate(modules["relationship"]),
+        db=None,
+        butler_name="relationship",
+    )
+    await MemoryModule().register_tools(
+        mcp,
+        MemoryModuleConfig.model_validate(modules["memory"]),
+        db=None,
+        butler_name="relationship",
+    )
+    names = {tool.name for tool in await mcp.list_tools()}
+    assert "memory_entity_create" in names
+    assert "entity_create" not in names
+    assert _READS <= names
+    assert _WRITES.isdisjoint(names)
+    assert "relationship_assert_fact" in names
 
 
 if __name__ == "__main__":  # pragma: no cover

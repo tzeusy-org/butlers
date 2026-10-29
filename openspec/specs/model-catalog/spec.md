@@ -9,6 +9,8 @@ The model catalog is the canonical registry of available model configurations fo
 ### Requirement: Model Catalog Schema
 The system SHALL maintain a `public.model_catalog` table as the canonical registry of available model configurations. Each entry defines a named model alias, its runtime adapter type, the actual model identifier, optional extra CLI arguments, a complexity tier assignment, an enabled flag, and a priority for tie-breaking.
 
+Entries SHALL also carry nullable allowance_account, an operator-supplied nonsecret account label; NULL SHALL retain the existing runtime_type fallback. Assigning a label SHALL NOT provision provider credentials or change quota/breaker semantics.
+
 #### Scenario: Catalog entry structure
 - **WHEN** a model catalog entry is created
 - **THEN** it contains: `id` (UUID PK), `alias` (text, UNIQUE), `runtime_type` (text, NOT NULL), `model_id` (text, NOT NULL), `extra_args` (JSONB, default `[]`), `complexity_tier` (text, NOT NULL), `enabled` (boolean, default true), `priority` (int, default 0), `session_timeout_s` (int, NOT NULL, default 1800), `last_verified_at` (timestamptz, nullable), `last_verified_latency_ms` (int, nullable), `last_verified_ok` (bool, nullable), `last_verified_error` (text, nullable), `created_at` (timestamptz), `updated_at` (timestamptz)
@@ -34,6 +36,16 @@ The system SHALL maintain a `public.model_catalog` table as the canonical regist
 #### Scenario: Extra args format
 - **WHEN** `extra_args` is provided
 - **THEN** it MUST be a JSON array of strings, where each string is a single CLI token (e.g. `["--config", "model_reasoning_effort=high"]`)
+
+#### Scenario: Explicit account label and legacy default
+- **WHEN** the existing catalog API creates a route with a valid allowance_account label or omits it
+- **THEN** the label SHALL be persisted and returned, or the column SHALL be NULL when omitted or null
+- **AND** NULL SHALL continue to use runtime_type as the allowance account key without guessing or backfilling credentials
+
+#### Scenario: Same-runtime routes retain distinct account assignments
+- **WHEN** two routes on one runtime_type are assigned different labels through the catalog API and one account is exhausted until a future reset
+- **THEN** the exhausted account's routes SHALL be excluded and an otherwise eligible route on the other account SHALL still resolve
+- **AND** identical labels SHALL intentionally retain the current account-key grouping across routes
 
 ### Requirement: Model Alias Concept
 A model alias is a named configuration combining a base model with optional extra runtime arguments. Aliases SHALL be rows in the model catalog - there is no separate alias table. The alias serves as the human-readable identifier while `model_id` is the actual model string passed to the runtime adapter.
@@ -259,26 +271,30 @@ The system SHALL seed the model catalog with sensible defaults on first migratio
 
 | Alias | Runtime | Model ID | Extra Args | Tier | Priority | Enabled |
 |-------|---------|----------|------------|------|----------|---------|
-| `claude-haiku` | `claude` | `claude-haiku-4-5-20251001` | `[]` | `cheap` | 10 | false |
-| `claude-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `workhorse` | 10 | false |
-| `claude-opus` | `claude` | `claude-opus-4-6` | `[]` | `reasoning` | 10 | false |
+| `claude-haiku` | `claude` | `claude-haiku-5-5` | `[]` | `cheap` | 10 | false |
+| `claude-sonnet` | `claude` | `claude-sonnet-5-5` | `[]` | `workhorse` | 10 | false |
+| `claude-opus` | `claude` | `claude-opus-5-5` | `[]` | `reasoning` | 10 | false |
 | `gpt-5.4-mini` | `codex` | `gpt-5.4-mini` | `[]` | `cheap` | 25 | true |
+| `api-haiku-cheap` | `api` | `claude-haiku-4-5-20251001` | `[]` | `cheap` | 30 | true |
 | `gpt-5.3-spark` | `codex` | `gpt-5.3-codex-spark` | `[]` | `workhorse` | 20 | true |
 | `gpt-5.4` | `codex` | `gpt-5.4` | `[]` | `workhorse` | 0 | true |
 | `gpt-5.4-high` | `codex` | `gpt-5.4` | `["--config", "model_reasoning_effort=high"]` | `reasoning` | 0 | true |
-| `gemini-2.5-flash` | `gemini` | `gemini-2.5-flash` | `[]` | `cheap` | 10 | false |
-| `gemini-2.5-pro` | `gemini` | `gemini-2.5-pro` | `[]` | `workhorse` | 10 | false |
-| `minimax-m2.5` | `opencode` | `opencode-go/minimax-m2.5` | `[]` | `workhorse` | 20 | true |
-| `glm-5` | `opencode` | `opencode-go/glm-5` | `[]` | `workhorse` | 20 | true |
-| `minimax-m2.7` | `opencode` | `opencode-go/minimax-m2.7` | `[]` | `workhorse` | 20 | true |
-| `minimax-m2.7-highspeed` | `opencode` | `opencode-go/minimax-m2.7-highspeed` | `[]` | `workhorse` | 15 | true |
-| `kimi-k2.5` | `opencode` | `opencode-go/kimi-k2.5` | `[]` | `reasoning` | 20 | true |
-| `qwen3-coder-480b` | `opencode` | `opencode-go/qwen3-coder-480b` | `[]` | `reasoning` | 20 | true |
+| `gpt-6-luna-max` | `codex` | `gpt-6-luna` | `["--config", "model_reasoning_effort=\"max\""]` | `cheap` | 26 | true |
+| `gpt-6.1-sol-low` | `codex` | `gpt-6.1-sol` | `["--config", "model_reasoning_effort=\"low\""]` | `workhorse` | 31 | true |
+| `gpt-6.1-sol-high` | `codex` | `gpt-6.1-sol` | `["--config", "model_reasoning_effort=\"high\""]` | `reasoning` | 30 | true |
+| `healing-gpt-6.1-sol` | `codex` | `gpt-6.1-sol` | `["--config", "model_reasoning_effort=\"high\""]` | `specialty` | 5 | true |
+| `gemini-3.8-flash` | `gemini` | `gemini-3.8-flash` | `[]` | `cheap` | 10 | false |
+| `gemini-4-argon` | `gemini` | `gemini-4-argon` | `[]` | `reasoning` | 10 | false |
+| `glm-5.3-flash` | `opencode` | `opencode-go/glm-5.3-flash` | `[]` | `workhorse` | 30 | true |
+| `mimo-v2.6-flash` | `opencode` | `opencode-go/mimo-v2.6-flash` | `[]` | `workhorse` | 25 | true |
+| `deepseek-v4.1-flash` | `opencode` | `opencode-go/deepseek-v4.1-flash` | `[]` | `workhorse` | 15 | false |
+| `mimo-v2.6-pro` | `opencode` | `opencode-go/mimo-v2.6-pro` | `[]` | `reasoning` | 30 | true |
 | `ollama-default` | `opencode` | `ollama/qwen2.5-coder:7b` | `[]` | `local` | 5 | false |
 | `ollama-light` | `opencode` | `ollama/llama3.3:latest` | `[]` | `local` | 5 | false |
 | `ollama-heavy` | `opencode` | `ollama/deepseek-r1:32b` | `[]` | `local` | 5 | false |
 | `discretion-qwen3.5-9b` | `opencode` | `ollama/qwen3.5:9b` | `[]` | `specialty` | 10 | true |
-| `healing-sonnet` | `claude` | `claude-sonnet-4-6` | `[]` | `specialty` | 10 | false |
+| `api-haiku-specialty` | `api` | `claude-haiku-4-5-20251001` | `[]` | `specialty` | 20 | true |
+| `healing-sonnet` | `claude` | `claude-sonnet-5-5` | `[]` | `specialty` | 10 | false |
 
 - **AND** entries whose `complexity_tier` is not one of the canonical tiers are skipped at load time
 

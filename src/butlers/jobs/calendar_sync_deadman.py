@@ -26,7 +26,7 @@ Why the dashboard-api process, not a butler daemon
 has its own sources + cursors, fanned out and merged for the FE's grid-level
 plaque). The dashboard-api's ``DatabaseManager`` already reads across every
 calendar-enabled schema for the sibling ``GET /api/calendar/workspace`` read
-(:func:`butlers.api.read_models.calendar_workspace_v1.query_calendar_sources`,
+(:func:`butlers.api.read_models.calendar_workspace.query_calendar_sources`,
 reused here unchanged) -- a single butler's own pool cannot. This also mirrors
 ``butlers.jobs.deploy_drift``'s identical rationale for running here rather
 than in a butler's scheduled-task loop.
@@ -85,11 +85,11 @@ from typing import Any
 import asyncpg
 
 from butlers.api.db import DatabaseManager
-from butlers.api.read_models.calendar_workspace_v1 import (
+from butlers.api.read_models.calendar_workspace import (
     CalendarSourceRow,
     query_calendar_sources,
 )
-from butlers.api.routers import audit as audit_router
+from butlers.core import audit as audit_router
 from butlers.core.healing.tracking import create_or_join_attempt, update_attempt_status
 from butlers.core.infra_conditions import (
     ConditionTransition,

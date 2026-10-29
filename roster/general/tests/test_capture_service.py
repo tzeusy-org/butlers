@@ -31,7 +31,7 @@ def capture_db_url(postgres_container):
         migration_db_name(),
         ["core", "general"],
         schemas={"general": "general"},
-        revisions={"core": "core_259"},
+        revisions={"core": "core_287"},
     )
 
 
@@ -196,12 +196,12 @@ async def test_rollback_unknown_lineage_and_unsupported_owner(service, capture_p
     ):
         interrupted = await svc.admit(authority(epoch), "Synthetic capture")
 
-        async def interrupt_after_write(*args, **kwargs):
+        async def interrupt_after_write(*args, _error_type=error_type, **kwargs):
             await original(*args, **kwargs)
-            if error_type is asyncio.CancelledError:
+            if _error_type is asyncio.CancelledError:
                 asyncio.current_task().cancel()
                 await asyncio.sleep(0)
-            raise error_type("synthetic post-write interruption")
+            raise _error_type("synthetic post-write interruption")
 
         monkeypatch.setattr(implementation, "item_create_versioned", interrupt_after_write)
         with pytest.raises(error_type):

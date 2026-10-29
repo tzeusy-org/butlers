@@ -4,6 +4,10 @@
 
 ### Requirement: Confirm Inline Keyboard Rendering
 
+ID: REQ-module-telegram-003
+Source: RFC 0038 D7/D13/D18; specify-telegram-confirm-interaction-contract/design.md
+Scope: v1-mandatory
+
 The module's send tools SHALL support rendering a `notify(intent="confirm")` envelope as an
 inline keyboard whose buttons carry `cfm1:<confirm_id>:<opt_idx>:<hmac>` callback tokens
 (see the `notify-confirm-interaction` capability), one button per offered option, and SHALL

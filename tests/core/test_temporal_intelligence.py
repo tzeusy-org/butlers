@@ -24,7 +24,9 @@ from typing import Any
 
 import pytest
 
+from butlers.config import ScheduleSpec
 from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [pytest.mark.unit]
 
@@ -489,7 +491,7 @@ def test_notification_due_expiry_and_delivery_result():
 
 @pytest.mark.asyncio
 async def test_event_chain_pass_skips_calendar_projection_when_event_chains_table_missing():
-    """Legacy calendar projection rows must not break tick() without event_chains."""
+    """A missing migrated event-chain table faults without querying legacy calendar data."""
     from butlers.core.scheduler import _tick_event_chain_pass
 
     class FakePool:
@@ -507,14 +509,11 @@ async def test_event_chain_pass_skips_calendar_projection_when_event_chains_tabl
             raise AssertionError(f"Unexpected fetchval: {sql!r} {args!r}")
 
         async def fetch(self, sql: str, *args):
+            import asyncpg
+
             self.fetch_calls.append(sql)
-            if "information_schema.columns" in sql and args[0] == "calendar_projection":
-                return [
-                    {"column_name": "event_id"},
-                    {"column_name": "butler_name"},
-                    {"column_name": "end_at"},
-                    {"column_name": "chain_triggered"},
-                ]
+            if "FROM event_chains" in sql:
+                raise asyncpg.UndefinedTableError("event_chains")
             raise AssertionError(f"Unexpected fetch: {sql!r} {args!r}")
 
         async def execute(self, sql: str, *args):
@@ -525,7 +524,10 @@ async def test_event_chain_pass_skips_calendar_projection_when_event_chains_tabl
     async def noop(**kwargs):
         pass
 
-    assert await _tick_event_chain_pass(pool, noop, datetime.now(UTC)) == 0
+    import asyncpg
+
+    with pytest.raises(asyncpg.UndefinedTableError):
+        await _tick_event_chain_pass(pool, noop, datetime.now(UTC))
     assert not any("FROM calendar_projection" in call for call in pool.fetch_calls)
 
 
@@ -596,6 +598,17 @@ async def test_event_chain_pass_skips_malformed_deadline_trigger_references(capl
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def migrated_tick_db_url(postgres_container):
+    """Apply the complete current core chain to a real butler schema per case."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": "general"},
+    )
+
+
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
@@ -618,117 +631,18 @@ class TestTickIntegration:
         ):
             yield
 
-    _SCHEDULED_TASKS_DDL = """
-        CREATE TABLE IF NOT EXISTS scheduled_tasks (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT UNIQUE NOT NULL,
-            cron TEXT NOT NULL DEFAULT '* * * * *',
-            prompt TEXT,
-            dispatch_mode TEXT NOT NULL DEFAULT 'prompt',
-            job_name TEXT,
-            job_args JSONB,
-            complexity TEXT DEFAULT 'medium',
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            start_at TIMESTAMPTZ,
-            end_at TIMESTAMPTZ,
-            until_at TIMESTAMPTZ,
-            display_title TEXT,
-            calendar_event_id TEXT,
-            source TEXT NOT NULL DEFAULT 'db',
-            enabled BOOLEAN NOT NULL DEFAULT true,
-            next_run_at TIMESTAMPTZ,
-            last_run_at TIMESTAMPTZ,
-            last_result JSONB,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            task_type TEXT NOT NULL DEFAULT 'cron',
-            target_date DATE,
-            lead_time_days INTEGER,
-            alert_thresholds JSONB,
-            deadline_status TEXT,
-            fired_thresholds JSONB,
-            depends_on JSONB
-        )
-    """
-
-    _EVENT_CHAINS_DDL = """
-        CREATE TABLE IF NOT EXISTS event_chains (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            trigger_type TEXT NOT NULL,
-            trigger_reference TEXT NOT NULL,
-            actions JSONB NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            butler_name TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """
-
-    _DEFERRED_NOTIFICATIONS_DDL = """
-        CREATE TABLE IF NOT EXISTS deferred_notifications (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            butler_name TEXT NOT NULL,
-            channel TEXT NOT NULL,
-            message TEXT NOT NULL,
-            priority TEXT NOT NULL DEFAULT 'medium',
-            envelope JSONB NOT NULL,
-            deferred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            deliver_at TIMESTAMPTZ NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending',
-            delivered_at TIMESTAMPTZ
-        )
-    """
-
-    _SEASONAL_PERIODS_DDL = """
-        CREATE TABLE IF NOT EXISTS seasonal_periods (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            name TEXT NOT NULL,
-            period_type TEXT NOT NULL DEFAULT 'annual',
-            start_month INTEGER NOT NULL,
-            start_day INTEGER NOT NULL,
-            end_month INTEGER NOT NULL,
-            end_day INTEGER NOT NULL,
-            timezone TEXT NOT NULL DEFAULT 'UTC',
-            metadata JSONB,
-            butler_name TEXT NOT NULL,
-            enabled BOOLEAN NOT NULL DEFAULT true,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """
-
     @pytest.fixture
-    async def pool(self, postgres_container):
+    async def pool(self, migrated_tick_db_url):
         import asyncpg
 
-        db_name = f"test_{uuid.uuid4().hex[:12]}"
-        admin_conn = await asyncpg.connect(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database="postgres",
-        )
-        try:
-            await admin_conn.execute(f'CREATE DATABASE "{db_name}"')
-        finally:
-            await admin_conn.close()
-
         p = await asyncpg.create_pool(
-            host=postgres_container.get_container_host_ip(),
-            port=int(postgres_container.get_exposed_port(5432)),
-            user=postgres_container.username,
-            password=postgres_container.password,
-            database=db_name,
+            migrated_tick_db_url,
             min_size=1,
             max_size=3,
+            server_settings={"search_path": "general,public"},
             init=register_jsonb_codec,
         )
-        await p.execute(self._SCHEDULED_TASKS_DDL)
-        await p.execute(self._EVENT_CHAINS_DDL)
-        await p.execute(self._DEFERRED_NOTIFICATIONS_DDL)
-        await p.execute(self._SEASONAL_PERIODS_DDL)
+        # Historical data only: the current core chain has no calendar_projection table.
         await p.execute("""
             CREATE TABLE IF NOT EXISTS calendar_projection (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1049,8 +963,8 @@ class TestTickIntegration:
         )
 
     async def test_tick_event_chains(self, pool):
-        """tick() fires: calendar_event_end, deadline_passed (expired+completed),
-        deadline_threshold; no-refire of fired chains; chains_fired span set."""
+        """Historical calendar stays inert; migrated deadline/threshold positives,
+        no-refire of fired chains and chains_fired telemetry remain."""
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -1068,7 +982,7 @@ class TestTickIntegration:
         async def noop(**kwargs):
             pass
 
-        # calendar_event_end chain fires
+        # A historical calendar-end chain stays readable, unmarked and inert.
         event_id = "google-event-abc123"
         await pool.execute(
             """
@@ -1093,7 +1007,19 @@ class TestTickIntegration:
         await tick(pool, noop)
         assert (await pool.fetchrow("SELECT status FROM event_chains WHERE name = 'post-dentist'"))[
             "status"
-        ] == "fired"
+        ] == "active"
+        assert (
+            await pool.fetchval(
+                "SELECT chain_triggered FROM calendar_projection WHERE event_id=$1", event_id
+            )
+            is False
+        )
+        assert (
+            await pool.fetchval(
+                "SELECT COUNT(*) FROM scheduled_tasks WHERE name='chain:post-dentist:0'"
+            )
+            == 0
+        )
         spans = exporter.get_finished_spans()
         tick_span = next((s for s in spans if s.name == "butler.tick"), None)
         assert tick_span is not None and "chains_fired" in dict(tick_span.attributes or {})
@@ -1233,7 +1159,9 @@ class TestTickIntegration:
         ] == "fired"
 
     async def test_tick_skips_calendar_event_chain_pass_without_event_chains_table(self, pool):
-        """A partial temporal schema must not make the whole scheduler tick fail."""
+        """A missing migrated event-chain table is visible; historical rows stay untouched."""
+        import asyncpg
+
         from butlers.core.scheduler import tick
 
         now = datetime.now(UTC)
@@ -1252,7 +1180,8 @@ class TestTickIntegration:
             now - timedelta(minutes=2),
         )
 
-        assert await tick(pool, noop) == 0
+        with pytest.raises(asyncpg.UndefinedTableError):
+            await tick(pool, noop)
         row = await pool.fetchrow(
             "SELECT chain_triggered FROM calendar_projection WHERE event_id = $1",
             "event-without-chain-table",
@@ -1260,7 +1189,7 @@ class TestTickIntegration:
         assert row["chain_triggered"] is False
 
     async def test_tick_cron_and_sync_schedules(self, pool):
-        """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; validates required fields."""
+        """Cron tasks dispatch; sync_schedules inserts deadline with temporal fields; the spec requires them."""
         from butlers.core.scheduler import sync_schedules, tick
 
         await pool.execute(
@@ -1283,26 +1212,19 @@ class TestTickIntegration:
         await sync_schedules(
             pool,
             [
-                {
-                    "name": "visa-renewal",
-                    "cron": "0 9 * * *",
-                    "task_type": "deadline",
-                    "prompt": "Check visa",
-                    "dispatch_mode": "prompt",
-                    "target_date": target.isoformat(),
-                    "lead_time_days": 60,
-                    "alert_thresholds": [
+                ScheduleSpec(
+                    name="visa-renewal",
+                    cron="0 9 * * *",
+                    task_type="deadline",
+                    prompt="Check visa",
+                    target_date=target,
+                    lead_time_days=60,
+                    alert_thresholds=[
                         {"days_before": 60, "severity": "info"},
                         {"days_before": 30, "severity": "warning"},
                     ],
-                },
-                {
-                    "name": "morning-summary",
-                    "cron": "0 8 * * *",
-                    "task_type": "cron",
-                    "prompt": "Morning briefing",
-                    "dispatch_mode": "prompt",
-                },
+                ),
+                ScheduleSpec(name="morning-summary", cron="0 8 * * *", prompt="Morning briefing"),
             ],
         )
         dl_row = await pool.fetchrow(
@@ -1324,19 +1246,13 @@ class TestTickIntegration:
         )["task_type"] == "cron"
 
         with pytest.raises(ValueError, match="target_date"):
-            await sync_schedules(
-                pool,
-                [
-                    {
-                        "name": "bad-dl",
-                        "cron": "0 9 * * *",
-                        "task_type": "deadline",
-                        "prompt": "Missing target",
-                        "dispatch_mode": "prompt",
-                        "lead_time_days": 30,
-                        "alert_thresholds": [{"days_before": 30, "severity": "info"}],
-                    }
-                ],
+            ScheduleSpec(
+                name="bad-dl",
+                cron="0 9 * * *",
+                task_type="deadline",
+                prompt="Missing target",
+                lead_time_days=30,
+                alert_thresholds=[{"days_before": 30, "severity": "info"}],
             )
 
     async def test_tick_deadline_seasonal_context_injection(self, pool):

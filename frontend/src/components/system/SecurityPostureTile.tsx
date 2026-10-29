@@ -19,6 +19,7 @@ import {
   TileTitle,
 } from "@/components/ui/Tile"
 import { Badge } from "@/components/ui/badge"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useHealthPosture } from "@/hooks/use-system"
 
@@ -38,22 +39,6 @@ function TileSkeleton() {
           <Skeleton className="h-5 w-48" />
           <Skeleton className="h-5 w-56" />
         </div>
-      </TileContent>
-    </Tile>
-  )
-}
-
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Security Posture</TileTitle>
-        <TileDescription>Auth and secrets configuration</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="security-posture-tile-error" className="text-destructive text-sm">
-          Could not load security posture.
-        </p>
       </TileContent>
     </Tile>
   )
@@ -107,13 +92,21 @@ function PostureRow({ label, secure, secureLabel, insecureLabel, testId }: Postu
  * Values are booleans only — no secret material is displayed or fetched.
  */
 export function SecurityPostureTile() {
-  const { data: response, isPending, isError } = useHealthPosture()
+  const q = useHealthPosture()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Security Posture" description="Auth and secrets configuration"
+      errorMessage="Could not load security posture." errorTestId="security-posture-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <SecurityPostureContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const posture = response?.auth
-  const security = response?.security
+function SecurityPostureContent({ response }: {
+  response: NonNullable<ReturnType<typeof useHealthPosture>["data"]>
+}) {
+  const posture = response.auth
+  const security = response.security
 
   return (
     <Tile>

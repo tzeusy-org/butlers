@@ -25,6 +25,7 @@ import {
   getMeasurementsLatest,
   getMeasurementSources,
   getExpectedSignals,
+  getHealthBaselines,
   getMeasurementsTrend,
   getMedicationAdherence,
   getMedicationDoses,
@@ -532,6 +533,15 @@ export function useExpectedSignals() {
   return useQuery({
     queryKey: ["health-expected-signals"],
     queryFn: getExpectedSignals,
+    refetchInterval: HEALTH_POLL_SLOW_MS,
+  });
+}
+
+/** Stored usual ranges refresh independently of measurement trends. */
+export function useHealthBaselines() {
+  return useQuery({
+    queryKey: ["health-baselines"],
+    queryFn: getHealthBaselines,
     refetchInterval: HEALTH_POLL_SLOW_MS,
   });
 }

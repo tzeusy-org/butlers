@@ -21,16 +21,18 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
+from pydantic import BaseModel, ValidationError
 
+from butlers.api.approval_review import resolve_messenger_reviews
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -55,9 +57,11 @@ from butlers.api.models.approval import (
     ApprovalRuleFromActionRequest,
     ApprovalsPolicy,
     ApprovalsPolicyUpdate,
+    ApprovalStepUpOptionsRequest,
     ApprovalSummary,
     AutonomySuggestion,
     AutonomySuggestionDismissRequest,
+    DisplayedApprovalCall,
     EntityRef,
     ExpireStaleActionsResponse,
     RuleConstraintSuggestion,
@@ -65,7 +69,9 @@ from butlers.api.models.approval import (
     UnroutableAttentionItem,
     UnroutableRetryResult,
 )
+from butlers.api.owner_auth.service import AuthError
 from butlers.api.routers import audit as audit_router
+from butlers.core.dashboard_stepup import verified_dashboard_session
 from butlers.modules.approvals import operations as approvals_ops
 from butlers.modules.approvals.decision_memory import (
     DecisionMemoryWriter,
@@ -85,12 +91,22 @@ from butlers.modules.approvals.models import (
 from butlers.modules.approvals.models import (
     ApprovalRule as ApprovalRuleModel,
 )
+from butlers.modules.approvals.previews import args_digest, dashboard_call_preview
 from butlers.modules.approvals.redaction import redact_execution_result
-from butlers.modules.approvals.rules import is_rule_effective
+from butlers.modules.approvals.rules import is_rule_effective, validate_rule_constraints
 from butlers.modules.approvals.sensitivity import redact_constraints, redact_tool_args
+from butlers.modules.approvals.stepup import bind_rule_action, is_receipt, run_rule_write
 from butlers.modules.base import ToolMeta
 
 logger = logging.getLogger(__name__)
+
+
+def _optional_body(model: type[BaseModel]) -> Any:
+    """An optional JSON body: a fresh ``model()`` per request, documented with its defaults."""
+    return Body(
+        default_factory=model, json_schema_extra={"default": model().model_dump(mode="json")}
+    )
+
 
 router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
@@ -136,11 +152,6 @@ def emit_approvals_event(
 
 # Cache mapping (butler_name, table_name) -> has_table to avoid repeated system catalog queries
 _TABLE_CACHE: dict[tuple[str, str], bool] = {}
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _clear_table_cache():
@@ -301,10 +312,7 @@ def _decision_memory_settings_for(butler_name: str) -> _DecisionMemorySettings |
         validated_memory_config = MemoryModuleConfig.model_validate(memory_config)
 
         tool_metadata: dict[str, ToolMeta] = {}
-        configured_modules = set(config.modules)
-        for module in default_registry().load_all(config.modules):
-            if module.name not in configured_modules:
-                continue
+        for module in default_registry().load_from_config(config.modules):
             try:
                 tool_metadata.update(module.tool_metadata())
             except Exception:  # noqa: BLE001 -- daemon uses the same conservative fallback
@@ -455,8 +463,20 @@ async def _fetch_actions_with_delivery(
     return await connection.fetch(query, *args)
 
 
+def _approval_origin(value: Any) -> Literal["prepared"] | None:
+    """Expose only the exact stored classification, never infer it from delivery."""
+    return "prepared" if type(value) is str and value == "prepared" else None
+
+
 def _delivery_truth(row: Any, action: PendingAction) -> ApprovalDeliveryTruth | None:
-    if action.origin == "prepared":
+    if (
+        _approval_origin(action.origin) == "prepared"
+        and action.push_outcome is None
+        and row.get("delivery_intent_id") is None
+        and row.get("legacy_push_action_id") is None
+    ):
+        # An intended non-send has no delivery claim. Origin must not hide
+        # independently recorded legacy failure or durable delivery evidence.
         return None
     if row.get("delivery_intent_id") is None:
         source: Literal["legacy", "unknown"] = (
@@ -549,7 +569,7 @@ def _pending_action_to_api(
         evidence=action.evidence,
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
-        origin=action.origin,
+        origin=_approval_origin(action.origin),
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
@@ -614,6 +634,7 @@ def _pending_action_to_detail(
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
         proposed_action=proposed_action,
+        call_preview=dashboard_call_preview(action.tool_name, action.tool_args),
         status=action.status.value,
         decided_by=action.decided_by,
         decided_at=action.decided_at,
@@ -626,6 +647,7 @@ def _pending_action_to_detail(
         target_contact=target_contact,
         session_id=str(action.session_id) if action.session_id else None,
         referenced_entities=referenced_entities or [],
+        origin=_approval_origin(action.origin),
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
@@ -653,6 +675,7 @@ def _pending_action_to_summary(
         ),
         blast_radius=action.blast_radius,
         reversibility=action.reversibility,
+        origin=_approval_origin(action.origin),
         push_outcome=action.push_outcome,
         push_failed=_push_failed(action, delivery),
         delivery=delivery,
@@ -790,6 +813,22 @@ def _approval_rule_to_api(rule: ApprovalRuleModel) -> ApprovalRule:
     )
 
 
+def _risk_tier_for_butler_tool(butler_name: str, tool_name: str) -> Any:
+    """Effective risk tier of *tool_name* under *butler_name*'s approvals config.
+
+    A butler without an enabled approvals config resolves to ``medium``, matching the
+    MCP module's behaviour when no policy is bound.
+    """
+    from butlers.api.deps import _DEFAULT_ROSTER_DIR
+    from butlers.config import ApprovalRiskTier, load_config, parse_approval_config
+
+    config = load_config(_DEFAULT_ROSTER_DIR / butler_name)
+    approval_config = parse_approval_config(config.modules.get("approvals"))
+    if approval_config is None or not approval_config.enabled:
+        return ApprovalRiskTier.MEDIUM
+    return approval_config.get_effective_risk_tier(tool_name)
+
+
 def _configured_gated_tools_for(butler_name: str) -> list[tuple[str, str, int]]:
     """Return the configured approval-gate baseline for one butler.
 
@@ -830,7 +869,8 @@ async def list_actions(
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
     origin: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
     """List pending actions with filtering and pagination.
 
@@ -890,8 +930,10 @@ async def list_actions(
             conditions.append(f"requested_at >= ${idx}")
             args.append(since_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     if until is not None:
         try:
@@ -899,8 +941,10 @@ async def list_actions(
             conditions.append(f"requested_at <= ${idx}")
             args.append(until_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid until timestamp: {until}"
+            ) from exc
 
     where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -955,7 +999,8 @@ async def list_executed_actions(
     since: str | None = Query(default=None),
     until: str | None = Query(default=None),
     butler: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalAction]:
     """List executed actions for audit review.
 
@@ -995,8 +1040,8 @@ async def list_executed_actions(
             conditions.append(f"approval_rule_id = ${idx}")
             args.append(parsed_rule_id)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     if since is not None:
         try:
@@ -1004,8 +1049,10 @@ async def list_executed_actions(
             conditions.append(f"decided_at >= ${idx}")
             args.append(since_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     if until is not None:
         try:
@@ -1013,8 +1060,10 @@ async def list_executed_actions(
             conditions.append(f"decided_at <= ${idx}")
             args.append(until_dt)
             idx += 1
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid until timestamp: {until}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid until timestamp: {until}"
+            ) from exc
 
     where_clause = " WHERE " + " AND ".join(conditions)
     all_rows: list[tuple[str, asyncpg.Record]] = []
@@ -1054,14 +1103,15 @@ async def list_executed_actions(
 @router.get("/actions/{action_id}")
 async def get_action(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Get details for a single pending action."""
 
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if not named_pools:
@@ -1096,73 +1146,34 @@ async def get_action(
 @router.post("/actions/{action_id}/approve")
 async def approve_action(
     action_id: str,
-    request: ApprovalActionApproveRequest = Body(default=ApprovalActionApproveRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalActionApproveRequest, _optional_body(ApprovalActionApproveRequest)],
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Approve a pending action and dispatch it for execution."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
     action_butler, target_pool = found
-    decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
-
-    # Read the action before approval so we have tool_name/args for dispatch
-    async with target_pool.acquire() as conn:
-        action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
-        )
-
-    async with target_pool.acquire() as conn:
-        result = await approvals_ops.approve_action(
-            conn,
-            action_id=action_id,
-            create_rule=request.create_rule,
-            decision_memory_writer=decision_memory_writer,
-        )
-
-    if "error" in result:
-        error_msg = result["error"]
-        if "not found" in error_msg.lower():
-            raise HTTPException(status_code=404, detail=error_msg)
-        if "cannot transition" in error_msg.lower():
-            raise HTTPException(status_code=409, detail=error_msg)
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    # Dispatch the approved action via MCP call_tool on a running butler
-    if action_row is not None:
-        tool_name = action_row["tool_name"]
-        raw_args = action_row["tool_args"]
-        tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-
-        dispatch_outcome = await _dispatch_approved_action_outcome(
-            mcp_mgr, db_mgr, target_pool, action_id, tool_name, tool_args, action_butler
-        )
-        if dispatch_outcome.kind == "executed" and dispatch_outcome.action is not None:
-            result = dispatch_outcome.action
-
-    # Build the ApprovalAction from the result dict, injecting the butler name
-    result.setdefault("butler", action_butler)
-    action_resp = ApprovalAction(
-        **{k: result[k] for k in ApprovalAction.model_fields if k in result}
+    return await approve_owning_action(
+        parsed_id=parsed_id,
+        actor_id=_decision_actor_id(None, callback_authenticated=False),
+        edits=None,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+        mcp_mgr=mcp_mgr,
+        displayed_call=request.displayed_call,
+        require_displayed_call=True,
+        create_rule=request.create_rule,
+        decision_memory_writer=_decision_memory_writer_for(db_mgr, action_butler, target_pool),
     )
-    # Honest dispatch status (see approve_approval): only 'executed' actually ran.
-    action_resp.dispatched = action_resp.status == "executed"
-    # Emit stream event
-    _emit_kind_legacy = "executed" if action_resp.status == "executed" else "approved"
-    emit_approvals_event(
-        _emit_kind_legacy,
-        action_id,
-        butler=action_butler,
-        tool_name=action_resp.tool_name,
-        status=action_resp.status,
-    )
-    return ApiResponse(data=action_resp)
 
 
 _MCP_DISPATCH_TIMEOUT_S = 30.0
@@ -1446,14 +1457,15 @@ def _raise_retry_dispatch_failure(outcome: _DispatchOutcome) -> None:
 @router.post("/actions/{action_id}/retry")
 async def retry_action(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Retry dispatch for an approved action that was not yet executed."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1503,14 +1515,15 @@ async def retry_action(
 @router.post("/actions/{action_id}/reject")
 async def reject_action(
     action_id: str,
-    request: ApprovalActionRejectRequest = Body(default=ApprovalActionRejectRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalActionRejectRequest, _optional_body(ApprovalActionRejectRequest)],
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Reject a pending action with optional reason."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1527,6 +1540,8 @@ async def reject_action(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1548,7 +1563,8 @@ async def reject_action(
 
 @router.post("/actions/expire-stale")
 async def expire_stale_actions(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ExpireStaleActionsResponse]:
     """Mark expired actions that are past their expires_at timestamp."""
     target_pools = await _find_all_approvals_pools(db_mgr, "pending_actions")
@@ -1600,16 +1616,111 @@ async def expire_stale_actions(
 # ---------------------------------------------------------------------------
 
 
+@router.post("/step-up/options")
+async def standing_rule_stepup_options(
+    body: ApprovalStepUpOptionsRequest,
+    request: Request,
+    *,
+    db_mgr: Db,
+) -> ApiResponse[dict]:
+    """Derive one exact intent; no rule, decision or factor is created here."""
+    session = verified_dashboard_session.get()
+    if session is None:
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "dashboard_step_up_required", "open_dashboard": "/approvals"},
+        )
+    parameters = body.parameters
+    target_pool = None
+    try:
+        if body.kind == "create":
+            if set(parameters) - set(ApprovalRuleCreateRequest.model_fields):
+                raise ValueError
+            candidate = ApprovalRuleCreateRequest.model_validate(parameters)
+            if candidate.butler not in db_mgr.butler_names:
+                raise ValueError
+            named = await _find_named_approvals_pools(db_mgr, "approval_rules")
+            target_pool = next((pool for name, pool in named if name == candidate.butler), None)
+            parameters = candidate.model_dump(exclude={"butler"})
+        elif body.kind == "promotion":
+            if set(parameters) != {"suggestion_id"}:
+                raise ValueError
+            parsed_id = UUID(str(parameters["suggestion_id"]))
+            parameters = dict(suggestion_id=str(parsed_id))
+            for _, pool in await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE):
+                async with pool.acquire() as connection:
+                    row = await connection.fetchrow(
+                        "SELECT suggestion_type FROM autonomy_suggestions WHERE id=$1", parsed_id
+                    )
+                if row is not None:
+                    if row["suggestion_type"] != "promotion":
+                        # Tightening/demotion has no new step-up requirement.
+                        return ApiResponse(data={"required": False})
+                    target_pool = pool
+                    break
+        else:
+            parsed_id = UUID(str(parameters["action_id"]))
+            found = await _find_action_pool(db_mgr, parsed_id)
+            if found is not None:
+                _, target_pool = found
+            if body.kind == "from_action":
+                if set(parameters) - set(ApprovalRuleFromActionRequest.model_fields):
+                    raise ValueError
+                candidate = ApprovalRuleFromActionRequest.model_validate(parameters)
+                parameters = candidate.model_dump()
+            else:
+                if set(parameters) - {"action_id", "edits", "displayed_call"}:
+                    raise ValueError
+                candidate = ApprovalApproveRequest.model_validate(parameters)
+                parameters = dict(action_id=str(parsed_id), **candidate.model_dump(mode="json"))
+        if target_pool is None:
+            raise HTTPException(status_code=503, detail="Step-up owning database unavailable")
+        async with target_pool.acquire() as connection:
+            # This read scope ends BEFORE the separate authentication call.
+            binding = await bind_rule_action(connection, body.kind, parameters)
+        service = request.app.state.owner_auth_service
+        return ApiResponse(data=await service.stepup_options(session, binding))
+    except AuthError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.code) from None
+    except (ValueError, TypeError, KeyError, ValidationError):
+        raise HTTPException(status_code=400, detail="Step-up intent unavailable") from None
+
+
 @router.post("/rules")
 async def create_rule(
     request: ApprovalRuleCreateRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
-    """Create a new standing approval rule."""
+    """Create a new standing approval rule in the named butler's schema.
+
+    The rule is validated like the MCP tool (risk-tier bounds) before it is written.
+    """
+    if request.butler not in db_mgr.butler_names:
+        raise HTTPException(status_code=404, detail=f"Unknown butler: {request.butler}")
     named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
-    if not named_pools:
-        raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
-    action_butler, target_pool = named_pools[0]
+    target = next(((n, p) for n, p in named_pools if n == request.butler), None)
+    if target is None:
+        raise HTTPException(
+            status_code=503, detail=f"Approvals unavailable for butler: {request.butler}"
+        )
+    action_butler, target_pool = target
+
+    try:
+        risk_tier = _risk_tier_for_butler_tool(request.butler, request.tool_name)
+    except Exception as exc:
+        logger.warning("Could not resolve approval policy for %s", request.butler, exc_info=True)
+        raise HTTPException(status_code=503, detail="Approval policy unavailable") from exc
+    constraint_error = validate_rule_constraints(
+        tool_name=request.tool_name,
+        risk_tier=risk_tier,
+        arg_constraints=request.arg_constraints,
+        expires_at=request.expires_at,
+        max_uses=request.max_uses,
+    )
+    if constraint_error is not None:
+        raise HTTPException(status_code=400, detail=constraint_error)
+
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
 
     async with target_pool.acquire() as conn:
@@ -1624,6 +1735,8 @@ async def create_rule(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         raise HTTPException(status_code=400, detail=result["error"])
 
     rule = ApprovalRule(**{k: result[k] for k in ApprovalRule.model_fields if k in result})
@@ -1633,13 +1746,16 @@ async def create_rule(
 @router.post("/rules/from-action")
 async def create_rule_from_action(
     request: ApprovalRuleFromActionRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Create a standing rule from a pending action."""
     try:
         parsed_id = UUID(request.action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {request.action_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid action_id: {request.action_id}"
+        ) from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1656,6 +1772,8 @@ async def create_rule_from_action(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1672,7 +1790,8 @@ async def list_rules(
     tool_name: str | None = Query(default=None),
     active: bool | None = Query(default=None),
     butler: str | None = Query(default=None),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[ApprovalRule]:
     """List standing approval rules with filtering and pagination.
 
@@ -1755,7 +1874,8 @@ async def list_rules(
 
 @router.get("/gated-tools")
 async def list_gated_tools(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalGatedTool]]:
     """List every configured approval gate with its active narrowing rules.
 
@@ -1827,14 +1947,15 @@ async def list_gated_tools(
 @router.get("/rules/{rule_id}")
 async def get_rule(
     rule_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Get details for a single standing approval rule."""
 
     try:
         parsed_id = UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     target_pools = await _find_all_approvals_pools(db_mgr, "approval_rules")
     if not target_pools:
@@ -1860,13 +1981,14 @@ async def get_rule(
 @router.post("/rules/{rule_id}/revoke")
 async def revoke_rule(
     rule_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalRule]:
     """Revoke (deactivate) a standing approval rule."""
     try:
         parsed_id = UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid rule_id: {rule_id}") from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, "approval_rules")
     if not named_pools:
@@ -1902,6 +2024,8 @@ async def revoke_rule(
         )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -1916,14 +2040,15 @@ async def revoke_rule(
 @router.get("/rules/suggestions/{action_id}")
 async def get_rule_suggestions(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[RuleConstraintSuggestion]:
     """Preview suggested constraints for creating a rule from a pending action."""
 
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -1959,7 +2084,8 @@ async def get_rule_suggestions(
 
 @router.get("/metrics")
 async def get_metrics(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalMetrics]:
     """Get aggregate metrics for the approvals dashboard.
 
@@ -2280,7 +2406,8 @@ async def list_approvals_flat(
         default="all", description="waiting|decided|stalled|all"
     ),
     limit: int = Query(default=100, ge=1, le=500),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Flat list of approvals — GET /api/approvals?state=waiting|decided|stalled|all.
 
@@ -2367,7 +2494,8 @@ async def list_approvals_flat(
 async def list_approvals_history(
     since: str | None = Query(default=None, description="ISO 8601 timestamp"),
     limit: int = Query(default=30, ge=1, le=500),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[ApprovalSummary]]:
     """Decided approvals history — GET /api/approvals/history?since=.
 
@@ -2384,8 +2512,10 @@ async def list_approvals_history(
     if since is not None:
         try:
             since_dt = datetime.fromisoformat(since)
-        except ValueError:
-            raise HTTPException(status_code=400, detail=f"Invalid since timestamp: {since}")
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid since timestamp: {since}"
+            ) from exc
 
     decided_statuses = list(_DECIDED_STATUSES)
     all_rows: list[tuple[str, asyncpg.Record]] = []
@@ -2429,7 +2559,8 @@ async def list_approvals_history(
 
 @router.get("/policy")
 async def get_approvals_policy(
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalsPolicy]:
     """Read the quiet-hours policy singleton — GET /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
@@ -2458,7 +2589,8 @@ async def get_approvals_policy(
 @router.put("/policy")
 async def update_approvals_policy(
     request: ApprovalsPolicyUpdate = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalsPolicy]:
     """Update the Owner Attention Policy singleton — PUT /api/approvals/policy."""
     pool = await _find_approvals_pool(db_mgr, "pending_actions")
@@ -2504,7 +2636,8 @@ async def update_approvals_policy(
 @router.get("/unroutable", response_model=ApiResponse[list[UnroutableAttentionItem]])
 async def list_unroutable_attention(
     limit: int = Query(default=50, ge=1, le=200),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[list[UnroutableAttentionItem]]:
     """List replayable dashboard routing failures on the Command surface."""
     pool = _switchboard_pool(db_mgr)
@@ -2541,7 +2674,8 @@ async def list_unroutable_attention(
 )
 async def retry_unroutable_attention(
     dead_letter_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[UnroutableRetryResult]:
     """Re-enqueue one dashboard dead-letter with its existing lineage."""
     try:
@@ -2646,7 +2780,8 @@ async def list_suggestions(
     suggestion_type: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> PaginatedResponse[AutonomySuggestion]:
     """List autonomy suggestions with filtering and pagination.
 
@@ -2713,7 +2848,8 @@ async def list_suggestions(
 @router.post("/suggestions/{suggestion_id}/confirm")
 async def confirm_suggestion(
     suggestion_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[AutonomySuggestion]:
     """Confirm an autonomy suggestion, creating a standing approval rule.
 
@@ -2726,8 +2862,10 @@ async def confirm_suggestion(
     """
     try:
         parsed_id = UUID(suggestion_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}"
+        ) from exc
 
     named_pools = await _find_named_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
     if not named_pools:
@@ -2755,12 +2893,6 @@ async def confirm_suggestion(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
 
-    if row["status"] != "pending":
-        raise HTTPException(
-            status_code=409,
-            detail=f"Suggestion has already been decided (status: {row['status']})",
-        )
-
     assert target_pool is not None
     assert action_butler is not None
     decision_memory_writer = _decision_memory_writer_for(db_mgr, action_butler, target_pool)
@@ -2769,12 +2901,18 @@ async def confirm_suggestion(
     # writer now binds a native dict (bu-c8b8e/bu-cymc4), and a live-data
     # audit (2026-07-05) found zero autonomy_suggestions rows in any schema,
     # so no isinstance(str) double-encoding workaround is needed here.
-    representative_args = row.get("representative_args") or {}
-
     now = datetime.now(UTC)
     actor = "dashboard:rest-api"
 
-    async with target_pool.acquire() as conn:
+    async def write(conn):
+        row = await conn.fetchrow(
+            "SELECT * FROM autonomy_suggestions WHERE id=$1 FOR UPDATE", parsed_id
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Suggestion not found: {suggestion_id}")
+        if row["status"] != "pending":
+            raise HTTPException(status_code=409, detail="Suggestion has already been decided")
+        representative_args = row.get("representative_args") or {}
         if row.get("suggestion_type") == "demotion":
             # Revoke the referenced standing rule via the operations layer so that
             # the RULE_REVOKED audit event is recorded consistently.
@@ -2786,7 +2924,7 @@ async def confirm_suggestion(
                     conn,
                     rule_id=str(rule_id),
                     actor_id=actor,
-                    decision_memory_writer=decision_memory_writer,
+                    decision_memory_writer=None,
                 )
                 if "error" in revoke_result:
                     raise HTTPException(
@@ -2824,7 +2962,7 @@ async def confirm_suggestion(
                 arg_constraints=arg_constraints,
                 description=scope_desc,
                 actor_id=actor,
-                decision_memory_writer=decision_memory_writer,
+                decision_memory_writer=None,
             )
             if "error" in create_result:
                 raise HTTPException(
@@ -2845,6 +2983,52 @@ async def confirm_suggestion(
                 parsed_id,
             )
 
+        if updated is None:
+            raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
+        if row["suggestion_type"] == "promotion":
+            from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
+
+            await record_approval_event(
+                conn,
+                ApprovalEventType.PROMOTION_CONFIRMED,
+                actor=f"user:{actor}",
+                rule_id=UUID(str(new_rule_id)),
+                reason=f"Suggestion {parsed_id} confirmed",
+                metadata={
+                    "suggestion_id": str(parsed_id),
+                    "suggestion_type": "promotion",
+                    "tool_name": row["tool_name"],
+                },
+                occurred_at=now,
+            )
+        return dict(updated)
+
+    async with target_pool.acquire() as conn:
+        if row.get("suggestion_type") == "promotion":
+            updated = await run_rule_write(
+                conn, "promotion", dict(suggestion_id=str(parsed_id)), write
+            )
+            if "error" in updated:
+                raise HTTPException(status_code=403, detail=updated)
+        else:
+            async with conn.transaction():
+                updated = await write(conn)
+    memory_rule_id = updated.get("resulting_rule_id") or (row.get("representative_args") or {}).get(
+        "rule_id"
+    )
+    if decision_memory_writer is not None and memory_rule_id and not is_receipt(updated):
+        try:
+            rule_row = await target_pool.fetchrow(
+                "SELECT * FROM approval_rules WHERE id=$1", UUID(str(memory_rule_id))
+            )
+            if rule_row is not None:
+                await decision_memory_writer.record_standing_rule(
+                    ApprovalRuleModel.from_row(rule_row),
+                    active=row.get("suggestion_type") == "promotion",
+                )
+        except Exception:
+            logger.warning("Suggestion decision memory writeback failed", exc_info=True)
+
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to confirm suggestion")
 
@@ -2855,8 +3039,11 @@ async def confirm_suggestion(
 @router.post("/suggestions/{suggestion_id}/dismiss")
 async def dismiss_suggestion(
     suggestion_id: str,
-    request: AutonomySuggestionDismissRequest = Body(default=AutonomySuggestionDismissRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[
+        AutonomySuggestionDismissRequest, _optional_body(AutonomySuggestionDismissRequest)
+    ],
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[AutonomySuggestion]:
     """Dismiss an autonomy suggestion with an optional reason and cooldown.
 
@@ -2867,8 +3054,10 @@ async def dismiss_suggestion(
     """
     try:
         parsed_id = UUID(suggestion_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid suggestion_id: {suggestion_id}"
+        ) from exc
 
     suggestion_pools = await _find_all_approvals_pools(db_mgr, _SUGGESTIONS_TABLE)
     if not suggestion_pools:
@@ -2937,15 +3126,38 @@ async def dismiss_suggestion(
 @router.get("/{action_id}")
 async def get_approval_detail(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    review_source: str | None = None,
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalDetail]:
     """Full dossier for one approval — GET /api/approvals/{id}."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
-    named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
+    calendar_expected_args: dict[str, Any] | None = None
+    if review_source is not None and review_source.startswith("calendar:"):
+        from butlers.api.routers.calendar_workspace import _calendar_response_review_pool
+
+        owner = review_source.removeprefix("calendar:")
+        if owner not in {"messenger", "relationship"}:
+            raise HTTPException(
+                status_code=400, detail="Unsupported Calendar approval review source"
+            )
+        pool, calendar_expected_args = await _calendar_response_review_pool(
+            db_mgr, parsed_id, owner
+        )
+        named_pools = [(owner, pool)]
+    elif review_source is not None:
+        if review_source != "messenger":
+            raise HTTPException(status_code=400, detail="Unsupported approval review source")
+        admitted = await resolve_messenger_reviews(db_mgr, {parsed_id})
+        if parsed_id not in admitted:
+            raise HTTPException(status_code=503, detail="Messenger approval review unavailable")
+        named_pools = [admitted[parsed_id]]
+    else:
+        named_pools = await _find_named_approvals_pools(db_mgr, "pending_actions")
     if not named_pools:
         raise HTTPException(status_code=503, detail="Approvals subsystem unavailable")
 
@@ -2960,6 +3172,14 @@ async def get_approval_detail(
                 )
                 if row is not None:
                     pa = PendingAction.from_row(row)
+                    if calendar_expected_args is not None and (
+                        pa.id != parsed_id
+                        or pa.tool_name != "calendar_respond"
+                        or pa.tool_args != calendar_expected_args
+                    ):
+                        raise HTTPException(
+                            status_code=409, detail="response_review_binding_unverified"
+                        )
                     denial_reason = (
                         await _latest_rejection_reason(conn, pa.id)
                         if pa.status.value == "rejected"
@@ -2978,9 +3198,15 @@ async def get_approval_detail(
                         delivery=_delivery_truth(row, pa),
                     )
                 )
-        except Exception:
+        except Exception as exc:
+            if calendar_expected_args is not None:
+                if isinstance(exc, HTTPException):
+                    raise
+                raise HTTPException(status_code=503, detail="response_review_unavailable") from None
             continue
 
+    if calendar_expected_args is not None:
+        raise HTTPException(status_code=503, detail="response_review_unavailable")
     raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
 
 
@@ -2988,8 +3214,9 @@ async def get_approval_detail(
 async def approve_approval(
     action_id: str,
     http_request: Request,
-    request: ApprovalApproveRequest = Body(default=ApprovalApproveRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalApproveRequest, _optional_body(ApprovalApproveRequest)],
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
@@ -2999,8 +3226,8 @@ async def approve_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     callback_authenticated = bool(
         getattr(http_request.state, "approval_callback_authenticated", False)
@@ -3020,22 +3247,130 @@ async def approve_approval(
         raise HTTPException(status_code=404, detail=f"Approval not found: {action_id}")
     action_butler, target_pool = found
 
+    return await approve_owning_action(
+        parsed_id=parsed_id,
+        actor_id=actor_id,
+        edits=request.edits,
+        action_butler=action_butler,
+        target_pool=target_pool,
+        db_mgr=db_mgr,
+        mcp_mgr=mcp_mgr,
+        check_presented_digests=callback_authenticated,
+        displayed_call=request.displayed_call,
+        require_displayed_call=not callback_authenticated,
+    )
+
+
+# Shared with the Telegram connector, which matches it to answer the tap honestly.
+APPROVAL_CALL_CHANGED_DETAIL = "The stored call changed since shown; nothing was executed."
+
+
+async def _require_presented_call_unchanged(
+    conn: Any, action_id: UUID, stored_tool_args: Any
+) -> None:
+    """Refuse a card tap whose stored call differs from any call a card showed.
+
+    Every presented card records the digest of the call it rendered
+    (``approval_delivery_presentations.args_digest``).  A connector-authenticated
+    tap carries only the action id, so it cannot say which card it came from;
+    tapping while any card for a different call is outstanding would execute
+    something that card did not show, so the tap executes nothing (security.md
+    § Approval Gates).  Dashboard approvals do not use this check: they bind to
+    the call the dashboard displayed.  Actions never presented with a digest are
+    unaffected.
+    """
+    presented = await conn.fetch(
+        """
+        SELECT DISTINCT p.args_digest
+          FROM approval_delivery_presentations AS p
+          JOIN approval_delivery_intents AS i ON i.id = p.intent_id
+         WHERE i.action_id = $1 AND p.args_digest IS NOT NULL
+        """,
+        action_id,
+    )
+    if not isinstance(presented, list | tuple):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+    raw = json.loads(stored_tool_args) if isinstance(stored_tool_args, str) else stored_tool_args
+    current = args_digest(raw if isinstance(raw, dict) else None)
+    if any(row["args_digest"] != current for row in presented):
+        raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+
+
+async def approve_owning_action(
+    *,
+    parsed_id: UUID,
+    actor_id: str,
+    edits: dict[str, Any] | None,
+    action_butler: str,
+    target_pool: Any,
+    db_mgr: DatabaseManager,
+    mcp_mgr: MCPClientManager,
+    expected_tool_args: dict[str, Any] | None = None,
+    check_presented_digests: bool = False,
+    displayed_call: DisplayedApprovalCall | None = None,
+    require_displayed_call: bool = False,
+    create_rule: bool = False,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> ApiResponse[ApprovalAction]:
+    """Shared verified decision/audit/dispatch on an already selected owner.
+
+    Calendar supplies the actual canonical pending args read from this pool;
+    callers cannot select an approval id or standing rule through that API.
+    """
+    action_id = str(parsed_id)
     # Use a single connection + transaction for the read, optional edits update,
     # approve, and audit so that an edits UPDATE / approve transition cannot
     # persist while the audit append fails. AuditTableNotAvailableError is
     # intentionally NOT caught here — it propagates to the app-level handler,
     # which returns 503 {"error": "audit_unavailable"} (dashboard-audit-log
     # spec), rolling this transaction back.
-    async with target_pool.acquire() as conn, conn.transaction():
+    action_row = None
+
+    async def decide(conn):
+        nonlocal action_row
+        # The row lock makes the presented-digest check below atomic with the
+        # status transition: the stored call cannot change in between.
         action_row = await conn.fetchrow(
-            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1", parsed_id
+            "SELECT tool_name, tool_args FROM pending_actions WHERE id = $1 FOR UPDATE",
+            parsed_id,
         )
 
-        # Apply edits to tool args before approval (same connection, no partial update risk)
-        if request.edits and action_row is not None:
+        if require_displayed_call:
+            preview = (
+                dashboard_call_preview(action_row["tool_name"], action_row["tool_args"])
+                if action_row is not None
+                else None
+            )
+            if (
+                displayed_call is None
+                or preview is None
+                or displayed_call.model_dump() != preview["displayed_call"]
+            ):
+                raise HTTPException(status_code=409, detail=APPROVAL_CALL_CHANGED_DETAIL)
+
+        if action_row is not None and check_presented_digests:
+            await _require_presented_call_unchanged(conn, parsed_id, action_row["tool_args"])
+
+        if expected_tool_args is not None:
+            if (
+                edits
+                or action_row is None
+                or action_row["tool_name"] != "calendar_respond"
+                or action_row["tool_args"] != expected_tool_args
+            ):
+                raise HTTPException(status_code=409, detail="response_approval_binding_changed")
+
+        if edits and action_row is not None and action_row["tool_name"] == "calendar_respond":
+            raise HTTPException(status_code=409, detail="response_command_is_immutable")
+
+        # Keep the locked original call until the owning decision accepts the edit.
+        original_tool_args: dict[str, Any] | None = None
+        if edits and action_row is not None:
             raw_args = action_row["tool_args"]
-            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-            tool_args.update(request.edits)
+            original_tool_args = (
+                json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            )
+            tool_args = {**original_tool_args, **edits}
             # Bind the sanitized dict directly (no json.dumps, no ::jsonb
             # cast) — asyncpg's registered jsonb codec already serializes
             # once; pre-serializing double-encodes (bu-cymc4/bu-bstqu).
@@ -3050,10 +3385,23 @@ async def approve_approval(
             conn,
             action_id=action_id,
             actor_id=actor_id,
-            create_rule=False,
+            create_rule=create_rule,
+            # A pool-backed writer uses a separate transaction. Defer it until
+            # this approval, optional standing rule and audit have committed.
+            decision_memory_writer=None,
         )
+        if "error" in result and original_tool_args is not None:
+            # A refused decision may still commit its legitimate expiry transition.
+            # Restore the exact prior call before releasing the same row lock;
+            # neither a refusal nor its retry may alter an already-approved call.
+            # Any restoration failure aborts this entire owning transaction.
+            await conn.execute(
+                "UPDATE pending_actions SET tool_args = $1 WHERE id = $2",
+                original_tool_args,
+                parsed_id,
+            )
         if "error" not in result:
-            edits_note = json.dumps(request.edits) if request.edits else None
+            edits_note = json.dumps(edits) if edits else None
             await audit_router.append(
                 conn,
                 _decision_audit_actor(actor_id),
@@ -3063,7 +3411,23 @@ async def approve_approval(
                 result="success",
             )
 
+        return result
+
+    async with target_pool.acquire() as conn:
+        if create_rule:
+            parameters = dict(
+                action_id=action_id,
+                edits=edits,
+                displayed_call=displayed_call.model_dump(mode="json") if displayed_call else None,
+            )
+            result = await run_rule_write(conn, "approve_with_rule", parameters, decide)
+        else:
+            async with conn.transaction():
+                result = await decide(conn)
+
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -3071,14 +3435,25 @@ async def approve_approval(
             raise HTTPException(status_code=409, detail=error_msg)
         raise HTTPException(status_code=400, detail=error_msg)
 
-    if action_row is not None:
+    created_rule = result.get("created_rule")
+    if not is_receipt(result) and decision_memory_writer is not None and created_rule is not None:
+        try:
+            await decision_memory_writer.record_standing_rule(
+                ApprovalRuleModel.from_dict(created_rule), active=True
+            )
+        except Exception:
+            # Memory is descriptive and fail-open; a committed approval/rule
+            # must not become a failed decision because its memory sink failed.
+            logger.exception("Post-commit standing-rule memory writeback failed")
+
+    if action_row is not None and not is_receipt(result):
         tool_name = action_row["tool_name"]
         raw_args = action_row["tool_args"]
         tool_args_for_dispatch = (
             json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
         )
-        if request.edits:
-            tool_args_for_dispatch.update(request.edits)
+        if edits:
+            tool_args_for_dispatch.update(edits)
 
         dispatch_outcome = await _dispatch_approved_action_outcome(
             mcp_mgr,
@@ -3116,15 +3491,16 @@ async def approve_approval(
 async def deny_approval(
     action_id: str,
     http_request: Request,
-    request: ApprovalDenyRequest = Body(default=ApprovalDenyRequest()),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    request: Annotated[ApprovalDenyRequest, _optional_body(ApprovalDenyRequest)],
+    *,
+    db_mgr: Db,
     callback_actor: str | None = Header(default=None, alias="X-Butlers-Decision-Actor"),
 ) -> ApiResponse[ApprovalAction]:
     """Deny (reject) a pending action — POST /api/approvals/{id}/deny {reason?: str}."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     callback_authenticated = bool(
         getattr(http_request.state, "approval_callback_authenticated", False)
@@ -3167,6 +3543,8 @@ async def deny_approval(
             )
 
     if "error" in result:
+        if result["error"] == "dashboard_step_up_required":
+            raise HTTPException(status_code=403, detail=result)
         error_msg = result["error"]
         if "not found" in error_msg.lower():
             raise HTTPException(status_code=404, detail=error_msg)
@@ -3198,7 +3576,8 @@ async def deny_approval(
 async def defer_approval(
     action_id: str,
     request: ApprovalDeferRequest = Body(...),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Defer an approval by extending its expiry — POST /api/approvals/{id}/defer {hours: int}.
 
@@ -3207,8 +3586,8 @@ async def defer_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -3287,7 +3666,8 @@ async def defer_approval(
 @router.post("/{action_id}/retry")
 async def retry_approval(
     action_id: str,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[ApprovalAction]:
     """Retry dispatch for an approved-but-un-run action — POST /api/approvals/{id}/retry.
@@ -3300,8 +3680,8 @@ async def retry_approval(
     """
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:
@@ -3359,13 +3739,14 @@ async def retry_approval(
 async def abandon_approval(
     action_id: str,
     request: ApprovalAbandonRequest,
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[ApprovalAction]:
     """Durably abandon one approved, unexecuted action from the dashboard only."""
     try:
         parsed_id = UUID(action_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid action_id: {action_id}") from exc
 
     found = await _find_action_pool(db_mgr, parsed_id)
     if found is None:

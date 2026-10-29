@@ -27,6 +27,7 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.scheduled_jobs import _run_education_compute_analytics_snapshots_job
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.tools.education.mind_maps import mind_map_update_status
 
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -76,7 +77,7 @@ async def pool(migrated_db_url: str):
 # ---------------------------------------------------------------------------
 
 
-async def _insert_map(pool: asyncpg.Pool, *, status: str = "active") -> str:
+async def _insert_map(pool: asyncpg.Pool, *, status: str = "draft") -> str:
     return await pool.fetchval(
         "INSERT INTO education.mind_maps (title, status) VALUES ($1, $2) RETURNING id::text",
         "Test Topic",
@@ -100,6 +101,15 @@ async def _insert_node(
         map_id,
         label,
         mastery_status,
+    )
+
+
+async def _activate_populated_map(pool: asyncpg.Pool, map_id: str) -> None:
+    """Use the real lifecycle writer after content exists, then read independently."""
+    await mind_map_update_status(pool, map_id, "active")
+    assert (
+        await pool.fetchval("SELECT status FROM education.mind_maps WHERE id = $1::uuid", map_id)
+        == "active"
     )
 
 
@@ -146,6 +156,8 @@ async def test_feedback_loop_fires_when_struggling_nodes_reach_threshold(pool):
         # last-5 review avg = 1.0 (< 2.5) with cnt == 5 -> struggling
         await _insert_reviews(pool, map_id, node_id, [1, 1, 1, 1, 1], days_ago=30)
 
+    await _activate_populated_map(pool, map_id)
+
     with patch(_REPLAN_TARGET, new=AsyncMock()) as mock_replan:
         result = await _run_education_compute_analytics_snapshots_job(pool, None)
 
@@ -164,6 +176,8 @@ async def test_feedback_loop_fires_when_retention_below_threshold(pool):
     # Recent reviews (within 7d): passed (q>=3) = 1 of 5 -> retention 0.2 < 0.60.
     # mean quality 1.8 (< 2.5) -> this is the ONLY struggling node (count == 1 < 3).
     await _insert_reviews(pool, map_id, node_id, [1, 2, 2, 1, 3], days_ago=1)
+
+    await _activate_populated_map(pool, map_id)
 
     with patch(_REPLAN_TARGET, new=AsyncMock()) as mock_replan:
         result = await _run_education_compute_analytics_snapshots_job(pool, None)
@@ -188,6 +202,8 @@ async def test_feedback_loop_does_not_fire_when_thresholds_not_breached(pool):
     # 5 strong recent reviews: struggling avg 4.4 (>= 2.5), retention 1.0 (>= 0.60).
     await _insert_reviews(pool, map_id, node_id, [4, 5, 4, 5, 4], days_ago=1)
 
+    await _activate_populated_map(pool, map_id)
+
     with patch(_REPLAN_TARGET, new=AsyncMock()) as mock_replan:
         result = await _run_education_compute_analytics_snapshots_job(pool, None)
 
@@ -203,6 +219,8 @@ async def test_replan_failure_does_not_abort_remaining_maps(pool):
     for i in range(3):
         node_id = await _insert_node(pool, map_id, label=f"concept-{i}")
         await _insert_reviews(pool, map_id, node_id, [1, 1, 1, 1, 1], days_ago=30)
+
+    await _activate_populated_map(pool, map_id)
 
     boom = AsyncMock(side_effect=RuntimeError("replan blew up"))
     with patch(_REPLAN_TARGET, new=boom):

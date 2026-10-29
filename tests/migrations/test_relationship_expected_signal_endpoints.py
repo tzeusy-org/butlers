@@ -14,11 +14,13 @@ from butlers.core.expected_signals import ExpectedSignalState
 from butlers.identity import ResolvedContact
 from butlers.tools.relationship import stale_contacts
 
+_THIS_FILE = Path(__file__).resolve()
+
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
 async def _apply_migrations(pool) -> None:
-    root = Path(__file__).resolve().parents[2]
+    root = _THIS_FILE.parents[2]
     for filename in (
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",

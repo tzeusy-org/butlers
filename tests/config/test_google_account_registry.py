@@ -24,6 +24,7 @@ from butlers.google_account_registry import (
     list_google_accounts,
     set_primary_account,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -80,23 +81,14 @@ def _make_value_row(value: str) -> MagicMock:
     return row
 
 
-class _FakeTx:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_):
-        pass
-
-
 class _FakeConn:
     def __init__(self):
         self.fetchrow = AsyncMock(return_value=None)
         self.fetch = AsyncMock(return_value=[])
         self.execute = AsyncMock(return_value="")
-        self._tx = _FakeTx()
 
     def transaction(self):
-        return self._tx
+        return AsyncCtx(None)
 
 
 def _make_pool(conn: _FakeConn) -> MagicMock:

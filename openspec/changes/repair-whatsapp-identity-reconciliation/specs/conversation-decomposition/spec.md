@@ -7,7 +7,7 @@ for each cherry-picked message while presenting only a canonical or neutral spea
 signal-extraction runtime and downstream butlers.
 
 ID: REQ-conversation-decomposition-001
-Source: docs/superpowers/specs/2026-08-24-whatsapp-identity-reconciliation-design.md §3
+Source: docs/plans/2026-08-24-whatsapp-identity-reconciliation-design.md §3
 Scope: v1-mandatory
 
 #### Scenario: Known speaker excerpt carries its entity anchor

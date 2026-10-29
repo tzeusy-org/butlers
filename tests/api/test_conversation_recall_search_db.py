@@ -27,7 +27,7 @@ from fastapi import FastAPI
 
 from butlers.api.conversations import message_search, message_thread_window
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.conversations import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -73,7 +73,7 @@ def search_app(pool: asyncpg.Pool) -> FastAPI:
     mock_db.credential_shared_pool.return_value = pool
 
     application = create_app()
-    application.dependency_overrides[_get_db_manager] = lambda: mock_db
+    application.dependency_overrides[get_db] = lambda: mock_db
     return application
 
 
@@ -166,7 +166,7 @@ async def test_message_search_returns_hits_across_butlers_ranked(pool: asyncpg.P
 
 async def test_message_search_empty_query_returns_empty(pool: asyncpg.Pool) -> None:
     result = await message_search(pool, query="   ")
-    assert result == {"items": [], "next_cursor": None, "has_more": False}
+    assert result == {"items": [], "next_cursor": None}
 
 
 async def test_message_search_no_match_returns_empty(pool: asyncpg.Pool) -> None:
@@ -175,7 +175,7 @@ async def test_message_search_no_match_returns_empty(pool: asyncpg.Pool) -> None
 
     result = await message_search(pool, query="zzz-no-such-term")
     assert result["items"] == []
-    assert result["has_more"] is False
+    assert result["next_cursor"] is None
 
 
 async def test_message_search_query_too_long_raises(pool: asyncpg.Pool) -> None:
@@ -238,7 +238,6 @@ async def test_message_search_cursor_stable_across_insert(pool: asyncpg.Pool) ->
         ids.append(msg_id)
 
     page1 = await message_search(pool, query="widget", limit=1)
-    assert page1["has_more"] is True
     assert page1["next_cursor"] is not None
     page1_ids = {item["message_id"] for item in page1["items"]}
 
@@ -318,26 +317,21 @@ async def test_router_paginates_by_cursor_with_highlight_ranges(
         )
 
     page1 = await _search_messages(search_app, q="gizmo", limit=2)
-    assert len(page1["data"]) == 2
-    assert page1["meta"]["has_more"] is True
-    assert page1["meta"]["next_cursor"] is not None
-    assert "offset" not in page1["meta"]
-    assert "total" not in page1["meta"]
+    assert len(page1["items"]) == 2
+    assert page1["next_cursor"] is not None
+    assert page1["limit"] == 2
 
-    first_item = page1["data"][0]
+    first_item = page1["items"][0]
     assert first_item["highlight_ranges"], "expected at least one highlight range"
     start, end = first_item["highlight_ranges"][0]
     assert first_item["snippet"][start:end].lower() == "gizmo"
 
-    page2 = await _search_messages(
-        search_app, q="gizmo", limit=2, cursor=page1["meta"]["next_cursor"]
-    )
-    assert len(page2["data"]) == 1
-    assert page2["meta"]["has_more"] is False
-    assert page2["meta"]["next_cursor"] is None
+    page2 = await _search_messages(search_app, q="gizmo", limit=2, cursor=page1["next_cursor"])
+    assert len(page2["items"]) == 1
+    assert page2["next_cursor"] is None
 
-    seen_ids = {item["message_id"] for item in page1["data"]} | {
-        item["message_id"] for item in page2["data"]
+    seen_ids = {item["message_id"] for item in page1["items"]} | {
+        item["message_id"] for item in page2["items"]
     }
     assert len(seen_ids) == 3
 
@@ -350,9 +344,9 @@ async def test_router_rejects_query_over_max_length(search_app: FastAPI) -> None
     assert resp.status_code == 422
 
 
-async def test_router_invalid_cursor_returns_422(search_app: FastAPI) -> None:
+async def test_router_invalid_cursor_returns_400(search_app: FastAPI) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=search_app), base_url=BASE_URL
     ) as client:
         resp = await client.get(SEARCH_PATH, params={"q": "anything", "cursor": "not-a-cursor"})
-    assert resp.status_code == 422
+    assert resp.status_code == 400

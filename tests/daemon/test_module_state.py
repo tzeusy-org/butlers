@@ -28,6 +28,7 @@ from butlers.daemon import (
 )
 from butlers.modules.base import Module
 from butlers.modules.registry import ModuleRegistry
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -38,9 +39,7 @@ pytestmark = pytest.mark.unit
 
 
 class StubModuleA(Module):
-    @property
-    def name(self) -> str:
-        return "stub_a"
+    name = "stub_a"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -70,9 +69,7 @@ class StubModuleA(Module):
 
 
 class StubModuleB(Module):
-    @property
-    def name(self) -> str:
-        return "stub_b"
+    name = "stub_b"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -148,6 +145,24 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     versions: dict[str, int] = {}
     pool = AsyncMock()
 
+    async def _runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    pool.fetchrow = AsyncMock(side_effect=_runtime_row)
+
     async def _fetchval(sql, *fargs):
         key = fargs[0] if fargs else None
         if "SELECT value FROM state" in sql:
@@ -179,17 +194,18 @@ def _make_mock_pool(state_store: dict | None = None) -> AsyncMock:
     # pool.acquire() is used as `async with pool.acquire() as conn:` in some
     # daemon code paths (e.g. contact_info resolution). Provide a context
     # manager that yields a no-op connection so those paths don't crash.
-    from contextlib import asynccontextmanager
-
     mock_conn = AsyncMock()
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
     mock_conn.execute = AsyncMock(return_value=None)
 
-    @asynccontextmanager
-    async def _acquire():
-        yield mock_conn
+    def _acquire():
+        return AsyncCtx(mock_conn)
 
     pool.acquire = _acquire
     return pool
@@ -216,7 +232,7 @@ def _patch_infra(mock_pool: AsyncMock | None = None):
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -239,7 +255,9 @@ def _patch_infra(mock_pool: AsyncMock | None = None):
         "recover_route_inbox": patch.object(
             ButlerDaemon, "_recover_route_inbox", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "mock_db": mock_db,
         "mock_pool": mock_pool,
@@ -264,7 +282,7 @@ async def _start_daemon(
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],

@@ -11,11 +11,16 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import asyncpg
 import pytest
+
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -150,16 +155,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS facts_active_property_unique
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with facts + subscriptions + transactions tables."""
-    async with provisioned_postgres_pool() as p:
+def migrated_db_url(postgres_container):
+    """Apply the real current schemas before starting the async test fixture."""
+    return create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core", "finance"]
+    )
+
+
+@pytest.fixture
+async def pool(migrated_db_url):
+    """Use migrated Finance tables and retain the alert tests' explicit facts store."""
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
         await p.execute(_DDL_SHARED_ENTITIES)
         await p.execute(_DDL_FACTS)
         await p.execute(_DDL_FACTS_UNIQUE_INDEX)
-        await p.execute(_DDL_SUBSCRIPTIONS)
-        await p.execute(_DDL_OBLIGATION_LEDGER)
-        await p.execute(_DDL_TRANSACTIONS)
         yield p
+    finally:
+        async with asyncio.timeout(5):
+            await p.close()
 
 
 # ---------------------------------------------------------------------------

@@ -101,6 +101,10 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     last_referenced_at: null,
     expires_at: null,
     metadata: {},
+    consolidation_attempts: 0,
+    last_consolidation_error: null,
+    dead_letter_reason: null,
+    next_consolidation_retry_at: null,
     ...overrides,
   }
 }

@@ -6,8 +6,12 @@ on:
     - cron: '0 2 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   nightly:
+    timeout-minutes: 25
     runs-on: ubuntu-latest
 
     services:
@@ -35,22 +39,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -81,10 +70,12 @@ jobs:
     # tree. It deliberately does NOT touch the monotonic clock, so
     # asyncio sleep/timeout semantics are unaffected (verified locally: a
     # faked process still measures asyncio.sleep(0.2) as ~0.2s of monotonic
-    # time while datetime.now() reports the shifted date). Postgres runs as a
-    # separate service container whose own clock is NOT shifted -- SQL
-    # NOW()/CURRENT_TIMESTAMP stays real -- so this catches the Python-level
-    # frozen-fixture class above, not a DB-side clock skew.
+    # time while datetime.now() reports the shifted date). bu-29wkwj.6: the
+    # root conftest gives the shared Postgres testcontainer the same library
+    # and FAKETIME offset, so SQL now() agrees with the Python clock. Before
+    # that only the Python clock moved, every DB test comparing the two clocks
+    # failed by the offset unless it carried pg_clock, and the leg stayed red
+    # from 2026-07-25 as new tests arrived without the marker.
     #
     # Scheduled/dispatch-only by design: this must never gate PR merges or
     # slow the required `check` job, only surface future hazards early. A
@@ -121,7 +112,12 @@ jobs:
     # exits non-zero (a real 'failure', not a silent cancel) -- turning the
     # next hang into actionable stacks well inside this budget. timeout-minutes
     # is the outer backstop should the watchdog itself be defeated.
-    timeout-minutes: 75
+    # bu-29wkwj.11: historical run39802115884 completed in 2378s/+45d and
+    # 3271s/+120d. Provisional job floor: ceil((2*3271 + UV640 + frozen
+    # dependencies640 + setup/evidence300 + ABRT cleanup30)/60) = 136min.
+    # Preserve the whole observed job, including setup and finalization;
+    # N=1 per offset is not current p95 or a completed long-tail calibration.
+    timeout-minutes: 136
     runs-on: ubuntu-latest
 
     strategy:
@@ -154,22 +150,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -213,12 +194,10 @@ jobs:
           # session end and is lost on cancel -- the PR #3176 failure mode
           # where no names were recoverable). -rf/--tb=short still give the
           # clean summary + tracebacks on the runs that do finish.
-          # bu-szgi9: `not pg_clock` drops the tests whose pass/fail hinges on
-          # comparing a Postgres-clock timestamp against a Python-clock value.
-          # libfaketime shifts only the Python process clock, not the Postgres
-          # testcontainer, so those tests skew by the offset and false-fail --
-          # they are CI-artifact skew, not wall-clock time-bombs, so they are
-          # excluded from THIS leg only (they still run in every other job).
+          # bu-szgi9 originally excluded pg_clock comparisons while only the
+          # Python clock shifted. Since bu-29wkwj.6 the shared Postgres
+          # testcontainer has the same offset. bu-29wkwj.12 re-admits those
+          # cases to both legs; the independent exclusions below remain.
           #
           # bu-ik7p3: session/worker-level watchdog. --timeout=300 bounds each
           # test CALL, but the observed wedge lives in xdist/session shutdown
@@ -233,8 +212,13 @@ jobs:
           # SIGKILLs any straggler that blocks SIGABRT. `timeout` exits non-zero
           # on fire, so the leg concludes 'failure' (preserving the
           # scheduled-failure email) instead of a silent job-level 'cancelled'.
-          # WATCHDOG_SECONDS is ~3x the observed healthy runtime (~20 min to
-          # 100%) and comfortably inside the 75-min job bound.
+          # bu-29wkwj.11: run39802115884's named suite steps took 2198s/+45d
+          # and 3173s/+120d after the shared Postgres clock shift. Retain twice
+          # the maximum, rounded up to a minute: ceil(2*3173/60)*60 = 6360s.
+          # The 136min job leaves 1770s beyond this suite cap plus 30s KILL:
+          # UV640 + frozen dependencies640 + setup/evidence300 + the largest
+          # observed other-job time180, with 10s rounding room. These are
+          # provisional reserves, not measured current setup or p95.
           # bu-tegqi: `not faketime_fragile` drops the pure-concurrency tests
           # whose progress DEPENDS on a timed thread-sync primitive expiring
           # (e.g. threading.Event.wait(timeout)). CPython implements those via a
@@ -244,19 +228,23 @@ jobs:
           # the recurring 99% wedge: run 29254910952 hung in
           # test_concurrent_same_model_builds_single_instance's RaceDict.wait,
           # NOT in a real embedding-model load). No time semantics -> zero value
-          # under faketime; they still run in every other job.
-          WATCHDOG_SECONDS=3600
+          # under faketime; they still run in every other job. bu-29wkwj.6
+          # adds tests needing a live TLS handshake (uv fetching from PyPI):
+          # certificate validity is checked against the shifted clock, so the
+          # +120d leg fails whenever the real certificate expires inside it.
+          WATCHDOG_SECONDS=6360
           timeout --signal=SIGABRT --kill-after=30s "${WATCHDOG_SECONDS}" \
             env LD_PRELOAD="${LIBFAKETIME_SO}" FAKETIME="${{ matrix.offset }}" \
             PYTHONFAULTHANDLER=1 \
             uv run pytest tests/ roster/ -v -rf --tb=short --ignore=tests/e2e \
-            -m "not bench and not perf and not nightly and not pg_clock and not faketime_fragile" \
+            -m "not bench and not perf and not nightly and not faketime_fragile" \
             -n auto --dist loadfile \
             --timeout=300 --timeout-method=thread
         env:
           TESTCONTAINERS_RYUK_DISABLED: "true"
 
   exact-image-sandbox:
+    timeout-minutes: 30
     # bu-zfmq2: task 3.6b's real-kernel exact-image proof
     # (test_exact_image_bubblewrap_handshake_runs_only_when_explicitly_enabled)
     # only runs when BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST=1 names an explicitly
@@ -296,22 +284,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
-        run: |
-          set -euo pipefail
-          max_attempts=5
-          for attempt in $(seq 1 "${max_attempts}"); do
-            if timeout 120 bash -c 'set -o pipefail; curl -LsSf https://astral.sh/uv/install.sh | sh'; then
-              echo "uv installed on attempt ${attempt}"
-              break
-            fi
-            if [ "${attempt}" -eq "${max_attempts}" ]; then
-              echo "::error::uv install failed after ${max_attempts} attempts" >&2
-              exit 1
-            fi
-            echo "uv install attempt ${attempt} failed; retrying in 10s..." >&2
-            sleep 10
-          done
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+        run: python3 scripts/install_ci_uv.py
 
       - name: Install dependencies
         run: uv sync --frozen --dev
@@ -351,6 +324,26 @@ jobs:
           DOCKER_BUILDKIT=1 docker build --build-arg GIT_SHA="${GIT_SHA}" \
             -t "butlers-app:${GIT_SHA}" .
 
+      - name: Allow unprivileged user namespaces for Bubblewrap (runner host setting)
+        # bu-3kyyyy: ubuntu-24.04 hosts (what ubuntu-latest now is) set
+        # kernel.apparmor_restrict_unprivileged_userns=1, which denies the
+        # capabilities an unprivileged process needs to write a uid map in a new
+        # user namespace, even when the container runs with
+        # --security-opt apparmor=unconfined. That surfaces as
+        # "bwrap: setting up uid map: Permission denied". This job passed on
+        # ubuntu-22.04 (no such sysctl) and has failed on every ubuntu-24.04
+        # run. The readbacks below record the value before and after, so the
+        # cause stays visible in the log. This relaxes only this CI host; the
+        # sandbox itself is unchanged and still refuses to run when it cannot
+        # create its namespaces (no unsandboxed fallback).
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns || echo "sysctl not present"
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            sysctl kernel.apparmor_restrict_unprivileged_userns
+          fi
+          uname -r
+
       - name: Exact-image Bubblewrap sandbox proof
         env:
           BUTLERS_RUN_EXACT_IMAGE_SANDBOX_TEST: "1"
@@ -361,3 +354,494 @@ jobs:
                 or test_exact_image_bubblewrap_sandbox_kills_detached_descendants_before_persistence \
                 or test_exact_image_concurrent_sandboxes_cannot_read_write_or_inspect_each_other \
                 or test_exact_image_bubblewrap_sandbox_denies_signer_and_protected_environment"
+
+  quarantined:
+    timeout-minutes: 30
+    # bu-w4c1iw: tests listed in tests/quarantine.json flake for a known cause
+    # owned by a bead, so every default pytest run (PR and merge-queue shards
+    # included) deselects them. This job runs exactly those tests, serially and
+    # alone on the runner, so they keep producing a signal until the PR that
+    # fixes the cause deletes the registry entry. It is not a required check.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+
+      - name: Install uv
+        run: python3 scripts/install_ci_uv.py
+
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+
+      - name: Quarantined tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: |
+          uv run pytest tests/ roster/ --ignore=tests/e2e --quarantined-full -n 0 -v -rf --tb=short
+
+  # Full covered execution (owner decision bu-w72da2 = A; formerly ci-coverage.yml).
+  # Required CI runs the same selected tests untraced; this nightly run is the only
+  # covered one. It uploads the combined report as an artifact and refreshes the
+  # main badge; it is not a required check.
+  coverage-shards:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: 3.12.15
+      CI_COVERAGE: '1'
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: unit
+            group: 1
+            timeout: 28
+          - lane: unit
+            group: 2
+            timeout: 28
+          - lane: unit
+            group: 3
+            timeout: 28
+          - lane: unit
+            group: 4
+            timeout: 28
+          - lane: unit
+            group: 5
+            timeout: 28
+          - lane: integration
+            group: 1
+            timeout: 36
+          - lane: integration
+            group: 2
+            timeout: 36
+          - lane: integration
+            group: 3
+            timeout: 36
+          - lane: integration
+            group: 4
+            timeout: 36
+          - lane: integration
+            group: 5
+            timeout: 36
+          - lane: integration
+            group: 6
+            timeout: 36
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+      - name: Free disk space before testcontainers
+        run: |
+          echo "Disk usage before cleanup:"
+          df -h /
+          MIN_FREE_GB=30
+          available_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
+          case "$available_kib" in
+            ''|*[!0-9]*)
+              echo "::error::could not determine free disk space"
+              exit 1
+              ;;
+          esac
+          available_gb=$((available_kib / 1024 / 1024))
+          if [ "$available_gb" -lt "$MIN_FREE_GB" ]; then
+            echo "Cleaning disk: ${available_gb} GiB is below ${MIN_FREE_GB} GiB."
+            sudo rm -rf /usr/local/lib/android
+            sudo rm -rf /usr/share/dotnet
+            sudo rm -rf /opt/ghc
+            sudo rm -rf /usr/local/.ghcup
+            sudo rm -rf /usr/share/swift
+            sudo rm -rf /usr/local/share/boost
+            sudo apt-get clean -q
+            docker image prune -f --filter "until=1h" || true
+          else
+            echo "Skipping disk cleanup: ${available_gb} GiB meets ${MIN_FREE_GB} GiB floor."
+          fi
+          echo "Disk usage after cleanup decision:"
+          df -h /
+        if: matrix.lane == 'integration'
+      - name: Run the covered lane group
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.group }}.data
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}
+          TESTCONTAINERS_RYUK_DISABLED: ${{ matrix.lane == 'integration' && 'true' || 'false' }}
+        run: uv run python scripts/ci_lanes.py run --lane ${{ matrix.lane }} --group ${{ matrix.group }} --output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}"
+      - name: Prepare ${{ matrix.lane }} group ${{ matrix.group }} duration evidence
+        if: always()
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt" \
+            --limit 25
+      - name: Upload complete covered execution evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ matrix.lane }}-${{ matrix.group }}-test-evidence
+          path: |
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/junit.xml
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/top-durations.txt
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/durations.json
+            ${{ runner.temp }}/ci-artifacts/${{ matrix.lane }}-${{ matrix.group }}/condensation-refusal-*.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Upload raw covered group inputs
+        if: ${{ always() && env.CI_COVERAGE == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-${{ matrix.lane }}-${{ matrix.group }}-coverage-data
+          path: |
+            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.group }}.data
+            ${{ runner.temp }}/ci-coverage/coverage-${{ matrix.lane }}-${{ matrix.group }}.data.metadata.json
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+  coverage-preflight:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: 3.12.15
+      CI_COVERAGE: '1'
+    timeout-minutes: 27
+    needs:
+      - coverage-shards
+    if: always()
+    steps:
+      - name: Require every coverage prerequisite
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          expected = {'coverage-shards'}
+          valid = isinstance(needs, dict) and set(needs) == expected
+          valid = valid and all(isinstance(value, dict) and value.get('result') == 'success' for value in needs.values())
+          raise SystemExit(0 if valid else 1)
+          PY
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+      - name: Download every covered lane group's evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-receipts
+      - name: Check the covered lane groups add up and stay within the test budget
+        run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
+      - name: Smoke tests (fast gate + release evidence)
+        id: smoke
+        env:
+          SMOKE_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/smoke
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
+        run: |
+          mkdir -p "$SMOKE_EVIDENCE_DIR"
+          SMOKE_CMD="uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short"
+
+          START_TS=$(date +%s)
+          set +e
+          $SMOKE_CMD --junit-xml="$SMOKE_EVIDENCE_DIR/raw-junit.xml" 2>&1 | tee "$SMOKE_EVIDENCE_DIR/smoke.log"
+          SMOKE_EXIT=${PIPESTATUS[0]}
+          set -e
+          END_TS=$(date +%s)
+          DURATION_S=$((END_TS - START_TS))
+          [ "$SMOKE_EXIT" -eq 0 ] && STATUS=PASS || STATUS=FAIL
+
+          # Write release-evidence JSON and emit a clearly-formatted log line.
+          SMOKE_EXIT_VAL=$SMOKE_EXIT \
+          SMOKE_SHA="${{ github.sha }}" \
+          SMOKE_DURATION=$DURATION_S \
+          SMOKE_STATUS=$STATUS \
+          SMOKE_CMD_VAL="$SMOKE_CMD" \
+          SMOKE_EVIDENCE_DIR="$SMOKE_EVIDENCE_DIR" \
+          python3 << 'PYEOF'
+          import json, os, sys, xml.etree.ElementTree as ET
+
+          sha = os.environ["SMOKE_SHA"]
+          duration_s = int(os.environ["SMOKE_DURATION"])
+          exit_code = int(os.environ["SMOKE_EXIT_VAL"])
+          status = os.environ["SMOKE_STATUS"]
+          cmd = os.environ["SMOKE_CMD_VAL"]
+          evidence_dir = os.environ["SMOKE_EVIDENCE_DIR"]
+
+          try:
+              root = ET.parse(os.path.join(evidence_dir, "raw-junit.xml")).getroot()
+              skipped_classes = sorted({
+                  tc.get("classname") or tc.get("name", "unknown")
+                  for tc in root.findall(".//testcase")
+                  if tc.find("skipped") is not None
+              })
+          except (ET.ParseError, OSError) as exc:
+              print(exc, file=sys.stderr)
+              skipped_classes = ["unavailable"]
+
+          evidence = {
+              "cmd": cmd,
+              "sha": sha,
+              "duration_s": duration_s,
+              "status": status,
+              "exit_code": exit_code,
+              "skipped_classes": skipped_classes,
+          }
+          with open(os.path.join(evidence_dir, "release-evidence.json"), "w") as f:
+              json.dump(evidence, f, indent=2)
+
+          print(f"SMOKE-RELEASE-EVIDENCE cmd={cmd!r} sha={sha!r} duration={duration_s}s status={status!r} skipped_classes={skipped_classes!r}")
+          print()
+          print(json.dumps(evidence, indent=2))
+          PYEOF
+
+          exit "$SMOKE_EXIT"
+      - name: Prepare smoke test duration evidence
+        if: ${{ always() && steps.smoke.outcome != 'skipped' }}
+        run: |
+          python3 scripts/summarize_junit_durations.py \
+            --input "${RUNNER_TEMP}/ci-artifacts/smoke/raw-junit.xml" \
+            --sanitized-junit "${RUNNER_TEMP}/ci-artifacts/smoke/junit.xml" \
+            --durations-output "${RUNNER_TEMP}/ci-artifacts/smoke/top-durations.txt" \
+            --limit 25
+      - name: Upload smoke release evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-release-evidence
+          path: ${{ runner.temp }}/ci-artifacts/smoke/release-evidence.json
+          retention-days: 30
+          if-no-files-found: warn
+          overwrite: true
+      - name: Upload smoke test evidence
+        if: ${{ always() && steps.smoke.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-smoke-test-evidence
+          path: |
+            ${{ runner.temp }}/ci-artifacts/smoke/junit.xml
+            ${{ runner.temp }}/ci-artifacts/smoke/top-durations.txt
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+  coverage-report:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: 3.12.15
+      CI_COVERAGE: '1'
+    timeout-minutes: 16
+    needs:
+      - coverage-shards
+      - coverage-preflight
+    if: always()
+    steps:
+      - name: Require every coverage prerequisite
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          needs = json.loads(os.environ['NEEDS_JSON'])
+          expected = {'coverage-shards', 'coverage-preflight'}
+          valid = isinstance(needs, dict) and set(needs) == expected
+          valid = valid and all(isinstance(value, dict) and value.get('result') == 'success' for value in needs.values())
+          raise SystemExit(0 if valid else 1)
+          PY
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/ci-python-environment
+      - name: Download unit group 1 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-1-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-1
+      - name: Download unit group 2 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-2-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-2
+      - name: Download unit group 3 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-3-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-3
+      - name: Download unit group 4 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-4-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-4
+      - name: Download unit group 5 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-unit-5-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/unit-5
+      - name: Download integration group 1 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-1-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-1
+      - name: Download integration group 2 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-2-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-2
+      - name: Download integration group 3 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-3-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-3
+      - name: Download integration group 4 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-4-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-4
+      - name: Download integration group 5 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-5-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-5
+      - name: Download integration group 6 coverage data
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-integration-6-coverage-data
+          path: ${{ runner.temp }}/ci-coverage/integration-6
+      - name: Combine coverage from all independent lane groups
+        id: coverage
+        env:
+          UNIT_1_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-1/coverage-unit-1.data
+          UNIT_2_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-2/coverage-unit-2.data
+          UNIT_3_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-3/coverage-unit-3.data
+          UNIT_4_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-4/coverage-unit-4.data
+          UNIT_5_COVERAGE: ${{ runner.temp }}/ci-coverage/unit-5/coverage-unit-5.data
+          INTEGRATION_1_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-1/coverage-integration-1.data
+          INTEGRATION_2_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-2/coverage-integration-2.data
+          INTEGRATION_3_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-3/coverage-integration-3.data
+          INTEGRATION_4_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-4/coverage-integration-4.data
+          INTEGRATION_6_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-6/coverage-integration-6.data
+          INTEGRATION_5_COVERAGE: ${{ runner.temp }}/ci-coverage/integration-5/coverage-integration-5.data
+          COMBINED_COVERAGE: ${{ runner.temp }}/ci-coverage/coverage-combined.data
+          COMBINED_REPORT: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
+        run: |
+          mkdir -p "$(dirname "$COMBINED_COVERAGE")" "$(dirname "$COMBINED_REPORT")"
+          rm -f "$COMBINED_COVERAGE" "$COMBINED_REPORT"
+          uv run python scripts/check_ci_coverage.py \
+            --input-root "${RUNNER_TEMP}/ci-coverage" \
+            --head "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" --event "$GITHUB_EVENT_NAME"
+          uv run coverage combine --data-file="$COMBINED_COVERAGE" \
+            "$UNIT_1_COVERAGE" \
+            "$UNIT_2_COVERAGE" \
+            "$UNIT_3_COVERAGE" \
+            "$UNIT_4_COVERAGE" \
+            "$UNIT_5_COVERAGE" \
+            "$INTEGRATION_1_COVERAGE" \
+            "$INTEGRATION_2_COVERAGE" \
+            "$INTEGRATION_3_COVERAGE" \
+            "$INTEGRATION_4_COVERAGE" \
+            "$INTEGRATION_5_COVERAGE" \
+            "$INTEGRATION_6_COVERAGE"
+          uv run coverage json --data-file="$COMBINED_COVERAGE" -o "$COMBINED_REPORT"
+          uv run coverage report --data-file="$COMBINED_COVERAGE" --show-missing
+          export COMBINED_REPORT
+          COVERAGE=$(python3 -c 'import json, os; print(round(json.load(open(os.environ["COMBINED_REPORT"]))["totals"]["percent_covered"]))')
+          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          # Color thresholds: green >=80, yellow >=60, red <60.
+          if [ "$COVERAGE" -ge 80 ]; then
+            echo "color=brightgreen" >> "$GITHUB_OUTPUT"
+          elif [ "$COVERAGE" -ge 60 ]; then
+            echo "color=yellow" >> "$GITHUB_OUTPUT"
+          else
+            echo "color=red" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload combined coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-combined-coverage-report
+          path: ${{ runner.temp }}/ci-artifacts/coverage/coverage.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Update coverage badge
+        if: ${{ success() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name
+          == 'workflow_dispatch') }}
+        uses: schneegans/dynamic-badges-action@v1.7.0
+        with:
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ secrets.COVERAGE_GIST_ID }}
+          filename: butlers-coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.percentage }}%
+          color: ${{ steps.coverage.outputs.color }}
+  durations-refresh:
+    # Merges every covered group's measured durations into the committed
+    # .test_durations that pytest-split balances the CI lane groups with. The
+    # merged file is always uploaded; Monday's scheduled run on main, or a manual
+    # dispatch on main, also opens a PR with it. It never pushes to main. A stale
+    # file only skews group balance: which tests run stays exact, because
+    # `ci_lanes.py totals` checks every lane's groups against --collect-only
+    # (bu-29wkwj.2). The PR is pushed and opened as the butlers-ci-bot GitHub App,
+    # not GITHUB_TOKEN: the repo does not let Actions open PRs, and a PR opened
+    # with GITHUB_TOKEN would not trigger pull_request CI (bu-29wkwj.9).
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [coverage-shards]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+    steps:
+      - name: Mint the butlers-ci-bot token
+        id: ci-bot
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CI_BOT_APP_ID }}
+          private-key: ${{ secrets.CI_BOT_APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.ci-bot.outputs.token || github.token }}
+      - name: Download every lane group's evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-evidence
+      - name: Merge the measured durations
+        run: python3 scripts/ci_lanes.py durations --evidence "${RUNNER_TEMP}/ci-test-evidence"
+      - name: Upload the merged durations
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-durations
+          path: .test_durations
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+      - name: Open a durations refresh PR
+        if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
+        env:
+          GH_TOKEN: ${{ steps.ci-bot.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
+            echo "Scheduled refreshes open a PR on Mondays only."
+            exit 0
+          fi
+          if git diff --quiet -- .test_durations; then
+            echo "Durations unchanged."
+            exit 0
+          fi
+          branch="ci/test-durations-${GITHUB_RUN_ID}"
+          bot="${{ steps.ci-bot.outputs.app-slug }}[bot]"
+          git config user.name "$bot"
+          git config user.email "$(gh api "/users/${bot}" --jq .id)+${bot}@users.noreply.github.com"
+          git switch -c "$branch"
+          git add .test_durations
+          git commit -m "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}" \
+            --body "Measured by the covered lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."

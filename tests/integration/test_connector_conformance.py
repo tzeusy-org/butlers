@@ -125,7 +125,8 @@ class TestTelegramConnectorConformance:
             assert envelope["source"]["provider"] == "telegram"
             assert envelope["source"]["endpoint_identity"] == "test_bot"
             assert envelope["event"]["external_event_id"] == "12345"
-            assert envelope["event"]["external_thread_id"] == "987654321:1"
+            assert envelope["event"]["external_conversation_id"] == "telegram:987654321"
+            assert envelope["event"]["reply_target_ref"] == "987654321:1"
             assert envelope["sender"]["identity"] == "987654321"
             assert envelope["payload"]["normalized_text"] == "Test message"
             assert envelope["control"]["idempotency_key"] == "tg:987654321:1"
@@ -190,7 +191,8 @@ class TestTelegramConnectorConformance:
 
         assert "event" in envelope
         assert "external_event_id" in envelope["event"]
-        assert "external_thread_id" in envelope["event"]
+        assert envelope["event"]["external_conversation_id"] == "telegram:222222"
+        assert envelope["event"]["reply_target_ref"] == "222222:1"
         assert "observed_at" in envelope["event"]
 
         assert "sender" in envelope
@@ -285,7 +287,8 @@ class TestGmailConnectorConformance:
             assert envelope["source"]["provider"] == "gmail"
             assert envelope["source"]["endpoint_identity"] == "gmail:user:test@example.com"
             assert envelope["event"]["external_event_id"] == "<unique@example.com>"
-            assert envelope["event"]["external_thread_id"] == "thread456"
+            assert envelope["event"]["external_conversation_id"] == "thread456"
+            assert envelope["event"]["reply_target_ref"] == "thread456"
             assert envelope["sender"]["identity"] == "sender@example.com"
 
     async def test_gmail_dedupe_replay_behavior(
@@ -356,7 +359,8 @@ class TestGmailConnectorConformance:
 
         assert "event" in envelope
         assert "external_event_id" in envelope["event"]
-        assert "external_thread_id" in envelope["event"]
+        assert envelope["event"]["external_conversation_id"] == "thread777"
+        assert envelope["event"]["reply_target_ref"] == "thread777"
         assert "observed_at" in envelope["event"]
 
         assert "sender" in envelope

@@ -1,8 +1,9 @@
 """Trusted transport and Messenger ledger for approval-delivery recovery.
 
-The public ``notify.v1`` recovery block carries correlation only.  Authority is
-derived from FastMCP access-token claims at each server boundary and converted
-to :class:`TrustedRecoveryContext`, which is never part of the caller model.
+The public ``notify.v1`` recovery block carries correlation only. Authority
+requires the approval-only protected ingress and an independent source-owned
+admission proof. Access-token claims and this DTO alone cannot attest a source
+presentation. The source protocol lives in ``approval_delivery_authority``.
 """
 
 from __future__ import annotations
@@ -12,8 +13,6 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
-
-from fastmcp.server.dependencies import AccessToken
 
 from butlers.core.approval_delivery_worker import DeliveryClaim, HandoffResult
 
@@ -108,45 +107,6 @@ class TrustedRecoveryContext:
         return context
 
 
-def authenticated_daemon_name(
-    access_token: AccessToken | None,
-    *,
-    required_scope: str,
-) -> str | None:
-    """Return the daemon identity only from a tightly bound access token."""
-    if access_token is None or required_scope not in access_token.scopes:
-        return None
-    claims = access_token.claims if isinstance(access_token.claims, Mapping) else {}
-    if claims.get("actor_type") != "daemon":
-        return None
-    name = claims.get("butler_name")
-    if not isinstance(name, str) or not _CANONICAL_NAME.fullmatch(name):
-        return None
-    if access_token.client_id != f"butler:{name}":
-        return None
-    return name
-
-
-def recovery_context_from_request(
-    *,
-    issuer: str,
-    recovery: Any,
-) -> TrustedRecoveryContext:
-    """Convert validated caller correlation into server-held trusted context."""
-    context = TrustedRecoveryContext(
-        issuer=issuer,
-        owning_schema=issuer,
-        operation=recovery.operation,
-        subject_kind=recovery.subject_kind,
-        subject_key=recovery.subject_key,
-        presentation_key=recovery.presentation_key,
-        presentation_generation=recovery.presentation_generation,
-        presentation_mode=recovery.presentation_mode,
-    )
-    context.validate()
-    return context
-
-
 class ApprovalRecoveryRuntime:
     """Dormant source-side runtime for the fenced approval worker.
 
@@ -159,7 +119,7 @@ class ApprovalRecoveryRuntime:
         *,
         source_butler: str,
         owning_schema: str,
-        dispatch: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+        dispatch: Callable[[DeliveryClaim, dict[str, Any]], Awaitable[dict[str, Any]]],
         resolve_owner_recipient: Callable[[], Awaitable[str | None]],
         resolve_callback_secret: Callable[[], Awaitable[str | None]],
     ) -> None:
@@ -195,7 +155,7 @@ class ApprovalRecoveryRuntime:
     ) -> HandoffResult:
         payload = dict(envelope)
         payload["recovery"] = self._recovery_payload(claim, "handoff")
-        return self._parse_result(await self._dispatch(payload))
+        return self._parse_result(await self._dispatch(claim, payload))
 
     async def reconcile(self, claim: DeliveryClaim) -> HandoffResult:
         payload = {
@@ -208,7 +168,7 @@ class ApprovalRecoveryRuntime:
             },
             "recovery": self._recovery_payload(claim, "reconcile"),
         }
-        return self._parse_result(await self._dispatch(payload))
+        return self._parse_result(await self._dispatch(claim, payload))
 
     @staticmethod
     def _parse_result(result: Mapping[str, Any]) -> HandoffResult:
@@ -497,6 +457,4 @@ __all__ = [
     "MessengerApprovalHandoffRepository",
     "RecoveryAuthorityError",
     "TrustedRecoveryContext",
-    "authenticated_daemon_name",
-    "recovery_context_from_request",
 ]

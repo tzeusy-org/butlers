@@ -83,7 +83,8 @@ Each user-client message SHALL be normalized to the canonical `ingest.v1` envelo
   - `source.provider` = `"telegram"`
   - `source.endpoint_identity` = `"telegram:user:<account_id>"` (the user's Telegram account, NOT the bot)
   - `event.external_event_id` = Telegram `message.id`
-  - `event.external_thread_id` = `<chat_id>` (the dialog/group)
+  - `event.external_conversation_id` = `"telegram:<chat_id>"` (the dialog/group)
+  - `event.reply_target_ref` = `<chat_id>:<message_id>`
   - `event.observed_at` = connector-observed timestamp (RFC3339)
   - `sender.identity` = `<sender_id>` (may be the user themselves or another participant)
   - `payload.raw` = full Telethon message payload

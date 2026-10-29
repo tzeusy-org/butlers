@@ -921,7 +921,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     for recent inbound messages on user-to-person channels
     (``telegram_user_client``, ``whatsapp_user_client``, ``email``).
 
-    Groups by ``(source_thread_identity, source_channel,
+    Groups by ``(external_conversation_id, source_channel,
     source_endpoint_identity, DATE(received_at))``
     — a chat-centric view — rather than by individual sender.  Per RFC 0013 D4:
 
@@ -951,11 +951,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     On successful completion the job writes ``scan_window_end`` back to the state
     store so the next run continues from where this one left off.
 
-    **Calendar-based sync:** Queries ``public.calendar_events`` for confirmed
+    **Calendar-based sync:** Queries ``relationship.calendar_events`` for confirmed
     events within the scan window.  For each event, extracts the
     ``metadata->'attendees'`` JSONB array, resolves attendee emails to
-    contact_ids via ``relationship.entity_facts`` (``has-email`` →
-    ``public.contacts.entity_id``), and calls
+    entity IDs via active ``relationship.entity_facts`` ``has-email`` facts, and calls
     ``interaction_log()`` with ``type='calendar_event'``.  Events where the
     owner's RSVP is ``declined`` are skipped entirely.  The owner's own
     attendee entry (``self=true``) is excluded from attendee resolution.
@@ -1058,19 +1057,22 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
     # -----------------------------------------------------------------------
     # Step 1: Query switchboard.message_inbox grouped by chat identity.
     #
-    # RFC 0013 D4: group by (source_thread_identity, source_channel, date)
-    # and collect the distinct set of senders per group.  Messages flagged
-    # as interaction_eligible=false are excluded before grouping.
+    # RFC 0013 D4: group by (chat identity, source_channel, date) and collect
+    # the distinct set of senders per group.  Messages flagged as
+    # interaction_eligible=false are excluded before grouping.
     #
-    # When source_thread_identity is NULL (legacy/connectors that don't set it),
-    # fall back to source_sender_identity as the grouping key so that each sender
-    # forms its own "chat" group rather than being merged into a NULL mega-group.
+    # The chat identity is external_conversation_id: source_thread_identity is
+    # the per-message reply target (bu-7exe4.2), so grouping on it would make
+    # every message its own chat.  Rows without either fall back to
+    # source_sender_identity so that each sender forms its own "chat" group
+    # rather than being merged into a NULL mega-group.
     # -----------------------------------------------------------------------
     try:
         rows = await db_pool.fetch(
             """
             SELECT
                 COALESCE(
+                    request_context ->> 'external_conversation_id',
                     request_context ->> 'source_thread_identity',
                     request_context ->> 'source_sender_identity'
                 )                                              AS thread_identity,
@@ -1115,8 +1117,13 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
               AND sender.identity IS NOT NULL
               AND sender.identity NOT IN ('unknown', 'multiple')
               AND COALESCE(request_context ->> 'interaction_eligible', 'true') != 'false'
+              -- Out-of-office replies, bounces and other automated mail are not the
+              -- contact reaching out.  Ingest classifies them and persists only
+              -- raw_payload.control.automated_kind, so read it from there.
+              AND COALESCE(raw_payload -> 'control' ->> 'automated_kind', '') = ''
             GROUP BY
                 COALESCE(
+                    request_context ->> 'external_conversation_id',
                     request_context ->> 'source_thread_identity',
                     request_context ->> 'source_sender_identity'
                 ),
@@ -1395,9 +1402,10 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     stats["errors"] += 1
 
     # -----------------------------------------------------------------------
-    # Step 4: Scan public.calendar_events for confirmed events within the
+    # Step 4: Scan relationship.calendar_events for confirmed events within the
     # scan window, extract attendees, and log interactions.
     # -----------------------------------------------------------------------
+    calendar_query_succeeded = False
     try:
         cal_rows = await db_pool.fetch(
             """
@@ -1406,7 +1414,7 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                 title,
                 starts_at,
                 metadata
-            FROM public.calendar_events
+            FROM relationship.calendar_events
             WHERE status = 'confirmed'
               AND starts_at >= $1
               AND starts_at <= now()
@@ -1415,13 +1423,19 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
             """,
             scan_window_start,
         )
+        calendar_query_succeeded = True
     except asyncpg.exceptions.UndefinedTableError:
-        logger.info(
-            "interaction_sync: public.calendar_events unavailable; skipping calendar-based sync"
+        logger.warning(
+            "interaction_sync: relationship.calendar_events unavailable (UndefinedTableError); "
+            "calendar scan incomplete"
         )
+        stats["errors"] += 1
         cal_rows = []
-    except Exception:
-        logger.exception("interaction_sync: failed to query public.calendar_events")
+    except Exception as exc:
+        logger.exception(
+            "interaction_sync: failed to query relationship.calendar_events (%s)",
+            type(exc).__name__,
+        )
         stats["errors"] += 1
         cal_rows = []
 
@@ -1739,23 +1753,22 @@ async def run_interaction_sync(db_pool: asyncpg.Pool) -> dict[str, Any]:
                         )
                         stats["errors"] += 1
 
-    # Persist the end of this scan window as the next checkpoint. Fail-open for
-    # the same reasons as the read above (interaction_log() dedups, scheduler
-    # storm avoidance). Surface via stats["errors"] + WARNING logs so monitoring
-    # catches recurring write failures without turning a completed fallback scan
-    # into an ERROR-level job failure.
-    next_checkpoint = scan_window_end.isoformat()
-    try:
-        await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
-    except Exception:
-        logger.warning(
-            "interaction_sync: failed to write checkpoint key=%s value=%s",
-            _INTERACTION_SYNC_STATE_KEY,
-            next_checkpoint,
-            exc_info=True,
-        )
-        stats["errors"] += 1
-
+    # A failed calendar read is not an empty successful scan. Preserve the
+    # bounded interval; committed message work deduplicates on the next run.
+    if calendar_query_succeeded:
+        next_checkpoint = scan_window_end.isoformat()
+        try:
+            await state_set(db_pool, _INTERACTION_SYNC_STATE_KEY, next_checkpoint)
+        except Exception:
+            logger.warning(
+                "interaction_sync: failed to write checkpoint key=%s value=%s",
+                _INTERACTION_SYNC_STATE_KEY,
+                next_checkpoint,
+                exc_info=True,
+            )
+            stats["errors"] += 1
+    else:
+        logger.warning("interaction_sync: calendar scan incomplete; checkpoint not advanced")
     logger.info(
         "Interaction sync complete: processed=%d, logged=%d, "
         "skipped_unresolved=%d, skipped_owner=%d, "
@@ -3141,7 +3154,7 @@ async def run_entity_dedup_curation(db_pool: asyncpg.Pool) -> dict[str, Any]:
         )
 
     exact_pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for name_key, group in name_groups.items():
+    for _name_key, group in name_groups.items():
         if len(group) < 2:
             continue
         stats["exact_groups_found"] += 1
@@ -3475,8 +3488,8 @@ async def archive_rejected_identity_enrichment_orphans(db_pool: asyncpg.Pool) ->
     also drains the historical backlog on each run.
 
     Only a *clean orphan* is touched -- provenance-tagged, not already tombstoned, and with
-    no references acquired since creation (mirrors the safety gate in
-    ``scripts/cleanup_bulk_email_identity_proposals.py``): no ``entity_facts`` as subject or
+    no references acquired since creation (the safety gate of the retired one-shot
+    ``cleanup_bulk_email_identity_proposals`` script): no ``entity_facts`` as subject or
     object-entity (an approved has-email
     proposal writes such a fact, so approved/graduated entities are excluded and left
     intact) and no live (pending/approved/executed) ``pending_actions`` subject. (Contact

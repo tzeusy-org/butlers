@@ -1,7 +1,65 @@
 import type { ReactNode } from "react";
+import type { UseQueryResult } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+
+export interface QueryProps<T, E = Error> {
+  q: UseQueryResult<T, E>;
+  children: (data: T) => ReactNode;
+  loadingFallback: ReactNode;
+  /** Derive emptiness from confirmed data, including its source availability. */
+  empty?: { when: (data: T) => boolean; fallback: ReactNode };
+  errorFallback?: ReactNode;
+  unavailableFallback?: ReactNode;
+  sourceLabel?: string;
+}
+
+/**
+ * Data children execute only for confirmed success. TanStack can retain data
+ * on a refetch error, or report success for a previous-key placeholder: neither
+ * is confirmation for this query. A consumer that needs retained stale rows
+ * renders an explicitly labelled, authority/key-scoped sibling, never an
+ * error-data callback here. Fetching and query identity remain hook-owned.
+ */
+export function Query<T, E = Error>({
+  q, children, loadingFallback, empty, errorFallback, unavailableFallback, sourceLabel,
+}: QueryProps<T, E>) {
+  if (q.status === "error") {
+    return errorFallback ?? (
+      <QueryBoundary
+        isLoading={false} isError error={q.error} isEmpty={false}
+        onRetry={() => { void q.refetch(); }} sourceLabel={sourceLabel}
+        loadingFallback={null} emptyFallback={null}
+      >{null}</QueryBoundary>
+    );
+  }
+
+  if (q.status !== "success" || q.isPlaceholderData || q.data === undefined) {
+    if (q.fetchStatus === "paused" || (q.status === "success" && q.data === undefined)) {
+      return unavailableFallback ?? (
+        <div role="status" className="space-y-2 text-sm text-muted-foreground">
+          <p>{q.fetchStatus === "paused" ? "Offline. Data is unavailable." : "Data is unavailable."}</p>
+          <Button variant="outline" size="sm"
+            className="[@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+            onClick={() => { void q.refetch(); }}>Retry</Button>
+        </div>
+      );
+    }
+    return <div aria-busy="true">{loadingFallback}</div>;
+  }
+
+  const refreshing = q.fetchStatus === "fetching";
+  return (
+    <div className="min-w-0" aria-busy={refreshing || undefined}>
+      {refreshing && <p role="status" className="text-xs text-muted-foreground">Refreshing</p>}
+      {q.fetchStatus === "paused" && (
+        <p role="status" className="text-xs text-muted-foreground">Offline. Showing last confirmed result.</p>
+      )}
+      {empty?.when(q.data) ? empty.fallback : children(q.data)}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // QueryBoundary -- shared three-way async state contract (bu-86c4c.2)
@@ -89,7 +147,9 @@ export function QueryBoundary({
           {subject}. Retry{detail ? `. ${detail}` : "."}
         </p>
         {onRetry && (
-          <Button variant="outline" size="sm" onClick={onRetry}>
+          <Button variant="outline" size="sm"
+            className="[@media(pointer:coarse)]:min-h-11 [@media(pointer:coarse)]:min-w-11"
+            onClick={onRetry}>
             Retry
           </Button>
         )}

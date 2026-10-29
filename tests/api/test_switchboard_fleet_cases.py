@@ -9,10 +9,8 @@ Covers:
 
 from __future__ import annotations
 
-import base64
 import datetime
-import importlib.util
-import json
+import importlib
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -21,6 +19,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.api.pagination import encode_cursor
 
 pytestmark = pytest.mark.unit
 
@@ -31,13 +31,8 @@ _router_path = _roster_root / "switchboard" / "api" / "router.py"
 
 def _get_db_dep():
     if _MODULE_NAME not in sys.modules:
-        spec = importlib.util.spec_from_file_location(_MODULE_NAME, _router_path)
-        if spec is None or spec.loader is None:
-            raise ValueError(f"Could not load spec from {_router_path}")
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[_MODULE_NAME] = module
-        spec.loader.exec_module(module)
-    return sys.modules[_MODULE_NAME]._get_db_manager
+        importlib.import_module("butlers.api._roster.switchboard.router")
+    return get_db
 
 
 def _make_row(data: dict):
@@ -126,6 +121,8 @@ def _sample_link_row(**overrides):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_happy_path_maps_all_fields(app):
     app, _ = _app_with_mock(app, fetch_rows=[_make_row(_sample_case_row())])
     async with httpx.AsyncClient(
@@ -135,9 +132,9 @@ async def test_list_cases_happy_path_maps_all_fields(app):
 
     assert resp.status_code == 200
     body = resp.json()
-    data = body["data"]
-    assert len(data) == 1
-    item = data[0]
+    items = body["items"]
+    assert len(items) == 1
+    item = items[0]
     assert item["id"] == "22222222-2222-2222-2222-222222222222"
     assert item["correlation_key"] == "health:owner:respiratory-illness"
     assert item["state"] == "open"
@@ -146,8 +143,8 @@ async def test_list_cases_happy_path_maps_all_fields(app):
     assert item["opened_at"] is not None
     assert item["updated_at"] is not None
     assert item["closed_at"] is None
-    assert body["meta"]["has_more"] is False
-    assert body["meta"]["next_cursor"] is None
+    assert body["next_cursor"] is None
+    assert body["limit"] == 50
 
 
 async def test_list_cases_state_filter_adds_condition(app):
@@ -178,6 +175,8 @@ async def test_list_cases_posture_filter_adds_condition(app):
     assert call[0][1] == ["urgent"]
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_has_more_emits_next_cursor(app):
     rows = [
         _make_row(_sample_case_row(id=f"11111111-1111-1111-1111-11111111111{i}")) for i in range(3)
@@ -190,15 +189,17 @@ async def test_list_cases_has_more_emits_next_cursor(app):
 
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["data"]) == 2
-    assert body["meta"]["has_more"] is True
-    assert body["meta"]["next_cursor"] is not None
+    assert len(body["items"]) == 2
+    assert body["next_cursor"] is not None
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_list_cases_cursor_round_trips_into_where_clause(app):
     app, mock_pool = _app_with_mock(app, fetch_rows=[])
-    cursor_payload = {"ua": "2026-09-01T00:00:00+00:00", "id": "some-id"}
-    cursor = base64.urlsafe_b64encode(json.dumps(cursor_payload).encode()).decode()
+    cursor = encode_cursor(
+        (datetime.datetime(2026, 9, 1, tzinfo=datetime.UTC), "some-id"), scope="fleet-cases"
+    )
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -234,13 +235,13 @@ async def test_list_cases_invalid_posture_422(app):
     assert resp.status_code == 422
 
 
-async def test_list_cases_invalid_cursor_422(app):
+async def test_list_cases_invalid_cursor_400(app):
     _app_with_mock(app, fetch_rows=[])
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         resp = await client.get("/api/switchboard/cases", params={"cursor": "not-valid-base64!!"})
-    assert resp.status_code == 422
+    assert resp.status_code == 400
 
 
 async def test_list_cases_limit_out_of_range_422(app):
@@ -260,9 +261,8 @@ async def test_list_cases_graceful_degrade_when_table_missing(app):
         resp = await client.get("/api/switchboard/cases")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["data"] == []
-    assert body["meta"]["has_more"] is False
-    assert body["meta"]["next_cursor"] is None
+    assert body["items"] == []
+    assert body["next_cursor"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +270,8 @@ async def test_list_cases_graceful_degrade_when_table_missing(app):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_happy_path_includes_evidence_and_links(app):
     app, mock_pool = _app_with_mock(
         app,
@@ -300,6 +302,8 @@ async def test_get_case_happy_path_includes_evidence_and_links(app):
 # ---------------------------------------------------------------------------
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_not_found_404(app):
     _app_with_mock(app, fetchrow_result=None)
     async with httpx.AsyncClient(
@@ -309,6 +313,8 @@ async def test_get_case_not_found_404(app):
     assert resp.status_code == 404
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_invalid_uuid_422(app):
     _app_with_mock(app, fetchrow_result=None)
     async with httpx.AsyncClient(
@@ -327,6 +333,8 @@ async def test_get_case_503_when_pool_unavailable(app):
     assert resp.status_code == 503
 
 
+# Spec: REQ-fleet-case-file-007
+# Partial actual ASGI behavior over mocked rows; not SQL/outage-honesty proof.
 async def test_get_case_503_when_lookup_fails(app):
     _app_with_mock(app, fetchrow_side_effect=RuntimeError("relation does not exist"))
     async with httpx.AsyncClient(

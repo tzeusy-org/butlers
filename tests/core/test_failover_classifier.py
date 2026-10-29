@@ -24,6 +24,7 @@ Covers every acceptance criterion from bu-ojiij.2:
 from __future__ import annotations
 
 import itertools
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -1056,7 +1057,7 @@ class TestFailoverDecisionContract:
     def test_decision_is_immutable(self) -> None:
         """FailoverDecision is frozen (immutable after construction)."""
         dec = FailoverDecision(eligible=True, reason="test")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             dec.eligible = False  # type: ignore[misc]
 
     def test_eligible_true(self) -> None:

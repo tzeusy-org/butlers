@@ -138,6 +138,11 @@ class CalendarWorkspaceSourceFreshness(BaseModel):
     #: ``POST /api/calendar/sources``. A disabled source is rendered "off" (not
     #: failed) and is skipped by the sync loop. Default ``True`` (opt-out).
     sync_enabled: bool = True
+    #: Whether a sync verdict applies at all. Only provider sources are synced;
+    #: internal sources (schedules, reminders) are projected locally and never
+    #: get a cursor, so their null ``last_synced_at`` is normal, not "never
+    #: synced". Mirrors the sync deadman's provider-only rule (bu-ak7fij).
+    sync_applicable: bool = True
 
 
 class CalendarWorkspaceLaneDefinition(BaseModel):
@@ -494,82 +499,6 @@ class CalendarSuggestedSlot(BaseModel):
     timezone: str
 
 
-_FIND_TIME_WEEKDAY_CODES = frozenset({"MO", "TU", "WE", "TH", "FR", "SA", "SU"})
-
-
-class CalendarFindTimeConstraints(BaseModel):
-    """Structured (pre-parsed) constraints for the free-slot finder.
-
-    Natural-language constraints ("mornings only", "avoid Fridays") are parsed
-    into this structured form at the call site; the finder itself performs no LLM
-    call. Both fields are soft preferences used for ranking, not hard filters.
-    """
-
-    part_of_day: Literal["morning", "afternoon", "evening"] | None = None
-    avoid_weekdays: list[str] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _validate_weekdays(self) -> CalendarFindTimeConstraints:
-        normalized: list[str] = []
-        for raw in self.avoid_weekdays:
-            code = str(raw).strip().upper()
-            if code not in _FIND_TIME_WEEKDAY_CODES:
-                raise ValueError(f"Invalid weekday {raw!r}; expected iCal codes like MO, TU, …, SU")
-            if code not in normalized:
-                normalized.append(code)
-        object.__setattr__(self, "avoid_weekdays", normalized)
-        return self
-
-
-class CalendarWorkspaceFindTimeRequest(BaseModel):
-    """Request payload for POST /api/calendar/workspace/find-time."""
-
-    butler_name: str
-    duration_minutes: int = Field(gt=0, le=24 * 60)
-    search_start: datetime
-    search_end: datetime
-    calendar_ids: list[str] | None = None
-    constraints: CalendarFindTimeConstraints | None = None
-    limit: int = Field(default=10, gt=0, le=100)
-
-    @model_validator(mode="after")
-    def _validate_window(self) -> CalendarWorkspaceFindTimeRequest:
-        if self.search_end <= self.search_start:
-            raise ValueError("search_end must be after search_start")
-        return self
-
-
-class CalendarWorkspaceFindTimeResponse(BaseModel):
-    """Response payload for POST /api/calendar/workspace/find-time.
-
-    ``slots`` are ranked open time slots (earliest-first, constraint matches
-    preferred).
-
-    Honest degraded contract (fail-open, never HTTP 500): finding time depends
-    on a cross-source free/busy lookup dispatched to the calendar butler over
-    MCP. The lookup may be unavailable because the butler/MCP transport cannot
-    be reached or because the module returned a structured provider
-    authentication/request error.
-
-    - ``available=True`` — the free/busy lookup completed. An empty ``slots``
-      list then means the window genuinely had no gap long enough for
-      ``duration_minutes``.
-    - ``available=False`` — the lookup could not produce availability
-      (butler/MCP transport failure or structured provider failure); ``slots`` is
-      empty because nothing was checked, NOT because the calendar is open.
-      ``reason`` is always the fixed, content-blind message:
-      ``Free/busy lookup unavailable; try again shortly.`` Raw provider
-      diagnostics are never exposed. The UI must render "free/busy unavailable"
-      rather than a misleading "no open slots".
-    """
-
-    slots: list[CalendarSuggestedSlot] = Field(default_factory=list)
-    duration_minutes: int
-    calendar_ids: list[str] = Field(default_factory=list)
-    available: bool = True
-    reason: str | None = None
-
-
 # ---------------------------------------------------------------------------
 # Conflict & overcommitment radar — GET /api/calendar/workspace/conflicts
 # ---------------------------------------------------------------------------
@@ -628,6 +557,30 @@ class ConflictScanResponse(BaseModel):
     issues: list[ConflictIssue] = Field(default_factory=list)
     scan_window: ConflictScanWindow
     issues_available: bool = True
+
+
+class CalendarInvitationEntry(BaseModel):
+    """One explicit unanswered provider occurrence; no RSVP/mutation authority."""
+
+    entry_id: UUID
+    title: str
+    start_at: datetime
+    end_at: datetime
+    timezone: str
+    organizer: str | None = None
+    organizer_source: Literal["event", "attendee", "unknown"] = "unknown"
+    butler_name: str | None = None
+    conflict_issues: list[ConflictIssue] = Field(default_factory=list)
+    response_configured: bool = False
+
+
+class CalendarInvitationsResponse(BaseModel):
+    entries: list[CalendarInvitationEntry] = Field(default_factory=list)
+    issues_available: bool = True
+    conflicts_available: bool = True
+    sources_degraded: list[str] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: str | None = None
 
 
 class CalendarButlerEventPreviewRequest(BaseModel):
@@ -694,29 +647,6 @@ class CalendarWorkspaceMutationResponse(BaseModel):
     projection_freshness: dict[str, Any] | None = None
 
 
-class CalendarIcsImportedEvent(BaseModel):
-    """One event that was created from an imported ``.ics`` payload."""
-
-    title: str
-    start_at: datetime
-    all_day: bool = False
-
-
-class CalendarIcsImportResponse(BaseModel):
-    """Result of a ``POST /api/calendar/import/ics`` import-with-dedup run.
-
-    ``imported`` and ``skipped_duplicates`` always sum to ``parsed`` (every
-    parseable VEVENT is either created or recognised as a duplicate). Re-importing
-    the same ``.ics`` yields ``imported == 0`` (a no-op) because every event
-    collapses onto an existing workspace entry via the read-model collapse keys.
-    """
-
-    parsed: int
-    imported: int
-    skipped_duplicates: int
-    imported_events: list[CalendarIcsImportedEvent] = Field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
 # Audit trail models — GET /api/calendar/workspace/audit
 # ---------------------------------------------------------------------------
@@ -765,29 +695,6 @@ class CalendarAuditResponse(BaseModel):
     #: table present in every calendar butler, so a failure is genuine (never a
     #: legitimately-absent table). Follows the fleet degraded-source convention.
     sources_available: bool = True
-
-
-# ---------------------------------------------------------------------------
-# Undo model — POST /api/calendar/workspace/undo/{action_id}
-# ---------------------------------------------------------------------------
-
-
-class CalendarUndoResponse(BaseModel):
-    """Response payload for POST /api/calendar/workspace/undo/{action_id}.
-
-    Reports the original action that was reversed, the inverse calendar MCP
-    tool dispatched to reverse it, the freshly generated ``request_id`` carried
-    by that dispatch (so the undo is itself idempotent and audited), and the
-    raw inverse mutation result.  ``undone`` is ``True`` only when the inverse
-    dispatch succeeded and the original action was marked undone.
-    """
-
-    action_id: UUID
-    action_type: str
-    inverse_tool: str
-    request_id: str
-    undone: bool
-    result: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -945,75 +852,22 @@ class QuickAddParseResponse(BaseModel):
     reason: str | None = None
 
 
-class CalendarDedupRulesModel(BaseModel):
-    """The active cross-source dedup rules (workspace-global).
-
-    ``match_strategy`` selects which collapse passes run:
-    - ``exact`` — only the origin-ref identity pass.
-    - ``balanced`` (default) — origin-ref + title/start collapse (current behavior).
-    - ``aggressive`` — as ``balanced`` but strips non-alphanumerics from titles.
-
-    ``noisy_threshold`` is the minimum cluster size (collapsed-member count) for a
-    cluster to be reported on the review surface; default ``2`` reports every
-    duplicate group.
-    """
-
-    match_strategy: Literal["exact", "balanced", "aggressive"] = "balanced"
-    noisy_threshold: int = Field(2, ge=2, le=1000)
-
-
-class CalendarDedupRulesUpdateRequest(BaseModel):
-    """PATCH body for the dedup rules; omitted fields are left unchanged."""
+class CalendarRespondRequest(BaseModel):
+    """Public response inputs; all authority and provider bindings are server-derived."""
 
     model_config = ConfigDict(extra="forbid")
-
-    match_strategy: Literal["exact", "balanced", "aggressive"] | None = None
-    noisy_threshold: int | None = Field(None, ge=2, le=1000)
-
-
-class CalendarDuplicateCluster(BaseModel):
-    """One collapsed cross-source duplicate cluster surfaced for review.
-
-    ``kept_entry`` is the survivor the read keeps (lowest keyset);
-    ``duplicate_entries`` are the copies the dedup collapses away.  When
-    ``keep_separate`` is true the user has pinned this cluster so the read does
-    NOT collapse it (every member is shown in the workspace).
-    """
-
-    cluster_key: str
-    match_pass: Literal["origin_ref", "title"]
-    member_count: int
-    keep_separate: bool = False
-    kept_entry: UnifiedCalendarEntry
-    duplicate_entries: list[UnifiedCalendarEntry]
+    entry_id: UUID
+    request_id: UUID
+    response_status: Literal["accepted", "declined", "tentative"]
+    send_updates: Literal["none", "all", "externalOnly"] = "none"
 
 
-class CalendarDuplicatesResponse(BaseModel):
-    """Response for GET /api/calendar/workspace/duplicates.
-
-    ``available`` is ``false`` only when the underlying read could not run; an
-    empty ``clusters`` list with ``available=true`` genuinely means no duplicates
-    were collapsed in the window.
-    """
-
-    clusters: list[CalendarDuplicateCluster]
-    rules: CalendarDedupRulesModel
-    available: bool = True
-
-
-class CalendarKeepSeparateRequest(BaseModel):
-    """Body to pin/unpin a duplicate cluster as keep-separate."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    cluster_key: str = Field(..., min_length=1)
-    keep_separate: bool
-    match_pass: Literal["origin_ref", "title"] | None = None
-    label: str | None = None
-
-
-class CalendarKeepSeparateResponse(BaseModel):
-    """Result of a keep-separate toggle."""
-
-    cluster_key: str
-    keep_separate: bool
+class CalendarRespondResponse(BaseModel):
+    status: Literal[
+        "pending_approval", "approved", "rejected", "uncertain", "noop", "applied", "failed"
+    ]
+    command_id: UUID | None = None
+    approval_id: UUID | None = None
+    projection_available: bool = False
+    source_butler: str
+    reason: str | None = None

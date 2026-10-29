@@ -118,7 +118,7 @@ function makeEvent(overrides: Partial<IngestionEventSummary> = {}): IngestionEve
 function makeInfiniteEventsResult(events: IngestionEventSummary[]) {
   return {
     data: {
-      pages: [{ data: events, meta: { next_cursor: null, has_more: false } }],
+      pages: [{ items: events, next_cursor: null, limit: 50 }],
       pageParams: [null],
     },
     isLoading: false,

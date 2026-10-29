@@ -13,6 +13,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useInstanceFacts } from "@/hooks/use-system"
@@ -39,22 +40,6 @@ function TileSkeleton() {
   )
 }
 
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Uptime</TileTitle>
-        <TileDescription>Process uptime</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="uptime-tile-error" className="text-destructive text-sm">
-          Could not load uptime info.
-        </p>
-      </TileContent>
-    </Tile>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // UptimeTile
 // ---------------------------------------------------------------------------
@@ -63,12 +48,20 @@ function TileError() {
  * Displays the process start time (relative) and a d/h/m uptime breakdown.
  */
 export function UptimeTile() {
-  const { data: response, isPending, isError } = useInstanceFacts()
+  const q = useInstanceFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Uptime" description="Process uptime"
+      errorMessage="Could not load uptime info." errorTestId="uptime-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <UptimeContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function UptimeContent({ response }: {
+  response: NonNullable<ReturnType<typeof useInstanceFacts>["data"]>
+}) {
+  const facts = response.data
 
   return (
     <Tile>
@@ -81,10 +74,10 @@ export function UptimeTile() {
           <div>
             <dt className="text-muted-foreground text-xs">Running for</dt>
             <dd className="text-lg font-semibold tabular-nums">
-              {facts != null ? formatUptimeParts(facts.uptime_seconds) : "--"}
+              {formatUptimeParts(facts.uptime_seconds)}
             </dd>
           </div>
-          {facts?.started_at && (
+          {facts.started_at && (
             <div>
               <dt className="text-muted-foreground text-xs">Started</dt>
               <dd>

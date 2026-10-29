@@ -36,13 +36,11 @@ from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
 )
 from butlers.api.models import compute_issue_key
-from butlers.api.routers.issues import (
-    _SOURCE_REACHABILITY_LEDGER,
-    _get_db_manager,
-)
+from butlers.api.routers.issues import _SOURCE_REACHABILITY_LEDGER
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -137,7 +135,7 @@ def _build_app(recorder: _Recorder, *, reachable: bool = False) -> Any:
     mgr.invalidate_client = AsyncMock()
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
     app.dependency_overrides[get_butler_configs] = lambda: [
         ButlerConnectionInfo(name=BUTLER, port=9001)
@@ -288,7 +286,7 @@ class TestDismissDerivesReachabilityWatermarkServerSide:
         mock_db.pool.return_value = mock_pool
 
         app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_db_optional] = lambda: mock_db
         app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
         app.dependency_overrides[get_butler_configs] = lambda: []
         return app, mock_pool

@@ -365,7 +365,7 @@ Category-level budget targets with configurable alert thresholds.
 | `category` | `TEXT NOT NULL` | Target category |
 | `amount` | `NUMERIC(14,2) NOT NULL` | Budget cap |
 | `currency` | `CHAR(3) DEFAULT 'USD'` | ISO 4217 |
-| `period` | `TEXT NOT NULL` | `'weekly'`, `'monthly'`, `'quarterly'`, `'annual'` |
+| `period` | `TEXT NOT NULL` | `'daily'`, `'weekly'`, `'monthly'`, `'quarterly'`, `'yearly'` |
 | `warn_threshold` | `FLOAT DEFAULT 0.8` | Warn at 80% utilization |
 | `alert_threshold` | `FLOAT DEFAULT 1.0` | Alert at 100% utilization |
 | `is_active` | `BOOLEAN DEFAULT true` | Active toggle |
@@ -374,6 +374,8 @@ Category-level budget targets with configurable alert thresholds.
 | `updated_at` | `TIMESTAMPTZ DEFAULT now()` | Last modification time |
 
 Uniqueness: `UNIQUE (category, period) WHERE is_active = true`. Deactivated budgets do not conflict with new active ones.
+
+Budget-period compatibility clarification (bu-aubi0k): `yearly` is the canonical stored token for the annual January 1 through December 31 span; the earlier `annual` spelling was never admitted by the migrated CHECK or shipped tool. `daily` preserves the already-admitted owner-calendar day. The forward `finance_016` CHECK repair adds required quarterly admission while retaining every legacy daily/yearly row; it does not alias, rename or convert periods.
 
 **Rationale for dedicated table over SPO property facts:** Budget status checks require joining actual spending against budget targets. With a dedicated table, this is a simple `JOIN` on `category`. With property facts, the query must extract `metadata->>'category'`, `metadata->>'amount'`, and `metadata->>'period'` from JSONB, making the join predicate non-indexable. Budget enforcement is a hot path (checked weekly and post-insert).
 

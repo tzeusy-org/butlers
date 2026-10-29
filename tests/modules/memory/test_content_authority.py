@@ -194,6 +194,8 @@ async def _catalog_rows(pool: asyncpg.Pool, rule_id: uuid.UUID) -> list[asyncpg.
     )
 
 
+# REQ-module-memory-013: real held-rule recall/catalog admission; Relationship
+# attribution does not replace the existing memory steering-authority policy.
 @_docker
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")

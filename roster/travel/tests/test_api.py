@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -31,7 +33,7 @@ def _load_travel_router():
     import importlib.util
     import sys
 
-    module_name = "travel_api_router_test"
+    module_name = "_travel_api_router_test"
     if module_name in sys.modules:
         return sys.modules[module_name]
 
@@ -274,7 +276,7 @@ def _make_app(
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool
 
@@ -293,7 +295,7 @@ def _make_app_multi_fetch(fetch_side_effects: list):
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool
 
@@ -489,7 +491,7 @@ async def test_get_trip_summary_found():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -531,7 +533,7 @@ async def test_get_trip_summary_trip_fields():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -568,7 +570,7 @@ async def test_get_trip_summary_survives_double_encoded_leg_metadata():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -602,7 +604,7 @@ async def test_get_trip_summary_excludes_and_discloses_unreadable_leg():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -651,7 +653,7 @@ async def test_get_trip_summary_connections_rendered():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -704,7 +706,7 @@ async def test_get_trip_summary_discloses_unreadable_connection():
     mock_db.pool.return_value = mock_pool
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -738,7 +740,7 @@ async def test_get_trip_summary_no_connections_is_empty_list_not_omitted():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -793,7 +795,7 @@ async def test_get_trip_summary_corrupt_top_level_trip_row_returns_documented_er
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
@@ -823,7 +825,7 @@ async def test_get_trip_summary_missing_boarding_pass_alert():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -857,7 +859,7 @@ async def test_get_trip_summary_no_alert_when_boarding_pass_present():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -890,7 +892,7 @@ async def test_get_trip_summary_timeline_built():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1226,7 +1228,7 @@ async def test_get_upcoming_travel_with_trip():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1265,7 +1267,7 @@ async def test_get_upcoming_travel_actions_with_missing_boarding_pass():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1324,7 +1326,7 @@ async def test_get_upcoming_travel_urgency_ranking():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1372,7 +1374,7 @@ async def test_get_upcoming_travel_excludes_and_discloses_unreadable_trip():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1641,7 +1643,7 @@ async def test_get_expiring_documents_503_on_missing_pool():
 
     app = FastAPI()
     app.include_router(_travel_router_mod.router)
-    app.dependency_overrides[_travel_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

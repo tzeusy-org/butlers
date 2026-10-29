@@ -6,11 +6,9 @@ All functions accept an asyncpg connection pool and return ranked results.
 
 from __future__ import annotations
 
-import importlib.util
 import math
 import uuid
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
@@ -18,25 +16,7 @@ from butlers.modules.memory.content_authority import RULE_ADMITTED_SQL
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-# ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_search_vector_mod = _load_module("search_vector")
-preprocess_search_query = _search_vector_mod.preprocess_search_query
-tsquery_sql = _search_vector_mod.tsquery_sql
+from butlers.modules.memory.search_vector import preprocess_search_query
 
 _VALID_TABLES = frozenset({"episodes", "facts", "rules"})
 # Tables that support scope filtering (facts/rules use `scope` column).
@@ -60,6 +40,40 @@ def _resolve_local_allowed_sensitivities(
     return list(allowed_sensitivities)
 
 
+def _structured_filter_conditions(
+    table: str,
+    entity_id: str | None,
+    predicate: str | None,
+    params: list,
+    param_idx: int,
+) -> tuple[list[str], int, bool]:
+    """Build the SQL for the entity and predicate filters applied before ranking.
+
+    Returns ``(conditions, next_param_idx, matches_nothing)``.  An entity filter
+    matches a fact's subject (``entity_id``) or object (``object_entity_id``).
+    Only facts carry those columns, so either filter excludes rules and episodes
+    rather than being ignored; an unparseable entity id also matches nothing.
+    """
+    if entity_id is None and predicate is None:
+        return [], param_idx, False
+    if table != "facts":
+        return [], param_idx, True
+    conditions: list[str] = []
+    if entity_id is not None:
+        try:
+            entity_uuid = uuid.UUID(str(entity_id))
+        except ValueError:
+            return [], param_idx, True
+        conditions.append(f"(entity_id = ${param_idx} OR object_entity_id = ${param_idx})")
+        params.append(entity_uuid)
+        param_idx += 1
+    if predicate is not None:
+        conditions.append(f"predicate = ${param_idx}")
+        params.append(predicate)
+        param_idx += 1
+    return conditions, param_idx, False
+
+
 # ---------------------------------------------------------------------------
 # Semantic search via pgvector
 # ---------------------------------------------------------------------------
@@ -74,6 +88,8 @@ async def semantic_search(
     scope: str | None = None,
     tenant_id: str = "shared",
     allowed_sensitivities: list[str] | None = None,
+    entity_id: str | None = None,
+    predicate: str | None = None,
 ) -> list[dict]:
     """Search by cosine similarity using pgvector.
 
@@ -89,6 +105,10 @@ async def semantic_search(
             — the same mechanism ``search_catalog`` uses for cross-butler
             reads, generalized to every local table. Omission fails closed to
             normal-only access; policy-aware callers pass their resolved set.
+        entity_id: Facts only. Keep rows whose subject or object entity is this id,
+            applied in SQL before the limit. Rules and episodes then match nothing.
+        predicate: Facts only. Keep rows with this predicate, applied in SQL before
+            the limit. Rules and episodes then match nothing.
 
     Returns:
         List of dicts with all table columns plus a ``similarity`` key
@@ -155,15 +175,37 @@ async def semantic_search(
     params.append(allowed_sensitivities)
     param_idx += 1
 
+    extra, param_idx, matches_nothing = _structured_filter_conditions(
+        table, entity_id, predicate, params, param_idx
+    )
+    if matches_nothing:
+        return []
+    conditions.extend(extra)
+
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-    sql = f"""
-        SELECT *, 1 - (embedding <=> $1) AS similarity
-        FROM {table}
-        {where}
-        ORDER BY embedding <=> $1
-        LIMIT ${param_idx}
-    """
+    if extra:
+        # A filtered vector leg must be exact.  Served from the HNSW index, the filter
+        # would apply after at most ``hnsw.ef_search`` nearest candidates and silently
+        # drop matching rows ranked below them.  The materialized CTE cannot use the ANN
+        # index, so the ordering is exact over exactly the filtered rows.
+        sql = f"""
+            WITH candidates AS MATERIALIZED (
+                SELECT * FROM {table} {where}
+            )
+            SELECT *, 1 - (embedding <=> $1) AS similarity
+            FROM candidates
+            ORDER BY embedding <=> $1
+            LIMIT ${param_idx}
+        """
+    else:
+        sql = f"""
+            SELECT *, 1 - (embedding <=> $1) AS similarity
+            FROM {table}
+            {where}
+            ORDER BY embedding <=> $1
+            LIMIT ${param_idx}
+        """
     params.append(limit)
 
     rows = await pool.fetch(sql, *params)
@@ -184,6 +226,8 @@ async def keyword_search(
     scope: str | None = None,
     tenant_id: str = "shared",
     allowed_sensitivities: list[str] | None = None,
+    entity_id: str | None = None,
+    predicate: str | None = None,
 ) -> list[dict]:
     """Search by keyword using PostgreSQL full-text search.
 
@@ -199,6 +243,8 @@ async def keyword_search(
         tenant_id: Tenant scope for isolation (default 'shared').
         allowed_sensitivities: See ``semantic_search`` — same read ceiling,
             applied in SQL.
+        entity_id: See ``semantic_search``.
+        predicate: See ``semantic_search``.
 
     Returns:
         List of dicts with keys: all table columns plus 'rank'.
@@ -255,6 +301,13 @@ async def keyword_search(
     params.append(allowed_sensitivities)
     param_idx += 1
 
+    extra, param_idx, matches_nothing = _structured_filter_conditions(
+        table, entity_id, predicate, params, param_idx
+    )
+    if matches_nothing:
+        return []
+    conditions.extend(extra)
+
     where = " AND ".join(conditions)
 
     sql = f"""
@@ -285,6 +338,8 @@ async def hybrid_search(
     scope: str | None = None,
     tenant_id: str = "shared",
     allowed_sensitivities: list[str] | None = None,
+    entity_id: str | None = None,
+    predicate: str | None = None,
 ) -> list[dict]:
     """Hybrid search combining semantic and keyword search via RRF.
 
@@ -306,6 +361,8 @@ async def hybrid_search(
         tenant_id: Tenant scope for isolation (default 'shared').
         allowed_sensitivities: Read ceiling forwarded to both search methods.
             Omission fails closed to normal-only access.
+        entity_id: Forwarded to both search methods (see ``semantic_search``).
+        predicate: Forwarded to both search methods (see ``semantic_search``).
 
     Returns:
         List of dicts with ``rrf_score``, ``semantic_rank``, and
@@ -328,6 +385,8 @@ async def hybrid_search(
         scope=scope,
         tenant_id=tenant_id,
         allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_id,
+        predicate=predicate,
     )
     keyword_results = await keyword_search(
         pool,
@@ -337,6 +396,8 @@ async def hybrid_search(
         scope=scope,
         tenant_id=tenant_id,
         allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_id,
+        predicate=predicate,
     )
 
     # Build rank maps keyed by id
@@ -527,7 +588,8 @@ async def recall(
     2. Runs hybrid search on both facts and rules tables, ceiling-filtered in SQL
     3. Computes composite scores (relevance, importance, recency, confidence)
     4. Filters by minimum effective confidence
-    5. Applies optional structured filters as AND conditions
+    5. Applies optional structured filters as AND conditions (``entity_id``, matching
+       a fact's subject or object, and ``predicate`` in SQL before ranking)
     6. Bumps reference counts on returned results
     7. Returns results sorted by composite score descending
 
@@ -576,7 +638,12 @@ async def recall(
     allowed_sensitivities = list(read_policy.allowed_sensitivities)
     query_embedding = embedding_engine.embed(topic)
 
-    # Search both facts and rules — ceiling applied in SQL, not post-fetch.
+    # The entity and predicate filters narrow the candidate set in SQL, before the
+    # per-source limit; filtering the top-N afterwards would lose rows ranked below it.
+    entity_filter = filters.get("entity_id") if filters else None
+    predicate_filter = filters.get("predicate") if filters else None
+
+    # Search both facts and rules — ceiling and structured filters applied in SQL.
     facts_results = await hybrid_search(
         pool,
         topic,
@@ -586,6 +653,8 @@ async def recall(
         scope=scope,
         tenant_id=tenant_id,
         allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_filter,
+        predicate=predicate_filter,
     )
     rules_results = await hybrid_search(
         pool,
@@ -596,6 +665,8 @@ async def recall(
         scope=scope,
         tenant_id=tenant_id,
         allowed_sensitivities=allowed_sensitivities,
+        entity_id=entity_filter,
+        predicate=predicate_filter,
     )
 
     # Tag each result with its memory type
@@ -632,9 +703,12 @@ async def recall(
     # Sort by composite score descending
     scored.sort(key=lambda x: -x["composite_score"])
 
-    # Apply structured filters as AND conditions (after scoring, before limit)
+    # Apply the remaining structured filters as AND conditions (after scoring, before
+    # limit).  entity_id and predicate were already applied in SQL; re-applying
+    # entity_id here would drop edge facts matched through their object entity.
     if filters:
-        scored = _apply_filters(scored, filters)
+        post_filters = {k: v for k, v in filters.items() if k not in ("entity_id", "predicate")}
+        scored = _apply_filters(scored, post_filters)
 
     scored = scored[:limit]
 

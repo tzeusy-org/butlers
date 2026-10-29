@@ -36,6 +36,7 @@ from unittest.mock import MagicMock, patch
 import asyncpg
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from butlers.db import register_jsonb_codec
@@ -753,7 +754,9 @@ def test_source_endpoint_rows_block_data_losing_downgrade_to_sw_028(
             )
 
         config = _build_alembic_config(db_url, chains=["switchboard"], target_schema="switchboard")
-        with pytest.raises(Exception):
+        with pytest.raises(
+            IntegrityError, match="chk_rule_promotion_suggestions_proposed_rule_type"
+        ):
             command.downgrade(config, "switchboard@sw_028")
 
         with engine.connect() as conn:

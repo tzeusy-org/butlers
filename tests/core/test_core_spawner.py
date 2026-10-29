@@ -22,7 +22,7 @@ import os
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -182,6 +182,7 @@ class MockAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -242,6 +243,7 @@ class SequenceMockAdapter(MockAdapter):
         self._sequence = sequence
         self._call_index = 0
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -270,6 +272,7 @@ class TrackingMockAdapter(MockAdapter):
         super().__init__()
         self.execution_log: list[tuple[str, str]] = []
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -305,6 +308,7 @@ class WorkerFactoryMockAdapter(RuntimeAdapter):
         self.created_worker_ids.append(worker_id)
         return _WorkerAdapter(worker_id=worker_id, factory=self)
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -342,6 +346,7 @@ class _WorkerAdapter(RuntimeAdapter):
     def binary_name(self) -> str:
         return "worker-mock"
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -547,6 +552,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-args-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -627,6 +633,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-timeout-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -674,6 +681,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "runtime-timeout-capture"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -751,6 +759,7 @@ class TestSpawnerInvocation:
             def binary_name(self) -> str:
                 return "adapter-managed-timeout"
 
+            @override
             async def invoke(
                 self,
                 prompt: str,
@@ -788,20 +797,28 @@ class TestSpawnerInvocation:
         assert adapter.reset_calls == 1
 
     async def test_error_wrapping_and_reset_behavior(self, tmp_path: Path):
-        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset."""
+        """Adapter error is wrapped in result with reset called; pre-invoke failure skips reset. REQ-core-spawner-005"""
         config_dir = tmp_path / "config"
         config_dir.mkdir()
         config = _make_config()
 
         # Adapter error wrapped in result; reset called once
         adapter = MockAdapter(error="adapter connection failed")
-        result = await Spawner(config=config, config_dir=config_dir, runtime=adapter).trigger(
-            "fail", "tick"
-        )
+        spawner = Spawner(config=config, config_dir=config_dir, runtime=adapter)
+        with patch(
+            "butlers.core.qa.dispatch.dispatch_qa_investigation", new_callable=AsyncMock
+        ) as local_dispatch:
+            result = await spawner.trigger("fail", "tick")
+            local_dispatch.assert_not_awaited()
         assert result.error is not None
         assert "RuntimeError" in result.error and "adapter connection failed" in result.error
         assert result.output is None and result.duration_ms >= 0
         assert adapter.reset_calls == 1
+        # A subsequent real invocation proves ordinary concurrency/finally release.
+        adapter._error = None
+        adapter._result_text = "recovered ordinary output"
+        recovered = await spawner.trigger("recovered ordinary work", "tick")
+        assert recovered.success is True
 
         # Pre-invoke failure (before runtime invocation) → reset not called
         adapter2 = MockAdapter()
@@ -1101,26 +1118,37 @@ class TestCredentialPassthrough:
     # Env-only path (no credential_store — backwards compatibility)
     # ------------------------------------------------------------------
 
-    async def test_env_path_passthrough_and_optional_exclusion(self):
-        """PATH and declared required/optional vars passed; undeclared not leaked;
-        optional absent → excluded; module credentials included."""
+    async def test_env_path_passthrough_and_optional_exclusion(self, tmp_path: Path):
+        """Declared env and tracing survive; daemon channel credentials do not."""
         config = _make_config(
             env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"],
             env_optional=["OPT_VAR", "DASHBOARD_AUTH_DB_PASSWORD", "POSTGRES_PASSWORD"],
         )
-        with patch.dict(
-            os.environ,
-            {
-                "PATH": "/tmp/node-bin",
-                "MY_SECRET": "s3cret",
-                "DASHBOARD_API_KEY": "synthetic-dashboard-key",
-                "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-auth-db-password",
-                "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
-                "POSTGRES_PASSWORD": "synthetic-host-password",
-                "OPT_VAR": "opt-val",
-                "UNDECLARED_SECRET": "should-not-leak",
-            },
-            clear=False,
+        channel_credentials = {
+            "TELEGRAM_BOT_TOKEN": "synthetic-telegram",
+            "SMTP_PASSWORD": "pw123",
+            "IMAP_TOKEN": "tok456",
+        }
+        trace = {"TRACEPARENT": "00-00000000000000000000000000000001-0000000000000001-01"}
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PATH": "/tmp/node-bin",
+                    "MY_SECRET": "s3cret",
+                    "DASHBOARD_API_KEY": "synthetic-dashboard-key",
+                    "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-auth-db-password",
+                    "DATABASE_URL": "postgresql://synthetic:synthetic@invalid.test/test",
+                    "POSTGRES_PASSWORD": "synthetic-host-password",
+                    "OPT_VAR": "opt-val",
+                    "UNDECLARED_SECRET": "should-not-leak",
+                    "GH_TOKEN": "synthetic-healing-token",
+                    **channel_credentials,
+                },
+                clear=True,
+            ),
+            patch("butlers.core.spawner_env.get_traceparent_env", return_value=trace),
+            patch("butlers.core.spawner.get_traceparent_env", return_value=trace),
         ):
             env = await _build_env(config)
             assert env["PATH"] == "/tmp/node-bin"
@@ -1131,31 +1159,47 @@ class TestCredentialPassthrough:
             assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
             assert "DATABASE_URL" not in env
             assert "POSTGRES_PASSWORD" not in env
+            assert not channel_credentials.keys() & env.keys()
+            assert env["TRACEPARENT"] == trace["TRACEPARENT"]
 
-        # Optional absent → excluded
-        config2 = _make_config(env_optional=["MISSING_OPT"])
-        os.environ.pop("MISSING_OPT", None)
-        env2 = await _build_env(config2)
-        assert "MISSING_OPT" not in env2
+            # Optional absent → excluded, without mutating the ambient environment.
+            config2 = _make_config(env_optional=["MISSING_OPT"])
+            env2 = await _build_env(config2)
+            assert "MISSING_OPT" not in env2
 
-        # Module credentials included
-        config3 = _make_config()
-        with patch.dict(
-            os.environ, {"SMTP_PASSWORD": "pw123", "IMAP_TOKEN": "tok456"}, clear=False
-        ):
-            env3 = await _build_env(
-                config3, module_credentials_env={"email": ["SMTP_PASSWORD", "IMAP_TOKEN"]}
-            )
-            assert env3["SMTP_PASSWORD"] == "pw123"
-            assert env3["IMAP_TOKEN"] == "tok456"
+            # The real Spawner consumer must keep credentials in the daemon.
+            config3 = _make_config()
+            adapter = MockAdapter(result_text="ok", capture=True)
+            spawner = Spawner(config=config3, config_dir=tmp_path, runtime=adapter)
+            result = await spawner.trigger("check isolation", "tick")
+            assert result.error is None
+            env3 = adapter.calls[0]["env"]
+            assert "SMTP_PASSWORD" not in env3
+            assert "IMAP_TOKEN" not in env3
+            assert "TELEGRAM_BOT_TOKEN" not in env3
+            assert env3 == {"PATH": "/tmp/node-bin", **trace}
+
+            # An explicit butler declaration remains operator-authorized.
+            declared = await _build_env(_make_config(env_required=["SMTP_PASSWORD"]))
+            assert declared["SMTP_PASSWORD"] == "pw123"
+
+            healing = await spawner.trigger("repair", "healing")
+            assert healing.error is None
+            assert adapter.calls[1]["env"] == {
+                "PATH": "/tmp/node-bin",
+                "GH_TOKEN": "synthetic-healing-token",
+                **trace,
+            }
+            assert adapter.calls[1]["mcp_servers"] == {}
 
     async def test_db_credential_resolution(self):
-        """DB-first path: module and butler creds resolved; missing key excluded."""
+        """DB-first declared credentials survive without resolving module-only keys."""
         config = _make_config(env_required=["MY_SECRET", "DASHBOARD_API_KEY", "DATABASE_URL"])
         store = AsyncMock()
         resolved = {
             "SMTP_PASSWORD": "db-smtp-pw",
             "IMAP_TOKEN": "db-imap-tok",
+            "TELEGRAM_BOT_TOKEN": "synthetic-db-telegram",
             "MY_SECRET": "db-secret-value",
             "DASHBOARD_API_KEY": "synthetic-db-dashboard-key",
             "DASHBOARD_AUTH_DB_PASSWORD": "synthetic-db-auth-password",
@@ -1163,31 +1207,31 @@ class TestCredentialPassthrough:
             "POSTGRES_PASSWORD": "synthetic-db-host-password",
         }
         store.resolve = AsyncMock(side_effect=lambda key: resolved.get(key))
-        env = await _build_env(
-            config,
-            module_credentials_env={
-                "email": [
-                    "SMTP_PASSWORD",
-                    "IMAP_TOKEN",
-                    "DASHBOARD_AUTH_DB_PASSWORD",
-                    "POSTGRES_PASSWORD",
-                ]
-            },
-            credential_store=store,
-        )
-        assert env["SMTP_PASSWORD"] == "db-smtp-pw"
-        assert env["IMAP_TOKEN"] == "db-imap-tok"
+        with patch.dict(os.environ, {"MY_SECRET": "ambient-must-not-win"}, clear=True):
+            env = await _build_env(config, credential_store=store)
+        assert "SMTP_PASSWORD" not in env
+        assert "IMAP_TOKEN" not in env
+        assert "TELEGRAM_BOT_TOKEN" not in env
         assert env["MY_SECRET"] == "db-secret-value"
         assert "DASHBOARD_API_KEY" not in env
         assert "DASHBOARD_AUTH_DB_PASSWORD" not in env
         assert "DATABASE_URL" not in env
         assert "POSTGRES_PASSWORD" not in env
+        assert [call.args[0] for call in store.resolve.await_args_list] == config.env_required
 
-        # Missing key excluded
+        # Explicitly declared overlap uses the store, not the ambient environment.
+        with patch.dict(os.environ, {"SMTP_PASSWORD": "ambient-must-not-win"}, clear=True):
+            declared = await _build_env(
+                _make_config(env_optional=["SMTP_PASSWORD"]), credential_store=store
+            )
+        assert declared["SMTP_PASSWORD"] == "db-smtp-pw"
+
+        # Missing key excluded, with no environment fallback.
         config2 = _make_config(env_required=["MISSING_KEY"])
         store2 = AsyncMock()
         store2.resolve = AsyncMock(return_value=None)
-        env2 = await _build_env(config2, credential_store=store2)
+        with patch.dict(os.environ, {"MISSING_KEY": "ambient-must-not-win"}, clear=True):
+            env2 = await _build_env(config2, credential_store=store2)
         assert "MISSING_KEY" not in env2
 
     async def test_env_and_db_creds_passed_to_adapter(self, tmp_path: Path):
@@ -1327,6 +1371,7 @@ class TestSemaphoreConcurrencyPool:
         ready = asyncio.Event()
 
         class ConcurrentTrackingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -1999,6 +2044,7 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2402,6 +2448,7 @@ class TestCatalogModelResolution:
         captured: dict = {}
 
         class CapturingAdapter(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -2449,6 +2496,7 @@ class TestCatalogModelResolution:
         captured2: dict = {}
 
         class CapturingAdapter2(MockAdapter):
+            @override
             async def invoke(
                 self,
                 prompt,
@@ -3801,11 +3849,13 @@ class TestCancelSession:
 
             def __init__(self, unwind_delay: float) -> None:
                 super().__init__(delay=100, capture=True)
+                self.invoke_entered = asyncio.Event()
                 self.cancel_received = asyncio.Event()
                 self._unwind_delay = unwind_delay
 
             async def invoke(self, *args: Any, **kwargs: Any) -> Any:
                 try:
+                    self.invoke_entered.set()
                     return await super().invoke(*args, **kwargs)
                 except asyncio.CancelledError:
                     self.cancel_received.set()
@@ -3830,6 +3880,9 @@ class TestCancelSession:
                     await asyncio.sleep(0.01)
                 else:
                     pytest.fail("invoke_task never registered for session_id")
+
+                # Registration can precede the adapter's cancellation handler.
+                await asyncio.wait_for(adapter.invoke_entered.wait(), timeout=5.0)
 
                 # Owner-initiated Stop: cancels invoke_task, but the adapter
                 # takes its time (unwind_delay) to actually unwind.

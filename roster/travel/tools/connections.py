@@ -141,7 +141,8 @@ def _find_connecting_pairs(
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     """Return adjacent (inbound, outbound) leg pairs that share a connecting airport."""
     pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for inbound, outbound in zip(legs, legs[1:]):
+    # Adjacent legs make N-1 pairs; the last leg has no onward connection.
+    for inbound, outbound in zip(legs, legs[1:], strict=False):
         inbound_arrival_airport = inbound.get("arrival_airport_station")
         outbound_departure_airport = outbound.get("departure_airport_station")
         if not inbound_arrival_airport or not outbound_departure_airport:
@@ -186,7 +187,8 @@ def _order_legs_for_itinerary(legs: list[dict[str, Any]]) -> list[dict[str, Any]
                 str(legs[index]["id"]),
             )
         )
-        for predecessor, successor in zip(indexes, indexes[1:]):
+        # A record's N legs need N-1 edges; its last index has no successor.
+        for predecessor, successor in zip(indexes, indexes[1:], strict=False):
             successors[predecessor].append(successor)
             indegree[successor] += 1
 

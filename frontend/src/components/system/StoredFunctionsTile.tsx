@@ -25,6 +25,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import type { StoredFunctionFacts } from "@/api/types"
 import { useStoredFunctionFacts } from "@/hooks/use-system"
@@ -89,22 +90,6 @@ function TileSkeleton() {
   )
 }
 
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Stored Functions</TileTitle>
-        <TileDescription>Deployed bodies vs. init-db.sql</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="stored-functions-tile-error" className="text-destructive text-sm">
-          Could not load stored-function drift status.
-        </p>
-      </TileContent>
-    </Tile>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // StoredFunctionsTile
 // ---------------------------------------------------------------------------
@@ -122,14 +107,22 @@ function TileError() {
  *     non-alarm color because not_deployed is an expected state.
  */
 export function StoredFunctionsTile() {
-  const { data: response, isPending, isError } = useStoredFunctionFacts()
+  const q = useStoredFunctionFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Stored Functions" description="Deployed bodies vs. init-db.sql"
+      errorMessage="Could not load stored-function drift status." errorTestId="stored-functions-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <StoredFunctionsContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function StoredFunctionsContent({ response }: {
+  response: NonNullable<ReturnType<typeof useStoredFunctionFacts>["data"]>
+}) {
+  const facts = response.data
 
-  if (!facts?.stored_function_check_available) {
+  if (!facts.stored_function_check_available) {
     return (
       <Tile degraded>
         <TileHeader>

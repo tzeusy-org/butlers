@@ -21,7 +21,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, cleanup, screen, within } from "@testing-library/react";
+import { render, cleanup, screen, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -139,11 +139,11 @@ async function checkA11y(): Promise<void> {
       </MemoryRouter>
     </QueryClientProvider>,
   );
-  const results = await axe(container, {
+  const results = await act(async () => axe(container, {
     rules: {
       "color-contrast": { enabled: false },
     },
-  });
+  }));
   expect(results).toHaveNoViolations();
 }
 

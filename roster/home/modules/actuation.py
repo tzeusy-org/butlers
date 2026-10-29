@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import enum
+import math
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -82,15 +84,179 @@ def classify_actuation(domain: str, service: str) -> ActuationRisk:
 
 
 def target_entity_ids(target: dict[str, Any] | None) -> list[str]:
-    """Extract explicit entity targets; area/device targets are not guessable."""
-    if not target:
+    """Observe only an entirely explicit entity target, never a partial bulk target."""
+    if not target or set(target) != {"entity_id"}:
         return []
     raw = target.get("entity_id")
-    if isinstance(raw, str):
-        return [raw]
-    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-        return raw
+    entities = [raw] if isinstance(raw, str) else raw
+    if (
+        isinstance(entities, list)
+        and entities
+        and all(isinstance(item, str) and _EXPLICIT_ENTITY_RE.fullmatch(item) for item in entities)
+    ):
+        return list(entities)
     return []
+
+
+_EXPLICIT_ENTITY_RE = re.compile(r"[a-z0-9_]+\.[a-z0-9_]+")
+_DIAGNOSTIC_KEY_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+DATA_TARGET_SELECTORS = frozenset({"entity_id", "area_id", "device_id", "label_id", "target"})
+_LIGHT_ON_KEYS = frozenset(
+    {"brightness", "brightness_pct", "color_temp_kelvin", "rgb_color", "transition"}
+)
+
+
+def snapshot_actuation_arguments(
+    target: dict[str, Any] | None, data: dict[str, Any] | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Detach exact JSON arguments before any await, rejecting unpersistable values.
+
+    Do not coerce numbers, stringify objects or turn None into an empty object:
+    the same snapshot must bind approval, classification, receipts and transport.
+    """
+    active: set[int] = set()
+
+    def clone(value: Any) -> Any:
+        if type(value) is str:
+            if "\x00" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+                raise ValueError("Home Assistant argument strings must be representable in JSONB")
+            return value
+        if value is None or type(value) in (bool, int):
+            return value
+        if type(value) is float and math.isfinite(value):
+            return value
+        if type(value) not in (dict, list) or id(value) in active:
+            raise ValueError("Home Assistant arguments must be finite, acyclic JSON")
+        active.add(id(value))
+        try:
+            if type(value) is dict:
+                if any(type(key) is not str for key in value):
+                    raise ValueError("Home Assistant argument object keys must be strings")
+                return {clone(key): clone(item) for key, item in value.items()}
+            return [clone(item) for item in value]
+        finally:
+            active.remove(id(value))
+
+    if any(value is not None and type(value) is not dict for value in (target, data)):
+        raise ValueError("Home Assistant target and data must be JSON objects or null")
+    try:
+        return clone(target), clone(data)
+    except RecursionError:
+        raise ValueError("Home Assistant arguments exceed JSON nesting support") from None
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveActuationRisk:
+    base: ActuationRisk
+    risk: ActuationRisk
+    reasons: tuple[str, ...] = ()
+    data_keys: tuple[str, ...] = ()
+    omitted_key_count: int = 0
+
+    @property
+    def approval_reason(self) -> str | None:
+        """Bounded owner-visible categories, without values or arbitrary key text."""
+        if not self.reasons:
+            return None
+        reason = "reversible call promoted: " + ", ".join(self.reasons)
+        if self.data_keys:
+            reason += "; data keys: " + ", ".join(self.data_keys)
+        if self.omitted_key_count:
+            reason += f"; omitted data keys: {self.omitted_key_count}"
+        return reason
+
+
+def _bounded_number(value: Any, low: float, high: float, *, integer: bool = False) -> bool:
+    if type(value) is int:
+        return low <= value <= high
+    return not integer and type(value) is float and math.isfinite(value) and low <= value <= high
+
+
+def effective_actuation_risk(
+    domain: str,
+    service: str,
+    target: dict[str, Any] | None,
+    data: dict[str, Any] | None,
+    *,
+    temperature_units: dict[str, Any] | None = None,
+) -> EffectiveActuationRisk:
+    """Only promote reversible services beyond the conservative automatic subset.
+
+    These are local auto-execution limits, not a vendor schema or an assertion
+    that an entity's cached unit is available or fresh. Unknown units park.
+    Callers provide a validated detached JSON snapshot and module-owned units.
+    """
+    base = classify_actuation(domain, service)
+    if base is not ActuationRisk.REVERSIBLE:
+        return EffectiveActuationRisk(base, base)
+    reasons: list[str] = []
+    entities = target_entity_ids(target)
+    if not entities:
+        reasons.append("target_not_explicit_entities")
+    elif any(entity.split(".", 1)[0] != domain for entity in entities):
+        reasons.append("target_domain_mismatch")
+
+    values = data if data is not None else {}
+    if DATA_TARGET_SELECTORS.intersection(values):
+        reasons.append("data_target_selector")
+    allowed = frozenset()
+    if (domain, service) == ("light", "turn_on"):
+        allowed = _LIGHT_ON_KEYS
+    elif (domain, service) == ("light", "turn_off"):
+        allowed = frozenset({"transition"})
+    elif (domain, service) == ("climate", "set_temperature"):
+        allowed = frozenset({"temperature"})
+    unknown = set(values) - allowed
+    if unknown:
+        reasons.append("unlisted_data_key")
+
+    for key, value in values.items():
+        valid = True
+        if key == "brightness" and key in allowed:
+            valid = _bounded_number(value, 0, 255, integer=True)
+        elif key == "brightness_pct" and key in allowed:
+            valid = _bounded_number(value, 0, 100)
+        elif key == "color_temp_kelvin" and key in allowed:
+            valid = _bounded_number(value, 1000, 10000, integer=True)
+        elif key == "transition" and key in allowed:
+            valid = _bounded_number(value, 0, 60)
+        elif key == "rgb_color" and key in allowed:
+            valid = (
+                type(value) is list
+                and len(value) == 3
+                and all(_bounded_number(item, 0, 255, integer=True) for item in value)
+            )
+        if not valid and "data_type_or_bounds" not in reasons:
+            reasons.append("data_type_or_bounds")
+    if domain == "light" and (
+        {"brightness", "brightness_pct"} <= set(values)
+        or {"rgb_color", "color_temp_kelvin"} <= set(values)
+    ):
+        reasons.append("incompatible_data_keys")
+
+    if (domain, service) == ("climate", "set_temperature"):
+        units = temperature_units or {}
+        normalized = [
+            {"C": "C", "°C": "C", "F": "F", "°F": "F"}.get(units.get(e))
+            if isinstance(units.get(e), str)
+            else None
+            for e in entities
+        ]
+        if not normalized or None in normalized or len(set(normalized)) != 1:
+            reasons.append("temperature_unit_unavailable_or_mixed")
+        else:
+            low, high = (16, 28) if normalized[0] == "C" else (60.8, 82.4)
+            if not _bounded_number(values.get("temperature"), low, high):
+                reasons.append("temperature_type_or_comfort_bounds")
+
+    keys = tuple(sorted(key for key in unknown if _DIAGNOSTIC_KEY_RE.fullmatch(key))[:8])
+    return EffectiveActuationRisk(
+        base,
+        ActuationRisk.CONSEQUENTIAL if reasons else base,
+        tuple(reasons),
+        keys,
+        len(unknown) - len(keys),
+    )
 
 
 def rollback_hint(
@@ -169,6 +335,10 @@ def verify_post_condition(
 __all__ = [
     "ActuationRisk",
     "Verification",
+    "EffectiveActuationRisk",
+    "DATA_TARGET_SELECTORS",
+    "effective_actuation_risk",
+    "snapshot_actuation_arguments",
     "classify_actuation",
     "rollback_hint",
     "target_entity_ids",

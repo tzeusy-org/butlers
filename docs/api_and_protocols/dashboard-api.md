@@ -8,6 +8,9 @@
 
 The Butlers Dashboard API is a FastAPI application that provides a single-pane-of-glass REST API over the entire butler infrastructure. It serves the shared and roster-specific dashboard endpoints, supports real-time SSE streaming for live updates, and auto-discovers butler-specific API routers from the roster directory. The application is created via the `create_app()` factory in `src/butlers/api/app.py`.
 
+`GET /api/butlers` summaries expose no schedule count. Scheduling facts remain on
+the existing schedule and board endpoints rather than an unobserved summary default.
+
 ## Application Factory
 
 `create_app()` accepts three optional parameters:
@@ -74,16 +77,53 @@ the inventory; the generated OpenAPI schema lists every operation and its respon
 Cross-cutting envelope, pagination, and degraded-source rules are in
 [Response Conventions](response-conventions.md).
 
+### Provider allowance observation
+
+`GET /api/settings/models/allowance` (`src/butlers/api/routers/model_settings.py`) is an
+owner-only, read-only projection of `public.provider_allowance_states`, guarded by the same
+`require_dashboard_owner_control` dependency as `/api/settings/models/attention`. It returns
+`{available, accounts: [{account_key, state, reset_at, reset_source, first_seen_at, updated_at,
+entries: [{id, alias}]}]}`; catalog entries belong to the account named by
+`COALESCE(allowance_account, runtime_type)`. A read failure returns the degraded envelope
+(`available: false`, empty `accounts`) and logs without row content. The Models tab renders it as
+an Allowance strip and the `/system` verdict adds an allowance source (a 403 is silent, an
+unreadable table reads "allowance unknown"). It never writes, resets, or probes. The model-routing
+contract page cross-links this section after the contract-evolution change that owns it lands.
+
+## Typed read-model boundaries
+
+Dashboard query implementations live in `src/butlers/api/read_models/`. Their
+internal module paths are independent of the explicit `READ_MODEL_VERSION`
+contract markers:
+
+| Module | Version marker |
+| --- | --- |
+| `activity.py` | `activity_v1` |
+| `butlers.py` | `butlers_v1` |
+| `calendar_workspace.py` | `calendar_workspace_v1` |
+| `insights.py` | `insights_v1` |
+| `search.py` | `search_v1` |
+| `sessions.py` | `sessions_v1` |
+| `timeline.py` | `timeline_v1` |
+
+These internal paths do not change API routes, response shapes, cursor formats,
+or authority boundaries. The explicit markers preserve the existing query and
+DTO versions.
+
 ## Auto-Discovered Butler Routers
 
 Butler-specific API routes live in `roster/{butler}/api/router.py` and are auto-discovered by `src/butlers/api/router_discovery.py`. The discovery process:
 
 1. Scans `roster/` for butler subdirectories containing `api/router.py`.
-2. Loads each module dynamically via `importlib.util.spec_from_file_location()`. Already-loaded modules in `sys.modules` are reused.
+2. Loads through `butlers.roster_imports`, the roster execution owner. Each file keeps one canonical module object; cached source paths are checked and failed loads are removed. Explicit custom roots retain distinct router and adjacent-model cache names. Router headers pass `api_source=__file__` to `roster_module()` so custom copies use their own fenced `api/models.py`; model-only namespace imports still select the default roster without executing routers.
 3. Validates that the module exports a `router` variable that is an `APIRouter` instance.
 4. Returns a sorted list of `(butler_name, router_module)` tuples.
 
-Dynamic routers are mounted **after** static core routers to prevent shadowing fixed API paths (e.g., `/api/oauth/*`). No `__init__.py` is needed in the `api/` directory. DB dependencies are auto-wired via `wire_db_dependencies()`.
+`butlers.api._roster.<butler>.router` aliases the actual `<butler>_api_router` module. The models alias and `router._models` (`_models_module` for Relationship) share its actual local models module, retaining the existing model execution name. Importing only models does not execute its router.
+
+Dynamic routers are mounted **after** static core routers to prevent shadowing fixed API paths (e.g., `/api/oauth/*`). No `__init__.py` is needed in the `api/` directory. One ordered registry (`api/router_registry.py`) supplies core exports, including secondary/hidden routers, followed by these sorted roster modules. Direct health routes and the final SPA mount remain explicit.
+
+Declare `db: Db` from `butlers.api.deps` for the shared manager dependency; override `get_db` in tests. `get_db_manager()` remains the same public singleton accessor. Existing best-effort reads use `OptionalDb`/`get_db_optional`, preserving their uninitialized-manager fallback. Pool startup/shutdown and the separate QA credential-status binding remain in the lifespan. Pricing and shared-credential pool selectors remain separate dependencies.
 
 ### Adding a Butler Router
 

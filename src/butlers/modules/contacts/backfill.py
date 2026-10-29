@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from datetime import UTC, datetime
@@ -28,12 +29,30 @@ from typing import Any
 
 import asyncpg
 
-from butlers.modules.contacts.sync import CanonicalContact
+from butlers.modules.contacts.owner import ContactsLookupAmbiguous, ContactsOwner
+from butlers.modules.contacts.sync import (
+    ANCHOR_STALL_ERROR,
+    DEFAULT_FAILURE_ERROR,
+    CanonicalContact,
+    ContactsSyncError,
+    ContactsSyncMode,
+    ContactsSyncState,
+    ContactsSyncStateRepository,
+    ContactsSyncStateStore,
+)
 
 logger = logging.getLogger(__name__)
 
+
+class CandidateNameUnavailable(Exception):
+    """No collision-free name could be generated for a duplicate-candidate entity."""
+
+
 # Metadata namespace for provenance tracking
 _PROVENANCE_NS = "sources.contacts"
+# A loss greater than half the active links is suspect; equality is accepted.
+# Empty full lists are always refused, independently of this limit.
+DEFAULT_MAX_SHRINK_FRACTION = 0.5
 
 
 def _provenance_key(provider: str, field: str) -> str:
@@ -91,10 +110,18 @@ class ContactBackfillResolver:
     public.contacts is no longer joined or read.
     """
 
-    def __init__(self, pool: asyncpg.Pool, *, provider: str, account_id: str) -> None:
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        *,
+        provider: str,
+        account_id: str,
+        owner: ContactsOwner | None = None,
+    ) -> None:
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
+        self._owner = owner or ContactsOwner(lambda: None, "")
 
     async def resolve(self, contact: CanonicalContact) -> tuple[uuid.UUID | None, str]:
         """Resolve a canonical contact to a local entity ID.
@@ -116,14 +143,20 @@ class ContactBackfillResolver:
             primary_email = contact.emails[0]
         if primary_email is not None:
             lookup = primary_email.normalized_value or primary_email.value
-            local_id = await self._match_email(lookup)
+            try:
+                local_id = await self._match_email(lookup)
+            except ContactsLookupAmbiguous:
+                return None, "ambiguous_channel"
             if local_id is not None:
                 return local_id, "email"
 
         # 3. Phone match (exact or e164)
         for phone in contact.phones:
             lookup_value = phone.e164_normalized or phone.value
-            local_id = await self._match_phone(lookup_value)
+            try:
+                local_id = await self._match_phone(lookup_value)
+            except ContactsLookupAmbiguous:
+                return None, "ambiguous_channel"
             if local_id is not None:
                 return local_id, "phone"
 
@@ -156,56 +189,11 @@ class ContactBackfillResolver:
         return uuid.UUID(str(local_entity_id)) if local_entity_id is not None else None
 
     async def _match_email(self, email_value: str) -> uuid.UUID | None:
-        # Resolve via the triple store: a ``has-email`` fact's subject is the entity UUID.
-        normalized = email_value.strip().lower()
-        try:
-            row = await self._pool.fetchrow(
-                """
-                SELECT ef.subject AS entity_id
-                FROM relationship.entity_facts ef
-                JOIN public.entities e ON e.id = ef.subject
-                WHERE ef.predicate = 'has-email' AND ef.object_kind = 'literal'
-                  AND ef.validity = 'active' AND lower(ef.object) = $1
-                  AND e.entity_type = 'person'
-                  AND (e.metadata->>'merged_into') IS NULL
-                  AND (e.metadata->>'deleted_at') IS NULL
-                ORDER BY ef.created_at ASC NULLS LAST LIMIT 1
-                """,
-                normalized,
-            )
-        except Exception:  # noqa: BLE001 — degrade to "no match" if facts unreadable
-            return None
-        if row is None:
-            return None
-        return uuid.UUID(str(row["entity_id"]))
+        # REQ-module-contacts-002: unavailable is not permission to create a person.
+        return await self._owner.lookup("email", email_value)
 
     async def _match_phone(self, phone_value: str) -> uuid.UUID | None:
-        normalized = phone_value.strip()
-        # Fallback: strip non-digits for loose match
-        digits = "".join(c for c in normalized if c.isdigit() or c in "+")
-        try:
-            row = await self._pool.fetchrow(
-                """
-                SELECT ef.subject AS entity_id
-                FROM relationship.entity_facts ef
-                JOIN public.entities e ON e.id = ef.subject
-                WHERE ef.predicate = 'has-phone'
-                  AND ef.object_kind = 'literal'
-                  AND ef.validity    = 'active'
-                  AND (ef.object = $1 OR ef.object = $2)
-                  AND e.entity_type = 'person'
-                  AND (e.metadata->>'merged_into') IS NULL
-                  AND (e.metadata->>'deleted_at') IS NULL
-                ORDER BY ef.created_at ASC NULLS LAST LIMIT 1
-                """,
-                normalized,
-                digits,
-            )
-        except Exception:  # noqa: BLE001 — degrade to "no match" if facts unreadable
-            return None
-        if row is None:
-            return None
-        return uuid.UUID(str(row["entity_id"]))
+        return await self._owner.lookup("phone", phone_value)
 
     async def _match_name(self, display_name: str) -> list[uuid.UUID]:
         name_stripped = display_name.strip()
@@ -242,7 +230,7 @@ class ContactBackfillWriter:
     Conflict policy (§7.3):
     - Source wins only for previously source-owned fields (tracked in metadata provenance)
     - Local manual edits win unless explicit refresh
-    - Ambiguous merges emit activity feed entries
+    - Ambiguous matches are created as duplicate candidates with a content-free warning
     """
 
     def __init__(
@@ -251,10 +239,12 @@ class ContactBackfillWriter:
         *,
         provider: str,
         account_id: str,
+        owner: ContactsOwner | None = None,
     ) -> None:
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
+        self._owner = owner or ContactsOwner(lambda: None, "")
         # Relationship-schema tables that may not exist in other butler schemas
         # (e.g. general, health). Populated lazily by _ensure_table_flags().
         self._table_flags: dict[str, bool] | None = None
@@ -305,8 +295,14 @@ class ContactBackfillWriter:
         contact: CanonicalContact,
         *,
         executor: Any | None = None,
+        duplicate_candidate: bool = False,
     ) -> uuid.UUID:
         """Create or update an entity for a backfilled contact, returning entity UUID.
+
+        ``duplicate_candidate`` creates a NEW entity flagged
+        ``metadata.duplicate_candidate = true`` for the curation queue, entirely on
+        ``executor`` (the caller's open transaction) so a later failure leaves no
+        entity behind. It never recovers an existing entity by name.
 
         After bu-tzyuh this method writes to ``public.entities`` only — not
         ``public.contacts``. The entity is resolved/created on ``self._pool``
@@ -343,8 +339,17 @@ class ContactBackfillWriter:
             primary_photo = contact.photos[0]
         avatar_url = primary_photo.url if primary_photo else None
 
-        entity_id = await self._ensure_entity(first, last, nickname, company)
+        if duplicate_candidate:
+            if executor is None:
+                raise ValueError("duplicate candidate creation requires a transaction executor")
+            entity_id = await self._insert_candidate_entity(
+                executor, contact, first, last, nickname, company
+            )
+        else:
+            entity_id = await self._ensure_entity(first, last, nickname, company)
 
+        if entity_id is None and duplicate_candidate:
+            raise CandidateNameUnavailable
         if entity_id is None:
             raise ValueError(
                 f"ContactBackfill: could not resolve or create entity for external_id="
@@ -358,10 +363,13 @@ class ContactBackfillWriter:
         # self._pool (autonomous) for the same reason _ensure_entity does: a raised error
         # inside a Postgres transaction aborts it even when Python catches it, so any
         # reads needed before the atomic commit must happen outside that transaction.
-        existing_row = await self._pool.fetchrow(
-            "SELECT metadata FROM public.entities WHERE id = $1", entity_id
-        )
-        metadata: dict[str, Any] = _parse_jsonb(existing_row["metadata"]) if existing_row else {}
+        if duplicate_candidate:
+            metadata: dict[str, Any] = {"duplicate_candidate": True}
+        else:
+            existing_row = await self._pool.fetchrow(
+                "SELECT metadata FROM public.entities WHERE id = $1", entity_id
+            )
+            metadata = _parse_jsonb(existing_row["metadata"]) if existing_row else {}
 
         if first is not None:
             _deep_set(metadata, "profile.first_name", first)
@@ -392,6 +400,57 @@ class ContactBackfillWriter:
             contact.external_id,
         )
         return entity_id
+
+    async def _insert_candidate_entity(
+        self,
+        conn: Any,
+        contact: CanonicalContact,
+        first_name: str | None,
+        last_name: str | None,
+        nickname: str | None,
+        company: str | None,
+    ) -> uuid.UUID | None:
+        """Insert a brand-new entity on the caller's transaction, never reusing one.
+
+        The entity gets a fresh random uuid (explicit id) and the canonical name
+        ``"<name> [<first 8 hex of that id>]"``; the plain name is kept as an alias so
+        name lookups still find it. The suffix is random, never derived from the
+        provider contact's identifiers, because ``canonical_name`` is readable by every
+        butler role and reaches LLM context. An insert that still collides is caught in
+        a savepoint (which keeps the outer transaction usable) and retried once with a
+        new id; ``None`` means both attempts collided.
+        """
+        canonical = " ".join(p.strip() for p in (first_name, last_name) if p and p.strip())
+        if not canonical:
+            canonical = nickname or company or "Unknown"
+        entity_type = (
+            "organization"
+            if (not (first_name or "").strip() and not (last_name or "").strip() and company)
+            else "person"
+        )
+        aliases = [
+            c.strip()
+            for c in (nickname, first_name)
+            if c and c.strip() and c.strip().lower() != canonical.lower()
+        ]
+        aliases.append(canonical)
+        for _attempt in range(2):
+            entity_id = uuid.uuid4()
+            try:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        "INSERT INTO public.entities (id, canonical_name, entity_type, "
+                        "aliases, metadata, roles) VALUES ($1, $2, $3, $4, "
+                        "'{}'::jsonb, '{}') RETURNING id",
+                        entity_id,
+                        f"{canonical} [{entity_id.hex[:8]}]",
+                        entity_type,
+                        aliases,
+                    )
+                return row["id"] if row else None
+            except asyncpg.UniqueViolationError:
+                continue
+        return None
 
     async def _ensure_entity(
         self,
@@ -622,29 +681,31 @@ class ContactBackfillWriter:
         if self._provider == "telegram" and contact.external_id:
             entries.append(("telegram_user_id", contact.external_id, "has-handle", False))
 
-        from butlers.tools.relationship.relationship_assert_fact import relationship_assert_fact
+        from butlers.core.fact_authority import FactWriteContext, _current_report
 
         for type_, value, predicate, primary in entries:
+            report_token = _current_report.set(FactWriteContext("third_party"))
             try:
-                await relationship_assert_fact(
-                    self._pool,
-                    entity_id,
-                    predicate,
-                    value,
-                    src="contacts-backfill",
-                    object_kind="literal",
-                    primary=primary,
-                )
-            except Exception:  # noqa: BLE001 — never block a bulk backfill on one row
+                # REQ-module-contacts-001: fixed owner route, never a foreign pool.
+                result = await self._owner.report(entity_id, type_, value, primary)
+                if result["outcome"] in {"candidate", "pending_approval"}:
+                    logger.info(
+                        "contacts_channel_report_incomplete entity=%s ci_type=%s predicate=%s "
+                        "outcome=%s",
+                        entity_id,
+                        type_,
+                        predicate,
+                        result["outcome"],
+                    )
+            except Exception:  # noqa: BLE001 — preserve bulk progress without operands
                 logger.warning(
-                    "upsert_contact_info: relationship_assert_fact failed for entity %s "
-                    "(ci_type=%r, predicate=%r, value=%r) — channel fact not written",
+                    "contacts_channel_report_failed entity=%s ci_type=%s predicate=%s",
                     entity_id,
                     type_,
                     predicate,
-                    value,
-                    exc_info=True,
                 )
+            finally:
+                _current_report.reset(report_token)
 
     async def upsert_addresses(
         self,
@@ -947,12 +1008,213 @@ class ContactBackfillEngine:
         *,
         provider: str,
         account_id: str,
+        owner: ContactsOwner | None = None,
+        max_shrink_fraction: float = DEFAULT_MAX_SHRINK_FRACTION,
     ) -> None:
+        if (
+            isinstance(max_shrink_fraction, bool)
+            or not isinstance(max_shrink_fraction, (int, float))
+            or not 0 <= max_shrink_fraction < 1
+            or not math.isfinite(max_shrink_fraction)
+        ):
+            raise ValueError("max_shrink_fraction must be finite and in [0, 1)")
+        self._max_shrink_fraction = max_shrink_fraction
+        self._anchor_stalled = False
         self._pool = pool
         self._provider = provider
         self._account_id = account_id
-        self._resolver = ContactBackfillResolver(pool, provider=provider, account_id=account_id)
-        self._writer = ContactBackfillWriter(pool, provider=provider, account_id=account_id)
+        self._resolver = ContactBackfillResolver(
+            pool, provider=provider, account_id=account_id, owner=owner
+        )
+        self._writer = ContactBackfillWriter(
+            pool, provider=provider, account_id=account_id, owner=owner
+        )
+
+    async def begin_sync(self, *, provider: str, account_id: str) -> dict[str, dict[str, Any]]:
+        """Snapshot local source anchors before a configured Telegram cycle fetches."""
+        if provider != "telegram" or provider != self._provider or account_id != self._account_id:
+            raise ContactsSyncError("contacts batch scope does not match configured backfill")
+        self._anchor_stalled = False
+        rows = await self._pool.fetch(
+            "SELECT external_contact_id,local_entity_id,source_etag,last_seen_at,deleted_at "
+            "FROM contacts_source_links WHERE provider=$1 AND account_id=$2",
+            self._provider,
+            self._account_id,
+        )
+        return {row["external_contact_id"]: dict(row) for row in rows}
+
+    def _refuse_absence(
+        self,
+        reason: str,
+        *,
+        baseline_count: int | None,
+        present_count: int | None,
+        removed_count: int | None = None,
+    ) -> None:
+        logger.warning(
+            "contact_sync_absence_refused",
+            extra={
+                "reason": reason,
+                "provider": self._provider,
+                "account_id": self._account_id,
+                "baseline_count": baseline_count,
+                "present_count": present_count,
+                "removed_count": removed_count,
+            },
+        )
+
+    async def finalize_sync(
+        self,
+        *,
+        contacts: list[CanonicalContact],
+        mode: ContactsSyncMode,
+        baseline: dict[str, dict[str, Any]],
+        expected_state: ContactsSyncState,
+        next_state: ContactsSyncState,
+        state_store: ContactsSyncStateRepository,
+    ) -> int:
+        """Co-commit accepted absence transitions, cache eviction and sync progress."""
+        if (
+            not isinstance(state_store, ContactsSyncStateStore)
+            or state_store._pool is not self._pool
+        ):
+            raise ContactsSyncError("Telegram custody requires its hosting sync state store")
+        active = {key: row for key, row in baseline.items() if row["deleted_at"] is None}
+        present = {c.external_id for c in contacts if not c.deleted}
+        accept_absence = mode == "full"
+        if accept_absence:
+            if not present:
+                self._refuse_absence("empty_full", baseline_count=len(active), present_count=0)
+                accept_absence = False
+            elif active:
+                # Set-based: contacts added this cycle must not offset removals.
+                removed = set(active) - present
+                if len(removed) / len(active) > self._max_shrink_fraction:
+                    self._refuse_absence(
+                        "sharp_shrink",
+                        baseline_count=len(active),
+                        present_count=len(present),
+                        removed_count=len(removed),
+                    )
+                    accept_absence = False
+        deleted = []
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                current = await state_store.lock_state(
+                    provider=self._provider,
+                    account_id=self._account_id,
+                    executor=conn,
+                )
+                if current != expected_state:
+                    self._refuse_absence(
+                        "concurrent_state", baseline_count=len(active), present_count=len(present)
+                    )
+                    raise ContactsSyncError("contacts sync state changed during fetch")
+                if accept_absence:
+                    candidates = await conn.fetch(
+                        "SELECT external_contact_id,local_entity_id,source_etag, "
+                        "last_seen_at,deleted_at "
+                        "FROM contacts_source_links WHERE provider=$1 AND account_id=$2 "
+                        "AND deleted_at IS NULL AND NOT(external_contact_id=ANY($3::text[])) "
+                        "ORDER BY external_contact_id FOR UPDATE",
+                        self._provider,
+                        self._account_id,
+                        sorted(present),
+                    )
+                    if any(
+                        active.get(row["external_contact_id"]) != dict(row) for row in candidates
+                    ):
+                        self._refuse_absence(
+                            "concurrent_source",
+                            baseline_count=len(active),
+                            present_count=len(present),
+                        )
+                        raise ContactsSyncError("contacts source baseline changed during fetch")
+                    missing = [row["external_contact_id"] for row in candidates]
+                    if missing:
+                        deleted = await conn.fetch(
+                            "UPDATE contacts_source_links SET deleted_at=now() "
+                            "WHERE provider=$1 AND account_id=$2 AND deleted_at IS NULL "
+                            "AND external_contact_id=ANY($3::text[]) "
+                            "RETURNING external_contact_id,local_entity_id",
+                            self._provider,
+                            self._account_id,
+                            missing,
+                        )
+                        for row in deleted:
+                            next_state.contact_versions.pop(row["external_contact_id"], None)
+                await state_store.save(
+                    provider=self._provider,
+                    account_id=self._account_id,
+                    state=next_state,
+                    executor=conn,
+                )
+        for row in deleted:
+            logger.info(
+                "contact_sync_deleted_source",
+                extra={
+                    "entity_id": str(row["local_entity_id"]) if row["local_entity_id"] else None,
+                    "provider": self._provider,
+                    "account_id": self._account_id,
+                    "external_id": row["external_contact_id"],
+                },
+            )
+        return len(deleted)
+
+    async def record_failure(
+        self,
+        *,
+        state_store: ContactsSyncStateRepository,
+        expected_state: ContactsSyncState,
+        expired_cursor: bool,
+    ) -> None:
+        self._refuse_absence("cycle_failed", baseline_count=None, present_count=None)
+        stalled, self._anchor_stalled = self._anchor_stalled, False
+        if isinstance(state_store, ContactsSyncStateStore) and state_store._pool is self._pool:
+            await state_store.record_failure(
+                provider=self._provider,
+                account_id=self._account_id,
+                expected_state=expected_state,
+                expired_cursor=expired_cursor,
+                last_error=ANCHOR_STALL_ERROR if stalled else DEFAULT_FAILURE_ERROR,
+            )
+
+    def _flag_anchor_stall(self, reason: str) -> None:
+        """Make a fail-closed reappearance stall visible on the sync state row.
+
+        A reappearing contact whose anchor entity was merged away or deleted
+        fails every cycle until an operator repairs the link. The failure is
+        recorded as a distinct, content-free ``last_error`` code instead of the
+        generic failure text; the log carries no external id or entity id.
+        """
+        self._anchor_stalled = True
+        logger.warning(
+            "contact_sync_anchor_stalled",
+            extra={
+                "reason": reason,
+                "provider": self._provider,
+                "account_id": self._account_id,
+            },
+        )
+
+    async def _reappearing_anchor(self, contact: CanonicalContact) -> uuid.UUID | None:
+        """A positive Telegram reappearance resumes only its exact inactive local anchor."""
+        row = await self._pool.fetchrow(
+            "SELECT sl.local_entity_id, EXISTS(SELECT 1 FROM public.entities e "
+            "WHERE e.id=sl.local_entity_id AND e.entity_type='person' "
+            "AND e.metadata->>'merged_into' IS NULL AND e.metadata->>'deleted_at' IS NULL) AS live "
+            "FROM contacts_source_links sl WHERE sl.provider=$1 AND sl.account_id=$2 "
+            "AND sl.external_contact_id=$3 AND sl.deleted_at IS NOT NULL",
+            self._provider,
+            self._account_id,
+            contact.external_id,
+        )
+        if row is None:
+            return None
+        if not row["local_entity_id"] or not row["live"]:
+            self._flag_anchor_stall("anchor_unavailable")
+            raise ContactsSyncError("inactive contact source anchor unavailable")
+        return uuid.UUID(str(row["local_entity_id"]))
 
     async def __call__(self, contact: CanonicalContact) -> None:
         """Process one canonical contact: resolve, write, feed."""
@@ -968,17 +1230,27 @@ class ContactBackfillEngine:
             raise
 
     async def _apply(self, contact: CanonicalContact) -> None:
-        local_id, strategy = await self._resolver.resolve(contact)
+        reappearing = (
+            await self._reappearing_anchor(contact)
+            if self._provider == "telegram" and not contact.deleted
+            else None
+        )
+        if reappearing is not None:
+            local_id, strategy = reappearing, "source_link"
+        else:
+            local_id, strategy = await self._resolver.resolve(contact)
 
         # Handle tombstone (source deleted) before anything else
         if contact.deleted:
             await self._handle_tombstone(contact, local_id)
             return
 
-        if strategy == "ambiguous_name":
-            # Cannot auto-merge; emit a review activity entry
-            await self._emit_ambiguous_merge_activity(contact)
-            return
+        ambiguous = strategy in {"ambiguous_name", "ambiguous_channel"}
+        if ambiguous:
+            # Cannot auto-merge. Create the contact as a flagged new entity with its
+            # source link (below) so it reaches duplicate curation and the next sync
+            # resolves it by source link instead of re-hitting the ambiguity.
+            logger.debug("ContactBackfill: ambiguous match, creating duplicate candidate")
 
         if local_id is not None:
             # Verify resolved entity still exists (stale source links, race conditions)
@@ -986,6 +1258,9 @@ class ContactBackfillEngine:
                 "SELECT 1 FROM public.entities WHERE id = $1", local_id
             )
             if not exists:
+                if reappearing is not None:
+                    self._flag_anchor_stall("entity_unavailable")
+                    raise ContactsSyncError("reappearing contact entity became unavailable")
                 logger.warning(
                     "ContactBackfill: resolved local_id=%s via %s but entity missing; "
                     "treating as new",
@@ -1004,14 +1279,29 @@ class ContactBackfillEngine:
             # unit. The remaining child-table upserts are best-effort and stay
             # outside the transaction — their failure must not block the
             # idempotency anchor or strand a half-written entity.
-            async with self._pool.acquire() as conn:
-                async with conn.transaction():
-                    local_id = await self._writer.create_contact(contact, executor=conn)
-                    await self._writer.upsert_source_link(local_id, contact, executor=conn)
+            try:
+                async with self._pool.acquire() as conn:
+                    async with conn.transaction():
+                        create_kwargs = {"duplicate_candidate": True} if ambiguous else {}
+                        local_id = await self._writer.create_contact(
+                            contact, executor=conn, **create_kwargs
+                        )
+                        await self._writer.upsert_source_link(local_id, contact, executor=conn)
+            except CandidateNameUnavailable:
+                # Nothing was written (the transaction rolled back). Skip this contact so
+                # the run and its cursor keep moving instead of wedging the account.
+                self._log_ambiguous(
+                    contact, strategy, entity_id=None, reason="candidate_name_unavailable"
+                )
+                return
             await self._writer.upsert_contact_info(local_id, contact)
             await self._writer.upsert_addresses(local_id, contact)
             await self._writer.upsert_important_dates(local_id, contact)
             await self._writer.upsert_labels(local_id, contact)
+            if ambiguous:
+                self._log_ambiguous(
+                    contact, strategy, entity_id=local_id, reason="created_as_duplicate_candidate"
+                )
             logger.info(
                 "ContactBackfill: created/updated entity %s from %s/%s external_id=%s",
                 local_id,
@@ -1061,17 +1351,29 @@ class ContactBackfillEngine:
                 contact.external_id,
             )
 
-    async def _emit_ambiguous_merge_activity(
+    def _log_ambiguous(
         self,
         contact: CanonicalContact,
+        strategy: str,
+        *,
+        entity_id: uuid.UUID | None,
+        reason: str,
     ) -> None:
-        """Emit a sync_conflict activity for ambiguous name match."""
-        # We cannot link to a specific contact, so we log at module level only.
+        """Warn about an ambiguous match (module-contacts log-record contract).
+
+        Carries the entity id (when known), provider, account, external id, strategy and
+        reason. Never the display name or any channel value.
+        """
         logger.warning(
-            "ContactBackfill: ambiguous name match for external_id=%s display_name=%r — "
-            "skipped auto-merge; manual review required",
-            contact.external_id,
-            contact.display_name,
+            "contact_sync_ambiguous",
+            extra={
+                "entity_id": str(entity_id) if entity_id else None,
+                "provider": self._provider,
+                "account_id": self._account_id,
+                "external_id": contact.external_id,
+                "strategy": strategy,
+                "reason": reason,
+            },
         )
 
 

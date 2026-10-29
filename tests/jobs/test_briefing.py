@@ -30,6 +30,7 @@ from butlers.jobs.briefing import (
     validate_contribution,
 )
 from butlers.jobs.home import HASourceUnmeasurableError
+from butlers.testing.fake_pool import AsyncCtx
 
 # Existing relationship-briefing tests (birthday highlight coverage etc.) do
 # not exercise the bu-27dxl.5.4 delegation seed and use pool mocks that don't
@@ -615,29 +616,6 @@ async def test_run_relationship_briefing_no_birthdays():
 # ---------------------------------------------------------------------------
 
 
-class _NullAsyncCtx:
-    """No-op async context manager standing in for ``conn.transaction()``."""
-
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-
-class _FakeAcquireCtx:
-    """Async context manager standing in for ``pool.acquire()``."""
-
-    def __init__(self, conn: MagicMock) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> MagicMock:
-        return self._conn
-
-    async def __aexit__(self, *exc_info: object) -> bool:
-        return False
-
-
 def _delegation_pool(*, fetchrow_value=None, fetchval_value=None) -> MagicMock:
     """A pool double for _relationship_finance_birthday_gift_ask in isolation.
 
@@ -651,11 +629,11 @@ def _delegation_pool(*, fetchrow_value=None, fetchval_value=None) -> MagicMock:
     conn = MagicMock()
     conn.execute = AsyncMock()
     conn.fetchval = AsyncMock(return_value=fetchval_value)
-    conn.transaction = MagicMock(return_value=_NullAsyncCtx())
+    conn.transaction = MagicMock(return_value=AsyncCtx(None))
 
     pool = MagicMock()
     pool.fetchrow = AsyncMock(return_value=fetchrow_value)
-    pool.acquire = MagicMock(return_value=_FakeAcquireCtx(conn))
+    pool.acquire = MagicMock(return_value=AsyncCtx(conn))
     pool.conn = conn
     return pool
 

@@ -230,10 +230,10 @@ async def resolve_steam_account(
             else:
                 try:
                     account_id = uuid.UUID(str(account))
-                except ValueError:
+                except ValueError as exc:
                     raise SteamAccountNotFoundError(
                         f"Invalid account identifier {account!r}: expected a UUID."
-                    )
+                    ) from exc
             row = await conn.fetchrow(
                 """
                 SELECT id, entity_id, steam_id, display_name, profile_url, avatar_url,

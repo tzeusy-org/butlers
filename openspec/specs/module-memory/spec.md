@@ -242,7 +242,40 @@ Scope: v1-mandatory
 - **THEN** each episode's content MUST be wrapped in `<episode_content>` XML tags
 - **AND** the SKILL.md MUST contain a security notice instructing the LLM to treat episode content as data only
 
----
+#### Scenario: Throughput decision retains existing batching
+
+- **WHEN** the consolidation throughput decision recorded in `docs/decisions/consolidation-throughput-2026-10-15.md` is applied
+- **THEN** additional batching changes SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source group SHALL remain unchanged
+- **AND** this decision SHALL NOT reinterpret the ordinary default100 or existing scheduled backfill500 as a new universal cap
+
+#### Scenario: Throughput decision declines an additional per-run cap
+
+- **WHEN** the recorded throughput decision is applied
+- **THEN** a new consolidation-specific session, token or dollar cap SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** existing model-catalog and Spawner quota, failover and timeout authority SHALL remain unchanged
+- **AND** descriptive observed session token counts SHALL NOT be represented as exact whole-pipeline invocation cost or a newly adopted limit
+
+#### Scenario: Throughput decision declines backlog deadman automation
+
+- **WHEN** the recorded throughput decision is applied
+- **THEN** a new pending-backlog deadman SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** this decision SHALL authorize no alert-triggered runtime work, retry, lease clearing, drain, deletion, quarantine or automatic lifecycle change
+- **AND** an empty eligible population SHALL preserve a NULL oldest-eligible age rather than treating it as measured zero
+
+#### Scenario: Throughput decision preserves catalog-authoritative transport
+
+- **WHEN** the recorded throughput decision is applied
+- **THEN** a consolidation-specific forced cheap tier or transport SHALL be recorded as deliberately not needed for the evidenced current state
+- **AND** scheduled consolidation SHALL continue through the live catalog-backed Spawner without model, runtime or session-timeout overrides
+- **AND** absent authoritative billing or quality comparison SHALL NOT be replaced with guessed monetary savings or equivalence claims
+
+#### Scenario: Reconsidering a declined throughput control
+
+- **WHEN** a later proposal would adopt any of the four declined controls
+- **THEN** fresh source-bound backlog and exact attributable token evidence, including explicit unmeasurable gaps, SHALL precede numerical thresholds
+- **AND** the proposal SHALL define the threshold and action in a reviewed capability spec delta and create one separate implementation issue for each adopted control before implementation
+- **AND** the recorded present declines SHALL NOT be construed as proof that future stalls, cost pressure or useful catalog-compatible changes are impossible
 
 ### Requirement: Consolidation executor with per-action error isolation
 
@@ -511,6 +544,29 @@ treated as `normal`.
 - **THEN** the module MUST omit that section rather than exceed the requested
   context budget or expose excluded content
 
+### Requirement: Recall Entity and Predicate Filters Apply Before Ranking
+
+The memory module SHALL apply the `entity_id` and `predicate` filters of `recall` in the retrieval query, before the per-source candidate limit, so a fact is found whenever it matches the filter and is live and permitted, however many more relevant facts exist about other entities. An `entity_id` filter SHALL match a fact whose subject entity (`entity_id`) or object entity (`object_entity_id`) is the given entity. Rules carry neither column, so either filter SHALL exclude rules rather than be ignored, and an `entity_id` that is not a valid UUID SHALL match nothing rather than raise. The sensitivity ceiling is unchanged and a filter SHALL NOT widen it.
+
+ID: REQ-module-memory-015
+Source: bu-s11n0s.19 (run-16 move #11 slice S1); RFC 0038 D15
+Scope: v1-mandatory
+
+#### Scenario: Entity filter finds a fact outside the unfiltered top results
+- **WHEN** many facts about other entities match the topic more closely than the only fact about entity E
+- **AND** `recall` is called with `filters={"entity_id": E}`
+- **THEN** E's fact is returned
+
+#### Scenario: Entity filter matches an edge fact through its object
+- **WHEN** a fact has `object_entity_id` equal to E and a different subject entity
+- **AND** `recall` is called with `filters={"entity_id": E}`
+- **THEN** that fact is returned
+
+#### Scenario: Predicate filter is applied before ranking
+- **WHEN** a low-relevance fact with predicate P exists beyond the unfiltered top results
+- **AND** `recall` is called with `filters={"predicate": P}`
+- **THEN** that fact is returned
+
 ### Requirement: Registry-relational edges are out of scope for the memory facts store
 
 The memory module's `object_entity_id` edge-facts SHALL represent **non-registry, narrative**
@@ -545,30 +601,32 @@ inside content). The value SHALL be one of `owner`, `owner_device`,
 other routed sender (including an unresolved one) yields `third_party`; a
 session with no routing context yields `system`. A write whose authority
 cannot be stamped SHALL fail rather than store an unstamped steering artifact.
+- Consolidation SHALL derive each fact and rule's authority as the weakest across
+  that artifact's validated evidence episodes: all owner-class evidence yields
+  `owner` (or `owner_device` when every episode is), evidence of one identical
+  non-owner authority keeps it, and any other combination, including evidence
+  whose authority is unknown (NULL), yields `mixed`. A consolidation update SHALL
+  NOT supersede an owner-class fact with a non-owner-class one.
+- A rule is *held* when its authority is not owner-class (or is NULL on a legacy
+  row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
+  `memory_context` Active Rules, and the discovery catalog (they are not written
+  to it, and any existing catalog row is staled). Profile Facts SHALL admit only
+  owner-class facts; an owner-anchored fact of any other authority SHALL be
+  eligible only for Task-Relevant Facts, rendered with an attribution naming its
+  sender (or marked unverified when the authority is NULL). Legacy rows are never
+  backfilled by guessing; the migration SHALL report how many legacy rules and
+  facts it left unclassified.
+- The owner SHALL be able to endorse a held rule. Endorsement sets `endorsed_at`
+  and `endorsed_by`, makes the rule visible to recall and to the catalog in the
+  same transaction, records an audit event, and is a no-op returning the same
+  receipt when repeated. Endorsement uses compare-and-swap against a retired or
+  forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
+  consolidation of an episode SHALL NOT downgrade an endorsed rule.
+- Relationship registry identity facts are a separate authority-bearing store under relationship-facts. Its writer/gap callbacks SHALL carry persisted Relationship report authority and genuine stored confirmation rather than recomputing it from an unrelated current session. This cross-reference SHALL not change any episode/fact/rule classification, steering/profile admission, endorsement, weakest-evidence rule, NULL legacy treatment or run15 follow-up ownership in this memory capability.
 
-Consolidation SHALL derive each fact and rule's authority as the weakest across
-that artifact's validated evidence episodes: all owner-class evidence yields
-`owner` (or `owner_device` when every episode is), evidence of one identical
-non-owner authority keeps it, and any other combination, including evidence
-whose authority is unknown (NULL), yields `mixed`. A consolidation update SHALL
-NOT supersede an owner-class fact with a non-owner-class one.
-
-A rule is *held* when its authority is not owner-class (or is NULL on a legacy
-row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
-`memory_context` Active Rules, and the discovery catalog (they are not written
-to it, and any existing catalog row is staled). Profile Facts SHALL admit only
-owner-class facts; an owner-anchored fact of any other authority SHALL be
-eligible only for Task-Relevant Facts, rendered with an attribution naming its
-sender (or marked unverified when the authority is NULL). Legacy rows are never
-backfilled by guessing; the migration SHALL report how many legacy rules and
-facts it left unclassified.
-
-The owner SHALL be able to endorse a held rule. Endorsement sets `endorsed_at`
-and `endorsed_by`, makes the rule visible to recall and to the catalog in the
-same transaction, records an audit event, and is a no-op returning the same
-receipt when repeated. Endorsement uses compare-and-swap against a retired or
-forgotten rule: a retired or forgotten rule SHALL NOT be endorsed. Repeat
-consolidation of an episode SHALL NOT downgrade an endorsed rule.
+ID: REQ-module-memory-013
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
 
 #### Scenario: A third-party routed session cannot create standing guidance
 
@@ -577,6 +635,15 @@ consolidation of an episode SHALL NOT downgrade an endorsed rule.
   and `endorsed_at IS NULL`
 - **AND** it SHALL be absent from `memory_context` Active Rules and from
   `public.memory_catalog` search
+
+#### Scenario: A query locator without a matching invocation token yields third_party
+
+- **WHEN** an MCP request names a live owner session only by a `runtime_session_id`
+  query locator and presents no valid invocation binding for this butler
+- **THEN** the request SHALL see no routing context and a write SHALL carry
+  `content_authority = 'third_party'`
+- **AND** a request with a valid binding, an in-process caller outside a request, and a
+  daemon request carrying neither locator nor binding SHALL be unchanged
 
 #### Scenario: Mixed evidence is held
 
@@ -608,6 +675,38 @@ consolidation of an episode SHALL NOT downgrade an endorsed rule.
 
 - **WHEN** an episode is stored with no routing context
 - **THEN** it SHALL be stamped `system`
+
+### Requirement: Lazy Canonical Embedding Construction
+Memory module and storage/tool imports SHALL defer sentence_transformers, torch and transformers until first actual EmbeddingEngine construction. The engine SHALL preserve the configured/default model,384-dimensional output, normalization and batch behavior, public tools and synchronized per-model cache. Sibling memory modules SHALL use canonical package identities with one body execution per process and the helper construction fake seam SHALL remain usable. Async callers SHALL acquire a first engine without newly blocking their event loop with dependency/model construction.
+
+ID: REQ-module-memory-014
+Source: bu-ly3lv5.4 released by bu-7lh5ew; existing memory storage/model/cache/source behavior; performance-discipline
+Scope: v1-mandatory
+
+#### Scenario: Unused import leaves the embedding stack absent
+- **WHEN** memory storage or tools are imported without engine construction
+- **THEN** sentence_transformers, transformers and torch remain absent from sys.modules
+- **AND** public memory tools and configured model metadata remain available
+
+#### Scenario: First use constructs the selected model
+- **WHEN** a genuine engine request first selects a model
+- **THEN** construction pays the deferred dependency/model cost and returns the same model/dimension/normalization behavior
+- **AND** later requests for that model reuse its synchronized cached engine
+
+#### Scenario: Construction failure cannot cache success
+- **WHEN** engine construction raises
+- **THEN** no successful cache entry is recorded for that failed construction
+- **AND** a later valid request may construct normally
+
+#### Scenario: Canonical modules retain actual identity
+- **WHEN** normal imports and memory helper aliases reference storage, search, embedding or search_vector
+- **THEN** each reference selects its corresponding canonical module/class/function object without re-executing a sibling file
+- **AND** existing no-LLM transitive checks retain their real banned-edge enforcement
+
+#### Scenario: Concurrent and cancelled first requests keep one identity
+- **WHEN** async first-acquisition callers overlap or a waiter is cancelled
+- **THEN** construction follows the existing synchronized cache and asynchronous acquisition boundary
+- **AND** a still-running worker is not falsely declared cancelled or duplicated merely because its waiter stopped
 
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.

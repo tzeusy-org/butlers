@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: [TARGET-STATE] Receiver-derived daemon observation
-The control plane SHALL enumerate exact expected daemon identities and endpoints from Git-owned roster configuration, probe each on a bounded cadence, and record only receiver-timed observations for the currently registered boot epoch. On every daemon boot, a narrow database registration SHALL allocate a monotonically increasing, durable boot epoch before the daemon advertises readiness. The daemon response SHALL include its exact name, boot UUID and allocated epoch, route contract range, and whether it currently accepts `route.execute` work. Arbitrary caller-provided addresses and daemon-authored timestamps SHALL confer no liveness authority.
+The control plane SHALL enumerate exact expected daemon identities and endpoints from Git-owned roster configuration, probe each on a bounded cadence, and record only receiver-timed observations for the currently registered boot epoch. On every daemon boot, a narrow database registration SHALL allocate a monotonically increasing, durable boot epoch before the daemon advertises service readiness. The daemon response SHALL include its exact name, boot UUID and allocated epoch, service compatibility contract range, and whether it currently accepts the declared service operations. Arbitrary caller-provided addresses and daemon-authored timestamps SHALL confer no liveness authority. The existing identity keys `route_contract` and `accepting_routes` denote service compatibility and acceptance in the target runtime; they do not restore classification, generic route dispatch or domain session spawning. All broker/caller authorization remains separate from this availability evidence.
 
 ID: REQ-butler-control-plane-liveness-001
-Source: heart-and-soul/vision.md Rules 4-5; RFC 0001 startup and RFC 0008 network boundary; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md Rules 4-5; RFC 0001 startup and RFC 0008 network boundary; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Expected ready daemon advances observation
@@ -25,12 +25,12 @@ Scope: v1-mandatory
 
 #### Scenario: Registration failure or rollback cannot revive an older process
 - **WHEN** boot registration fails, restarts after an interrupted transaction, or code rollback lacks the current epoch contract
-- **THEN** the daemon does not advertise route acceptance until it has a committed current epoch
-- **AND** rollback preserves the latest epoch and rejects older or absent epochs rather than making a predecessor routable
+- **THEN** the daemon does not advertise service acceptance until it has a committed current epoch
+- **AND** rollback preserves the latest epoch and rejects older or absent epochs rather than making a predecessor eligible
 
 #### Scenario: Untrusted identity fails closed
-- **WHEN** a response names the wrong daemon or generation, has an incompatible route contract, includes any daemon-authored timestamp or other unexpected field, is malformed, or comes from a different endpoint
-- **THEN** it cannot advance healthy liveness or route compatibility
+- **WHEN** a response names the wrong daemon or generation, has an incompatible service compatibility contract, includes any daemon-authored timestamp or other unexpected field, is malformed, or comes from a different endpoint
+- **THEN** it cannot advance healthy liveness or service compatibility
 - **AND** the mismatch remains distinguishable in content-blind diagnostic evidence
 
 #### Scenario: Observer failure cannot clear an incident
@@ -44,19 +44,19 @@ Scope: v1-mandatory
 - **AND** no legacy heartbeat-age projection or UI row may treat the failed attempt time as healthy freshness
 
 ### Requirement: [TARGET-STATE] Separate routability dimensions
-The registry SHALL retain observed health (`healthy`, `stale`, `unavailable`, `observer_unknown`), administrative policy (`active`, `paused`, `quarantined`, `review_required`), and route compatibility as separate dimensions. Routability SHALL require a fresh observation matching the latest durable boot epoch, an accepting compatible daemon, and active administrative policy; observation alone SHALL never revoke policy.
+The registry SHALL retain observed health (`healthy`, `stale`, `unavailable`, `observer_unknown`), administrative policy (`active`, `paused`, `quarantined`, `review_required`), and service compatibility as separate dimensions. Service eligibility SHALL require a fresh observation matching the latest durable boot epoch, an accepting compatible daemon, and active administrative policy; observation alone SHALL never revoke policy.
 
 ID: REQ-butler-control-plane-liveness-002
-Source: heart-and-soul/vision.md Rules 4-5; RFC 0003 routing; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §4 Owner-set and liveness-derived quarantine
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md Rules 4-5; RFC 0003 routing; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §4 Owner-set and liveness-derived quarantine
 Scope: v1-mandatory
 
 #### Scenario: Owner quarantine survives every automatic writer
-- **WHEN** the owner quarantines a daemon and a later probe, registration, route success, or restart reports health
+- **WHEN** the owner quarantines a daemon and a later probe, registration, authorized service-call success, or restart reports health
 - **THEN** administrative policy remains quarantined and the daemon remains ineligible
 - **AND** only an explicit authorized owner action may restore active policy
 
 #### Scenario: Fresh but incompatible daemon remains ineligible
-- **WHEN** a daemon is healthy but its route contract or capability set does not satisfy the target route
+- **WHEN** a daemon is healthy but its service compatibility contract or capability set does not satisfy the target service operation
 - **THEN** the target remains ineligible with a compatibility reason
 - **AND** its observed health remains healthy rather than being rewritten as unavailable
 
@@ -69,7 +69,7 @@ Scope: v1-mandatory
 Before separated policy becomes authoritative, the system SHALL classify each existing quarantine by recorded provenance. Proven TTL-derived quarantine SHALL become observation state, proven operator quarantine SHALL become administrative policy, and ambiguous provenance SHALL remain ineligible with `review_required` until an explicit owner decision. Migration and rollback SHALL preserve the original evidence and never silently activate an uncertain target.
 
 ID: REQ-butler-control-plane-liveness-003
-Source: heart-and-soul/vision.md Rule 5; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1 and §6 Phase 1
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md Rule 5; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1 and §6 Phase 1
 Scope: v1-mandatory
 
 #### Scenario: Historical automatic quarantine is not made owner policy
@@ -78,7 +78,7 @@ Scope: v1-mandatory
 
 #### Scenario: Ambiguous legacy quarantine remains closed
 - **WHEN** a legacy row cannot be attributed confidently to automatic expiry or an operator action
-- **THEN** it becomes `review_required` and remains unroutable
+- **THEN** it becomes `review_required` and remains service-ineligible
 - **AND** its original metadata is retained for a content-blind owner review
 
 #### Scenario: Repeated migration is stable
@@ -86,30 +86,30 @@ Scope: v1-mandatory
 - **THEN** it does not clear policy, duplicate provenance records, or turn an ambiguous target active
 
 ### Requirement: [TARGET-STATE] Bounded stale-route recheck
-Before rejecting an otherwise eligible stale target, Switchboard SHALL make at most one bounded receiver-derived probe of that target. A valid current-generation response SHALL refresh observation and allow the route; a failed probe SHALL return the existing typed `not_attempted` transport outcome with a transient target-unavailable reason and SHALL NOT call the target.
+Before rejecting an otherwise eligible stale target, Switchboard SHALL make at most one bounded receiver-derived probe of that target. A valid current-generation response SHALL refresh observation and allow the otherwise authorized service call; a failed probe SHALL return the existing typed `not_attempted` transport outcome with a transient target-unavailable reason and SHALL NOT call the target.
 
 ID: REQ-butler-control-plane-liveness-004
-Source: RFC 0003 routing; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1; [Observed] roster/switchboard/tools/routing/transport.py
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; RFC 0003 routing; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1; [Observed] roster/switchboard/tools/transport.py
 Scope: v1-mandatory
 
 #### Scenario: Stale healthy daemon recovers without restart
 - **WHEN** an otherwise eligible target is stale but its exact configured endpoint returns a valid ready current-generation response within the recheck deadline
-- **THEN** Switchboard refreshes receiver-timed observation and attempts the original route once
+- **THEN** Switchboard refreshes receiver-timed observation and attempts the original authorized service call once
 
 #### Scenario: No-effect refusal is typed
 - **WHEN** the bounded probe cannot prove current acceptance readiness
-- **THEN** Switchboard does not call `route.execute` and reports canonical `outcome=not_attempted` with retryability determined by the transient failure
+- **THEN** Switchboard calls no target capability, does not invoke the deleted `route.execute`, and reports canonical `outcome=not_attempted` with retryability determined by the transient failure
 - **AND** it does not label the target quarantined or claim delivery succeeded
 
 #### Scenario: Administrative policy cannot be bypassed
 - **WHEN** a target is paused, quarantined, under review, or incompatible
-- **THEN** no stale-path probe restores route eligibility or overrides that reason
+- **THEN** no stale-path probe restores service eligibility or overrides that reason
 
 ### Requirement: [TARGET-STATE] Independent fleet condition producer
-A separately supervised control-plane controller SHALL observe fleet status and QA patrol age without depending on QA's own scheduler or a routable QA registry row. It SHALL create one stable fleet-level condition for one or more affected expected daemons, attach per-daemon impact evidence, and resolve only after a complete healthy snapshot under the existing infrastructure-condition lifecycle. At cutover, redundant per-butler liveness conditions SHALL retain their impact evidence and remain linked but shall not independently page or start duplicate QA investigations; recovery resolution still requires a complete healthy observation of each affected daemon.
+A separately supervised control-plane controller SHALL observe fleet status and QA patrol age without depending on QA's own scheduler or a service-eligible QA registry row. It SHALL create one stable fleet-level condition for one or more affected expected daemons, attach per-daemon impact evidence, and resolve only after a complete healthy snapshot under the existing infrastructure-condition lifecycle. At cutover, redundant per-butler liveness conditions SHALL retain their impact evidence and remain linked but shall not independently page or start duplicate QA investigations; recovery resolution still requires a complete healthy observation of each affected daemon.
 
 ID: REQ-butler-control-plane-liveness-005
-Source: heart-and-soul/vision.md:51-53,120-137; RFC 0015 patrol; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Episode lifecycle
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; RFC 0015 patrol; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Episode lifecycle
 Scope: v1-mandatory
 
 #### Scenario: Common control failure yields one episode
@@ -158,12 +158,12 @@ Scope: v1-mandatory
 After receiver-derived observation is authoritative, the dashboard SHALL reject or remove the old daemon `POST /api/switchboard/heartbeat` mutation and daemons SHALL cease sending it. It SHALL never become anonymous, accept the dashboard owner key from a daemon, or reuse unrelated approval or runtime-probe credentials.
 
 ID: REQ-butler-control-plane-liveness-006
-Source: heart-and-soul/security.md:161-195; openspec/changes/specify-host-authorized-dashboard-enrollment/specs/dashboard-owner-auth/spec.md §Central owner boundary; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §4
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/security.md:161-195; openspec/changes/specify-host-authorized-dashboard-enrollment/specs/dashboard-owner-auth/spec.md §Central owner boundary; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §4
 Scope: v1-mandatory
 
 #### Scenario: Legacy writer has no liveness authority
 - **WHEN** a daemon or other caller invokes the legacy heartbeat POST after cutover
-- **THEN** the request cannot update fleet observation, administrative policy, or route compatibility
+- **THEN** the request cannot update fleet observation, administrative policy, or service compatibility
 
 #### Scenario: Owner auth remains fail closed
 - **WHEN** an unauthenticated caller targets protected dashboard APIs
@@ -171,10 +171,14 @@ Scope: v1-mandatory
 - **AND** no blanket daemon or heartbeat path exemption is introduced
 
 ### Requirement: [TARGET-STATE] Durable independent owner attention for fleet and QA failure
-The independently supervised control-plane producer SHALL create one content-blind runtime-attention outbox episode for each active fleet-control or QA-patrol-overdue condition episode that reaches its first owner-attention threshold. With the database and controller available, that threshold and durable append SHALL occur within ten minutes of the first failing fleet observation or observed overdue QA patrol. A qualifying QA patrol SHALL be a completed `clean`, `findings_dispatched`, or genuinely filtered `suppressed` cycle of a full patrol by the QA module (timer-driven or reactive; both record `origin='scheduled'`) with durable proof that every source enabled under the current configuration completed successfully. The `origin`, enabled-source snapshot/config digest, and completion marker in `REQ-staffer-qa-008` SHALL distinguish genuine filtered findings from a synthetic placeholder. `running`, `error`, `skipped_overlap`, synthetic `suppressed`, incomplete-source, and ambiguous legacy rows SHALL NOT renew patrol freshness. The append SHALL use a fixed server-derived condition identity and narrowly authorized producer operation; no QA patrol, routable QA daemon, model session, or browser request is needed to create it. Switchboard SHALL deliver it through the existing fenced at-most-once runtime-attention worker. Later condition escalation SHALL remain bounded by the infrastructure-condition lifecycle and SHALL NOT duplicate the outbox episode or automatically resend an uncertain transport effect.
+The independently supervised control-plane producer SHALL create one content-blind runtime-attention outbox episode for each active fleet-control or QA-patrol-overdue condition episode that reaches its first owner-attention threshold. With the database and controller available, that threshold and durable append SHALL occur within ten minutes of the first failing fleet observation or observed overdue QA patrol. A qualifying QA patrol SHALL be a completed `clean`, `findings_dispatched`, or genuinely filtered `suppressed` cycle of a full patrol by the QA module (timer-driven or reactive; both record `origin='scheduled'`) with durable proof that every source enabled under the current configuration completed successfully. The `origin`, enabled-source snapshot/config digest, and completion marker in `REQ-staffer-qa-008` SHALL distinguish genuine filtered findings from a synthetic placeholder. `running`, `error`, `skipped_overlap`, synthetic `suppressed`, incomplete-source, and ambiguous legacy rows SHALL NOT renew patrol freshness. The append SHALL use a fixed server-derived condition identity and narrowly authorized producer operation; no QA patrol, service-eligible QA daemon, model session, or browser request is needed to create it. Switchboard SHALL deliver it through the existing fenced at-most-once runtime-attention worker. Later condition escalation SHALL remain bounded by the infrastructure-condition lifecycle and SHALL NOT duplicate the outbox episode or automatically resend an uncertain transport effect.
+
+The supported rollback of the `core_251` condition-attention producer SHALL roll back the database revision and application code together. An ordinary migration-login downgrade only restamps and warns, leaving the installed producer and its enabled flag in place; newer code that continues to call it can still append and page. A database-only partial rollback is not a stop-paging guarantee. Existing bootstrap-only deactivation and retained episode, marker and delivery evidence SHALL remain unchanged.
+
+The standard backup excludes both `public.runtime_attention_condition_episodes` and `public.runtime_attention_outbox`. A valid restore that loses both MAY result in one additional page for a still-active eligible fleet or overdue-QA condition in that restored state, once its protected interfaces and normal producer/controller are available. Existing mandatory append/admission and fenced delivery rules SHALL continue to govern: after the new marker exists, concurrent scans, retries and controller restarts reuse that episode. Ordinary outbox retention, escalation and re-enabling with retained markers SHALL NOT re-page, and a surviving uncertain episode SHALL NOT gain an automatic resend path. The restore allowance does not guarantee successful external delivery; another loss of both records in a later restore is a separate restored state.
 
 ID: REQ-butler-control-plane-liveness-007
-Source: heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7; owner decisions bu-6gdfxt (A), bu-43lod8 (A); deploy/backup/pg_dump.sh exclusion set
 Scope: v1-mandatory
 
 #### Scenario: Correlated fleet expiry produces one owner alert episode
@@ -217,15 +221,28 @@ Scope: v1-mandatory
 - **THEN** durable condition evidence retains the emitted episode identity and last verified delivery category
 - **AND** reconciliation does not treat the retained condition as an unpaged new episode
 
+#### Scenario: Database-only partial rollback can leave condition paging enabled
+- **WHEN** core_251 is downgraded as the ordinary migration login while newer application code continues to call the condition-attention producer
+- **THEN** the downgrade only restamps and warns, and the installed enabled producer can still append condition episodes
+- **AND** the supported rollback is database and application code together; no database-only stop-paging guarantee is claimed
+- **AND** existing emitted episodes, condition markers and delivery truth are retained
+
+#### Scenario: Restore may page a still-active condition once more
+- **WHEN** a valid restore loses both the condition-side emission marker and its runtime-attention outbox row, and a still-active eligible condition is evaluated by the available normal producer after its attention grace
+- **THEN** the existing fixed idempotent append rules SHALL continue to govern; loss of both deduplication records can create one new content-blind episode in that restored state
+- **AND** that episode may page the owner once more, without guaranteeing successful external delivery
+- **AND** after the new marker exists, concurrent scans, retries and controller restarts return that same new episode rather than multiplying pages
+- **AND** ordinary outbox retention with a surviving marker, escalation and a surviving uncertain episode do not acquire an automatic resend path
+
 ### Requirement: [TARGET-STATE] Shared bounded probe authority across processes
-The Dashboard periodic observer and Switchboard stale-route recovery SHALL use the same exact-roster response verifier and database-reserved per-daemon probe sequence. Dashboard SHALL own the periodic pass; Switchboard SHALL initiate exactly one on-demand probe before refusing an otherwise eligible stale route using its own narrowly authorized control-plane observation operation. Both writers SHALL update the same receiver-derived registry record conditionally on the latest durable boot epoch and probe sequence, within a bounded deadline. Neither writer SHALL accept caller-supplied endpoints or gain dashboard owner-auth authority.
+The Dashboard periodic observer and Switchboard stale-service recovery SHALL use the same exact-roster response verifier and database-reserved per-daemon probe sequence. Dashboard SHALL own the periodic pass; Switchboard SHALL initiate exactly one on-demand probe before refusing an otherwise eligible stale service call using its own narrowly authorized control-plane observation operation. Both writers SHALL update the same receiver-derived registry record conditionally on the latest durable boot epoch and probe sequence, within a bounded deadline. Neither writer SHALL accept caller-supplied endpoints or gain dashboard owner-auth authority.
 
 ID: REQ-butler-control-plane-liveness-008
-Source: heart-and-soul/vision.md Rules 3-5; RFC 0003 routing; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md Rules 3-5; RFC 0003 routing; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.1
 Scope: v1-mandatory
 
 #### Scenario: Switchboard rechecks a stale target from its own process
-- **WHEN** Switchboard encounters an otherwise eligible stale route target
+- **WHEN** Switchboard encounters an otherwise eligible stale service target
 - **THEN** it reserves a sequence in the database, probes that target's exact Git-roster endpoint with the shared bounded verifier, and conditionally records its receiver-timed result
 - **AND** it does not call the dashboard API, wait for its periodic loop, or present an owner session or key
 
@@ -237,4 +254,4 @@ Scope: v1-mandatory
 #### Scenario: Probe operation cannot become broad registry write authority
 - **WHEN** either process requests a probe sequence or records a result
 - **THEN** its effective database role is limited to fixed reserve-and-record operations for Git-roster identities and cannot directly update administrative policy or invent an endpoint
-- **AND** failed verification, DB refusal, or deadline expiry leaves the target unavailable with a typed no-attempt route result
+- **AND** failed verification, DB refusal, or deadline expiry leaves the target unavailable with a typed no-attempt service result

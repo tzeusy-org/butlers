@@ -1286,7 +1286,7 @@ async def test_device_auth_session_oversized_stdout_terminates_the_handle_and_ma
         sandbox=_OversizedOutputLauncher(),
     )
     await session.start()
-    await session.wait(timeout=1.0)
+    await session.wait(timeout_s=1.0)
     assert session._reader_task is not None
     await session._reader_task
 
@@ -1411,7 +1411,7 @@ async def test_device_auth_success_line_stays_provisional_until_sandbox_finaliza
     await asyncio.sleep(0.01)
     assert session.state != "success"
     assert session.message == "Finalizing authentication safely."
-    await session.wait(timeout=1.0)
+    await session.wait(timeout_s=1.0)
 
     assert session.state == "expired"
     assert events.count("terminate") >= 1
@@ -2879,7 +2879,7 @@ async def test_readonly_command_uses_one_absolute_timeout_across_multiple_chunks
     real_wait_for = sandbox_platform.asyncio.wait_for
     absolute_timeout_values: list[float] = []
 
-    async def _deterministic_wait_for(awaitable: object, timeout: float) -> object:
+    async def _deterministic_wait_for(awaitable: object, timeout: float) -> object:  # noqa: ASYNC109 - stands in for asyncio.wait_for
         """Expire the collector after two chunks without depending on wall-clock scheduling."""
         coroutine_code = getattr(awaitable, "cr_code", None)
         if coroutine_code is None or coroutine_code.co_name != "_collect":

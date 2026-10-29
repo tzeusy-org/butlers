@@ -2,20 +2,30 @@
 
 ### Requirement: Pre-Launch and Prewarm Codex Auth Synchronization
 
-The Codex adapter SHALL use an explicitly selected system-global credential
-authority for live reconciliation before evaluating token freshness, creating
+The control-plane goal runner SHALL select the system-global credential
+authority and dispatch Codex execution to the session host over its
+authenticated control channel. The session host SHALL have no database or
+credential-store access, domain/connector credentials, or inbound dashboard
+port. Domain daemons SHALL not receive goal provider credentials or runtime
+OAuth volumes. The session-host Codex adapter SHALL use control-plane fenced
+reconciliation before evaluating token freshness, creating
 an isolated HOME, launching any subprocess attempt, or running speculative or
-on-path prewarm. For each child it SHALL prepare a durable exact-generation
-operation, write the transient `repr`-safe authority document into a distinct
-private stage, conditionally mark that operation launched immediately before
-process creation, and refuse the child when that recheck fails. Every child
+on-path prewarm. For each child the trusted control-plane caller SHALL prepare
+a durable exact-generation operation, stage its transient `repr`-safe authority
+document in a distinct private session-host stage over the authenticated channel,
+and conditionally mark that operation launched immediately before process
+creation. The prepared host launcher SHALL refuse the child if that mark fails. Every child
 SHALL also execute inside kernel-enforced per-invocation isolation with a unique
 leased outer UID/GID and distinct user, mount, PID, IPC, and UTS namespaces;
 only its own stage is mounted as HOME. Distinct paths, mode `0600`,
-`no_new_privs`, or a process group alone SHALL NOT satisfy peer isolation. The
-Codex CLI's `--dangerously-bypass-approvals-and-sandbox` flag SHALL remain
-inside this outer boundary. The child SHALL not use a mutable shared canonical
-`auth.json` as its authority or result source.
+`no_new_privs`, or a process group alone SHALL NOT satisfy peer isolation.
+Goal adapters SHALL drop the Codex
+`--dangerously-bypass-approvals-and-sandbox` flag, require deny-all built-in
+and provider-hosted tools, and use strict broker-only MCP. The separate
+engineering executor's permission policy SHALL NOT authorize goal invocations.
+An adapter unable to prove these restrictions for its runtime/model tuple
+SHALL be ineligible. The child SHALL not link to or use a mutable shared
+canonical `auth.json` as its authority or result source.
 
 The adapter SHALL preserve the existing provider execution timeout and use the
 existing bounded setup/finalizer allowance without allowing retries or child
@@ -25,6 +35,10 @@ not permission to use a schema-local credential or local file. It SHALL retain
 the existing environment-isolation, session-recording, and same-tier failover
 safety, including the prohibition on replaying an attempt that may have caused
 side effects.
+
+ID: REQ-core-spawner-011
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Exact-generation reconciliation precedes a Codex subprocess
 - **WHEN** a Codex adapter with an explicit system-global authority invokes a
@@ -37,7 +51,8 @@ side effects.
   no-launch result rather than a schema-local or local-file fallback
 
 #### Scenario: Private stages prevent cross-daemon result attribution
-- **WHEN** two daemons launch Codex operations on the same current generation
+- **WHEN** two control-plane launches dispatch concurrent session-host Codex
+  operations on the same current generation
 - **THEN** each child receives a distinct private auth stage seeded from that
   generation
 - **AND** behavior-executing peer read and peer write attempts against the
@@ -92,20 +107,20 @@ side effects.
   that may have caused side effects
 
 #### Scenario: Reconciliation precedes a Codex subprocess
-- **WHEN** a Codex adapter with a credential store invokes a new runtime
-  session and a canonical home directory is available
-- **THEN** it SHALL await live device-auth reconciliation before starting the
-  Codex CLI subprocess
-- **AND** the isolated invocation HOME SHALL link to the reconciled canonical
-  auth file
+- **WHEN** the control-plane runner dispatches a Codex goal invocation with a
+  selected system-global credential authority to the session host
+- **THEN** it SHALL await exact-generation reconciliation and successful launch
+  marking before starting the Codex CLI subprocess
+- **AND** the isolated invocation HOME SHALL contain only its operation-private
+  staged credential, never a link to the shared canonical auth file
 
 #### Scenario: Unavailable auth synchronization does not consume session time
 - **WHEN** credential-authority synchronization is blocked on a pool checkout,
   row lock, or another local reconciliation task
-- **THEN** the adapter SHALL bound that best-effort work and treat expiry as an
-  unavailable authority result
-- **AND** it SHALL continue the existing local-auth subprocess path without
-  consuming the session runtime timeout for synchronization
+- **THEN** the control-plane caller SHALL bound that work and treat expiry as
+  an unavailable authority result without consuming provider execution time
+- **AND** it SHALL create no Codex child or local-auth fallback and preserve
+  the existing bounded setup/finalizer allowance and failover safety
 
 #### Scenario: Bounded auth setup is outside provider execution time
 - **WHEN** a credential-wired runtime declares a finite setup/finalizer
@@ -119,33 +134,38 @@ side effects.
   invocation SHALL share that single allowance
 
 #### Scenario: Existing local CLI rotation persistence remains intact
-- **WHEN** a Codex subprocess changes its canonical `auth.json` during an
-  invocation
-- **THEN** the adapter SHALL retain its existing post-invocation rotation
-  detection and persistence behavior
+- **WHEN** a Codex subprocess changes its operation-private staged `auth.json`
+  during a session-host invocation
+- **THEN** after complete descendant termination the control-plane caller SHALL
+  conditionally persist the strictly validated rotation through that exact
+  launched operation while its generation remains current and unexpired
 - **AND** a database-originated reconciliation baseline SHALL not be treated as
   a new CLI-originated rotation
 
 #### Scenario: Internal retries persist the final local rotation
-- **WHEN** a Codex invocation retries internally and successive attempts rotate
-  the canonical auth file
-- **THEN** each later attempt SHALL revalidate the authority before it starts
-- **AND** the invocation finalizer SHALL conditionally persist the final file
-  state against the last attempt's captured authority snapshot
+- **WHEN** a Codex invocation retries internally before prohibited side effects
+  and successive attempts rotate their operation-private auth stages
+- **THEN** each later attempt SHALL revalidate the current authority and prepare
+  and mark its own operation before it starts, within the original deadline
+- **AND** each finalizer SHALL conditionally persist only its own contained,
+  validated result against that operation's captured generation; the final
+  attempt cannot attribute an earlier or shared file to itself
 
 #### Scenario: Speculative prewarm receives reconciled auth
 - **WHEN** the spawner invokes `CodexAdapter.speculative_prewarm()` before the
   normal runtime invocation
-- **THEN** the adapter SHALL reconcile canonical auth before `codex login
-  status` can run
-- **AND** it SHALL finalize afterward using the prewarm's captured authority
-  snapshot so a prewarm-caused rotation is durable before the next spawn
+- **THEN** the control-plane caller SHALL reconcile the current generation,
+  stage it on the session host, and mark that prewarm's own operation before
+  `codex login status` can run
+- **AND** it SHALL finalize afterward through that exact operation so an
+  eligible prewarm-caused rotation is durable before the next spawn
 
 #### Scenario: Dashboard login captures its prewarm rotation
-- **WHEN** dashboard device authentication succeeds for Codex and its
-  post-login prewarm modifies `auth.json`
-- **THEN** the dashboard callback SHALL finalize the final file through the
-  same authority-safe path using the snapshot captured before that prewarm
+- **WHEN** dashboard device authentication through the control-plane service
+  listener succeeds on the session host and its post-login prewarm modifies
+  that prewarm's private `auth.json`
+- **THEN** the control-plane callback SHALL finalize that validated stage through
+  the prewarm's own exact launched operation and captured generation
 - **AND** a concurrent newer dashboard refresh SHALL remain authoritative
 
 #### Scenario: Auth reconciliation does not alter failover safety
@@ -157,10 +177,13 @@ side effects.
 
 ### Requirement: Codex Adapter Finalization Uses the Launch Operation
 
-The adapter SHALL, after a Codex child has been completely terminated and its
-own private stage has been strictly validated, finalize only through the
-operation that launched that child.  A valid changed stage is a candidate
-successor, not authority by itself.  The adapter SHALL pass only a safe
+The control-plane caller SHALL, after a session-host Codex child's complete
+descendant domain has been terminated and its own private stage has been
+strictly validated, finalize only through the operation that launched that
+child. The authenticated channel SHALL carry that result to the trusted caller;
+the session host SHALL neither access the database nor authorize completion
+from a local file or operation identifier alone. A valid changed stage is a
+candidate successor, not authority by itself.  The adapter SHALL pass only a safe
 classified health outcome; it SHALL not persist provider stderr, raw exception
 text, a token-derived digest, file identity, or process identity as health or
 provenance.
@@ -177,6 +200,10 @@ failure SHALL invoke the guarded abandonment operation with a closed reason.
 After launch, cancellation, containment, parsing, or persistence failure SHALL
 invoke that same abandonment operation only after the complete child namespace
 is proven dead. Duplicate abandonment SHALL be non-committing.
+
+ID: REQ-core-spawner-012
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Winning stage creates one conditional successor
 - **WHEN** a completed runtime child has a valid operation-private staged
@@ -209,12 +236,19 @@ is proven dead. Duplicate abandonment SHALL be non-committing.
 
 ### Requirement: Codex Projection Lock Is Not a Fallback Authorization
 
-The system SHALL require any compatibility component needing a canonical local
-Codex projection to write only a database-originated complete current authority
-under the cross-process projection lock and atomic `0600` replacement.  Failure to obtain
-or safely use that lock SHALL fail the associated operation before child launch;
+The system SHALL keep any compatibility canonical Codex projection only on
+the session-host credential volume, transported through the control plane's
+service listener and authenticated control channel. It SHALL write only a
+database-originated complete current authority under the cross-process
+projection lock and atomic `0600` replacement. No domain daemon SHALL receive
+the provider credential, and no goal HOME SHALL link to the shared projection.
+Failure to obtain or safely use that lock SHALL fail the associated operation before child launch;
 the component SHALL not proceed unlocked.  Runtime children and their
 finalization SHALL not depend on that projection as a mutable authority source.
+
+ID: REQ-core-spawner-013
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Projection contention does not permit unlocked launch
 - **WHEN** a component that still requires the canonical projection cannot

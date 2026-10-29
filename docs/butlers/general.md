@@ -79,6 +79,22 @@ global name constraint and drops the passive representation. The `source_version
 tables are dropped only when empty; if they hold rows, they stay in place unused, and a later
 re-upgrade picks them up again.
 
+## Explicit Context and Prompt Values
+
+The context tools follow the adopted [context-security contract](../concepts/context-security.md).
+`check_context` remains a data read; model-mediated `set_context` and `clear_context`
+require the server-verified invocation bound to the actual owner or authenticated
+owner device. A session locator, tool argument or claimed source label is not
+that binding. Canonical DND mutation identity, replay and receipt rules still apply.
+
+General's deterministic Calendar job emits only `meeting/busy` or `focused/focused`.
+It never publishes an event title in the context value, metadata or result. An
+exact returned row witnessed by that producer in the same process/pool can render
+the typed value in the prompt preamble. Legacy rows, foreign pools, restarts,
+expiry, changes and finite cache eviction fall back to type/confidence only;
+matching stored labels do not confer provenance. No new signal or authority is
+introduced.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes messages here as the default fallback
@@ -86,7 +102,7 @@ re-upgrade picks them up again.
 
 ## Internal Capture Ledger
 
-`core_259` installs `public.captures`, `public.capture_operations`, and the fixed
+`core_287` installs `public.captures`, `public.capture_operations`, and the fixed
 `public.capture_service_control` singleton. FORCE RLS admits only effective
 `current_user = butler_general_rw`; inherited membership and replayed public grants
 cannot admit another runtime or a role-less API/migration pool. All three reject

@@ -30,11 +30,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     _AUDIT_DEFAULT_LIMIT,
     _VALID_SCOPES,
     AuditEvent,
-    _get_db_manager,
     _write_cli_audit,
     _write_credential_audit,
     _write_system_audit,
@@ -104,7 +104,7 @@ def _make_db_manager_with_audit_rows(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 
@@ -309,7 +309,7 @@ def test_audit_history_limit_default_used():
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get("/api/secrets/audit/system/SOME_KEY")
@@ -332,7 +332,7 @@ def test_audit_history_limit_custom_respected():
     mock_db.credential_shared_pool = MagicMock(return_value=shared_pool)
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get("/api/secrets/audit/system/SOME_KEY?limit=3")
@@ -375,7 +375,7 @@ def test_audit_history_pool_unavailable_returns_503():
     )
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     client = TestClient(app)
 
     resp = client.get("/api/secrets/audit/system/SOME_KEY")

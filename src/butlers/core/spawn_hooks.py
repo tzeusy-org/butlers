@@ -1,6 +1,6 @@
 """Dependency-inversion hook for the Spawner.
 
-``modules`` that need to dispatch LLM sessions (QaModule, SelfHealingModule)
+``modules`` that need to dispatch LLM sessions (QaModule, QaModule)
 must not hold a reference to the daemon's Spawner singleton — that would
 violate Vision Rule 2 (modules only add tools, never touch core infrastructure).
 

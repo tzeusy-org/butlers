@@ -37,29 +37,47 @@
   `accepted` pre-dispatch rows and all non-dashboard rows. Add regression
   coverage for both no-replay-after-unproven-processing and
   safe-replay-before-dispatch.
-- [ ] 1.4 Add a dedicated Switchboard-router bearer credential in the existing
-  credential store, have its cached QA MCP client present it, and configure a QA
-  FastMCP auth provider to validate its subject/client and QA audience from
-  request/access-token context before dashboard-mode writes or lookups. Never
-  authorize from caller-supplied `source_butler`; cover anonymous,
-  wrong-subject, wrong-audience, spoofed-source, and partial-identity rejection.
-- [ ] 1.5 Add dashboard-action/effect identities to QA `report_finding` and a
-  durable dashboard-report inbox/receipt store. Extend the existing
-  `butler_reports` source with a fenced durable
-  `pending -> claimed -> acknowledged` claim/ack lifecycle that emits and links
-  one patrol-owned finding after restart; enforce one inbox-to-finding mapping,
-  canonical payload/idempotency validation, `not_found`-only same-key redelivery,
-  and bounded `unavailable` ambiguity. Reject new dashboard delivery while the
-  source is disabled, but retain accepted inbox evidence for a later enabled
-  claim; keep ordinary non-dashboard reports on their existing volatile-buffer
-  path.
-- [ ] 1.6 Add the authenticated receipt lookup on the same QA principal
-  boundary; prove direct callers cannot enumerate receipts and mismatched
-  duplicate idempotency keys cannot overwrite the canonical record.
-- [ ] 1.7 Amend RFC 0015 and `roster/qa/MANIFESTO.md` in this implementation
-  change to replace the dashboard-report volatility deferral with the
-  authenticated durable-inbox exception and document ingestion, triage
-  ownership, permissions, recovery, and service-level expectations.
+- [ ] 1.4 Consume `bu-2c1g7v`'s actual released named QA service-relay/auth
+  interface on the service listener, with its fixed target/schema and
+  per-endpoint daemon allowlist. Validate the Switchboard-router subject/client
+  and QA audience before inbox write or lookup; never authorize from
+  `source_butler`, `trigger_source`, dashboard arguments or model output. Do not
+  duplicate the transport owner's credential mechanism or retain generic route
+  as a goal-runtime compatibility path. Cover anonymous, wrong-subject/audience,
+  session-listener, unlisted-daemon, spoofed-source and partial-identity refusal.
+- [ ] 1.5 Implement REQ-staffer-qa-003's dashboard-action/effect keyed durable
+  inbox/receipt, canonical payload/idempotency validation, fenced
+  `pending -> claimed -> acknowledged` claim/reclaim and unique immutable
+  inbox-to-finding link. Keep ordinary reports volatile and disabled-source
+  new-delivery refusal distinct from readable retained accepted evidence.
+  Consume the adopted `qa_triage_v1` contract with explicit empty domain/resource
+  ceiling, verified current catalog binding and exposed canonical finding input;
+  use the existing StafferContract/EvidenceProvider/admission/ledger, not a new
+  engine or ledger. Derive the stable finding source only from authenticated
+  stored linkage/current fences, and prove retry/concurrency/crash produces at
+  most one logical admission. Missing/stale/spoofed contract/source/catalog and
+  unavailable limits refuse without effects; insufficient diagnostics stay
+  unknown. Canonical scoring/fingerprint/dedup and D18 executor owners keep
+  their authority; this task grants no shell/network, domain or executor power.
+- [ ] 1.6 Implement REQ-staffer-qa-004 authenticated durable-only exact receipt
+  lookup; prove no direct enumeration, changed-payload/key overwrite or
+  volatile-buffer inference. Only proven `not_found` permits same-key/payload
+  redelivery when enabled; `found` pending/claimed retains accepted evidence,
+  and `unavailable` reaches existing bounded ambiguity without blind retry.
+  Reconcile unknown admission commits through the same stored source/attempt
+  and existing decision before another trusted attempt; never mint a new source.
+- [ ] 1.7 Amend RFC 0015 and `roster/qa/MANIFESTO.md` in `.17`'s implementation
+  change to document the durable-dashboard exception, named authenticated relay,
+  exposed staffer-triage contract and input/unknown limits, ingestion/finding/
+  admission ownership, permissions, recovery and service-level expectations.
+  Keep non-dashboard volatility, existing QA conversion and D18 executor
+  contracts. Extend tests/switchboard/test_goal_admission.py,
+  tests/core/qa/test_butler_reports.py, test_findings.py, test_triage.py and
+  tests/modules/test_module_qa.py; earn actual migrated-Postgres identity,
+  auth-before-access, receipt/fence, concurrent admission, restart/rollback and
+  disabled-source proof. Contract adoption/guards alone satisfy no source or
+  runtime task. No checkbox tick, archive, activation, credentials or deployment
+  is implied by this normative prerequisite.
 - [ ] 1.8 Add durable uniqueness/receipt boundaries for dead-letter capture and
   `conversation_reply` child effects.
 - [ ] 1.9 Document and test that an effect without receiver-enforced idempotency

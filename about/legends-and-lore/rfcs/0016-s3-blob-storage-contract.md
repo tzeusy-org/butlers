@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-25
+Governing doctrine: [security.md, Credential Management](../../heart-and-soul/security.md#credential-management) (blob store credentials resolve from the DB-backed store) and [vision.md rule 1, the user owns the data, with no shared infrastructure](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 

@@ -30,11 +30,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.priority_contacts import (
-    _ef_display_value,
-    _entity_facts_values_by_contact,
-    _get_db_manager,
-)
+from butlers.api.deps import get_db
+from butlers.api.routers.priority_contacts import _ef_display_value, _entity_facts_values_by_contact
 
 pytestmark = pytest.mark.unit
 
@@ -144,7 +141,7 @@ def _make_record(row: dict) -> MagicMock:
 def _wire_app(app: FastAPI, *, pool: AsyncMock) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
 
 async def test_list_contact_info_values_from_entity_facts(app: FastAPI) -> None:

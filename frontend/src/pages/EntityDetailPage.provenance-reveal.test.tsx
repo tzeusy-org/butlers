@@ -147,6 +147,10 @@ const PROVENANCE: EntityFact = {
   weight: 3,
   last_observed_at: "2020-01-01T00:00:00Z",
   verified: true,
+  confirmation_status: "owner_confirmed",
+  confirmed_at: "2020-01-01T00:00:00Z",
+  confirmed_by_entity_id: "entity-001",
+  confirmation_source: "dashboard_confirm",
   primary: true,
   validity: "active",
   created_at: "2020-01-01T00:00:00Z",
@@ -212,6 +216,8 @@ afterEach(() => {
 });
 
 describe("EntityDetailPage — editorial provenance reveal", () => {
+  // REQ-dashboard-relationship-003: mounted owner-confirmed versus legacy
+  // provenance display. These fixtures do not prove request authentication.
   it("keeps provenance hidden until the affordance is activated", () => {
     renderPage();
 
@@ -231,6 +237,24 @@ describe("EntityDetailPage — editorial provenance reveal", () => {
     expect(reveal.querySelector('[data-verified="true"]')).not.toBeNull();
     expect(reveal.querySelector('[data-staleness="stale"]')).not.toBeNull();
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    // The same raw verified bit on an unconfirmed legacy identity is honest
+    // historical provenance, not a genuine owner confirmation badge.
+    cleanup();
+    vi.mocked(useEntityFacts).mockReturnValue({
+      data: { items: [{ ...PROVENANCE, confirmation_status: "legacy_verified",
+        confirmed_at: null, confirmed_by_entity_id: null, confirmation_source: null }],
+      next_cursor: null, has_more: false },
+      isFetching: false,
+      error: null,
+    } as unknown as ReturnType<typeof useEntityFacts>);
+    renderPage();
+    fireEvent.click(screen.getByTestId("fact-provenance-toggle-fact-1"));
+    const legacy = screen.getByTestId("fact-provenance-reveal-fact-1");
+    expect(legacy.querySelector('[data-verified="true"]')).toBeNull();
+    expect(legacy.textContent).toContain("Legacy verification");
+    expect(legacy.textContent).toContain("relationship");
+    expect(legacy.querySelector('[data-staleness="stale"]')).not.toBeNull();
   });
 
   it("offers no affordance when the fact has no drill provenance", () => {

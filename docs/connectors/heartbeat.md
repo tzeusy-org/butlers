@@ -29,7 +29,17 @@ also lists the accepted `connector_type` values (`VALID_CONNECTOR_TYPES`). Every
 - Counters are monotonically increasing since process start. The Switchboard computes deltas
   against the previous snapshot, so a connector must never reset them mid-process.
 - `checkpoint` is an opaque provider cursor; `capabilities` (for example `backfill: true`) drives
-  which dashboard controls render.
+  which dashboard controls render. `capabilities.channel_kind = "feed"` registers a device or
+  telemetry feed (`REQ-connector-base-spec-003`). Only literal `feed` or `message` is retained;
+  absent, unknown or non-string values mean message after a successful registry lookup. Admission
+  lookup failure refuses rather than defaulting. The endpoint advisory lock precedes the registry
+  row lock for every heartbeat, preserving Gmail classification ordering. Previous/incoming
+  effective-kind comparison and upsert commit atomically; changes (including omitted/invalid
+  metadata erasing feed) emit only `Connector channel kind changed outcome=drift` after commit.
+  The diagnostic contains no endpoint, sender, content or database error. Ordinary capabilities,
+  counters, checkpoints and liveness continue to update. This alert-on-change policy does not pin
+  a channel permanently or activate admission. The consumer remains a trusted closed harness;
+  see [Untrusted Spans and Channel Kind](overview.md#untrusted-spans-and-channel-kind).
 - `sent_at` plus the `server_time` in the acknowledgment allow clock-drift detection.
 
 ## Frequency and Staleness
@@ -112,6 +122,16 @@ curl -s http://localhost:41200/api/ingestion/connectors/summaries | python3 -m j
 - `status.state` is a closed vocabulary (`healthy`, `degraded`, `error`). A connector that has not
   finished its first transport attempt reports `degraded` with detail such as `transport=starting`,
   never a fourth state.
+
+### Gmail classification admission
+
+The optional fixed `capabilities.known_contact_check` object carries version=1, state/reason, strict nonnegative query generation, UTC last-success, process instance UUID and a nullable admission epoch UUID. Gmail startup sends unloaded/not_loaded, generation0, no success and no epoch; the server stores unknown and issues a fresh ordering epoch. Normal evidence must match the admitted instance/epoch and monotonically advance generation. Same-generation mutation and old instance/epoch/generation are refused before registry/counter/liveness mutation; identical duplicates cannot renew successful-query freshness. Legacy or malformed metadata is classification unknown. Capabilities bind as Python objects through the production JSONB codec; unrelated flags retain their contract. Existing historical JSON strings are not reinterpreted as authority.
+
+The optional `classification_ack` contains admitted, instance_id, generation, request_admission_epoch, admission_epoch and a closed reason. Instance/generation/request epoch echo the exact request, including refusals. Startup echoes null and returns a new epoch; normal admitted replies return the sent epoch; refusals return no adoptable epoch. These public epochs order observations under existing heartbeat registration; they are not authentication credentials or new caller authority.
+
+For opted-in Gmail, one publisher slot covers latest request assembly, send and exact ACK adoption. The two-second bound includes queue wait. Cancellation/timeout retires the attempt before releasing the slot; late replies cannot adopt or clear newer admission. Transport tails receive cancellation and bounded cleanup. A late no-epoch startup can still make the SERVER conservatively unknown; client retirement does not undo that observation. Subsequent refusal/handshake/loaded publication restores current admission without changing local query history. Generic periodic/default-disabled heartbeat behavior and provider health remain unchanged.
+
+The Gmail primary writer takes an endpoint transaction advisory lock, then the registry row, and commits before existing best-effort partition/log work. The seven-day heartbeat log is not classification authority. New classification metadata is removed from capability diagnostics before logging, and malformed fields are normalized before generic validation errors. New diagnostics contain closed outcomes, no contact/error/token/epoch payloads.
 
 ## Related Pages
 

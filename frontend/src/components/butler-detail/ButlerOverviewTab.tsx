@@ -21,7 +21,7 @@ import {
   KV,
   MonoLabel,
   Panel,
-} from "@/components/butler-detail/atoms"
+} from "@/components/ui/atoms"
 import { ButlerDelegationsPanel } from "@/components/butler-detail/ButlerDelegationsPanel"
 import { ButlerDomainEventsPanel } from "@/components/butler-detail/ButlerDomainEventsPanel"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
@@ -29,7 +29,7 @@ import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer"
 import { Button } from "@/components/ui/button"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
-import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions"
+import { ApprovalCallReview, useApprovalDecisionMutations, type ViewedApproval } from "@/hooks/use-approval-decisions"
 import { useApprovalActions } from "@/hooks/use-approvals"
 import { useButler } from "@/hooks/use-butlers"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
@@ -295,7 +295,7 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     () => new Map(),
   )
   const pendingDecisionIds = useRef<Set<string>>(new Set())
-  const { approveMut, denyMut } = useApprovalDecisionMutations()
+  const { approveMut, denyMut, review, requestReview, cancelReview } = useApprovalDecisionMutations()
 
   // Keep an approved/rejected row disabled until the action-preview query has
   // reconciled it away. mutateAsync resolves once the endpoint responds, but
@@ -341,8 +341,8 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
     [],
   )
   const handleApprove = useCallback(
-    (id: string) => runDecision(id, "approve", () => approveMut.mutateAsync(id)),
-    [approveMut, runDecision],
+    (id: string) => { void requestReview(id) },
+    [requestReview],
   )
   const handleReject = useCallback(
     (id: string) => runDecision(id, "reject", () => denyMut.mutateAsync({ id })),
@@ -559,6 +559,10 @@ export default function ButlerOverviewTab({ butlerName }: ButlerOverviewTabProps
       <ButlerDomainEventsPanel butlerName={butlerName} />
     </ButlerPanelGrid>
 
+    <ApprovalCallReview review={review} onCancel={cancelReview} onConfirm={(view: ViewedApproval) => {
+      cancelReview()
+      runDecision(view.id, "approve", () => approveMut.mutateAsync(view))
+    }} />
     <SessionDetailDrawer
       sessionId={selectedSessionId}
       onClose={() => setSelectedSessionId(null)}

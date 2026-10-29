@@ -28,6 +28,7 @@ import type {
   ModelAttentionEpisode,
   ModelCatalogEntry,
 } from "@/api/types.ts";
+import { ModelAllowanceStrip } from "@/components/settings/ModelAllowanceStrip";
 import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Switch } from "@/components/ui/switch";
@@ -59,6 +60,7 @@ import {
 import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
+  useModelAllowance,
   useModelAttention,
   useModelCatalogDeleteImpact,
   useModelCatalog,
@@ -453,6 +455,14 @@ interface EditModelDialogProps {
  * Inner form component. Mounted only when the dialog is open so that `useState`
  * always initializes from current `model` props — no `useEffect` sync needed.
  */
+function validateAllowanceAccount(value: string): string | undefined {
+  const label = value.trim();
+  if (label && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(label)) {
+    return "Use 1-64 lowercase letters, digits, underscores or hyphens";
+  }
+  return undefined;
+}
+
 function EditModelForm({
   model,
   onOpenChange,
@@ -465,6 +475,7 @@ function EditModelForm({
   const [alias, setAlias] = useState(model.alias);
   const [runtimeType, setRuntimeType] = useState(model.runtime_type);
   const [modelId, setModelId] = useState(model.model_id);
+  const [allowanceAccount, setAllowanceAccount] = useState(model.allowance_account ?? "");
   const [complexityTier, setComplexityTier] = useState<ComplexityTier>(model.complexity_tier);
   const [priority, setPriority] = useState(String(model.priority));
   const [sessionTimeoutS, setSessionTimeoutS] = useState(String(model.session_timeout_s));
@@ -474,12 +485,14 @@ function EditModelForm({
   // True when ExtraArgsEditor's raw-JSON mode has a parse error.
   const [argsHasError, setArgsHasError] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const accountError = validateAllowanceAccount(allowanceAccount);
 
   const validate = (): boolean => {
     const errors: Record<string, string> = {};
     if (!alias.trim()) errors.alias = "Alias is required";
     if (!runtimeType.trim()) errors.runtime_type = "Runtime type is required";
     if (!modelId.trim()) errors.model_id = "Model ID is required";
+    if (accountError) errors.allowance_account = accountError;
     if (!TIER_ORDER.includes(complexityTier))
       errors.complexity_tier = "Must be one of the six canonical tiers";
     const parsedPriority = parseInt(priority, 10);
@@ -508,6 +521,7 @@ function EditModelForm({
           alias: alias.trim(),
           runtime_type: runtimeType.trim(),
           model_id: modelId.trim(),
+          allowance_account: allowanceAccount.trim() || null,
           complexity_tier: complexityTier,
           priority: parseInt(priority, 10),
           session_timeout_s: parseInt(sessionTimeoutS, 10),
@@ -588,7 +602,19 @@ function EditModelForm({
           )}
         </div>
 
-        {/* Model ID */}
+        {/* Allowance account */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="edit-allowance-account" className="font-mono text-[11px] uppercase tracking-widest">Allowance account</Label>
+          <Input id="edit-allowance-account" value={allowanceAccount} maxLength={64}
+            onChange={(e) => setAllowanceAccount(e.target.value)}
+            aria-describedby="edit-allowance-account-help"
+            aria-invalid={Boolean(accountError)}
+            className="font-mono text-sm" />
+          <p id="edit-allowance-account-help" className="text-xs text-muted-foreground">Optional account label; blank uses runtime default.</p>
+          {accountError && (
+            <p role="alert" className="text-xs text-destructive">{accountError}</p>
+          )}
+        </div>
         <div className="grid gap-1.5">
           <Label
             htmlFor="edit-model-id"
@@ -722,7 +748,7 @@ function EditModelForm({
         <Button
           size="sm"
           onClick={handleSave}
-          disabled={updateEntry.isPending}
+          disabled={updateEntry.isPending || Boolean(accountError)}
           className="font-mono text-[10px] uppercase tracking-widest"
         >
           {updateEntry.isPending ? "Saving…" : "Save →"}
@@ -767,6 +793,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   const [alias, setAlias] = useState("");
   const [runtimeType, setRuntimeType] = useState<string>(RUNTIME_TYPES[0]);
   const [modelId, setModelId] = useState("");
+  const [allowanceAccount, setAllowanceAccount] = useState("");
   const [complexityTier, setComplexityTier] = useState<ComplexityTier>("workhorse");
   const [priority, setPriority] = useState("0");
   const [sessionTimeoutS, setSessionTimeoutS] = useState(String(DEFAULT_SESSION_TIMEOUT_S));
@@ -776,12 +803,14 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
   // True when ExtraArgsEditor's raw-JSON mode has a parse error.
   const [argsHasError, setArgsHasError] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const accountError = validateAllowanceAccount(allowanceAccount);
 
   /** Apply a pre-configured alias template to the form fields. */
   const applyTemplate = (label: string) => {
     const tpl = ALIAS_TEMPLATES.find((t) => t.label === label);
     if (!tpl) return;
     setRuntimeType(tpl.runtimeType);
+    setAllowanceAccount("");
     setArgs([...tpl.extraArgs]);
   };
 
@@ -790,6 +819,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
     if (!alias.trim()) errors.alias = "Alias is required";
     if (!runtimeType.trim()) errors.runtime_type = "Runtime type is required";
     if (!modelId.trim()) errors.model_id = "Model ID is required";
+    if (accountError) errors.allowance_account = accountError;
     if (!TIER_ORDER.includes(complexityTier))
       errors.complexity_tier = "Must be one of the six canonical tiers";
     const parsedPriority = parseInt(priority, 10);
@@ -815,6 +845,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         alias: alias.trim(),
         runtime_type: runtimeType.trim(),
         model_id: modelId.trim(),
+        allowance_account: allowanceAccount.trim() || null,
         complexity_tier: complexityTier,
         priority: parseInt(priority, 10),
         session_timeout_s: parseInt(sessionTimeoutS, 10),
@@ -908,7 +939,19 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
           )}
         </div>
 
-        {/* Model ID */}
+        {/* Allowance account */}
+        <div className="grid gap-1.5">
+          <Label htmlFor="add-allowance-account" className="font-mono text-[11px] uppercase tracking-widest">Allowance account</Label>
+          <Input id="add-allowance-account" value={allowanceAccount} maxLength={64}
+            onChange={(e) => setAllowanceAccount(e.target.value)}
+            aria-describedby="add-allowance-account-help"
+            aria-invalid={Boolean(accountError)}
+            className="font-mono text-sm" />
+          <p id="add-allowance-account-help" className="text-xs text-muted-foreground">Optional account label; blank uses runtime default.</p>
+          {accountError && (
+            <p role="alert" className="text-xs text-destructive">{accountError}</p>
+          )}
+        </div>
         <div className="grid gap-1.5">
           <Label
             htmlFor="add-model-id"
@@ -1036,7 +1079,7 @@ function AddModelForm({ onOpenChange }: { onOpenChange: (open: boolean) => void 
         <Button
           size="sm"
           onClick={handleCreate}
-          disabled={createEntry.isPending}
+          disabled={createEntry.isPending || Boolean(accountError)}
           className="font-mono text-[10px] uppercase tracking-widest"
         >
           {createEntry.isPending ? "Adding…" : "Add model →"}
@@ -1368,6 +1411,46 @@ function UsageCell({
 }
 
 // ---------------------------------------------------------------------------
+// Capability chips
+// ---------------------------------------------------------------------------
+
+// Declared capability features (RFC 0036). Names outside this list render nothing.
+const CAPABILITY_FEATURES = [
+  ["tool_use", "Tool use"],
+  ["structured_output", "Structured output"],
+  ["session_resume", "Session resume"],
+  ["vision", "Vision"],
+] as const;
+
+/** Read-only declaration chips. Declarations are claims, not proof. */
+function CapabilityChips({ capabilities }: { capabilities?: Record<string, boolean> }) {
+  const chips = CAPABILITY_FEATURES.flatMap(([key, label]) => {
+    const declared = capabilities?.[key];
+    if (typeof declared === "boolean") {
+      return [{ key, label, state: declared ? "Declared supported" : "Declared unsupported" }];
+    }
+    // Only vision reports absence; other absent features render nothing.
+    return key === "vision" ? [{ key, label, state: "Unknown" }] : [];
+  });
+  return (
+    <div
+      className="flex items-center gap-1 flex-wrap"
+      data-testid="capability-chips"
+      aria-label="Declared capabilities"
+    >
+      {chips.map((chip) => (
+        <span
+          key={chip.key}
+          className="rounded border border-border px-1 font-mono text-[9px] uppercase tracking-widest text-muted-foreground"
+        >
+          {chip.label}: {chip.state}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Model row
 // ---------------------------------------------------------------------------
 
@@ -1561,6 +1644,7 @@ function ModelRow({
                   ? "ineligible after failed probe"
                   : "eligible"}
           </p>
+          <CapabilityChips capabilities={model.capabilities} />
           <div className="flex items-center gap-2 flex-wrap">
             <span>
               Attention: {attentionLoading
@@ -1745,6 +1829,7 @@ export default function SettingsModelsPage() {
 
   const { data, isLoading, isError } = useModelCatalog();
   const attentionQuery = useModelAttention();
+  const allowanceQuery = useModelAllowance();
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const spendSummary = useSpendSummary(
@@ -1903,6 +1988,12 @@ export default function SettingsModelsPage() {
           </div>
         )
       )}
+
+      <ModelAllowanceStrip
+        data={allowanceQuery.data?.data}
+        isError={allowanceQuery.isError}
+        isForbidden={allowanceQuery.isForbidden}
+      />
 
       {/* Add model dialog */}
       <AddModelDialog open={addOpen} onOpenChange={setAddOpen} />

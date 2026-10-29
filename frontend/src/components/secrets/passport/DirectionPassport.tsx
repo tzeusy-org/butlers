@@ -170,6 +170,14 @@ export function DirectionPassport({
   const identityParam = searchParams.get("identity");
   const sortParam = searchParams.get("sort");
 
+  // A Telegram (or any) deep link arrives with ?focus=: on a phone the targeted page leads the
+  // single column and takes focus, instead of sitting below the whole spine.
+  const [enteredWithFocus] = React.useState(() => focusParam !== null);
+  const pageRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (enteredWithFocus) pageRef.current?.focus({ preventScroll: true });
+  }, [enteredWithFocus]);
+
   // Active identity: URL param or first identity (owner).
   const defaultIdentity = inventory.identities[0]?.id ?? "";
   const identityId = identityParam ?? defaultIdentity;
@@ -503,8 +511,8 @@ export function DirectionPassport({
 
         {/* Book body: spine + page */}
         <div
-          className="grid flex-1 min-h-0"
-          style={{ gridTemplateColumns: "296px 1fr" }}
+          className="grid flex-1 min-h-0 grid-cols-1 md:grid-cols-[296px_1fr] max-md:[&>nav]:max-h-72"
+          data-testid="passport-book-body"
         >
           <Spine
             entries={entries}
@@ -520,7 +528,15 @@ export function DirectionPassport({
             providers={inventory.providers}
           />
 
-          <div className="overflow-y-auto min-w-0">
+          <div
+            ref={pageRef}
+            tabIndex={-1}
+            aria-label="Credential page"
+            data-testid="passport-page"
+            className={`overflow-y-auto min-w-0 outline-none focus-visible:ring-[3px] focus-visible:ring-focus${
+              enteredWithFocus ? " max-md:order-first" : ""
+            }`}
+          >
             {addOpen ? (
               <PassportAddPanel
                 ownerEntityId={inventory.ownerEntityId}

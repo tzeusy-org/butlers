@@ -8,7 +8,6 @@ measurement updates, and the dashboard's source aggregation endpoint.
 from __future__ import annotations
 
 import shutil
-import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -18,6 +17,7 @@ import asyncpg
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -32,7 +32,7 @@ pytestmark = [
 # Router discovery registers the dependency under this module name. FastAPI's
 # dependency overrides key on the function object, so keep that exact object.
 _APP_SEED = create_app(api_key="")
-_health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
+_health_get_db_manager = get_db
 
 
 @pytest.fixture(scope="module")

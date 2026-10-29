@@ -65,14 +65,21 @@ def test_on_notify_bridges_valid_envelope_to_event_bus():
 
 
 # Spec: REQ-core-fleet-events-005
-def test_on_notify_ignores_other_channels():
+def test_on_notify_ignores_other_channels(caplog):
     from butlers.api.routers.events import _events_ring
 
-    payload = json.dumps({"type": "session", "data": {}})
+    payload = json.dumps({"type": "session", "data": {"private": "payload-sentinel"}})
 
-    _on_notify(None, 1, "some_other_channel", payload)
+    with caplog.at_level("WARNING"):
+        _on_notify(None, 1, "foreign-channel-sentinel", payload)
 
     assert len(_events_ring) == 0
+    assert len(caplog.records) == 1
+    assert "payload-sentinel" not in caplog.text
+    assert "foreign-channel-sentinel" not in caplog.text
+    _on_notify(None, 1, FLEET_EVENTS_CHANNEL, json.dumps({"type": "session", "data": {}}))
+    assert len(_events_ring) == 1
+    assert _events_ring[-1]["type"] == "session"
 
 
 # Spec: REQ-core-fleet-events-005
@@ -94,10 +101,17 @@ def test_on_notify_drops_non_object_payload():
 
 
 # Spec: REQ-core-fleet-events-005
-def test_on_notify_drops_payload_missing_type():
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        {"data": {"a": 1}},
+        *({"type": value, "data": {"a": 1}} for value in (None, 1, True, [], {})),
+    ],
+)
+def test_on_notify_drops_payload_missing_type(envelope):
     from butlers.api.routers.events import _events_ring
 
-    _on_notify(None, 1, FLEET_EVENTS_CHANNEL, json.dumps({"data": {"a": 1}}))
+    _on_notify(None, 1, FLEET_EVENTS_CHANNEL, json.dumps(envelope))
 
     assert len(_events_ring) == 0
 

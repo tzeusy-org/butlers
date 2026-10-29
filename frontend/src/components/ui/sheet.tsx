@@ -1,11 +1,14 @@
+import { DraftDismissBoundary } from "./draft-dismiss"
 import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
-function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
-  return <SheetPrimitive.Root data-slot="sheet" {...props} />
+function Sheet({ onOpenChange, ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
+  return <DraftDismissBoundary>{(dismiss) => <SheetPrimitive.Root data-slot="sheet" {...props} onOpenChange={(open) => {
+    if (open) onOpenChange?.(true); else dismiss(() => onOpenChange?.(false));
+  }} />}</DraftDismissBoundary>
 }
 
 function SheetPortal({
@@ -53,7 +56,7 @@ const SheetContent = React.forwardRef<
             // off the palette per the Dispatch motion contract (see
             // about/heart-and-soul/design-language.md § Motion; --ease-out-quart
             // is the only permitted easing for state transitions).
-            "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg transition ease-out-quart duration-slow",
+            "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 shadow-lg ease-out-quart duration-slow",
             side === "right" &&
               "data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm",
             side === "left" &&

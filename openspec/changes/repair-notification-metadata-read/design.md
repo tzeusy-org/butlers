@@ -8,8 +8,8 @@ change intentionally did not reinterpret historical rows.
 
 `NotificationSummary.metadata` is an object-or-null API field used by the
 global notification list, the butler-scoped list, and the mark-read response.
-The current shared reader accepts mappings and converts every other decoded
-value to `null`. A legacy JSONB string scalar therefore loses an encoded object
+The original shared reader accepted mappings and converted every other decoded
+value to `null`. A legacy JSONB string scalar therefore lost an encoded object
 even though its original string can be interpreted safely once. The
 Switchboard-specific migration chain owns the underlying `notifications`
 relation; it must remain the only repair path for historical data.
@@ -69,12 +69,19 @@ into a hidden data transformation.
 
 ### D2 — Keep the documentation contract and response construction aligned
 
-`docs/frontend/backend-api-contract.md` will describe the table above and name
+`docs/api_and_protocols/response-conventions.md` will describe the table above and name
 all three response paths. The API model remains object-or-null; no frontend
 display change is required for this slice. The direct normalizer and endpoint
 tests use the same cases so the global list, butler-scoped list, and mark-read
 response cannot drift apart. Decoder-limit cases retain the exact outer string
 under `_raw`, just like malformed and successfully parsed non-object strings.
+
+The serving API matrix is now owned by that surviving document; the former backend-api-contract
+path is retired. The production writer normalization owners are the JSONB cases in
+`roster/switchboard/tests/test_tools.py`; the delivery search-path integration owner remains a
+separate seam. The read-only procedure is
+`docs/operations/notification-metadata-repair.md`, linked from Kubernetes deployment guidance.
+Preparing that procedure does not satisfy its runtime gate or the unchanged #3458 ancestry rule.
 
 **Alternative considered:** documenting only the list endpoint. Rejected
 because the same stored row can be returned by a butler-scoped query or

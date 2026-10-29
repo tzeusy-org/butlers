@@ -80,6 +80,7 @@ async def test_entity_graph_walk_rejects_invalid_direction():
         await walk(entity_id=str(uuid4()), direction="sideways")
 
 
+# REQ-entity-graph-005: bounded traversal or wrapper-filter assertions only.
 async def test_entity_graph_walk_maps_hits_and_forwards_filters(monkeypatch):
     start_id = uuid4()
     reached_id = uuid4()
@@ -172,6 +173,7 @@ async def test_entity_graph_path_rejects_invalid_direction():
         await path(from_entity_id=str(uuid4()), to_entity_id=str(uuid4()), direction="sideways")
 
 
+# REQ-entity-graph-009: public graph read seam only; broader reader boundary remains uncovered.
 async def test_entity_graph_path_found_maps_edges(monkeypatch):
     from_id = uuid4()
     to_id = uuid4()
@@ -212,6 +214,7 @@ async def test_entity_graph_path_found_maps_edges(monkeypatch):
     assert kwargs["max_hops"] == 2
 
 
+# REQ-entity-graph-006: ordered/missing/zero-hop path or wrapper receipt assertions only.
 async def test_entity_graph_path_not_found_reports_false(monkeypatch):
     monkeypatch.setattr(
         "butlers.core_tools._graph.find_entity_graph_path", AsyncMock(return_value=None)

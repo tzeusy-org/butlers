@@ -145,6 +145,11 @@ async def test_validation_failure_emits_escalated_journal_event(tmp_path: Path) 
             "butlers.core.qa.dispatch._create_qa_pr",
             new_callable=AsyncMock,
             return_value=(None, None, None, f"anonymization_failed: {detail}"),
+        ) as create_pr,
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
         ),
         patch(
             "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
@@ -175,11 +180,10 @@ async def test_validation_failure_emits_escalated_journal_event(tmp_path: Path) 
             gh_token="ghtoken",
         )
 
-    record.assert_awaited_once()
-    assert record.await_args.kwargs["attempt_id"] == attempt_id
-    assert record.await_args.kwargs["step"] == "escalated"
-    assert record.await_args.kwargs["text"] == "anonymization validator rejected PR payload"
-    assert record.await_args.kwargs["detail"] == detail
+    # Publication fails closed before any PR payload exists: the dispatcher never
+    # reaches the anonymization validator, so no escalated event is emitted.
+    create_pr.assert_not_awaited()
+    record.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -201,6 +205,11 @@ async def test_validation_failure_detail_anonymized(tmp_path: Path) -> None:
                 "anonymization_failed: "
                 f"email pattern detected at offset 10-26 (len=16); context: '{raw_evidence}'",
             ),
+        ) as create_pr,
+        patch(
+            "butlers.core.qa.dispatch._detect_no_op_branch",
+            new_callable=AsyncMock,
+            return_value=False,
         ),
         patch(
             "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
@@ -231,7 +240,7 @@ async def test_validation_failure_detail_anonymized(tmp_path: Path) -> None:
             gh_token="ghtoken",
         )
 
-    detail = record.await_args.kwargs["detail"]
-    assert raw_evidence not in detail
-    assert "tze@example.com" not in detail
-    assert detail == "email pattern detected at offset 10-26 (len=16)"
+    # Raw evidence can no longer reach the journal: no validator error is produced.
+    create_pr.assert_not_awaited()
+    record.assert_not_awaited()
+    assert raw_evidence not in repr(record.await_args_list)

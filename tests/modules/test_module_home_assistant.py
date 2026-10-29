@@ -24,12 +24,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
+import butlers.modules._roster_home.actuation as ha_actuation
 from butlers.modules._roster_home import (
     HomeAssistantConfig,
     HomeAssistantModule,
@@ -47,6 +51,7 @@ from butlers.modules.approvals.execution_context import (
     set_approval_execution_context,
 )
 from butlers.modules.base import Module, ToolMeta
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -89,22 +94,8 @@ def ha_module() -> HomeAssistantModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        declared_name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-home_assistant-tools")
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +141,10 @@ class TestPhysicalRiskContract:
         self, domain: str, service: str, expected: ActuationRisk
     ) -> None:
         assert classify_actuation(domain, service) is expected
+        assert ha_actuation.effective_actuation_risk(domain, service, None, None).base is expected
+        assert ha_actuation.effective_actuation_risk(domain, service, None, None).risk is (
+            ActuationRisk.CONSEQUENTIAL if expected is ActuationRisk.REVERSIBLE else expected
+        )
 
     def test_reversible_action_has_concrete_rollback_hint(self) -> None:
         assert rollback_hint(
@@ -207,14 +202,14 @@ class TestToolRegistration:
         await ha_module.register_tools(
             mcp=mock_mcp, config={"url": "http://ha.local"}, db=None, butler_name="test-butler"
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HA_TOOLS
 
     async def test_read_only_registers_only_query_tools(self, mock_mcp: MagicMock) -> None:
         module = HomeAssistantModule()
         await module.register_tools(
             mcp=mock_mcp, config={"read_only": True}, db=None, butler_name="test-butler"
         )
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HA_READ_ONLY_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HA_READ_ONLY_TOOLS
 
     def test_default_registry_includes_home_assistant(self) -> None:
         from butlers.modules.registry import default_registry
@@ -867,3 +862,562 @@ class TestHASourceHealthRecording:
         await ha_module._seed_entity_cache_from_rest()
 
         ha_module._record_ha_source_success.assert_awaited_once()
+
+
+# Argument-aware actuation cohorts exercise the registered tool, not a classifier stub.
+async def _registered_actuation(mock_mcp, monkeypatch, args, *, units=None):
+    from butlers.modules._roster_home import CachedEntity
+
+    module = HomeAssistantModule()
+    pool = MagicMock()
+    pool.execute = AsyncMock(return_value="UPDATE 1")
+    pool.fetchrow = AsyncMock(return_value=None)
+    db = MagicMock()
+    db.pool = pool
+    await module.register_tools(mock_mcp, {}, db, "home")
+    response = MagicMock()
+    response.content = b"json"
+    response.json.return_value = []
+    client = MagicMock()
+    client.post = AsyncMock(return_value=response)
+
+    async def observe(path):
+        result = MagicMock()
+        result.json.return_value = {
+            "state": "on" if args["service"] == "turn_on" else "off",
+            "attributes": {"temperature": (args.get("data") or {}).get("temperature")},
+        }
+        return result
+
+    client.get = AsyncMock(side_effect=observe)
+    module._client = client
+    for entity_id, unit in (units or {}).items():
+        module._entity_cache[entity_id] = CachedEntity(
+            entity_id=entity_id, state="on", attributes={"temperature_unit": unit}
+        )
+    park = AsyncMock()
+    audit = AsyncMock()
+    event = AsyncMock()
+    monkeypatch.setattr(
+        "butlers.core.approvals_hooks.is_approval_parking_available", lambda pool: True
+    )
+    monkeypatch.setattr("butlers.core.approvals_hooks.park_pending_action", park)
+    monkeypatch.setattr("butlers.modules._roster_home.record_approval_event", audit)
+    monkeypatch.setattr(module, "_emit_actuation_event", event)
+    return SimpleNamespace(
+        module=module,
+        tool=(await registered_tools(mock_mcp))["ha_call_service"],
+        client=client,
+        pool=pool,
+        park=park,
+        audit=audit,
+        event=event,
+    )
+
+
+def _assert_parked(case, args, result, case_id):
+    assert result["status"] == "pending_approval", case_id
+    assert result["risk"] == "consequential", case_id
+    case.client.post.assert_not_awaited()
+    case.client.get.assert_not_awaited()
+    case.pool.execute.assert_not_awaited()
+    assert case.park.await_count == 1, case_id
+    stored = case.park.await_args.kwargs
+    assert stored["tool_args"] == args, case_id
+    assert stored["why"], case_id
+
+
+def _assert_automatic(case, args, result, case_id):
+    assert result["status"] == "succeeded", case_id
+    assert result["risk"] == "reversible", case_id
+    case.park.assert_not_awaited()
+    expected = dict(args["data"] or {})
+    expected["target"] = args["target"]
+    case.client.post.assert_awaited_once_with(
+        f"/api/services/{args['domain']}/{args['service']}", json=expected
+    )
+    start = case.pool.execute.await_args_list[0].args
+    assert start[4:7] == (args["target"], args["data"], "reversible"), case_id
+    assert start[10] == args, case_id
+    assert case.pool.execute.await_args_list[1].args[2] == "succeeded", case_id
+    case.event.assert_awaited_once_with(
+        pool=case.pool,
+        attempt_id=uuid.UUID(result["attempt_id"]),
+        domain=args["domain"],
+        service=args["service"],
+        risk=ActuationRisk.REVERSIBLE,
+        status="succeeded",
+        attention_required=False,
+    )
+
+
+_TARGET_RISK_CASES = [
+    ("area", {"area_id": "fixture_area"}),
+    ("device", {"device_id": "fixture_device"}),
+    ("label", {"label_id": "fixture_label"}),
+    ("all_scalar", {"entity_id": "all"}),
+    ("all_list", {"entity_id": ["all"]}),
+    ("mixed_domain", {"entity_id": ["switch.fixture", "light.fixture"]}),
+    ("no_target", None),
+    ("empty_target", {}),
+    ("empty_entities", {"entity_id": []}),
+    ("extra_target_key", {"entity_id": "switch.fixture", "area_id": "fixture_area"}),
+    ("malformed_id", {"entity_id": "switch.fixture, switch.other"}),
+    ("nonstring_entity_member", {"entity_id": ["switch.fixture", True]}),
+]
+
+
+async def test_registered_reversible_target_risk_cohort(mock_mcp, monkeypatch):
+    for case_id, target in _TARGET_RISK_CASES:
+        args = {"domain": "switch", "service": "turn_off", "target": deepcopy(target), "data": None}
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        _assert_parked(case, args, await case.tool(**args), case_id)
+
+
+_DATA_RISK_CASES = [
+    ("hidden_entity_id", "light", "turn_off", None, {"entity_id": "all"}),
+    ("hidden_area_id", "light", "turn_off", None, {"area_id": "fixture_area"}),
+    ("hidden_device_id", "light", "turn_off", None, {"device_id": "fixture_device"}),
+    ("hidden_label_id", "light", "turn_off", None, {"label_id": "fixture_label"}),
+    ("hidden_target", "light", "turn_off", None, {"target": {"area_id": "fixture_area"}}),
+    ("unknown_key", "light", "turn_on", {"entity_id": "light.fixture"}, {"unlisted_setting": 1}),
+    ("brightness_bool", "light", "turn_on", {"entity_id": "light.fixture"}, {"brightness": True}),
+    (
+        "brightness_string",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"brightness": "100"},
+    ),
+    ("brightness_negative", "light", "turn_on", {"entity_id": "light.fixture"}, {"brightness": -1}),
+    ("brightness_256", "light", "turn_on", {"entity_id": "light.fixture"}, {"brightness": 256}),
+    (
+        "brightness_pct_101",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"brightness_pct": 101},
+    ),
+    (
+        "rgb_wrong_arity",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"rgb_color": [0, 255]},
+    ),
+    ("rgb_bool", "light", "turn_on", {"entity_id": "light.fixture"}, {"rgb_color": [0, True, 255]}),
+    ("rgb_256", "light", "turn_on", {"entity_id": "light.fixture"}, {"rgb_color": [0, 255, 256]}),
+    ("kelvin_999", "light", "turn_on", {"entity_id": "light.fixture"}, {"color_temp_kelvin": 999}),
+    ("transition_negative", "light", "turn_on", {"entity_id": "light.fixture"}, {"transition": -1}),
+    ("transition_61", "light", "turn_on", {"entity_id": "light.fixture"}, {"transition": 61}),
+    (
+        "dual_brightness",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"brightness": 100, "brightness_pct": 50},
+    ),
+    (
+        "dual_color",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"rgb_color": [0, 255, 0], "color_temp_kelvin": 4000},
+    ),
+    ("fan_percentage", "fan", "turn_on", {"entity_id": "fan.fixture"}, {"percentage": 20}),
+    (
+        "humidifier_humidity",
+        "humidifier",
+        "turn_on",
+        {"entity_id": "humidifier.fixture"},
+        {"humidity": 50},
+    ),
+]
+
+
+async def test_registered_reversible_data_risk_cohort(mock_mcp, monkeypatch):
+    for case_id, domain, service, target, data in _DATA_RISK_CASES:
+        args = deepcopy({"domain": domain, "service": service, "target": target, "data": data})
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        _assert_parked(case, args, await case.tool(**args), case_id)
+
+
+_ALLOWED_CONTROL_CASES = [
+    ("light_on_no_data", "light", "turn_on", {"entity_id": "light.fixture"}, None),
+    ("brightness_255", "light", "turn_on", {"entity_id": "light.fixture"}, {"brightness": 255}),
+    (
+        "brightness_pct_100",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"brightness_pct": 100},
+    ),
+    (
+        "rgb_boundary",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"rgb_color": [0, 255, 0]},
+    ),
+    (
+        "kelvin_1000",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"color_temp_kelvin": 1000},
+    ),
+    (
+        "kelvin_10000",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"color_temp_kelvin": 10000},
+    ),
+    (
+        "light_off_transition_0",
+        "light",
+        "turn_off",
+        {"entity_id": "light.fixture"},
+        {"transition": 0},
+    ),
+    (
+        "light_off_transition_60",
+        "light",
+        "turn_off",
+        {"entity_id": "light.fixture"},
+        {"transition": 60},
+    ),
+    ("switch_on", "switch", "turn_on", {"entity_id": "switch.fixture"}, None),
+    ("switch_off", "switch", "turn_off", {"entity_id": "switch.fixture"}, None),
+    ("fan_on", "fan", "turn_on", {"entity_id": "fan.fixture"}, None),
+    ("fan_off", "fan", "turn_off", {"entity_id": "fan.fixture"}, None),
+    ("humidifier_on", "humidifier", "turn_on", {"entity_id": "humidifier.fixture"}, None),
+    ("humidifier_off", "humidifier", "turn_off", {"entity_id": "humidifier.fixture"}, None),
+    (
+        "explicit_entity_list",
+        "light",
+        "turn_on",
+        {"entity_id": ["light.fixture", "light.other", "light.fixture"]},
+        None,
+    ),
+    (
+        "original_brightness_pct_80",
+        "light",
+        "turn_on",
+        {"entity_id": "light.fixture"},
+        {"brightness_pct": 80},
+    ),
+]
+
+
+async def test_registered_explicit_allowed_control_cohort(mock_mcp, monkeypatch):
+    for case_id, domain, service, target, data in _ALLOWED_CONTROL_CASES:
+        args = deepcopy({"domain": domain, "service": service, "target": target, "data": data})
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        _assert_automatic(case, args, await case.tool(**args), case_id)
+
+
+_CLIMATE_RISK_CASES = [
+    ("C_16", "climate.fixture", {"temperature": 16}, "°C", False),
+    ("C_28", "climate.fixture", {"temperature": 28}, "°C", False),
+    ("C_22", "climate.fixture", {"temperature": 22}, "°C", False),
+    ("F_60_8", "climate.fixture", {"temperature": 60.8}, "°F", False),
+    ("F_82_4", "climate.fixture", {"temperature": 82.4}, "°F", False),
+    ("F_72", "climate.fixture", {"temperature": 72}, "°F", False),
+    ("C_15_9", "climate.fixture", {"temperature": 15.9}, "°C", True),
+    ("C_28_1", "climate.fixture", {"temperature": 28.1}, "°C", True),
+    ("F_100", "climate.fixture", {"temperature": 100}, "°F", True),
+    ("missing_unit", "climate.fixture", {"temperature": 22}, None, True),
+    ("unknown_unit", "climate.fixture", {"temperature": 22}, "kelvin", True),
+    ("mixed_units", ["climate.fixture", "climate.other"], {"temperature": 22}, ["°C", "°F"], True),
+    ("bool_temperature", "climate.fixture", {"temperature": True}, "°C", True),
+    ("string_temperature", "climate.fixture", {"temperature": "22"}, "°C", True),
+    ("missing_temperature", "climate.fixture", {}, "°C", True),
+    ("target_temp_low", "climate.fixture", {"temperature": 22, "target_temp_low": 22}, "°C", True),
+    (
+        "target_temp_high",
+        "climate.fixture",
+        {"temperature": 22, "target_temp_high": 22},
+        "°C",
+        True,
+    ),
+    ("hvac_mode", "climate.fixture", {"temperature": 22, "hvac_mode": "heat"}, "°C", True),
+]
+
+
+async def test_registered_climate_risk_cohort(mock_mcp, monkeypatch):
+    for case_id, entity_ids, data, unit, parks in _CLIMATE_RISK_CASES:
+        args = deepcopy(
+            {
+                "domain": "climate",
+                "service": "set_temperature",
+                "target": {"entity_id": entity_ids},
+                "data": data,
+            }
+        )
+        entities = [entity_ids] if isinstance(entity_ids, str) else entity_ids
+        units = unit if isinstance(unit, list) else [unit] * len(entities)
+        case = await _registered_actuation(
+            mock_mcp, monkeypatch, args, units=dict(zip(entities, units, strict=True))
+        )
+        result = await case.tool(**args)
+        if parks:
+            _assert_parked(case, args, result, case_id)
+        else:
+            _assert_automatic(case, args, result, case_id)
+
+
+async def test_registered_non_json_command_refusal_cohort(mock_mcp, monkeypatch, caplog):
+    cycle = {}
+    cycle["cycle"] = cycle
+    cases = [
+        ("nan", {"temperature": float("nan")}, {"entity_id": "light.fixture"}),
+        ("positive_infinity", {"temperature": float("inf")}, {"entity_id": "light.fixture"}),
+        ("negative_infinity", {"temperature": float("-inf")}, {"entity_id": "light.fixture"}),
+        ("nonobject_target", None, []),
+        ("nonobject_data", [], {"entity_id": "light.fixture"}),
+        ("nonstring_object_key", {1: 2}, {"entity_id": "light.fixture"}),
+        ("cyclic_value", cycle, {"entity_id": "light.fixture"}),
+        ("custom_value", {"value": object()}, {"entity_id": "light.fixture"}),
+        (
+            "nul_string_value",
+            {"unlisted_setting": "private\x00value"},
+            {"entity_id": "light.fixture"},
+        ),
+        (
+            "high_surrogate_value",
+            {"nested": ["private\ud800value"]},
+            {"entity_id": "light.fixture"},
+        ),
+        (
+            "low_surrogate_value",
+            {"nested": {"value": "private\udfff"}},
+            {"entity_id": "light.fixture"},
+        ),
+        ("nul_object_key", {"private\x00key": 1}, {"entity_id": "light.fixture"}),
+        ("high_surrogate_key", {"nested": {"private\ud800key": 1}}, {"entity_id": "light.fixture"}),
+        (
+            "low_surrogate_key",
+            {"nested": [{"private\udfffkey": 1}]},
+            {"entity_id": "light.fixture"},
+        ),
+    ]
+    for case_id, data, target in cases:
+        caplog.clear()
+        args = {"domain": "light", "service": "turn_on", "target": target, "data": data}
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        with pytest.raises(ValueError) as exc:
+            await case.tool(**args)
+        assert "Home Assistant" in str(exc.value), case_id
+        assert len(str(exc.value)) < 100, case_id
+        case.park.assert_not_awaited()
+        case.pool.execute.assert_not_awaited()
+        case.client.get.assert_not_awaited()
+        case.client.post.assert_not_awaited()
+        case.audit.assert_not_awaited()
+        case.event.assert_not_awaited()
+        assert "private" not in caplog.text, case_id
+        if case_id in {
+            "nul_string_value",
+            "high_surrogate_value",
+            "low_surrogate_value",
+            "nul_object_key",
+            "high_surrogate_key",
+            "low_surrogate_key",
+        }:
+            assert (
+                str(exc.value) == "Home Assistant argument strings must be representable in JSONB"
+            )
+
+    # Real Unicode scalar values and ordinary control characters remain exact.
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.fixture"},
+        "data": {"unicode_☀": ["synthetic-😀\n\t"]},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    _assert_parked(case, args, await case.tool(**args), "representable_unicode_control")
+
+
+async def test_argument_snapshot_and_diagnostic_privacy(mock_mcp, monkeypatch, caplog):
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.fixture"},
+        "data": {"brightness_pct": 80},
+    }
+    original = deepcopy(args)
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def write_receipt(*values):
+        if "INSERT INTO ha_command_log" in values[0]:
+            entered.set()
+            await release.wait()
+        return "UPDATE 1"
+
+    case.pool.execute.side_effect = write_receipt
+    call = asyncio.create_task(case.tool(**args))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        args["target"]["entity_id"] = "all"
+        args["data"]["brightness_pct"] = 101
+    finally:
+        release.set()
+    result = await asyncio.wait_for(call, 1)
+    _assert_automatic(case, original, result, "mutable_nested_args_and_private_marker")
+
+    private_value = "synthetic-private-value"
+    private_key = "synthetic-private-key\n"
+    args = {
+        "domain": "light",
+        "service": "turn_on",
+        "target": {"entity_id": "light.private_fixture"},
+        "data": {private_key: private_value, **{f"unlisted_{i}": private_value for i in range(10)}},
+    }
+    case = await _registered_actuation(mock_mcp, monkeypatch, args)
+    result = await case.tool(**args)
+    _assert_parked(case, args, result, "private_marker")
+    why = case.park.await_args.kwargs["why"]
+    assert "unlisted_data_key" in why
+    assert "omitted data keys: 3" in why
+    diagnostics = why + repr(case.audit.await_args) + caplog.text
+    assert private_value not in diagnostics
+    assert private_key not in diagnostics
+    assert "light.private_fixture" not in diagnostics
+    case.event.assert_not_awaited()
+
+
+def _authorize_actuation(args, *, tool="ha_call_service"):
+    task = asyncio.current_task()
+    assert task is not None
+    return set_approval_execution_context(
+        ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="human:owner",
+            tool_name=tool,
+            tool_args_digest=approval_tool_args_digest(args),
+            authorized_task=task,
+        )
+    )
+
+
+async def test_approved_dual_target_sources_are_not_silently_merged(mock_mcp, monkeypatch):
+    for case_id, target in [
+        ("exact_approved_ambiguous_sources", {"entity_id": "light.fixture"}),
+        ("exact_approved_data_only_selector", None),
+    ]:
+        args = {
+            "domain": "light",
+            "service": "turn_off",
+            "target": target,
+            "data": {"entity_id": "all"},
+        }
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        token = _authorize_actuation(args)
+        try:
+            if target is not None:
+                with pytest.raises(ValueError, match="ambiguous target sources"):
+                    await case.tool(**args)
+                case.client.post.assert_not_awaited()
+                case.pool.execute.assert_not_awaited()
+            else:
+                outcome = await case.tool(**args)
+                assert outcome["status"] == "unverified", case_id
+                assert outcome["risk"] == "consequential", case_id
+                case.client.post.assert_awaited_once_with(
+                    "/api/services/light/turn_off", json={"entity_id": "all"}
+                )
+                case.pool.fetchrow.return_value = {
+                    "attempt_id": uuid.UUID(outcome["attempt_id"]),
+                    "status": "unverified",
+                    "failure_reason": "no explicit entity target",
+                }
+                replay = await case.tool(**args)
+                assert replay["receipt_status"] == "unverified", case_id
+                assert case.client.post.await_count == 1, case_id
+                assert case.pool.execute.await_count == 2, case_id
+            case.client.get.assert_not_awaited()
+            case.park.assert_not_awaited()
+        finally:
+            reset_approval_execution_context(token)
+
+
+async def test_promoted_gate_failure_never_reaches_ha(mock_mcp, monkeypatch):
+    for case_id in [
+        "receipt_pool_missing",
+        "parking_hook_unavailable",
+        "park_admission_raises",
+        "post_park_audit_raises",
+    ]:
+        args = {
+            "domain": "switch",
+            "service": "turn_off",
+            "target": {"area_id": "fixture_area"},
+            "data": None,
+        }
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        if case_id == "receipt_pool_missing":
+            case.module._db = None
+        elif case_id == "parking_hook_unavailable":
+            monkeypatch.setattr(
+                "butlers.core.approvals_hooks.is_approval_parking_available", lambda pool: False
+            )
+        elif case_id == "park_admission_raises":
+            case.park.side_effect = RuntimeError("synthetic park admission failure")
+        else:
+            case.audit.side_effect = RuntimeError("synthetic post-park audit failure")
+        with pytest.raises(RuntimeError):
+            await case.tool(**args)
+        case.client.get.assert_not_awaited()
+        case.client.post.assert_not_awaited()
+        case.pool.execute.assert_not_awaited()
+        expected_parks = int(case_id in {"park_admission_raises", "post_park_audit_raises"})
+        assert case.park.await_count == expected_parks, case_id
+        if case_id == "post_park_audit_raises":
+            # The completed park is not rolled back by a separate audit failure.
+            assert case.park.await_args.kwargs["tool_args"] == args
+            assert case.audit.await_count == 1
+
+
+async def test_promoted_approval_context_is_exact(mock_mcp, monkeypatch):
+    original = {
+        "domain": "switch",
+        "service": "turn_off",
+        "target": {"area_id": "fixture_area"},
+        "data": None,
+    }
+    for case_id in [
+        "wrong_tool",
+        "wrong_domain",
+        "wrong_service",
+        "wrong_target",
+        "wrong_data",
+        "inherited_child",
+        "none_empty_mismatch",
+    ]:
+        args = deepcopy(original)
+        if case_id == "wrong_domain":
+            args["domain"] = "light"
+        elif case_id == "wrong_service":
+            args["service"] = "turn_on"
+        elif case_id == "wrong_target":
+            args["target"] = {"area_id": "other_fixture_area"}
+        elif case_id == "wrong_data":
+            args["data"] = {"unlisted_setting": 1}
+        elif case_id == "none_empty_mismatch":
+            args["data"] = {}
+        case = await _registered_actuation(mock_mcp, monkeypatch, args)
+        token = _authorize_actuation(
+            original, tool="ha_activate_scene" if case_id == "wrong_tool" else "ha_call_service"
+        )
+        try:
+            if case_id == "inherited_child":
+                result = await asyncio.create_task(case.tool(**args))
+            else:
+                result = await case.tool(**args)
+        finally:
+            reset_approval_execution_context(token)
+        _assert_parked(case, args, result, case_id)

@@ -915,6 +915,8 @@ async def resolve_owner_channel_via_definer(
     pool: asyncpg.Pool,
     channel_type: str,
     channel_value: str,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[ResolvedContact, bool] | None:
     """Resolve an OWNER channel through the ``public.resolve_owner_triple`` function.
 
@@ -934,7 +936,8 @@ async def resolve_owner_channel_via_definer(
     Returns ``(owner_contact, is_primary)`` when the candidate values resolve
     to exactly one live entity and that entity is the owner.  Returns ``None``
     for non-owner, unknown, or cross-entity ambiguous identifiers, unknown
-    channel types, and unavailable lookup infrastructure.
+    channel types, and unavailable lookup infrastructure. Trusted admission callers
+    set ``raise_on_error=True`` to distinguish unavailable infrastructure from a miss.
     """
     candidates = _owner_channel_authorization_candidates(channel_type, channel_value)
     if not candidates:
@@ -947,6 +950,8 @@ async def resolve_owner_channel_via_definer(
             list(candidates),
         )
     except Exception:  # noqa: BLE001
+        if raise_on_error:
+            raise
         logger.debug("identity.owner_channel_resolution_failed")
         return None
 
@@ -1004,6 +1009,7 @@ async def create_temp_contact(
     pre_resolved_miss: bool = False,
     reservation_state_key: str | None = None,
     raise_on_error: bool = False,
+    resolver: Any = None,
 ) -> ResolvedContact | None:
     """Create a temporary entity for an unknown sender.
 
@@ -1064,13 +1070,14 @@ async def create_temp_contact(
         else f"Unknown ({channel_type} {channel_value})"
     )
     strict_failure: IdentityResolutionQueryError | None = None
+    lookup = resolver or resolve_contact_by_channel
 
     try:
         # Re-check via the triple store to avoid double-creation: if the channel
         # identifier already resolves to an entity, return that instead of
         # minting a duplicate.  This mirrors resolve_contact_by_channel().
         if not pre_resolved_miss:
-            existing_resolved = await resolve_contact_by_channel(
+            existing_resolved = await lookup(
                 pool,
                 lookup_channel_type,
                 channel_value,
@@ -1121,7 +1128,7 @@ async def create_temp_contact(
                 # present, the sender reservation row lock. A fact can land
                 # between the caller's miss and this lock; this strict query is
                 # the only recheck with a concrete race-closing purpose.
-                existing_in_txn = await resolve_contact_by_channel(
+                existing_in_txn = await lookup(
                     conn,
                     lookup_channel_type,
                     channel_value,

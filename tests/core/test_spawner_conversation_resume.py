@@ -28,7 +28,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -188,6 +188,7 @@ class _ResumeCapableAdapter(RuntimeAdapter):
     def last_process_info(self) -> dict[str, Any] | None:
         return self._last_process_info
 
+    @override
     async def invoke(
         self,
         prompt: str,

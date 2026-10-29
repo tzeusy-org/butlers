@@ -75,6 +75,7 @@ from butlers.core.tool_call_capture import (
     get_current_runtime_session_id,
 )
 from butlers.core.tool_catalog import (
+    AUTHORIZATION_FIELDS,
     ToolCatalog,
     ToolCatalogError,
     build_tool_catalog,
@@ -192,6 +193,21 @@ _ROUTE_ERROR_RETRYABLE: dict[str, bool] = {
 }
 
 
+class LocalSwitchboardClient:
+    """Daemon-owned transport to its already registered local MCP tools.
+
+    Modules receive only call_tool transport; MCP server custody and tool
+    registration remain in the daemon infrastructure.
+    """
+
+    def __init__(self, mcp: FastMCP) -> None:
+        self._mcp = mcp
+
+    async def call_tool(self, name: str, arguments: dict) -> Any:
+        async with MCPClient(self._mcp) as client:
+            return await client.call_tool(name, arguments)
+
+
 class ButlerDaemon:
     """Central orchestrator for a single butler instance."""
 
@@ -202,6 +218,7 @@ class ButlerDaemon:
         *,
         butler_name: str | None = None,
         db: Database | None = None,
+        control_profile: str | None = None,
     ) -> None:
         if config_dir is None and butler_name is None:
             raise ValueError("Either config_dir or butler_name must be provided")
@@ -214,6 +231,7 @@ class ButlerDaemon:
         else:
             self.config_dir = config_dir  # type: ignore
 
+        self._control_profile = control_profile
         self._registry = registry or default_registry()
         self.config: ButlerConfig | None = None
         self.db: Database | None = db  # Allow injected Database for testing
@@ -228,6 +246,7 @@ class ButlerDaemon:
         self._tool_module_map: dict[str, str] = {}
         self._resolved_tool_metadata: dict[str, ToolMeta] = {}
         self._tool_catalog: ToolCatalog | None = None
+        self._finance_warning_control_owner = None
         self._declared_tool_names: set[str] = set()
         self._effective_tool_names: set[str] = set()
         self._registered_tool_names: set[str] = set()
@@ -248,9 +267,7 @@ class ButlerDaemon:
         self.switchboard_client: MCPClient | None = None
         self._pipeline: MessagePipeline | None = None
         self._buffer: Any = None  # DurableBuffer instance (switchboard only)
-        self._audit_db: Database | None = None  # Switchboard DB for daemon audit logging
-        # Switchboard-schema pool (butler_registry) used by the scheduler loop to
-        # gate scheduled dispatch on eligibility_state. Set during startup.
+        # Pool for daemon audit writes to public.audit_log. Set during startup.
         self._audit_pool: asyncpg.Pool | None = None
         self._shared_credentials_db: Database | None = None
         self._credential_store: CredentialStore | None = None
@@ -282,59 +299,6 @@ class ButlerDaemon:
             if m.name not in self._module_statuses
             or self._module_statuses[m.name].status == "active"
         ]
-
-    @staticmethod
-    def _required_schema_fields(schema: type[Any]) -> list[str]:
-        """Return sorted required field names for a Pydantic schema."""
-        model_fields = getattr(schema, "model_fields", {})
-        required: list[str] = []
-        for field_name, field_info in model_fields.items():
-            is_required = getattr(field_info, "is_required", None)
-            if callable(is_required) and is_required():
-                required.append(field_name)
-        return sorted(required)
-
-    def _select_startup_modules(self, modules: list[Module]) -> list[Module]:
-        """Filter loaded modules to those eligible for startup in this config.
-
-        Modules that define required config fields are only started when an
-        explicit ``[modules.<name>]`` section exists in ``butler.toml``.
-        This keeps intentionally omitted modules out of the startup path and
-        avoids noisy "missing required field" validation warnings.
-        """
-        if self.config is None:
-            return modules
-
-        selected: list[Module] = []
-        for mod in modules:
-            if mod.name in self.config.modules:
-                selected.append(mod)
-                continue
-
-            schema = mod.config_schema
-            if schema is None:
-                selected.append(mod)
-                continue
-
-            required_fields = self._required_schema_fields(schema)
-            if required_fields:
-                logger.info(
-                    "Skipping module '%s': no [modules.%s] config provided and schema requires: %s",
-                    mod.name,
-                    mod.name,
-                    ", ".join(required_fields),
-                )
-                continue
-
-            # Module not in config → always skip (explicit config required)
-            logger.info(
-                "Skipping module '%s': no [modules.%s] config provided",
-                mod.name,
-                mod.name,
-            )
-            continue
-
-        return selected
 
     def _cascade_module_failures(self) -> None:
         """Mark modules whose dependencies failed as ``cascade_failed``.
@@ -583,6 +547,15 @@ class ButlerDaemon:
         while not self._shutting_down and self._boot_epoch is None:
             await asyncio.sleep(delay_s)
             if await self._register_boot_epoch() and not self._shutting_down:
+                from butlers.core.catalog_publication import start_catalog_publication
+
+                try:
+                    await start_catalog_publication(self, self.db.pool)
+                except Exception:
+                    # No acceptance from a partial/uncertain publication. Its
+                    # retained operation is available to bounded shutdown.
+                    self._catalog_publication_failed = True
+                    return
                 self._accepting_connections = True
                 logger.info("Boot epoch committed for butler=%s", self.config.name)
                 return
@@ -598,6 +571,34 @@ class ButlerDaemon:
         The socket is stored on ``self._mcp_socket`` and closed in shutdown after
         the server task finishes.
         """
+        from butlers.core.fact_authority import FactReceiverContextRegistry
+
+        self._fact_receiver_registry = FactReceiverContextRegistry(self.db.pool, self.config.name)
+        if self.config.name in {"finance", "switchboard"}:
+            from butlers.config import list_butlers
+            from butlers.core.control_plane_identity import IDENTITY_PATH, expected_from_roster
+            from butlers.core.finance_warning_control import VERIFY_PATH, FinanceWarningControlOwner
+
+            expected = next(
+                (
+                    target
+                    for target in expected_from_roster(list_butlers(self.config_dir.parent))
+                    if target.name == "switchboard"
+                ),
+                None,
+            )
+            verifier_url = (
+                expected.url.removesuffix(IDENTITY_PATH) + VERIFY_PATH if expected else None
+            )
+            route_call = None
+            if self.config.name == "switchboard":
+                from butlers.tools.switchboard.routing.route import route
+
+                route_call = route
+            self._finance_warning_control_owner = FinanceWarningControlOwner(
+                self, route_call=route_call, verifier_url=verifier_url
+            )
+
         app = self._build_mcp_http_app(
             self.mcp,
             butler_name=self.config.name,
@@ -605,6 +606,9 @@ class ButlerDaemon:
             runtime_probe_coordinator=self._build_runtime_probe_coordinator(),
             identity_provider=self._identity_facts,
             route_preflight=self._build_route_preflight(),
+            fact_source_registry=getattr(self, "_fact_source_registry", None),
+            fact_receiver_registry=self._fact_receiver_registry,
+            finance_warning_control_owner=self._finance_warning_control_owner,
         )
         config = uvicorn.Config(
             app,
@@ -734,6 +738,9 @@ class ButlerDaemon:
         runtime_probe_coordinator: Any | None = None,
         identity_provider: Any | None = None,
         route_preflight: Any | None = None,
+        fact_source_registry: Any | None = None,
+        fact_receiver_registry: Any | None = None,
+        finance_warning_control_owner: Any | None = None,
     ) -> Any:
         """Build a unified ASGI app exposing streamable HTTP and legacy SSE MCP routes."""
         apply_streamable_http_disconnect_patch()
@@ -813,6 +820,23 @@ class ButlerDaemon:
                 if not cls._attach_route_via_public_api(streamable_app, control_route):
                     streamable_app.routes.append(control_route)
 
+        if fact_source_registry is not None:
+            for source_route in (
+                fact_source_registry.route(),
+                fact_source_registry.recovery_route(),
+            ):
+                if not cls._attach_route_via_public_api(streamable_app, source_route):
+                    streamable_app.routes.append(source_route)
+        if fact_receiver_registry is not None:
+            receiver_route = fact_receiver_registry.route()
+            if not cls._attach_route_via_public_api(streamable_app, receiver_route):
+                streamable_app.routes.append(receiver_route)
+
+        if butler_name == "switchboard" and finance_warning_control_owner is not None:
+            control_route = finance_warning_control_owner.route()
+            if not cls._attach_route_via_public_api(streamable_app, control_route):
+                streamable_app.routes.append(control_route)
+
         guarded_app = _McpRuntimeSessionGuard(
             streamable_app,
             butler_name=butler_name,
@@ -821,44 +845,13 @@ class ButlerDaemon:
         return _McpSseDisconnectGuard(guarded_app, butler_name=butler_name)
 
     async def _create_audit_pool(self, own_pool: asyncpg.Pool) -> asyncpg.Pool | None:
-        """Create or reuse a connection pool for daemon-side audit logging.
+        """Return the pool for daemon-side audit logging.
 
-        The switchboard butler reuses its own pool. Other butlers open a small
-        dedicated pool to the switchboard schema in the shared ``butlers`` DB.
-
-        Returns ``None`` (with a warning) if the pool cannot be created.
+        Audit entries land in ``public.audit_log``, which every butler runtime
+        role may INSERT, so each butler writes them through its own pool and
+        verified role. A separate role-less pool is refused since #5016.
         """
-        # Intentional name check: the switchboard IS the audit schema owner. Reusing its own
-        # pool avoids a redundant connection. This is switchboard-specific, not staffer-generic.
-        if self.config.name == "switchboard":
-            return own_pool
-
-        try:
-            audit_db_name = self.config.db_name or "butlers"
-            audit_db_schema = "switchboard"
-            audit_db = Database.from_env(audit_db_name)
-            if audit_db is self.db:
-                # Same DB object — reuse the existing pool directly (avoids double-close
-                # on shutdown when the audit DB and main DB share the same connection).
-                return own_pool
-            audit_db.set_schema(audit_db_schema)
-            audit_db.min_pool_size = 1
-            audit_db.max_pool_size = 2
-            await audit_db.connect()
-            self._audit_db = audit_db
-            logger.info(
-                "Audit pool connected (db=%s, schema=%s)",
-                audit_db_name,
-                audit_db_schema or "<default>",
-            )
-            return audit_db.pool
-        except Exception:
-            logger.warning(
-                "Failed to create audit pool for %s; daemon audit logging disabled",
-                self.config.name,
-                exc_info=True,
-            )
-            return None
+        return own_pool
 
     async def _connect_switchboard(self) -> None:
         """Open an MCP client connection to the Switchboard butler.
@@ -1110,6 +1103,8 @@ class ButlerDaemon:
             max_token_budget=max_token_budget,
             switchboard_client=self.switchboard_client,
             approval_push_runtime=self._approval_push_runtime,
+            credential_store=self._credential_store,
+            chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
     async def _build_scheduler_runtime_context(self) -> _SchedulerRuntimeContext:
@@ -1169,6 +1164,14 @@ class ButlerDaemon:
 
                     store_fact_fn = build_chronicler_fact_writer(memory_pool, memory_engine)
 
+            from butlers.chronicler.day_close_continuation import DayCloseContinuation
+            from butlers.chronicler.day_close_refresh import held_refresh_service
+
+            if vars(self).get("_chronicler_continuation") is None:
+                self._chronicler_continuation = DayCloseContinuation(
+                    held_refresh_service(self, self.db.pool), default_timezone
+                )
+
             prompt_hooks = build_day_close_prompt_hooks(timezone=default_timezone)
             completion_hooks = build_day_close_completion_hooks(
                 self.db.pool,
@@ -1201,6 +1204,13 @@ class ButlerDaemon:
         runtime_context = await self._build_scheduler_runtime_context()
 
         daemon = self
+        # Under the receiver cutover every butler reads its own administrative
+        # policy through sw_053's role-derived function on its own pool. The
+        # legacy resolver reads switchboard tables, which only the switchboard's
+        # runtime role may SELECT, so other butlers skip the gate there.
+        from butlers.tools.switchboard.registry.registry import receiver_route_cutover_enabled
+
+        gate_on_own_pool = self.config.name == "switchboard" or receiver_route_cutover_enabled()
         await _background.scheduler_loop(
             pool=self.db.pool,
             dispatch_fn=self._dispatch_scheduled_task,
@@ -1211,8 +1221,9 @@ class ButlerDaemon:
             get_db=lambda: daemon.db,
             prompt_hooks=runtime_context.prompt_hooks,
             completion_hooks=runtime_context.completion_hooks,
-            get_eligibility_pool=lambda: daemon._audit_pool,
+            get_eligibility_pool=lambda: daemon.db.pool if gate_on_own_pool else None,
             default_timezone=runtime_context.default_timezone,
+            chronicler_continuation=vars(self).get("_chronicler_continuation"),
         )
 
     def _resolve_memory_module(self) -> Any | None:
@@ -1306,7 +1317,7 @@ class ButlerDaemon:
             # 3. Fallback to module class property
             mod = loaded_modules.get(mod_name)
             if mod is not None:
-                env_list = getattr(mod, "credentials_env", [])
+                env_list = mod.credentials_env
                 if env_list:
                     creds[mod_name] = list(env_list)
         return creds
@@ -1436,11 +1447,32 @@ class ButlerDaemon:
         for tool_name in mcp._registered_tool_names:
             self._tool_module_map[tool_name] = "core"
 
+    def _qa_switchboard_client(self) -> Any:
+        """Resolve the current transport; own Switchboard uses its local MCP server."""
+        if self.switchboard_client is not None:
+            return self.switchboard_client
+        if self.config.name != "switchboard":
+            return None
+        local = getattr(self, "_qa_local_switchboard_client", None)
+        if local is None or getattr(self, "_qa_local_mcp", None) is not self.mcp:
+            local = LocalSwitchboardClient(self.mcp)
+            self._qa_local_switchboard_client = local
+            self._qa_local_mcp = self.mcp
+        return local
+
     def _collect_tool_metadata(self) -> dict[str, ToolMeta]:
         """Merge module sensitivities with the central presentation inventory."""
         from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_BY_NAME
 
-        sensitivities: dict[str, ToolMeta] = {}
+        sensitivities: dict[str, ToolMeta] = {
+            "report_error": ToolMeta(
+                arg_sensitivities={
+                    "error_message": True,
+                    "traceback": True,
+                    "context": True,
+                }
+            ),
+        }
         for mod in self._active_modules:
             try:
                 declared = mod.tool_metadata()
@@ -1461,8 +1493,12 @@ class ButlerDaemon:
             module_classified = validate_tool_metadata(tool_name, actual_owner, sensitivity)
             presentation = TOOL_PRESENTATION_BY_NAME.get(tool_name)
             if presentation is None:
-                resolved[tool_name] = sensitivity
-                continue
+                if not module_classified:
+                    resolved[tool_name] = sensitivity
+                    continue
+                # Configuration-specific module tools use the existing module
+                # declaration channel; the actual daemon still binds authority.
+                presentation = sensitivity
             if actual_owner != presentation.module_name:
                 raise ToolCatalogError(
                     f"tool presentation owner mismatch for {tool_name!r}: "
@@ -1498,7 +1534,35 @@ class ButlerDaemon:
                 namespace=presentation.namespace,
                 llm_presentable=presentation.llm_presentable,
                 load_posture=presentation.load_posture,
+                **{
+                    field_name: getattr(presentation, field_name)
+                    for field_name in AUTHORIZATION_FIELDS
+                    if field_name not in {"owner_domain", "approval_policy"}
+                },
+                owner_domain=self.config.name,
+                approval_policy={},
+                read_stores=presentation.read_stores,
+                write_stores=presentation.write_stores,
+                unknown_output_source=presentation.unknown_output_source,
             )
+            policy = parse_approval_config(self.config.modules.get("approvals"))
+            if policy is not None:
+                gate = policy.gated_tools.get(tool_name)
+                resolved[tool_name].approval_policy = {
+                    "enabled": policy.enabled,
+                    "configured_gate": gate is not None,
+                    "expiry_hours": policy.get_effective_expiry(tool_name),
+                    "risk_tier": policy.get_effective_risk_tier(tool_name).value,
+                    "rule_precedence": policy.rule_precedence,
+                }
+            # Explicit new declarations cannot silently contradict the inventory.
+            for field_name in AUTHORIZATION_FIELDS:
+                supplied = getattr(sensitivity, field_name, None)
+                if supplied is not None and supplied != getattr(resolved[tool_name], field_name):
+                    raise ToolCatalogError(
+                        f"tool authorization metadata conflicts with central inventory for "
+                        f"{tool_name!r}: {field_name}"
+                    )
         self._resolved_tool_metadata = resolved
         return resolved
 
@@ -1513,6 +1577,16 @@ class ButlerDaemon:
         if current is not None and current.generation_digest == candidate.generation_digest:
             return current
         self._tool_catalog = candidate
+        # Republish a real definition replacement, never renew an old digest
+        # against a changed registry. The role-bound owner is created only by
+        # the explicitly enabled final-startup publication hook.
+        publication = getattr(self, "_catalog_publication", None)
+        if publication is not None:
+            try:
+                await publication.publish(candidate)
+            except BaseException:
+                await publication.retire()
+                raise
         return candidate
 
     @property
@@ -1634,12 +1708,10 @@ class ButlerDaemon:
         # Allow modules to cross-wire after all tools are registered.
         module_map = {mod.name: mod for mod in self._modules}
         for mod in self._modules:
-            on_ready = getattr(mod, "on_all_modules_ready", None)
-            if on_ready is not None:
-                try:
-                    on_ready(module_map)
-                except Exception as exc:
-                    logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
+            try:
+                mod.on_all_modules_ready(module_map)
+            except Exception as exc:
+                logger.warning("Module '%s' on_all_modules_ready failed: %s", mod.name, exc)
 
     async def _apply_approval_gates(self) -> dict[str, Any]:
         """Parse approval config and wrap gated tools with approval interception.
@@ -1663,6 +1735,28 @@ class ButlerDaemon:
             None,
         )
         tool_metadata = ButlerDaemon._collect_tool_metadata(self)
+        canonical_preparers: dict[str, Any] = {}
+        response_modules: list[Any] = []
+        for module in self._active_modules:
+            # A declared method, not a permissive mock/dynamic attribute, owns
+            # this trusted startup extension. Caller JSON cannot register it.
+            declared = getattr(type(module), "canonical_approval_preparers", None)
+            if not callable(declared):
+                continue
+            prepared = module.canonical_approval_preparers()
+            if set(prepared).intersection(canonical_preparers):
+                raise RuntimeError("duplicate canonical approval preparer")
+            canonical_preparers.update(prepared)
+            if prepared:
+                response_modules.append(module)
+        if canonical_preparers and (
+            approvals_module is None
+            or approval_config is None
+            or not approval_config.enabled
+            or not set(canonical_preparers).issubset(approval_config.gated_tools)
+            or not callable(getattr(approvals_module, "set_tool_executor", None))
+        ):
+            raise RuntimeError("canonical response requires its owning approval gate and executor")
         if approvals_module is not None:
             set_tool_metadata = getattr(approvals_module, "set_tool_metadata", None)
             if callable(set_tool_metadata):
@@ -1778,10 +1872,15 @@ class ButlerDaemon:
             tool_metadata=tool_metadata,
             decision_memory_writer=decision_memory_writer,
             approval_push_runtime=self._approval_push_runtime,
+            **({"canonical_preparers": canonical_preparers} if canonical_preparers else {}),
         )
         # Keep the executor closure wired above, but make its captured mapping
         # available once gate wrapping has saved the original handlers.
         originals.update(wrapped_originals)
+        if not set(canonical_preparers).issubset(wrapped_originals):
+            raise RuntimeError("canonical response handler was not gated")
+        for module in response_modules:
+            module.set_response_approval_ready(True)
 
         if originals:
             logger.info(
@@ -2018,8 +2117,8 @@ class ButlerDaemon:
             logger.debug("_wire_module_runtime: spawner not yet set — skipping")
             return
 
-        # Register the daemon's spawner in the core hook so modules (QaModule,
-        # SelfHealingModule) can retrieve it at dispatch time without holding a
+        # Register the daemon's spawner in the core hook so QaModule can
+        # retrieve it at dispatch time without holding a
         # direct reference on their __init__ (Vision Rule 2).
         from butlers.core.spawn_hooks import register_spawner
 
@@ -2038,11 +2137,12 @@ class ButlerDaemon:
             if wire_fn is None or not callable(wire_fn):
                 continue
             try:
-                wire_fn(
-                    self.spawner,
-                    repo_root,
-                    switchboard_client=self.switchboard_client,
-                )
+                client = self.switchboard_client
+                wire_kwargs: dict[str, Any] = {"switchboard_client": client}
+                if "switchboard_client_getter" in inspect.signature(wire_fn).parameters:
+                    # Late-bound: the heartbeat loop replaces the attribute on reconnect.
+                    wire_kwargs["switchboard_client_getter"] = lambda: self.switchboard_client
+                wire_fn(self.spawner, repo_root, **wire_kwargs)
                 logger.debug(
                     "Wired runtime into module '%s' (switchboard_client=%s)",
                     mod.name,
@@ -2103,15 +2203,22 @@ class ButlerDaemon:
         shared_pool: asyncpg.Pool | None = None
 
         if schema_topology:
-            shared_db = Database.from_env(shared_db_name)
-            shared_db.set_schema(shared_db_schema)
+            # Runtime pools must hold a verified role, so a same-database shared
+            # pool reads ``public`` credentials under this butler's own role.
+            owner_delegates = isinstance(self.db, Database) and self.db.db_name == shared_db_name
+            if owner_delegates:
+                shared_db = self.db.for_owned_schema(shared_db_schema)
+            else:
+                shared_db = Database.from_env(shared_db_name)
+                shared_db.set_schema(shared_db_schema)
             if shared_db is self.db:
                 # Test harnesses may patch Database.from_env to always return the
                 # main DB object. Treat that as local-only mode.
                 shared_pool = local_pool
             else:
                 try:
-                    await shared_db.provision()
+                    if not owner_delegates:
+                        await shared_db.provision()
                     shared_pool = await shared_db.connect()
                     await ensure_secrets_schema(shared_pool)
                     self._shared_credentials_db = shared_db
@@ -2155,3 +2262,35 @@ class ButlerDaemon:
             fallback_pools=fallback_pools,
             system_global_pool=shared_pool,
         )
+
+    @staticmethod
+    def _validate_dashboard_read_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
+        """Validate remote read arguments against the provider's plugin declarations.
+
+        Capture signatures using the same registration path as Concierge. This
+        declares no endpoint and executes no handler; remote availability remains
+        the routed MCP call's responsibility. Core tools consume only this callback.
+        """
+        import inspect
+        from typing import get_type_hints
+
+        from pydantic import TypeAdapter
+
+        from butlers.modules.dashboard_read.tools import register_tools
+
+        handlers: dict[str, Any] = {}
+
+        class ReadRegistry:
+            def tool(self):
+                def capture(fn):
+                    handlers[fn.__name__] = fn
+                    return fn
+
+                return capture
+
+        register_tools(ReadRegistry(), None)
+        handler = handlers[tool_name]
+        bound = inspect.signature(handler).bind(**arguments)
+        hints = get_type_hints(handler)
+        for name, value in bound.arguments.items():
+            TypeAdapter(hints[name]).validate_python(value, strict=True)

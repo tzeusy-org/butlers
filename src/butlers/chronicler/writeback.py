@@ -40,7 +40,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from butlers.chronicler.aggregations import LANES, lane_for_activity
+from butlers.chronicler.aggregations import LANES, lane_for_activity, sources_for_lane
 from butlers.chronicler.balance import (
     DEFAULT_BASELINE_LOOKBACK_DAYS,
     LaneBalance,
@@ -544,28 +544,73 @@ async def run_day_close_writeback(
             pool, start_date=baseline_start, end_date=baseline_end
         )
         flags = await storage.list_daily_rollup_flags(pool, local_date=day_date)
+        baseline_flags = await storage.list_daily_rollup_flags_range(
+            pool, start_date=baseline_start, end_date=baseline_end
+        )
     except Exception:
         logger.exception(
             "chronicler writeback: rollup fetch failed for %s; skipping write-back", day_date
         )
         return WriteBackResult()
 
-    day_seconds_by_lane = {r.lane: r.seconds for r in day_rollups}
+    # Rollups deliberately zero-fill every lane for the balance API. That is
+    # not evidence of a measured zero for durable behavioral claims. Preserve
+    # numeric zero when it has a real sample, rather than testing truthiness.
+    dark_by_date: dict[date, set[str]] = {day_date: set()}
+    for flag_date, flag in [
+        *((day_date, flag) for flag in flags),
+        *((flag.local_date, flag) for flag in baseline_flags),
+    ]:
+        if flag.flag_type == "feeder_dark":
+            dark_by_date.setdefault(flag_date, set()).update(flag.detail.get("dark_sources", []))
+
+    def supported(row: Any) -> bool:
+        return (
+            row.timezone == timezone
+            and row.episode_count > 0
+            and not (sources_for_lane(row.lane) & dark_by_date.get(row.local_date, set()))
+        )
+
+    day_seconds_by_lane = {
+        r.lane: r.seconds for r in day_rollups if r.local_date == day_date and supported(r)
+    }
     baseline_by_lane: dict[str, list[int]] = {lane: [] for lane in LANES}
     for r in baseline_rollups:
-        if r.lane in baseline_by_lane:
+        if (
+            r.lane in baseline_by_lane
+            and baseline_start <= r.local_date <= baseline_end
+            and supported(r)
+        ):
             baseline_by_lane[r.lane].append(r.seconds)
 
-    balances = compute_daily_balance(day_seconds_by_lane, baseline_by_lane)
+    balances = [
+        b
+        for b in compute_daily_balance(day_seconds_by_lane, baseline_by_lane)
+        if b.lane in day_seconds_by_lane
+    ]
 
     insights = synthesize_lane_skew_insights(day_date, balances)
-    sleep_window = [*baseline_by_lane.get("sleep", []), day_seconds_by_lane.get("sleep", 0)]
+    # The pure synthesis text describes consecutive calendar days. Missing
+    # dates cannot be compressed into a confident shorter debt window.
+    sleep_by_day = {
+        row.local_date: row.seconds
+        for row in baseline_rollups
+        if row.lane == "sleep"
+        and baseline_start <= row.local_date <= baseline_end
+        and supported(row)
+    }
+    expected_days = {baseline_start + timedelta(days=i) for i in range(baseline_lookback_days)}
+    sleep_window = (
+        [*(sleep_by_day[day] for day in sorted(expected_days)), day_seconds_by_lane["sleep"]]
+        if "sleep" in day_seconds_by_lane and set(sleep_by_day) == expected_days
+        else []
+    )
     sleep_debt = synthesize_sleep_debt_insight(
         day_date,
         sleep_daily_seconds=sleep_window,
         sleep_baseline_seconds=_mean(baseline_by_lane.get("sleep", [])),
     )
-    if sleep_debt is not None:
+    if sleep_debt is not None and "sleep" in day_seconds_by_lane:
         insights.append(sleep_debt)
 
     self_reminders = synthesize_self_reminders(day_date, flags)

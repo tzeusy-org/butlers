@@ -87,11 +87,12 @@ its own schema (`concierge.sessions`); no domain retention policy applies.
 | `public.memory_catalog` | Read (catalog routing seed, standard grant) |
 | Butler-owned schemas (direct) | No access |
 
-`cross_butler_access = ["*"]` reflects that Concierge's *views* fan out across
-every butler schema at the database level (each view executes with its
-owner's privileges, not `butler_concierge_rw`'s own; that role holds no
-grant on any other butler's tables at all), not that Concierge issues live
-MCP calls to other butlers. See RFC 0030 for the full guardrail set.
+`cross_butler_access = ["qa"]` declares the RFC 0015 error-report relay.
+This is the staffer archetype's v1 advisory connectivity scope, not an enforced
+MCP authorization boundary.
+Fleet reads use the two sanctioned views and require no outbound domain-butler
+MCP access. View privileges and outbound MCP scope are separate boundaries;
+`butler_concierge_rw` still holds no grant on another butler's tables.
 
 ---
 

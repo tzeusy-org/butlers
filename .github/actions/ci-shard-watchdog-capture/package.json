@@ -1,0 +1,14 @@
+{
+  "name": "butlers-ci-shard-watchdog-capture",
+  "version": "1.0.0",
+  "private": true,
+  "license": "MIT",
+  "engines": {"node": "20.x"},
+  "scripts": {
+    "build": "ncc build src/index.js --out dist --license licenses.txt --minify && node -e \"require('node:fs').copyFileSync('src/supervisor.py','dist/supervisor.py')\"",
+    "check-bundle": "node src/check-bundle.js",
+    "test": "timeout --signal=TERM --kill-after=5s 300s node --test tests/*.test.js"
+  },
+  "dependencies": {"@actions/artifact": "2.3.2"},
+  "devDependencies": {"@vercel/ncc": "0.38.3"}
+}

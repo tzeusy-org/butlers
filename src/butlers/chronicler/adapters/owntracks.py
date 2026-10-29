@@ -31,17 +31,20 @@ Semantics:
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
 
 Clock-skew detection:
-- When ``abs(ts - recorded_at) > CLOCK_SKEW_THRESHOLD_HOURS``, the device
-  clock is implausible.  The adapter clamps ``ts`` to ``recorded_at``
-  (server ingestion time) for that row before episode projection.  This
-  prevents the skewed device timestamp from producing inverted episodes at
-  the source, making the swap-bounds guard in ``_project_movement_episodes``
-  a strictly redundant safety net for the residual cases it cannot reach
-  (cross-batch carryover inversions).  The original device ``ts`` is
-  preserved verbatim in the evidence table for forensic access.
-- Threshold default: 4 hours — wider than legitimate timezone confusion,
-  tighter than weeks-old buffered points.  Override via the
-  ``clock_skew_threshold_hours`` constructor argument.
+- When ``ts - recorded_at > CLOCK_SKEW_THRESHOLD_HOURS`` (the device claims a
+  fix taken after the server received it), the device clock is implausible.
+  The adapter clamps ``ts`` to ``recorded_at`` (server ingestion time) for
+  that row before projection.  The original device ``ts`` is preserved
+  verbatim in the evidence table for forensic access.
+- A ``ts`` far *behind* ``recorded_at`` is normal: OwnTracks queues fixes
+  while offline (e.g. in flight) and uploads them later.  Those rows keep
+  their device ``ts``; re-stamping them to upload time would place the owner
+  where they were hours ago at the time they came back online (bu-8r9q06).
+- Movement episodes are segmented in device ``ts`` order, so out-of-order
+  delivery cannot invert bounds within a batch.  The swap-bounds guard in
+  ``_project_movement_episodes`` remains for cross-batch carryover cases.
+- Threshold default: 4 hours — wider than legitimate timezone confusion.
+  Override via the ``clock_skew_threshold_hours`` constructor argument.
 """
 
 from __future__ import annotations
@@ -55,6 +58,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -91,12 +95,12 @@ DEFAULT_BATCH_LIMIT = 1000
 # Consecutive points separated by more than this threshold start a new episode.
 MOVEMENT_GAP_MINUTES = 30
 
-# Points whose device timestamp deviates from server ingestion time by more than
+# Points whose device timestamp runs ahead of server ingestion time by more than
 # this threshold are treated as having an implausible device clock.  The adapter
-# clamps their ``ts`` to ``recorded_at`` (server ingestion time) so that episode
-# projection never sees a pathologically skewed timestamp.
-# 4 hours: wider than legitimate timezone confusion, tighter than weeks-old
-# buffered points.  Override via ``OwnTracksPointAdapter(clock_skew_threshold_hours=...)``.
+# clamps their ``ts`` to ``recorded_at`` (server ingestion time) so that
+# projection never sees a future-dated fix.  Late (buffered) points are not
+# clamped.  4 hours: wider than legitimate timezone confusion.  Override via
+# ``OwnTracksPointAdapter(clock_skew_threshold_hours=...)``.
 CLOCK_SKEW_THRESHOLD_HOURS = 4
 
 
@@ -205,11 +209,12 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         in Postgres ``double precision`` but not in JSONB payloads, which would
         otherwise crash projection and poison the checkpoint.
 
-        Clock-skew detection: when ``abs(ts - recorded_at) > clock_skew_threshold``,
+        Clock-skew detection: when ``ts - recorded_at > clock_skew_threshold``,
         the device clock is considered implausible.  The row's ``ts`` is clamped
-        to ``recorded_at`` (server ingestion time) so episode projection never
-        sees a pathologically skewed timestamp.  The original device timestamp is
-        preserved verbatim in the evidence table for forensic access.
+        to ``recorded_at`` (server ingestion time) so projection never sees a
+        future-dated fix.  A ``ts`` behind ``recorded_at`` is a buffered offline
+        fix and is kept.  The original device timestamp is preserved verbatim in
+        the evidence table for forensic access.
 
         Returns:
             (normalized_dict, warnings) — normalized_dict is None when the row
@@ -224,12 +229,13 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         if not isinstance(ts, datetime) or ts.tzinfo is None:
             return None, [f"Skipping malformed OwnTracks row {row_ref}: ts must be timezone-aware"]
 
-        # Clock-skew detection: clamp implausible device timestamps to server
-        # ingestion time (recorded_at) before episode projection.
+        # Clock-skew detection: clamp future-dated device timestamps to server
+        # ingestion time (recorded_at).  Late delivery (ts behind recorded_at)
+        # is OwnTracks' offline queue draining and keeps the device ts.
         recorded_at = row["recorded_at"]
         if isinstance(recorded_at, datetime) and recorded_at.tzinfo is not None:
             delta = ts - recorded_at
-            if abs(delta) > self.clock_skew_threshold:
+            if delta > self.clock_skew_threshold:
                 skew_warning = (
                     f"OwnTracks row {row_ref} has implausible device timestamp "
                     f"(ts={ts.isoformat()}, recorded_at={recorded_at.isoformat()}, "
@@ -435,23 +441,22 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         captures any open movement episode at the end of this batch.
 
         Implementation note — clock-skew safety:
-        Device-reported ``ts`` values can arrive out of order due to clock skew
-        or buffered delivery.  To produce monotonically ordered bounds, the
-        buffer is re-sorted by ``recorded_at`` (server ingestion time) before
-        segmenting.  A defensive guard rejects any episode whose computed
-        ``end_at < effective_start_at`` by swapping the bounds, ensuring the
-        ``episodes_check`` DB constraint is never violated.
+        Buffered delivery means upload order (``recorded_at``) can differ from
+        device order.  Segmenting is done in device ``ts`` order (after the
+        future-skew clamp in ``_normalize_row``) so gaps are never negative and
+        bounds are monotonic within a batch.  A defensive guard rejects any
+        episode whose computed ``end_at < effective_start_at`` by swapping the
+        bounds, ensuring the ``episodes_check`` DB constraint is never violated.
         """
         if not rows:
             return 0, {}
 
         event_id_by_key = event_id_by_key or {}
 
-        # Re-sort by server ingestion time so that device clock skew or
-        # buffered delivery never produces a negative-duration segment.
-        # ``recorded_at`` is set by the server on arrival and is
-        # monotonically non-decreasing within a single evidence table scan.
-        rows = sorted(rows, key=lambda r: r["recorded_at"])
+        # Segment in device-time order.  Sorting by upload time instead would
+        # yield negative ts gaps for buffered points, which pass the gap check
+        # and merge fixes taken hours (and airports) apart (bu-8r9q06).
+        rows = sorted(rows, key=lambda r: (r["ts"], r["recorded_at"]))
 
         gap = timedelta(minutes=self.movement_gap_minutes)
         episodes_upserted = 0
@@ -552,7 +557,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             point_count = len(seg_rows)
 
             # Defensive guard: device clock skew can produce an inverted episode
-            # even after recorded_at sorting (e.g. when the prior-batch carryover
+            # even after ts sorting (e.g. when the prior-batch carryover
             # start_at is later than the current batch's last ts).  Swapping the
             # bounds is always safe here — the episode still covers the same time
             # range and never violates the episodes_check constraint.
@@ -606,26 +611,27 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             confidence = derive_confidence([EvidenceKind(name="gps")])
 
             async with chronicler_pool.acquire() as conn:
-                episode = await upsert_episode(
-                    conn,
-                    Episode(
-                        source_name=self.source_name,
-                        source_ref=seg_source_ref,
-                        episode_type=EPISODE_TYPE_MOVEMENT,
-                        start_at=effective_start_at,
-                        end_at=end_at,
-                        precision=Precision.EXACT,
-                        title=title,
-                        payload=payload,
-                        privacy=Privacy.NORMAL,
-                        layer=Layer.ACTIVITY,
-                        confidence=confidence,
-                        evidence_refs=evidence_refs,
-                    ),
-                )
-                # Write owner row into episode_entities join table (bu-4c1ks).
-                ep_id = episode.id if episode is not None else None
-                await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+                async with owner_episode_transaction(conn):
+                    episode = await upsert_episode(
+                        conn,
+                        Episode(
+                            source_name=self.source_name,
+                            source_ref=seg_source_ref,
+                            episode_type=EPISODE_TYPE_MOVEMENT,
+                            start_at=effective_start_at,
+                            end_at=end_at,
+                            precision=Precision.EXACT,
+                            title=title,
+                            payload=payload,
+                            privacy=Privacy.NORMAL,
+                            layer=Layer.ACTIVITY,
+                            confidence=confidence,
+                            evidence_refs=evidence_refs,
+                        ),
+                    )
+                    # Write owner row into episode_entities join table (bu-4c1ks).
+                    ep_id = episode.id if episode is not None else None
+                    await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
                 # Link each GPS fix into the canonical evidence chain.
                 if ep_id is not None:
                     for event_id in seg_event_ids:

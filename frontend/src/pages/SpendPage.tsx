@@ -112,7 +112,7 @@ import type {
 // ForecastData/ForecastDay live in lib/spend-forecast.ts so SpendVerdictOpener
 // can share the same shape without a page-to-component import cycle.
 
-interface SpendRule {
+export interface SpendRule {
   id: string;
   position: number;
   condition: Record<string, unknown>;
@@ -148,7 +148,7 @@ function toExplicitSpendRangeDate(date: Date): Date {
   return parseISO(formatCostDate(date, SPEND_UTC_DATE_KEY_TIMEZONE));
 }
 
-interface BreakdownData {
+export interface BreakdownData {
   by: string;
   breakdown: Record<string, number>;
   // Set only on the "purpose" dimension (bu-og0j2): true when the ledger-backed
@@ -900,7 +900,7 @@ function BreakdownBar({
       {labelEl}
       <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
         <div
-          className="h-full bg-primary rounded-full transition-all"
+          className="h-full bg-primary rounded-full"
           style={{ width: `${pct.toFixed(1)}%` }}
         />
       </div>

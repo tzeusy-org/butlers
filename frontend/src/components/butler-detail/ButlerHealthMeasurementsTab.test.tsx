@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 
@@ -57,7 +57,7 @@ vi.mock("recharts", () => {
       children,
     );
 
-  const ReferenceArea = () => null;
+  const ReferenceArea = (p: { y1?: number; y2?: number }) => p.y1 === undefined ? null : createElement("i", { "data-testid": "baseline-chart-band", "data-low": p.y1, "data-high": p.y2 });
 
   return { LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, ResponsiveContainer };
 });
@@ -71,6 +71,7 @@ vi.mock("@/hooks/use-health", () => ({
   useSleepLatest: vi.fn(),
   useMeasurementSources: vi.fn(),
   useExpectedSignals: vi.fn(),
+  useHealthBaselines: vi.fn(),
   useMeasurements: vi.fn(),
   useMedications: vi.fn(),
   useConditions: vi.fn(),
@@ -90,6 +91,7 @@ import {
   useSleepLatest,
   useMeasurementSources,
   useExpectedSignals,
+  useHealthBaselines,
   useMeasurements,
   useMedications,
   useConditions,
@@ -251,6 +253,7 @@ function renderTab() {
 type AnyQueryResult = any;
 
 function setupWithData() {
+  vi.mocked(useHealthBaselines).mockReturnValue({ data: { baselines: [], available: true }, isLoading: false, isError: false } as AnyQueryResult);
   vi.mocked(useMeasurementsLatest).mockReturnValue({
     data: MEASUREMENTS_LATEST,
     isLoading: false,
@@ -289,6 +292,7 @@ function setupWithData() {
 }
 
 function setupLoading() {
+  vi.mocked(useHealthBaselines).mockReturnValue({ data: { baselines: [], available: true }, isLoading: false, isError: false } as AnyQueryResult);
   vi.mocked(useMeasurementsLatest).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
   vi.mocked(useSleepLatest).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
   vi.mocked(useMeasurementSources).mockReturnValue({ data: undefined, isLoading: true } as AnyQueryResult);
@@ -303,6 +307,7 @@ function setupLoading() {
 }
 
 function setupEmpty() {
+  vi.mocked(useHealthBaselines).mockReturnValue({ data: { baselines: [], available: true }, isLoading: false, isError: false } as AnyQueryResult);
   vi.mocked(useMeasurementsLatest).mockReturnValue({
     data: { measurements: {} },
     isLoading: false,
@@ -832,5 +837,63 @@ describe("TrendSparkline — prefers-reduced-motion", () => {
     lines.forEach((line) => {
       expect(line.getAttribute("data-animation-active")).toBe("false");
     });
+  });
+});
+
+
+const BASELINES = [
+  { metric_key: "resting_hr", unit: "bpm", band: { low: 50, high: 62 } },
+  { metric_key: "hrv", unit: "ms", band: { low: 30, high: 50 } },
+  { metric_key: "sleep_duration", unit: "h", band: { low: 7, high: 9 } },
+].map((b) => ({ ...b, state: "ready" as const, center: 40, n_observed: 54, n_expected: 60, coverage: 0.9, computed_at: "2026-05-12T00:00:00Z", stale: false, method_version: "mad-v1" }));
+
+describe("personal baseline display", () => {
+  beforeEach(() => { vi.resetAllMocks(); setupWithData(); });
+  afterEach(cleanup);
+
+  it("shows the three declared metrics and puts only HRV's range on its matching trend", () => {
+    vi.mocked(useHealthBaselines).mockReturnValue({ data: { baselines: BASELINES, available: true }, isLoading: false, isError: false } as AnyQueryResult);
+    renderTab();
+    expect(screen.getAllByText("54 of 60 days")).toHaveLength(3);
+    expect(within(screen.getByTestId("baseline-resting_hr")).getByText("50–62 bpm")).toBeTruthy();
+    expect(within(screen.getByTestId("baseline-sleep_duration")).getByText("7–9 h")).toBeTruthy();
+    const band = within(screen.getByTestId("trend-panel-hrv")).getByTestId("baseline-chart-band");
+    expect(band.dataset.low).toBe("30");
+    expect(band.dataset.high).toBe("50");
+    expect(within(screen.getByTestId("trend-panel-heart_rate")).queryByTestId("baseline-chart-band")).toBeNull();
+  });
+
+  it.each([
+    ["insufficient_history", "Not enough history"],
+    ["unmeasurable", "Measurement source unavailable"],
+    ["stale", "Usual range is out of date"],
+    ["no_baseline", "No usual range yet"],
+  ])("renders %s honestly without a band", (state, copy) => {
+    vi.mocked(useHealthBaselines).mockReturnValue({ data: { baselines: BASELINES.map(b => ({ ...b, state, band: null })), available: true }, isLoading: false, isError: false } as AnyQueryResult);
+    renderTab();
+    expect(screen.getAllByText(copy)).toHaveLength(3);
+    expect(screen.queryByTestId("baseline-chart-band")).toBeNull();
+    expect(screen.getAllByTestId("trend-chart").length).toBeGreaterThan(0);
+  });
+
+  it.each([false, true])("preserves trends when the baseline envelope or request is unavailable (%s)", (isError) => {
+    vi.mocked(useHealthBaselines).mockReturnValue({ data: isError ? undefined : { baselines: null, available: false }, isLoading: false, isError } as AnyQueryResult);
+    renderTab();
+    expect(screen.getByText("Usual ranges unavailable")).toBeTruthy();
+    expect(screen.getAllByTestId("trend-chart").length).toBeGreaterThan(0);
+    expect(screen.queryByTestId("baseline-chart-band")).toBeNull();
+  });
+});
+
+
+describe("baseline loading", () => {
+  beforeEach(() => { vi.resetAllMocks(); setupWithData(); });
+  afterEach(cleanup);
+  it("does not show a cached range while loading and preserves independent trends", () => {
+    vi.mocked(useHealthBaselines).mockReturnValue({ data: { baselines: BASELINES, available: true }, isLoading: true, isError: false } as AnyQueryResult);
+    renderTab();
+    expect(screen.getByTestId("baselines-loading")).toBeTruthy();
+    expect(screen.queryByTestId("baseline-chart-band")).toBeNull();
+    expect(screen.getAllByTestId("trend-chart").length).toBeGreaterThan(0);
   });
 });

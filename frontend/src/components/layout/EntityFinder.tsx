@@ -62,8 +62,7 @@ import { fuzzyFilter } from "@/lib/fuzzy-match";
 import { addRecent, getRecents, type RecentEntry } from "@/lib/recents-store";
 import { useSearch } from "@/hooks/use-search";
 import { useButlers } from "@/hooks/use-butlers";
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
-import { resolveRouteChunkLoader } from "@/lib/route-chunk-registry";
+import { useNavIntent } from "@/hooks/use-nav-intent";
 import { EntityMark } from "@/components/ui/EntityMark";
 import {
   Dialog,
@@ -331,14 +330,22 @@ export default function EntityFinder() {
   // Empty-query owner-pinned set: owner's top neighbours by summed weight.
   // Only resolved while the Finder is open AND the query is empty.
   // -------------------------------------------------------------------------
-  const { data: ownerStatus } = useQuery({
+  const {
+    data: ownerStatus,
+    isError: ownerStatusError,
+    refetch: refetchOwnerStatus,
+  } = useQuery({
     queryKey: ["owner-setup-status"],
     queryFn: getOwnerSetupStatus,
     enabled: open && isEmptyQuery,
   });
   const ownerId = ownerStatus?.entity_id ?? undefined;
 
-  const { data: ownerNeighbours } = useEntityNeighbours(
+  const {
+    data: ownerNeighbours,
+    isError: ownerNeighboursError,
+    refetch: refetchOwnerNeighbours,
+  } = useEntityNeighbours(
     open && isEmptyQuery ? ownerId : undefined,
     undefined,
   );
@@ -346,9 +353,15 @@ export default function EntityFinder() {
   // The ranked neighbours endpoint truncates *each predicate* before this
   // cross-predicate aggregation runs. Request the complete owner set so the
   // pinned count and overflow row remain truthful after deduplication.
+  // A failed owner lookup must never read as "the owner has no inner circle":
+  // the pinned set is withheld and an explicit unavailable note replaces it.
+  const ownerPinnedUnavailable = ownerStatusError || ownerNeighboursError;
   const allPinned = useMemo(
-    () => aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, null),
-    [ownerNeighbours, ownerId],
+    () =>
+      ownerPinnedUnavailable
+        ? []
+        : aggregateOwnerPinned(ownerNeighbours?.neighbours, ownerId, null),
+    [ownerNeighbours, ownerId, ownerPinnedUnavailable],
   );
   const pinned = allPinned.slice(0, PINNED_LIMIT);
 
@@ -511,15 +524,12 @@ export default function EntityFinder() {
     return null;
   }, [activeValue, sessionMatches, stateMatches]);
 
-  const highlightPrefetch = usePrefetchOnIntent(highlightedPath);
+  const highlightPrefetch = useNavIntent(highlightedPath);
   useEffect(() => {
     // Highlighting is command/keyboard intent, so both the lazy chunk and
-    // matching query cache start immediately. A pending pointer timer cannot
-    // be cancelled by activation because `warmNow` clears it first.
-    highlightPrefetch.warmNow?.();
-    const loader = highlightedPath ? resolveRouteChunkLoader(highlightedPath) : null;
-    loader?.().catch(() => {});
-    return highlightPrefetch.cancel;
+    // matching query cache start immediately from one intent cycle.
+    highlightPrefetch.onFocus();
+    return highlightPrefetch.onBlur;
     // highlightPrefetch reads its target via a ref (stable identity across
     // `to` changes) -- only the resolved path itself should retrigger this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -637,6 +647,7 @@ export default function EntityFinder() {
         </DialogDescription>
         <Command
           label="Command menu"
+          value={activeValue}
           onValueChange={setActiveValue}
           className="relative mx-auto flex h-full min-h-0 w-full max-w-3xl overflow-hidden rounded-xl border border-border bg-background shadow-2xl sm:h-auto"
           onKeyDown={(e) => {
@@ -763,6 +774,18 @@ export default function EntityFinder() {
              * neighbours by summed weight (spec: "Finder empty-query state").
              * Typing replaces this set with search results.
              * --------------------------------------------------------------- */}
+            {isEmptyQuery && ownerPinnedUnavailable && (
+              <div data-testid="entity-finder-pinned-unavailable" className="mb-1">
+                <SourceDegradedNote
+                  label="Owner shortcuts"
+                  detail="unavailable"
+                  onRetry={() => {
+                    if (ownerStatusError) void refetchOwnerStatus();
+                    else void refetchOwnerNeighbours();
+                  }}
+                />
+              </div>
+            )}
             {isEmptyQuery && pinned.length > 0 && (
               <PaletteGroup
                 heading="Pinned"

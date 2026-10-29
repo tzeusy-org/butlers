@@ -78,7 +78,8 @@ The Gmail connector SHALL normalize every ingested Gmail message to the
   - `source.provider` = `"gmail"` (must be `gmail`, not `imap`)
   - `source.endpoint_identity` = `"gmail:user:<email_address>"`
   - `event.external_event_id` = the RFC822 `Message-ID` header value (falls back to the Gmail message ID when the header is absent)
-  - `event.external_thread_id` = Gmail `threadId`
+  - `event.external_conversation_id` = Gmail `threadId`
+  - `event.reply_target_ref` = Gmail `threadId`
   - `event.observed_at` = connector-observed timestamp (RFC3339)
   - `sender.identity` = normalized sender address from `From` header
   - `sender.display_name` = the raw display-name part of the `From` header (e.g. `"John Doe"` from `"John Doe <john@example.com>"`), or `null` when the header carried no display name; stored verbatim (not normalized) so identity enrichment can use the real name instead of guessing one from the address local-part
@@ -133,7 +134,7 @@ Gmail label include/exclude policy SHALL gate ingestion before tier evaluation.
 The connector SHALL implement a three-tier ingestion policy to process emails in proportion to value.
 
 #### Scenario: Tier 1 — full pipeline
-- **WHEN** a message's triage action is `route_to`, `low_priority_queue`, `pass_through`, or unknown
+- **WHEN** a message's triage action is `route_to`, `low_priority_queue`, `pass_through`, or unknown, and it is not an automated reply or bounce (see "Automated replies and bounces are metadata-only")
 - **THEN** the full `ingest.v1` envelope with complete `payload.raw` is submitted for LLM classification, routing, and butler processing
 
 #### Scenario: Tier 2 — metadata-only pipeline
@@ -141,13 +142,19 @@ The connector SHALL implement a three-tier ingestion policy to process emails in
 - **THEN** a slim envelope with `payload.raw=null`, `payload.normalized_text=<subject only>`, and `control.ingestion_tier="metadata"` is submitted
 - **AND** Switchboard bypasses LLM classification and persists a metadata reference only
 
+#### Scenario: Automated replies and bounces are metadata-only
+- **WHEN** a message's headers mark it as a bounce (`Content-Type: multipart/report` with `report-type=delivery-status`, or a `mailer-daemon`/`postmaster` sender with a `message/delivery-status` part) or as an automated reply (`Auto-Submitted: auto-replied`, `X-Autoreply`, `X-Autorespond`, or `Precedence: auto_reply`)
+- **THEN** the connector assigns Tier 2 with reason `bounce` or `auto_reply` on `butlers_connector_gmail_tier_assigned_total`, and the slim envelope carries `control.automated_kind` with the same value
+- **AND** a global rule resolving to `skip` still skips the message, while `route_to`, `low_priority_queue` and `pass_through` do not raise it to Tier 1
+- **AND** `Auto-Submitted: auto-generated` or `no`, `Precedence: bulk` or `list`, list mail, and missing or malformed headers are ordinary mail, so detection never drops a message
+
 #### Scenario: Tier 3 — skip
 - **WHEN** a message's triage action is `skip` or label exclusion matched
 - **THEN** the connector does not submit to Switchboard
 - **AND** skip counters are incremented for auditability — no silent drops
 
 #### Scenario: Default tier is always Tier 1
-- **WHEN** no triage rule matches a message
+- **WHEN** no triage rule matches a message that is not an automated reply or bounce
 - **THEN** the default action is `pass_through` which maps to Tier 1 (safety: never silently drop potentially important mail)
 
 #### Scenario: Policy pipeline order
@@ -187,6 +194,10 @@ The Gmail connector SHALL implement the ingestion policy gate using `IngestionPo
 The implementation SHALL provide the behavior described by this requirement.
 The connector assigns policy tiers for Switchboard queue ordering using a `PolicyTierAssigner` with first-match-wins rules.
 
+The known-contact set consumed by the `known_contact` rule is resolved by `GmailPolicyEvaluator`, which owns the read path onto `public.priority_contacts`. The evaluator SHALL load the set with a single query joining `public.priority_contacts` to `relationship.entity_facts` on `ef.subject = pc.entity_id`, restricted to `predicate = 'has-email'`, `object_kind = 'literal'`, `validity = 'active'`, and non-NULL `object` and `entity_id`. It SHALL NOT join through `public.contacts`, which has been dropped, and SHALL NOT read any flat file. Addresses SHALL be normalized on both load and lookup so membership is case- and whitespace-insensitive.
+
+The evaluator SHALL cache that set in-process with a 15-minute TTL measured on a monotonic clock, refreshed lazily when an expired cache is read. The initial load timestamp SHALL be a sentinel that is unconditionally expired rather than zero, so that a process started on a host whose uptime is shorter than the TTL still performs its first refresh. Refresh SHALL fail open: when the query raises, the evaluator SHALL log a warning and retain its previous cache rather than emptying it, so a database blip cannot silently demote every priority contact. Before the first successful load, the set SHALL be empty and no sender SHALL be treated as a known contact.
+
 #### Scenario: Known contact → high priority
 - **WHEN** the sender address is in the known-contact set (loaded from `public.priority_contacts` joined to `relationship.entity_facts`, cached in-process with a 15 minute TTL)
 - **THEN** `policy_tier="high_priority"` with rule `"known_contact"`
@@ -206,6 +217,31 @@ The connector assigns policy tiers for Switchboard queue ordering using a `Polic
 #### Scenario: Policy tier telemetry
 - **WHEN** a policy tier is assigned
 - **THEN** `butlers_connector_gmail_priority_tier_assigned_total` counter is incremented with labels `endpoint_identity`, `policy_tier`, `assignment_rule`
+
+#### Scenario: Evaluator loads priority contacts from the database
+- **WHEN** the evaluator refreshes its known-contact set
+- **THEN** it issues one query joining `public.priority_contacts` to `relationship.entity_facts` via `entity_id` on the `has-email` predicate
+- **AND** it reads no flat file and does not join `public.contacts`
+
+#### Scenario: Cache TTL is 15 minutes
+- **WHEN** the known-contact set is read less than 15 minutes after a successful load
+- **THEN** the cached set is returned and no query is issued
+- **WHEN** it is read 15 minutes or more after that load
+- **THEN** the evaluator refreshes from the database first
+
+#### Scenario: First read always refreshes
+- **WHEN** the known-contact set is read for the first time in a freshly started process, on a host whose uptime is shorter than the TTL
+- **THEN** the cache is treated as expired and a refresh is attempted
+
+#### Scenario: Fail-open on DB error
+- **WHEN** the refresh query raises
+- **THEN** a warning is logged and the previously loaded set is retained unchanged
+- **AND** the load timestamp is not advanced, so the next read retries the refresh
+
+#### Scenario: Empty set before the first successful load
+- **WHEN** the very first refresh fails, or no database pool is configured
+- **THEN** the known-contact set is empty and the `known_contact` rule matches nothing
+- **AND** tier assignment falls through to the remaining rules rather than erroring
 
 ### Requirement: Triage Rules
 
@@ -349,7 +385,8 @@ truth for accepted ingestion records across all tiers.
   `payload.normalized_text=<subject only>`, and `control.ingestion_tier="metadata"`
 - **AND** Switchboard persists a `message_inbox` row with `ingestion_tier='metadata'`,
   bypassing LLM classification; `raw_payload` retains the source endpoint identity,
-  `external_event_id` (Gmail message ID), `external_thread_id`, and sender identity
+  `external_event_id` (Gmail message ID), `external_conversation_id`,
+  `reply_target_ref`, and sender identity
 
 #### Scenario: Tier 2 metadata is queryable by tier
 - **WHEN** Tier 2 records are queried
@@ -434,6 +471,26 @@ Multiple Gmail connector processes SHALL be able to run concurrently for horizon
 The Gmail connector SHALL expose a single aggregated health status covering
 every account loop, reporting the worst-case status across accounts together
 with per-account detail.
+The source-failure classifier SHALL report OAuth reauthorization only when the actual HTTP response is bound to a POST request to exactly `https://oauth2.googleapis.com/token` and its parsed top-level `error` is the literal `invalid_grant` or `unauthorized_client`. Gmail data-API failures, unavailable request provenance, wrong methods/origins, nested error codes and diagnostic text SHALL NOT supply reauthorization authority. Their existing failure remains visible as degraded source health. This does not authorize mutating shared account status, credential fallback, a new token retry, altered backoff or changed payload/privacy fields. A successful source call SHALL retain the existing healthy reset.
+
+ID: REQ-connector-gmail-001
+Source: https://github.com/tzeusy-org/butlers/blob/5eb4b330ec56c3e1c2d6db8cb7cdfeb547caefd7/openspec/changes/gmail-token-origin-health/design.md#governing-authority-and-provenance ; https://github.com/tzeusy-org/butlers/blob/5eb4b330ec56c3e1c2d6db8cb7cdfeb547caefd7/openspec/changes/gmail-token-origin-health/design.md#minimal-implementation ; existing canonical connector-gmail Aggregated Health Status
+Scope: v1-mandatory
+
+#### Scenario: Exact token revocation remains actionable
+- **WHEN** the actual Gmail token POST returns a literal top-level revocation code
+- **THEN** only that account's source health reports the existing actionable error
+- **AND** sibling account loops and shared credential/account state are unchanged by classification
+
+#### Scenario: Data-origin and ambiguous failures remain visible without revocation authority
+- **WHEN** a data-API response, unknown request provenance or a wrong token request method/origin contains the same literal error code
+- **THEN** its source failure remains visible as degraded rather than an OAuth reauthorization error
+- **AND** the original failed-call metrics, diagnostic format, cursor/cache retention and request exception remain intact
+
+#### Scenario: Ordinary nested errors and source success preserve existing health
+- **WHEN** a source fails with an ordinary nested data error and later succeeds
+- **THEN** the original degraded state and failure diagnostics remain visible until the successful call
+- **AND** success clears the existing failure/auth flags and returns the account's original healthy payload
 
 #### Scenario: Health model (multi-account)
 - **WHEN** the Gmail connector's health is queried

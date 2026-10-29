@@ -677,6 +677,80 @@ async def test_workout_confidence_reflects_detection(detection: str, expected: s
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("detection", "heart_rate", "expected"),
+    [
+        pytest.param(None, {}, "medium", id="absent-medium"),
+        pytest.param("manual", {"average_heart_rate": 151}, "high", id="manual-average"),
+        pytest.param("manual", {"max_heart_rate": 177}, "high", id="manual-max"),
+        pytest.param(
+            "manual", {"average_heart_rate": 151, "max_heart_rate": 177}, "high", id="manual-both"
+        ),
+        pytest.param(None, {"average_heart_rate": 151}, "high", id="absent-average"),
+        pytest.param(None, {"max_heart_rate": 177}, "high", id="absent-max"),
+        pytest.param(
+            None, {"average_heart_rate": 151, "max_heart_rate": 177}, "high", id="absent-both"
+        ),
+        pytest.param("auto", {"average_heart_rate": 151}, "medium", id="auto-average"),
+        pytest.param("auto", {"max_heart_rate": 177}, "medium", id="auto-max"),
+        pytest.param(
+            "auto", {"average_heart_rate": 151, "max_heart_rate": 177}, "medium", id="auto-both"
+        ),
+    ],
+)
+async def test_workout_confidence_matches_detection_and_heart_rate(
+    detection: str | None, heart_rate: dict[str, int], expected: str
+) -> None:
+    """Heart-rate evidence lifts either workout baseline exactly one confidence tier."""
+    metadata = {
+        "activity_type": "walking",
+        "duration_ms": 20 * 60_000,
+        "calories": 120,
+        "distance_m": 1500,
+        "session_id": "confidence-session",
+        **heart_rate,
+    }
+    if detection is not None:
+        metadata["detection"] = detection
+    start = datetime(2026, 4, 25, 8, 0, tzinfo=UTC)
+    row = _make_row(
+        row_id=f"workout-{detection}",
+        idempotency_key=f"google_health:owner:workout:{detection}",
+        valid_at=start,
+        metadata=metadata,
+    )
+    row["predicate"] = "workout_session"
+    upserted: list[Episode] = []
+
+    async def _fake_upsert(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
+
+    with patch(
+        "butlers.chronicler.adapters.google_health.upsert_episode",
+        side_effect=_fake_upsert,
+    ):
+        await GoogleHealthWorkoutAdapter().project(
+            _pool_returning(row), chronicler_pool=_chronicler_pool(), since=None
+        )
+
+    assert len(upserted) == 1
+    assert upserted[0].confidence.value == expected
+    episode = upserted[0]
+    assert episode.privacy == (Privacy.SENSITIVE if heart_rate else Privacy.NORMAL)
+    assert episode.precision == Precision.MINUTE
+    assert episode.start_at == start
+    assert episode.end_at == start + timedelta(minutes=20)
+    assert episode.source_name == "google_health.measurements"
+    assert episode.source_ref == f"health.facts:workout_session:{row['idempotency_key']}"
+    assert episode.payload == {
+        "fact_id": row["id"],
+        "idempotency_key": row["idempotency_key"],
+        **metadata,
+    }
+
+
+@pytest.mark.asyncio
 async def test_connector_envelope_flows_through_ingest_to_one_workout_episode() -> None:
     """Seam contract: connector output -> wellness_ingest metadata -> Chronicler episode."""
     from butlers.connectors.google_health import (

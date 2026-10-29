@@ -43,6 +43,7 @@ from butlers.core.state import (
     state_get,
     state_set,
 )
+from butlers.tools.education._helpers import _transaction
 from butlers.tools.education.mastery import mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
 from butlers.tools.education.mind_maps import mind_map_create, mind_map_update_status
@@ -258,27 +259,28 @@ async def teaching_flow_start(
     dict
         Flow state dict after transition to DIAGNOSING.
     """
-    # Create the mind map
-    mind_map_id = await mind_map_create(pool, topic)
+    async with _transaction(pool) as connection:
+        # Create the mind map
+        mind_map_id = await mind_map_create(connection, topic)
 
-    # Store goal in metadata if provided
-    if goal is not None:
-        await pool.execute(
-            """
-            UPDATE education.mind_maps
-            SET metadata = metadata || $1::jsonb, updated_at = now()
-            WHERE id = $2
-            """,
-            {"goal": goal},
-            mind_map_id,
-        )
+        # Store goal in metadata if provided
+        if goal is not None:
+            await connection.execute(
+                """
+                UPDATE education.mind_maps
+                SET metadata = metadata || $1::jsonb, updated_at = now()
+                WHERE id = $2
+                """,
+                {"goal": goal},
+                mind_map_id,
+            )
 
-    # Initialize flow state at PENDING
-    initial_state = _initial_flow_state(mind_map_id)
-    await state_set(pool, _flow_key(mind_map_id), initial_state)
+        # Initialize flow state at PENDING
+        initial_state = _initial_flow_state(mind_map_id)
+        await state_set(connection, _flow_key(mind_map_id), initial_state)
 
-    # Immediately advance to DIAGNOSING
-    return await teaching_flow_advance(pool, mind_map_id)
+        # Immediately advance to DIAGNOSING
+        return await teaching_flow_advance(connection, mind_map_id)
 
 
 async def teaching_flow_get(
@@ -375,6 +377,11 @@ async def teaching_flow_advance(
         new_state["current_technique"] = None
 
     elif current_status == "planning":
+        map_status = await pool.fetchval(
+            "SELECT status FROM education.mind_maps WHERE id = $1", mind_map_id
+        )
+        if map_status != "active":
+            raise ValueError("Cannot advance to teaching: curriculum has not been generated")
         # Advance to teaching: find first frontier node
         next_node = await _determine_next_node(pool, mind_map_id)
         if next_node is None:
@@ -398,7 +405,13 @@ async def teaching_flow_advance(
             new_state["current_phase"] = None
             new_state["current_technique"] = None
             # Update mind map to completed
-            await mind_map_update_status(pool, mind_map_id, "completed")
+            if (
+                await pool.fetchval(
+                    "SELECT status FROM education.mind_maps WHERE id = $1", mind_map_id
+                )
+                != "completed"
+            ):
+                await mind_map_update_status(pool, mind_map_id, "completed")
         else:
             next_node = await _determine_next_node(pool, mind_map_id)
             if next_node is not None:
@@ -417,7 +430,13 @@ async def teaching_flow_advance(
             new_state["current_node_id"] = None
             new_state["current_phase"] = None
             new_state["current_technique"] = None
-            await mind_map_update_status(pool, mind_map_id, "completed")
+            if (
+                await pool.fetchval(
+                    "SELECT status FROM education.mind_maps WHERE id = $1", mind_map_id
+                )
+                != "completed"
+            ):
+                await mind_map_update_status(pool, mind_map_id, "completed")
         else:
             next_node = await _determine_next_node(pool, mind_map_id)
             if next_node is not None:
@@ -465,29 +484,23 @@ async def teaching_flow_abandon(
     ValueError
         If no flow exists for this mind map, or the flow is already terminal.
     """
-    state, version = await _get_state_with_version(pool, mind_map_id)
-    if state is None:
-        raise ValueError(f"No flow found for mind_map_id {mind_map_id!r}")
-
-    current_status = state["status"]
-    if current_status in _TERMINAL_STATES:
-        raise ValueError(
-            f"Cannot abandon flow {mind_map_id!r}: already in terminal state {current_status!r}"
+    async with _transaction(pool) as connection:
+        state, version = await _get_state_with_version(connection, mind_map_id)
+        if state is None:
+            raise ValueError(f"No flow found for mind_map_id {mind_map_id!r}")
+        if state["status"] in _TERMINAL_STATES:
+            raise ValueError(
+                f"Cannot abandon flow {mind_map_id!r}: terminal state {state['status']}"
+            )
+        await mind_map_update_status(connection, mind_map_id, "abandoned")
+        new_state = dict(state)
+        new_state.update(
+            status="abandoned",
+            last_session_at=_now_iso(),
+            current_phase=None,
+            current_technique=None,
         )
-
-    new_state = dict(state)
-    new_state["status"] = "abandoned"
-    new_state["last_session_at"] = _now_iso()
-    new_state["current_phase"] = None
-    new_state["current_technique"] = None
-
-    await _write_state_cas(pool, mind_map_id, new_state, expected_version=version)
-
-    # Update mind map status
-    try:
-        await mind_map_update_status(pool, mind_map_id, "abandoned")
-    except ValueError:
-        logger.warning("Mind map %s not found when abandoning flow", mind_map_id)
+        await _write_state_cas(connection, mind_map_id, new_state, expected_version=version)
 
     # Clean up pending review schedules for all nodes in this map
     await _cleanup_review_schedules(pool, mind_map_id, schedule_delete=schedule_delete)
@@ -739,12 +752,11 @@ async def check_stale_flows(
     stale_days: int = _STALE_DAYS,
     schedule_delete: ScheduleDeleteFn = _default_schedule_delete,
 ) -> list[str]:
-    """Weekly staleness check — auto-abandon flows inactive for > stale_days.
+    """Sweep stalled drafts and inactive populated maps, including flow-less maps.
 
-    Scans all active (non-terminal) flows. Any flow whose last_session_at is
-    more than stale_days in the past is abandoned.
-
-    Completed and abandoned flows are skipped.
+    Empty drafts use their strict 24-hour creation boundary. Populated maps use
+    flow inactivity, or newest node activity when no flow exists. Completed and
+    all-mastered maps remain unchanged; abandoned maps retry only schedule cleanup.
 
     Parameters
     ----------
@@ -761,49 +773,62 @@ async def check_stale_flows(
     list of str
         UUIDs of mind maps that were abandoned by this check.
     """
-    cutoff = datetime.now(tz=UTC) - timedelta(days=stale_days)
-
-    # Fetch all mind maps with active flows
-    rows = await pool.fetch(
-        "SELECT id FROM education.mind_maps",
+    return await _abandon_stale_maps(
+        pool, node_activity=False, stale_days=stale_days, schedule_delete=schedule_delete
     )
 
-    abandoned: list[str] = []
 
+async def _abandon_stale_maps(
+    pool: asyncpg.Pool,
+    *,
+    node_activity: bool,
+    stale_days: int,
+    schedule_delete: ScheduleDeleteFn,
+) -> list[str]:
+    """Share lifecycle writes and cleanup while keeping the two tool clocks distinct."""
+    now = datetime.now(tz=UTC)
+    cutoff = now - timedelta(days=stale_days)
+    draft_cutoff = now - timedelta(hours=24)
+    rows = await pool.fetch(
+        """SELECT m.id, m.status, m.created_at,
+                  (SELECT count(*) FROM education.mind_map_nodes n
+                   WHERE n.mind_map_id = m.id) AS node_count,
+                  (SELECT max(updated_at) FROM education.mind_map_nodes n
+                   WHERE n.mind_map_id = m.id) AS last_activity,
+                  (SELECT bool_and(mastery_status = 'mastered') FROM education.mind_map_nodes n
+                   WHERE n.mind_map_id = m.id) AS all_mastered
+           FROM education.mind_maps m WHERE m.status IN ('draft', 'active', 'abandoned')"""
+    )
+    abandoned: list[str] = []
     for row in rows:
         map_id = str(row["id"])
         flow_state = await state_get(pool, _flow_key(map_id))
-        if flow_state is None:
+        if row["status"] == "abandoned":
+            # Repeat only idempotent schedule cleanup after a prior committed abandonment.
+            await _cleanup_review_schedules(pool, map_id, schedule_delete=schedule_delete)
             continue
-
-        status = flow_state.get("status", "unknown")
-        if status in _TERMINAL_STATES:
+        if (flow_state and flow_state.get("status") in _TERMINAL_STATES) or row.get("all_mastered"):
             continue
-
-        last_session_at_str = flow_state.get("last_session_at")
-        if last_session_at_str is None:
+        empty_draft = row["status"] == "draft" and row["node_count"] == 0
+        if empty_draft and row["created_at"] >= draft_cutoff:
             continue
-
-        try:
-            last_session_at = datetime.fromisoformat(last_session_at_str)
-            # Ensure timezone-aware
-            if last_session_at.tzinfo is None:
-                last_session_at = last_session_at.replace(tzinfo=UTC)
-        except (ValueError, TypeError):
-            logger.warning("Could not parse last_session_at for flow %s", map_id)
-            continue
-
-        if last_session_at < cutoff:
-            logger.info(
-                "Abandoning stale flow %s (last_session_at=%s, cutoff=%s)",
-                map_id,
-                last_session_at_str,
-                cutoff.isoformat(),
-            )
+        stalled_draft = empty_draft and row["created_at"] < draft_cutoff
+        if flow_state and not node_activity:
+            activity = flow_state.get("last_session_at")
             try:
-                await teaching_flow_abandon(pool, map_id, schedule_delete=schedule_delete)
-                abandoned.append(map_id)
-            except Exception:
-                logger.exception("Failed to abandon stale flow %s", map_id)
-
+                last_activity = datetime.fromisoformat(activity) if activity else None
+                if last_activity and last_activity.tzinfo is None:
+                    last_activity = last_activity.replace(tzinfo=UTC)
+            except (ValueError, TypeError):
+                last_activity = None
+        else:
+            last_activity = row["last_activity"]
+        if not stalled_draft and not (last_activity and last_activity < cutoff):
+            continue
+        if flow_state:
+            await teaching_flow_abandon(pool, map_id, schedule_delete=schedule_delete)
+        else:
+            await mind_map_update_status(pool, map_id, "abandoned")
+            await _cleanup_review_schedules(pool, map_id, schedule_delete=schedule_delete)
+        abandoned.append(map_id)
     return abandoned

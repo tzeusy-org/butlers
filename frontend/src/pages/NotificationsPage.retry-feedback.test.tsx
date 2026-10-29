@@ -30,6 +30,7 @@ import {
   useRetryNotification,
 } from "@/hooks/use-notifications";
 import NotificationsPage from "@/pages/NotificationsPage";
+vi.mock("@/components/notifications/confirm-requests", () => ({ ConfirmRequests: () => null }));
 
 vi.mock("@/hooks/use-notifications", () => ({
   useNotifications: vi.fn(),

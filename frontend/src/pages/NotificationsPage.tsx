@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import type { NotificationParams } from "@/api/types";
+import { ConfirmRequests } from "@/components/notifications/confirm-requests";
 import { NotificationFeed } from "@/components/notifications/notification-feed";
 import { NotificationStatsBar } from "@/components/notifications/notification-stats-bar";
 import {
@@ -13,6 +14,7 @@ import { NotificationTableSkeleton } from "@/components/skeletons";
 import { Button } from "@/components/ui/button";
 import { Section, SectionContent } from "@/components/ui/Section";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { ErrorState } from "@/components/ui/error-state";
 import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Input } from "@/components/ui/input";
 import { ListTriageFooterHint } from "@/components/ui/list-triage-footer";
@@ -185,8 +187,13 @@ export default function NotificationsPage() {
   };
 
   // Data hooks
-  const { data: statsResponse, isLoading: statsLoading } =
-    useNotificationStats();
+  const {
+    data: statsResponse,
+    isLoading: statsLoading,
+    isError: statsError,
+    isFetching: statsFetching,
+    refetch: refetchStats,
+  } = useNotificationStats();
   // Verdict opener's own windowed stats (bu-y0v0c, JARVIS pursuit move 9
   // slice 3) -- a separate query, keyed on its own closed interval, so it
   // caches independently of the all-time stats bar above. The interval is
@@ -391,7 +398,6 @@ export default function NotificationsPage() {
   >(() => requestedNotificationId);
 
   // Keep a direct `?notification=` deep link authoritative if it changes
-  // (mirrors DecisionsPage's identical `requestedBeadId` sync effect).
   useEffect(() => {
     setSelectedNotificationId(requestedNotificationId);
   }, [requestedNotificationId]);
@@ -469,6 +475,7 @@ export default function NotificationsPage() {
           ) : undefined
         }
       >
+        <ConfirmRequests />
         {/* Verdict opener — windowed failed-notification count + dominant
             butler, composed from by_butler (fetched but discarded until now,
             JARVIS pursuit move 9 slice 3). */}
@@ -484,11 +491,42 @@ export default function NotificationsPage() {
 
         {/* Stats bar — Sent/Failed tiles are filter anchors (bu-qvnce.13): click
             one to pivot the filter bar to that status without leaving the page. */}
-        <NotificationStatsBar
-          stats={statsResponse?.data}
-          isLoading={statsLoading}
-          onFilterClick={(status) => handleFilterChange("status", status)}
-        />
+        {statsError && !statsResponse?.data ? (
+          <ErrorState
+            title="All-time notification statistics unavailable"
+            description="The statistics request failed. Try again to load the counts."
+            action={
+              <Button
+                variant="outline"
+                disabled={statsFetching}
+                onClick={() => void refetchStats()}
+              >
+                Retry
+              </Button>
+            }
+          />
+        ) : (
+          <>
+            {statsError && (
+              <div role="alert" className="flex flex-wrap items-center gap-3 px-6 py-3 text-sm text-destructive">
+                <p>All-time notification statistics are stale. The latest refresh failed.</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={statsFetching}
+                  onClick={() => void refetchStats()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+            <NotificationStatsBar
+              stats={statsResponse?.data}
+              isLoading={statsLoading}
+              onFilterClick={(status) => handleFilterChange("status", status)}
+            />
+          </>
+        )}
 
         {/* Filter bar */}
         <Section>

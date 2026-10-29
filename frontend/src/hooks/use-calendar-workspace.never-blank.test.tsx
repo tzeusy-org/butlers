@@ -29,7 +29,6 @@ vi.mock("@/api/index.ts", async (importOriginal) => {
     getCalendarWorkspace: vi.fn(),
     getCalendarWorkspaceAudit: vi.fn(),
     getCalendarWorkspaceConflicts: vi.fn(),
-    getCalendarWorkspaceDuplicates: vi.fn(),
     searchCalendarWorkspace: vi.fn(),
   };
 });
@@ -47,7 +46,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   useCalendarConflicts,
   useCalendarDayBriefing,
-  useCalendarDuplicates,
   useCalendarMeetingPrep,
   useCalendarOverlays,
   useCalendarWorkspaceAudit,
@@ -89,17 +87,6 @@ const keyedHooks: Array<{ name: string; useHook: () => void }> = [
     name: "workspace search phrase",
     useHook: () => {
       useCalendarWorkspaceSearch({ q: "planning", view: "user", timezone: "UTC" });
-    },
-  },
-  {
-    name: "duplicate-review window",
-    useHook: () => {
-      useCalendarDuplicates({
-        view: "user",
-        start: "2026-07-01T00:00:00Z",
-        end: "2026-07-08T00:00:00Z",
-        timezone: "UTC",
-      });
     },
   },
   {

@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from butlers.api.deps import get_db
+
 pytestmark = pytest.mark.unit
 
 
@@ -78,7 +80,7 @@ def _make_app(db_manager: MagicMock, roster_dir: Path, mcp_manager=None):
 
     app = FastAPI()
     app.include_router(runtime_config.router)
-    app.dependency_overrides[runtime_config._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db] = lambda: db_manager
     app.dependency_overrides[runtime_config._get_roster_dir] = lambda: roster_dir
     app.dependency_overrides[runtime_config._get_mcp_client_manager] = lambda: mcp_manager
     return app

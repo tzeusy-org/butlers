@@ -42,19 +42,18 @@ from butlers.api.conversations import (
     message_create_idempotent,
     message_find_reply_since,
     message_set_session_id_if_null,
-    resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 from butlers.api.routers import conversations as conversations_router
 from butlers.api.routers.conversations import (
     _SWITCHBOARD_BUTLER,
-    _get_db_manager,
     _persist_dashboard_user_message,
     _resolve_session_id,
     _stream_conversation_response,
     _submit_to_switchboard,
 )
+from butlers.core.conversation_sessions import resolve_resume_handle
 from butlers.core.dashboard_turns import DashboardTurnResult
 
 pytestmark = pytest.mark.unit
@@ -100,7 +99,7 @@ def _app_with_mock_db(
     else:
         mock_db.credential_shared_pool.return_value = mock_pool
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -777,7 +776,7 @@ async def test_conversation_get_or_create_by_thread_new_row_inserts_full_shape()
         pool,
         butler_name=_BUTLER,
         source_channel="telegram",
-        source_thread_identity="t:1",
+        external_conversation_id="telegram:t:1",
         first_message="hello",
     )
 
@@ -802,7 +801,7 @@ async def test_conversation_get_or_create_by_thread_conflict_reuses_existing_row
         pool,
         butler_name=_BUTLER,
         source_channel="telegram",
-        source_thread_identity="t:1",
+        external_conversation_id="telegram:t:1",
         first_message="a retried first message",
     )
 
@@ -820,7 +819,7 @@ async def test_conversation_get_or_create_by_thread_raises_if_row_vanishes():
             pool,
             butler_name=_BUTLER,
             source_channel="telegram",
-            source_thread_identity="t:1",
+            external_conversation_id="telegram:t:1",
             first_message="hello",
         )
 
@@ -980,7 +979,7 @@ def _app_with_mock_db_and_mcp(app: FastAPI, *, mcp_manager, reply_row=None, conv
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = shared_pool
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     return app, shared_pool
 
@@ -1042,7 +1041,7 @@ async def test_create_conversation_backfills_session_id_when_reply_row_lacks_one
     reply_row = _make_reply_row()  # session_id is None — ambient context absent
     app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
 
-    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db = app.dependency_overrides[get_db]()
     butler_pool = AsyncMock()
     butler_pool.fetchval = AsyncMock(return_value=resolved_session_id)
     mock_db.pool = MagicMock(return_value=butler_pool)
@@ -1088,7 +1087,7 @@ async def test_create_conversation_keeps_ambient_session_id_without_resolving(ap
     reply_row = _make_reply_row(session_id=ambient_session_id)
     app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
 
-    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db = app.dependency_overrides[get_db]()
     mock_db.pool = MagicMock(side_effect=AssertionError("must not resolve when already stamped"))
 
     async with httpx.AsyncClient(
@@ -2276,7 +2275,7 @@ class _FakeChatStreamListener:
             self._queue.put_nowait(envelope)
         self.closed = False
 
-    async def get(self, timeout: float) -> dict[str, object] | None:
+    async def get(self, timeout: float) -> dict[str, object] | None:  # noqa: ASYNC109 - fakes ChatStreamListener.get
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=timeout)
         except TimeoutError:
@@ -2409,14 +2408,21 @@ async def test_stream_fallback_emits_exactly_one_token_event_without_a_producer(
 
 
 async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch):
-    """A chat-stream NOTIFY wake (conversation_reply_create's reply_ready,
-    here faked at the listener seam) delivers message_complete far faster
-    than the fixed poll interval; with NOTIFY suppressed (no listener), the
-    safety-net poll still delivers it within that same configured window
-    (bu-0ynlk.7 AC3)."""
-    monkeypatch.setattr(conversations_router, "_POLL_INTERVAL_S", 0.2)
+    """NOTIFY delivers below the old500ms bound; suppressed delivery keeps
+    its configured200ms poll/600ms window (bu-0ynlk.7 AC3). Time begins at
+    the empty persisted read and queued wake, after unrelated dispatch setup.
+    """
+    notify_bound_s = 0.5
+    fallback_interval_s = 0.2
 
     async def _run(*, use_listener: bool) -> float:
+        # A forced full wait must violate the governing500ms NOTIFY bound.
+        # The suppressed companion retains its original faster test window.
+        monkeypatch.setattr(
+            conversations_router,
+            "_POLL_INTERVAL_S",
+            notify_bound_s if use_listener else fallback_interval_s,
+        )
         request_id = str(uuid4())
         mock_client = MagicMock()
         mock_client.call_tool = AsyncMock(
@@ -2430,16 +2436,45 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
             )
         )
         mgr = _make_mcp_manager(mock_client)
-        reply_row = _make_reply_row()
+        reply_row = _make_reply_row(
+            session_id=uuid4(),
+            routed_butler="finance",
+            citations=[{"label": "Stored reply", "target": "/conversations", "kind": "internal"}],
+        )
+        listener = _FakeChatStreamListener([]) if use_listener else None
+        observed: list[str] = []
+        ready_at = complete_at = None
+
+        async def read_reply(*args, **kwargs):
+            nonlocal ready_at
+            if ready_at is None:
+                observed.append("empty_read")
+                ready_at = time.monotonic()
+                # Simulate a reply committing just after this empty read.
+                # NOTIFY is only a wake; the next persisted read supplies it.
+                if listener is not None:
+                    listener._queue.put_nowait({"type": "reply_ready", "data": {}})
+                    observed.append("notify_queued")
+                return None
+            observed.append("persisted_recheck")
+            return reply_row
+
+        if listener is not None:
+            queued_get = listener.get
+
+            async def receive_wake(timeout):  # noqa: ASYNC109 - fakes ChatStreamListener.get
+                observed.append("listener_wait")
+                event = await queued_get(timeout)
+                observed.append("listener_wake" if event is not None else "listener_timeout")
+                return event
+
+            monkeypatch.setattr(listener, "get", AsyncMock(side_effect=receive_wake))
+
         shared_pool = AsyncMock()
-        shared_pool.fetchrow = AsyncMock(side_effect=[None, reply_row])
+        shared_pool.fetchrow = AsyncMock(side_effect=read_reply)
         shared_pool.execute = AsyncMock(return_value=None)
         mock_db = MagicMock(spec=DatabaseManager)
         mock_db.credential_shared_pool.return_value = shared_pool
-
-        listener = (
-            _FakeChatStreamListener([{"type": "reply_ready", "data": {}}]) if use_listener else None
-        )
         monkeypatch.setattr(
             conversations_router, "open_chat_stream_listener", AsyncMock(return_value=listener)
         )
@@ -2447,9 +2482,8 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
         envelope = build_dashboard_envelope(
             conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi", pinned_target=None
         )
-
-        start = time.monotonic()
-        async for _ in _stream_conversation_response(
+        events: list[str] = []
+        async for chunk in _stream_conversation_response(
             request=_FakeRequest(),
             butler_name=_SWITCHBOARD_BUTLER,
             conversation_id=_CONV_ID,
@@ -2458,14 +2492,45 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
             db=mock_db,
             mcp_mgr=mgr,
         ):
-            pass
-        return time.monotonic() - start
+            events.append(chunk)
+            if chunk.startswith("event: message_complete"):
+                complete_at = time.monotonic()
+                observed.append("message_complete")
+
+        assert ready_at is not None and complete_at is not None
+        assert shared_pool.fetchrow.await_count == 2
+        completions = [
+            json.loads(event.split("data: ", 1)[1])
+            for event in events
+            if event.startswith("event: message_complete")
+        ]
+        assert len(completions) == 1
+        assert completions[0]["message_id"] == str(reply_row["id"])
+        assert completions[0]["session_id"] == str(reply_row["session_id"])
+        assert completions[0]["citations"] == reply_row["citations"]
+        assert completions[0]["routed_butler"] == reply_row["routed_butler"]
+        assert "".join(token["content"] for token in _token_events(events)) == reply_row["content"]
+        assert events[-1].startswith("event: done")
+        if listener is not None:
+            listener.get.assert_awaited_once_with(timeout=notify_bound_s)
+            assert listener.closed
+            assert observed == [
+                "empty_read",
+                "notify_queued",
+                "listener_wait",
+                "listener_wake",
+                "persisted_recheck",
+                "message_complete",
+            ]
+        else:
+            assert observed == ["empty_read", "persisted_recheck", "message_complete"]
+        return complete_at - ready_at
 
     notify_elapsed = await _run(use_listener=True)
     poll_elapsed = await _run(use_listener=False)
 
     poll_interval = conversations_router._POLL_INTERVAL_S
-    assert notify_elapsed < poll_interval / 2
+    assert notify_elapsed < notify_bound_s
     assert poll_interval <= poll_elapsed < poll_interval * 3
 
 
@@ -2597,7 +2662,7 @@ async def test_stream_conversation_response_registers_switchboard_for_pass_throu
 
 async def test_cancel_with_no_active_turn_is_benign_noop(app):
     """Stop after the turn already finished must never claim it stopped anything."""
-    app.dependency_overrides[_get_db_manager] = lambda: MagicMock(spec=DatabaseManager)
+    app.dependency_overrides[get_db] = lambda: MagicMock(spec=DatabaseManager)
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock(spec=MCPClientManager)
 
     async with httpx.AsyncClient(
@@ -2645,7 +2710,7 @@ async def test_cancel_uses_switchboard_before_classifier_handoff(app):
     )
     mgr = _make_mcp_manager(switchboard_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2715,7 +2780,7 @@ async def test_cancel_prefers_post_classification_target_over_switchboard(app):
         }.__getitem__
     )
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2770,7 +2835,7 @@ async def test_cancel_with_post_classification_target_pending_session_stays_retr
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock()
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2819,7 +2884,7 @@ async def test_cancel_surfaces_target_session_lookup_failures(
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock()
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2891,7 +2956,7 @@ async def test_cancel_rechecks_handoff_after_switchboard_has_finished(app):
         }.__getitem__
     )
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2973,7 +3038,7 @@ async def test_cancel_rechecks_handoff_after_switchboard_cancel_succeeds(app):
         }.__getitem__
     )
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3019,7 +3084,7 @@ async def test_cancel_confirmed_by_routed_butler_kills_the_session(app):
     )
     mgr = _make_mcp_manager(mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3057,7 +3122,7 @@ async def test_cancel_when_session_already_finished_is_not_rendered_as_stopped(a
     )
     mgr = _make_mcp_manager(mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3088,7 +3153,7 @@ async def test_cancel_surfaces_honest_failure_when_butler_unreachable(app):
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("finance"))
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(

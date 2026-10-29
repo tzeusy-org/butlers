@@ -73,6 +73,6 @@ Then explore by topic as needed:
 
 ### Reference
 - [Diagrams](diagrams/) — source files for all documentation diagrams
-- [Working plans](plans/README.md) — retained design dependencies and approval packets
+- [Working plans](plans/README.md) — the only plan home: retained design dependencies, approval packets and review packets
 - [Redesigns](redesigns/README.md) — binding briefs and dated audit evidence
 - [Archive and successors](archive/README.md) — retained research and successor map for retired plans

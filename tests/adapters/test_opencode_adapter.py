@@ -13,6 +13,7 @@ Covers unique OpenCode behaviors not in test_adapter_contract.py:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -139,7 +140,12 @@ def test_build_config_file(tmp_path: Path, caplog):
         for bad_name in bad:
             assert bad_name not in data["mcp"]
     # Check structure for a valid server
-    mcp_servers = {"my-butler": {"url": "http://localhost:9100/mcp"}}
+    mcp_servers = {
+        "my-butler": {
+            "url": "http://localhost:9100/mcp",
+            "headers": {"X-Butlers-Fact-Invocation": "synthetic-binding"},
+        }
+    }
     config_path = adapter.build_config_file(mcp_servers=mcp_servers, tmp_dir=tmp_path)
     assert config_path == tmp_path / "opencode.jsonc"
     data = json.loads(config_path.read_text())
@@ -147,6 +153,7 @@ def test_build_config_file(tmp_path: Path, caplog):
     entry = data["mcp"]["my-butler"]
     assert entry["type"] == "remote" and entry["url"] == "http://localhost:9100/mcp"
     assert entry["enabled"] is True
+    assert entry["headers"] == {"X-Butlers-Fact-Invocation": "synthetic-binding"}
 
 
 # ---------------------------------------------------------------------------
@@ -538,7 +545,9 @@ async def test_invoke_spills_large_prompt_to_attachment():
         prompt_file = Path(cmd[cmd.index("--file") + 1])
         captured["cmd"] = cmd
         captured["kwargs"] = kwargs
-        captured["prompt_file_text"] = prompt_file.read_text(encoding="utf-8")
+        captured["prompt_file_text"] = await asyncio.to_thread(
+            prompt_file.read_text, encoding="utf-8"
+        )
         return mock_proc
 
     with patch(_EXEC, side_effect=fake_exec):

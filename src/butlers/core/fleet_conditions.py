@@ -130,12 +130,17 @@ async def active_legacy_liveness_conditions(pool: Any) -> list[Any]:
 
 
 async def reconcile_fleet_condition(
-    pool: Any, cycle: ShadowCycle, expected_names: frozenset[str]
+    pool: Any,
+    cycle: ShadowCycle,
+    expected_names: frozenset[str],
+    is_retired: Callable[[str], bool] | None = None,
 ) -> list[ConditionTransition]:
     """Record one fleet condition from a receiver cycle; resolve only on complete health.
 
-    A legacy per-butler episode resolves only when its daemon is in the exact
-    expected roster and this complete cycle proved it receiver-ready.
+    A legacy per-butler episode resolves when its daemon is in the exact expected
+    roster and this complete cycle proved it receiver-ready, or when ``is_retired``
+    reports a positive retirement signal for a butler outside the expected roster.
+    Absence from the expected roster alone never resolves it.
     """
     affected = sorted(
         (d for d in cycle.unready if d.policy_state != "paused"), key=lambda d: d.name
@@ -152,6 +157,21 @@ async def reconcile_fleet_condition(
                     fingerprint=row["fingerprint"],
                     resolution_metadata={
                         "resolution_reason": "complete_receiver_snapshot_healthy",
+                        "fleet_condition_fingerprint": FLEET_FINGERPRINT,
+                    },
+                )
+            elif (
+                row["butler"] is not None
+                and row["butler"] not in expected_names
+                and is_retired is not None
+                and is_retired(row["butler"])
+            ):
+                await resolve_condition(
+                    pool,
+                    source=_LEGACY_SOURCE,
+                    fingerprint=row["fingerprint"],
+                    resolution_metadata={
+                        "resolution_reason": "butler_retired_from_roster",
                         "fleet_condition_fingerprint": FLEET_FINGERPRINT,
                     },
                 )
@@ -441,10 +461,11 @@ async def run_controller_pass(
     cycle: ShadowCycle,
     expected_names: frozenset[str],
     qa_contract: QaPatrolContract | None,
+    is_retired: Callable[[str], bool] | None = None,
 ) -> None:
     """Run both independent checks, then attention; no step blocks another."""
     try:
-        await reconcile_fleet_condition(pool, cycle, expected_names)
+        await reconcile_fleet_condition(pool, cycle, expected_names, is_retired)
     except Exception:
         logger.exception("Fleet condition controller: fleet reconciliation failed")
     if qa_contract is not None:
@@ -459,13 +480,17 @@ async def run_controller_pass(
 
 
 def controller_after_cycle(
-    pool: Any, configs: list[Any]
+    pool: Any,
+    configs: list[Any],
+    is_retired: Callable[[str], bool] | None = None,
 ) -> Callable[[Any, ShadowCycle], Awaitable[None]]:
     """Bind the controller to the exact Git roster for the observer's ``after_cycle``.
 
     ``pool`` writes the condition ledger and reads ``public.qa_patrols``; the
     observer's Switchboard role view reads QA's owner policy and is the only
-    identity the attention producer accepts.
+    identity the attention producer accepts. ``is_retired`` is the startup
+    discovery's positive retirement signal for a butler name; without it no
+    legacy episode resolves by retirement.
     """
     expected_names = frozenset(config.name for config in configs)
     qa_contract = next(
@@ -474,6 +499,8 @@ def controller_after_cycle(
     )
 
     async def after_cycle(policy_reader: Any, cycle: ShadowCycle) -> None:
-        await run_controller_pass(pool, policy_reader, cycle, expected_names, qa_contract)
+        await run_controller_pass(
+            pool, policy_reader, cycle, expected_names, qa_contract, is_retired
+        )
 
     return after_cycle

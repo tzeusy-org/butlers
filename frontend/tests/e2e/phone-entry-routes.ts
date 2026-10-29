@@ -1,3 +1,5 @@
+import { emptyApprovalMetrics } from "./fixtures/empty-api";
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
  * Phone entry-route registry.
  *
@@ -13,7 +15,7 @@
 
 import type { Locator, Page } from "@playwright/test";
 
-type Fixtures = Record<string, unknown>;
+type Fixtures = Record<string, string>;
 
 export interface PhoneEntryRoute {
   /** Test title and failure label. */
@@ -32,7 +34,7 @@ const NOW = "2026-10-01T09:00:00Z";
 const APPROVAL_ID = "11111111-1111-4111-8111-111111111111";
 const CONVERSATION_ID = "22222222-2222-4222-8222-222222222222";
 
-const APPROVAL_SUMMARY = {
+const APPROVAL_SUMMARY: ResponseOf<"getApprovalsFlat">["data"][number] = {
   id: APPROVAL_ID,
   butler: "general",
   tool_name: "send_email",
@@ -45,16 +47,16 @@ const APPROVAL_SUMMARY = {
 };
 
 const APPROVALS_FIXTURES: Fixtures = {
-  "**/api/approvals?*": {
+  "**/api/approvals?*": mockJson("getApprovalsFlat", {
     data: [APPROVAL_SUMMARY],
     meta: { stalled_count: 0, sources_degraded: [] },
-  },
-  "**/api/approvals/history*": { data: [], meta: { sources_degraded: [] } },
-  "**/api/approvals/policy": { data: { timezone: "UTC" }, meta: {} },
-  "**/api/approvals/unroutable": { data: [], meta: {} },
-  "**/api/approvals/rules*": { data: [], meta: {} },
-  "**/api/approvals/metrics": { data: [], meta: {} },
-  [`**/api/approvals/${APPROVAL_ID}`]: {
+  }),
+  "**/api/approvals/history*": mockJson("getApprovalsHistory", { data: [], meta: { sources_degraded: [] } }),
+  "**/api/approvals/policy": mockJson("getApprovalsPolicy", { data: { timezone: "UTC" }, meta: {} }),
+  "**/api/approvals/unroutable": mockJson("getUnroutableAttention", { data: [], meta: {} }),
+  "**/api/approvals/rules*": mockJson("getApprovalRules", { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } }),
+  "**/api/approvals/metrics": mockJson("getApprovalMetrics", emptyApprovalMetrics),
+  [`**/api/approvals/${APPROVAL_ID}`]: mockJson("getApprovalDetail", {
     data: {
       ...APPROVAL_SUMMARY,
       title: "Send email to landlord",
@@ -66,11 +68,11 @@ const APPROVALS_FIXTURES: Fixtures = {
       },
     },
     meta: {},
-  },
+  }),
 };
 
 const SECRETS_FIXTURES: Fixtures = {
-  "**/api/secrets/inventory**": {
+  "**/api/secrets/inventory**": mockJson("getSecretsInventory", {
     data: {
       user: [
         {
@@ -104,11 +106,11 @@ const SECRETS_FIXTURES: Fixtures = {
       failing_count_by_family: { cli: 0, system: 0, user: 0 },
       unverified_count_by_family: { cli: 0, system: 0, user: 0 },
     },
-  },
-  "**/api/secrets/breaks-catalogue**": { breaks: [] },
+  }),
+  "**/api/secrets/breaks-catalogue**": mockJson("getBreaksCatalogue", { data: [], meta: { catalogue_available: true } }),
 };
 
-const CONVERSATION = {
+const CONVERSATION: ResponseOf<"getConversationById"> = {
   id: CONVERSATION_ID,
   butler_name: "switchboard",
   title: "Lease renewal",
@@ -119,10 +121,10 @@ const CONVERSATION = {
 };
 
 const CHAT_FIXTURES: Fixtures = {
-  [`**/api/conversations/${CONVERSATION_ID}`]: CONVERSATION,
-  "**/api/butlers/*/conversations": { data: [CONVERSATION], meta: {} },
-  "**/api/butlers/*/conversations?*": { data: [CONVERSATION], meta: {} },
-  [`**/api/butlers/*/conversations/${CONVERSATION_ID}/messages`]: {
+  [`**/api/conversations/${CONVERSATION_ID}`]: mockJson("getConversationById", CONVERSATION),
+  "**/api/butlers/*/conversations": mockJson("listConversations", { data: [CONVERSATION], meta: {} }),
+  "**/api/butlers/*/conversations?*": mockJson("listConversations", { data: [CONVERSATION], meta: {} }),
+  [`**/api/butlers/*/conversations/${CONVERSATION_ID}/messages`]: mockJson("getConversationMessages", {
     data: [
       {
         id: "33333333-3333-4333-8333-333333333333",
@@ -140,8 +142,8 @@ const CHAT_FIXTURES: Fixtures = {
       },
     ],
     meta: {},
-  },
-  "**/api/pricing*": { data: {}, meta: {} },
+  }),
+  "**/api/pricing*": mockJson("fetchPricingMap", { data: {}, meta: {} }),
 };
 
 export const PHONE_ENTRY_ROUTES: PhoneEntryRoute[] = [

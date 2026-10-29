@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
 
 class EntityStateResponse(BaseModel):
@@ -287,3 +287,28 @@ class AtmosphereLocationUpdateRequest(BaseModel):
 
     latitude: float = Field(..., ge=-90, le=90)
     longitude: float = Field(..., ge=-180, le=180)
+
+
+class SafetyWatchEntry(BaseModel):
+    """One owner-declared life-safety sensor (``home.safety_watch``)."""
+
+    entity_id: str
+    role: Literal["leak", "smoke", "co", "gas"]
+    owner_label: str
+    updated_at: str | None = None
+
+
+class SafetyWatchUpsertRequest(BaseModel):
+    """Declare (or relabel) a sensor as guarding against one hazard."""
+
+    entity_id: str = Field(..., pattern=r"^binary_sensor\.[a-z0-9_]+$", max_length=255)
+    role: Literal["leak", "smoke", "co", "gas"]
+    owner_label: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("owner_label")
+    @classmethod
+    def _label_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("owner_label must not be blank")
+        return stripped

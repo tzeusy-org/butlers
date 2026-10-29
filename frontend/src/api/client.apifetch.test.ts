@@ -22,7 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
 
-import { apiFetch, ApiError, API_REQUEST_TIMEOUT_MS } from "./client.ts";
+import { apiFetch, ApiError, API_REQUEST_TIMEOUT_MS, getApprovalDetail, getCalendarResponseReceipt } from "./client.ts";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -48,6 +48,20 @@ describe("apiFetch — timeout", () => {
     const result = await apiFetch("/health");
 
     expect(result).toEqual({ ok: true });
+
+    // Spec: REQ-dashboard-visibility-004; ordinary URLs stay exact, source qualification is explicit.
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: {} }));
+    await getApprovalDetail("action-id");
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/approvals\/action-id$/);
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: {} }));
+    await getApprovalDetail("action-id", "messenger");
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/approvals\/action-id\?review_source=messenger$/);
+    mockFetch.mockResolvedValueOnce(jsonResponse({ data: {} }));
+    await getCalendarResponseReceipt("original/id", "messenger", true);
+    expect(mockFetch.mock.calls.at(-1)?.[0]).toMatch(/\/calendar\/workspace\/responses\/original%2Fid\?source_butler=messenger&inverse=true$/);
+    expect(mockFetch.mock.calls.at(-1)?.[1].method ?? "GET").toBe("GET");
+
+
   });
 
   it("passes an AbortSignal to fetch even when the caller supplies no options", async () => {

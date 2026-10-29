@@ -21,7 +21,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LogLevel } from "@/api/types";
-import { Panel } from "@/components/butler-detail/atoms";
+import { Panel } from "@/components/ui/atoms";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
 import { useButlerLogs } from "@/hooks/use-butler-logs";

@@ -226,7 +226,7 @@ export function MapWidgetInner({
   // Register a panTo implementation with the shared pan store.
   useEffect(() => {
     registerMapPan((lat, lng) => {
-      mapRef.current?.flyTo({ center: [lng, lat], zoom: 13 })
+      mapRef.current?.flyTo({ center: [lng, lat], zoom: 13, duration: 0 })
     })
   }, [registerMapPan, hasMapData])
 
@@ -252,7 +252,7 @@ export function MapWidgetInner({
       markersRef.current.push(marker)
       bounds.extend([point.lng, point.lat])
     }
-    map.fitBounds(bounds, { padding: 48, maxZoom: 14 })
+    map.fitBounds(bounds, { padding: 48, maxZoom: 14, duration: 0 })
   }, [visiblePoints])
 
   // Fit the map to the trail's bounding box on first load so the user sees

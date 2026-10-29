@@ -85,7 +85,6 @@ export const EVENT_CACHE_COVERAGE_MANIFEST: CoverageEntry[] = [
   { eventType: "calendar", queryKey: ["calendar-overlays"], source: "use-calendar-workspace.ts (useCalendarOverlays)" },
   { eventType: "calendar", queryKey: ["calendar-day-briefing"], source: "use-calendar-workspace.ts (useCalendarDayBriefing)" },
   { eventType: "calendar", queryKey: ["calendar-proposals"], source: "use-calendar-workspace.ts (useCalendarProposals)" },
-  { eventType: "calendar", queryKey: ["calendar-duplicates"], source: "use-calendar-workspace.ts (useCalendarDuplicates)" },
   { eventType: "calendar", queryKey: ["calendar-conflicts"], source: "use-calendar-workspace.ts (useCalendarConflicts)" },
   { eventType: "calendar", queryKey: ["calendar-workspace-entry"], source: "use-calendar-workspace.ts (useCalendarWorkspaceEntry)" },
   { eventType: "calendar", queryKey: ["calendar-workspace-search"], source: "use-calendar-workspace.ts (useCalendarWorkspaceSearch)" },

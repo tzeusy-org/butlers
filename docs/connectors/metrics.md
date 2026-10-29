@@ -139,4 +139,4 @@ PROMETHEUS_URL=http://localhost:1 curl -s http://localhost:41200/api/ingestion/c
 - [Connector Interface](overview.md) -- Shared connector contract and lifecycle
 - [Heartbeat Protocol](heartbeat.md) -- Liveness signaling that complements these metrics
 - [Attachment Handling](attachment-handling.md) -- Attachment-specific metric semantics
-- [Metrics Module](../modules/metrics.md) -- Butler-level Prometheus integration (separate from connector metrics)
+- [Observability](../architecture/observability.md) -- Shared Prometheus query transport (separate from connector instrumentation)

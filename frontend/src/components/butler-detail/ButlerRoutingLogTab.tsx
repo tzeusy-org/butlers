@@ -5,7 +5,7 @@
  */
 
 import RoutingLogTable from "@/components/switchboard/RoutingLogTable.tsx";
-import { ButlerPanelGrid, Panel } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel } from "@/components/ui/atoms";
 
 export default function ButlerRoutingLogTab() {
   return (

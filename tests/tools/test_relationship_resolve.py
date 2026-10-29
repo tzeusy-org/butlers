@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
-import sys
+import importlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -13,11 +12,8 @@ RESOLVE_PATH = Path(__file__).parent.parent.parent / "roster/relationship/tools/
 
 
 def _load_resolve_module():
-    spec = importlib.util.spec_from_file_location("resolve", RESOLVE_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["resolve"] = mod
-    spec.loader.exec_module(mod)
+    mod = importlib.import_module("butlers.tools.relationship.resolve")
+    assert mod.__spec__ is not None and mod.__spec__.loader is not None
     return mod
 
 

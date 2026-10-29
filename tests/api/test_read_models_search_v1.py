@@ -27,7 +27,7 @@ from uuid import UUID
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 
-from butlers.api.read_models.search_v1 import (
+from butlers.api.read_models.search import (
     CONTACT_COLUMNS,
     ENTITY_COLUMNS,
     ENTITY_FACTS_SNIPPET_COLUMNS,

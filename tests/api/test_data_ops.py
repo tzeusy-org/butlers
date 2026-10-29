@@ -34,6 +34,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.audit import AuditTableNotAvailableError
 from butlers.api.routers.data_ops import (
     _DEV_EXPORT_ENCRYPTION_KEY,
@@ -43,7 +44,6 @@ from butlers.api.routers.data_ops import (
     _SCOPE_MAP,
     _decrypt_export,
     _encrypt_export,
-    _get_db_manager,
     _sign_token,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -63,6 +63,21 @@ def _make_pool() -> AsyncMock:
 def _make_db(pool: AsyncMock) -> MagicMock:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
+    return db
+
+
+def _make_roster_db(pool: AsyncMock) -> DatabaseManager:
+    """A real DatabaseManager whose only registered butler is a memory butler.
+
+    The memory/all export scopes build their tables from the manager's butler
+    roster (bu-8ptawc), so these cases use the real manager seam rather than a
+    ``MagicMock(spec=DatabaseManager)`` that would silently pick a different path.
+    """
+    db = DatabaseManager()
+    db._pools["switchboard"] = pool
+    db._butler_schemas["switchboard"] = "switchboard"
+    db._butler_memory_schema_overrides["switchboard"] = None
+    db._butler_modules["switchboard"] = frozenset({"memory"})
     return db
 
 
@@ -101,7 +116,7 @@ async def test_export_returns_signed_url(app):
     """POST /api/data/export returns a signed URL with 60-minute TTL."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -120,7 +135,7 @@ async def test_export_calls_audit(app):
     """POST /api/data/export calls audit.append with action=data.export."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock) as mock_audit:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -156,7 +171,7 @@ async def test_export_propagates_audit_unavailable_as_503(app):
     """
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch(
         "butlers.api.routers.data_ops.audit.append",
@@ -174,7 +189,7 @@ async def test_export_unknown_scope_returns_400(app):
     """POST /api/data/export rejects unknown scopes with 400 Bad Request."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -191,7 +206,7 @@ async def test_export_accepts_full_alias(app):
     """POST /api/data/export accepts 'full' as an alias for 'all'."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -218,7 +233,7 @@ async def test_download_valid_token_returns_200_encrypted(app):
     pool = _make_pool()
     pool.fetch = AsyncMock(return_value=[{"id": 1, "action": "data.export", "actor": "owner"}])
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-id-1234"
     url = _make_download_url(export_id, "audit")
@@ -242,7 +257,7 @@ async def test_download_audit_scope_returns_encrypted_zip_with_real_data(app):
         ]
     )
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-audit"
     url = _make_download_url(export_id, "audit")
@@ -271,7 +286,7 @@ async def test_download_config_scope_returns_encrypted_zip_with_all_config_table
         ]
     )
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-config"
     url = _make_download_url(export_id, "config")
@@ -304,8 +319,8 @@ async def test_download_memory_scope_returns_encrypted_zip_with_memory_tables(ap
             [{"id": "e1", "butler": "general", "content": "Session log entry"}],
         ]
     )
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    db = _make_roster_db(pool)
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-memory"
     url = _make_download_url(export_id, "memory")
@@ -315,15 +330,23 @@ async def test_download_memory_scope_returns_encrypted_zip_with_memory_tables(ap
 
     assert resp.status_code == 200
     files = _decrypt_zip_content(resp.content)
-    assert "memory_facts.ndjson" in files
-    assert "memory_rules.ndjson" in files
-    assert "memory_episodes.ndjson" in files
+    assert "switchboard_memory_facts.ndjson" in files
+    assert "switchboard_memory_rules.ndjson" in files
+    assert "switchboard_memory_episodes.ndjson" in files
 
-    facts = [json.loads(line) for line in files["memory_facts.ndjson"].splitlines() if line]
+    facts = [
+        json.loads(line) for line in files["switchboard_memory_facts.ndjson"].splitlines() if line
+    ]
     assert facts[0]["predicate"] == "name"
-    rules = [json.loads(line) for line in files["memory_rules.ndjson"].splitlines() if line]
+    rules = [
+        json.loads(line) for line in files["switchboard_memory_rules.ndjson"].splitlines() if line
+    ]
     assert "politely" in rules[0]["content"]
-    episodes = [json.loads(line) for line in files["memory_episodes.ndjson"].splitlines() if line]
+    episodes = [
+        json.loads(line)
+        for line in files["switchboard_memory_episodes.ndjson"].splitlines()
+        if line
+    ]
     assert episodes[0]["butler"] == "general"
 
 
@@ -343,8 +366,8 @@ async def test_download_all_scope_includes_all_tables(app):
             [{"id": "p1", "butler": "general"}],
         ]
     )
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    db = _make_roster_db(pool)
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-all"
     url = _make_download_url(export_id, "all")
@@ -355,9 +378,9 @@ async def test_download_all_scope_includes_all_tables(app):
     assert resp.status_code == 200
     files = _decrypt_zip_content(resp.content)
     expected_files = {
-        "memory_facts.ndjson",
-        "memory_rules.ndjson",
-        "memory_episodes.ndjson",
+        "switchboard_memory_facts.ndjson",
+        "switchboard_memory_rules.ndjson",
+        "switchboard_memory_episodes.ndjson",
         "public_audit_log.ndjson",
         "public_runtime_config.ndjson",
         "public_model_catalog.ndjson",
@@ -375,8 +398,8 @@ async def test_download_full_alias_same_as_all(app):
     """scope=full (alias for all) returns the same 7-table set as scope=all."""
     pool = _make_pool()
     pool.fetch = AsyncMock(return_value=[{"id": 1}])
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    db = _make_roster_db(pool)
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-full"
     url = _make_download_url(export_id, "full")
@@ -394,7 +417,7 @@ async def test_download_round_trip_decrypt(app):
     pool = _make_pool()
     pool.fetch = AsyncMock(return_value=[{"id": 99, "action": "webhook.test", "actor": "owner"}])
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     # Step 1: POST to get the signed URL
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock):
@@ -439,8 +462,8 @@ async def test_download_skip_columns_excludes_embeddings(app):
             }
         ]
     )
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    db = _make_roster_db(pool)
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-skip-cols"
     url = _make_download_url(export_id, "memory")
@@ -450,7 +473,7 @@ async def test_download_skip_columns_excludes_embeddings(app):
 
     assert resp.status_code == 200
     files = _decrypt_zip_content(resp.content)
-    facts_content = files["memory_facts.ndjson"]
+    facts_content = files["switchboard_memory_facts.ndjson"]
     row = json.loads(facts_content.strip())
     # Retained columns
     assert row["id"] == "f1"
@@ -466,7 +489,7 @@ async def test_download_table_fetch_failure_returns_500(app):
     pool = _make_pool()
     pool.fetch = AsyncMock(side_effect=RuntimeError("db error"))
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-fetch-fail"
     url = _make_download_url(export_id, "audit")
@@ -481,7 +504,7 @@ async def test_download_expired_token_returns_410(app):
     """Token older than 60 minutes returns 410 Gone."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-id-expired"
     old_ts = int(time.time()) - 3661  # 61 minutes ago
@@ -497,7 +520,7 @@ async def test_download_bad_signature_returns_401(app):
     """Tampered token returns 401 Unauthorized."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-id-badsig"
     ts = int(time.time())
@@ -518,7 +541,7 @@ async def test_download_wrong_scope_returns_401(app):
     """
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-id-wrongscope"
     ts = int(time.time())
@@ -536,7 +559,7 @@ async def test_download_future_issued_at_returns_401(app):
     """Token with far-future issued_at is rejected (clock-forward bypass attempt)."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-id-future"
     future_ts = int(time.time()) + 365 * 24 * 3600
@@ -553,7 +576,7 @@ async def test_download_negative_issued_at_returns_401(app):
     """Token with negative issued_at is rejected."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     export_id = "test-export-id-negative"
     negative_ts = -1
@@ -580,7 +603,7 @@ async def test_wipe_disabled_returns_503(app):
     """Wipe with exact phrase returns 503 wipe_disabled (feature disabled)."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.request(
@@ -597,7 +620,7 @@ async def test_wipe_disabled_no_db_mutation(app):
     """Wipe returns 503 without executing any DROP or audit call."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.data_ops.audit.append", new_callable=AsyncMock) as mock_audit:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -616,7 +639,7 @@ async def test_wipe_any_phrase_returns_503(app):
     """Any phrase (correct or not) returns 503 while wipe is disabled."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     for phrase in [_EXACT_PHRASE, _EXACT_PHRASE + " ", _EXACT_PHRASE.lower(), "wrong"]:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -630,7 +653,7 @@ async def test_wipe_missing_phrase_returns_422(app):
     """Missing phrase field returns 422 (Pydantic validation fires before handler)."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.request(
@@ -882,8 +905,8 @@ async def test_download_bytes_are_encrypted_not_plaintext(app, scope):
     sentinel = "SENTINEL_PLAINTEXT_MARKER_permission.set"
     pool = _make_pool()
     pool.fetch = AsyncMock(return_value=[{"id": 1, "action": sentinel, "actor": "owner"}])
-    db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    db = _make_roster_db(pool)
+    app.dependency_overrides[get_db] = lambda: db
 
     url = _make_download_url(f"test-enc-{scope}", scope)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

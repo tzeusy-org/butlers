@@ -9,3 +9,11 @@ set -euo pipefail
 [ -z "${BUTLERS_PUBLIC_HOST:-}" ] || printf '%s\n' "--set publicUrl.host=${BUTLERS_PUBLIC_HOST}"
 [ -z "${BUTLERS_OTLP_ENDPOINT:-}" ] || printf '%s\n' "--set commonEnv.OTEL_EXPORTER_OTLP_ENDPOINT=${BUTLERS_OTLP_ENDPOINT}"
 [ -z "${LIVE_LISTENER_TRANSCRIPTION_URL:-}" ] || printf '%s\n' "--set commonEnv.LIVE_LISTENER_TRANSCRIPTION_URL=${LIVE_LISTENER_TRANSCRIPTION_URL}"
+# The retained tracker-egress NetworkPolicy needs every IPv4 address of the tracker host
+# it resolves to (pods are IPv4-only). An unresolvable host prints no CIDRs, so the render fails
+# instead of shipping without the egress boundary.
+if [ -n "${BEADS_DOLT_SERVER_HOST:-}" ]; then
+    _dolt_cidrs="$(getent ahostsv4 "${BEADS_DOLT_SERVER_HOST}" 2>/dev/null \
+        | awk '{print $1 "/32"}' | sort -u | paste -sd, -)"
+    [ -z "${_dolt_cidrs}" ] || printf '%s\n' "--set 'trackerEgress.deniedCidrs={${_dolt_cidrs}}'"
+fi

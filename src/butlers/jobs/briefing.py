@@ -20,13 +20,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from datetime import date as date_cls
 from typing import Any, TypedDict
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
 from butlers.config import ButlerType, list_butlers
+from butlers.core.general_settings import load_configured_general_timezone
 from butlers.core.state import state_delete, state_list, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.core_tools._delegation import dispatch_delegated_ask
@@ -106,6 +108,25 @@ class CombinedBriefingPayload(TypedDict):
 def today_sgt() -> date_cls:
     """Return today's date in SGT (UTC+8)."""
     return datetime.now(tz=SGT).date()
+
+
+async def owner_briefing_zone(pool: asyncpg.Pool) -> tzinfo:
+    """Return the owner's configured timezone for day-window math, else SGT.
+
+    Reads the shared ``settings.general`` timezone from ``public.state`` (the single source the
+    scheduler, the dashboard and the session filters use), schema-qualified because the
+    job's pool resolves an unqualified ``state`` to ``health.state``.  The documented fallback
+    is SGT: it applies when the owner never saved a timezone, when the shared settings cannot be
+    read, and when the stored name is not a valid IANA zone, so the briefing keeps its
+    historical day window instead of silently switching to UTC.
+    """
+    try:
+        name = await load_configured_general_timezone(pool)
+        if name is not None:
+            return ZoneInfo(name)
+    except Exception:
+        logger.warning("Could not resolve owner timezone for briefing; using SGT", exc_info=True)
+    return SGT
 
 
 def contribution_key(date: str) -> str:
@@ -233,6 +254,16 @@ async def _write_contribution(
 # ---------------------------------------------------------------------------
 
 
+def _schedule_list(raw: Any) -> list[str]:
+    """Normalise a medication ``schedule`` JSONB value (list, JSON text, or None)."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    return [str(x) for x in raw] if isinstance(raw, list) else []
+
+
 async def run_health_briefing_contribution(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -240,7 +271,8 @@ async def run_health_briefing_contribution(
     """Health butler daily briefing contribution job.
 
     Queries:
-    - Medication adherence today (missed doses)
+    - Medication adherence today (overdue doses as missed, later doses as "due later";
+      as-needed medications never; see ``dose_status_today``)
     - Latest weight measurement
     - Next upcoming appointment (from state or calendar notes — calendar not queried here)
 
@@ -248,12 +280,16 @@ async def run_health_briefing_contribution(
     """
     del job_args
 
-    today_dt = today_sgt()
-    today_str = today_dt.isoformat()
-    # Compute SGT day boundaries (midnight SGT -> next midnight SGT) and convert to UTC
-    sgt_midnight = datetime(today_dt.year, today_dt.month, today_dt.day, tzinfo=SGT)
-    today_start = sgt_midnight.astimezone(UTC)
-    today_end = (sgt_midnight + timedelta(days=1)).astimezone(UTC)
+    # The contribution key/date stays on the fleet-wide SGT briefing date (every reader
+    # of ``briefing/daily/<date>`` keys on it); only the dose day window and the
+    # missed / due-later split follow the owner's configured timezone.
+    today_str = today_sgt().isoformat()
+    owner_zone = await owner_briefing_zone(pool)
+    now_local = datetime.now(tz=owner_zone)
+    # Owner-local day boundaries (midnight -> next midnight) converted to UTC.
+    local_midnight = datetime(now_local.year, now_local.month, now_local.day, tzinfo=owner_zone)
+    today_start = local_midnight.astimezone(UTC)
+    today_end = (local_midnight + timedelta(days=1)).astimezone(UTC)
 
     highlights: list[BriefingHighlight] = []
 
@@ -265,46 +301,73 @@ async def run_health_briefing_contribution(
     # (roster/health/api/router.py) and the medication_add / medication_log_dose
     # write paths. The legacy health.medications / health.medication_doses
     # relational tables are orphaned (the butler no longer writes them).
-    missed_rows = await pool.fetch(
+    # Every active medication with today's non-skipped dose count; whether a dose is
+    # missed, due later, or not scheduled at all is decided in Python from the
+    # medication's frequency and schedule (shared helper), not by "no dose since
+    # midnight".
+    med_rows = await pool.fetch(
         """
         SELECT m.metadata->>'name' AS name,
                m.metadata->>'frequency' AS frequency,
-               m.metadata->'schedule' AS schedule
+               m.metadata->'schedule' AS schedule,
+               (
+                 SELECT COUNT(*) FROM facts d
+                 WHERE d.predicate = 'took_dose'
+                   AND d.validity = 'active'
+                   AND d.scope = 'health'
+                   AND d.metadata->>'medication_id' = m.id::text
+                   AND d.valid_at >= $1
+                   AND d.valid_at < $2
+                   AND COALESCE((d.metadata->>'skipped')::boolean, false) = false
+               ) AS doses_taken
         FROM facts m
         WHERE m.predicate = 'medication'
           AND m.validity = 'active'
           AND m.scope = 'health'
           AND (m.metadata->>'active')::boolean = true
-          AND NOT EXISTS (
-            SELECT 1 FROM facts d
-            WHERE d.predicate = 'took_dose'
-              AND d.validity = 'active'
-              AND d.scope = 'health'
-              AND d.metadata->>'medication_id' = m.id::text
-              AND d.valid_at >= $1
-              AND d.valid_at < $2
-              AND COALESCE((d.metadata->>'skipped')::boolean, false) = false
-          )
         ORDER BY m.metadata->>'name'
         """,
         today_start,
         today_end,
     )
 
-    missed_count = len(missed_rows)
+    from butlers.tools.health._medication_utils import dose_status_today
+
+    missed_names: list[str] = []
+    due_later_names: list[str] = []
+    for row in med_rows:
+        status = dose_status_today(
+            frequency=row["frequency"],
+            schedule=_schedule_list(row["schedule"]),
+            now_local=now_local,
+            doses_taken=int(row.get("doses_taken") or 0),
+        )
+        if status.missed > 0:
+            missed_names.append(row["name"])
+        if status.due_later > 0:
+            due_later_names.append(row["name"])
+
+    missed_count = len(missed_names)
     if missed_count > 0:
-        missed_names = ", ".join(r["name"] for r in missed_rows)
         highlights.append(
             {
                 "category": "medication",
-                "text": f"Missed dose(s) today: {missed_names}",
+                "text": f"Missed dose(s) today: {', '.join(missed_names)}",
                 "priority": "high",
+            }
+        )
+    if due_later_names:
+        highlights.append(
+            {
+                "category": "medication",
+                "text": f"Doses due later today: {', '.join(due_later_names)}",
+                "priority": "low",
             }
         )
 
     # --- Taken doses today (for adherence context) ---
     # Count non-skipped dose facts (predicate='took_dose', scope='health') whose
-    # valid_at (taken_at) falls within today's SGT window.
+    # valid_at (taken_at) falls within today's owner-local window.
     taken_rows = await pool.fetch(
         """
         SELECT COUNT(*) AS cnt

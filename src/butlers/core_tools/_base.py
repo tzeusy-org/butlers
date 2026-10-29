@@ -34,6 +34,12 @@ class NotifyRequestContextInput(TypedDict):
             ),
         ]
     ]
+    external_conversation_id: NotRequired[
+        Annotated[
+            str,
+            Field(description="Stable provider conversation identity used for history continuity."),
+        ]
+    ]
     received_at: NotRequired[
         Annotated[str, Field(description="Optional RFC3339 source receive timestamp.")]
     ]

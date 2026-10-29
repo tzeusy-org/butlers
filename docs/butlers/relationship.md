@@ -107,11 +107,39 @@ commitment only when the owner declares it. The next calendar prep envelope for 
 carries the commitment.
 
 Three consecutive unanswered batches drop the cadence to once a week (the batch that crosses the
-threshold says so); any answer restores the daily cadence. Not built yet: the dashboard Debrief
-card with a pinned reply (replies go through ordinary routing today), a "work commitments" filter
-on the condition ledger, and deriving `sphere` from endpoint custody.
+threshold says so); any answer restores the daily cadence.
+
+The Calendar page shows a Debrief card fed by `GET /api/relationship/meeting-debriefs/pending`,
+which returns what `meeting_debrief_pending` returns (a failed read is `debriefs_available: false`,
+never an empty list). A reply from the card is sent as `"<number>: <text>"` to the Relationship
+pinned dashboard conversation, so it reaches the `meeting-debrief` skill without classification.
+Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
+endpoint custody.
 
 ## Implementation Notes
+
+### Meeting debrief answer transactions
+
+The answer handler holds the debrief row and rechecks answerability in the same owning
+transaction as every public `create_commitment` call and the final state update. The additive
+internal `transaction_connection` option retains the ordinary pool wrapper; it must not reacquire
+the held pool connection, so a size-one pool works. Batch preflight reuses common validation.
+Required propagated graph/final-state failures and cancellation before commit roll back the batch,
+including changes to existing confirmations. Typed invalid responses follow rollback; captured/
+none_agreed follow commit. Lost commit acknowledgment remains uncertain, and durable row-lock
+retry cannot append a second answer. The job's stale unaskable expiry rechecks pending.
+
+Creation and reconfirmation use `snapshot_complete=False` and produce no resolved transition,
+so they do not generate premise amendments. The existing resolved-only premise hook retains its
+savepoint/best-effort ordinary-error behavior; this existing partial conformance does not waive the
+mandatory resolved-enqueue contract. Conditional enqueue commit/rollback proof uses a real
+resolution control. Counterparty/null, evidence, declared sphere and current prompt posture policy
+are preserved. Answer-time posture (.69) and free-text/LLM verification (.66) remain separately
+uncompleted. The source PR retains separate baseline and corrected-source receipts: the actual
+before-fix head `220cf3eb` executed 23 migrated PG cases with 10 causal failures and 13 passing
+controls in CI 37286612106. Corrected-source named PG proof, independent review and the protected
+gate remain required; source inspection and collection alone are not runtime proof.
+
 
 - `relationship.facts` is a multi-valued log store: `activity` and `interaction_*` carry many
   active rows per `(entity_id, predicate)`. Contradiction detection in
@@ -122,6 +150,18 @@ on the condition ledger, and deriving `sphere` from endpoint custody.
 - `run_interaction_sync_job` reads `switchboard.message_inbox` directly, so `scripts/init-db.sql`
   grants `butler_relationship_rw` read-only access to schema `switchboard` (plus matching default
   privileges).
+- Calendar interaction sync reads `relationship.calendar_events` explicitly through the
+  Relationship role. It consumes the local Calendar module projection, including its attendee
+  metadata, rather than falling back to a public or another butler's projection.
+  Calendar query failures increment the existing `errors` result counter and log the failure;
+  a missing table emits a warning. The shared checkpoint remains unchanged after a failed
+  calendar query, preserving the bounded interval for the next scheduled run while committed
+  message interactions deduplicate. A successful empty read advances normally. The scheduler
+  still records the returned dict as dispatch success, so callers must inspect `errors`.
+- Routine Calendar provider polling remains disabled by default in the checked-in Relationship
+  configuration. Existing internal projection, explicit force-sync and mutation projection
+  paths remain available. Reading this table proves local consumption only; it does not prove
+  provider ingestion or deployed source population, and does not subscribe to foreign schemas.
 - `POST /api/relationship/contacts/sync` dispatches to the `contacts_sync_now` MCP tool with
   `{"provider": "google", "mode": "incremental|full"}`. `mode` is strict, and credential failures
   surface as `400` errors pointing at `/api/oauth/google/start`.
@@ -135,7 +175,34 @@ on the condition ledger, and deriving `sphere` from endpoint custody.
   `extra_metadata.source == "interaction_sync"`; `email`, `interview` and `calendar_event`
   interactions weigh `0.2`.
 
+## Upcoming date push
+
+The registered `upcoming_dates` tool selects only `public.entities.posture = 'active'`
+in both contact-anchored and contactless entity-anchored UNION arms. Existing listed/archive
+mapping, ordering, anniversaries and year wrapping remain in effect. The 08:00
+`upcoming-dates-check` job calls `upcoming_dates(days_ahead=7)`: an empty successful read
+is silent, and a failed read raises, so it never becomes a reminder or an all-clear. A
+successful read with dates sends one templated message through the owner-notify boundary
+(`roster/relationship/tools/reminders.py`).
+
+Memorial, quiet and no_contact people remain available to appropriate history/display readers.
+Reactivation makes the date eligible again. The separately adopted calendar remembrance overlay
+retains its own policy; this birthday push introduces no memorial opt-in or changed posture writer.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes people-related messages here
 - [General Butler](general.md) -- handles freeform data that is not contact-specific
+
+### Fact authority and reported channels
+
+The central writer derives verified content from its private admitted report or a separately
+recorded owner confirmation, never from caller confidence. Third-party kinship at confidence
+0.95 parks for approval. Gap closure reads the persisted fact's report and confirmation, not
+the current session. Candidates cannot answer an established identity gap.
+
+Identity fact APIs carry original reporter availability and owner confirmation separately.
+The contact card shows reported channels awaiting adoption, protected exact Adopt/Reject
+controls and receipt-based recovery after an uncertain response. Narrative facts retain their
+existing behavior. Entity merge locks candidate identity slots and all active facts before the
+first write; moving a candidate does not activate it or rewrite its reporter.

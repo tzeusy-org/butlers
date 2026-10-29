@@ -2,8 +2,10 @@
 ``memory.facts`` / ``memory.rules`` / ``memory.episodes`` schema-qualified
 (bu-4rif7).
 
-``_build_export_zip(pool, "memory")`` runs the three hardcoded
-``SELECT * FROM memory.<table>`` queries in ``data_ops._SCOPE_MAP``. Today
+``_build_export_zip(pool, "memory", db)`` runs, for every butler in the real
+``DatabaseManager`` roster that has the memory module, the three
+``SELECT * FROM "<memory schema>"."<table>"`` queries (bu-8ptawc replaced the
+former hardcoded ``memory.<table>`` reads). Today
 ``tests/api/test_data_ops.py`` covers this with 24 mock-pool cases and zero
 real-Postgres coverage, so an accidental un-qualification would pass unit tests
 but 500 in production (the #2598 mocked-green / integration-red class).
@@ -25,6 +27,7 @@ import zipfile
 import asyncpg
 import pytest
 
+from butlers.api.db import DatabaseManager
 from butlers.api.routers.data_ops import _build_export_zip
 from butlers.db import register_jsonb_codec
 from butlers.modules.memory.storage import store_fact
@@ -101,14 +104,23 @@ async def test_memory_export_reads_memory_schema_under_public_search_path(
     # Build the export through the public-only pool. This runs all three
     # `SELECT * FROM memory.<table>` reads; it only succeeds because they are
     # schema-qualified (facts, rules AND episodes each resolve, empty or not).
-    zip_bytes = await _build_export_zip(public_pool, "memory")
+    db = DatabaseManager()
+    db._pools["general"] = public_pool
+    db._butler_schemas["general"] = "general"
+    db._butler_memory_schema_overrides["general"] = "memory"
+    db._butler_modules["general"] = frozenset({"memory"})
+    zip_bytes = await _build_export_zip(public_pool, "memory", db)
 
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         names = set(zf.namelist())
-        assert {"memory_facts.ndjson", "memory_rules.ndjson", "memory_episodes.ndjson"} <= names
+        assert {
+            "general_memory_facts.ndjson",
+            "general_memory_rules.ndjson",
+            "general_memory_episodes.ndjson",
+        } <= names
         facts_lines = [
             json.loads(line)
-            for line in zf.read("memory_facts.ndjson").decode().splitlines()
+            for line in zf.read("general_memory_facts.ndjson").decode().splitlines()
             if line.strip()
         ]
 

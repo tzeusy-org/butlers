@@ -1,0 +1,27 @@
+{{- if .Values.trackerEgress.enabled }}
+{{- if not .Values.trackerEgress.deniedCidrs }}
+{{- fail "trackerEgress.deniedCidrs is required when trackerEgress.enabled (scripts/k8s/site-helm-args.sh resolves it)" }}
+{{- end }}
+# The retired bridge grants no pod an exception. Retain the existing IPv4-only
+# tracker boundary independently of all product features and credentials.
+# Site configuration must cover every tracker IPv4 address; no CIDR means refusal.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-tracker-egress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.trackerEgress.deniedCidrs }}
+              - {{ . }}
+              {{- end }}
+{{- end }}

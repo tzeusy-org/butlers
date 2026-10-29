@@ -81,7 +81,7 @@ def _install_common_mocks(monkeypatch, *, call_counts: dict) -> None:
     monkeypatch.setattr(api_app, "create_owner_auth_service", AsyncMock(return_value=None))
     monkeypatch.setattr(api_app, "close_owner_auth_service", AsyncMock())
     monkeypatch.setattr(api_app, "get_db_manager", MagicMock(return_value=mock_db))
-    monkeypatch.setattr(api_app, "wire_db_dependencies", MagicMock())
+    monkeypatch.setattr(api_app, "wire_qa_credentials", MagicMock())
     monkeypatch.setattr(api_app, "get_mcp_manager", MagicMock())
     monkeypatch.setattr(api_app, "get_pricing", MagicMock())
     monkeypatch.setattr(api_app, "resolve_staleness_window_s", MagicMock(return_value=3600.0))
@@ -142,17 +142,38 @@ def _spy_on_supervisor(monkeypatch) -> list[tuple[str, asyncio.Task]]:
 
 
 # Spec: REQ-core-fleet-events-006
-async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(monkeypatch):
+@pytest.mark.parametrize("bridge_start_failure", [False, True])
+async def test_all_dashboard_loops_wired_through_supervisor_exactly_once(
+    monkeypatch, caplog, bridge_start_failure
+):
     monkeypatch.delenv(api_app.EXTERNAL_DEADMAN_URL_ENV, raising=False)
     call_counts: dict[str, int] = {}
     _install_common_mocks(monkeypatch, call_counts=call_counts)
     calls = _spy_on_supervisor(monkeypatch)
+    supervised = api_app.supervise_lifespan_loop
+    startup_failure = RuntimeError("synthetic bridge startup failure")
+
+    def guarded_supervise(name, coro_factory, **kwargs):
+        if bridge_start_failure and name == "fleet_events_bridge":
+            raise startup_failure
+        return supervised(name, coro_factory, **kwargs)
+
+    monkeypatch.setattr(api_app, "supervise_lifespan_loop", guarded_supervise)
 
     app = FastAPI()
     async with api_app.lifespan(app):
         names = [name for name, _ in calls]
         # Exactly once each -- no double-wrapping, no missing loop.
-        assert sorted(names) == sorted(_ALWAYS_ON_LOOP_NAMES)
+        expected = _ALWAYS_ON_LOOP_NAMES - (
+            {"fleet_events_bridge"} if bridge_start_failure else set()
+        )
+        assert set(names) == expected
+        assert app.state.ready is True
+        if bridge_start_failure:
+            assert any(
+                record.exc_info and record.exc_info[1] is startup_failure
+                for record in caplog.records
+            )
         assert len(names) == len(set(names))
 
         tasks_by_name = dict(calls)

@@ -44,9 +44,14 @@ from uuid import UUID
 
 import asyncpg
 from opentelemetry import metrics as otel_metrics
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from butlers.core.account_security_events import classify_ingest_record, publish_security_event
+from butlers.conversation_identity import event_conversation_identity
+from butlers.core.account_security_events import (
+    classify_ingest_record,
+    publish_security_event,
+    sender_authentication_verdict,
+)
 from butlers.core.metrics import ButlerMetrics
 from butlers.ingestion_bearer_scrub import (
     BearerArtifact,
@@ -58,7 +63,8 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.ingestion_spans import collapse_spans
+from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     parse_ingest_envelope,
 )
@@ -233,6 +239,36 @@ def _generate_uuid7() -> UUID:
     return uuid.UUID(int=value)
 
 
+def _dedupe_text(envelope: IngestEnvelopeV1) -> tuple[str, bool]:
+    """Text that content-hash keys derive from, and whether bearer material was withheld.
+
+    Keys are stored beside the scrubbed text, so hashing the raw text would let any reader of
+    ``message_inbox``/``ingestion_events`` brute-force a withheld 4-8 digit code. Text with no
+    bearer material hashes exactly as before. A scrub failure fails closed to a constant.
+    """
+    text = envelope.payload.normalized_text
+    try:
+        # Match the storage scrubber's entire content scope: Telegram text_link URLs,
+        # Gmail bodies and other bearer material can exist only in payload.raw.
+        # scrub_stored_record returns a copy, preserving original Sender auth headers.
+        _, scrubbed, artifacts = scrub_stored_record(
+            {
+                "source": {"provider": envelope.source.provider},
+                "sender": envelope.sender.model_dump(exclude_none=True),
+                "payload": {"raw": envelope.payload.raw, "normalized_text": text},
+            },
+            text,
+        )
+    except Exception:
+        logger.warning("Bearer scrub failed while deriving dedupe key; using constant text")
+        return _SCRUB_FAILED_TEXT, True
+    # A connector that scrubbed before submitting leaves the placeholder (and usually the flag).
+    withheld = (
+        bool(artifacts) or envelope.control.bearer_scrubbed or bool(placeholder_artifacts(text))
+    )
+    return scrubbed, withheld
+
+
 def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
     """Compute content-hash dedup key independent of connector-specific identifiers.
 
@@ -247,7 +283,7 @@ def _compute_content_hash_key(envelope: IngestEnvelopeV1) -> str:
     because the same update legitimately arrives on different bots and each
     bot should process it independently.
     """
-    content_repr = f"{envelope.payload.normalized_text}:{envelope.sender.identity}"
+    content_repr = f"{_dedupe_text(envelope)[0]}:{envelope.sender.identity}"
     content_hash = hashlib.sha256(content_repr.encode()).hexdigest()[:16]
     time_bucket = envelope.event.observed_at.strftime("%Y%m%d%H")  # hourly window
     # Email: omit endpoint_identity so the same email from different accounts dedupes.
@@ -370,6 +406,25 @@ def _scrub_bearer_material(
     return raw_payload, normalized_text, fresh
 
 
+def _persist_exposure_markers(
+    envelope: IngestEnvelopeV1, raw_payload: dict[str, Any], stored_text: str
+) -> None:
+    """Copy the reply reference and untrusted spans into ``raw_payload``.
+
+    Each key is written only when the connector supplied it, so envelopes without markers
+    persist exactly as before. Spans index the connector's text; when the stored text differs
+    (bearer scrub, null-byte strip, scrub failure) their offsets are stale, so each kind
+    collapses to one whole-text span rather than fencing the wrong characters.
+    """
+    if envelope.event.in_reply_to_ref is not None:
+        raw_payload["event"]["in_reply_to_ref"] = envelope.event.in_reply_to_ref
+    if envelope.payload.untrusted_spans:
+        spans = [span.model_dump(exclude_none=True) for span in envelope.payload.untrusted_spans]
+        if stored_text != envelope.payload.normalized_text:
+            spans = collapse_spans(stored_text, spans)
+        raw_payload["payload"]["untrusted_spans"] = spans
+
+
 def _record_bearer_scrub(source_channel: str, artifacts: list[BearerArtifact]) -> None:
     """Count fresh scrubs per rule (false-positive visibility)."""
     if not artifacts:
@@ -413,8 +468,14 @@ def _build_request_context(
     }
 
     # Optional fields
-    if event.external_thread_id:
-        context["source_thread_identity"] = event.external_thread_id
+    external_conversation_id, reply_target_ref = event_conversation_identity(event.model_dump())
+    if external_conversation_id:
+        context["external_conversation_id"] = external_conversation_id
+    if reply_target_ref:
+        # Compatibility name consumed by notify.v1. It is deliberately the
+        # per-message reply target, never the continuity key.
+        context["source_thread_identity"] = reply_target_ref
+        context["reply_target_ref"] = reply_target_ref
 
     if control.idempotency_key:
         context["idempotency_key"] = control.idempotency_key
@@ -516,7 +577,7 @@ def _make_ingestion_envelope(
             mime_parts.append(part.lower())
 
     event = payload.get("event") or {}
-    thread_id = event.get("external_thread_id")
+    thread_id, _ = event_conversation_identity(event)
 
     # Build raw_key based on channel
     raw_key = ""
@@ -537,10 +598,14 @@ def _make_ingestion_envelope(
         # silently over-matching the channel's other event types.
         raw_key = str(event.get("external_event_id") or "")
 
+    control = payload.get("control") or {}
+    known_contact = control.get("known_contact") if isinstance(control, Mapping) else None
+
     return IngestionEnvelope(
         sender_address=sender_address,
         source_channel=source_channel,
         source_endpoint_identity=source_endpoint_identity,
+        known_contact=known_contact if isinstance(known_contact, bool) else None,
         headers=headers,
         mime_parts=mime_parts,
         thread_id=str(thread_id) if thread_id else None,
@@ -639,6 +704,23 @@ def _run_policy_evaluation(
         )
 
 
+def _envelope_error_summary(exc: Exception) -> str:
+    """Content-free description of an envelope validation failure: field paths and error types.
+
+    Never includes pydantic's message, input value or context (they quote envelope content).
+    The key named by an ``extra_forbidden`` error is caller-supplied, so it is not echoed.
+    """
+    if not isinstance(exc, ValidationError):
+        return type(exc).__name__
+    parts = []
+    for error in exc.errors(include_input=False, include_url=False):
+        loc = [str(part) for part in error["loc"]]
+        if error["type"] == "extra_forbidden" and loc:
+            loc[-1] = "<unexpected field>"
+        parts.append(f"{'.'.join(loc) or '<root>'}: {error['type']}")
+    return "; ".join(parts) or "validation failed"
+
+
 async def ingest_v1(
     pool: asyncpg.Pool,
     payload: Mapping[str, Any],
@@ -700,20 +782,21 @@ async def ingest_v1(
     try:
         envelope = parse_ingest_envelope(payload)
     except Exception as exc:
-        logger.warning("Ingest envelope validation failed: %s", exc)
+        # Pydantic's own text echoes the offending input values, i.e. envelope content, and
+        # connectors re-log the returned error; log and return a content-free summary only.
+        summary = _envelope_error_summary(exc)
+        logger.warning("Ingest envelope validation failed: %s", summary)
         _ingest_metrics.record_ingest_result(source=_source_for_metrics, outcome="validation_error")
-        raise ValueError(f"Invalid ingest.v1 envelope: {exc}") from exc
+        raise ValueError(f"Invalid ingest.v1 envelope: {summary}") from None
 
     # Validate explicit pins before any duplicate early return.  The dedupe keys
     # intentionally ignore control directives, so a repeated payload with a bad
     # pin must still be rejected instead of accepted as a harmless duplicate.
     pinned_target = envelope.control.pinned_target
     if pinned_target is not None:
-        from butlers.tools.switchboard.routing.classify import (
-            _load_available_butlers,
-        )
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
 
-        available_butlers = await _load_available_butlers(pool)
+        available_butlers = await load_available_butlers(pool)
         if not any(butler["name"] == pinned_target for butler in available_butlers):
             _ingest_metrics.record_ingest_result(
                 source=envelope.source.channel, outcome="validation_error"
@@ -724,6 +807,7 @@ async def ingest_v1(
             )
 
     # 2. Compute stable dedupe key
+    _, bearer_withheld = _dedupe_text(envelope)
     dedupe_key = _compute_dedupe_key(envelope)
 
     # 3. Check for existing request (idempotent duplicate handling)
@@ -733,7 +817,9 @@ async def ingest_v1(
     # different connectors produce different primary keys for the same message.
     # Only runs when the primary key used a connector-specific strategy (not
     # already a content hash).
-    if not existing and not dedupe_key.startswith("hash:"):
+    # Messages whose bearer material was withheld skip this lookup: two distinct codes
+    # would otherwise collide and the second be dropped despite its own event ID.
+    if not existing and not dedupe_key.startswith("hash:") and not bearer_withheld:
         content_hash_key = _compute_content_hash_key(envelope)
         existing = await _find_request_by_content_hash(pool, content_hash_key)
         if existing:
@@ -773,9 +859,10 @@ async def ingest_v1(
     # policy_evaluator=None means caller did not provide one — skip annotation
     triage_decision: PolicyDecision | None = None
     source_channel = envelope.source.channel
-    thread_id: str | None = None
-    if envelope.event.external_thread_id:
-        thread_id = str(envelope.event.external_thread_id)
+    # thread_id is the continuity key (email thread affinity); reply_target_ref
+    # keeps public.ingestion_events.source_thread_identity a reply target, as
+    # correct_route hands it back to notify as source_thread_identity.
+    thread_id, reply_target_ref = event_conversation_identity(envelope.event.model_dump())
 
     # 4a. Envelope pin — already validated above against the live, routable
     # butler registry before any duplicate return.  Bypasses thread-affinity
@@ -850,7 +937,8 @@ async def ingest_v1(
     request_context["dedupe_key"] = dedupe_key
     # Store content-hash key for cross-connector dedup (secondary lookup).
     # When the primary key is already a content hash, no separate key is needed.
-    if not dedupe_key.startswith("hash:"):
+    # Omitted when bearer material was withheld (see the step 3a skip above).
+    if not dedupe_key.startswith("hash:") and not bearer_withheld:
         request_context["content_hash_key"] = _compute_content_hash_key(envelope)
     request_context["dedupe_strategy"] = "connector_api"
 
@@ -865,6 +953,8 @@ async def ingest_v1(
         },
         "event": {
             "external_event_id": envelope.event.external_event_id,
+            "external_conversation_id": envelope.event.external_conversation_id,
+            "reply_target_ref": envelope.event.reply_target_ref,
             "external_thread_id": envelope.event.external_thread_id,
             "observed_at": envelope.event.observed_at.isoformat(),
         },
@@ -876,6 +966,12 @@ async def ingest_v1(
         "control": {
             "policy_tier": envelope.control.policy_tier,
             "ingestion_tier": ingestion_tier,
+            **({"pinned_target": pinned_target} if pinned_target is not None else {}),
+            **(
+                {"automated_kind": envelope.control.automated_kind}
+                if envelope.control.automated_kind
+                else {}
+            ),
             **(
                 {"payload_type": envelope.control.payload_type}
                 if envelope.control.payload_type
@@ -933,6 +1029,11 @@ async def ingest_v1(
     if attachments_value is not None:
         attachments_value = _strip_null_bytes(attachments_value)
 
+    # 6c. Persist the connector's exposure markers for goal admission (bu-xmueeq). Additive
+    # representation: nothing on the routing path reads them.
+    _persist_exposure_markers(envelope, raw_payload, normalized_text)
+    raw_payload = _strip_null_bytes(raw_payload)
+
     # 7. Ensure partition exists for received_at — committed immediately,
     # OUTSIDE any transaction so that DDL (CREATE TABLE IF NOT EXISTS) cannot
     # be rolled back by a subsequent failure inside the dedup transaction.
@@ -975,6 +1076,20 @@ async def ingest_v1(
     lifecycle_state = lifecycle_override or (
         "metadata_ref" if ingestion_tier == "metadata" else "accepted"
     )
+
+    # Sender-authentication verdict (bu-s11n0s.20): deterministic from the topmost
+    # Authentication-Results header, stored once on the canonical event row so readers
+    # never re-parse headers. Best-effort: a verifier failure stores NULL and never
+    # fails an accepted ingest.
+    try:
+        sender_authentication = sender_authentication_verdict(
+            source_channel=envelope.source.channel,
+            sender_address=str(envelope.sender.identity or ""),
+            raw=envelope.payload.raw,
+        )
+    except Exception:
+        logger.warning("sender-authentication verdict failed (non-fatal)", exc_info=True)
+        sender_authentication = None
 
     try:
         async with pool.acquire() as conn:
@@ -1083,9 +1198,10 @@ async def ingest_v1(
                         ingestion_tier,
                         policy_tier,
                         triage_decision,
-                        triage_target
+                        triage_target,
+                        sender_authentication
                     ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
                     )
                     """,
                     request_id,
@@ -1095,7 +1211,7 @@ async def ingest_v1(
                     _strip_null_bytes(envelope.source.endpoint_identity),
                     _strip_null_bytes(envelope.sender.identity),
                     _strip_null_bytes(envelope.sender.display_name),
-                    _strip_null_bytes(envelope.event.external_thread_id),
+                    _strip_null_bytes(reply_target_ref),
                     _strip_null_bytes(envelope.event.external_event_id),
                     _strip_null_bytes(dedupe_key),
                     "connector_api",
@@ -1103,6 +1219,7 @@ async def ingest_v1(
                     envelope.control.policy_tier,
                     triage_decision.action if triage_decision is not None else None,
                     triage_decision.target_butler if triage_decision is not None else None,
+                    sender_authentication,
                 )
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)

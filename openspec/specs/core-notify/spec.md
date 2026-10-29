@@ -3,6 +3,8 @@
 ## Purpose
 Defines the `notify` MCP tool and its versioned envelope contract (`notify.v1`) for outbound user interaction requests from non-messenger butlers, routed through Switchboard to the Messenger butler for delivery.
 
+The approval-recovery protocol is owned by [approval-delivery-intent-recovery](../approval-delivery-intent-recovery/spec.md); this spec binds its integration seam to that canonical contract.
+
 ## Requirements
 
 ### Requirement: Notify Tool Registration
@@ -129,7 +131,7 @@ Attention Policy data SHALL retain the existing fail-open immediate path.
 ### Requirement: Attention Ledger Recording at the notify() Boundary
 Every terminal decision the `notify()` owner-default quiet-hours gate makes SHALL be recorded to `public.attention_ledger` with a closed outcome vocabulary (`delivered`, `coalesced`, `deferred`, `suppressed`, `failed`) and a machine-readable `reason`. A ledger-write failure MUST NOT block or fail the notification it describes (best-effort, fail-open).
 
-`deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`, `butlers.jobs.decision_review._deliver`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
+`deferred` and `failed` are distinct and MUST NOT be conflated: `deferred` is a benign, chosen hold that resolves on its own (a quiet-hours window ending, a coalescing flush tick) with no caller action required. `failed` is a genuine terminal failure at this attempt — no recipient configured, a transport/delivery error, an unexpected exception — that nothing automatically retries unless the caller explicitly enqueues a retry envelope (e.g. via `insert_deferred_notification`) and records the resulting row id as `notification_ref`. This distinction applies identically to every caller that composes the same gating/dispatch primitives `notify()` uses from outside a butler daemon's own MCP closure (e.g. `butlers.jobs.secrets_lifecycle`, `butlers.jobs.home._send_notify`) — see those modules' docstrings for why each is a process-boundary-forced consumer rather than a direct `notify()` caller.
 
 #### Scenario: A genuine delivery failure is recorded as failed, not deferred
 - **WHEN** any notify-boundary caller (the `notify()` tool itself, or a process-boundary-forced consumer composing the same primitives) cannot resolve a recipient, or the underlying `deliver()` dispatch returns `status="failed"`, or an unexpected exception occurs mid-dispatch
@@ -262,6 +264,8 @@ Naming note: the summary's "per source" grouping is `origin_butler` (which butle
 - **THEN** both endpoints return an empty/zero payload with `source_available=true` — this is a genuinely-empty state, not a source failure
 
 ### Requirement: notify.v1 Envelope Schema
+
+ID: REQ-core-notify-034
 
 The notify envelope SHALL include `schema_version` ("notify.v1"), `origin_butler` (requesting butler's name), `delivery` (intent, channel, message, optional recipient/subject/emoji), and optional `request_context` for reply/react targeting.
 
@@ -702,3 +706,217 @@ The `public.attention_ledger` outcome vocabulary SHALL additionally contain `wit
 - **WHEN** a premise-false candidate is withdrawn, or a delivered insight is amended in place
 - **THEN** the ledger row carries `outcome="withdrawn"` or `outcome="amended"` respectively, never `failed` or `suppressed`
 
+### Requirement: Authenticated recovery presentation envelope
+The `notify.v1` contract SHALL carry an immutable recovery subject (a direct
+action key or a cohort key) plus a generation-specific presentation key only in
+a recovery-only approval-request shape. Recovery mode SHALL be selected only
+when the serialized `recovery` member is non-null. An absent or null member
+SHALL have ordinary notification semantics, and producers SHALL omit it when
+unset. A present, non-null value that does not satisfy the complete recovery
+shape SHALL fail closed before recovery persistence or provider egress.
+Switchboard SHALL derive the issuer and
+owning schema from the authenticated daemon transport, validate the claimed
+subject/schema/mode against that trusted identity and a non-caller-serializable
+source-schema subject/presentation attestation, and forward trusted context to
+Messenger without placing recovery work in the generic deferred-notification
+queue or granting cross-schema reads.
+
+ID: REQ-core-notify-028
+Source: RFC-0023
+Scope: v1-mandatory
+
+#### Scenario: Approval worker dispatches a stable presentation key
+- **WHEN** an approval-delivery worker renders a due `single` action presentation or cohort `burst_digest` presentation
+- **THEN** its recovery request contains the stable direct-action or cohort subject key and its immutable current presentation key
+- **AND** retries, restarts, and reconciliation requests retain exactly that presentation key rather than minting another one
+
+#### Scenario: Dashboard defer advances only the presentation generation
+- **WHEN** authenticated dashboard defer atomically schedules an action's next presentation
+- **THEN** its later recovery request retains the same logical action key and carries the next deterministic presentation key
+- **AND** no ordinary retry, worker, or generic notification control can advance that generation
+
+#### Scenario: Ordinary notify behavior remains compatible
+- **WHEN** an ordinary non-recovery `notify.v1` caller omits `recovery` or serializes `"recovery": null`
+- **THEN** the request follows the ordinary generic-notification validation and delivery path
+- **AND** it does not enter recovery authentication, handoff-ledger, or approval-presentation handling
+- **AND** serializers omit the unset member from newly emitted envelopes
+
+#### Scenario: Malformed material recovery fails closed
+- **WHEN** `recovery` is present and non-null but is not a complete valid recovery object
+- **THEN** the request is rejected before generic delivery logging, recovery-ledger persistence, or a Messenger/provider call
+- **AND** it is neither treated as ordinary notification traffic nor granted recovery authority
+
+#### Scenario: Claimed recovery identity is not authority
+- **WHEN** a caller supplies an action/cohort subject or presentation key, origin, owning schema, or mode that differs from the transport-authenticated issuer and registered owning schema
+- **THEN** Switchboard rejects it before generic delivery logging, recovery-ledger persistence, or a Messenger/provider call
+- **AND** an ordinary caller that adds recovery-shaped fields is rejected rather than treated as a recovery worker
+
+### Requirement: Safe provider-handoff classification
+The notify delivery boundary SHALL return a normalized `confirmed`, `safe_retry`, or `ambiguous` handoff classification with only safe reason/reference fields for a trusted recovery presentation, and SHALL not collapse an unknown post-start provider outcome into a generic retryable failure.
+
+ID: REQ-core-notify-029
+Source: RFC-0023
+Scope: v1-mandatory
+
+#### Scenario: Source receives confirmed handoff truth
+- **WHEN** Messenger confirms provider acceptance or a duplicate-safe reconciliation for an approval presentation key
+- **THEN** Switchboard and the source receive `confirmed` for that same presentation key
+- **AND** the result does not assert that the owner read or decided the action
+
+#### Scenario: Timeout after possible provider start is ambiguous
+- **WHEN** the boundary loses a result after Messenger may have started a provider call and cannot prove duplicate safety
+- **THEN** it returns `ambiguous` with a closed safe reason code
+- **AND** the source worker cannot treat that response as `safe_retry` or issue a fresh presentation key
+
+### Requirement: Approval-recovery isolation from generic defer
+The notify subsystem SHALL keep approval-delivery presentations outside `deferred_notifications`, generic quiet-hours flush coalescing, and generic wake-recovery cohorts while preserving their stored RFC 0021 admission or authenticated-defer time at the approval boundary.
+
+ID: REQ-core-notify-030
+Source: RFC-0021,RFC-0023
+Scope: v1-mandatory
+
+#### Scenario: Quiet-hours approval recovery is local to its presentation
+- **WHEN** an approval action parks during RFC 0021 quiet hours
+- **THEN** its approval presentation stores and later honors the exact admission release time
+- **AND** no generic deferred-notification row, flush claim, or wake cohort is created for that action
+
+### Requirement: Recovery isolation from generic notification controls and history
+The generic Switchboard notification table SHALL exclude recovery-keyed
+approval presentations. `switchboard.message_inbox` SHALL exclude them from
+persistence and history. Their history/list/read models, aggregate counts,
+acknowledgement, retry, escalation, and stored-envelope reconstruction SHALL do
+the same. The recovery-only `notify.v1` branch MUST NOT call
+`_write_outbound_message_inbox()` and MUST NOT insert an outbound
+`switchboard.message_inbox` row, including a redacted substitute. It SHALL
+bypass generic notification persistence as well. The protected recovery path
+SHALL expose only the approvals read model's safe projection and SHALL never
+persist rendered message text, recipient-derived thread identity, callback
+material, or a full recovery envelope in generic notification metadata. All
+generic conversation/LLM-history readers SHALL be unable to retrieve recovery
+presentation data, including any current or successor pipeline history loader.
+
+ID: REQ-core-notify-031
+Source: RFC-0023
+Scope: v1-mandatory
+
+#### Scenario: Generic retry and escalation cannot bypass the fence
+- **WHEN** a generic notification retry, escalation, acknowledgement, or envelope-reconstruction path is given a recovery-keyed row or identifier
+- **THEN** it returns an uninformative no-control result before reconstructing an envelope or calling delivery
+- **AND** only the fenced approval-delivery worker can reconcile that presentation through the trusted recovery path
+
+#### Scenario: Generic history cannot leak a recovery envelope
+- **WHEN** a generic notification list, butler-scoped history, detail/read projection, or stats query encounters recovery delivery evidence
+- **THEN** the recovery record is excluded from that generic surface and aggregate
+- **AND** no response includes its recipient, message, action/cohort subject or presentation key, callback token, callback secret, raw provider response, or stored recovery envelope
+
+#### Scenario: Recovery delivery bypasses outbound conversation persistence
+- **WHEN** a trusted recovery-mode `notify.v1` approval presentation reaches a
+  confirmed, safe-retry, or ambiguous handoff outcome
+- **THEN** Switchboard does not call `_write_outbound_message_inbox()` and no
+  outbound `switchboard.message_inbox` row exists for that presentation
+- **AND** neither a rendered message, recipient-derived thread identity, nor
+  callback material is persisted in a generic notification or conversation
+  record
+
+#### Scenario: Generic conversation-history and LLM-history readers cannot read recovery data
+- **WHEN** a generic conversation-history or LLM-history reader loads outbound
+  history for a recovery presentation's explicit or recipient-derived thread
+  identity
+- **THEN** the result contains no recovery presentation data
+- **AND** only the approval safe projection and the protected handoff ledger
+  remain available to their authorized readers
+
+### Requirement: Committed notification parks retain a bounded review reference
+A Messenger-routed notification blocked by a successful recipient-gate park SHALL retain a bounded, server-derived same-action review reference through its typed refusal and the existing Switchboard failed-notification persistence. The reference SHALL contain only the canonical action UUID and actual registered owning Messenger source, SHALL be separate from caller metadata and exception text, and SHALL be admitted only after the owning park commit and same-request routed response validation. Failed, rolled-back, absent, malformed, wrong-source or uncertain park evidence MUST NOT fabricate a reference. The notification SHALL remain blocked with all existing role, actor, privacy, authorization, delivery and recovery boundaries intact.
+
+ID: REQ-core-notify-032
+Source: Closed owner release bu-3b6goa; run13 dossier ranked move5 S4; parked-notification-approval-review-door/design.md
+Scope: v1-mandatory
+
+#### Scenario: A real committed park retains the same action
+- **WHEN** Messenger's pool-scoped recipient gate commits a pending action and blocks the routed notification
+- **THEN** its validated same-request refusal carries that admitted action UUID and registered Messenger source
+- **AND** the ordinary Switchboard failed row stores the same reference through its dedicated writer-owned correlation field
+- **AND** no channel adapter executes and the existing blocked delivery/error and permission boundaries remain intact
+
+#### Scenario: Park failure or rollback cannot fabricate a door
+- **WHEN** the recipient park fails, rolls back, returns no durable action or loses its response before a validated refusal is received
+- **THEN** no notification review reference is admitted
+- **AND** the failure or uncertainty remains truthful without fabricating a pending action, successful delivery or review door
+
+#### Scenario: Caller metadata and error text are not correlation authority
+- **WHEN** a notify input, ordinary metadata, legacy stored metadata or error text contains an apparent action ID, source or review URL
+- **THEN** that input SHALL NOT populate the dedicated review reference
+- **AND** malformed, foreign-source, mismatched-request or mismatched-channel response references are refused
+
+#### Scenario: Logging failure cannot undo or repeat the committed park
+- **WHEN** the park committed but the subsequent owning failed-notification insert fails
+- **THEN** the pending action remains under its existing lifecycle and the logging failure supplies no fabricated persisted reference
+- **AND** this correlation performs no rollback of the committed action, provider delivery or automatic re-park/retry
+
+#### Scenario: Replay preserves the actual admission rather than a borrowed action
+- **WHEN** the existing park lifecycle returns a duplicate admission or concurrent attempts produce distinct admissions
+- **THEN** each admitted reference names only the actual action returned for that request
+- **AND** this contract adds no deduplication or inference from another request's action, error or metadata
+
+#### Scenario: Ordinary notify and recovery boundaries survive
+- **WHEN** the notification is owner-allowed, rule-allowed, an ordinary failed delivery, a local pending_action_id park or an approval-control/recovery envelope
+- **THEN** its existing delivery, tool response, ledger, privacy and recovery-isolation contracts remain intact
+- **AND** this routed review correlation adds no action permission, recursive park, synthesized local ledger row or recovery capability
+
+
+### Requirement: Fixed dashboard self references in owner controls
+Approval notification producers SHALL emit an `open_dashboard` action with
+`reference: {kind: "self", route_key, params}` instead of a raw `dashboard_url`.
+The fixed Python route registry SHALL contain `approval_detail` with exactly one
+canonical UUID `action_id` parameter and `approvals_queue` with no parameters.
+Self references SHALL NOT expire. Callback actions SHALL retain their signed
+callback tokens and SHALL NOT carry link URLs or self references.
+
+Switchboard delivery SHALL resolve admitted references using only the server's
+configured HTTPS `DASHBOARD_URL` origin and the fixed route registry. A valid
+reference SHALL produce server-only `open_link {label, url, host, provenance}`
+output, retaining its reference for independent receiver resolution. The label
+SHALL display the resolved host and `dashboard` provenance. These presentation
+fields SHALL NOT authenticate the caller or grant delivery authority.
+
+Public `notify.v1` tool input SHALL reject `open_link`, raw `dashboard_url`, and
+caller claims of URL, host, provenance or server construction. The internal
+Messenger receiver SHALL reconstruct the reference and independently resolve it
+against its current server configuration. It SHALL NOT trust the output URL or
+label supplied on the wire. Existing owner lookup, recipient admission, signed
+callbacks, exact stored replay and authenticated recovery checks SHALL remain
+required on both normal and recovery delivery paths.
+
+Live URLs SHALL be at most 300 characters, use HTTPS without user information,
+IP literals, internationalized or punycode hosts, or a non-default port. The
+configured origin SHALL NOT contain a path, query or fragment. This requirement
+does not authorize general model-supplied URLs, research links or login actions.
+
+#### Scenario: Approval detail becomes a fixed dashboard button
+- **WHEN** an admitted owner approval notification carries `approval_detail`
+  with its canonical UUID `action_id` and a valid configured HTTPS origin
+- **THEN** delivery constructs `/approvals/<action_id>` at that origin
+- **AND** Messenger independently reconstructs that URL before rendering the
+  host-labelled dashboard button, retaining signed Approve and Reject controls
+
+#### Scenario: An unverifiable self reference preserves the notification
+- **WHEN** the route key is unknown, parameters are invalid, the configured
+  origin is absent or unsafe, or the resulting URL exceeds 300 characters
+- **THEN** the message is still delivered through the existing admission path
+- **AND** it contains `[link not verified]` and no URL button for that reference
+- **AND** unresolved links do not disable otherwise valid signed callbacks
+
+#### Scenario: Caller link claims cannot create a live control
+- **WHEN** a caller submits a raw URL or `open_link` through the notify tool
+- **THEN** the public contract refuses that request
+- **AND WHEN** the internal delivery output's URL or label is altered
+- **THEN** Messenger uses only the independently resolved reference, never the
+  altered URL, and existing recovery and owner authority remain required
+
+#### Scenario: Registry paths remain actual phone entry routes
+- **WHEN** the server self route registry changes
+- **THEN** an automated source guard verifies every template against
+  `frontend/tests/e2e/phone-entry-routes.ts`, normalizing only its typed UUID
+  placeholder notation
+- **AND** a missing phone entry path fails that guard

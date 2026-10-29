@@ -97,6 +97,10 @@ Each rolling window (24h and 30d) SHALL have its own independent reset marker. R
 ### Requirement: Pre-Spawn Quota Check
 The system SHALL provide a `check_token_quota(pool, catalog_entry_id)` function that evaluates whether a catalog entry's usage is within its configured limits for both rolling windows.
 
+ID: REQ-catalog-token-limits-001
+Source: 2026-03-18-catalog-tier-token-limits; RFC 0038 D10, D18
+Scope: v1-mandatory
+
 #### Scenario: QuotaStatus return type
 - **WHEN** `check_token_quota()` is called
 - **THEN** it returns a `QuotaStatus` dataclass with fields: `allowed` (bool), `usage_24h` (int), `limit_24h` (int | None), `usage_30d` (int), `limit_30d` (int | None)
@@ -310,6 +314,10 @@ The model catalog table on the settings page SHALL display token usage alongside
 The monthly spend ceiling SHALL price the current month from the append-only
 token usage ledger and SHALL preserve the distinction between a known
 zero-marginal model and a model with no configured price.
+
+ID: REQ-catalog-token-limits-002
+Source: 2026-08-22-spend-ledger-truth
+Scope: v1-mandatory
 
 #### Scenario: Ceiling reports attempts with no measurable usage
 - **WHEN** the current-month ledger contains one or more `usage_source='unmeasurable'` rows

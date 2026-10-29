@@ -1,0 +1,49 @@
+## SOURCE phase qualification
+
+ROOT released this complete seven-delta reconciliation after corrected PRIMARY
+review and exact canonical readback. The adopted P0–P9 below retain the dated
+PRIMARY planning record; this SOURCE stage changes tests and native drafts,
+with no runtime behavior/role/migration changes. Every remaining original
+archive/22-finding/pruning outcome and final exact-head delivery remains
+mandatory. Actual historical-row PostgreSQL proof precedes completing task4.1
+and normal validated generated archive adoption.
+
+## P0 — Authority, inputs and full preservation
+
+PRIMARY produces ignored proposals only. Bind public 1800d2584b0b6d7d675545a02028dc9cee0f8eac, the complete original four fields/notes/dependencies, all seven restoration deltas, the May 19 archived topic bodies, current baseline whole bodies, the archived prerequisite repair and the active aggregate sibling. No live/source/native/bd mutation or SOURCE self-release. Refresh actual public/shared-header ownership again at SOURCE time. The original213 remains bound to its dated 0d2d source; current whole bodies and modes are independently compared at 1800. Neither this successor nor prospective retirement composition is adopted.
+
+## P1 — Prerequisite and count frontier
+
+Both historical merge commits c04f72d28c9a25b1a39e057fa20e82b8cf66372a (#3807) and 303247d13a425d9581b6f9530e83280e61b2c2ce (#3797) are ancestors of the pinned source. repair-email-spec-requirement-prose is actually archived as 2026-09-02. Read all three Gmail repaired requirement bodies plus its module-email repair; do not rearchive it or adopt unrelated tasks. Capture full collect() findings before and after using the identical script source. The current frontier is 729 findings/591 keys; the targeted May 19 set is 59 findings/46 keys. Exactly 22 matching one-finding keys are to heal, with no introduced finding. A strict exit remains nonzero for unrelated debt; it is the full keyed difference that proves this criterion.
+
+## P2 — All seven capability bodies
+
+Repair all seven whole deltas without subset deferral: lifecycle, replay, aggregates, priority contacts, Gmail, ingestion policy and dispatch console. The current restoration has 27 whole requirements and 122 scenarios. The proposal retains 17 whole requirement bodies and 112 scenario clause bodies (111 byte-exact and one with only an inherited terminal blank-line boundary); ten original scenarios have explicit source-grounded correction dispositions and full before/after carriers, resulting in 128 proposed scenarios. Keep every unrelated current requirement and scenario. No requirement or revision IDs are allocated at PRIMARY.
+
+## P3 — Lifecycle and replay failures
+
+Keep the entire lifecycle gate/status/row-lock/soft-delete/credential-blindness/audit contract. Exclude the early reauth 503 refusal from existence and audit requirements; it performs no database/approval access or Retry-After. Keep all replay classification order, archived/deleted exclusions, twice-enforced safety, registry share lock, exact 100-id cap, no truncation, 409 whole-batch unsafe refusal, per-event conflict/not_found and skip-locked drain. Add the source-proven bulk classification-error 503/no-transition species; do not substitute false safety for a query failure.
+
+## P4 — Aggregate truth and same-header ownership
+
+Use the complete source-proven honest-ingestion-aggregate-availability Degraded-mode response shape as the restoration ADDED body, preserving all of its finite scalar, spark matrix, routed/rate/filtered and truthful-empty scenarios. Preserve the current independent Cross-summary aggregate availability is query-backed and Connector Prometheus counter samples are source-honest whole bodies. sw_025 is a Steam skip-rule seed, not an evidenced rollup drop. No materialized-view exception is granted by the old title. Cache lookup/store locking and fetch-outside-lock remain; do not claim single-flight on concurrent cold misses. Restoration must be applied first; the sibling owner then rebuilds its complete MODIFIED block against that baseline. This proposal neither archives the sibling nor ticks its tasks. A same-header collision must be body-compared, never resolved by last-writer order alone.
+
+## P5 — Priority-contact current and historical evidence
+
+Keep global entity-anchored schema, ON DELETE SET NULL, entity-null tolerance, channels from active literal entity facts, CRUD/statuses, inert flag, best-effort caller audit, indefinite retention and bounded credential-free projections. core_205 removes the unconditional trigger and orphan function. Current direct DELETE has no fabricated audit; current API DELETE has exactly the ingestion.priority_contact.remove action. Historical cascade audit rows stay untouched. Preserve the historical requirement name for trace identity only, with explicit normative retirement text; do not heal the missing-header finding by reinstating a false trigger. Old two-action/no-suffix scenarios are explicitly superseded or qualified as historical in full dispositions, not claimed current positives.
+
+## P6 — Gmail and channel attribution
+
+The complete Policy Tier Assignment MODIFIED body preserves all five current baseline scenario bodies and adds its exact database join, normalized contacts, 900s monotonic TTL, always-expired first-read sentinel, fail-open prior-set retention and empty-before-first-success behavior. Preserve existing observable cache contracts elsewhere. Channel-default schema/closed channels/validation/wholesale replacement/503/405/retention and best-effort audit stay intact; updated_by and audit actor come from authenticated_principal(), legacy caller updated_by is ignored, never authority.
+
+## P7 — Actual URL and polling contract
+
+Preserve the complete route-architecture MODIFIED body and all current unrelated Dispatch requirements, including bounded-read, replay-policy and canonical connector namespace additions. Range, settled debounced search including clearing, channel changes, minute-scope selection/clearing, event opening/closing and explicit trace clear PUSH a history entry. Back restores the preceding URL selection and mount/reload hydrate its controls; no new same-mounted range/search popstate synchronization is promised. Statuses/view mirroring REPLACES the current entry and creates no back step for its immediately previous mirrored values. A custom view may separately push its range/search/channels, then mirror statuses/view with replacement. Legacy normalization and consumed OAuth markers also REPLACE. Unknown statuses and unresolved custom views remain explicit; no invented filter/view contents. Preserve parsing, defaults/omissions and debounce. Roster uses one summary query/no mounted detail queries and 60s current interval within the no-faster-than-30s contract. Catalogue has no interval, 60s stale/120s gc and ordinary stale focus/remount/invalidation refetches.
+
+## P8 — Proof species and scoped execution
+
+SOURCE first reads and, where needed, runs the nearest existing meaningful software nodes/files for lifecycle, bulk outage/unsafe batch, aggregate malformed/readable/empty/cache, server attribution and Gmail cache. Preserve every old assertion/node/decorator. The priority-contact migration species is genuine PostgreSQL catalog plus planted deletion/one API audit/historical row preservation and restored positive; local Docker/SQL is not authorized here, so use exact root-owned hosted proof if unavailable. Frontend contract proof uses existing router/link-state/roster/hook cases through lint/copy/coercion/knip before build/tests when source changes. For spec/tooling changes, run dirty-worktree planner advice and explicit static/contract topology gates; do not treat a selector as universal evidence. Extend existing species only if a concrete uncovered invariant needs it, never mirror prose or raise budgets just to satisfy citation counts. Existing real MemoryRouter link-state cases prove serialization, mount/reload and unknown/unresolved positive/negative behavior, not PUSH/REPLACE stack behavior. SOURCE must extend the nearest existing link-state/router species with actual history index/navigation type/back URL controls and neutralize PUSH to REPLACE or mirror REPLACE to PUSH for a meaningful RED, restore for PASS. Preserve all existing assertions and avoid duplicate collected nodes. Qualify range/search mount hydration separately from unproven same-mounted POP UI synchronization.
+
+## P9 — Validated scratch generation, ratchet and recovery
+
+The original instruction never to run openspec archive in a real worktree is retained: generate and rehearse in an isolated complete scratch copy with source/mode/body provenance. Current PRIMARY scratch --yes operations ran with unchecked old tasks and therefore establish only parser/application/count behavior, not completed native administration. After SOURCE proof and truthful prearchive preparation tasks, use normal validated scratch generation with no skip-specs/no-validate/force/heading workaround. Carry its complete generated archive+baseline diff into the reviewable source result only after SOURCE release; never hand-compose baseline clauses or merely git-mv an unapplied change. Prepare the exact 22 hand-pruned JSON entries; actual final application must remove precisely them and retain all others. Compare full finding identity sets and complete foreign requirement/scenario/native/task bodies. The postarchive baseline/administrative readback, independent source review, exact normal/protected gate and actual merge are separately required before closure. On any changed public frontier, regenerate/review the full diff; if exact22 ceases to hold, report a concrete canonical amendment/dependency for ROOT instead of redefining a finding or muting the guard.

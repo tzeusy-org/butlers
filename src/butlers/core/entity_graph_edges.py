@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
 
 import asyncpg
 
@@ -458,6 +460,120 @@ async def coverage_for_entities(
         unique_ids,
     )
     return {row["entity_id"]: (row["known"], row["withheld"]) for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# Dossier (RFC 0031 Slice 5, REQ-entity-graph-010): live projected edges with
+# their source natural-key provenance, plus a bare withheld count.
+# ---------------------------------------------------------------------------
+
+#: Default and maximum number of live receipts one dossier read returns.
+DOSSIER_RECEIPT_LIMIT = 100
+DOSSIER_RECEIPT_LIMIT_MAX = 500
+
+
+@dataclass(frozen=True)
+class DossierReceipt:
+    """One live projected edge touching the entity, with its source provenance."""
+
+    edge_id: uuid.UUID
+    source_schema: str
+    source_table: str
+    source_id: uuid.UUID
+    predicate: str
+    direction: str  # "subject": entity -> counterpart; "object": counterpart -> entity
+    counterpart_entity_id: uuid.UUID
+    sensitivity: str
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class EntityDossierRead:
+    """Result of :func:`dossier_for_entity`.
+
+    ``live_by_source`` and ``withheld`` are true totals from the projection; ``receipts`` is the
+    newest ``limit`` live edges.  ``withheld`` is a bare count: a withheld stub's predicate,
+    object and source identity are never selected.
+    """
+
+    receipts: list[DossierReceipt]
+    live_by_source: dict[tuple[str, str], int]
+    withheld: int
+
+
+_LIVE_EDGE_FILTER = """
+    withheld_reason IS NULL
+    AND (subject_entity_id = $1 OR object_entity_id = $1)
+"""
+
+
+async def dossier_for_entity(
+    pool: asyncpg.Pool, entity_id: uuid.UUID, *, limit: int = DOSSIER_RECEIPT_LIMIT
+) -> EntityDossierRead:
+    """Read the entity's live projected edges grouped by source, plus its withheld count.
+
+    Reads only ``public.entity_graph_edges``; it never touches a butler's private schema.  An
+    entity counts a live edge on either end, but a withheld stub only on the subject side (the
+    only side a stub populates), matching :func:`coverage_for_entities`.  A self-referencing
+    live edge is one edge here.  Failures propagate: the caller must report the graph as
+    unavailable rather than substitute an empty dossier.
+    """
+    bounded = max(1, min(int(limit), DOSSIER_RECEIPT_LIMIT_MAX))
+    group_rows = await pool.fetch(
+        f"""
+        SELECT source_schema, source_table, COUNT(*) AS live
+        FROM public.entity_graph_edges
+        WHERE {_LIVE_EDGE_FILTER}
+        GROUP BY source_schema, source_table
+        ORDER BY source_schema, source_table
+        """,
+        entity_id,
+    )
+    edge_rows = await pool.fetch(
+        f"""
+        SELECT id, source_schema, source_table, source_id, subject_entity_id,
+               predicate, object_entity_id, sensitivity, updated_at
+        FROM public.entity_graph_edges
+        WHERE {_LIVE_EDGE_FILTER}
+        ORDER BY updated_at DESC, id
+        LIMIT $2
+        """,
+        entity_id,
+        bounded,
+    )
+    withheld = await pool.fetchval(
+        """
+        SELECT COUNT(*)
+        FROM public.entity_graph_edges
+        WHERE subject_entity_id = $1 AND withheld_reason IS NOT NULL
+        """,
+        entity_id,
+    )
+    receipts = [
+        DossierReceipt(
+            edge_id=row["id"],
+            source_schema=row["source_schema"],
+            source_table=row["source_table"],
+            source_id=row["source_id"],
+            predicate=row["predicate"],
+            direction="subject" if row["subject_entity_id"] == entity_id else "object",
+            counterpart_entity_id=(
+                row["object_entity_id"]
+                if row["subject_entity_id"] == entity_id
+                else row["subject_entity_id"]
+            ),
+            sensitivity=row["sensitivity"],
+            updated_at=row["updated_at"],
+        )
+        for row in edge_rows
+    ]
+    return EntityDossierRead(
+        receipts=receipts,
+        live_by_source={
+            (r["source_schema"], r["source_table"]): int(r["live"]) for r in group_rows
+        },
+        withheld=int(withheld or 0),
+    )
 
 
 async def backfill_memory_facts_edges(

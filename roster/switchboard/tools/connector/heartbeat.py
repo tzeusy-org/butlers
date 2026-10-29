@@ -20,10 +20,21 @@ import logging
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+from butlers.connectors.catalog import canonical_connector_types
+from butlers.core.goal_admission import EvidenceRefused
+from butlers.core.known_contact_state import CLASSIFICATION_KEY, parse_check
+from butlers.ingestion_spans import (
+    CHANNEL_KIND_CAPABILITY,
+    CHANNEL_KIND_MESSAGE,
+    CHANNEL_KINDS,
+    ChannelKind,
+    effective_channel_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,22 +42,7 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 ConnectorState = Literal["healthy", "degraded", "error"]
 
 # Known valid connector types that can register via heartbeat
-VALID_CONNECTOR_TYPES = {
-    "activitywatch",
-    "discord_user",
-    "gmail",
-    "google_calendar",
-    "google_drive",
-    "google_health",
-    "home_assistant",
-    "live_listener",
-    "owntracks",
-    "spotify",
-    "steam",
-    "telegram_bot",
-    "telegram_user_client",
-    "whatsapp_user_client",
-}
+VALID_CONNECTOR_TYPES = canonical_connector_types()
 
 
 class ConnectorIdentityV1(BaseModel):
@@ -215,6 +211,7 @@ class HeartbeatAcceptedResponse(BaseModel):
 
     status: str = "accepted"
     server_time: str = Field(description="Server timestamp in RFC3339 format")
+    classification_ack: dict[str, Any] | None = None
 
 
 def parse_connector_heartbeat(payload: Mapping[str, Any]) -> ConnectorHeartbeatV1:
@@ -229,16 +226,75 @@ def parse_connector_heartbeat(payload: Mapping[str, Any]) -> ConnectorHeartbeatV
     Raises:
         ValueError: If the payload fails validation.
     """
+    # Normalize the new fixed metadata before pydantic/generic diagnostics can
+    # include rejected values. Unrelated capability contracts remain unchanged.
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, dict) and CLASSIFICATION_KEY in capabilities:
+        payload = {
+            **payload,
+            "capabilities": {
+                **capabilities,
+                CLASSIFICATION_KEY: parse_check(capabilities[CLASSIFICATION_KEY]),
+            },
+        }
+    capabilities = payload.get("capabilities")
+    if (
+        isinstance(capabilities, dict)
+        and CHANNEL_KIND_CAPABILITY in capabilities
+        and (
+            not isinstance(capabilities[CHANNEL_KIND_CAPABILITY], str)
+            or capabilities[CHANNEL_KIND_CAPABILITY] not in CHANNEL_KINDS
+        )
+    ):
+        # An unrecognised channel kind is not registered at all, which is a message channel
+        # (REQ-connector-base-spec-003); liveness is unaffected.
+        payload = {
+            **payload,
+            "capabilities": {k: v for k, v in capabilities.items() if k != CHANNEL_KIND_CAPABILITY},
+        }
     try:
         return ConnectorHeartbeatV1.model_validate(payload)
     except Exception as exc:
         raise ValueError(f"Invalid connector.heartbeat.v1 envelope: {exc}") from exc
 
 
-async def _get_previous_snapshot(
-    pool: asyncpg.Pool,
+async def registered_channel_kind(
+    pool: asyncpg.Pool | asyncpg.Connection,
     connector_type: str,
     endpoint_identity: str,
+) -> ChannelKind:
+    """The channel kind a connector registered (REQ-connector-base-spec-003).
+
+    Goal admission resolves the kind here, from the Switchboard-owned registry row, never from an
+    ingest envelope. Successful missing, undeclared or malformed metadata defaults to message.
+    An unavailable registry refuses admission instead of downgrading a feed.
+    """
+    try:
+        capabilities = await pool.fetchval(
+            """
+            SELECT capabilities
+            FROM switchboard.connector_registry
+            WHERE connector_type = $1 AND endpoint_identity = $2
+            """,
+            connector_type,
+            endpoint_identity,
+        )
+    except Exception:
+        raise EvidenceRefused("channel_registry_unavailable") from None
+    if isinstance(capabilities, str):
+        try:
+            capabilities = json.loads(capabilities)
+        except ValueError:
+            return CHANNEL_KIND_MESSAGE
+    return effective_channel_kind(capabilities if isinstance(capabilities, dict) else None)
+
+
+async def _get_previous_snapshot(
+    pool: asyncpg.Pool | asyncpg.Connection,
+    connector_type: str,
+    endpoint_identity: str,
+    *,
+    for_update: bool = False,
 ) -> asyncpg.Record | None:
     """Fetch the previous counter snapshot from connector_registry.
 
@@ -252,10 +308,12 @@ async def _get_previous_snapshot(
             counter_messages_failed,
             counter_source_api_calls,
             counter_checkpoint_saves,
-            counter_dedupe_accepted
+            counter_dedupe_accepted,
+            capabilities
         FROM switchboard.connector_registry
         WHERE connector_type = $1 AND endpoint_identity = $2
-        """,
+        """
+        + (" FOR UPDATE" if for_update else ""),
         connector_type,
         endpoint_identity,
     )
@@ -313,6 +371,150 @@ def _compute_counter_deltas(
     }
 
 
+async def _persist_registry(
+    connection: asyncpg.Connection | asyncpg.Pool,
+    envelope: ConnectorHeartbeatV1,
+    received_at: datetime,
+    capabilities: dict[str, Any] | None,
+) -> None:
+    connector = envelope.connector
+    connector_type = connector.connector_type
+    endpoint_identity = connector.endpoint_identity
+    instance_id = connector.instance_id
+    status, counters, checkpoint = envelope.status, envelope.counters, envelope.checkpoint
+    await connection.execute(
+        """
+        INSERT INTO switchboard.connector_registry (
+            connector_type,
+            endpoint_identity,
+            instance_id,
+            version,
+            state,
+            error_message,
+            uptime_s,
+            last_heartbeat_at,
+            first_seen_at,
+            registered_via,
+            counter_messages_ingested,
+            counter_messages_failed,
+            counter_source_api_calls,
+            counter_checkpoint_saves,
+            counter_dedupe_accepted,
+            checkpoint_cursor,
+            checkpoint_updated_at,
+            capabilities,
+            operational_role
+        ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8, $8, 'self',
+            $9, $10, $11, $12, $13, $14, $15, $16, 'runtime_instance'
+        )
+        ON CONFLICT (connector_type, endpoint_identity) DO UPDATE SET
+            instance_id = EXCLUDED.instance_id,
+            version = EXCLUDED.version,
+            state = EXCLUDED.state,
+            error_message = EXCLUDED.error_message,
+            uptime_s = EXCLUDED.uptime_s,
+            last_heartbeat_at = EXCLUDED.last_heartbeat_at,
+            counter_messages_ingested = EXCLUDED.counter_messages_ingested,
+            counter_messages_failed = EXCLUDED.counter_messages_failed,
+            counter_source_api_calls = EXCLUDED.counter_source_api_calls,
+            counter_checkpoint_saves = EXCLUDED.counter_checkpoint_saves,
+            counter_dedupe_accepted = EXCLUDED.counter_dedupe_accepted,
+            -- A heartbeat without a checkpoint (e.g. before a connector's first
+            -- save after a restart) reports nothing about the cursor; it must
+            -- not erase the cursor the connector saved through cursor_store.
+            checkpoint_cursor = COALESCE(
+                EXCLUDED.checkpoint_cursor, connector_registry.checkpoint_cursor
+            ),
+            checkpoint_updated_at = CASE
+                WHEN EXCLUDED.checkpoint_cursor IS NULL
+                THEN connector_registry.checkpoint_updated_at
+                ELSE EXCLUDED.checkpoint_updated_at
+            END,
+            capabilities = EXCLUDED.capabilities,
+            -- A heartbeat is proof that an executable process owns this
+            -- identity, so it claims the row unconditionally. This is the
+            -- one place a registry row becomes a runtime instance; a row
+            -- created earlier by a checkpoint or settings write is
+            -- promoted here on the process's first check-in
+            -- (butlers.connectors.registry_roles).
+            operational_role = 'runtime_instance'
+        """,
+        connector_type,
+        endpoint_identity,
+        instance_id,
+        connector.version,
+        status.state,
+        status.error_message,
+        status.uptime_s,
+        received_at,
+        counters.messages_ingested,
+        counters.messages_failed,
+        counters.source_api_calls,
+        counters.checkpoint_saves,
+        counters.dedupe_accepted,
+        checkpoint.cursor if checkpoint else None,
+        checkpoint.updated_at if checkpoint else None,
+        capabilities,
+    )
+
+
+def _classification_admission(
+    envelope: ConnectorHeartbeatV1,
+    previous: asyncpg.Record | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+    capabilities = dict(envelope.capabilities or {})
+    check = parse_check(capabilities.get(CLASSIFICATION_KEY))
+    if check is None:
+        # Legacy/invalid metadata is accepted for ordinary liveness but cannot
+        # retain an earlier loaded classification. Do not reinterpret strings.
+        if CLASSIFICATION_KEY in capabilities:
+            capabilities[CLASSIFICATION_KEY] = None
+        return capabilities if envelope.capabilities is not None else None, None, True
+    reason = "none" if check["instance_id"] == str(envelope.connector.instance_id) else "instance"
+    stored = None
+    if previous is not None and isinstance(previous["capabilities"], dict):
+        stored = parse_check(previous["capabilities"].get(CLASSIFICATION_KEY))
+    epoch = check["admission_epoch"]
+    if reason != "none":
+        pass
+    elif epoch is None:
+        if not (
+            check["state"] == "unloaded"
+            and check["reason"] == "not_loaded"
+            and check["generation"] == 0
+            and check["last_success_at"] is None
+        ):
+            reason = "invalid"
+        else:
+            epoch = str(uuid4())
+    elif stored is None or stored["admission_epoch"] != epoch:
+        reason = "epoch"
+    elif (
+        stored["instance_id"] != check["instance_id"]
+        or str(previous["instance_id"]) != check["instance_id"]
+    ):
+        reason = "instance"
+    elif check["generation"] < stored["generation"]:
+        reason = "generation"
+    elif check["generation"] == stored["generation"] and any(
+        check[k] != stored[k] for k in ("state", "reason", "last_success_at")
+    ):
+        reason = "generation"
+    admitted = reason == "none"
+    ack = {
+        "admitted": admitted,
+        "instance_id": check["instance_id"],
+        "generation": check["generation"],
+        "request_admission_epoch": check["admission_epoch"],
+        "admission_epoch": epoch if admitted else None,
+        "reason": reason,
+    }
+    if admitted:
+        capabilities[CLASSIFICATION_KEY] = {**check, "admission_epoch": epoch}
+    return capabilities, ack, admitted
+
+
 async def heartbeat(
     pool: asyncpg.Pool,
     payload: Mapping[str, Any],
@@ -351,7 +553,6 @@ async def heartbeat(
     connector = envelope.connector
     status = envelope.status
     counters = envelope.counters
-    checkpoint = envelope.checkpoint
     capabilities = envelope.capabilities
     sent_at = envelope.sent_at
     received_at = datetime.now(UTC)
@@ -360,98 +561,49 @@ async def heartbeat(
     endpoint_identity = connector.endpoint_identity
     instance_id = connector.instance_id
 
-    # 2. Fetch previous snapshot for delta computation
-    previous = await _get_previous_snapshot(pool, connector_type, endpoint_identity)
-
-    # 3. Compute counter deltas
-    deltas = _compute_counter_deltas(counters, previous, instance_id)
-
-    # 4. Upsert connector_registry
-    if previous is None:
-        # Self-registration: first heartbeat
-        logger.info(
-            "Self-registering connector: connector_type=%s, endpoint_identity=%s, instance_id=%s",
-            connector_type,
-            endpoint_identity,
-            instance_id,
-        )
-
+    # Gmail admission owns endpoint advisory -> registry row ordering. The
+    # primary transaction commits before any best-effort log/partition work.
+    classification_ack = None
     try:
-        await pool.execute(
-            """
-            INSERT INTO switchboard.connector_registry (
-                connector_type,
-                endpoint_identity,
-                instance_id,
-                version,
-                state,
-                error_message,
-                uptime_s,
-                last_heartbeat_at,
-                first_seen_at,
-                registered_via,
-                counter_messages_ingested,
-                counter_messages_failed,
-                counter_source_api_calls,
-                counter_checkpoint_saves,
-                counter_dedupe_accepted,
-                checkpoint_cursor,
-                checkpoint_updated_at,
-                capabilities,
-                operational_role
-            ) VALUES (
-                $1, $2, $3, $4, $5, $6, $7, $8, $8, 'self',
-                $9, $10, $11, $12, $13, $14, $15, $16, 'runtime_instance'
+        async with pool.acquire() as connection, connection.transaction():
+            # Serialize even absent rows. Gmail's existing endpoint advisory lock
+            # remains first, before its registry row lock/classification checks.
+            await connection.fetchval(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"connector-classification:{connector_type}:{endpoint_identity}",
             )
-            ON CONFLICT (connector_type, endpoint_identity) DO UPDATE SET
-                instance_id = EXCLUDED.instance_id,
-                version = EXCLUDED.version,
-                state = EXCLUDED.state,
-                error_message = EXCLUDED.error_message,
-                uptime_s = EXCLUDED.uptime_s,
-                last_heartbeat_at = EXCLUDED.last_heartbeat_at,
-                counter_messages_ingested = EXCLUDED.counter_messages_ingested,
-                counter_messages_failed = EXCLUDED.counter_messages_failed,
-                counter_source_api_calls = EXCLUDED.counter_source_api_calls,
-                counter_checkpoint_saves = EXCLUDED.counter_checkpoint_saves,
-                counter_dedupe_accepted = EXCLUDED.counter_dedupe_accepted,
-                checkpoint_cursor = EXCLUDED.checkpoint_cursor,
-                checkpoint_updated_at = EXCLUDED.checkpoint_updated_at,
-                capabilities = EXCLUDED.capabilities,
-                -- A heartbeat is proof that an executable process owns this
-                -- identity, so it claims the row unconditionally. This is the
-                -- one place a registry row becomes a runtime instance; a row
-                -- created earlier by a checkpoint or settings write is
-                -- promoted here on the process's first check-in
-                -- (butlers.connectors.registry_roles).
-                operational_role = 'runtime_instance'
-            """,
-            connector_type,
-            endpoint_identity,
-            instance_id,
-            connector.version,
-            status.state,
-            status.error_message,
-            status.uptime_s,
-            received_at,
-            counters.messages_ingested,
-            counters.messages_failed,
-            counters.source_api_calls,
-            counters.checkpoint_saves,
-            counters.dedupe_accepted,
-            checkpoint.cursor if checkpoint else None,
-            checkpoint.updated_at if checkpoint else None,
-            json.dumps(envelope.capabilities) if envelope.capabilities is not None else None,
-        )
+            previous = await _get_previous_snapshot(
+                connection, connector_type, endpoint_identity, for_update=True
+            )
+            if connector_type == "gmail":
+                capabilities, classification_ack, admitted = _classification_admission(
+                    envelope, previous
+                )
+                if not admitted:
+                    return HeartbeatAcceptedResponse(
+                        server_time=received_at.isoformat(), classification_ack=classification_ack
+                    )
+            await _persist_registry(connection, envelope, received_at, capabilities)
+            prior_capabilities = previous.get("capabilities") if previous else None
+            if isinstance(prior_capabilities, str):
+                try:
+                    prior_capabilities = json.loads(prior_capabilities)
+                except ValueError:
+                    prior_capabilities = None
+            drifted = previous is not None and effective_channel_kind(
+                prior_capabilities if isinstance(prior_capabilities, Mapping) else None
+            ) != effective_channel_kind(capabilities)
+        # Never emit a drift verdict before the owning transaction commits.
+        if drifted:
+            logger.warning("Connector channel kind changed outcome=drift")
     except Exception as exc:
-        logger.error(
-            "Failed to upsert connector_registry for %s/%s: %s",
-            connector_type,
-            endpoint_identity,
-            exc,
-            exc_info=True,
-        )
+        # New classification diagnostics never include input or DB error tails.
+        if connector_type == "gmail":
+            logger.error("Gmail classification persistence outcome=failed")
+            raise RuntimeError("Failed to persist Gmail heartbeat") from None
+        logger.error("Failed to persist connector heartbeat", exc_info=True)
         raise RuntimeError(f"Failed to persist connector heartbeat: {exc}") from exc
+    deltas = _compute_counter_deltas(counters, previous, instance_id)
 
     # 5. Ensure partition exists for received_at
     try:
@@ -518,11 +670,12 @@ async def heartbeat(
         instance_id,
         status.state,
         status.uptime_s,
-        capabilities,
+        {k: v for k, v in (capabilities or {}).items() if k != CLASSIFICATION_KEY},
         deltas,
     )
 
     return HeartbeatAcceptedResponse(
         status="accepted",
         server_time=received_at.isoformat(),
+        classification_ack=classification_ack,
     )

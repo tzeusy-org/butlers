@@ -42,7 +42,7 @@ from pathlib import Path
 
 import pytest
 
-from butlers.api.models.audit import PROBE_FAILURE_VOCABULARY
+from butlers.core.audit import PROBE_FAILURE_VOCABULARY
 
 _SRC = Path(__file__).resolve().parents[2] / "src" / "butlers"
 
@@ -191,7 +191,7 @@ def test_the_census_is_the_size_this_module_documents(call_sites: list[_CallSite
     assert by_file == {
         "secrets_v2.py": 15,
         "oauth.py": 12,
-        "secrets_lifecycle.py": 1,
+        "secrets_lifecycle.py": 2,
     }, f"the credential-audit call-site census moved: {by_file}"
 
 
@@ -224,7 +224,7 @@ def test_success_only_producers_stay_uncategorised(call_sites: list[_CallSite]) 
     # And the success-only set is not empty, so the assertion above is not
     # passing over nothing.
     success_only = [site for site in call_sites if not site.can_fail]
-    assert len(success_only) == 17, (
+    assert len(success_only) == 18, (
         f"the success-only producer count moved: {[s.where for s in success_only]}"
     )
 

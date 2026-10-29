@@ -36,7 +36,7 @@ import { Section, SectionContent, SectionHeader, SectionTitle } from "@/componen
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time, formatOwnerDateTime } from "@/components/ui/time";
 import { useTimezone } from "@/components/ui/timezone-context";
-import { KpiCell, ErrorLine } from "./atoms";
+import { KpiCell, ErrorLine } from "@/components/ui/atoms";
 import { useOverdueContacts } from "@/hooks/use-contacts";
 import { useEntityInteractions, useRelationshipEntities } from "@/hooks/use-entities";
 import { useDunbarRanking, useEntity } from "@/hooks/use-memory";
@@ -266,7 +266,7 @@ function TierDistributionPanel({ ranking, isLoading, isError }: TierDistribution
             {/* Warmth bar */}
             <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
               <div
-                className="h-full rounded-full bg-primary transition-all"
+                className="h-full rounded-full bg-primary"
                 style={{ width: warmthBarWidth(avgWarmth) }}
                 aria-label={`Warmth: ${fmtWarmth(avgWarmth)}`}
               />

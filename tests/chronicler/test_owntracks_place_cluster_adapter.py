@@ -770,12 +770,12 @@ async def test_dwell_one_second_over_min_dwell_emits_episode() -> None:
     assert len(captured) == 1
 
 
-# --- clock-skew clamp: abs(delta) > threshold clamps ts to recorded_at ------
+# --- clock-skew clamp: future-dated ts > threshold clamps ts to recorded_at --
 
 
 def test_clock_skew_exactly_at_threshold_is_not_clamped() -> None:
     """A device/server delta of EXACTLY the threshold is NOT clamped
-    (``abs(delta) > threshold`` is strict); the original ts is preserved and
+    (``delta > threshold`` is strict); the original ts is preserved and
     no warning is raised."""
     adapter = OwnTracksPlaceClusterAdapter()  # default threshold = 4h
     ts = _NOW + timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS)
@@ -805,17 +805,17 @@ def test_clock_skew_just_over_threshold_clamps_ts_to_recorded_at() -> None:
     assert "clamping ts to recorded_at" in warnings[0]
 
 
-def test_clock_skew_negative_direction_over_threshold_clamps() -> None:
-    """The clamp is on ``abs(delta)``: a device clock that runs BEHIND server
-    time by more than the threshold is clamped too."""
+def test_late_delivered_point_keeps_device_ts() -> None:
+    """A fix uploaded long after it was taken (OwnTracks' offline queue, e.g.
+    after a flight) keeps its device ts: re-stamping it to upload time would
+    place the owner where they were hours ago (bu-8r9q06)."""
     adapter = OwnTracksPlaceClusterAdapter()
-    ts = _NOW - timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS, seconds=1)
+    ts = _NOW - timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS, minutes=18)
     row = _row(ts)
     row["recorded_at"] = _NOW
 
     normalized, warnings = adapter._normalize_row(row)
 
     assert normalized is not None
-    assert normalized["ts"] == _NOW  # clamped to recorded_at
-    assert len(warnings) == 1
-    assert "clamping ts to recorded_at" in warnings[0]
+    assert normalized["ts"] == ts
+    assert warnings == []

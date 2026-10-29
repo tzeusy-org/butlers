@@ -24,11 +24,17 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.permissions import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.core.permissions import ENFORCED_PERMISSIONS
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
+
+
+def _provide(value):
+    """Dependency override returning ``value`` as bound now, not at request time."""
+    return lambda: value
+
 
 _ENFORCED_SORTED = sorted(ENFORCED_PERMISSIONS)
 
@@ -129,7 +135,7 @@ async def test_get_permissions_empty_matrix(app):
     """With no butlers and no rows the cells dict is empty; perms = enforced set."""
     pool = _make_pool(rows=[], butler_rows=[])
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/permissions")
@@ -156,7 +162,7 @@ async def test_get_permissions_dense_matrix_enforced_perms(app):
     ]
     pool = _make_pool(rows=perm_rows, butler_rows=butler_rows)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/permissions")
@@ -207,7 +213,7 @@ async def test_get_permissions_inherited_false_after_explicit_row(app):
     ]
     pool = _make_pool(rows=perm_rows, butler_rows=butler_rows)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/permissions")
@@ -239,7 +245,7 @@ async def test_get_permissions_butler_only_in_perm_rows(app):
     ]
     pool = _make_pool(rows=perm_rows, butler_rows=[])
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/permissions")
@@ -254,7 +260,7 @@ async def test_get_permissions_503_when_no_switchboard(app):
     """Returns 503 when the switchboard pool is unavailable."""
     db = MagicMock(spec=DatabaseManager)
     db.pool.side_effect = KeyError("switchboard")
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/permissions")
@@ -271,7 +277,7 @@ async def test_put_permission_success(app):
     """Successful update returns 200 and calls audit.append."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch(
         "butlers.api.routers.permissions.audit.append", new_callable=AsyncMock
@@ -312,7 +318,7 @@ async def test_put_permission_rejects_non_enforced_permission_before_writing(app
     """The writable route cannot mint decorative, non-runtime permission rows."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.put(
@@ -330,7 +336,7 @@ async def test_put_permission_rejects_unregistered_butler_before_writing(app):
     """Only live registry members can receive an explicit permission override."""
     pool = _make_pool(registered=False)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with (
         patch("butlers.api.routers.permissions.audit.append", new_callable=AsyncMock) as mock_audit,
@@ -358,7 +364,7 @@ async def test_put_permission_empty_reason_returns_422(app):
     """Empty reason returns HTTP 422 with {error: reason_required}."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.put(
@@ -375,7 +381,7 @@ async def test_put_permission_whitespace_reason_returns_422(app):
     """Whitespace-only reason returns HTTP 422 with {error: reason_required}."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.put(
@@ -397,7 +403,7 @@ async def test_put_permission_missing_reason_returns_422(app):
     """
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.put(
@@ -447,7 +453,7 @@ async def test_put_permission_credential_reason_returns_422(app):
     """Reason matching a credential pattern → 422 reason_contains_credential."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch(
         "butlers.api.routers.permissions.audit.append", new_callable=AsyncMock
@@ -479,7 +485,7 @@ async def test_put_permission_credential_reason_no_state_change(app):
     for reason in credential_reasons:
         pool = _make_pool()
         db = _make_db(pool)
-        app.dependency_overrides[_get_db_manager] = lambda: db
+        app.dependency_overrides[get_db] = _provide(db)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             resp = await client.put(
@@ -496,7 +502,7 @@ async def test_put_permission_clean_reason_still_succeeds(app):
     """A reason with no credential keywords still goes through normally."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch(
         "butlers.api.routers.permissions.audit.append", new_callable=AsyncMock
@@ -526,7 +532,7 @@ async def test_put_permission_dispatches_event_on_success(app):
     """PUT /api/permissions calls dispatch_event with permission.set on success."""
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     dispatched: list[tuple] = []
 

@@ -11,9 +11,10 @@ Kept in its own module (not in the pure ``gap_interview`` engine) so the engine
 stays I/O-free and telegram-agnostic — when the decision loop (RFC 0021) takes
 over the transport, this file is what gets swapped, nothing in the engine.
 
-Self-contained on purpose: it resolves the owner's telegram chat id from
-``public.entity_info`` and the bot token from ``butler_secrets`` (both readable
-from the chronicler pool's ``public`` search path) and POSTs ``sendMessage``
+It resolves the owner's telegram chat id from ``public.entity_info`` and the
+bot token through the daemon-selected CredentialStore (local, then explicitly
+configured fallback pools). A local pool alone cannot establish shared credential
+access. Tier 1 tokens never fall back to environment variables. It POSTs ``sendMessage``
 directly, rather than threading inline-keyboard support through the shared
 ``notify()`` → ``deliver`` → messenger → telegram chain. Owner-directed sends
 auto-approve on the owner's own verified channel, so no approval gate is
@@ -111,19 +112,20 @@ async def resolve_owner_chat_id(pool: Any) -> str | None:
     return chat_id.strip() if isinstance(chat_id, str) and chat_id.strip() else None
 
 
-async def resolve_bot_token(pool: Any) -> str | None:
-    """Bot token from ``butler_secrets`` via the chronicler pool's public reach."""
+async def resolve_bot_token(pool: Any, *, credential_store: Any | None = None) -> str | None:
+    """Resolve the Tier 1 token through the selected store, with DB-only local compatibility."""
     from butlers.credential_store import CredentialStore
 
     try:
-        return await CredentialStore(pool).resolve(_TELEGRAM_TOKEN_SECRET, env_fallback=True)
+        store = credential_store if credential_store is not None else CredentialStore(pool)
+        return await store.resolve(_TELEGRAM_TOKEN_SECRET)
     except Exception:  # noqa: BLE001 — missing secret ⇒ cannot send, treated as no token
-        logger.warning("gap interview: could not resolve %s", _TELEGRAM_TOKEN_SECRET, exc_info=True)
+        logger.warning("gap interview: bot token store unavailable; skipping send")
         return None
 
 
 async def build_telegram_transport(
-    pool: Any, *, http_client: Any
+    pool: Any, *, http_client: Any, credential_store: Any | None = None
 ) -> TelegramInlineButtonTransport | None:
     """Assemble a telegram transport, or ``None`` when it cannot be delivered.
 
@@ -135,7 +137,7 @@ async def build_telegram_transport(
     if not chat_id:
         logger.info("gap interview: no owner telegram chat configured; skipping send")
         return None
-    token = await resolve_bot_token(pool)
+    token = await resolve_bot_token(pool, credential_store=credential_store)
     if not token:
         return None
     api_base = f"https://api.telegram.org/bot{token}"

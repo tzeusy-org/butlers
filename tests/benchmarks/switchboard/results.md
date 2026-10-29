@@ -14,4 +14,4 @@ uv run pytest tests/benchmarks/switchboard/ -v --override-ini="addopts=" --model
 | ollama/qwen3.5:9b | 66.7% | 47038ms | 81352ms | 91041ms | 26457ms | 0.0 | 100 | 2026-04-08 |
 | ollama/gemma3:12b | 0.0% | 1657ms | 1766ms | 1802ms | 1914ms | 0.6 | 100 | 2026-03-17 |
 | ollama/qwen3:14b | 0.0% | 1478ms | 1574ms | 1707ms | 1498ms | 0.7 | 100 | 2026-03-18 |
-| gemma3:4b | 0.0% | — | — | — | — | — | 100 | 2026-04-05 |
+| gemma3:4b | 0.0% | — | — | — | — | — | 100 | 2026-10-22 |

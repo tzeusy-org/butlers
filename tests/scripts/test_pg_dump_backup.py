@@ -72,6 +72,7 @@ while IFS= read -r line; do
         */id) printf 'ABCDEF-012345\\n' > "${output_file}" ;;
         */policy-count) printf '3\\n' > "${output_file}" ;;
         */capture-count) printf '0\\n' > "${output_file}" ;;
+        */confirm-policy-count) printf '1\\n' > "${output_file}" ;;
       esac
       output_file=""
       ;;
@@ -144,6 +145,28 @@ _EXPECTED_SCOPED_DATA_TABLES = {
     "public.cost_claim_events",
 }
 
+_EXPECTED_CAPTURE_DATA_TABLES = {
+    "public.captures",
+    "public.capture_operations",
+    "public.capture_service_control",
+}
+
+_CONFIRM_FIXTURE_SQL = """
+INSERT INTO public.pending_confirms
+    (id,producer,producer_key,prompt,recipient_entity,recipient_sender,recipient_chat,
+     recipient_owner,sink,sink_ref,expires_at,status,answer_index,answered_at,
+     answer_channel,application_status,application_receipt,message_ref,delivery_status)
+VALUES
+    ('00000000-0000-4000-8000-000000000248','backup-fixture','immutable-source-key',
+     jsonb_build_object('question',E'Work?\\nQuoted\\ttext',
+                        'options',jsonb_build_array(
+                            jsonb_build_object('value','yes','label','Work'),
+                            jsonb_build_object('value','no','label','Not work'))),
+     '00000000-0000-4000-8000-000000000249','42','42',true,'fixture','day',
+     clock_timestamp()+interval '1 hour','answered',1,clock_timestamp(),'telegram_owner',
+     'error','{"code":"application_unconfirmed"}'::jsonb,NULL,'ambiguous')
+"""
+
 
 def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
     """Parse the exclusion and included-RLS sets declared in the backup script."""
@@ -159,6 +182,13 @@ def _read_backup_sets() -> tuple[set[str], set[str], set[str]]:
         _one("BACKUP_EXCLUDE_TABLES"),
         _one("BACKUP_SCOPED_DATA_TABLES"),
     )
+
+
+def _read_confirm_backup_set() -> set[str]:
+    source = _SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r'^BACKUP_CONFIRM_DATA_TABLES="([^"]*)"$', source, re.MULTILINE)
+    assert match is not None, "Confidential confirm backup scope is missing"
+    return set(match.group(1).split())
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +211,10 @@ def test_script_keeps_pg_dump_fail_loud_and_scopes_the_rls_data_path() -> None:
         "public.capture_operations",
         "public.capture_service_control",
     }
+    assert scoped_data_tables == _EXPECTED_SCOPED_DATA_TABLES | _EXPECTED_CAPTURE_DATA_TABLES
+    assert _read_confirm_backup_set() == {"public.pending_confirms"}
     assert any('--snapshot="${BACKUP_SNAPSHOT}"' in line for line in code)
-    for table in scoped_data_tables:
+    for _table in scoped_data_tables:
         assert any('"--exclude-table-data=${table}"' in line for line in code)
 
 
@@ -323,8 +355,11 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         schema, _, _table = qualified.partition(".")
         return schema in excluded_schemas or qualified in excluded_tables
 
+    confirm_data_tables = _read_confirm_backup_set()
     missed = sorted(
-        rel for rel in fenced if not _is_excluded(rel) and rel not in scoped_data_tables
+        rel
+        for rel in fenced
+        if not _is_excluded(rel) and rel not in scoped_data_tables | confirm_data_tables
     )
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
@@ -355,6 +390,7 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         "public.capture_service_control",
     }
     assert scoped_data_tables <= fenced
+    assert confirm_data_tables == {"public.pending_confirms"} <= fenced
     policy_rows = _fetch_rows(
         bootstrapped_db_url,
         """
@@ -381,6 +417,17 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         "Every RLS table admitted to the backup must expose every row through one "
         f"permissive PUBLIC SELECT policy; got {policy_rows}."
     )
+    confirm_policy = _fetch_rows(
+        bootstrapped_db_url,
+        """
+        SELECT p.polpermissive, p.polcmd, p.polroles = ARRAY[0::oid],
+               pg_get_expr(p.polqual,p.polrelid) =
+                   format('(CURRENT_USER = %L::name)',current_user)
+        FROM pg_policy p WHERE p.polrelid='public.pending_confirms'::regclass
+          AND p.polname='confirm_backup_read'
+        """,
+    )
+    assert confirm_policy == [(True, "r", True, True)]
 
 
 def _backup_command(
@@ -481,6 +528,9 @@ def test_script_produces_a_verifiable_artifact(
                 (claim_id,),
             )
             conn.exec_driver_sql("RESET ROLE")
+            conn.exec_driver_sql("SET ROLE butler_messenger_rw")
+            conn.exec_driver_sql(_CONFIRM_FIXTURE_SQL)
+            conn.exec_driver_sql("RESET ROLE")
             mapping_entity = conn.exec_driver_sql(
                 "INSERT INTO public.entities (canonical_name, entity_type) "
                 "VALUES ('Backup mapping fixture', 'person') RETURNING id"
@@ -548,6 +598,23 @@ def test_script_produces_a_verifiable_artifact(
     ]
     assert any("backup-contract-claim" in payload for payload in staged_payloads)
     assert any(str(claim_id) in payload for payload in staged_payloads)
+    assert "CREATE TABLE public.pending_confirms" in dump
+    assert "COPY public.pending_confirms " not in dump
+    assert "SELECT public.confirm_restore_row(" in dump
+    confirm_lines = dump.split("COPY butlers_confirm_restore_rows (payload_hex) FROM stdin;\n", 1)[
+        1
+    ]
+    confirm_payloads = [
+        json.loads(bytes.fromhex(line).decode("utf-8"))
+        for line in confirm_lines.split("\\.\n", 1)[0].splitlines()
+    ]
+    assert len(confirm_payloads) == 1
+    assert confirm_payloads[0]["producer_key"] == "immutable-source-key"
+    assert confirm_payloads[0]["status"] == "answered"
+    assert confirm_payloads[0]["answer_index"] == 1
+    assert confirm_payloads[0]["application_status"] == "error"
+    assert confirm_payloads[0]["delivery_status"] == "ambiguous"
+    assert confirm_payloads[0]["prompt"]["question"] == "Work?\nQuoted\ttext"
 
 
 @pytest.mark.db
@@ -571,6 +638,8 @@ def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
             str(postgres_container.get_exposed_port(5432)),
         )
         assert result.returncode != 0
+        if relation == "cost_claims":
+            assert "policy is not the exact full-row contract" in result.stderr
         assert "policy" in result.stderr and "not publishing" in result.stderr
         assert not list(tmp_path.glob("butlers_*.sql.gz"))
     finally:
@@ -578,6 +647,56 @@ def test_scoped_export_fails_before_publish_when_read_policy_can_filter(
             conn.exec_driver_sql(
                 f"DROP POLICY IF EXISTS {relation}_backup_regression ON public.{relation}"
             )
+        engine.dispose()
+
+
+@pytest.mark.db
+@pytest.mark.integration
+@pytest.mark.skipif(not docker_available, reason="Docker not available")
+def test_confirm_export_refuses_read_policy_drift(
+    bootstrapped_db_url: str, postgres_container, tmp_path: Path
+) -> None:
+    """Neither filtered nor publicly exposed confirms satisfy the backup contract."""
+    engine = create_engine(bootstrapped_db_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            original = conn.exec_driver_sql(
+                "SELECT pg_get_expr(polqual,polrelid) FROM pg_policy "
+                "WHERE polrelid='public.pending_confirms'::regclass "
+                "AND polname='confirm_backup_read'"
+            ).scalar_one()
+            for expression in ("false", "true", "extra_restrictive"):
+                try:
+                    if expression == "extra_restrictive":
+                        conn.exec_driver_sql(
+                            "CREATE POLICY confirm_backup_regression ON public.pending_confirms "
+                            "AS RESTRICTIVE FOR SELECT USING (false)"
+                        )
+                    else:
+                        conn.exec_driver_sql(
+                            f"ALTER POLICY confirm_backup_read ON public.pending_confirms "
+                            f"USING ({expression})"
+                        )
+                    result = _run_backup_script(
+                        bootstrapped_db_url,
+                        tmp_path,
+                        str(postgres_container.get_exposed_port(5432)),
+                    )
+                    assert result.returncode != 0
+                    assert (
+                        "confirm backup policy is not the exact confidential-row contract"
+                        in result.stderr
+                    )
+                    assert not list(tmp_path.glob("butlers_*.sql.gz"))
+                finally:
+                    conn.exec_driver_sql(
+                        "DROP POLICY IF EXISTS confirm_backup_regression ON public.pending_confirms"
+                    )
+                    conn.exec_driver_sql(
+                        f"ALTER POLICY confirm_backup_read ON public.pending_confirms "
+                        f"USING ({original})"
+                    )
+    finally:
         engine.dispose()
 
 

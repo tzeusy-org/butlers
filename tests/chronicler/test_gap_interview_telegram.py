@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from butlers.chronicler.gap_interview import (
     GapInterview,
     GapInterviewDecision,
@@ -109,3 +111,41 @@ async def test_build_transport_ok(monkeypatch):
     assert transport is not None
     result = await transport.deliver_interview(_interview())
     assert result.delivered is True
+
+
+@pytest.mark.parametrize("mode", ["local", "shared", "missing", "env-only", "denied", "cancel"])
+async def test_selected_store_resolution_is_db_only_and_fail_closed(monkeypatch, caplog, mode):
+    import asyncio
+
+    from butlers.chronicler.gap_interview_telegram import resolve_bot_token
+    from butlers.credential_store import CredentialStore
+
+    def pool_for(value):
+        connection = AsyncMock()
+        connection.fetchrow.return_value = {"secret_value": value} if value else None
+        pool = MagicMock()
+        pool.acquire.return_value.__aenter__ = AsyncMock(return_value=connection)
+        return pool, connection
+
+    local, local_conn = pool_for("synthetic-local" if mode == "local" else None)
+    shared, shared_conn = pool_for("synthetic-shared" if mode in {"local", "shared"} else None)
+    store = CredentialStore(local, fallback_pools=[shared])
+    # Synthetic test input only. A real environment/credential is never inspected.
+    monkeypatch.setenv("BUTLER_TELEGRAM_TOKEN", "synthetic-environment")
+    if mode == "denied":
+        shared_conn.fetchrow.side_effect = PermissionError("synthetic-sensitive-error")
+    if mode == "cancel":
+        shared_conn.fetchrow.side_effect = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            await resolve_bot_token(local, credential_store=store)
+        return
+
+    result = await resolve_bot_token(local, credential_store=store)
+    expected = {"local": "synthetic-local", "shared": "synthetic-shared"}.get(mode)
+    assert result == expected
+    assert shared_conn.fetchrow.await_count == (0 if mode == "local" else 1)
+    assert "synthetic-sensitive-error" not in caplog.text
+    assert "synthetic-environment" not in caplog.text
+    # Compatibility callers without a selected store remain local and DB-only.
+    local_conn.fetchrow.return_value = None
+    assert await resolve_bot_token(local) is None

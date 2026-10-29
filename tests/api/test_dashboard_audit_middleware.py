@@ -14,6 +14,7 @@ import pytest
 
 from butlers.api.audit_emit import build_user_context, emit_dashboard_audit, redact_body
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db as _audit_get_db
 from tests.api.auth_helpers import _DOMAIN_KEY
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -404,7 +405,6 @@ class TestDashboardAuditMiddleware:
 class TestAuditReadEndpoint:
     async def test_get_audit_log_returns_paginated_structure(self):
         """GET /api/audit-log still works correctly after middleware changes."""
-        from butlers.api.routers.audit import _get_db_manager as _audit_get_db
 
         mock_pool = AsyncMock()
         mock_pool.fetchval = AsyncMock(return_value=0)
@@ -451,3 +451,222 @@ class TestInferButler:
 
         assert _infer_butler("/api/audit-log") == "dashboard"
         assert _infer_butler("/api/health") == "dashboard"
+
+
+_CALLBACK_ID = "12345678-1234-5678-1234-567812345678"
+_CALLBACK_SECRET = "synthetic-retired-callback-secret"
+_CALLBACK_CREDENTIAL = "synthetic-callback-credential"
+
+
+def _callback_headers():
+    return {"X-Butlers-Approval-Callback-Token": _CALLBACK_CREDENTIAL}
+
+
+def _callback_token():
+    return f"dsk1:{_CALLBACK_ID}:0:0123456789abcdef"
+
+
+@pytest.fixture
+def callback_privacy(monkeypatch, caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.metrics import NoOpMeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from butlers.api.app import create_app
+    from butlers.credential_store import CredentialStore
+    from tests.api.auth_helpers import _DomainOwnerState
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    instrument = FastAPIInstrumentor.instrument_app
+
+    def local_instrument(app, **kwargs):
+        return instrument(
+            app, tracer_provider=provider, meter_provider=NoOpMeterProvider(), **kwargs
+        )
+
+    monkeypatch.setattr(FastAPIInstrumentor, "instrument_app", staticmethod(local_instrument))
+    monkeypatch.setattr("butlers.core.telemetry.init_telemetry", lambda *args: None)
+    monkeypatch.setattr("butlers.core.metrics.init_metrics", lambda *args: None)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST", ".*")
+    monkeypatch.setenv("OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_RESPONSE", ".*")
+    caplog.set_level(logging.DEBUG)
+    logging.getLogger("callback_privacy_control").warning("callback-capture-live-control")
+    connection = SimpleNamespace(fetchval=AsyncMock(return_value=1), fetchrow=AsyncMock())
+    resolve = AsyncMock()
+    monkeypatch.setattr(CredentialStore, "resolve", resolve)
+    db = SimpleNamespace(pool=lambda name: connection)
+    app = create_app(api_key="synthetic-owner-key")
+    app.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
+    app.state.approval_callback_connector_token = _CALLBACK_CREDENTIAL
+    fixture = SimpleNamespace(app=app, db=db, connection=connection, resolve=resolve)
+    fixture.exporter = exporter
+    monkeypatch.setattr("butlers.api.dashboard_audit_middleware.get_db_manager", lambda: fixture.db)
+    try:
+        yield fixture
+    finally:
+        FastAPIInstrumentor.uninstrument_app(fixture.app)
+        provider.shutdown()
+
+
+def _callback_audits(fixture):
+    return [
+        call.args
+        for call in fixture.connection.fetchval.call_args_list
+        if "public.audit_log" in call.args[0]
+    ]
+
+
+def _assert_callback_private(fixture, response, caplog, *private):
+    spans = fixture.exporter.get_finished_spans()
+    # Unmatched paths (the deliberately unsupported trailing slash) have no
+    # route template. A real server span still proves instrumentation ran.
+    assert spans and any(span.kind.name == "SERVER" for span in spans)
+    captured_logs = caplog.text + "\n".join(
+        record.getMessage() for record in caplog.get_records("setup")
+    )
+    assert "callback-capture-live-control" in captured_logs
+    rows = _callback_audits(fixture)
+    assert rows, "The actual production audit append must execute"
+    row = rows[-1]
+    summary = row[7]["request_summary"]
+    assert summary["method"] == "POST"
+    assert summary["path"].endswith(("/choose", "/choose/"))
+    assert row[1] == "decisions"
+    assert row[2] == f"POST {summary['path']}" and row[3] == summary["path"]
+    prompt_segment = summary["path"].rstrip("/").split("/")[-2]
+    if len(prompt_segment) == 36:
+        assert summary["path_params"] == {"param_0": prompt_segment}
+    assert summary["body"] == {"redacted": "unmatched_route"}
+    assert summary["response_status"] == response.status_code
+    assert str(row[6]) == response.headers["x-trace-id"] == summary["trace_id"]
+    assert row[7]["user_context"]["principal"] == "owner"
+    assert row[8] == ("success" if response.status_code < 400 else "error")
+    retained = (
+        repr(rows)
+        + response.text
+        + captured_logs
+        + repr([(span.name, dict(span.attributes or {}), span.events) for span in spans])
+    )
+    for value in private:
+        assert value not in retained
+
+
+async def test_choose_validation_and_audit_never_expose_body(callback_privacy, caplog):
+    import json
+
+    fixture = callback_privacy
+    token = _callback_token()
+    good = {"token": token, "option_index": 0}
+    bodies = [
+        (json.dumps(good), 200),
+        (json.dumps({"token": token}), 422),
+        (json.dumps({**good, "option_index": "invalid"}), 422),
+        (json.dumps({"option_index": 0}), 403),
+        *[
+            (json.dumps({**good, "token": value}), 403)
+            for value in (None, 7, "", "dsk1:invalid", "x" * 65)
+        ],
+        (json.dumps({"token": "", "option_index": "invalid"}), 422),
+        ('{"token":' + json.dumps(token), 422),
+        (json.dumps(token), 422),
+        (json.dumps([token]), 422),
+        (b'"\xff"', 404),
+        ('{"token":' + json.dumps(token) + ',"option_index":0' + " " * 17000 + "}", 200),
+        ("{" + " " * 16370 + '"token":' + json.dumps(token) + ',"option_index":0}', 200),
+        ("{" + " " * 16370 + '"token":' + json.dumps(token), 422),
+        (json.dumps({**good, "token": "x" * 20000}), 403),
+    ]
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
+    ) as client:
+        for body, _retired_status in bodies:
+            before = len(_callback_audits(fixture))
+            response = await client.post(
+                f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+                content=body,
+                headers={"X-API-Key": "synthetic-owner-key", "Content-Type": "application/json"},
+            )
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
+            assert len(_callback_audits(fixture)) == before + 1
+            _assert_callback_private(
+                fixture,
+                response,
+                caplog,
+                token,
+                token[-12:],
+                _CALLBACK_SECRET,
+                _CALLBACK_CREDENTIAL,
+            )
+        invalid_path = await client.post(
+            "/api/decisions/prompts/not-a-uuid/choose",
+            json=good,
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+        assert invalid_path.status_code == 404
+        assert invalid_path.json() == {"detail": "Not Found"}
+        _assert_callback_private(
+            fixture, invalid_path, caplog, token, token[-12:], _CALLBACK_SECRET
+        )
+
+
+async def test_choose_trailing_slash_audit_retains_metadata_only(callback_privacy, caplog):
+
+    fixture = callback_privacy
+    token = _callback_token()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
+    ) as client:
+        path = f"/api/decisions/prompts/{_CALLBACK_ID}/choose/"
+        response = await client.post(
+            path,
+            json={"option_index": 0, "token": token},
+            headers={"X-API-Key": "synthetic-owner-key"},
+        )
+        assert response.status_code == 404 and "location" not in response.headers
+        _assert_callback_private(fixture, response, caplog, token, token[-12:])
+        count = len(_callback_audits(fixture))
+        denied = await client.post(
+            path, json={"option_index": 0, "token": token}, headers=_callback_headers()
+        )
+        assert denied.status_code == 401
+        assert len(_callback_audits(fixture)) == count
+
+
+async def test_choose_failures_keep_secret_and_token_out_of_error_telemetry(
+    callback_privacy, caplog
+):
+
+    fixture = callback_privacy
+    token = _callback_token()
+    private = token + _CALLBACK_SECRET + _CALLBACK_CREDENTIAL
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=fixture.app), base_url="http://test"
+    ) as client:
+        for where in (fixture.resolve, fixture.connection.fetchrow):
+            where.side_effect = RuntimeError(private)
+            response = await client.post(
+                f"/api/decisions/prompts/{_CALLBACK_ID}/choose",
+                json={"option_index": 0, "token": token},
+                headers={"X-API-Key": "synthetic-owner-key"},
+            )
+            assert response.status_code == 404
+            assert response.json() == {"detail": "Not Found"}
+            where.assert_not_awaited()
+            _assert_callback_private(
+                fixture,
+                response,
+                caplog,
+                token,
+                token[-12:],
+                _CALLBACK_SECRET,
+                _CALLBACK_CREDENTIAL,
+            )

@@ -264,6 +264,19 @@ def test_the_base_url_follows_the_dashboard_to_butler_convention(
     assert activation.switchboard_control_base_url() == "http://localhost:41100"
 
 
+def test_the_base_url_follows_switchboard_into_its_control_workload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """KEY_ABSENT_STAGE: nothing listens on butlers-up:41100, so probes follow SWITCHBOARD_MCP_URL."""
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    assert activation.switchboard_control_base_url() == "http://butlers-control:41100"
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "not-an-http-endpoint")
+    with pytest.raises(ValueError, match="SWITCHBOARD_MCP_URL"):
+        activation.switchboard_control_base_url()
+
+
 # ---------------------------------------------------------------------------
 # Criterion 3: rotation decides issuance, not the mount
 # ---------------------------------------------------------------------------

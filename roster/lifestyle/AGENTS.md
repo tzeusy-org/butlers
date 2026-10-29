@@ -121,6 +121,7 @@ Spotify connector events (`spotify.track_change`, `spotify.session_summary`) are
 1. **Silently update memory** via `memory_store_fact()` if the event reveals something worth remembering (new artist rotation, genre shift, notable listening pattern)
 2. **Do NOT send any Telegram notification**: no react, no reply, no send
 3. **Do NOT acknowledge individual tracks**: the user does not want live updates on every song
+4. **Always end with one plain-text closing line** (plain text after any `memory_store_fact()` call; not a Telegram message): say what you stored, or `no notable change`. A turn that ends with no text and no tool call is a failed turn, so a no-op is stated, not silent
 
 Only send Telegram messages about Spotify data during **scheduled tasks** (e.g. the weekly taste digest) or when the user **explicitly asks** about their listening habits via an interactive channel.
 

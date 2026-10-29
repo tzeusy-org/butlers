@@ -51,15 +51,8 @@ The egress paths are:
   docstring for why it goes through the MCP tool rather than an in-process
   ``deliver()`` call, even though ``deliver()``/``route()``'s
   ``butler_registry`` lookups are now schema-qualified — bu-tdd4k.2).
-- ``butlers.jobs.decision_review`` (bu-ckkpz.4) — Switchboard's weekly
-  decision-review digest and P1/deploy age-escalation crons. Run inside the
-  Switchboard daemon process itself, so unlike Home's crons above they call
-  ``switchboard.notification.deliver`` in-process (no MCP round-trip needed
-  — mirrors ``secrets_lifecycle``'s composition, not Home's). See that
-  module's docstring for why the underlying beads data is read from a
-  bind-mounted JSONL file rather than a live query.
 
-All five call :func:`record_attention_event` at each terminal decision point
+All remaining paths call :func:`record_attention_event` at each terminal decision point
 so a notification is never silently dropped: it is recorded as delivered,
 coalesced (folded into a digest), deferred (retryable later), or suppressed
 (quiet hours / context bus), always with a machine-readable ``reason``.
@@ -85,6 +78,7 @@ from typing import Any, Literal
 import asyncpg
 
 from butlers.core.approvals_policy import (
+    AttentionReadUnavailable,
     get_approvals_policy_quiet_hours,
     is_policy_quiet_now,
 )
@@ -155,10 +149,9 @@ ATTENTION_LEDGER_SESSION_KEY = "session_id"
 
 # Priority range shared with RFC 0011's Priority Scoring Convention (1-100
 # scale): 90-100 is "time-critical — action needed within 24-48 hours". The
-# attention policy (quiet hours, context-bus dnd/sleeping) fails OPEN for any
-# candidate/notification at or above this threshold — it always gets through,
-# regardless of quiet hours or dnd/sleeping context signals. Only the routine
-# (below-threshold) path is budgeted/suppressible.
+# This is a ranking/ledger convention, not interruption authority. The D7
+# notify and Insight delivery boundaries require a current verified cause for
+# quiet-hours or dnd/sleeping exceptions; a model-assigned score never grants one.
 URGENT_PRIORITY_THRESHOLD = 90
 
 # notify()'s priority parameter is a 3-level enum (high/medium/low), not the
@@ -253,11 +246,10 @@ async def record_attention_event(
 
     priority_label, priority_score = normalize_priority(priority)
 
-    # Pre-serialize + explicit ::jsonb cast (not a raw dict bind): portable
-    # across both a pool with a registered dict->jsonb codec (production, via
-    # Database.connect()) and a bare asyncpg pool with no custom codec (tests
-    # that connect directly). Mirrors the existing pattern in
-    # propose_insight_candidate() — never bind a raw dict without this cast.
+    # Bind serialized JSON as text, then convert it to JSONB in PostgreSQL.
+    # A direct JSONB parameter would run the production codec's encoder again,
+    # storing a JSON string instead of an object. Text also works on bare
+    # asyncpg pools without that codec, and None remains SQL NULL.
     if session_id:
         metadata = {**(metadata or {}), ATTENTION_LEDGER_SESSION_KEY: session_id}
     metadata_json = json.dumps(metadata) if metadata is not None else None
@@ -268,7 +260,7 @@ async def record_attention_event(
             INSERT INTO public.attention_ledger
                 (origin_butler, source, channel, intent, priority_label,
                  priority_score, dedup_key, outcome, reason, notification_ref, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text::jsonb)
             RETURNING id
             """,
             origin_butler,
@@ -551,10 +543,10 @@ async def get_suppressing_context(
     """Return the active context hold and its latest suppressor expiry.
 
     Deterministic, non-LLM read of ``public.user_context`` via the existing
-    context-bus module (``butlers.context_bus.get_active_context``). Fails
-    open (returns None) on any error, consistent with every other
-    context-bus reader in this codebase (see
-    ``spawner_context.fetch_situational_context_preamble``).
+    context-bus module (``butlers.context_bus.get_active_context``). A failed
+    read or absent pool raises ``AttentionReadUnavailable``; only a successful
+    empty read means no suppressor. Prompt decoration has a separate fallback
+    and never supplies delivery authority.
 
     ``now`` is the instant the hold is evaluated at, defaulting to the wall
     clock. A signal only holds while it is unexpired *at that instant*: the
@@ -565,19 +557,15 @@ async def get_suppressing_context(
     calculation (``roster/switchboard/tools/insight/broker.py``).
     """
     if pool is None:
-        return None
+        raise AttentionReadUnavailable("context_store_unavailable")
     if now is None:
         now = datetime.now(UTC)
     try:
         from butlers.context_bus import get_active_context
 
         signals = await get_active_context(pool)
-    except Exception:
-        logger.debug(
-            "get_suppressing_context: context bus unavailable; failing open",
-            exc_info=True,
-        )
-        return None
+    except Exception as exc:
+        raise AttentionReadUnavailable("context_store_unavailable") from exc
 
     suppressing = [
         signal
@@ -638,9 +626,10 @@ async def check_owner_notify_suppression(
     """
     try:
         policy = await get_approvals_policy_quiet_hours(pool)
-    except Exception:
-        logger.debug("%s: quiet-hours policy lookup failed", log_context, exc_info=True)
-        policy = None
+    except Exception as exc:
+        # Callers must retain pending work or surface failure, never record a
+        # destructive suppression or continue to a provider on an unreadable store.
+        raise AttentionReadUnavailable("attention_policy_unavailable") from exc
 
     if now is None:
         now = datetime.now(UTC)

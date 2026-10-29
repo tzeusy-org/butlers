@@ -23,11 +23,12 @@ from __future__ import annotations
 
 import importlib
 import os
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from butlers.testing.records import row as make_record
 
 pytestmark = pytest.mark.unit
 
@@ -39,7 +40,6 @@ pytestmark = pytest.mark.unit
 
 
 def _load_router(module_name: str = "_sw_router_db_fallback"):
-    sys.modules.pop("switchboard_api_models", None)
     router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
     spec = importlib.util.spec_from_file_location(module_name, router_path)
     mod = importlib.util.module_from_spec(spec)
@@ -73,16 +73,6 @@ class _FakeFanoutDB:
         self._fan_out_calls.append(query)
         self._fan_out_args.append(args)
         return self._fan_out_result, []
-
-
-class _FakeRow(dict):
-    """asyncpg.Record-like dict with attribute access."""
-
-    def __getattr__(self, name: str):
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +110,7 @@ async def test_db_fallback_single_butler_single_connector():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=5,
@@ -146,19 +136,19 @@ async def test_db_fallback_multiple_butlers():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=3,
             ),
         ],
         "relationship": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_123",
                 message_count=10,
             ),
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=7,
@@ -189,19 +179,19 @@ async def test_db_fallback_sorted_by_connector_then_count_desc():
 
     fan_out_result = {
         "butler_b": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_a",
                 message_count=5,
             ),
         ],
         "butler_a": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=20,
             ),
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_a",
                 message_count=15,
@@ -228,13 +218,13 @@ async def test_db_fallback_prometheus_error_triggers_db():
     fake_error = [{"error": "upstream timeout"}]
 
     with patch(
-        "butlers.modules.metrics.prometheus.async_query",
+        "butlers.core.prometheus.async_query",
         new=AsyncMock(return_value=fake_error),
     ):
         with patch.dict("os.environ", {"PROMETHEUS_URL": "http://fake-prom:9090"}):
             fan_out_result = {
                 "atlas": [
-                    _FakeRow(
+                    make_record(
                         connector_type="gmail",
                         endpoint_identity="inbox@org.com",
                         message_count=8,
@@ -293,14 +283,14 @@ async def test_db_fallback_skips_zero_count_rows():
 
     fan_out_result = {
         "health": [
-            _FakeRow(
+            make_record(
                 connector_type="gmail",
                 endpoint_identity="user@example.com",
                 message_count=0,
             ),
         ],
         "relationship": [
-            _FakeRow(
+            make_record(
                 connector_type="telegram_bot",
                 endpoint_identity="bot_x",
                 message_count=3,

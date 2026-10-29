@@ -154,14 +154,25 @@ class IngestionHistogramResponse(BaseModel):
 class IngestionDroppedKnownSummary(BaseModel):
     """Response body for GET /api/ingestion/events/dropped-known.
 
-    ``available=False`` means the filtered-event store could not be read; the
-    counts are then meaningless and consumers must not render them as zero.
+    ``available=False`` means current classification or historical completeness
+    is unknown. Readable positive counts remain lower bounds when
+    ``counts_available=True``; placeholders from a failed read are not zero evidence.
     """
 
     available: bool
     window: str
     dropped: int = 0
     episodes: int = 0
+    counts_available: bool = False
+    classification_available: bool = False
+    uncertain_drops: int | None = None
+    availability_reason: Literal[
+        "none",
+        "counts_unavailable",
+        "registry_unavailable",
+        "classification_unknown",
+        "historical_uncertainty",
+    ] = "counts_unavailable"
 
 
 class IngestionEventSession(BaseModel):

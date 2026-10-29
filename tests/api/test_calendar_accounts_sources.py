@@ -16,7 +16,7 @@ from uuid import uuid4
 import httpx
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.calendar_workspace import _get_db_manager
+from butlers.api.deps import get_db
 
 
 class _FakeAcquire:
@@ -72,7 +72,7 @@ def _wire(app, *, shared_pool, switchboard_pool=None, butler_pool=None, butler_n
         return butler_pool
 
     mock_db.pool = MagicMock(side_effect=_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
 
 def _heartbeat_row(

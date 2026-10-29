@@ -45,6 +45,7 @@ function entry(over: Partial<CoreDateEntry>): CoreDateEntry {
     src: "telegram",
     conf: 1,
     verified: true,
+    confirmation_status: "owner_asserted",
     staleness_band: "fresh",
     ...over,
   };

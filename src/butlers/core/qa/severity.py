@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes
 

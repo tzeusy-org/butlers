@@ -2,6 +2,12 @@
 
 ## ADDED Requirements
 
+RFC 0038 D2 leaves these projection adapters and their retention/health checks
+deterministic. Narration is separately admitted as a declared Chronicler
+obligation goal under D5/D18; that change does not move adapter reads into a
+model or widen their approved read surfaces, privacy/retention boundaries,
+tenant scope, source provenance or source-stamp/taint authority under D6.
+
 ### Requirement: Retention-Window-Aware Projection Adapters
 
 A projection adapter whose read surface has a rolling retention policy (a TTL/partition-drop window, as opposed to chronicler's own schema or a TTL-free connector table) SHALL monitor its checkpoint watermark against that table's retention cutoff and surface a warning before source data ages out unprojected.

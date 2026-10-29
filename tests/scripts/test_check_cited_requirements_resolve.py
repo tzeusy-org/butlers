@@ -485,3 +485,32 @@ def test_the_requirement_that_prompted_this_guard_is_still_watched() -> None:
         "the citation this guard was written for is not visible in its output:\n"
         + result.stdout[-4000:]
     )
+
+
+def test_dangling_id_in_an_implementation_module_fails_and_is_named(tmp_path: Path) -> None:
+    _tree(
+        tmp_path,
+        baseline={"widgets": [IN_BASELINE]},
+        cited={
+            "src/butlers/widgets.py": [DANGLING],
+            "roster/general/tools.py": [DANGLING_TOO],
+            "src/butlers/ok.py": [IN_BASELINE],
+            "src/.hidden/skipped.py": [DANGLING_ELSEWHERE],
+        },
+    )
+    result = _run("--root", str(tmp_path), "--baseline", str(_empty_frozen(tmp_path)))
+
+    assert result.returncode == 1, result.stdout
+    assert "src/butlers/widgets.py" in result.stdout and DANGLING in result.stdout
+    assert "roster/general/tools.py" in result.stdout and DANGLING_TOO in result.stdout
+    assert "src/butlers/ok.py" not in result.stdout
+    assert DANGLING_ELSEWHERE not in result.stdout
+
+
+def test_roster_test_file_is_reported_once_not_twice(tmp_path: Path) -> None:
+    _tree(tmp_path, cited={"roster/general/tests/test_tools.py": [DANGLING]})
+    result = _run("--root", str(tmp_path), "--baseline", str(_empty_frozen(tmp_path)))
+
+    assert result.returncode == 1, result.stdout
+    assert result.stdout.count("roster/general/tests/test_tools.py") == 1
+    assert "1 citation(s) across 1 file(s)" in result.stdout

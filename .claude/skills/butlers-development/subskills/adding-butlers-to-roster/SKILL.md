@@ -25,6 +25,14 @@ schema per butler).
 **Triggers:** "add a new butler", "scaffold a butler", "create the finance/journal/travel
 butler", "register a butler with switchboard", "what files does a butler need".
 
+## Reasoning Roles Are Not Roster Entries
+
+This workflow creates durable domain owners: data, capabilities, schedules and
+obligations. A goal's lead and focused children are ephemeral invocations, not
+new butlers, schemas or manifestos (`about/heart-and-soul/vision.md`). A need
+for a dedicated task prompt alone never justifies scaffolding a butler. New
+model-reachable tools must declare RFC 0038 authorization metadata.
+
 ## Prerequisites
 
 Before creating a butler, confirm:

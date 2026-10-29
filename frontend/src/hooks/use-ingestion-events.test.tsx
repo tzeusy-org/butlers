@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
@@ -14,7 +14,12 @@ vi.mock("@/api/index.ts", () => ({
   getIngestionEventSessions: vi.fn(),
   getIngestionWindowRollup: vi.fn(), getIngestionEventsHistogram: vi.fn(),
   getIngestionEventReplays: vi.fn(), getIngestionEventSenderContact: vi.fn(),
-  getIngestionEventPayload: vi.fn(),
+  getIngestionEventPayload: vi.fn(), getIngestionDroppedKnown: vi.fn(),
+}));
+
+vi.mock("@/hooks/use-ingestion", () => ({
+  usePipelineStats: () => ({ data: { aggregates_available: true, ingested: 2, filtered: 0 }, isLoading: false, isError: false }),
+  useConnectorSummaries: vi.fn(),
 }));
 
 function setup() {
@@ -25,10 +30,11 @@ function setup() {
 }
 
 const page = (id: string, cursor: string | null) => ({
-  data: [{ id }], meta: { next_cursor: cursor, has_more: cursor !== null },
+  items: [{ id }], next_cursor: cursor, limit: 50,
 }) as Awaited<ReturnType<typeof api.listIngestionEvents>>;
 
 afterEach(() => {
+  cleanup();
   vi.resetAllMocks();
   vi.useRealTimers();
 });
@@ -42,11 +48,11 @@ it("refreshes only the head while retaining paged history and its retry cursor",
     .mockRejectedValueOnce(new Error("unavailable"))
     .mockResolvedValueOnce(page("third", null));
   const { result } = renderHook(() => useIngestionEvents({}, { refetchInterval: false }), { wrapper });
-  await waitFor(() => expect(result.current.data?.pages[0].data[0].id).toBe("first"));
+  await waitFor(() => expect(result.current.data?.pages[0].items[0].id).toBe("first"));
   await act(async () => { await result.current.fetchNextPage(); });
   await act(async () => { await client.invalidateQueries({ queryKey: ingestionEventKeys.list({}) }); });
   expect(api.listIngestionEvents).toHaveBeenCalledTimes(3);
-  expect(result.current.data?.pages.flatMap(p => p.data.map(e => e.id))).toEqual(["first", "second"]);
+  expect(result.current.data?.pages.flatMap(p => p.items.map(e => e.id))).toEqual(["first", "second"]);
   await waitFor(() => expect(result.current.newCount).toBe(1));
   await act(async () => { await result.current.fetchNextPage(); });
   expect(result.current.isFetchNextPageError).toBe(true);
@@ -55,7 +61,7 @@ it("refreshes only the head while retaining paged history and its retry cursor",
   expect(vi.mocked(api.listIngestionEvents).mock.calls.slice(3).map(c => c[0]?.cursor)).toEqual(["oldest", "oldest"]);
   expect(result.current.data?.pages).toHaveLength(3);
   act(() => result.current.showNewEvents());
-  expect(result.current.data?.pages[0].data[0].id).toBe("new");
+  expect(result.current.data?.pages[0].items[0].id).toBe("new");
   expect(result.current.newCount).toBe(0);
 });
 
@@ -69,22 +75,22 @@ it("aborts obsolete history on a filter change and ignores its late response", a
   const { result, rerender } = renderHook(({ q }) => useIngestionEvents({ q }, { refetchInterval: false }), {
     wrapper, initialProps: { q: "one" },
   });
-  await waitFor(() => expect(result.current.data?.pages[0].data[0].id).toBe("first"));
+  await waitFor(() => expect(result.current.data?.pages[0].items[0].id).toBe("first"));
   act(() => { void result.current.fetchNextPage(); });
   const signal = vi.mocked(api.listIngestionEvents).mock.calls[1][1];
   rerender({ q: "two" });
   expect(signal?.aborted).toBe(true);
   await act(async () => { resolveOlder(page("obsolete", null)); });
-  await waitFor(() => expect(result.current.data?.pages[0].data[0].id).toBe("filtered"));
+  await waitFor(() => expect(result.current.data?.pages[0].items[0].id).toBe("filtered"));
   expect(result.current.data?.pages).toHaveLength(1);
 });
 
 it("reconciles existing head rows without moving history, including after reactivation", async () => {
   const { wrapper } = setup();
   const initial = page("first", "older");
-  initial.data[0].status = "replay_pending";
+  initial.items[0].status = "replay_pending";
   const refreshed = page("first", "different-cursor");
-  refreshed.data[0].status = "replay_complete";
+  refreshed.items[0].status = "replay_complete";
   let resolveOldest!: (value: ReturnType<typeof page>) => void;
   vi.mocked(api.listIngestionEvents)
     .mockResolvedValueOnce(initial)
@@ -103,21 +109,21 @@ it("reconciles existing head rows without moving history, including after reacti
   let oldestRequest!: Promise<void>;
   act(() => { oldestRequest = result.current.fetchNextPage(); });
   await act(async () => { await result.current.refetch(); });
-  await waitFor(() => expect(result.current.data?.pages[0].data[0].status).toBe("replay_complete"));
-  expect(result.current.data?.pages.map(p => p.data[0].id)).toEqual(["first", "second"]);
-  expect(result.current.data?.pages[0].meta.next_cursor).toBe("older");
+  await waitFor(() => expect(result.current.data?.pages[0].items[0].status).toBe("replay_complete"));
+  expect(result.current.data?.pages.map(p => p.items[0].id)).toEqual(["first", "second"]);
+  expect(result.current.data?.pages[0].next_cursor).toBe("older");
   expect(result.current.newCount).toBe(0);
   expect(result.current.isFollowingLive).toBe(false);
   await act(async () => { await result.current.refetch(); });
   await waitFor(() => expect(result.current.newCount).toBe(1));
-  expect(result.current.data?.pages[0].data[0].status).toBe("replay_complete");
-  expect(result.current.data?.pages[0].meta.next_cursor).toBe("older");
+  expect(result.current.data?.pages[0].items[0].status).toBe("replay_complete");
+  expect(result.current.data?.pages[0].next_cursor).toBe("older");
   await act(async () => {
     resolveOldest(page("third", null));
     await oldestRequest;
   });
-  expect(result.current.data?.pages.map(p => p.data[0].id)).toEqual(["first", "second", "third"]);
-  expect(result.current.data?.pages[0].data[0].status).toBe("replay_complete");
+  expect(result.current.data?.pages.map(p => p.items[0].id)).toEqual(["first", "second", "third"]);
+  expect(result.current.data?.pages[0].items[0].status).toBe("replay_complete");
 });
 
 it("aborts an in-flight detail read when its drawer unmounts", async () => {
@@ -265,4 +271,39 @@ it("reconciles active drawer and aggregate reads every 30 seconds without bus ev
   unmount();
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   for (const read of readers) expect(read).toHaveBeenCalledTimes(3);
+});
+
+
+it("composes the actual dropped-known query and opener through loading, partial failure and healthy zero", async () => {
+  const { MemoryRouter } = await import("react-router");
+  const { IngestionFiltersVerdictOpener } = await import("@/components/ingestion/dispatch/IngestionVerdictOpeners");
+  const { client, wrapper } = setup();
+  let resolve!: (value: Awaited<ReturnType<typeof api.getIngestionDroppedKnown>>) => void;
+  vi.mocked(api.getIngestionDroppedKnown).mockImplementationOnce(() => new Promise(r => { resolve = r; }));
+  render(<MemoryRouter><IngestionFiltersVerdictOpener /></MemoryRouter>, { wrapper });
+  expect(screen.getByTestId("ingestion-filters-verdict-skeleton")).toBeTruthy();
+  expect(screen.queryByText(/All gates clear/)).toBeNull();
+  await act(async () => { resolve({ available: false, counts_available: true,
+    classification_available: false, uncertain_drops: 0, availability_reason: "classification_unknown",
+    window: "24h", dropped: 0, episodes: 0 }); });
+  await waitFor(() => expect(screen.getByText("gate harm unknown")).toBeTruthy());
+  expect(api.getIngestionDroppedKnown).toHaveBeenCalledWith("24h", expect.any(AbortSignal));
+  expect(screen.queryByText(/All gates clear/)).toBeNull();
+  await act(async () => { client.setQueryData(ingestionEventKeys.droppedKnown("24h"), {
+    available: true, counts_available: true, classification_available: true, uncertain_drops: 0,
+    availability_reason: "none", window: "24h", dropped: 3, episodes: 2,
+  }); });
+  vi.mocked(api.getIngestionDroppedKnown).mockRejectedValueOnce(new Error("unavailable"));
+  await act(async () => { await client.refetchQueries({ queryKey: ingestionEventKeys.droppedKnown("24h") }); });
+  await waitFor(() => expect(screen.getByText("gate harm unknown")).toBeTruthy());
+  expect(screen.getByText("3 dropped from people you know").closest("a")?.getAttribute("href"))
+    .toBe("/ingestion?statuses=filtered&range=24h");
+  expect(screen.queryByText(/All gates clear/)).toBeNull();
+  vi.mocked(api.getIngestionDroppedKnown).mockResolvedValueOnce({ available: true,
+    counts_available: true, classification_available: true, uncertain_drops: 0,
+    availability_reason: "none", window: "24h", dropped: 0, episodes: 0 });
+  await act(async () => { await client.refetchQueries({ queryKey: ingestionEventKeys.droppedKnown("24h") }); });
+  await waitFor(() => expect(screen.getByText(/All gates clear/)).toBeTruthy());
+  expect(screen.queryByText("gate harm unknown")).toBeNull();
+  client.clear();
 });

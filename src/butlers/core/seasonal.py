@@ -369,10 +369,10 @@ async def seasonal_period_create(
             butler_name,
             enabled,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise ValueError(
             f"A seasonal period named {name!r} already exists for butler {butler_name!r}"
-        )
+        ) from exc
 
     return row["id"]
 
@@ -501,10 +501,10 @@ async def seasonal_period_update(
 
     try:
         result = await pool.execute(sql, *params)
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise ValueError(
             f"A seasonal period named {name!r} already exists for butler {butler_name!r}"
-        )
+        ) from exc
 
     # asyncpg returns e.g. 'UPDATE 1'
     rows_affected = int(result.split()[-1])

@@ -186,3 +186,45 @@ curl -s "http://localhost:9090/api/v1/label/butler/values" | python3 -m json.too
 - [Butler Daemon](butler-daemon.md) — telemetry initialization during startup
 - [Spawner](../runtime/spawner.md) — trace context injection into spawned processes
 - [Session Lifecycle](../runtime/session-lifecycle.md) — session-level trace correlation
+
+## Dashboard Prometheus Queries
+
+`butlers.core.prometheus` owns `async_query(url, query, time=None)` and
+`async_query_range(url, query, start, end, step)`. They GET the instant and range
+HTTP endpoints with the supplied parameters, a 30-second timeout and a
+10-second connect timeout. Successful `data.result` values, including an empty
+list, pass through unchanged; request, HTTP, decoding and Prometheus status
+errors retain the existing single-entry error list. The Switchboard connector
+summary and ingestion-pipeline API retain their own aggregation, caching and
+degraded-response policies. This transport adds no MCP tools, storage, retries
+or authentication. Core and connector metric instrumentation remain separate.
+
+
+### Bearer scrub operation estimates
+
+`roster/switchboard/tools/ingestion/ingest.py::_record_bearer_scrub` records
+`butlers.ingest.bearer_scrubbed` once per fresh Switchboard scrub artifact,
+with the closed `kind` values `auth_code`, `reset_link` and `magic_link`, plus
+`source_channel`. It runs before the ingestion transaction commits: these are
+operation counts including attempts, not unique accepted messages or proven
+false positives. Connector-prescrubbed placeholders and historical cleanup do
+not increment this counter.
+
+The repository-pinned Collector Contrib 0.105.0 Prometheus remote-write
+translator exports this monotonic counter as
+`butlers_ingest_bearer_scrubbed_total` (default metric suffixes enabled).
+This names the configured translation, not a claim that a live deployment or
+all sources were observed. The dashboard uses the fixed query
+`sum by (kind) (increase(butlers_ingest_bearer_scrubbed_total[<window>]))`
+for the closed `1h`, `24h` and `7d` windows. `increase` produces estimates,
+including fractional values. Source-channel labels are aggregated away; no
+sender, message, domain, bearer code/link or raw payload enters this projection.
+
+The flat pipeline response adds `bearer_scrub_counts` and
+`bearer_scrub_available`, independently of funnel and DB-backlog availability.
+A readable empty vector means three measured zeros. An unconfigured source,
+query error, malformed sample, unknown kind, negative or non-finite count means
+null counts and false availability. Reads reuse the existing lazy 60-second
+per-window cache; concurrent cold reads may duplicate queries outside its lock.
+Dashboard reads never scrub, submit, replay or increment source state. Removing
+the projection is reversible and does not alter the producer or stored rows.

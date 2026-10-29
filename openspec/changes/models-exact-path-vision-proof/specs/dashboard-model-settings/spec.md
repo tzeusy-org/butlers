@@ -8,6 +8,8 @@ ID: REQ-dashboard-model-settings-004
 Source: owner-adopted Models vision contract d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e; canonical dashboard-model-settings baseline
 Scope: v1-mandatory
 
+The existing add/edit catalog form SHALL expose the optional nonsecret allowance-account label with accessible validation and nullable round-trip behavior; it SHALL NOT add an allowance state/countdown page or credential picker.
+
 #### Scenario: Catalog table display
 - **WHEN** the settings page loads the model catalog section
 - **THEN** a table displays all catalog entries grouped by complexity tier with columns: Alias, Runtime, Model ID, Extra Args (formatted), Tier (badge), Priority, Enabled (toggle), and Actions (Edit, Delete)
@@ -51,3 +53,13 @@ Scope: v1-mandatory
 
 - **WHEN** owner inspects a historical true or stale managed row with a fresh unapplied pass
 - **THEN** UI shows the declaration and latest pass without claiming applicable managed proof; explicit Apply/Refresh remains required
+
+#### Scenario: Existing editor assigns and clears an account label
+- **WHEN** an operator opens the existing Add Model or Edit dialog
+- **THEN** an accessible Allowance account input SHALL show the current label or blank and explain that blank uses the runtime default
+- **AND** valid input SHALL be saved through the existing catalog mutation; clearing it SHALL send explicit null
+- **AND** invalid input SHALL show an inline error and prevent save, while the existing defaults and other form behavior remain
+
+#### Scenario: Catalog refresh preserves account labels
+- **WHEN** an operator edits another catalog field, toggles enabled, or steps priority
+- **THEN** the account label SHALL retain its current value and remain available in the full-entry response/editor

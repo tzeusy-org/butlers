@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.api.read_models.butlers_v1 import (
+from butlers.api.read_models.butlers import (
     READ_MODEL_VERSION,
     SESSIONS_24H_SQL,
     query_sessions_24h,
@@ -130,7 +130,7 @@ async def test_query_sessions_24h_passes_butler_names():
 async def test_query_sessions_24h_default_timeout_is_five_seconds():
     """Default timeout_s must be 5.0 seconds."""
     db = _make_db({"assistant": [_make_fan_out_row(1)]})
-    with patch("butlers.api.read_models.butlers_v1.asyncio.wait_for") as mock_wait:
+    with patch("butlers.api.read_models.butlers.asyncio.wait_for") as mock_wait:
         mock_wait.return_value = {"assistant": [_make_fan_out_row(1)]}
         await query_sessions_24h(db)
         _, kwargs = mock_wait.call_args
@@ -140,7 +140,7 @@ async def test_query_sessions_24h_default_timeout_is_five_seconds():
 async def test_query_sessions_24h_custom_timeout_forwarded():
     """Custom timeout_s is passed to asyncio.wait_for."""
     db = _make_db({"assistant": [_make_fan_out_row(1)]})
-    with patch("butlers.api.read_models.butlers_v1.asyncio.wait_for") as mock_wait:
+    with patch("butlers.api.read_models.butlers.asyncio.wait_for") as mock_wait:
         mock_wait.return_value = {"assistant": [_make_fan_out_row(1)]}
         await query_sessions_24h(db, timeout_s=2.5)
         _, kwargs = mock_wait.call_args

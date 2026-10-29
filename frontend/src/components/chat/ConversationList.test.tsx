@@ -38,7 +38,7 @@ beforeEach(() => {
     refetch: vi.fn(),
   } as unknown as ReturnType<typeof useConversationSearch>);
   vi.mocked(useMessageSearch).mockReturnValue({
-    data: { data: [], meta: { next_cursor: null, has_more: false } },
+    data: { items: [], next_cursor: null, limit: 20 },
     isLoading: false,
     isError: false,
   } as unknown as ReturnType<typeof useMessageSearch>);
@@ -156,7 +156,7 @@ describe("ConversationList — message search (bu-0ynlk.9)", () => {
     vi.useFakeTimers();
     vi.mocked(useMessageSearch).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             message_id: "msg-1",
             conversation_id: "conv-1",
@@ -169,7 +169,8 @@ describe("ConversationList — message search (bu-0ynlk.9)", () => {
             deep_link: "/butlers/home",
           },
         ],
-        meta: { next_cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 20,
       },
       isLoading: false,
       isError: false,
@@ -198,7 +199,7 @@ describe("ConversationList — message search (bu-0ynlk.9)", () => {
     vi.useFakeTimers();
     vi.mocked(useMessageSearch).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             message_id: "msg-1",
             conversation_id: "conv-1",
@@ -211,7 +212,8 @@ describe("ConversationList — message search (bu-0ynlk.9)", () => {
             deep_link: "/butlers/switchboard",
           },
         ],
-        meta: { next_cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 20,
       },
       isLoading: false,
       isError: false,
@@ -237,7 +239,7 @@ describe("ConversationList — message search (bu-0ynlk.9)", () => {
     vi.useFakeTimers();
     vi.mocked(useMessageSearch).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             message_id: "msg-2",
             conversation_id: "conv-2",
@@ -250,7 +252,8 @@ describe("ConversationList — message search (bu-0ynlk.9)", () => {
             deep_link: "/sessions/sess-9",
           },
         ],
-        meta: { next_cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 20,
       },
       isLoading: false,
       isError: false,

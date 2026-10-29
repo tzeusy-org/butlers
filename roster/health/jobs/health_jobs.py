@@ -27,6 +27,7 @@ from butlers.core.expected_signals import (
     measurement_producer_identity,
     upsert_expected_signal,
 )
+from butlers.core.insight_premise import probe_premise
 from butlers.tools.health._medication_utils import (
     expected_dose_count as _expected_dose_count,
 )
@@ -293,6 +294,7 @@ async def run_insight_scan(
         expires_at: datetime,
         cooldown_days: int | None = None,
         metadata: dict[str, Any] | None = None,
+        premise: dict[str, Any] | None = None,
     ) -> bool:
         """Submit one candidate; return False if verbosity=off (early exit signal)."""
         stats["candidates_proposed"] += 1
@@ -307,6 +309,8 @@ async def run_insight_scan(
         }
         if metadata is not None:
             proposal_kwargs["metadata"] = metadata
+        if premise is not None:
+            proposal_kwargs["premise"] = premise
         result = await propose_insight_candidate(
             db_pool,
             **proposal_kwargs,
@@ -470,7 +474,7 @@ async def run_insight_scan(
     # them we have no genuine data to estimate depletion from.
     med_rows = await db_pool.fetch(
         """
-        SELECT id, metadata->>'name' AS name, metadata->>'frequency' AS frequency,
+        SELECT id, subject, metadata->>'name' AS name, metadata->>'frequency' AS frequency,
                (metadata->>'quantity')::numeric AS quantity,
                (metadata->>'quantity_updated_at')::timestamptz AS quantity_updated_at
         FROM facts
@@ -549,6 +553,19 @@ async def run_insight_scan(
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
+            # bu-q7vx1q.30: "running out in N days" is only true while the
+            # medication is active and unrefilled; the broker re-checks this at
+            # send and withdraws the reminder if it stopped being true. Bound to
+            # the stable subject (an edit or refill supersedes the fact id).
+            premise=probe_premise(
+                "health",
+                "medication_refill_still_due",
+                {
+                    "subject": med_row.get("subject") or f"medication:{med_name}",
+                    "doses_per_day": doses_per_day,
+                    "warning_days": _REFILL_WARNING_DAYS,
+                },
+            ),
         )
         if not should_continue:
             logger.info("Health insight scan: verbosity=off, exiting early after medication-refill")
@@ -626,6 +643,7 @@ async def run_insight_scan(
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
+            metadata={"name": symptom_name},
         )
         if not should_continue:
             logger.info("Health insight scan: verbosity=off, exiting early after symptom-trend")

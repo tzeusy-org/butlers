@@ -201,6 +201,9 @@ class TestMcpOnlyInterButler:
         import pkgutil
         import sys
 
+        from butlers.modules.registry import default_registry
+
+        default_registry()  # This test explicitly needs the complete roster set.
         # Discover roster modules via pkgutil so we don't silently skip when
         # sys.modules happens to be empty (e.g. in a fresh test process).
         try:
@@ -226,7 +229,7 @@ class TestMcpOnlyInterButler:
         all_roster_names = set(roster_module_names) | set(loaded_roster.keys())
 
         if not all_roster_names:
-            pytest.skip("No roster modules discovered — isolation check not applicable")
+            pytest.fail("No roster modules discovered: isolation coverage is incomplete")
 
         for mod_name in all_roster_names:
             butler_name = mod_name.replace("butlers.modules._roster_", "")
@@ -347,9 +350,7 @@ class TestMcpOnlyInterButler:
 
         # Build a minimal synthetic module with an arbitrary name
         class _SyntheticModule(Module):
-            @property
-            def name(self) -> str:
-                return "test_synthetic_module_xyzzy"
+            name = "test_synthetic_module_xyzzy"
 
             @property
             def config_schema(self):
@@ -409,18 +410,21 @@ class TestMcpOnlyInterButler:
         """
         import inspect
 
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
         from butlers.tools.switchboard.routing import classify
 
-        src = inspect.getsource(classify)
+        # The classifier's candidate loader is the registry's butler-only loader
+        assert classify._load_available_butlers is load_available_butlers
+        src = inspect.getsource(load_available_butlers)
 
-        # Classify module must reference staffer exclusion
+        # The candidate loader must reference staffer exclusion
         assert "staffer" in src.lower(), (
-            "classify module must reference staffer type for exclusion (RFC 0003)"
+            "candidate loader must reference staffer type for exclusion (RFC 0003)"
         )
 
         # list_butlers with butler_only=True is the exclusion mechanism
         assert "butler_only" in src, (
-            "classify must use butler_only=True to exclude staffers from classification (RFC 0003)"
+            "candidate loader must use butler_only=True to exclude staffers (RFC 0003)"
         )
 
     def test_route_execute_is_the_only_cross_butler_dispatch_mechanism(self):

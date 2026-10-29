@@ -87,7 +87,8 @@ Flushed conversation snippets SHALL be submitted as a single ingest.v1 envelope 
 - **WHEN** a chat buffer is flushed with conversation context
 - **THEN** the ingest.v1 envelope SHALL contain:
   - `event.external_event_id` = `"batch:<chat_id>:<min_msg_id>-<max_msg_id>"`
-  - `event.external_thread_id` = `<chat_id>`
+  - `event.external_conversation_id` = `"telegram:<chat_id>"`
+  - `event.reply_target_ref` = `<chat_id>:<max_msg_id>` (the newest buffered message)
   - `sender.identity` = `"multiple"`
   - `payload.normalized_text` = concatenated text of NEW (buffered) messages only, with sender prefixes
   - `payload.raw.conversation_history` = ordered list of all context messages (history + new)

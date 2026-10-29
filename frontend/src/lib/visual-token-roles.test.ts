@@ -249,8 +249,7 @@ describe("semantic visual role registry", () => {
     expect(stateColorVar("healthy")).toBe("var(--green)");
     expect(ownerCustomColor("#1a73e8")).toBe("#1a73e8");
     expect(ownerCustomColor("bg-blue-500")).toBeUndefined();
-    // eslint-disable-next-line visual-role/no-private-identity-token -- Exercises the helper's rejection path with a prohibited caller value.
-    expect(ownerCustomColor(`var(--${"category-1"})`)).toBeUndefined();
+    expect(ownerCustomColor("var(--categorical-1)")).toBeUndefined();
     expect(CATEGORICAL_TOKEN_COUNT).toBe(12);
   });
 

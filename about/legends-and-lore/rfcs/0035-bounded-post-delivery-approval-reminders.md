@@ -1,7 +1,8 @@
 # RFC 0035: Bounded Post-Delivery Approval Reminders
 
 **Status:** Proposed - owner selected Direction B on 2026-09-15; independent
-security/product review and exact-artifact adoption remain required
+security/product review findings resolved in bu-8cdl1.23 and re-reviewed
+(see the review record); exact-artifact owner adoption remains required
 **Date:** 2026-09-16
 **Related:** RFC 0011 (proactive insight engagement), RFC 0017 (owner-routing
 safety), RFC 0021 (one-tap approvals), RFC 0023 (durable approval delivery),
@@ -98,7 +99,11 @@ message delivery, unrelated owner ingress, system expiry, connector traffic,
 and non-owner activity are not action acknowledgement.
 
 Acknowledgement writes are idempotent by `(action_id, presentation_generation,
-evidence_kind, evidence_key)`. Replaying the same evidence returns the first
+evidence_kind, evidence_key)`. The server derives `evidence_key` from the
+durable operation identity; a caller-supplied key or token is ignored. A
+rejected submission records only a reason from the closed set `stale_evidence`,
+`wrong_action_or_generation`, `non_owner`, `caller_asserted_actor`,
+`unbound_receipt`. Replaying the same evidence returns the first
 record. A different owner-authenticated acknowledgement may add provenance but
 cannot reopen or reschedule an acknowledged episode. Evidence timestamped
 before the generation it claims to acknowledge, bound to another action, or
@@ -119,7 +124,9 @@ trusted-recovery notify registry, have an enabled Messenger adapter, and have
 one unambiguous active owner reachability fact. Unlike reminder eligibility,
 this inventory does not exclude a channel because a presentation already used
 it in an attention episode, and owner preference does not affect membership.
-Evidence is fresh for 24 hours from its durable occurrence time:
+Evidence is fresh while its age on database time is strictly below 24 hours;
+an event exactly 24 hours old is stale, which matches the homecoming gap rule
+(section 7) so the two never disagree about one instant:
 
 | Derived state | Exact rule |
 | --- | --- |
@@ -154,12 +161,25 @@ at reminder admission:
    the current attention episode.
 
 The first four predicates are the reachability observation inventory from
-section 2. The fifth is action-episode policy and applies only to reminder and
-homecoming channel selection. It never removes historical channel outcomes
-from observational reachability derivation.
+section 2. For a direct reminder or reminder digest member, the fifth predicate
+is bound to that action's current attention episode. For the homecoming
+summary, it is instead bound to the singleton owner-presence epoch that owns
+the summary, not to any member action's episode. Prior original or reminder
+channel use by a member does not exclude that member from the summary. All four
+inventory predicates, egress re-verification, ambiguity exclusions, and the
+fixed channel order still apply. These episode-local predicates never remove
+historical channel outcomes from observational reachability derivation.
 
-Private addresses and handles are resolved only at egress. Eligibility stores
-the channel name and safe reason, never the identifier.
+Private addresses and handles are resolved only at egress, only from the
+owner's own active reachability fact, and are never taken from a caller, a
+stored action argument, or a non-owner identity. Eligibility stores the channel
+name and safe reason, never the identifier. Egress re-verifies the channel and
+fact; if either is no longer eligible the handoff fails with a pre-provider
+no-effect result on the same key, never a channel or recipient switch, and the
+episode enters `safe_hold(no_eligible_reminder_channel)`
+(`channel_inventory_unavailable` is reserved for an inventory that cannot be
+read completely). A supplied non-owner destination is a hard no-effect refusal
+and is never retried.
 
 Eligible channels are ordered once under the action/intent lock:
 
@@ -206,8 +226,15 @@ presentation in the RFC 0023 order and verifies all of the following:
 - the reminder ordinal is unused; and
 - an eligible unused channel exists.
 
-Failure of any check creates no provider effect. Terminal action or expiry
-cancels policy. Missing evidence or no channel enters `safe_hold` with a closed
+An admitted ordinal that is cancelled before provider handoff (acknowledgement,
+decision, expiry, or goal Stop) stays spent; a later defer episode inherits only
+unspent ordinals. Late reconciliation of an ambiguous presentation records the
+same-key result but does not restore reminder authority or re-anchor the due
+instants; the episode keeps `safe_hold(ambiguous_delivery)`.
+
+Failure of any check creates no provider effect. Any non-`pending` action status
+(including `cancelled`, which RFC 0038 gives a parked effect cancelled by owner
+Stop) or expiry cancels policy. Missing evidence or no channel enters `safe_hold` with a closed
 reason. A reminder due at or after expiry is never admitted.
 
 Quiet hours use RFC 0021's existing end-exclusive Owner Attention Policy. The
@@ -254,14 +281,23 @@ their existing transitions.
 Entering safe hold:
 
 - cancels unstarted automatic reminder slots;
-- records one closed reason such as `reminder_budget_exhausted`,
+- records exactly one reason from the closed set `reminder_budget_exhausted`,
   `no_eligible_reminder_channel`, `ack_evidence_unavailable`,
   `channel_inventory_unavailable`, `burst_digest_channel_incompatible`,
-  `ambiguous_delivery`, or `expiry_fence`;
+  `ambiguous_delivery`, `expiry_fence` (a new reason needs an adopted
+  amendment);
+- happens at confirmation, not at the next slot, when every allowlisted channel
+  (the first three predicates of section 3) has been used by the episode or both ordinals are spent, so a returning owner
+  is told early; a merely transient missing reachability fact is judged at the
+  due instant;
 - never changes `pending_actions.status`, arguments, `expires_at`, decision
   provenance, or execution state; and
 - is idempotent and monotonic except that a later qualifying acknowledgement
   may project the episode as acknowledged without reviving a send.
+
+The authenticated dashboard shows the owner the episode state, the hold reason
+as a fixed human label, unspent ordinals, reachability state with its evidence
+time, and ambiguity, with no raw provider data or destination.
 
 The canonical expiry path still transitions a pending action to `expired` at
 its existing expiry. No reminder extends, approves, or revives it. An expired
@@ -272,7 +308,7 @@ be generated for it.
 
 The system maintains a content-blind owner-presence epoch. Under a singleton
 database lock, a qualifying owner-activity event starts a new epoch only when
-the preceding qualifying activity is at least 24 hours old; otherwise it
+the preceding qualifying activity is at least 24 hours old on database time; otherwise it
 updates the current epoch. Concurrent events therefore resolve to one epoch.
 
 At most one homecoming summary is admitted per epoch, enforced by a unique
@@ -287,9 +323,12 @@ Pending rows link to the dashboard approval detail. Expired rows are explicitly
 non-actionable. The summary carries no tool arguments, recipient identifier,
 callback token, or direct approve/reject control.
 
-An action whose latest presentation is ambiguous is excluded from outbound
-homecoming content until reconciliation resolves it. It remains visible on the
-authenticated dashboard as ambiguous. This prevents homecoming from laundering
+An action with any presentation (not only its latest) that is ambiguous is
+excluded from outbound homecoming content, the overflow count, and any outbound
+count of held-back items until reconciliation resolves it. It remains visible
+on the authenticated dashboard as ambiguous. When no row qualifies, no summary
+is admitted for that epoch and it is not retried. Overflow is stated as a count
+of further non-ambiguous qualifying rows with one dashboard link to the list. This prevents homecoming from laundering
 an uncertain provider effect into a fresh presentation key.
 
 The homecoming summary uses the qualifying activity's channel only when that
@@ -298,7 +337,9 @@ channel is eligible under section 3; otherwise it uses the same preferred then
 as one presentation in the burst window. Repeated activity, restart, or
 concurrent triggers replay the same epoch key and cannot create another
 summary. A post-start ambiguous homecoming handoff is reconciled under its same
-key and never reissued.
+key and never reissued. This presence epoch is only the summary's channel-use
+and deduplication identity. It does not create a new action attention episode,
+restore a reminder ordinal, or erase an action's channel-use history.
 
 ### 8. Disengagement denominator
 
@@ -324,6 +365,9 @@ confirmed-digest, homecoming, and already-expired observations are excluded.
 Its numerator is qualifying action acknowledgement. The rate is diagnostic
 only and cannot change insight verbosity or action state.
 
+Approval acknowledgement rate, safe holds, and reachability labels never adapt
+reminder count, timing, channels, or the insight auto-off ratchet.
+
 Reachability updates never delete or rewrite historical insight or approval
 evidence. A future proposal to exclude periods of proven unreachability from
 the insight ratchet requires its own exact owner-approved amendment; this RFC
@@ -343,6 +387,49 @@ does not infer that authority.
   homecoming key.
 - Replayed scheduler, callback, provider receipt, defer request, or homecoming
   trigger returns the durable prior result and creates no additional key.
+
+### 10. Content, authority, and keying
+
+- Attention state, logs, metrics, and audit payloads hold only identifiers,
+  closed enumerations, generations, ordinals, channel names, timestamps, and
+  bounded counts (homecoming overflow, aggregate metric values):
+  no tool names, arguments, lineage content, destinations, or callback material.
+- A reminder or homecoming presentation is a fixed content-blind template that
+  identifies itself as a reminder, states pending-since and expiry, and links to
+  the authenticated dashboard detail. It carries no arguments and no approve,
+  reject, or defer control. Whether a reminder may carry one-tap controls is an
+  owner question recorded in the OpenSpec proposal; this RFC proposes none.
+- Acknowledgement, admission, safe hold, reachability, and homecoming are
+  deterministic daemon infrastructure plus owner-authenticated surfaces. None is
+  in a goal-visible catalog, grantable, or callable with a broker assertion;
+  the scheduler invokes no model.
+- Identities key on the approval (`pending_actions`) id and presentation
+  generation, never session, goal, invocation, or effect id. Under RFC 0038 a
+  parked effect, a `legacy`-origin action, and a session-less action behave
+  identically; lineage may be joined by approval id on the owner surface only.
+  A fresh owner approval to replay an `unknown` effect is a new approval with
+  its own episode and ordinals.
+
+## Independent review record
+
+First pass (bu-8cdl1.23): RFC 0035 and OpenSpec change
+`bounded-post-delivery-approval-reminders` at commit
+`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (main
+`8f75653ed89f87ab9c0845d64618982c68ee5695`) produced security findings S1-S7 and
+product findings P1-P7, resolved in the same PR (sections 1, 3, 4, 6, 7, 8, 10).
+Topic coverage in that pass:
+
+- Channel order (preferred, then `telegram`, then `email`; initial channel
+  excluded): no finding on the order itself; the egress and early-hold edges
+  became S4 and P1.
+- T+4h/T+24h cadence (independent of RFC 0023 backoff): no finding on the
+  constants; boundary clock and cancelled-ordinal edges became P3 and P6.
+
+Second pass (bu-ijsbde) re-reviewed the post-resolution text at the exact head of
+the resolution PR; the exact SHA is recorded in the bead and the PR, since a
+commit cannot name itself. The owner adopts the merged commit whose RFC 0035 and
+change-directory contents equal that reviewed head. Any later semantic edit
+invalidates it.
 
 ## Required review and verification
 

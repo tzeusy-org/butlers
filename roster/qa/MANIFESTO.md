@@ -45,7 +45,7 @@ sits in a 320 px left rail; selecting a case opens the full dossier body.
   isolated investigation agents, and monitor their outcomes via watchdog tasks.
 - **PR pipeline:** Produce anonymized PRs with `self-healing` and `automated`
   labels. Humans remain in the merge seat.
-- **Relay reception:** Accept findings from butler self-healing modules via
+- **Relay reception:** Accept findings from every butler's core QA relay via
   Switchboard `route()` → `report_finding` tool. This is direct
   butler-to-staffer tool routing, not user-message classification.
 - **Status reporting:** Expose `get_qa_status` and `force_patrol` MCP tools.
@@ -147,7 +147,7 @@ Investigation agents receive `PATH` and build-tool variables, never GitHub publi
 ## PR Creation Standards
 
 - Labels: `["self-healing", "automated"]`
-- GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")`
+- GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` by the trusted dispatcher only (PR-status polling); agents never receive it, and automated PR creation is currently unavailable
 - Effective publication surface: validated attempt-bound branch and PR publication plus fixed sanitized labels; **no merge, review, approval or queue**. Coarse provider permissions may be broader; publisher compromise is a residual risk, not an absent GitHub permission.
 - Anonymization: all event summaries and agent context passed through
   `anonymize()` before inclusion in PRs
@@ -191,7 +191,7 @@ access.
 | DB pool exhaustion | Patrol hangs or fails | Daemon restart; stale `running` patrol rows recovered on startup |
 | GitHub API rate limiting | PR creation fails; attempt transitions to `failed` | Next patrol cycle for the same fingerprint will retry after cooldown |
 | Worktree creation failure | Investigation not dispatched; attempt marked `failed` | Next patrol cycle retries if fingerprint recurs |
-| No GitHub token | Investigation completes but transitions to `failed` with `"no_gh_token"` | Provision `BUTLERS_QA_GH_TOKEN` via dashboard /secrets |
+| Publication unavailable (always, until the isolated publisher lands) | Investigation completes but transitions to `failed` with `"publication_unavailable"`; nothing is pushed and no PR is opened. A follow-up on an open PR records the same reason and leaves the PR untouched | Wait for the isolated publisher (bu-mc01y5.5-.7) |
 | Circuit breaker tripped | All dispatch halted after N consecutive failures | Investigate and fix underlying cause; circuit breaker resets on next success |
 | Repeated anonymization failures | PR pipeline halted | Manual review required; operator clears via dashboard |
 
@@ -204,7 +204,7 @@ access.
 - **PostgreSQL (`butlers.qa` schema):** State store, session log
 - **PostgreSQL (`public` schema):** `qa_patrols`, `qa_findings`, `qa_dismissals`, `healing_attempts`, `v_qa_recent_failures`
 - **Switchboard:** Registration and routing of `report_finding` calls from butlers; receiver-derived liveness is observed by the control plane
-- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** PR creation for investigation outcomes
+- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** read-only PR-status polling by the dispatcher; PR creation is unavailable until the isolated publisher lands
 
 ### Depends On QA Staffer
 

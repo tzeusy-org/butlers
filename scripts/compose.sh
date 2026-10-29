@@ -10,13 +10,10 @@
 #   ./scripts/compose.sh --skip-oauth-check        # skip OAuth gate
 #   ./scripts/compose.sh --skip-tailscale-check    # skip tailscale serve setup
 #   ./scripts/compose.sh --audio                   # include live-listener (needs /dev/snd)
-#   ./scripts/compose.sh --observability           # enable observability stack (Prometheus, Grafana, Tempo)
-#   ./scripts/compose.sh --hardened                # opt into hardened posture (disables Grafana anon viewer)
+#   ./scripts/compose.sh --observability           # include collector, Tempo, Prometheus, Grafana (local Compose)
 #
-# DEPLOYMENT POSTURE:
-#   Default posture is "dev" (anonymous Grafana viewer enabled when --observability is set).
-#   To opt into hardened posture, pass --hardened or set BUTLERS_POSTURE=hardened in the environment.
-#   See docs/operations/deployment-posture.md for the full posture reference.
+# Grafana anonymous access defaults false and can be explicitly configured via
+# GF_AUTH_ANONYMOUS_ENABLED. This never changes runtime database role enforcement.
 #
 # Dev defaults to hotreload because the baked image only re-bakes when this
 # script rebuilds it -- editing src/ on the host has no effect on a baked
@@ -43,16 +40,10 @@ RESTORE_DRILL_ENABLED=false
 # Tri-state: empty = use mode default; true/false = user opted in/out.
 HOTRELOAD_OPT=""
 
-# Deployment posture: "dev" (default when unset) or "hardened" (explicit opt-in).
-# Governs security-gated toggles such as Grafana anonymous viewer access.
-# Inherits from the environment; can also be set via --hardened flag.
-BUTLERS_POSTURE="${BUTLERS_POSTURE:-dev}"
-
 for arg in "$@"; do
   case "$arg" in
     --prod)                 BUTLERS_MODE=prod ;;
     --with-restore-drill)   RESTORE_DRILL_ENABLED=true ;;
-    --hardened)             BUTLERS_POSTURE=hardened ;;
     --hotreload)            HOTRELOAD_OPT=true ;;
     --no-hotreload)         HOTRELOAD_OPT=false ;;
     --audio)                PROFILES+=(audio) ;;
@@ -79,13 +70,48 @@ readonly RESTORE_DRILL_ENABLED
 # replicas. BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 overrides (non-live DB only).
 if [ "$BUTLERS_MODE" = "prod" ]; then K8S_NAMESPACE=butlers; else K8S_NAMESPACE=butlers-dev; fi
 if [ "${BUTLERS_ALLOW_COMPOSE_WITH_K8S:-0}" != "1" ] && command -v kubectl &>/dev/null; then
-  K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy butlers-up \
-    -o jsonpath='{.spec.replicas}' 2>/dev/null || true)
-  if [ -n "$K8S_REPLICAS" ] && [ "$K8S_REPLICAS" != "0" ]; then
-    echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
-    echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
-    echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
+  # Local configuration inspection requires no cluster connection. A standalone
+  # host without a selected context can use Compose; invalid configuration or
+  # any failed probe against a configured context cannot establish ownership.
+  if ! K8S_CONTEXT=$(timeout 10 kubectl config view -o 'jsonpath={.current-context}' 2>/dev/null); then
+    echo "ERROR: Cannot establish Kubernetes ownership: local configuration inspection failed." >&2
     exit 1
+  fi
+  if [ -n "$K8S_CONTEXT" ]; then
+    K8S_DEPLOYMENTS=(butlers-up)
+    K8S_REPLICA_TEMPLATE='present {{.spec.replicas}}'
+    K8S_REPLICA_PATTERN='^present ([0-9]+)$'
+    if [ "$BUTLERS_MODE" = "dev" ]; then
+      K8S_DEPLOYMENTS+=(butlers-control)
+      # Desired zero is insufficient while the old staged pods still exist.
+      # A Deployment not yet reconciled may legitimately lack observed replicas.
+      K8S_REPLICA_TEMPLATE+=' {{if eq .status.replicas nil}}0{{else}}{{.status.replicas}}{{end}}'
+      K8S_REPLICA_PATTERN='^present ([0-9]+) ([0-9]+)$'
+    fi
+    for K8S_DEPLOYMENT in "${K8S_DEPLOYMENTS[@]}"; do
+      if ! K8S_REPLICAS=$(timeout 10 kubectl -n "$K8S_NAMESPACE" get deploy "$K8S_DEPLOYMENT" \
+        --ignore-not-found -o "go-template=${K8S_REPLICA_TEMPLATE}" 2>/dev/null); then
+        echo "ERROR: Cannot establish Kubernetes ownership for ${K8S_DEPLOYMENT} (namespace ${K8S_NAMESPACE}); query failed." >&2
+        exit 1
+      fi
+      # Only a successful --ignore-not-found query can establish absence. The
+      # marker distinguishes an existing object with missing/invalid metadata.
+      [ -n "$K8S_REPLICAS" ] || continue
+      if ! [[ "$K8S_REPLICAS" =~ $K8S_REPLICA_PATTERN ]]; then
+        echo "ERROR: Cannot establish Kubernetes ownership for ${K8S_DEPLOYMENT} (namespace ${K8S_NAMESPACE}); invalid replica metadata." >&2
+        exit 1
+      fi
+      K8S_REPLICA_COUNTS=("${BASH_REMATCH[@]:1}")
+      for K8S_REPLICA_COUNT in "${K8S_REPLICA_COUNTS[@]}"; do
+        if ! [[ "$K8S_REPLICA_COUNT" =~ ^0+$ ]]; then
+          echo "ERROR: the ${BUTLERS_MODE} database is already served by Kubernetes (namespace ${K8S_NAMESPACE})." >&2
+          echo "  Active workload: ${K8S_DEPLOYMENT}." >&2
+          echo "  Ship changes with deploy/helm/butlers: make ship-${BUTLERS_MODE} (docs/operations/kubernetes-deployment.md)." >&2
+          echo "  Override only for a non-live database: BUTLERS_ALLOW_COMPOSE_WITH_K8S=1 $0 $*" >&2
+          exit 1
+        fi
+      done
+    done
   fi
 fi
 
@@ -441,16 +467,10 @@ if [ "$OBSERVABILITY" = "true" ]; then
   PROFILES+=(observability)
   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 
-  # Gate Grafana anonymous viewer on deployment posture.
-  # dev (default when unset): anon viewer on — convenient for local iteration.
-  # hardened: anon viewer off — login required (admin/admin or overridden creds).
-  if [ "$BUTLERS_POSTURE" = "hardened" ]; then
-    export GF_AUTH_ANONYMOUS_ENABLED=false
-    echo "Observability stack enabled: Grafana at http://localhost:3000 (posture=hardened, login required)"
-  else
-    export GF_AUTH_ANONYMOUS_ENABLED=true
-    echo "Observability stack enabled: Grafana at http://localhost:3000 (posture=dev, anonymous viewer on)"
-  fi
+  # Anonymous access is an explicit independent service configuration.
+  # The retained Compose service default is false; no profile bypass exists.
+  export GF_AUTH_ANONYMOUS_ENABLED="${GF_AUTH_ANONYMOUS_ENABLED:-false}"
+  echo "Observability stack enabled: Grafana at http://localhost:3000"
   echo ""
 fi
 
@@ -462,6 +482,21 @@ fi
 CMD=(docker compose -f docker-compose.yml)
 if [ "$RESTORE_DRILL_ENABLED" = "true" ]; then
   CMD+=(-f docker-compose.restore-drill.yml)
+fi
+# Source-selected dev topology only. Production retains the unsplit service
+# and its process-local capacity five; no environment-file profile selection.
+if [ "$BUTLERS_MODE" = "dev" ]; then
+  CMD+=(-f docker-compose.control-stage.yml)
+  export BUTLERS_SWITCHBOARD_SERVICE=butlers-control
+  PROFILES+=(control-stage)
+  if [ "$HOTRELOAD_OPT" = "true" ]; then
+    PROFILES+=(control-stage-hotreload)
+  fi
+else
+  export BUTLERS_SWITCHBOARD_SERVICE=butlers-up
+fi
+if [ "$OBSERVABILITY" = "true" ]; then
+  CMD+=(-f docker-compose.observability.yml)
 fi
 for p in "${PROFILES[@]}"; do
   CMD+=(--profile "$p")
@@ -477,7 +512,10 @@ SCALE_ARGS=()
 for p in "${PROFILES[@]}"; do
   if [ "$p" = "hotreload" ]; then
     SCALE_ARGS+=(--scale butlers-up=0 --scale dashboard-api=0)
-    echo "Hotreload: scaling down butlers-up and dashboard-api (replaced by *-hotreload variants)"
+    if [ "$BUTLERS_MODE" = "dev" ]; then
+      SCALE_ARGS+=(--scale butlers-control=0)
+    fi
+    echo "Hotreload: replacing baked services with the selected hotreload variants"
   fi
 done
 
@@ -596,7 +634,7 @@ docker builder prune --keep-storage=20g -f 2>/dev/null || true
 
 # ── Build shared app image (used by all services) ────────────────────
 # All services reference butlers-app:${BUTLERS_APP_TAG:-latest} — includes
-# Go whatsapp-bridge binary and whatsapp extra (just qrcode). One image
+# Go whatsapp-bridge binary and the frozen CPU dependency set. One image
 # for everything.
 #
 # Override BUTLERS_APP_TAG to pin to a specific build (e.g. a git SHA):
@@ -629,21 +667,7 @@ if [[ " ${PROFILES[*]} " == *" audio "* ]]; then
   }
 fi
 
-# ── Ensure the beads export file exists before compose mounts it ──────
-# bu-hmdqz.6: docker-compose.yml bind-mounts ./.beads/issues.export.jsonl:ro
-# into dashboard-api(-hotreload)/butlers-up(-hotreload). If that host path
-# doesn't exist yet (fresh clone, or a worktree that's never run `bd
-# export`), Docker creates a *directory* there to satisfy the mount --
-# permanently breaking `bd export -o` afterwards with IsADirectoryError.
-# This dev flow doesn't go through `butlers deploy`
-# (src/butlers/core/deploy.py::materialize_beads_export is the prod-deploy
-# equivalent of this same guard), so it needs its own. Prefer a real export
-# when `bd` is available and reachable; fall back to an empty placeholder
-# file otherwise -- either way, a regular file exists before `compose up`.
-mkdir -p .beads
-if [ ! -f .beads/issues.export.jsonl ]; then
-  bd export -o .beads/issues.export.jsonl 2>/dev/null || touch .beads/issues.export.jsonl
-fi
+
 
 # ── Swap: stop old containers, start new ones ─────────────────────────
 # --remove-orphans clears containers from renamed/removed services.

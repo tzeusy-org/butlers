@@ -33,7 +33,7 @@ import re
 import shutil
 import sys
 import warnings
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 from pathlib import Path
 
 import structlog
@@ -52,9 +52,17 @@ warnings.filterwarnings("ignore", message=r"websockets\.server\.WebSocketServerP
 _butler_context: ContextVar[str | None] = ContextVar("butler_name", default=None)
 
 
-def set_butler_context(name: str) -> None:
-    """Set the butler name for the current async context."""
-    _butler_context.set(name)
+def set_butler_context(name: str) -> Token[str | None]:
+    """Set the butler name for the current async context.
+
+    Returns the token a scoped caller passes to :func:`reset_butler_context`.
+    """
+    return _butler_context.set(name)
+
+
+def reset_butler_context(token: Token[str | None]) -> None:
+    """Restore the butler name that was current before ``set_butler_context``."""
+    _butler_context.reset(token)
 
 
 def get_butler_context() -> str | None:
@@ -315,7 +323,11 @@ def configure_logging(
     else:
         # Console: compact HH:MM:SS, no microseconds
         console_processors = _build_processors(time_fmt="%H:%M:%S")
-        renderer = structlog.dev.ConsoleRenderer()
+        # Never render traceback locals: frames such as Database.connect hold
+        # connection kwargs, including the login password.
+        renderer = structlog.dev.ConsoleRenderer(
+            exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False)
+        )
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[

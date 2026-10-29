@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## ADDED Requirements
 
 ### Requirement: Durable Runtime Attention Episodes
@@ -17,6 +22,15 @@ foreign key. The schema SHALL enforce a partial unique
 `fleet_halt` source/month breach key. It SHALL retain the safe source snapshot
 when a catalog entry or dispatch-attempt record is later deleted under its own
 retention policy.
+
+After the goal switch, deterministic goal-outcome recording SHALL supply the
+same qualifying evidence and atomic attention edge; Switchboard SHALL remain
+the sole service-plane claimant and delivery owner. No new goal, model probe,
+capability grant or observation ledger SHALL replace the immutable edge key,
+claim/lease/epoch fencing or explicit reissue identity. All retention, bounded
+proven-pre-send retry, uncertain terminal/no replay, concurrent successor and
+no-backfill scenarios below remain mandatory, with no producer/worker
+activation, history deletion or rollback-fence change by this amendment.
 
 ID: REQ-runtime-attention-outbox-001
 Source: heart-and-soul/vision.md Rule 3 and Rule 4; RFC 0001; RFC 0011 Amendment 1; design.md Decisions 3-5

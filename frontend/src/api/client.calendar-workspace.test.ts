@@ -75,48 +75,6 @@ describe("getCalendarWorkspace — facets + pagination params", () => {
   });
 });
 
-function mockFindTimeResponse(slots: unknown[]) {
-  const body = { data: { slots, duration_minutes: 60, calendar_ids: ["primary"] } };
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    status: 200,
-    json: async () => body,
-    text: async () => JSON.stringify(body),
-    headers: { get: () => "application/json" },
-  });
-}
-
-import { findCalendarWorkspaceTime } from "./client.ts";
-
-describe("findCalendarWorkspaceTime — POST /calendar/workspace/find-time", () => {
-  it("POSTs the duration, window, and constraints", async () => {
-    const slot = {
-      start_at: "2026-06-22T09:00:00+00:00",
-      end_at: "2026-06-22T10:00:00+00:00",
-      timezone: "UTC",
-    };
-    mockFindTimeResponse([slot]);
-
-    const res = await findCalendarWorkspaceTime({
-      butler_name: "general",
-      duration_minutes: 60,
-      search_start: "2026-06-22T08:00:00Z",
-      search_end: "2026-06-29T08:00:00Z",
-      constraints: { part_of_day: "morning", avoid_weekdays: ["SA", "SU"] },
-      limit: 12,
-    });
-
-    const [url, init] = mockFetch.mock.calls[0];
-    expect(url).toContain("/calendar/workspace/find-time");
-    expect(init.method).toBe("POST");
-    const sent = JSON.parse(init.body as string);
-    expect(sent.duration_minutes).toBe(60);
-    expect(sent.constraints).toEqual({ part_of_day: "morning", avoid_weekdays: ["SA", "SU"] });
-    expect(res.data.slots).toHaveLength(1);
-    expect(res.data.slots[0].start_at).toBe(slot.start_at);
-  });
-});
-
 import { acceptCalendarProposal, ApiError, dismissCalendarProposal } from "./client.ts";
 
 function mockProposalActionResponse(status: string, acceptedEventId?: string | null) {
@@ -206,65 +164,6 @@ describe("dismissCalendarProposal — POST /calendar/workspace/proposals/{id}/di
     mockErrorResponse(404, "Proposal not found");
 
     const err = await dismissCalendarProposal(PROPOSAL_ID).catch((e) => e);
-    expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(404);
-  });
-});
-
-import { undoCalendarWorkspaceMutation } from "./client.ts";
-
-const ACTION_ID = "44444444-4444-4444-4444-444444444444";
-
-describe("undoCalendarWorkspaceMutation — POST /calendar/workspace/undo/{action_id}", () => {
-  it("POSTs to the undo endpoint threading the action_id and returns the fresh request_id", async () => {
-    const body = {
-      data: {
-        action_id: ACTION_ID,
-        action_type: "workspace_user_update",
-        inverse_tool: "calendar_update_event",
-        request_id: "undo-deadbeef",
-        undone: true,
-        result: { event_id: "evt-1" },
-      },
-    };
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => body,
-      text: async () => JSON.stringify(body),
-      headers: { get: () => "application/json" },
-    });
-
-    const res = await undoCalendarWorkspaceMutation(ACTION_ID);
-
-    const [url, init] = mockFetch.mock.calls[0];
-    expect(url).toContain(`/calendar/workspace/undo/${ACTION_ID}`);
-    expect(init.method).toBe("POST");
-    // No client-supplied body — the endpoint synthesizes the inverse itself.
-    expect(init.body).toBeUndefined();
-    // The reversal's request_id is generated server-side and surfaced back.
-    expect(res.data.request_id).toBe("undo-deadbeef");
-    expect(res.data.request_id.startsWith("undo-")).toBe(true);
-    expect(res.data.undone).toBe(true);
-  });
-
-  it("surfaces 409 (already undone) as an ApiError with the status preserved", async () => {
-    mockErrorResponse(409, "Action was already undone.");
-    const err = await undoCalendarWorkspaceMutation(ACTION_ID).catch((e) => e);
-    expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(409);
-  });
-
-  it("surfaces 422 (missing pre-state) as an ApiError with the status preserved", async () => {
-    mockErrorResponse(422, "Captured pre-state is missing or expired.");
-    const err = await undoCalendarWorkspaceMutation(ACTION_ID).catch((e) => e);
-    expect(err).toBeInstanceOf(ApiError);
-    expect(err.status).toBe(422);
-  });
-
-  it("surfaces 404 (unknown action) as an ApiError with the status preserved", async () => {
-    mockErrorResponse(404, "Unknown calendar action.");
-    const err = await undoCalendarWorkspaceMutation(ACTION_ID).catch((e) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect(err.status).toBe(404);
   });

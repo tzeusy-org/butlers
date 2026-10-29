@@ -43,6 +43,7 @@ import { ActivitySparkline } from "@/components/relationship/ActivitySparkline";
 import { ContactChannelCard } from "@/components/relationship/ContactChannelCard";
 import { CoreDatesBlock } from "@/components/relationship/CoreDatesBlock";
 import { DeltaSinceLastVisitBanner } from "@/components/relationship/DeltaSinceLastVisitBanner";
+import { EntityDossierPanel } from "@/components/relationship/EntityDossierPanel";
 import { EntityVerbRail } from "@/components/relationship/EntityVerbRail";
 import { LatestInteractionsBlock } from "@/components/relationship/LatestInteractionsBlock";
 import { OwnerSetupBanner } from "@/components/relationship/OwnerSetupBanner";
@@ -57,6 +58,7 @@ import { announce } from "@/lib/shell-announcer";
 import { Row } from "@/components/ui/Row";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Voice } from "@/components/ui/Voice";
+import { FactReporterLine } from "@/components/relationship/FactReporterLine";
 import { ProvenanceMarks, StalenessBand } from "@/components/ui/Provenance";
 import {
   AlertDialog,
@@ -728,6 +730,9 @@ function TimelineRow({ item }: { item: EntityActivityItem }) {
         {item.summary && (
           <p className="text-sm leading-snug">{item.summary}</p>
         )}
+        {item.store === "identity" && (
+          <FactReporterLine fact={item} />
+        )}
         <p className="text-muted-foreground mt-0.5 text-xs capitalize">
           {item.src === "chronicler" ? subtitle : `Relationship · ${subtitle}`}
         </p>
@@ -1237,7 +1242,8 @@ function FactRow({
           className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 pl-0 text-xs"
         >
           <StalenessBand band={provenance.staleness_band} />
-          <ProvenanceMarks src={provenance.src} verified={provenance.verified} />
+          <ProvenanceMarks src={provenance.src} verified={provenance.store === "identity" ? (provenance.confirmation_status === "owner_asserted" || provenance.confirmation_status === "owner_confirmed") : provenance.verified} />
+          {provenance.store === "identity" && <FactReporterLine fact={provenance} />}
         </div>
       )}
     </li>
@@ -1402,8 +1408,8 @@ function ProvenanceGrid({
     return [...priorPages, ...pageItems.filter((f) => !seen.has(`${f.store}:${f.id}`))];
   }, [priorPages, pageItems]);
 
-  const hasMore = data?.has_more ?? false;
   const nextCursor = data?.next_cursor ?? null;
+  const hasMore = nextCursor != null;
 
   function handleLoadMore() {
     if (nextCursor == null) return;
@@ -1585,6 +1591,7 @@ function ProvenanceRow({ fact }: { fact: EntityFact }) {
       </TableCell>
       <TableCell className="text-xs text-muted-foreground">
         {fact.src}
+        {fact.store === "identity" && <FactReporterLine fact={fact} />}
       </TableCell>
       <TableCell className="text-xs text-muted-foreground tabular-nums">
         <Time value={lastObserved} mode="absolute" precision="day" />
@@ -1901,8 +1908,8 @@ function WorkbenchKpiStrip({ entityId }: { entityId: string }) {
   }, [binsData]);
 
   const facts = useMemo(() => factsData?.items ?? [], [factsData]);
-  // has_more=true means the 200-fact window is incomplete; counts are lower bounds.
-  const truncated = factsData?.has_more ?? false;
+  // A next_cursor means the 200-fact window is incomplete; counts are lower bounds.
+  const truncated = factsData?.next_cursor != null;
   const sourcesCount = useMemo(() => new Set(facts.map((f) => f.src)).size, [facts]);
   const channelsCount = useMemo(
     () => facts.filter((f) => f.predicate.startsWith("has-")).length,
@@ -2115,7 +2122,8 @@ function WorkbenchInspectorRow({ fact }: { fact: EntityFact }) {
         <div className="truncate text-[11px] font-medium">
           {formatPredicateLabel(fact.predicate)}
         </div>
-        <ProvenanceMarks src={fact.src} verified={fact.verified} className="mt-0.5" />
+        <ProvenanceMarks src={fact.src} verified={fact.store === "identity" ? (fact.confirmation_status === "owner_asserted" || fact.confirmation_status === "owner_confirmed") : fact.verified} className="mt-0.5" />
+        {fact.store === "identity" && <FactReporterLine fact={fact} />}
       </div>
     </Row>
   );
@@ -3117,6 +3125,9 @@ export default function EntityDetailPage() {
               {/* Operator verbs — log-interaction, gift-idea, note. Every
                   chip writes a real fact (bu-6t8ix.4). */}
               <EntityVerbRail entityId={entityId} />
+
+              {/* Graph dossier — per-source receipts and known/withheld coverage */}
+              <EntityDossierPanel entityId={entityId} />
 
               {/* Gifts and loans — structured panels, hidden when empty */}
               <div className="grid gap-6 sm:grid-cols-2">

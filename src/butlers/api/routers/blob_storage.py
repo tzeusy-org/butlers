@@ -11,10 +11,11 @@ from __future__ import annotations
 import logging
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.credential_store import CredentialStore
 
@@ -29,11 +30,6 @@ _BLOB_KEYS = [
     "BLOB_S3_ACCESS_KEY_ID",
     "BLOB_S3_SECRET_ACCESS_KEY",
 ]
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +67,13 @@ def _shared_store(db: DatabaseManager) -> CredentialStore:
     """Return a CredentialStore backed by the shared credential pool."""
     try:
         pool = db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         from fastapi import HTTPException
 
         raise HTTPException(
             status_code=503,
             detail="Shared credential database is not available",
-        )
+        ) from exc
     return CredentialStore(pool)
 
 
@@ -96,7 +92,8 @@ async def _load_blob_config(store: CredentialStore) -> dict[str, str | None]:
 
 @router.get("", response_model=ApiResponse[BlobStorageStatus])
 async def get_blob_storage_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BlobStorageStatus]:
     """Return current blob storage configuration status.
 
@@ -132,7 +129,8 @@ async def get_blob_storage_status(
 
 @router.post("/test", response_model=ApiResponse[BlobStorageTestResult])
 async def test_blob_storage(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BlobStorageTestResult]:
     """Test S3 connectivity by checking that the configured bucket exists.
 

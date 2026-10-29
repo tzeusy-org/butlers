@@ -10,6 +10,51 @@
 
 The scheduler (`src/butlers/core/scheduler.py`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
 
+## Explicit owner break-through at creation
+
+A cookie-authenticated, CSRF-checked dashboard request may opt in with
+`interrupt_owner: true` and one canonical UUID `X-Butlers-Creation-Operation`.
+The existing owner-auth service issues a purpose-separated, hash-only creation
+ticket. It is not a D13 standing-permission factor and is never an MCP tool
+argument. The API sends its unpersisted nonce in per-call MCP metadata; it does
+not modify the cached client's headers. The daemon checks the raw RFC8785
+argument digest and receiver before entering the owning schedule transaction.
+
+That one physical-database transaction checks the current auth/session fence,
+consumes the ticket, creates the actual definition and seals its immutable
+stamp and closed result. Unknown-commit retry with the same operation returns
+the original task UUID. It never recreates a deleted task or blesses an edited
+definition. A changed operation payload, wrong receiver/session, expired ticket
+or revoked authority refuses. Ordinary model creation has no stamp.
+
+`tick()` carries the claimed task UUID and original due occurrence through
+private invocation context. A bare task UUID, trigger name or model-provided
+request context is insufficient. Both `notify` and the direct Insight delivery
+consumer use the same current persisted evaluator. Only the scheduler's mutable
+execution bookkeeping is excluded from the definition digest; edits to the
+owning definition invalidate its creation stamp. TOML sync and model edits do
+not retroactively opt in. The last valid `until_at` occurrence atomically records a
+separate final-claim witness while auto-disabling the task. The immutable
+creation stamp still includes `enabled`; the witness binds the actual original
+due occurrence and disabled definition, and survives completion bookkeeping.
+Explicit definition edits or disable revoke the witness, including an already
+disabled request. Revoked occurrence tombstones prevent a cached final invocation
+from regaining authority after re-enable. The fixed domain-role function derives
+the witness from the actual same-transaction row and current creation stamp;
+callers cannot supply a final flag or definition digest.
+
+## Migrated storage and historical triggers
+
+The scheduler requires the current migrated schema. It does not probe
+`information_schema` or hide missing task/deadline/event-chain/deferred storage
+behind legacy projections. Storage faults remain visible. Existing optimistic
+claims, NULL-safe CAS, continuity, policy decisions, deferred retry/coalescing
+and expiry keep their current semantics.
+
+`calendar_event_end` is no longer writable or detected. Create and explicit
+trigger updates refuse before database access; historical rows remain
+readable/listable/deletable and inert. No data rewrite, remap or replay occurs.
+
 ## TOML-to-DB Sync
 
 On startup, `sync_schedules()` reconciles `[[butler.schedule]]` entries from the butler's TOML config with the `scheduled_tasks` table:
@@ -19,6 +64,14 @@ On startup, `sync_schedules()` reconciles `[[butler.schedule]]` entries from the
 - **Removed tasks** (present in DB with `source='toml'` but absent from the current TOML) are disabled by setting `enabled=false`.
 
 Each synced task gets a computed `next_run_at` based on its cron expression and optional stagger offset.
+
+### Schedule timezone
+
+Hour-pinned cron fields are evaluated in the owner's configured general timezone, so `0 23 * * *` fires at 23:00 owner-local. A `[[butler.schedule]]` entry may set `timezone` (an IANA name) to pin its own zone instead, and sync stores it on the row. Use this for infrastructure schedules whose comment states a UTC time. Pin real UTC with `timezone = "Etc/UTC"`: the literal `"UTC"` (like an empty or missing value) is the sentinel that follows the owner timezone, so it cannot pin. `timezone = "UTC"` (any case) or a blank value is refused with an error naming `Etc/UTC`, as is an unknown zone. A change to only the declared timezone updates the existing row.
+
+### Always-quiet warning
+
+When sync can read the owner quiet window (`public.approvals_policy`), it logs one warning per prompt-mode schedule that references `notify` but whose every firing in the next week, including the stagger allowance, falls inside that window, because its notifications would always be held or dropped. The lint never rejects a schedule or blocks sync, and it stays silent when there is no usable policy, the cron is irregular, or the schedule is job-mode or does not notify.
 
 ## Dispatch Modes
 
@@ -31,6 +84,8 @@ The task's `prompt` string is sent to the spawner, which spawns an LLM session. 
 ### Job Mode
 
 The task's `job_name` maps to a registered Python function that runs directly without spawning an LLM. This is for deterministic maintenance work: memory consolidation, analytics computation, eligibility sweeps.
+
+Job mode also fits owner reminders whose text has a fixed shape. Relationship `upcoming-dates-check` and `relationship-maintenance` render a template from an existing read, and Chronicler `chronicler_gap_interview` asks yesterday's gap interview through the same service as its MCP tool. A job reaches the owner through `butlers.jobs.owner_notify.send_owner_telegram`: the `notify.v1` send through Switchboard `deliver` on the client `dispatch_scheduled_task` binds for the handler call, with one attention-ledger row per outcome. Unlike `notify()`, a quiet-hours or context-bus suppression drops the send rather than deferring it.
 
 ## The Tick Loop
 
@@ -145,6 +200,16 @@ psql -h localhost -U butlers -d butlers -c \
   lifts and does not trigger catch-up. Work that was already launched keeps running.
   `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
   `src/butlers/core/scheduler.py::_butler_dispatch_gated()` path.
+- `sw_053` generalises that projection as `public.butler_local_schedule_policy()` for every other
+  butler. It takes no arguments, derives the butler name from the effective
+  `SET ROLE butler_<name>_rw` (anything else is refused with `42501`) and returns `butler_name`,
+  `policy_state` and `policy_provenance` (`P0002` when no row exists). EXECUTE is granted only to
+  `butler_*_rw` roles. Under the receiver cutover `_butler_dispatch_gated()` calls it through the
+  butler's own role-verified pool (the daemon wires `eligibility_pool` to `daemon.db.pool` for every
+  butler under the cutover, and for the switchboard always). A missing row or any state other than
+  `active` holds dispatch; a refusal, an absent function or a row naming another butler fails open,
+  like other gate errors. Without the cutover only the switchboard gates, because the legacy
+  resolver reads switchboard tables that runtime roles cannot see. Downgrade keeps the function.
 
 - `job_args` JSONB can round-trip through asyncpg as a JSON string: serialize dicts explicitly on
   write and normalize back to dicts before diffing, validation merges, list responses or dispatch.

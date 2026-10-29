@@ -1,10 +1,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Patrol Database Schema
-Patrol cycles SHALL be recorded in `public.qa_patrols` for observability and dashboard display. The record SHALL distinguish an actual scheduled discovery cycle from an operator-created synthetic validation row and retain the enabled-source configuration and successful-completion evidence used by independent patrol assurance. Legacy rows without this provenance SHALL remain readable but SHALL NOT count as qualifying patrols.
+Patrol cycles SHALL be recorded in `public.qa_patrols` for observability and dashboard display. The record SHALL distinguish an actual scheduled discovery cycle from an operator-created synthetic validation row and retain the enabled-source configuration and successful-completion evidence used by independent patrol assurance. Legacy rows without this provenance SHALL remain readable but SHALL NOT count as qualifying patrols. Patrol completion is deterministic discovery evidence, not domain reasoning-session health or proof that an investigation goal completed.
 
 ID: REQ-staffer-qa-008
-Source: RFC 0015 §D6; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2; [Observed] src/butlers/modules/qa/__init__.py and src/butlers/api/routers/qa.py synthetic finding path
+Source: RFC 0038 D2/D7/D18; generalist-lead-focused-delegation QA Patrol Loop Lifecycle; RFC 0015 §D6; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2; [Observed] src/butlers/modules/qa/__init__.py and src/butlers/api/routers/qa.py synthetic finding path
 Scope: v1-mandatory
 
 #### Scenario: Patrol record structure
@@ -36,10 +36,10 @@ Scope: v1-mandatory
 ## ADDED Requirements
 
 ### Requirement: [TARGET-STATE] Patrol continues through derived remote staleness
-The QA Staffer's deterministic local patrol and recovery schedules SHALL remain runnable when its remote registry observation is stale. Explicit authorized administrative pause, quarantine, or operator-provenance review_required suppresses new local admissions. Ambiguous legacy review_required and missing, malformed, denied, or unreadable policy authority are separately typed safety refusals, not remote-staleness gates or attributed owner stops. Investigation dispatch MAY be suppressed by its separately defined admission gates while discovery evidence remains durable.
+The QA Staffer's deterministic local patrol and recovery schedules SHALL remain runnable when its remote registry observation is stale. Explicit authorized administrative pause, quarantine, or operator-provenance review_required suppresses new local admissions. Ambiguous legacy review_required and missing, malformed, denied, or unreadable policy authority are separately typed safety refusals, not remote-staleness gates or attributed owner stops. Investigation dispatch MAY be suppressed by its separately defined admission gates while discovery evidence remains durable. Work needing reasoning follows the existing staffer/goal admission and permitted D18 executor contracts; it does not start a domain reasoning session or revive generic `route` forwarding. Deterministic findings reach QA through the authenticated service-plane relay. This amendment does not change enabled discovery sources or adopt a new source/retention policy.
 
 ID: REQ-staffer-qa-006
-Source: heart-and-soul/vision.md:51-53,80-84; RFC 0015 §D6; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §4 QA circular gate
+Source: RFC 0038 D2/D7/D18; generalist-lead-focused-delegation QA Patrol Loop Lifecycle; heart-and-soul/vision.md:51-53,80-84; RFC 0015 §D6; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §4 QA circular gate
 Scope: v1-mandatory
 
 #### Scenario: QA observes its own registry failure
@@ -55,7 +55,7 @@ Scope: v1-mandatory
 QA SHALL associate related per-butler liveness findings with the active fleet-level condition and preserve source evidence without dispatching a separate investigation for each affected daemon.
 
 ID: REQ-staffer-qa-007
-Source: RFC 0015 §D1-4; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Infrastructure-condition QA suppression; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.2
+Source: RFC 0038 D2/D7/D18; generalist-lead-focused-delegation QA Patrol Loop Lifecycle; RFC 0015 §D1-4; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Infrastructure-condition QA suppression; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2
 Scope: v1-mandatory
 
 #### Scenario: One fleet failure is visible without case explosion

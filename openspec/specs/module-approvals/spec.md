@@ -4,6 +4,8 @@
 
 The Approvals module is a reusable execution-control module that butlers load locally to intercept configured high-impact tool invocations before execution, park unapproved invocations as durable pending actions, support manual approve/reject/expire workflows, and auto-approve matching invocations through standing approval rules.
 
+The approval-recovery protocol is owned by [approval-delivery-intent-recovery](../approval-delivery-intent-recovery/spec.md); this spec binds its integration seam to that canonical contract.
+
 ## Requirements
 
 ### Requirement: Gate Wrapper Interception
@@ -32,8 +34,11 @@ The module MUST wrap configured MCP tools at FastMCP registration time so that g
 - **AND** remaining valid gated tools are still wrapped
 
 ### Requirement: Pending Actions Queue
+The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`. When durable admission is enabled under the canonical additive rollout contract, every newly admitted `pending` row SHALL commit in the same transaction as one unique, schema-local approval delivery-intent root whose immutable logical action key and admission classification are safe for end-to-end notification recovery. The first three ordinary actions receive direct presentations; the fourth `cohort_anchor` joins and creates the cohort-owned digest; later ordinary `collapsed` actions record a terminal non-sendable local presentation and join that cohort. A digest-only `origin='prepared'` action uses the same durable representation with one standalone terminal `collapsed` action presentation, no cohort membership, no burst-count effect, and no provider or defer activation.
 
-The `pending_actions` table MUST provide a durable queue and audit log for approval-gated tool invocations. It stores `id`, `tool_name`, `tool_args` (JSONB), `status`, `requested_at`, and optional fields `agent_summary`, `session_id`, `expires_at`, `decided_by`, `decided_at`, `execution_result`, `approval_rule_id`, `why`, `evidence`, and producer-opt-in `deduplication_key`.
+ID: REQ-module-approvals-001
+Source: RFC-0021,RFC-0023
+Scope: v1-mandatory
 
 #### Scenario: Pending action rationale fields
 
@@ -51,29 +56,44 @@ The `pending_actions` table MUST provide a durable queue and audit log for appro
 - **AND** null historic keys MUST remain allowed, while an `expired` action
   MUST not block a newly surfaced action with the same key
 
-#### Scenario: List pending actions with status filter
+#### Scenario: Atomic pending admission creates one intent
+- **WHEN** a producer admits a new action with status `pending` and durable admission enabled
+- **THEN** the pending row and one foreign-keyed intent with the action's immutable logical key plus its required direct presentation, cohort anchor/digest, or collapsed terminal presentation and membership commit together or both roll back
+- **AND** an unavailable notification runtime does not permit a pending row without its intent
 
+#### Scenario: Prepared action admission stays durable and silent
+- **WHEN** a relationship or travel producer admits a digest-only action with `origin='prepared'`
+- **THEN** the pending row, intent, and standalone terminal `collapsed` presentation commit atomically when admission is enabled
+- **AND** it creates no cohort membership, due work, legacy emission, provider call, or defer successor
+- **AND** default-off admission commits only the established prepared pending row
+
+#### Scenario: List pending actions with status filter
 - **WHEN** `list_pending_actions` is called with an optional status filter and limit
 - **THEN** matching rows are returned ordered by `requested_at DESC`
 - **AND** an invalid status value returns an error dict
 
 #### Scenario: Show pending action detail
-
 - **WHEN** `show_pending_action` is called with an action_id
 - **THEN** the full PendingAction row is returned as a serialized dict
+- **AND** its safe delivery projection is included without unsafe recovery detail
 - **AND** an invalid UUID or missing action returns an error dict
 
 #### Scenario: Count pending actions by status
 
 - **WHEN** `pending_action_count` is called
 - **THEN** a dict with `total` and `by_status` counts is returned
+- **AND** delivery backlog metrics remain a separate safe aggregation rather than action payload data
 
 ### Requirement: Status Transition Contract
 
 The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 `approved -> executed|abandoned`, and no transition from
 `rejected|expired|executed|abandoned`. Invalid transitions raise
-`InvalidTransitionError`.
+`InvalidTransitionError`. Every transition out of `pending` SHALL atomically fence or cancel its nonterminal approval-delivery presentations without granting the notification worker domain-action mutation authority. Each authenticated dashboard defer remains a pending-state operation and appends exactly one bounded successor presentation generation through its own shared transaction path.
+
+ID: REQ-module-approvals-002
+Source: RFC-0021,RFC-0023
+Scope: v1-mandatory
 
 #### Scenario: Approve a pending action
 
@@ -85,13 +105,23 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 - **AND** an available owning executor MAY then run the original tool function
 - **AND** status advances to `executed` only after that execution persists its
   result and success audit event.
+- **AND** the same transaction atomically cancels its sendable delivery presentations
 
 #### Scenario: Approve with concurrent race
-
 - **WHEN** two concurrent approve calls target the same pending action
-- **THEN** the compare-and-set ensures only one succeeds (WHERE status =
-  'pending')
-- **AND** the losing call receives a transition error with the current status.
+- **THEN** the compare-and-set ensures only one succeeds with `WHERE status = 'pending'`
+- **AND** the losing call receives a transition error with the current status and cannot revive a cancelled presentation
+
+#### Scenario: Dashboard abandons a stalled approved action
+
+- **WHEN** a dashboard actor supplies a non-blank reason for an action whose
+  status is `approved` and whose `execution_result` is null
+- **THEN** a compare-and-set update transitions that action to `abandoned`
+- **AND** an immutable `action_abandoned` event stores the actor and reason in
+  the same transaction
+- **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can
+  invoke abandonment
+- **AND** an action outside that exact predicate remains unchanged.
 
 #### Scenario: Reject a pending action
 
@@ -100,6 +130,7 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 - **THEN** status transitions from `pending` to `rejected` with `decided_by`
   set to `human:<actor_id> (reason: <escaped_reason>)`
 - **AND** an `action_rejected` audit event is recorded.
+- **AND** the same transaction atomically cancels delivery recovery; a started handoff may only append late evidence and never changes the rejected action
 
 #### Scenario: Expire stale actions
 
@@ -107,6 +138,25 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 - **THEN** all pending actions where `expires_at < now()` are transitioned to
   `expired`
 - **AND** an `action_expired` audit event is recorded for each.
+- **AND** the same transaction cancels each action’s sendable presentations and marks its cohort membership ineligible without cancelling a shared eligible digest
+- **AND** a worker that merely observes an expired action cannot perform the domain expiry transition itself
+
+#### Scenario: Send-start and decision race
+- **WHEN** a worker and a terminal decision contend for the same pending action
+- **THEN** the committed fenced handoff-start marker is the final cancellation-safe boundary under a fixed action-then-intent-presentation lock order
+- **AND** whichever transaction loses cannot send or revive future recovery, while a decision after send-start stops only future recovery
+
+#### Scenario: Dashboard defer schedules a guarded re-presentation
+- **WHEN** an authenticated dashboard actor defers a still-pending action for `1 ≤ hours ≤ 168`
+- **THEN** the same action/intent transaction extends expiry, supersedes an unstarted current presentation, and appends the next presentation generation for `now + hours`
+- **AND** it keeps the logical action key, cannot route through generic notifications, and does not grant the worker ability to defer or schedule future presentations
+
+#### Scenario: Already-executed action is replayed
+
+- **WHEN** the executor is called for an action that is already `executed`
+- **THEN** the stored `execution_result` is returned (idempotent replay)
+- **AND** no second execution occurs.
+- **AND** no second notification delivery occurs
 
 #### Scenario: Abandon an approved unexecuted action
 
@@ -137,26 +187,13 @@ The approval lifecycle MUST allow `pending -> approved|rejected|expired`,
 - **AND** the loser returns the current durable state without appending another
   terminal event.
 
-#### Scenario: Already-executed action is replayed
-
-- **WHEN** the executor is called for an action that is already `executed`
-- **THEN** the stored `execution_result` is returned (idempotent replay)
-- **AND** no second execution occurs.
-
-#### Scenario: Dashboard abandons a stalled approved action
-
-- **WHEN** a dashboard actor supplies a non-blank reason for an action whose
-  status is `approved` and whose `execution_result` is null
-- **THEN** a compare-and-set update transitions that action to `abandoned`
-- **AND** an immutable `action_abandoned` event stores the actor and reason in
-  the same transaction
-- **AND** no MCP, Telegram callback, automatic, bulk, or scheduled path can
-  invoke abandonment
-- **AND** an action outside that exact predicate remains unchanged.
-
 ### Requirement: Standing Rules CRUD and Matching
 
 Standing approval rules MUST enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`. A rule's `created_from` is historical action provenance rather than a deletion-blocking foreign key, so action retention does not mutate or delete a retained rule.
+
+ID: REQ-module-approvals-003
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses
+Scope: v1-mandatory
 
 #### Scenario: Create a standing rule
 
@@ -192,6 +229,29 @@ Standing approval rules MUST enable auto-approval of repeatable safe invocations
 - **AND** expired rules (`expires_at < now`) are excluded
 - **AND** exhausted rules (`use_count >= max_uses`) are excluded
 
+#### Scenario: Concurrent use of a bounded rule
+
+- **WHEN** several gated invocations race for a rule that has fewer remaining uses than callers (`max_uses` minus `use_count`)
+- **THEN** each use is claimed atomically with the insert of its `approved` action, so exactly the remaining uses are admitted
+- **AND** the remaining invocations are parked as `pending` actions
+- **AND** `use_count` never exceeds `max_uses`
+- **AND** an inactive, expired, or exhausted rule claims nothing and parks the invocation
+
+#### Scenario: A rule use is consumed at admission
+
+- **WHEN** a rule-matched invocation is admitted
+- **THEN** the rule's `use_count` is incremented by the admission claim, before the tool executes
+- **AND** the executor does not increment `use_count` again
+- **AND** a failed execution leaves the use consumed, because an approved action was issued
+- **AND** the email recipient guard claims its rule use through the same helper and parks when the rule cannot be claimed
+
+#### Scenario: Dashboard rule creation names its butler and is validated like the MCP tool
+
+- **WHEN** `POST /api/approvals/rules` is called
+- **THEN** `butler` is required (missing returns 422), an unknown butler returns 404, and a butler whose approvals pool is unavailable returns 503
+- **AND** the rule is written into that butler's schema
+- **AND** the same risk-tier validation as `create_approval_rule` runs first, so a high-risk tool without an `exact` or `pattern` constraint, or without `expires_at` or `max_uses`, returns 400 with the same message
+
 #### Scenario: Revoke a standing rule
 
 - **WHEN** `revoke_approval_rule` is called with authenticated human actor
@@ -224,13 +284,17 @@ The module MUST classify tools into explicit risk tiers (`low`, `medium`, `high`
 
 ### Requirement: Shared Executor Path
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, immutable success audit event, and any auto-approval `use_count` increment. The terminal state and audit append are atomic when the runtime provides a transaction.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, and immutable success audit event. An auto-approval `use_count` increment is not made here: the use is claimed at admission. The terminal state and audit append are atomic when the runtime provides a transaction.
 
 Direct non-Messenger producers covered by the executable-command contract MUST
 persist a declared executable command: the owning daemon, registered original
 tool name, and exact handler kwargs are validated before the row can be
 parked. The owning daemon validates its declared command contracts against the
 registered MCP surface during startup.
+
+ID: REQ-module-approvals-004
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses
+Scope: v1-mandatory
 
 #### Scenario: Tool execution succeeds
 
@@ -648,3 +712,61 @@ immediate execution when approval is not required.
 - **THEN** dispatch MUST fail without rewriting or guessing its executable arguments
 - **AND** the action MUST remain `approved` with `execution_result = null`
 - **AND** an immutable `action_execution_failed` event MUST be recorded
+
+### Requirement: Approval Cards Show the Exact Stored Call
+
+An owner-targeted `approval_request` card for a single parked action SHALL render
+its recipients and content from the stored, unredacted `pending_actions.tool_args`
+through a deterministic per-tool preview registry, never from model-written text.
+The model-written `why`, `blast_radius` and `reversibility` fields SHALL appear
+only under an "Assistant says" label as claims, with URLs defanged and the text
+rendered inert. The "Started by" line SHALL come from server rows, not from
+message text. The card SHALL offer Approve and Reject only when the whole stored
+call is shown and fits within about 3,500 rendered characters; in every other
+case it SHALL offer Open only: no registered preview, a renderer error, an
+argument or recipient the preview cannot enumerate, a shown value containing a C0/C1
+control character (other than a newline) or a Unicode format character, an
+over-budget call, and any tool whose effect class is `administer` or protected or
+consequential actuation. The budget SHALL be measured in UTF-16 code units.
+The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
+
+Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
+(sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
+pending action's row lock when the handoff starts. If the stored call no longer
+matches the rendered digest, the handoff SHALL NOT start, and a card SHALL NOT be
+handed off with a NULL digest. A connector-authenticated card decision SHALL take
+the pending action's row lock and refuse with HTTP 409 "changed since shown" when
+any recorded presentation digest differs from the digest of the stored call,
+executing nothing; a dashboard approval binds to the call the dashboard displayed
+and does not use that check. Both dashboard approval routes SHALL compare the
+owner-safe displayed tool identity and argument digest against the locked pending
+row before edits, approval, audit or dispatch. Summary-only surfaces SHALL show
+the complete safe stored-call preview before enabling approval, and delayed undo
+callbacks SHALL retain that reviewed snapshot rather than substitute a refreshed
+call. Missing, stale, malformed or unshowable snapshots SHALL execute nothing.
+Downgrading the migration that adds the digest column
+SHALL refuse while any presentation carries a digest.
+
+#### Scenario: Email card shows the call
+
+- **WHEN** an email send is parked and its card is rendered
+- **THEN** the card lists every To and Cc address, the subject and the full body from stored `tool_args`
+- **AND** the assistant's explanation appears only under "Assistant says"
+- **AND** Approve, Reject and Open are offered
+
+#### Scenario: Call cannot be shown whole
+
+- **WHEN** the body exceeds the fit budget, the tool has no registered preview, or the tool is `administer`
+- **THEN** the card offers Open only
+
+#### Scenario: Telegram reaction card shows the exact native call
+
+- **WHEN** a `telegram_react_to_message` call is parked with nonempty text `chat_id` and `emoji` and a positive integer `message_id` excluding booleans
+- **THEN** Telegram and dashboard previews show all three exact stored arguments through the shared registry
+- **AND** a Telegram card that passes the existing safety and fit checks offers Approve, Reject and Open
+- **AND** missing or malformed arguments or unknown reaction kwargs, including empty future arguments, offer Open only
+
+#### Scenario: Stored call changed after presentation
+
+- **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
+- **THEN** nothing executes, the action stays pending, and the reply says the call changed since shown

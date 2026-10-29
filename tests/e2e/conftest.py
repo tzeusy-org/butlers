@@ -49,6 +49,8 @@ from typing import TYPE_CHECKING
 import pytest
 from testcontainers.postgres import PostgresContainer
 
+_THIS_FILE = Path(__file__).resolve()
+
 if TYPE_CHECKING:
     from asyncpg.pool import Pool
 
@@ -399,7 +401,7 @@ async def butler_ecosystem(
 
         # Compute switchboard E2E port from its base config
         switchboard_base_config = load_config(
-            Path(__file__).resolve().parent.parent.parent / "roster" / "switchboard"
+            _THIS_FILE.parent.parent.parent / "roster" / "switchboard"
         )
         switchboard_e2e_port = switchboard_base_config.port + E2E_PORT_OFFSET
 
@@ -779,7 +781,7 @@ async def _smoke_test_butlers(ecosystem: ButlerEcosystem) -> None:
     module which runs as the first E2E test.
     """
     failed: list[str] = []
-    for butler_name, daemon in ecosystem.butlers.items():
+    for butler_name, _daemon in ecosystem.butlers.items():
         pool = ecosystem.pools.get(butler_name)
         if pool is None:
             failed.append(f"{butler_name}: no DB pool")

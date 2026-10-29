@@ -86,7 +86,7 @@ the Dispatch primitives (`Section`, `Tile`, `Row`, `Pill`, `Eyebrow`, `Mono`, `V
 `time`, `query-boundary`, `error-state`, `empty-state`, `confirm-dialog`, …); `layout/` holds
 the shell; every other folder is one domain or surface (`qa/`, `butler-detail/`, `memory/`,
 `health/`, `relationship/`, `chronicles/`, `approvals/`, `ingestion/`, `overview/`, `chat/`,
-`decisions/`, `spend/`, `system/`, `topology/`, …). `ls frontend/src/components/` is the current
+`spend/`, `system/`, `topology/`, …). `ls frontend/src/components/` is the current
 list.
 
 `ui/Section.tsx` is the default semantic surface, with Header/Title/Description/Action/Content/Footer
@@ -124,8 +124,8 @@ graph LR
 - `frontend/components.json` configures shadcn: style `new-york`, base color `neutral`, lucide icons.
 - `hooks/useDarkMode.ts` defaults to `'dark'` on a cold load and ignores `prefers-color-scheme`.
   Rationale: design-language.md "Theme commitment".
-- Colour roles are lint-enforced (`frontend/eslint.config.js` visual-role guard and
-  `frontend/scripts/visual-role-css-guard.mjs`); see §Butler letter-mark below.
+- Colour roles are structural, not lint-policed: butler identity hues are private to `ButlerMark`,
+  and `frontend/eslint.config.js` bans the raw-colour dialects; see §Butler letter-mark below.
 
 ---
 
@@ -218,7 +218,17 @@ The frame:
   column from `AttentionList`, `KpiStrip`, and `RecentDaysIndex`.
 
 Motion follows spec `dashboard-design-language` §Motion Vocabulary: opacity-only cross-fade on
-briefing refresh, transform-only rotation on the status pill icon, nothing else.
+briefing refresh, transform-only rotation on the status pill icon, allowed paint/opacity/border/box-shadow
+state changes and rotate/translate transforms at the 150/200/250ms tiers. Sidebar chevrons retain the
+named 120ms linear rotation, Radix owns primitive enter/exit, and spinners indicate loading. Layout
+tweens, scale, bounce and decorative motion are forbidden.
+
+The ESLint class guard covers complete string tokens and static template chunks in each effective
+`no-restricted-syntax` override, including `ButlerMark`; it does not resolve interpolated values,
+inline CSS or library APIs. Review those paths against the same vocabulary. `MapWidgetInner` camera
+navigation uses `duration: 0`; the minimap changes dimensions instantly and MapLibre observes its
+container resize. Episode expansion reveals uncapped content instantly, and search-target highlights
+use static paint while retaining their existing visibility lifetimes.
 
 ### Row anatomies
 
@@ -238,10 +248,10 @@ wrappers (`components/ui/Section.tsx`). Anatomy and empty-state copy: spec §Lis
 
 ### Butler letter-mark
 
-The butler hue from `--category-1..12` resolves only onto the butler letter-mark. The canonical
-component is `frontend/src/components/ui/ButlerMark.tsx`; see
+The butler hue resolves only onto the butler letter-mark. The canonical component is
+`frontend/src/components/ui/ButlerMark.tsx`; see
 `openspec/specs/dashboard-design-language/spec.md` § Requirement: Butler Category Hues for the
-current butler→token mapping.
+current butler→slot mapping.
 
 `ButlerMark`'s color-role-facing subset of its public surface is intentionally
 small:
@@ -259,11 +269,9 @@ labels, and the staffer circle respectively; they do not expand the identity
 color-role surface documented here.
 
 The identity-slot resolver is private to ButlerMark. It is not a public API:
-no chart, tag, badge, or other caller may resolve `--category-N` (or its
-`--color-category-N` alias) directly. The private identity surface is
-enforced by the visual-role guard in `frontend/eslint.config.js` for
-TypeScript/TSX and `frontend/scripts/visual-role-css-guard.mjs` for source
-stylesheets; both gates run through `frontend`'s `npm run lint`.
+the palette is a module-private TypeScript map applied as an inline `light-dark()` style, so no
+CSS variable exists for a chart, tag, badge, or other caller to resolve. The surface is private by
+construction rather than by a lint rule.
 
 Non-identity callers choose a typed semantic role instead:
 

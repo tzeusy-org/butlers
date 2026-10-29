@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
 from typing import Final
+from urllib.parse import urlparse
 
+from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 from butlers.core.runtime_probe_control.client import RuntimeProbeControlClient
 from butlers.core.runtime_probe_control.keys import SignerSnapshot, signer_snapshot
 
@@ -106,14 +107,13 @@ def activated_signer_snapshot() -> SignerSnapshot:
 def switchboard_control_base_url() -> str:
     """Where Switchboard's private control plane lives, from this process.
 
-    Mirrors the ``BUTLERS_HOST`` convention every other Dashboard-to-butler
-    caller already uses (``butlers.api.deps.ButlerConnectionInfo.sse_url``):
-    Compose sets it to the ``butlers-up`` service name on both Dashboard
-    containers, and it is unset inside ``butlers-up`` itself, where the
-    daemons see each other on loopback.
+    Uses the same canonical Switchboard destination as every other caller
+    (``butlers.api.deps.ButlerConnectionInfo.sse_url``): ``SWITCHBOARD_MCP_URL``
+    when configured, so the key-absent stage reaches ``butlers-control``;
+    otherwise ``BUTLERS_HOST``, and loopback inside ``butlers-up`` itself.
     """
-    host = os.environ.get("BUTLERS_HOST") or "localhost"
-    return f"http://{host}:{SWITCHBOARD_CONTROL_PORT}"
+    loopback = f"http://localhost:{SWITCHBOARD_CONTROL_PORT}"
+    return f"http://{urlparse(resolve_cross_container_mcp_url(loopback)).netloc}"
 
 
 _clients: dict[str, RuntimeProbeControlClient] = {}

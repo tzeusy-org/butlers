@@ -170,7 +170,7 @@ async def test_upgrade_remaps_model_catalog_tiers(migration_pool: asyncpg.Pool) 
         "discretion": "specialty",
         "self_healing": "specialty",
     }
-    for old_tier, expected_new in old_to_new.items():
+    for old_tier in old_to_new:
         await pool.execute(
             "INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)"
             " VALUES ($1, 'codex', 'test-model', $2)",
@@ -217,7 +217,7 @@ async def test_upgrade_remaps_butler_model_overrides_tiers(migration_pool: async
         "discretion": "specialty",
         "self_healing": "specialty",
     }
-    for old_tier_name, expected_new in old_to_new.items():
+    for old_tier_name in old_to_new:
         await pool.execute(
             "INSERT INTO public.butler_model_overrides"
             " (butler_name, catalog_entry_id, complexity_tier)"
@@ -388,7 +388,7 @@ async def test_downgrade_remaps_model_catalog_tiers(migration_pool: asyncpg.Pool
         "local": "trivial",
         "legacy": "trivial",
     }
-    for alias, new_tier in new_to_expected_old.items():
+    for alias, _new_tier in new_to_expected_old.items():
         # After upgrade, complexity_tier must use the NEW vocabulary (alias = new tier name).
         await pool.execute(
             "INSERT INTO public.model_catalog (alias, runtime_type, model_id, complexity_tier)"

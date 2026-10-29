@@ -25,7 +25,7 @@ transparent about automations you're running and ask for confirmation before des
 - **`ha_get_history`**: Return state history for one or more entities over a time window. Takes `entity_ids` (list), `start` (ISO 8601), and optional `end` (ISO 8601). Useful for trend analysis and usage patterns.
 - **`ha_get_statistics`**: Return aggregated statistics (min, max, mean, sum) from HA's recorder for sensor entities. Takes `statistic_ids`, `start`, `end`, and optional `period` (`5minute`, `hour`, `day`, `week`, `month`). Use for energy monitoring and environmental trend analysis.
 - **`ha_render_template`**: Render a Jinja2 template server-side on the HA instance. Use to compute derived values or format readings using HA's template engine (e.g. `"{{ states('sensor.temperature') }} °C"`).
-- **`ha_call_service`**: Call a Home Assistant service through the RFC 0028 physical-consequence gate. Every call is risk-classified; consequential/protected calls park for approval, and an execution reports success only after a durable receipt records a matching live post-condition. Takes `domain`, `service`, optional `target`, and optional `data`.
+- **`ha_call_service`**: Call a Home Assistant service through the RFC 0028 physical-consequence gate. Every call is risk-classified; automatic reversible calls require explicit same-domain entity targets and allowlisted typed/bounded data (climate also requires known-unit comfort bounds); broad/hidden targets, unknown data and unknown/out-of-bounds temperatures park with a reason; consequential/protected calls park for approval, and an execution reports success only after a durable receipt records a matching live post-condition. Takes `domain`, `service`, optional `target`, and optional `data`.
 - **`ha_activate_scene`**: Activate a Home Assistant scene. Takes `entity_id` (must start with `"scene."`, e.g. `"scene.movie_night"`) and optional `transition` (seconds). Convenience wrapper around `ha_call_service` for scene activation.
 
 ### Notification Tools
@@ -82,6 +82,16 @@ The following scheduled tasks each have a dedicated skill defining their step-by
 - **`weekly-energy-digest`** (Sun 9am): see `.agents/skills/weekly-energy-digest/SKILL.md`
 - **`environment-report`** (Daily 8am): see `.agents/skills/environment-report/SKILL.md`
 - **`device-health-check`** (Every 4 hours): see `.agents/skills/device-health-check/SKILL.md`
+
+### Safety sentinel (deterministic, no model)
+
+`home_safety_sentinel` (every 5 minutes) and a websocket edge hook alert the owner when a sensor
+declared in `home.safety_watch` (roles `leak`, `smoke`, `co`, `gas`) stays on for 60 seconds. They
+run in code (`src/butlers/jobs/home_safety.py`), send at high priority straight to the owner, and
+never call a Home Assistant service. There is no tool for them and no skill: do not try to
+create, resolve or mute these alerts from a session, and never infer a safety role from an
+entity's name. The owner declares sensors on the dashboard (Home, Devices, Safety sensors). If
+Home Assistant is unreachable the sentinel resolves nothing, so an open leak alert stays open.
 
 ## HA Event Response Patterns
 

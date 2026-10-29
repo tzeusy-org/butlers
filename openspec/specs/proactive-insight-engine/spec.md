@@ -254,6 +254,11 @@ is active, precedence is `dnd`, then `meeting`, then `sleeping`, then
 `traveling` — the first of these, in that order, with an active
 non-max-held instance wins and is reported as the suppression signal.
 
+The delivery cycle SHALL also treat an active `focused` signal as a
+suppression input, ranked immediately after `dnd` and before `meeting` in the
+precedence above, with a max-hold TTL of 4 hours, and SHALL report it as
+`context_bus:focused` when it wins.
+
 Each signal type has its own max-hold TTL bounding how long that signal
 alone may suppress routine delivery, independent of the signal's own (often
 much longer) context-bus expiry: `dnd` 4 hours, `meeting` 2 hours, `sleeping`
@@ -279,6 +284,13 @@ silently queue for the length of a trip.
 - **AND** no pending candidate is priority>=90
 - **THEN** the cycle is suppressed with `reason="context_bus:meeting"` (or
   `"context_bus:traveling"`), exactly as `dnd`/`sleeping` suppress today
+
+#### Scenario: focused signal suppresses after dnd within a 4 hour max-hold
+- **WHEN** `public.user_context` has an active `focused` signal whose `set_at`
+  is within 4 hours of the delivery cycle's `now`, and no `dnd` signal is
+  active
+- **AND** no pending candidate is priority>=90
+- **THEN** the cycle is suppressed with `reason="context_bus:focused"`
 
 #### Scenario: A signal beyond its max-hold TTL no longer suppresses
 - **WHEN** `public.user_context` has an active `traveling` signal whose
@@ -392,7 +404,13 @@ Butlers SHALL submit insight candidates exclusively through the Switchboard's `p
 
 #### Scenario: propose_insight_candidate tool signature
 - **WHEN** the insight broker module registers its MCP tools
-- **THEN** it SHALL expose `propose_insight_candidate(priority: int, category: str, dedup_key: str, message: str, expires_at: datetime, cooldown_days: int | None = None, channel: str | None = None, metadata: dict | None = None) -> {"status": "accepted" | "filtered" | "error", "reason": str}`
+- **THEN** it SHALL expose `propose_insight_candidate(priority: int, category: str, dedup_key: str, message: str, expires_at: datetime, cooldown_days: int | None = None, channel: str | None = None, metadata: dict | None = None, premise: dict | None = None) -> {"status": "accepted" | "filtered" | "error", "reason": str}`
+
+#### Scenario: Origin is derived by the server, never supplied
+- **WHEN** a session calls the `propose_insight_candidate()` MCP tool
+- **THEN** the tool SHALL have no `origin_butler` parameter, and the staged row's `origin_butler` SHALL be the name of the butler daemon that registered the tool
+- **AND** a four-segment (butler-scoped) `dedup_key` whose first segment is not that butler SHALL be refused with `{"status": "error"}` and no row written, while a three-segment (cross-butler) key is accepted
+- **AND** in-process producers that import the Python function keep passing their own fixed `origin_butler`
 
 #### Scenario: Successful candidate submission
 - **WHEN** a butler calls `propose_insight_candidate()` with valid parameters
@@ -573,7 +591,7 @@ suppressed skip.
 
 #### Scenario: A context-bus signal schedules a catch-up at its max-hold end
 - **WHEN** the delivery cycle is fully suppressed by an active context-bus
-  signal (`dnd`, `meeting`, `sleeping`, or `traveling`), with no urgent
+  signal (`dnd`, `focused`, `meeting`, `sleeping`, or `traveling`), with no urgent
   candidate pending
 - **THEN** a one-shot catch-up task is reconciled for that signal's `set_at`
   plus its own max-hold TTL
@@ -609,6 +627,9 @@ suppressed skip.
   had not been attempted
 
 ### Requirement: Bounded Explicit Insight Feedback
+
+ID: REQ-proactive-insight-engine-034
+
 The broker SHALL expose useful, not-now, and never owner-feedback verbs without
 adding another global verbosity control. Feedback attribution SHALL be derived by
 the server and the persisted evidence SHALL remain content-blind.
@@ -748,7 +769,7 @@ requirement existed.
 The delivery cycle SHALL record a `held_by` key in the `metadata` of any
 `public.attention_ledger` row it writes with `outcome="suppressed"`, naming
 the specific suppression signal — the context-bus signal type (`"dnd"`,
-`"meeting"`, `"sleeping"`, or `"traveling"`) or the literal string
+`"focused"`, `"meeting"`, `"sleeping"`, or `"traveling"`) or the literal string
 `"quiet_hours"` — so the specific hold is queryable as structured data
 without parsing the free-text `reason` field.
 
@@ -805,7 +826,7 @@ the next scheduled daily cron slot. Instead:
   routine digest entirely for that tick (`reason="travel_day_defer"`),
   regardless of how long `traveling` has been active, and SHALL NOT
   force-deliver it via the hard fallback deadline below;
-- otherwise (an active `dnd`, `meeting`, `sleeping`, or quiet-hours
+- otherwise (an active `dnd`, `focused`, `meeting`, `sleeping`, or quiet-hours
   suppression), the cycle SHALL bypass suppression for the full routine
   pending set once the delivery cycle's `now` reaches the hard fallback
   deadline (11:00 UTC), so a held digest is never silently skipped for an
@@ -824,7 +845,7 @@ consult unconditionally per RFC 0011 Amendment 1).
 
 #### Scenario: The hard fallback deadline force-delivers a held routine digest
 - **WHEN** `daily_hold_mode=True`, the active suppressing signal is `dnd`,
-  `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
+  `focused`, `meeting`, `sleeping`, or quiet-hours, no urgent candidate is pending, and
   the delivery cycle's `now` has reached the hard fallback deadline
 - **THEN** the cycle proceeds with the full routine pending candidate set as
   if unsuppressed
@@ -869,3 +890,126 @@ When a delivered candidate's `owner_condition` premise resolves, the delivered m
 - **WHEN** the same resolved condition is reconciled again
 - **THEN** exactly one amendment exists for the candidate and episode, and a second cycle performs no second edit
 
+### Requirement: Premise Amendment Migration Evidence
+
+The premise-amendment migration lifecycle SHALL distinguish the ordinary migration login's privilege-filtered metadata inventory from table row visibility, ownership and SECURITY DEFINER execution authority. A controlled bounded core_255 rollback SHALL retain existing `public.insight_amendments` rows while their referenced candidates remain, preserve the existing runtime row policy, and remove the candidate premise and delivery-reference columns with their documented lossy folds. Retention SHALL NOT be treated as permission to broaden runtime grants or as proof that bootstrap-recreated functions have converged to the ordinary migration owner.
+
+#### Scenario: Bootstrap installation preserves metadata visibility without widening row authority
+
+- **WHEN** core_255 installs the amendment table under managed bootstrap authority after an ordinary migration to core_254
+- **THEN** the existing targeted Switchboard table grant makes its columns visible to the ordinary migration login through its configured inherited membership
+- **AND** actual runtime roles remain subject to the amendment table's current Switchboard row policy before and after a replay of the production bootstrap
+- **AND** producer enqueue and the narrow finance probe use their existing fixed function interfaces rather than new direct peer-schema access
+
+#### Scenario: A bounded rollback retains queued correction evidence
+
+- **WHEN** an owning or managed-bootstrap migration bounds its upgrade at core_255 and rolls back to core_254
+- **THEN** existing pending, applied, fold and folded amendment rows retain their ids and stored fields while their candidates remain
+- **AND** candidate premise and delivery-reference data is removed, candidate withdrawn status folds to filtered, and the ledger's documented withdrawn and amended folds remain cumulative-CHECK safe
+- **AND** the rollback does not claim that the surviving table means amendment delivery is available to the older code
+
+#### Scenario: Metadata inventory loss is diagnosed with a positive object witness
+
+- **WHEN** a disposable PostgreSQL round-trip comparison reports the amendment table only in the fresh database
+- **THEN** the investigation compares a positive qualified administrative object witness with the ordinary login's metadata inventory and records login, object owner, database/schema ownership, effective inherited privileges and per-creator defaults before attributing the failure to teardown
+- **AND** grant-only and retention-only controls are tested separately when the historical correction changed both
+- **AND** missing function execution or ownership convergence is recorded independently of table inventory equality
+- **AND** the actual ordinary core migration entrypoint is exercised while a bootstrap-created amendment table still has its bootstrap owner, before any ordinary DROP/recreate, with the reached revision, phase, SQLSTATE and separate before/after catalog and version witnesses recorded
+- **AND** hypothetical destructive diagnostics and the exact current bootstrap-created replay are classified separately, and an existing replay failure is returned with a concrete scoped forward proposal rather than claimed repaired by metadata equality
+
+### Requirement: Privileged Bootstrap Converges the Amendment Table Owner
+
+The privileged managed bootstrap SHALL narrowly converge an existing ordinary `public.insight_amendments` table from the actual current bootstrap owner to the existing configured trusted ordinary migration identity before subsequent ordinary core replay. An absent table and an already-converged owner SHALL be no-ops. Unexpected relation kind, third ownership or unsafe/unknown target identity SHALL fail closed; no generic owner reassignment, role creation, new grant, destructive recreation, applied-revision rewrite or new caller interface SHALL be introduced. Read-only initial classification SHALL precede bootstrap side effects, and the transition SHALL revalidate qualified object/owner/target identity under a finite nonwaiting exclusive lock. Its atomic ownership block SHALL preserve complete amendment rows, logical definitions, FK, runtime effective privileges and grant options, RLS flags/policy bodies and independently installed functions. Expected PostgreSQL owner-OID ACL and dependent-index/TOAST/owned-sequence ownership effects SHALL be separately measured. The trusted migration owner's ordinary RLS bypass SHALL be explicit and SHALL NOT be conflated with runtime-role authority. Existing historical diagnostics, six causal variants, 45 role controls, two bootstrap replays, 43-row baseline, all amendment retention states and bounded cumulative CHECK/lossy-fold/q34 invariants SHALL remain enforced. Actual ordinary canonical replay SHALL reach the dynamic core head and durable per-schema version/data witnesses; metadata, a stamped head, mocks or expected-failure green SHALL NOT establish repair. Function/caller/FK/FORCE-RLS hardening remains a separate contract.
+
+ID: REQ-proactive-insight-engine-033
+Source: RFC0006; scripts/init-db.sql Important ownership note; bu-d55reo adopted complete canonical P0-P9; scripts/init-db.sql qualified owner convergence
+Scope: v1-mandatory
+
+#### Scenario: First absent table and already ordinary-owned replay remain no-ops
+- **WHEN** the managed privileged bootstrap encounters no amendment table, or an actual ordinary-first table already owned by the configured trusted migration login, including a repeated convergence
+- **THEN** the ownership block issues no ownership-changing DDL and separate readback confirms unchanged relation/data/catalog authority for each present-table companion
+- **AND** the ordinary-first and repeated canonical migration paths retain their genuine dynamic-head and runtime-role controls
+
+#### Scenario: Populated bootstrap-owned table permits real ordinary continuation
+- **WHEN** the exact current privileged core_255 installation retains 43 amendment rows after its two baseline bootstrap replays, and the actual unmodified privileged bootstrap converges the qualified table to its configured trusted normal migration identity
+- **THEN** the actual ordinary canonical entrypoint completes through the dynamic core head without stamping past255, and separate per-schema version and complete-row readbacks witness durable success
+- **AND** a second-schema continuation and a repeated bootstrap preserve the same completed authority and data
+
+#### Scenario: Unexpected owner, object or configured identity refuses before side effects
+- **WHEN** initial read-only classification finds a planted third-owned relation, wrong relation kind, missing configured identity or a runtime/recovery identity instead of the trusted migration identity
+- **THEN** bootstrap refuses before its first extension/role/schema/ACL side effect and separate planted catalog/data/version witnesses remain unchanged
+- **AND** the corresponding genuine bootstrap-owned ordinary table and valid configured target are accepted without granting membership or appropriating another owner
+
+#### Scenario: Transfer lock, race and transaction failures remain bounded and atomic
+- **WHEN** another connection holds the qualified table's exclusive lock, or the actual OID/owner/target changes before transition, or a disposable failure aborts the ownership block
+- **THEN** nonwaiting exclusion or identity revalidation refuses, the ownership block releases its resources on transaction exit, and independent readback proves no partial owner/data/ACL/version transition
+- **AND** release of the held lock permits the same genuine operation to complete
+- **AND** the receipt separately records any earlier committed legacy-bootstrap effects and never asserts rollback of the whole existing psql script
+
+#### Scenario: Runtime matrix survives expected owner effects
+- **WHEN** table ownership changes under the privileged bootstrap and the configured normal migration owner performs its real post-convergence DDL/row observation
+- **THEN** its trusted-owner RLS bypass is explicit, while actual runtime SET ROLE acquisitions retain the existing Switchboard/peer/foreign-schema/write-refusal behavior and grant options
+- **AND** raw table/column ACL observations show only the expected old-owner-to-new-owner grantor/grantee remapping or consolidation, dependent ownership follows the table, and logical index/FK/default definitions, RLS flags/policies and complete original rows remain unchanged
+- **AND** no new DML grant, FORCE-RLS or function-authority convergence is inferred
+
+#### Scenario: Exact historical failure remains a causal negative
+- **WHEN** only the uniquely identified convergence block is neutralized in a full source-bound disposable bootstrap copy and the exact populated supported-current state is replayed through the ordinary entrypoint
+- **THEN** actual core_255 CREATE INDEX again raises42501 before ALTER while qualified object/metadata positives and separate unchanged catalog/data/version witnesses remain
+- **AND** all original 45 role controls, six separately labeled historical variants and two original bootstrap replays remain enforced, the fixture path is restored on normal and exceptional exit, and actual unmodified bootstrap supplies the success companion before any destructive diagnostic
+
+#### Scenario: Independent lifecycle proof retains historical contracts and attribution
+- **WHEN** the bounded repair is validated, reviewed and delivered through normal native/source/hosted/protected operations
+- **THEN** all existing amendment states, candidate retention/cascade, documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
+- **AND** function ownership/caller/EXECUTE and FK/FORCE-RLS hardening are reported separately, source/mock/collection or historical diagnostic green is never called SQL repair, and full original delivery outcomes remain required for closure
+
+### Requirement: Finance contribution protection survives durable insight processing
+
+The insight broker MUST preserve a Finance contribution protection floor bound to the exact subject, display value, revision and message through persistence and every derived message. Only the trusted deterministic producer SHALL supply an owner-only proof; public JSON labels, current session context and derived text MUST NOT upgrade stored provenance.
+
+ID: REQ-proactive-insight-engine-035
+Source: bu-svqpzo.19 proposed persisted contribution contract; RFC 0038 D6; canonical Messenger bu-vbdug9.1
+Scope: v1-mandatory
+
+#### Scenario: R01 Extracted subscription names remain protected through the actual producer
+
+- **WHEN** an extracted subscription service contains a bare host, an HTTPS URL or hostile markup
+- **THEN** the real registered writer, stored row and Finance scan MUST preserve its extracted origin through candidate persistence to the actual final delivery consumer
+- **AND** raw stored names MUST remain unchanged while text and metadata readback MUST NOT create an active extracted link or preview
+
+#### Scenario: R02 Extracted payees use the same protection
+
+- **WHEN** a bill due, reconciliation or predicted-bill candidate incorporates an extracted payee
+- **THEN** the same origin and revision protection MUST survive the actual bill writer and name-bearing producer branch
+- **AND** payment destination, bill settlement and reconciliation authority MUST remain unchanged
+
+#### Scenario: R06 Unprovable contribution origin stays conservative
+
+- **WHEN** a candidate is legacy, lacks a valid producer binding or carries forged, malformed or conflicting provenance
+- **THEN** its Finance display contribution MUST require inert rendering
+- **AND** public MCP JSON and a later owner session MUST NOT construct an owner-only proof, clear the protection floor or rebind it to different content
+
+#### Scenario: R07 Broker delay and restart retain the protection floor
+
+- **WHEN** a candidate is held for quiet hours, attention policy, day boundary or process restart
+- **THEN** the persisted row and its later replay MUST retain protection with the original subject, value and revision bindings
+- **AND** current quiet/context checks, expiry, priorities and budgets MUST still apply; re-reading current owner context MUST NOT upgrade the stored origin
+
+#### Scenario: R08 Failed delivery and replay do not lose protection
+
+- **WHEN** a protected delivery fails or is replayed by the existing broker retry path
+- **THEN** all subsequent attempts MUST retain its protection and exact contribution bindings
+- **AND** existing failure and attempt accounting, three-failure policy and unknown-outcome semantics MUST remain; no automatic duplicate-send or safe-retry claim is added
+
+#### Scenario: R09 Derived summaries and amendments inherit all contributors
+
+- **WHEN** synthesis, digest formatting, folded amendments or prepared-action doors derive text from protected contributions
+- **THEN** the resulting text MUST require the union of every contributor protection floor
+- **AND** paraphrase, ordering or a newly generated summary MUST NOT clear protection; separately bound server-created controls MUST keep their own authority without making extracted text active
+
+#### Scenario: R15 Successful in-place amendments retain the complete protection floor
+
+- **WHEN** a stored Finance insight is amended in place through `apply_pending_amendments`, the production `_build_switchboard_insight_amend_fn`, `amend_delivery` and the registered Telegram edit consumer
+- **THEN** the complete replacement MUST inherit the union of the persisted original message's and every new contributor's protection, bound to their exact values and revisions; a current session, public flag or resolution note MUST NOT clear it
+- **AND** a successful protected edit MUST use the same canonical rendering primitive for all replacement text, with every link inert and previews disabled, while preserving authenticated target/message identity and current edit permission
+- **AND** if that trusted edit path cannot enforce protection, it MUST refuse before the provider call and truthfully use the existing rejected-edit/fold path with the full persisted protection union; it MUST NOT mark the raw edit applied or lose protection in the later digest
+- **AND** owner-only independently unexposed edits MUST retain ordinary rendering, and existing amendment CAS, attempt limits, cancellation, ambiguous outcomes and replay accounting MUST remain; no unknown edit becomes a claimed success, duplicate send or invented safe retry

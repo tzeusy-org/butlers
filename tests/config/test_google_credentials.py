@@ -6,6 +6,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import ValidationError
 
 from butlers.credential_store import CredentialStore
 from butlers.google_credentials import (
@@ -92,7 +93,7 @@ def test_google_credentials_model():
     assert creds.client_id == "id" and creds.scope == "gmail"
 
     for cid, cs, rt in [("", "s", "r"), ("id", "", "r"), ("id", "s", "")]:
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             GoogleCredentials(client_id=cid, client_secret=cs, refresh_token=rt)
 
     r = repr(GoogleCredentials(client_id="cid", client_secret="SECRET", refresh_token="TOKEN"))

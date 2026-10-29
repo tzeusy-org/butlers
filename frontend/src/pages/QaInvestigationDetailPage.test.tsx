@@ -31,10 +31,6 @@ vi.mock("@/hooks/use-qa", () => ({
     mutate: vi.fn(),
     isPending: false,
   })),
-  useRetryHealingAttempt: vi.fn(() => ({
-    mutate: vi.fn(),
-    isPending: false,
-  })),
 }));
 
 type UseQaCaseResult = ReturnType<typeof useQaCase>;

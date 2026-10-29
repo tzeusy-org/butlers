@@ -133,7 +133,7 @@ The `tick()` function SHALL query all due tasks (`enabled=true AND next_run_at <
 Additionally, `tick()` SHALL perform three new evaluation passes:
 
 1. **Deadline evaluation**: For each enabled task with `task_type='deadline'`, compute `days_remaining` and evaluate alert thresholds. Dispatch deadline tasks whose thresholds are newly satisfied.
-2. **Event chain trigger detection**: Query calendar projection for events whose `end_at` has passed since last tick. Check for deadline status transitions. Fire matching event chains by materializing their actions as one-shot scheduled tasks.
+2. **Event chain trigger detection**: Check deadline status transitions and threshold matches. Fire matching deadline event chains by materializing their actions as one-shot scheduled tasks. Historical calendar-end chains remain readable and removable, without querying calendar projection, marking an event or materializing work.
 3. **Deferred notification flush**: Query `deferred_notifications` where `status='pending' AND deliver_at <= now()`, pass a solo row's stored envelope verbatim to the standard notify pipeline, and update a row to delivered only after successful delivery. The flush SHALL NOT re-evaluate approvals-policy quiet hours or context for a stored envelope; `deliver_at` is the durable admission decision. Existing same-target coalescing and pending-row retry behavior remain unchanged.
 
 The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, and `deferred_flushed` in addition to the existing `tasks_due` and `tasks_run`.
@@ -154,9 +154,9 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 
 #### Scenario: Event chain detection runs each tick
 - **WHEN** `tick()` is called
-- **THEN** calendar projection is checked for recently ended events
-- **AND** deadline status transitions are checked
-- **AND** matching event chains with `status='active'` are fired
+- **THEN** deadline status transitions and threshold matches are checked
+- **AND** matching deadline event chains with `status='active'` are fired
+- **AND** historical calendar-end chains remain inert without calendar projection reads or event marking
 
 #### Scenario: Deferred notification flush runs each tick
 - **WHEN** `tick()` is called
@@ -173,11 +173,11 @@ The tick span attributes SHALL include `deadlines_evaluated`, `chains_fired`, an
 - **AND** `get_active_seasons()` returns non-empty results
 - **THEN** the dispatch context includes `active_seasons` metadata
 
-#### Scenario: Legacy schema without until_at continues cron dispatch
-- **WHEN** `tick()` runs against a deployed legacy `scheduled_tasks` table that does not yet include the `until_at` column
-- **THEN** it logs a warning that `scheduled_tasks.until_at` is missing
-- **AND** the due-task query projects `NULL::timestamptz AS until_at`
-- **AND** due cron tasks continue dispatching without applying an auto-disable boundary until the schema is backfilled
+#### Scenario: Migrated scheduler schema is required
+- **WHEN** `tick()` runs against storage missing a required migrated column or table
+- **THEN** the actual database fault remains visible instead of a schema probe, NULL projection or silent pass skip
+- **AND** the scheduler does not reinterpret missing `task_type`, `until_at`, `max_token_budget`, `continuity`, deadline, event-chain or deferred-notification storage as a usable legacy schema
+- **AND** current-schema claims, CAS, dispatch ordering, attention, continuity, quiet-window decisions, retry/coalescing and expiry remain unchanged
 
 ### Requirement: Auto-Disable via until_at Boundary
 When a task has `until_at` set and the computed `next_run_at` exceeds it, the scheduler SHALL automatically set the task to `enabled=false` and `next_run_at=NULL` after its final dispatch.
@@ -282,6 +282,10 @@ Continuity lookup SHALL be fail-open, not fail-closed: any exception during look
 
 Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior change: `tick()` SHALL NOT query `task_continuity` for them and SHALL NOT alter their dispatched prompt.
 
+ID: REQ-core-scheduler-002
+Source: RFC 0038 D5, D6 and D7
+Scope: v1-mandatory
+
 #### Scenario: Opted-in task with no prior run gets an honest empty state
 - **WHEN** a `continuity=true` task fires for the first time (no live row in `public.task_continuity`)
 - **THEN** the dispatched prompt includes a continuity block reading "the last run recorded no carry-forward"
@@ -316,10 +320,10 @@ Tasks that do not opt in (`continuity=false`, the default) SHALL see no behavior
 - **THEN** `carry_forward` is NOT among them
 - **AND** this does not affect any other butler's tool registration
 
-#### Scenario: Legacy schema without the continuity column
-- **WHEN** `tick()` runs against a `scheduled_tasks` table that predates migration `core_229`
-- **THEN** the column probe treats `continuity` as absent
-- **AND** every task is treated as `continuity_enabled=False`, with no behavior change from before the ledger existed
+#### Scenario: Missing migrated continuity column is a storage fault
+- **WHEN** `tick()` runs against a `scheduled_tasks` table missing `continuity`
+- **THEN** the database error remains visible without a column probe or implicit opt-out
+- **AND** migrated rows with `continuity=false` still dispatch without a continuity block
 
 #### Scenario: The ledger is excluded from the nightly backup, by design
 - **WHEN** the nightly `pg_dump` backup runs

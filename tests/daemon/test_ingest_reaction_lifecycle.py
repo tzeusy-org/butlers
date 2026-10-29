@@ -20,6 +20,7 @@ from butlers.modules.telegram import (
     REACTION_SUCCESS,
     TelegramModule,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -54,11 +55,8 @@ def _make_minimal_pipeline(result: RoutingResult | None = None) -> MessagePipeli
     conn.fetch = AsyncMock(return_value=[])
     conn.execute = AsyncMock(return_value=None)
 
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _acquire():
-        yield conn
+    def _acquire():
+        return AsyncCtx(conn)
 
     pool = MagicMock()
     pool.acquire = _acquire

@@ -364,12 +364,29 @@ async def backfill_loan_cost_claims(pool: asyncpg.Pool) -> dict[str, int]:
           AND f.validity = 'active' AND f.valid_at IS NOT NULL
         """
     )
-    counts = {"asserted": 0, "skipped_missing_currency": 0, "skipped_invalid": 0}
+    # An owner-retracted claim stays retracted: the partial live-unique index would otherwise
+    # let this run insert a fresh live claim for the same loan. Settlement supersedes the loan
+    # fact with a settled successor (a new fact id, hence a new claim_key with no claim), so
+    # settled facts are skipped outright. Read lazily, once, so a run with nothing to assert
+    # never touches the claim table.
+    retracted_keys: set[str] | None = None
+    counts = {
+        "asserted": 0,
+        "skipped_missing_currency": 0,
+        "skipped_invalid": 0,
+        "skipped_retracted": 0,
+        "skipped_settled": 0,
+    }
     for row in rows:
         meta = row["metadata"] or {}
         currency = meta.get("currency")
         amount_cents = meta.get("amount_cents")
         direction = meta.get("direction")
+        if meta.get("settled") is True:
+            # loan_settle already retracted the old key's claim; the settled successor must
+            # not be projected as a live claim.
+            counts["skipped_settled"] += 1
+            continue
         if not currency:
             counts["skipped_missing_currency"] += 1
             continue
@@ -379,6 +396,25 @@ async def backfill_loan_cost_claims(pool: asyncpg.Pool) -> dict[str, int]:
             or row["entity_id"] is None
         ):
             counts["skipped_invalid"] += 1
+            continue
+        if retracted_keys is None:
+            retracted_keys = {
+                r["claim_key"]
+                for r in await pool.fetch(
+                    """
+                    SELECT c.claim_key FROM public.cost_claims c
+                    WHERE c.asserted_by = 'relationship' AND c.retracted_at IS NOT NULL
+                      AND c.claim_key = ANY($1::text[])
+                      AND NOT EXISTS (
+                          SELECT 1 FROM public.cost_claims l
+                          WHERE l.asserted_by = c.asserted_by AND l.claim_key = c.claim_key
+                            AND l.superseded_at IS NULL AND l.retracted_at IS NULL)
+                    """,
+                    [f"loan:{r['id']}" for r in rows],
+                )
+            }
+        if f"loan:{row['id']}" in retracted_keys:
+            counts["skipped_retracted"] += 1
             continue
         await assert_claim(
             pool,

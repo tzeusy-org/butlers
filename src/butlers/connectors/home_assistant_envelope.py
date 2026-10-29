@@ -41,12 +41,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.connectors.catalog import connector_descriptor
+
+_DESCRIPTOR = connector_descriptor("home_assistant")
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-_CHANNEL = "home_assistant"
-_PROVIDER = "home_assistant"
+_CHANNEL = _DESCRIPTOR.channel
+_PROVIDER = _DESCRIPTOR.provider
 _POLICY_TIER = "default"
 _INGESTION_TIER = "full"
 
@@ -299,7 +303,7 @@ def build_state_changed_envelope(
 # wellness envelope builder (ADR-4 — home-assistant-wellness-promotion)
 # ---------------------------------------------------------------------------
 
-_WELLNESS_CHANNEL = "wellness"
+_WELLNESS_CHANNEL = _DESCRIPTOR.secondary_pairs[0][0]
 
 # Human-readable labels for normalized_text rendering.
 _WELLNESS_METRIC_LABELS: dict[str, str] = {

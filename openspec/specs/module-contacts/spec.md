@@ -175,7 +175,6 @@ The `TelegramContactsProvider` SHALL implement the `ContactsProvider` interface 
 - **THEN** it SHALL do so only after a successful, complete fetch of the contact list; a failed, partial, or errored fetch marks nothing
 - **AND** it SHALL refuse to mark deletions when the batch is empty or has shrunk sharply relative to the active Telegram source links (the sanity threshold is an implementation parameter and a refusal is logged)
 - **AND** it SHALL distinguish an unchanged-hash empty batch (hash matched the cursor, no changes, no absence inferred) from an empty fetch (Telethon returned no contacts, treated as suspect and refused)
-- **AND** deletion-by-absence is unmet by the current code and tracked by bead bu-dridrs
 
 #### Scenario: Telegram contact without phone number
 
@@ -193,6 +192,24 @@ The `TelegramContactsProvider` SHALL implement the `ContactsProvider` interface 
 
 - **WHEN** `list_groups()` is called on the Telegram provider
 - **THEN** it returns an empty `GroupBatch` (Telegram personal contacts do not have group/label semantics)
+
+### Requirement: Single Contacts Sync Owner
+
+Exactly one butler in the roster, Relationship, SHALL run the contacts sync poller, because it owns the entity graph that sync writes into and Google sync takes no cross-process lock. `sync.enabled` SHALL default to `false`, so a butler that loads the contacts module without an explicit `[modules.contacts.sync] enabled = true` does not poll. Every other roster butler that loads the module SHALL set `enabled = false` explicitly in its `butler.toml`.
+
+ID: REQ-module-contacts-003
+Source: bu-ep60gq.5; 2026-10-21 simplicity audit
+Scope: v1-mandatory
+
+#### Scenario: Only Relationship polls
+
+- **WHEN** every `roster/*/butler.toml` is parsed
+- **THEN** exactly one butler, `relationship`, resolves `[modules.contacts.sync] enabled` to true
+
+#### Scenario: A new butler does not become a second syncer
+
+- **WHEN** a butler configures `[modules.contacts]` without a `sync` section
+- **THEN** `sync.enabled` is `false` and the module skips runtime startup
 
 ### Requirement: Multi-Provider Sync Runtime
 

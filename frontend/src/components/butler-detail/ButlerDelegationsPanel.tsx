@@ -15,7 +15,7 @@
  * identically to an ordinary answered row.
  */
 
-import { MonoLabel, Panel } from "@/components/butler-detail/atoms"
+import { MonoLabel, Panel } from "@/components/ui/atoms"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Time } from "@/components/ui/time"
 import { useDelegationLedger } from "@/hooks/use-delegation"

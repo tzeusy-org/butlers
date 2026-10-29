@@ -25,6 +25,7 @@ from prometheus_client import Counter
 from butlers.core.attention_ledger import record_attention_event
 from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
 from butlers.identity import resolve_contact_by_channel
+from butlers.ingestion_bearer_scrub import scrub_text
 
 logger = logging.getLogger(__name__)
 
@@ -474,6 +475,9 @@ def _parse_verdict(raw_response: str) -> tuple[Verdict, str]:
 # ---------------------------------------------------------------------------
 
 
+_CONTENT_WITHHELD = "[content withheld]"
+
+
 class DiscretionEvaluator:
     """Stateful per-source discretion evaluator.
 
@@ -546,6 +550,8 @@ class DiscretionEvaluator:
         channel: str | None = None,
         participant_count: int | None = None,
         chat_type: str | None = None,
+        provider_domain: str = "unknown",
+        aggressive: bool = False,
     ) -> DiscretionResult:
         """Evaluate a new message against the sliding context window.
 
@@ -605,9 +611,20 @@ class DiscretionEvaluator:
                 silently skip discretion regardless of sender trust, which
                 was never the intent of this bypass.
 
+            provider_domain: Provider domain hint for bearer-material placeholders.
+            aggressive: Treat every 4-8 digit run as a code (Telegram 777000
+                service sender).
+
         Returns:
             :class:`DiscretionResult` — always succeeds.
         """
+        # Withhold bearer material before the window, prompt, log line and
+        # dispatcher (an external model) can see it.
+        try:
+            text, _ = scrub_text(text, provider_domain=provider_domain, aggressive=aggressive)
+        except Exception:  # noqa: BLE001
+            logger.warning("Discretion bearer scrub failed for source=%s", self._source)
+            text = _CONTENT_WITHHELD
         ts = timestamp if timestamp is not None else time.time()
         entry = ContextEntry(text=text, timestamp=ts, source=self._source)
 

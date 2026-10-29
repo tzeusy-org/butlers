@@ -15,7 +15,7 @@
  */
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { act } from "react";
+import { act, useCallback, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router";
@@ -44,7 +44,8 @@ vi.mock("@/hooks/use-approvals", async (importOriginal) => {
     usePendingApprovalsFlat: vi.fn(),
   };
 });
-vi.mock("@/hooks/use-approval-decisions.ts", () => ({
+vi.mock("@/hooks/use-approval-decisions.ts", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/hooks/use-approval-decisions.ts")>(),
   useApprovalDecisionMutations: vi.fn(),
   UNDO_WINDOW_MS: 5_000,
 }));
@@ -286,7 +287,7 @@ function setDefaultData(
   // "calls the mutation with the row's id" assertions below stay a click ->
   // immediate-call check; the shared undo-window contract itself is covered
   // by its own describe block further down with the REAL hook.
-  vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+  vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
     approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
     denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
     deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
@@ -296,7 +297,7 @@ function setDefaultData(
       return true;
     }),
     cancelDecision: vi.fn(),
-  } as AnyMock);
+  } as AnyMock));
   vi.mocked(useNotificationStats).mockReturnValue({
     data: {
       data: { total: 0, sent: 0, failed: 0, by_channel: {}, by_butler: {} },
@@ -357,6 +358,20 @@ function setDefaultData(
     isLoading: false,
     isError: false,
   } as AnyMock);
+}
+
+const displayedCall = { tool_name: "telegram_send_message", args_digest: "a".repeat(64) };
+function useReviewedDecisionsMock(decisions: ReturnType<typeof useApprovalDecisionMutations>) {
+  const [stableDecisions] = useState(decisions);
+  const [review, setReview] = useState<{ id: string; preview: {
+    title: string; facts: { label: string; value: string }[]; displayed_call: typeof displayedCall;
+  } } | null>(null);
+  const requestReview = useCallback(async (id: string) => setReview({ id, preview: {
+    title: "Review stored call", facts: [{ label: "Message", value: "Complete reviewed body" }],
+    displayed_call: displayedCall,
+  } }), []);
+  const cancelReview = useCallback(() => setReview(null), []);
+  return { ...stableDecisions, review, requestReview, cancelReview };
 }
 
 function renderPage(
@@ -1562,7 +1577,7 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
     const approveMutate = vi.fn();
     const denyMutate = vi.fn();
     const deferMutate = vi.fn();
-    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+    vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
       approveMut: {
         mutate: approveMutate,
         isPending: false,
@@ -1576,7 +1591,7 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
         return true;
       },
       cancelDecision: vi.fn(),
-    } as AnyMock);
+    } as AnyMock));
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
         data: [
@@ -1602,7 +1617,10 @@ describe("DashboardPage -- inline approve/deny/defer on the attention list (bu-8
     act(() => {
       findButton("Approve")!.click();
     });
-    expect(approveMutate).toHaveBeenCalledWith("a1");
+    act(() => {
+      Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Approve reviewed call")!.click();
+    });
+    expect(approveMutate).toHaveBeenCalledWith({ id: "a1", displayed_call: displayedCall });
 
     act(() => {
       findButton("Deny")!.click();
@@ -1746,7 +1764,7 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
 
   it("a approves the selected row via the shared decision mutation", () => {
     const approveMutate = vi.fn();
-    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+    vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
       approveMut: {
         mutate: approveMutate,
         isPending: false,
@@ -1760,7 +1778,7 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
         return true;
       },
       cancelDecision: vi.fn(),
-    } as AnyMock);
+    } as AnyMock));
     useOnlyHealthyBoardRows();
     vi.mocked(usePendingApprovalsFlat).mockReturnValue({
       data: {
@@ -1784,9 +1802,10 @@ describe("DashboardPage -- j/k list-triage on the attention list (bu-qvnce.11 sl
 
     renderLive();
     act(() => press("j")); // select the (only) row
-    act(() => press("a")); // approve it
+    act(() => press("a")); // opens exact-call review
+    act(() => Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Approve reviewed call")!.click());
 
-    expect(approveMutate).toHaveBeenCalledWith("a1");
+    expect(approveMutate).toHaveBeenCalledWith({ id: "a1", displayed_call: displayedCall });
   });
 
   it("renders the footer hint strip advertising the exact bound keys", () => {
@@ -1939,7 +1958,7 @@ describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
   it("clicking Approve schedules the decision instead of calling the mutation directly", () => {
     const approveMutate = vi.fn();
     const scheduleDecision = vi.fn();
-    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+    vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
       approveMut: {
         mutate: approveMutate,
         isPending: false,
@@ -1950,11 +1969,14 @@ describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
       scheduledDecisions: new Map(),
       scheduleDecision,
       cancelDecision: vi.fn(),
-    } as AnyMock);
+    } as AnyMock));
 
     renderLive();
     act(() => {
       findButton("Approve")!.click();
+    });
+    act(() => {
+      Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Approve reviewed call")!.click();
     });
 
     expect(scheduleDecision).toHaveBeenCalledWith(
@@ -1968,14 +1990,14 @@ describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
   });
 
   it("renders the inline 'Approving in 5s · Undo' state once a decision is scheduled, replacing the verb buttons", () => {
-    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+    vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
       approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       scheduledDecisions: new Map([["a1", { verb: "approve", timeoutId: 0 }]]),
       scheduleDecision: vi.fn(),
       cancelDecision: vi.fn(),
-    } as AnyMock);
+    } as AnyMock));
 
     const html = renderPage();
     expect(html).toContain("Approving in 5s");
@@ -1987,14 +2009,14 @@ describe("DashboardPage -- shared undo-window contract (bu-qvnce.4)", () => {
 
   it("clicking Undo on a scheduled row calls cancelDecision with the row's id", () => {
     const cancelDecision = vi.fn();
-    vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+    vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
       approveMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       denyMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       deferMut: { mutate: vi.fn(), isPending: false, variables: undefined },
       scheduledDecisions: new Map([["a1", { verb: "approve", timeoutId: 0 }]]),
       scheduleDecision: vi.fn(),
       cancelDecision,
-    } as AnyMock);
+    } as AnyMock));
 
     renderLive();
     act(() => {

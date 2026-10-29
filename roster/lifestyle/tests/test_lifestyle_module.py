@@ -10,32 +10,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.modules._roster_lifestyle import LifestyleModule
+from butlers.testing.mcp import registered_tools, tool_fn
 
 pytestmark = pytest.mark.unit
-
-
-def _make_mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        declared_name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[declared_name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
 
 
 class _FakeDB:
@@ -45,9 +29,9 @@ class _FakeDB:
 
 async def _registered_module(pool: Any) -> tuple[LifestyleModule, dict[str, Any]]:
     module = LifestyleModule()
-    mcp = _make_mock_mcp()
+    mcp = FastMCP()
     await module.register_tools(mcp=mcp, config={}, db=_FakeDB(pool), butler_name="lifestyle")
-    return module, mcp._registered_tools
+    return module, (await registered_tools(mcp))
 
 
 async def test_registers_exactly_five_tools() -> None:
@@ -168,7 +152,7 @@ async def test_taste_backfill_ledger_runs_both_evidence_sources() -> None:
     from butlers.tools.lifestyle import taste_ledger as ledger
 
     module = LifestyleModule()
-    mcp = _make_mock_mcp()
+    mcp = FastMCP()
     pool = AsyncMock()
     await module.register_tools(mcp=mcp, config={}, db=_FakeDB(pool), butler_name="lifestyle")
 
@@ -183,7 +167,7 @@ async def test_taste_backfill_ledger_runs_both_evidence_sources() -> None:
         ),
         patch.object(ledger, "backfill_from_track_plays", AsyncMock(return_value=plays_result)),
     ):
-        result = await mcp._registered_tools["taste_backfill_ledger"]()
+        result = await (await tool_fn(mcp, "taste_backfill_ledger"))()
 
     assert result["sessions"]["works_created"] == 2
     assert result["track_plays"]["signals_created"] == 3

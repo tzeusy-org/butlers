@@ -23,10 +23,13 @@ from uuid import UUID
 from opentelemetry import metrics, trace
 from pydantic import BaseModel, ConfigDict, Field
 
+from butlers.connectors.catalog import conversation_history_strategies
 from butlers.core.approval_recovery_exclusion import message_inbox_recovery_exclusion_sql
+from butlers.core.fact_authority import accepted_source_scope
 from butlers.core.model_routing import Complexity
 from butlers.core.routing_context import _routing_ctx_var
 from butlers.core.utils import coerce_request_id as _coerce_request_id
+from butlers.ingestion_bearer_scrub import scrub_message_text, scrub_stored_record
 from butlers.modules.base import Module
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.telemetry import (
@@ -71,8 +74,6 @@ _ROUTE_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])route_to_butler$", re.IGNORECA
 _FILE_BUG_REPORT_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])file_bug_report$", re.IGNORECASE)
 _ANSWER_QUESTION_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])answer_question$", re.IGNORECASE)
 _CANNOT_ANSWER_TOOL_NAME_RE = re.compile(r"(?:^|[^a-z0-9])cannot_answer$", re.IGNORECASE)
-_TELEGRAM_CHAT_ID_RE = re.compile(r"^-?\d+$")
-_TELEGRAM_CHAT_MESSAGE_RE = re.compile(r"^(?P<chat_id>-?\d+):(?P<message_id>\d+)$")
 _ROUTE_RESULT_ERROR_CLASSES = frozenset(
     {
         "delivery_error",
@@ -104,31 +105,14 @@ class HistoryConfig:
 
 
 # Channel strategy mapping
-HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = {
-    # Real-time messaging channels
-    "telegram_bot": "realtime",
-    "telegram_user_client": "realtime",
-    "whatsapp": "realtime",
-    "whatsapp_user_client": "realtime",
-    "slack": "realtime",
-    "discord": "realtime",
-    # Email
-    "email": "email",
-    # Google Calendar connector
-    "google_calendar": "realtime",
-    # Spotify connector
-    "spotify_user_client": "realtime",
-    # OwnTracks connector
-    "owntracks": "realtime",
-    # No history for other channels
-    "api": "none",
-    "mcp": "none",
-}
+HISTORY_STRATEGY: dict[str, Literal["realtime", "email", "none"]] = (
+    conversation_history_strategies()
+)
 
 
 async def _load_realtime_history(
     pool: Any,
-    source_thread_identity: str,
+    external_conversation_id: str,
     received_at: datetime,
     *,
     source_channel: str | None = None,
@@ -147,14 +131,6 @@ async def _load_realtime_history(
     time_cutoff = received_at - timedelta(minutes=max_time_window_minutes)
     history_exclusion = message_inbox_recovery_exclusion_sql()
 
-    telegram_chat_id: str | None = None
-    if source_channel in ("telegram_bot", "telegram_user_client"):
-        match = _TELEGRAM_CHAT_MESSAGE_RE.fullmatch(source_thread_identity)
-        if match is not None:
-            telegram_chat_id = match.group("chat_id")
-        elif _TELEGRAM_CHAT_ID_RE.fullmatch(source_thread_identity):
-            telegram_chat_id = source_thread_identity
-
     async with pool.acquire() as conn:
         # Load time-based window
         time_window_messages = await conn.fetch(
@@ -167,29 +143,19 @@ async def _load_realtime_history(
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE {history_exclusion}
+                AND request_context ->> 'external_conversation_id' = $1
                 AND (
-                    request_context ->> 'source_thread_identity' = $1
-                    OR (
-                        $4::text IS NOT NULL
-                        AND (
-                            request_context ->> 'source_thread_identity' = $4
-                            OR request_context ->> 'source_thread_identity' LIKE ($4 || ':%')
-                        )
-                    )
-                )
-                AND (
-                    $5::text IS NULL
-                    OR request_context ->> 'source_channel' = $5
+                    $4::text IS NULL
+                    OR request_context ->> 'source_channel' = $4
                     OR direction = 'outbound'
                 )
                 AND received_at >= $2
                 AND received_at < $3
             ORDER BY received_at ASC
             """,
-            source_thread_identity,
+            external_conversation_id,
             time_cutoff,
             received_at,
-            telegram_chat_id,
             source_channel,
         )
 
@@ -204,28 +170,18 @@ async def _load_realtime_history(
                 COALESCE(direction, 'inbound') AS direction
             FROM message_inbox
             WHERE {history_exclusion}
+                AND request_context ->> 'external_conversation_id' = $1
                 AND (
-                    request_context ->> 'source_thread_identity' = $1
-                    OR (
-                        $3::text IS NOT NULL
-                        AND (
-                            request_context ->> 'source_thread_identity' = $3
-                            OR request_context ->> 'source_thread_identity' LIKE ($3 || ':%')
-                        )
-                    )
-                )
-                AND (
-                    $4::text IS NULL
-                    OR request_context ->> 'source_channel' = $4
+                    $3::text IS NULL
+                    OR request_context ->> 'source_channel' = $3
                     OR direction = 'outbound'
                 )
                 AND received_at < $2
             ORDER BY received_at DESC
-            LIMIT $5
+            LIMIT $4
             """,
-            source_thread_identity,
+            external_conversation_id,
             received_at,
-            telegram_chat_id,
             source_channel,
             max_message_count,
         )
@@ -625,7 +581,11 @@ def _build_dashboard_lane_prompt(
         "question — it must never be routed there.\n"
         "  - If the question is about the butler ecosystem/infrastructure "
         "itself (not one butler's domain data), call `answer_question` with "
-        "scope='system' and `question` set (omit `target`).\n"
+        "scope='system', `question`, and `system_tool` naming an existing Concierge "
+        "dashboard_read tool with its `system_args` (omit `target`). After the read, "
+        "write your final answer solely from its data; do not invent missing values, "
+        "hide unpriced usage, or treat estimates as actual charges. If the tool "
+        "declines, do not add an answer.\n"
         "  - If you cannot identify an owning butler or scope at all, do NOT "
         "guess a target and do NOT call `route_to_butler`. Call "
         "`cannot_answer` with `question_summary`, `scope_checked` (what you "
@@ -737,12 +697,9 @@ def _extract_cannot_answer_calls(
 ) -> tuple[bool, bool, str | None]:
     """Parse ``cannot_answer`` tool calls out of a spawn result's tool_calls.
 
-    Also matches an ``answer_question(scope="system")`` call: that scope
-    always falls back to the same dead-letter/honest-decline path today (no
-    Concierge available — bu-0ynlk.3), returning the exact
-    ``{"status": "ok"/"error", "dead_letter_id": ...}`` shape ``cannot_answer``
-    returns — so callers only need this one function to detect "this turn was
-    terminally declined, not routed".
+    Also matches a failed ``answer_question(scope="system")`` read that used
+    the same dead-letter/honest-decline path. Successful system reads are
+    handled separately and must never be mistaken for a terminal decline.
 
     Returns
     -------
@@ -787,6 +744,9 @@ def _extract_cannot_answer_calls(
         if not isinstance(result, dict):
             result = {}
 
+        if is_answer_question and result.get("answered") is True:
+            continue
+
         if result.get("status") == "refused":
             # A prior terminal tool owns the turn. This declined call did not
             # dead-letter anything and must not override the first lane's
@@ -807,8 +767,8 @@ def _extract_answer_question_calls(
     failed) lists — mirrors ``_extract_routed_butlers`` so a successful
     dispatch flows through the same routing-verdict/telemetry bookkeeping as
     ``route_to_butler``. A scope="system" call is deliberately excluded here
-    — that scope always falls back to a terminal decline today, handled by
-    :func:`_extract_cannot_answer_calls`, not a route.
+    — successful system reads are published directly by the question lane;
+    unavailable reads use :func:`_extract_cannot_answer_calls`, never a route.
     """
     routed: list[str] = []
     acked: list[str] = []
@@ -1381,6 +1341,13 @@ class MessagePipeline:
         duplicate entity. Failures are swallowed by the writer-side helper so a
         fact-write hiccup never breaks routing.
         """
+        from butlers.core.fact_authority import source_registry
+
+        registry = source_registry()
+        if registry is not None:
+            await registry.assert_sender_channel(entity_id, channel_type, channel_value)
+            return
+
         from butlers.tools.relationship.relationship_assert_fact import (
             assert_sender_channel_fact,
         )
@@ -1448,9 +1415,11 @@ class MessagePipeline:
         messages: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, IdentityResolutionResult]]:
         """Resolve batch speakers and attach authoritative identity fields."""
+        from butlers.core.fact_authority import source_registry
         from butlers.identity import canonical_identity_channel_type
         from butlers.tools.switchboard.identity.inject import resolve_sender_identities
 
+        issuer = source_registry()
         identity_channel = canonical_identity_channel_type(source_channel)
         channel_values = [
             value
@@ -1462,6 +1431,11 @@ class MessagePipeline:
             source_channel,
             channel_values,
             notify_owner_fn=self._notify_owner_fn,
+            **(
+                {"resolver": issuer.resolve_identity, "bulk_resolver": issuer.resolve_identities}
+                if issuer is not None
+                else {}
+            ),
         )
 
         for result in resolutions.values():
@@ -1545,6 +1519,12 @@ class MessagePipeline:
             source_thread_identity = request_context.get("source_thread_identity")
             if source_thread_identity not in (None, ""):
                 route_request_context["source_thread_identity"] = str(source_thread_identity)
+            external_conversation_id = request_context.get("external_conversation_id")
+            if external_conversation_id not in (None, ""):
+                route_request_context["external_conversation_id"] = str(external_conversation_id)
+            reply_target_ref = request_context.get("reply_target_ref")
+            if reply_target_ref not in (None, ""):
+                route_request_context["reply_target_ref"] = str(reply_target_ref)
             route_request_context["addressed"] = bool(request_context.get("addressed", False))
 
         route_source_metadata = {
@@ -1765,7 +1745,7 @@ class MessagePipeline:
                 "explicitly what you'd like recorded or reported."
             )
             try:
-                from butlers.api.conversations import conversation_reply_create
+                from butlers.conversation_messages import conversation_reply_create
 
                 await conversation_reply_create(
                     self._pool,
@@ -2019,6 +1999,20 @@ class MessagePipeline:
         return None
 
     @classmethod
+    def _external_conversation_id(cls, args: dict[str, Any]) -> str | None:
+        # ``external_thread_id`` in pipeline args is the reply target, never a
+        # continuity key; ingest has already resolved unsplit producers.
+        candidates = (
+            args.get("external_conversation_id"),
+            (args.get("request_context") or {}).get("external_conversation_id"),
+        )
+        for candidate in candidates:
+            normalized = cls._string_or_none(candidate)
+            if normalized is not None:
+                return normalized
+        return None
+
+    @classmethod
     def _external_event_id(
         cls,
         args: dict[str, Any],
@@ -2126,13 +2120,6 @@ class MessagePipeline:
 
         content_blind_observability = self._uses_content_blind_observability(source, args)
         received_at = datetime.now(UTC)
-        dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
-            args=args,
-            source_metadata=source_metadata,
-            message_text=message_text,
-            received_at=received_at,
-        )
-
         raw_metadata = args.get("raw_metadata")
         if isinstance(raw_metadata, dict):
             raw_metadata_payload: dict[str, Any] = dict(raw_metadata)
@@ -2142,20 +2129,40 @@ class MessagePipeline:
 
         source_sender_identity = self._source_sender_identity(args, source_metadata)
         source_thread_identity = self._source_thread_identity(args)
+        external_conversation_id = self._external_conversation_id(args)
         source_endpoint_identity = self._source_endpoint_identity(args, source_metadata)
 
+        # Scrub before any write; a detector failure raises, so no raw text is stored.
+        scrubbed, message_text, _ = scrub_stored_record(
+            {
+                "content": message_text,
+                "source": {"provider": source},
+                "sender": {"identity": source_sender_identity},
+            },
+            message_text,
+        )
+        raw_payload = {
+            "content": scrubbed["content"],
+            "metadata": raw_metadata_payload,
+        }
+
+        # Keys are stored beside the scrubbed text, so they derive from it: hashing the raw
+        # text would let a reader of message_inbox brute-force a withheld code.
+        dedupe_key, dedupe_strategy, idempotency_key = self._build_dedupe_record(
+            args=args,
+            source_metadata=source_metadata,
+            message_text=message_text,
+            received_at=received_at,
+        )
         request_context = {
             "source_channel": source,
             "source_endpoint_identity": source_endpoint_identity,
             "source_sender_identity": source_sender_identity,
             "source_thread_identity": source_thread_identity,
+            "external_conversation_id": external_conversation_id,
             "idempotency_key": idempotency_key,
             "dedupe_key": dedupe_key,
             "dedupe_strategy": dedupe_strategy,
-        }
-        raw_payload = {
-            "content": message_text,
-            "metadata": raw_metadata_payload,
         }
 
         # Ensure the partition exists for received_at — committed immediately,
@@ -2330,6 +2337,7 @@ class MessagePipeline:
                 message_inbox_id,
             )
 
+    @accepted_source_scope
     async def process(
         self,
         message_text: str,
@@ -2411,6 +2419,19 @@ class MessagePipeline:
         source_id = source_metadata.get("source_id")
         raw_chat_id = args.get("chat_id")
         chat_id = str(raw_chat_id) if raw_chat_id not in (None, "") else None
+        # Everything downstream (routing prompt, preview, response summary, dead-letter
+        # cc_output) uses the scrubbed text. The ingress dedupe record scrubs the text as
+        # received itself and derives its key from the scrubbed result.
+        raw_message_text = message_text
+        try:
+            message_text = scrub_message_text(
+                message_text,
+                source={"provider": source},
+                sender={"identity": self._source_sender_identity(args, source_metadata)},
+            )
+        except Exception:
+            logger.warning("Inbound bearer scrub failed; withholding message text")
+            message_text = "[content withheld]"
         message_length = len(message_text)
         content_blind_observability = self._uses_content_blind_observability(source, args)
         message_preview = (
@@ -2423,7 +2444,11 @@ class MessagePipeline:
         received_at = datetime.now(UTC)
         request_context = args.get("request_context")
         if isinstance(request_context, dict):
-            request_context = dict(request_context)
+            request_context = {
+                key: value
+                for key, value in request_context.items()
+                if not key.startswith("_fact_source_")
+            }
         else:
             request_context = None
         route_source_metadata = self._route_wire_source_metadata(source_metadata)
@@ -2476,7 +2501,7 @@ class MessagePipeline:
                     if message_inbox_id is None and self._enable_ingress_dedupe:
                         try:
                             ingress_record = await self._accept_ingress(
-                                message_text=message_text,
+                                message_text=raw_message_text,
                                 args=args,
                                 source_metadata=source_metadata,
                                 source=source,
@@ -2546,45 +2571,19 @@ class MessagePipeline:
                 )
 
                 # --- Engagement detection ---
-                # On each ingress request FROM THE OWNER, mark unengaged
-                # insight_engagement rows delivered within the last 60 minutes
-                # as engaged=TRUE, and record the owner-ingress day in the
-                # durable daily rollup (bu-tdd4k.5). Connector/automated/
-                # non-owner ingress must NOT count as engagement — the
-                # disengagement ratchet (check_total_disengagement_auto_off)
-                # is a vision success marker and can never fire if noise
-                # impersonates owner attention. Gated on a direct, read-only
-                # identity lookup rather than the full resolve_and_inject_
-                # identity() preamble machinery (no temp-contact creation or
-                # owner-notify side effects belong in a best-effort gate).
-                # This is a best-effort side effect — failures must not block routing.
-                try:
-                    from butlers.core.attention_ledger import record_owner_ingress_rollup
-                    from butlers.identity import resolve_contact_by_channel
-                    from butlers.tools.switchboard.insight.broker import (
-                        check_and_update_engagement,
-                    )
+                # Owner-authored ingress marks recent insight deliveries engaged;
+                # best-effort, so failures never block routing.
+                from butlers.tools.switchboard.insight.engagement import (
+                    record_owner_ingress_engagement,
+                )
 
-                    sender_value = source_metadata.get("source_id") or source_metadata.get(
-                        "identity"
-                    )
-                    is_owner_ingress = False
-                    if sender_value and source:
-                        resolved_sender = await resolve_contact_by_channel(
-                            self._pool, source, sender_value
-                        )
-                        is_owner_ingress = (
-                            resolved_sender is not None and "owner" in resolved_sender.roles
-                        )
-
-                    if is_owner_ingress:
-                        await check_and_update_engagement(self._pool)
-                        await record_owner_ingress_rollup(self._pool, occurred_at=received_at)
-                except Exception:
-                    logger.debug(
-                        "Engagement detection failed; proceeding without update",
-                        exc_info=True,
-                    )
+                await record_owner_ingress_engagement(
+                    self._pool,
+                    source=source,
+                    sender_value=source_metadata.get("source_id")
+                    or source_metadata.get("identity"),
+                    received_at=received_at,
+                )
 
                 # --- Mark as processing so the scanner does not re-enqueue ---
                 if message_inbox_id is not None:
@@ -2601,6 +2600,25 @@ class MessagePipeline:
                             "Failed to mark message_inbox as processing; scanner may re-enqueue",
                             exc_info=True,
                         )
+
+                # Freeze before both direct policy routing and classification.
+                # Recovery uses the accepted original; public route context is
+                # never a producer. An unavailable identity service leaves an
+                # honestly unresolved third-party report, never owner authority.
+                from butlers.core.fact_authority import _pipeline_source, source_registry
+
+                issuer = source_registry()
+                if issuer is not None and message_inbox_id is not None:
+                    source_record_id = UUID(str(message_inbox_id))
+                    await issuer.capture_accepted_report(
+                        source_record_id,
+                        None,
+                        mixed=bool(
+                            request_context
+                            and request_context.get("payload_type") == "conversation_history"
+                        ),
+                    )
+                    _pipeline_source.set(source_record_id)
 
                 # --- Pre-resolved triage bypass ---
                 # If the ingest tool already resolved a triage decision via
@@ -2732,6 +2750,16 @@ class MessagePipeline:
                                 "source_sender_identity": route_sender_identity,
                                 "source_thread_identity": (
                                     request_context.get("source_thread_identity")
+                                    if request_context
+                                    else None
+                                ),
+                                "external_conversation_id": (
+                                    request_context.get("external_conversation_id")
+                                    if request_context
+                                    else None
+                                ),
+                                "reply_target_ref": (
+                                    request_context.get("reply_target_ref")
                                     if request_context
                                     else None
                                 ),
@@ -3016,9 +3044,9 @@ class MessagePipeline:
                     # ordinary messages. Structured decomposition messages are
                     # formatted only after per-speaker identity enrichment.
                     conversation_history = ""
-                    source_thread_identity = self._source_thread_identity(args)
+                    external_conversation_id = self._external_conversation_id(args)
 
-                    if _decomp_messages is None and source_thread_identity:
+                    if _decomp_messages is None and external_conversation_id:
                         with tracer.start_as_current_span(
                             "butlers.switchboard.routing.load_history"
                         ):
@@ -3026,7 +3054,7 @@ class MessagePipeline:
                             conversation_history = await _load_conversation_history(
                                 self._pool,
                                 source,
-                                source_thread_identity,
+                                external_conversation_id,
                                 received_at,
                             )
                             history_latency_ms = (time.perf_counter() - history_start) * 1000
@@ -3086,6 +3114,11 @@ class MessagePipeline:
                                             channel_value=sender_value,
                                             display_name=args.get("sender_name"),
                                             notify_owner_fn=self._notify_owner_fn,
+                                            **(
+                                                {"resolver": issuer.resolve_identity}
+                                                if issuer is not None
+                                                else {}
+                                            ),
                                         )
 
                                 if identity_result is not None:
@@ -3130,9 +3163,9 @@ class MessagePipeline:
                                         },
                                     )
                                 else:
-                                    logger.debug(
-                                        "Identity resolution failed; proceeding without preamble",
-                                        exc_info=True,
+                                    logger.warning(
+                                        "pipeline.identity_resolution_failed",
+                                        extra={"failure_class": type(exc).__name__},
                                     )
 
                     if _decomp_messages is not None:
@@ -3758,6 +3791,61 @@ class MessagePipeline:
                                 failed_targets=[] if bug_succeeded else ["qa"],
                             )
 
+                        from butlers.core_tools._dashboard_system_answer import (
+                            extract_system_answer,
+                            persist_system_answer,
+                        )
+
+                        system_answer = extract_system_answer(tool_calls)
+                        if system_answer is not None and system_answer.get("status") == "cancelled":
+                            return RoutingResult(
+                                target_butler="cancelled",
+                                route_result={"cancelled": True},
+                                routed_targets=[],
+                                acked_targets=[],
+                                failed_targets=[],
+                            )
+                        if system_answer is not None:
+                            outcome = await persist_system_answer(
+                                self._pool,
+                                dashboard_context=dashboard_context,
+                                message_id=dashboard_turn_id,
+                                request_id=UUID(str(request_id)),
+                                answer=cc_output,
+                                evidence=system_answer,
+                            )
+                            succeeded = outcome in {"completed", "cancelled"}
+                            if message_inbox_id:
+                                completed_at = datetime.now(UTC)
+                                await self._update_message_inbox_lifecycle(
+                                    message_inbox_id=message_inbox_id,
+                                    decomposition_output={
+                                        "request_id": request_id,
+                                        "lane": "system_answer",
+                                        "tool": system_answer["tool"],
+                                    },
+                                    dispatch_outcomes={
+                                        "request_id": request_id,
+                                        "acked": [],
+                                        "failed": [],
+                                    },
+                                    response_summary="system_answer:" + outcome,
+                                    lifecycle_state="parsed" if succeeded else "errored",
+                                    classified_at=completed_at,
+                                    classification_duration_ms=spawn_latency_ms,
+                                    final_state_at=completed_at,
+                                )
+                            return RoutingResult(
+                                target_butler="cancelled"
+                                if outcome == "cancelled"
+                                else "concierge",
+                                route_result={"lane": "system_answer", "status": outcome},
+                                routing_error=None if succeeded else "system_answer:" + outcome,
+                                routed_targets=[],
+                                acked_targets=[],
+                                failed_targets=[],
+                            )
+
                         # Dashboard Lane D (decline path): cannot_answer, or
                         # answer_question(scope="system") falling back to the
                         # same dead-letter/honest-decline path (bu-0ynlk.2).
@@ -3981,6 +4069,16 @@ class MessagePipeline:
                                     if request_context
                                     else None
                                 ),
+                                "external_conversation_id": (
+                                    request_context.get("external_conversation_id")
+                                    if request_context
+                                    else None
+                                ),
+                                "reply_target_ref": (
+                                    request_context.get("reply_target_ref")
+                                    if request_context
+                                    else None
+                                ),
                                 "trace_context": {},
                             },
                             "input": {"prompt": message_text},
@@ -4192,6 +4290,12 @@ class MessagePipeline:
                                 if request_context
                                 else None
                             ),
+                            # The fallback turn resumes the chat's anchor too.
+                            "external_conversation_id": (
+                                request_context.get("external_conversation_id")
+                                if request_context
+                                else None
+                            ),
                             "trace_context": {},
                         },
                         "input": {"prompt": message_text},
@@ -4353,21 +4457,11 @@ class PipelineModule(Module):
         self._pipeline: MessagePipeline | None = None
         self._pool: Any = None
 
-    @property
-    def name(self) -> str:
-        return "pipeline"
+    name = "pipeline"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return PipelineConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # No module-specific tables; pipeline uses shared switchboard schema.
-        return None
 
     def set_pipeline(self, pipeline: MessagePipeline) -> None:
         """Attach a pre-constructed ``MessagePipeline`` instance.

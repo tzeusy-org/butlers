@@ -18,9 +18,12 @@ Postgres instance (testcontainers) — not just mocked-pool unit tests:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import asyncpg
 import pytest
@@ -29,6 +32,7 @@ from butlers.api.routers.attention_ledger import _query_ledger, _query_ledger_su
 from butlers.core.attention_ledger import record_attention_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight.broker import expire_candidates
+from scripts import repair_attention_ledger_metadata as metadata_repair
 
 docker_available = shutil.which("docker") is not None
 _TEST_NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -553,3 +557,143 @@ async def test_query_ledger_summary_flags_suppressed_never_delivered(pool: async
     assert by_name["reader_test_epsilon"].suppressed_never_delivered is False
     assert "reader_test_delta" in result.flagged_sources
     assert "reader_test_epsilon" not in result.flagged_sources
+
+
+@pytest.mark.parametrize("production_codec", [False, True], ids=["bare", "production-codec"])
+async def test_exact_metadata_repair_preserves_native_values_and_atomicity(
+    migrated_db_url: str, tmp_path, production_codec: bool
+) -> None:
+    """Real text->JSONB casts, normal-role SQL, independent readback and rollback.
+
+    The failure/cancellation adapter delegates every actual statement/transaction
+    to PostgreSQL, then raises after the first real UPDATE. It cannot simulate a
+    committed/rolled-back database result.
+    """
+    options, target = metadata_repair.connection_options(migrated_db_url + "?sslmode=disable")
+
+    async def ordinary_role(conn):
+        await conn.execute('SET ROLE "butler_switchboard_rw"')
+        assert await conn.fetchval("SELECT current_user") == metadata_repair.ROLE
+
+    @asynccontextmanager
+    async def carrier():
+        if production_codec:
+            async with metadata_repair.open_database(options) as selected:
+                yield selected
+        else:
+            selected = await asyncpg.create_pool(
+                migrated_db_url, min_size=1, max_size=1, setup=ordinary_role, command_timeout=30
+            )
+            try:
+                yield selected
+            finally:
+                await selected.close()
+
+    ids = sorted([uuid4(), uuid4()])
+    session = str(uuid4())
+    inner = (
+        '{"session_id":"' + session + '","n":0.12345678901234567890123456789,'
+        '"nested":{"quoted":"a\\nb"}}'
+    )
+    original = [json.dumps(inner), json.dumps('{"other":{"legitimate":[1,true,null]}}')]
+    async with carrier() as selected:
+        for row_id, encoded in zip(ids, original, strict=True):
+            await selected.execute(
+                """INSERT INTO public.attention_ledger
+                (id,origin_butler,source,outcome,metadata) VALUES
+                ($1,'chronicler','notify','delivered',$2::text::jsonb)""",
+                row_id,
+                encoded,
+            )
+        plan = await metadata_repair.plan_repair(selected, ids, target=target)
+        assert [r["status"] for r in plan["rows"]] == ["repair", "repair"]
+        for suffix, fault in (
+            ("failure", RuntimeError("injected")),
+            ("cancel", asyncio.CancelledError()),
+        ):
+
+            @asynccontextmanager
+            async def failing_acquire(*, failure=fault, **kwargs):
+                async with selected.acquire(**kwargs) as real:
+
+                    class FailAfterUpdate:
+                        transaction = real.transaction
+                        fetchrow = real.fetchrow
+                        fetch = real.fetch
+                        fetchval = real.fetchval
+
+                        async def execute(self, sql, *args, **execute_kwargs):
+                            await real.execute(sql, *args, **execute_kwargs)
+                            raise failure
+
+                    yield FailAfterUpdate()
+
+            class FailingPool:
+                acquire = staticmethod(failing_acquire)
+
+            with pytest.raises(type(fault)):
+                await metadata_repair.apply_repair(
+                    FailingPool(), plan, target=target, beforeimages=tmp_path / suffix
+                )
+            async with carrier() as observer:
+                assert (
+                    await observer.fetchval(
+                        "SELECT bool_and(jsonb_typeof(metadata)='string') "
+                        "FROM public.attention_ledger WHERE id=ANY($1::uuid[])",
+                        ids,
+                    )
+                    is True
+                )
+        # A stale member prevents even the first eligible row from changing.
+        await selected.execute(metadata_repair.UPDATE, ids[1], '{"drift":true}')
+        with pytest.raises(metadata_repair.Refused):
+            await metadata_repair.apply_repair(
+                selected, plan, target=target, beforeimages=tmp_path / "stale"
+            )
+        assert (
+            await selected.fetchval(
+                "SELECT jsonb_typeof(metadata) FROM public.attention_ledger WHERE id=$1", ids[0]
+            )
+            == "string"
+        )
+        await selected.execute(metadata_repair.UPDATE, ids[1], original[1])
+        result, texts = await metadata_repair.apply_repair(
+            selected, plan, target=target, beforeimages=tmp_path / "before"
+        )
+        assert result == {"updated": 2, "already_applied": 0, "unchanged": 0}
+    async with carrier() as observer:
+        await metadata_repair.verify_repair(observer, plan, target=target, expected_texts=texts)
+        assert (
+            await observer.fetchval(
+                "SELECT metadata=$2::text::jsonb AND metadata->>'session_id'=$3 "
+                "FROM public.attention_ledger WHERE id=$1",
+                ids[0],
+                inner,
+                session,
+            )
+            is True
+        )
+        from butlers.core.attention_ledger import find_notify_dispatch_for_session
+
+        dispatch = await find_notify_dispatch_for_session(
+            observer, origin_butler="chronicler", session_id=session
+        )
+        assert dispatch is not None and dispatch.outcome == "delivered"
+        result, repeat_texts = await metadata_repair.apply_repair(
+            observer, plan, target=target, beforeimages=tmp_path / "repeat"
+        )
+        assert result == {"updated": 0, "already_applied": 2, "unchanged": 0}
+        # A real JSONB string can contain malformed/duplicate-key inner JSON.
+        await observer.execute(metadata_repair.UPDATE, ids[1], json.dumps('{"x":1,"x":2}'))
+        malformed = await metadata_repair.plan_repair(observer, ids, target=target)
+        assert malformed["rows"][1]["status"] == "refused"
+        with pytest.raises(metadata_repair.Refused):
+            await metadata_repair.apply_repair(
+                observer, malformed, target=target, beforeimages=tmp_path / "malformed"
+            )
+    async with carrier() as independent:
+        # The original reviewed plan still detects the malformed-row drift.
+        with pytest.raises(metadata_repair.Refused):
+            await metadata_repair.verify_repair(
+                independent, plan, target=target, expected_texts=repeat_texts
+            )

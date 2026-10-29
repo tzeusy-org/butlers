@@ -27,11 +27,18 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from contextlib import AsyncExitStack
 from typing import Any
 
+import asyncpg
 import pytest
 
-from butlers.db import Database
+from butlers.db import (
+    Database,
+    register_jsonb_codec,
+    schema_search_path,
+    should_retry_with_ssl_disable,
+)
 
 docker_available = shutil.which("docker") is not None
 
@@ -48,10 +55,10 @@ def _unique_db_name() -> str:
 
 @pytest.fixture
 async def dual_scoped_pools(postgres_container):
-    """Two pools against the *same* database: one scoped to ``switchboard``
-    (used to seed the schema/data, mirroring the switchboard butler's own
-    connections) and one scoped to ``public`` only (used to invoke deliver(),
-    mirroring secrets_lifecycle's shared credential pool).
+    """Administrative pools in one disposable DB with distinct query search paths.
+
+    These seed and exercise cross-schema delivery SQL, not runtime-role
+    isolation. Provisioning does not open a runtime Database connection.
     """
     db_name = _unique_db_name()
     conn_kwargs: dict[str, Any] = {
@@ -61,15 +68,54 @@ async def dual_scoped_pools(postgres_container):
         "password": postgres_container.password,
     }
 
-    switchboard_db = Database(db_name=db_name, schema="switchboard", **conn_kwargs)
-    await switchboard_db.provision()
-    switchboard_pool = await switchboard_db.connect()
+    search_paths = {schema: schema_search_path(schema) for schema in ("switchboard", "public")}
+    admin_db = Database(db_name=db_name, **conn_kwargs)
+    await admin_db.provision()
 
-    public_db = Database(db_name=db_name, schema="public", **conn_kwargs)
-    await public_db.provision()  # idempotent -- db already exists
-    public_pool = await public_db.connect()
+    async def open_pool(schema: str) -> asyncpg.Pool:
+        pool_kwargs = {
+            **conn_kwargs,
+            "database": admin_db.db_name,
+            "min_size": admin_db.min_pool_size,
+            "max_size": admin_db.max_pool_size,
+            "init": register_jsonb_codec,
+            "server_settings": {"search_path": search_paths[schema]},
+        }
+        if admin_db.ssl is not None:
+            pool_kwargs["ssl"] = admin_db.ssl
 
-    try:
+        async def initialize_pool() -> asyncpg.Pool:
+            # Retain the native candidate through partial initialization so
+            # failures and cancellation terminate its owned connections.
+            candidate = asyncpg.create_pool(**pool_kwargs)
+            try:
+                return await candidate
+            except BaseException:
+                candidate.terminate()
+                raise
+
+        try:
+            return await initialize_pool()
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, admin_db.ssl):
+                raise
+            pool_kwargs["ssl"] = "disable"
+            return await initialize_pool()
+
+    async def close_pool(pool: asyncpg.Pool) -> None:
+        try:
+            await pool.close()
+        except BaseException:
+            pool.terminate()
+            raise
+
+    # Register each successful pool immediately. The first remains owned if
+    # opening the second fails; stack unwinding attempts both on cancellation.
+    async with AsyncExitStack() as stack:
+        switchboard_pool = await open_pool("switchboard")
+        stack.push_async_callback(close_pool, switchboard_pool)
+        public_pool = await open_pool("public")
+        stack.push_async_callback(close_pool, public_pool)
         await switchboard_pool.execute("CREATE SCHEMA IF NOT EXISTS switchboard")
         await switchboard_pool.execute("""
             CREATE TABLE IF NOT EXISTS switchboard.butler_registry (
@@ -148,9 +194,6 @@ async def dual_scoped_pools(postgres_container):
         )
 
         yield switchboard_pool, public_pool
-    finally:
-        await switchboard_db.close()
-        await public_db.close()
 
 
 @pytest.mark.pg_clock

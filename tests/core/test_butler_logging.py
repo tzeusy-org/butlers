@@ -11,14 +11,26 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from butlers.core.butler_logging import ButlerLogger, _level_rank
+from butlers.core.logging import _butler_context
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _restore_butler_context() -> Iterator[None]:
+    """Keep a butler name a synchronous test sets from naming later tests' records."""
+    token = _butler_context.set(None)
+    try:
+        yield
+    finally:
+        _butler_context.reset(token)
 
 
 # ---------------------------------------------------------------------------

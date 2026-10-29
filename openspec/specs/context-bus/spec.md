@@ -5,6 +5,11 @@ Provides shared situational awareness across butlers via a `public.user_context`
 
 ## Requirements
 
+The adopted [bounded-read amendment](../../changes/specify-safe-context-rendering-and-bounded-read-failures/specs/context-bus/spec.md)
+additionally governs suppression-read availability (REQ-context-bus-016). Its ADDED
+requirement remains in that active change until archival; the implemented behavior
+and operational qualifications are described in [context security](../../../docs/concepts/context-security.md).
+
 Note on signatures: every context-bus function that takes a connection `pool` (`get_active_context`, `is_user_in_context`, `set_context`, `clear_context`) is implemented as an `async def` and must be awaited (`src/butlers/context_bus.py`). The function-call notation in the scenarios below omits the `async`/`await` keywords for brevity.
 
 ### Requirement: User Context Table Schema
@@ -65,7 +70,7 @@ The permission mapping SHALL be:
 - **THEN** the write succeeds because general is authorized for all signal types
 
 ### Requirement: TTL Semantics
-Every context signal SHALL have an `expires_at` timestamp. There SHALL be no indefinite signals. Each signal type SHALL have a default TTL and a maximum TTL. If `expires_at` is not provided, the default TTL SHALL be applied from `set_at`. If the requested TTL exceeds the maximum, it SHALL be clamped to the maximum. A signal is considered **active** when `superseded_at IS NULL AND expires_at > now()`.
+Every context signal SHALL have an `expires_at` timestamp. There SHALL be no indefinite signals. Each signal type SHALL have a default TTL and a maximum TTL. If `expires_at` is not provided, the default TTL SHALL be applied from the time of the assertion. If the requested TTL exceeds the maximum, it SHALL be clamped to the maximum. A signal is considered **active** when `superseded_at IS NULL AND expires_at > now()`.
 
 Default and maximum TTLs:
 - `traveling`: default 24h, max 30d
@@ -134,15 +139,23 @@ The system SHALL provide an `is_user_in_context(pool, signal_type, min_confidenc
 - **THEN** `is_user_in_context(pool, "meeting", min_confidence=0.2)` returns `True`
 
 ### Requirement: Set Context Signal
-The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_at, value, confidence, metadata)` function that writes or updates a context signal. The function SHALL validate write permissions, validate the signal type against the vocabulary enum, clamp the TTL to the maximum, and perform an upsert via `INSERT ... ON CONFLICT DO UPDATE`. The `set_at` field SHALL always be set to the current time on upsert. If the signal was previously superseded, the upsert SHALL clear `superseded_at` (set to NULL).
+The system SHALL provide a `set_context(pool, butler_name, signal_type, expires_at, value, confidence, metadata)` function that writes or updates a context signal. The function SHALL validate write permissions, validate the signal type against the vocabulary enum, clamp the TTL to the maximum, and perform an upsert via `INSERT ... ON CONFLICT DO UPDATE`. The `set_at` field marks the start of the current activation: it SHALL be reset to the current time when the value changes, the row was superseded, or the row had expired, and SHALL be kept on an unchanged re-assertion of an active row. This keep rule applies to every signal type except `dnd`: for `dnd`, `set_context` delegates to the canonical gateway `public.context_dnd_mutate`, which resets `set_at` on every assertion. `expires_at` SHALL be refreshed on every assertion, so the TTL is measured from the latest assertion. If the signal was previously superseded, the upsert SHALL clear `superseded_at` (set to NULL).
 
 #### Scenario: New signal created
 - **WHEN** no existing signal exists for the `(signal_type, set_by_butler)` pair
 - **THEN** a new row is inserted with the provided values
 
 #### Scenario: Existing signal updated
-- **WHEN** a signal already exists for the `(signal_type, set_by_butler)` pair
-- **THEN** the existing row is updated with new `value`, `set_at`, `expires_at`, `confidence`, `metadata`, and `superseded_at = NULL`
+- **WHEN** a signal already exists for the `(signal_type, set_by_butler)` pair and `set_context()` is called with a different value
+- **THEN** the existing row is updated with new `value`, `expires_at`, `confidence`, `metadata`, and `superseded_at = NULL`, and `set_at` is reset to the current time because the value changed
+
+#### Scenario: Unchanged active signal re-asserted
+- **WHEN** a signal is active (not superseded, not expired) and `set_context()` is called with the same `value`
+- **THEN** `set_at` is kept and `expires_at` is refreshed, so consumers measuring continuous activity are not reset
+
+#### Scenario: Expired signal re-asserted
+- **WHEN** a signal's row has expired (`expires_at` is not after now) and `set_context()` is called with the same `value`
+- **THEN** `set_at` is reset to the current time, starting a new activation
 
 #### Scenario: Previously cleared signal re-activated
 - **WHEN** a signal was cleared (superseded_at is set) and `set_context()` is called again
@@ -165,15 +178,23 @@ The system SHALL provide a `clear_context(pool, butler_name, signal_type)` funct
 - **THEN** no error is raised and no rows are affected
 
 ### Requirement: Context Preamble for LLM Sessions
-The system SHALL provide a `format_context_preamble(signals)` function that formats a list of `ContextEntry` objects into a bracketed text string suitable for prepending to LLM session prompts. The format SHALL be: `[User Context: <signal_type> (<value>, <confidence_label>), ...]`. Confidence labels SHALL be: "explicit" for 1.0, "high confidence" for >= 0.8, "medium confidence" for >= 0.5, "low confidence" for < 0.5. If no active signals exist, the function SHALL return an empty string.
+The system SHALL provide a `format_context_preamble(signals)` function that formats a list of `ContextEntry` objects into a bracketed text string suitable for prepending to LLM session prompts. The format SHALL be: `[User Context: <signal_type> (<value>, <confidence_label>), ...]` only for values admitted by the producer-bound typed contract below; otherwise each signal SHALL use `<signal_type> (<confidence_label>)` with no value. Confidence labels SHALL be: "explicit" for 1.0, "high confidence" for >= 0.8, "medium confidence" for >= 0.5, "low confidence" for < 0.5. If no active signals exist, the function SHALL return an empty string.
+
+The system SHALL provide `format_context_preamble(signals)` as a deterministic renderer of active, vocabulary-validated context types and confidence labels. It SHALL render a value only when an enumerated typed producer contract admits that exact value and the server-verified producer identity matches; arbitrary strings, event titles, metadata, destinations, room names, tool arguments and source text SHALL NOT become prompt instructions through this preamble. The initial value allowlist SHALL consist only of General's deterministic calendar producer: `meeting` with literal `busy`, or `focused` with literal `focused`. A matching string or a caller-supplied producer label alone SHALL NOT establish producer provenance. Other signals SHALL render type and confidence only. Confidence labels SHALL remain `explicit` for 1.0, `high confidence` for >=0.8, `medium confidence` for >=0.5 and `low confidence` below 0.5. Empty input SHALL produce an empty string. This projection SHALL NOT confer owner authority or remove RFC0038 exposure.
+
+ID: REQ-context-bus-009
+Source: RFC 0009 §§Context Preamble for LLM Sessions, Owner Attention Policy Sleep Producer, Bounded Suppression Read Failures (proposed amendment bu-dhloi1.17); RFC 0038 D5
+Scope: v1-mandatory
 
 #### Scenario: Single active signal formatted
 - **WHEN** there is one active signal: traveling, value="Paris", confidence=1.0
-- **THEN** `format_context_preamble()` returns `[User Context: traveling (Paris, explicit)]`
+- **THEN** `format_context_preamble()` returns `[User Context: traveling (explicit)]`
+- **AND** the destination is omitted because it is not an admitted typed value
 
 #### Scenario: Multiple active signals formatted
 - **WHEN** there are two active signals: traveling (Paris, 1.0) and meeting (standup, 0.8)
 - **THEN** the preamble includes both signals separated by commas
+- **AND** only their type/confidence summaries appear; neither the arbitrary trip destination nor the calendar title appears
 
 #### Scenario: Signal without value
 - **WHEN** there is one active signal: dnd, value=None, confidence=1.0
@@ -182,6 +203,15 @@ The system SHALL provide a `format_context_preamble(signals)` function that form
 #### Scenario: No active signals
 - **WHEN** there are no active signals
 - **THEN** `format_context_preamble()` returns an empty string
+
+#### Scenario: Typed calendar state can be rendered
+- **WHEN** server-verified General calendar output is meeting/busy or focused/focused
+- **THEN** only that enumerated value and the usual type/confidence are rendered
+
+#### Scenario: Hostile or forged value is omitted
+- **WHEN** a value or metadata contains bracket escapes, newlines, instructions, an event title or a forged producer label
+- **THEN** the value/metadata is omitted while a valid signal type may still render
+- **AND** escaping or truncation alone does not admit the text
 
 ### Requirement: Suppressing Context Wake Anchor
 The system SHALL require consumers that defer routine owner-default
@@ -228,6 +258,11 @@ The following producers SHALL exist:
   trip in `travel.trips`.
 - **health → sleeping** (writer `health`): derived from the owner-declared
   end-exclusive Owner Attention Policy window in `public.approvals_policy`.
+The calendar producer SHALL publish only typed busy/focused state: value `busy` for `meeting`, or `focused` for `focused`, with fixed source provenance. It SHALL NOT copy the event title, description or other free text into the emitted context value, metadata or producer result. Existing title classification MAY select the finite state but SHALL NOT transmit its input. Eligibility, human-event provenance, sibling clearing and end-based bounded expiry SHALL remain unchanged.
+
+ID: REQ-context-bus-011
+Source: RFC 0009 §§Context Preamble for LLM Sessions, Owner Attention Policy Sleep Producer, Bounded Suppression Read Failures (proposed amendment bu-dhloi1.17); RFC 0038 D5
+Scope: v1-mandatory
 
 #### Scenario: Calendar producer publishes meeting for a live event
 - **WHEN** the general butler's `calendar_events` contains a confirmed,
@@ -288,18 +323,28 @@ The following producers SHALL exist:
 - **AND** the stored envelope's `deliver_at` is the latest active suppressing
   signal expiry
 
+#### Scenario: Calendar title cannot propagate into context
+- **WHEN** an eligible event title contains hostile instructions
+- **THEN** the emitted context value is only busy/focused and its metadata/result contain no title or other event free text
+
 ### Requirement: Explicit Context MCP Tools
 The system SHALL expose `check_context`, `set_context`, and `clear_context` MCP
 tools on the general module so that explicit, user-initiated context signals
 (primarily `dnd` and `sick`) that no deterministic producer can infer may be
 read and written. Writes SHALL go through the general butler at confidence 1.0
 and SHALL be subject to the same vocabulary and write-permission validation as
-`set_context()`.
+`set_context()`. These model-mediated writes SHALL be subject to the server-verified owner-invocation requirements below.
+
+The system SHALL retain General's `check_context`, `set_context` and `clear_context` MCP tools and existing vocabulary, writer checks, confidence 1.0 and TTL rules. Each model-mediated set/clear SHALL additionally require the server-verified current runtime invocation binding to an owner-channel request, resolved to the actual owner or authenticated owner device. A third party, unknown/mixed/system provenance, missing binding, unbound runtime-session locator or caller-asserted identity SHALL refuse before writes. Source text, tool arguments, a source-channel label, confidence 1.0 or possession of a request/mutation ID SHALL NOT establish owner authority. Trusted deterministic producers retain their existing role-specific internal paths; this rule does not require them to impersonate a model/owner or alter canonical DND mutation replay/generation controls.
+
+ID: REQ-context-bus-012
+Source: RFC 0009 §§Context Preamble for LLM Sessions, Owner Attention Policy Sleep Producer, Bounded Suppression Read Failures (proposed amendment bu-dhloi1.17); RFC 0038 D5
+Scope: v1-mandatory
 
 #### Scenario: Explicit dnd set via MCP tool
-- **WHEN** the `set_context` MCP tool is called with `signal_type="dnd"`
+- **WHEN** the `set_context` MCP tool is called with `signal_type="dnd"` by a verified bound owner with valid existing mutation identity
 - **THEN** a `dnd` signal is written with `set_by_butler = "general"` and
-  confidence 1.0
+  confidence 1.0 through the existing canonical DND mutation gateway
 
 #### Scenario: check_context returns active signals
 - **WHEN** the `check_context` MCP tool is called
@@ -312,26 +357,57 @@ and SHALL be subject to the same vocabulary and write-permission validation as
 - **THEN** the underlying `set_context()` raises `ValueError` and no signal is
   written
 
+#### Scenario: Bound owner can clear explicit context
+- **WHEN** the actual bound owner request invokes clear_context
+- **THEN** the existing authorized clear and DND receipt/generation semantics apply
+
+#### Scenario: Third-party and forged labels cannot steer context
+- **WHEN** a third party or caller-asserted owner/channel label invokes set or clear
+- **THEN** the call refuses before any row, DND generation or receipt changes
+
+#### Scenario: Missing invocation binding is not owner authority
+- **WHEN** a set/clear call has no current verified invocation or only a diagnostic session locator
+- **THEN** the call refuses even if its text says it is from the owner
+
 ### Requirement: Sleep Context Uses the Owner Attention Policy Anchor
 The deterministic health sleep producer SHALL derive both its quiet-window
 membership and `sleeping` signal expiry from the shared Owner Attention Policy
 predicate and exact-end UTC anchor. It SHALL not duplicate timezone conversion
-or add an hour to the configured end. Missing, incomplete, invalid, or
-unreadable policy data SHALL cause the producer to clear/avoid its owned sleep
+or add an hour to the configured end. Missing, incomplete, or invalid policy data from a successful read SHALL cause the producer to clear/avoid its owned sleep
 signal rather than infer a replacement timezone or wake time.
+
+The deterministic Health sleep producer SHALL derive quiet-window membership and expiry from the existing shared Owner Attention Policy and exact-end UTC anchor. Successfully read absent, disabled, incomplete or invalid policy SHALL clear/avoid Health's owned sleeping signal without inventing a timezone or wake time. A transient read failure SHALL instead remain distinguishable as unavailable: it SHALL NOT clear a still-unexpired confirmed sleep assertion, mint a new sleeping signal, refresh set_at/expires_at or treat unreadable state as a valid policy. Retained state SHALL expire at its original bounded deadline. Recovery SHALL re-read policy before asserting/clearing. End-exclusive hours, equal endpoints as an empty window, stored IANA timezone and existing sleeping TTL clamps SHALL remain unchanged.
+
+ID: REQ-context-bus-013
+Source: RFC 0009 §§Context Preamble for LLM Sessions, Owner Attention Policy Sleep Producer, Bounded Suppression Read Failures (proposed amendment bu-dhloi1.17); RFC 0038 D5
+Scope: v1-mandatory
 
 #### Scenario: Sleep expires at the exact end-exclusive boundary
 - **WHEN** the current local time falls inside the Owner Attention Policy
   `[quiet_start_hour, quiet_end_hour)` interval
 - **THEN** the health producer sets `sleeping` with the shared exact
-  `quiet_end_hour` UTC anchor as `expires_at`
+  `quiet_end_hour` UTC anchor as `expires_at`, subject to the existing sleeping maximum TTL
 - **AND** the signal is not active at the exact local end
+- **AND** any earlier effective expiry from the existing TTL clamp is also enforced; no extra hour or replacement timezone is added
 
 #### Scenario: Invalid persisted zone fails open for sleep context
 - **WHEN** the Owner Attention Policy contains an unrecognized persisted IANA
   timezone
 - **THEN** the health producer does not publish a derived sleeping signal
 - **AND** it does not silently substitute UTC or another timezone
+
+#### Scenario: Absent or malformed policy is not a storage failure
+- **WHEN** a successful read returns no policy, disabled hours or malformed hours
+- **THEN** Health clears/avoids only its own sleeping assertion and leaves independent active suppressors intact
+
+#### Scenario: Temporary policy outage does not renew sleep
+- **WHEN** the policy read fails while a previously confirmed Health sleep assertion exists
+- **THEN** its original expiry is retained and routine delivery observes the unavailable-read contract
+- **AND** repeated failures do not refresh its timestamps or move expiry
+
+#### Scenario: Sleep outage recovers from current policy
+- **WHEN** a later policy read succeeds after an outage
+- **THEN** Health re-evaluates current policy and normal TTLs rather than replaying a stale sleep assertion
 
 ### Requirement: Calendar Producer Provenance Candidate Selection
 

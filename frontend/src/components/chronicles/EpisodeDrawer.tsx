@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // EpisodeDrawer — click-to-drilldown side drawer for Chronicler episodes
 //
@@ -190,17 +192,22 @@ function CorrectionForm({ episodeId, currentPrivacy, isSensitive }: CorrectionFo
   const [privacy, setPrivacy] = useState<string>("unchanged")
   const [note, setNote] = useState("")
 
+  const draft = useDraft("chronicles.correction", [episodeId], { title: isSensitive ? "" : title, privacy, note }, (v) => { setTitle(isSensitive ? "" : v.title); setPrivacy(v.privacy); setNote(v.note); });
+
   const submitCorrection = useSubmitEpisodeCorrection()
 
   const trimmedTitle = title.trim()
   const trimmedNote = note.trim()
   const privacyChanged = privacy !== "unchanged" && privacy !== currentPrivacy
   const hasAnyField = !!trimmedTitle || privacyChanged || !!trimmedNote
-  const canSubmit = hasAnyField && !submitCorrection.isPending
+  const canSubmit = hasAnyField && !submitCorrection.isPending && !draft.session?.presentation.submitting && !draft.session?.presentation.cleanup
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmit) return
+    const submission = draft.capture()
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
 
     submitCorrection.mutate(
       {
@@ -212,17 +219,15 @@ function CorrectionForm({ episodeId, currentPrivacy, isSensitive }: CorrectionFo
         },
       },
       {
-        onSuccess: () => {
-          setTitle("")
-          setPrivacy("unchanged")
-          setNote("")
-        },
+        onSuccess: () => { void draft.submitted(submission, () => { setTitle(""); setPrivacy("unchanged"); setNote(""); }); },
+        onSettled: draft.finish,
       },
     )
   }
 
   return (
     <form className="space-y-2" onSubmit={handleSubmit} aria-label="Submit a correction">
+      <DraftNotice session={draft.session} />
       {!isSensitive && (
         <div className="space-y-1">
           <label htmlFor="correction-title" className="text-xs text-muted-foreground">
@@ -564,6 +569,7 @@ export function EpisodeDrawerContent({ episodeId }: EpisodeDrawerContentProps) {
           Correct this episode
         </h3>
         <CorrectionForm
+          key={ep.id}
           episodeId={ep.id}
           currentPrivacy={ep.canonical_privacy}
           isSensitive={isSensitive}

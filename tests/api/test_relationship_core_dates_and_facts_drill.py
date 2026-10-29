@@ -22,13 +22,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.api.pagination import encode_cursor
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -48,9 +50,9 @@ def _wire_app(mock_pool: AsyncMock) -> FastAPI:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             return app
     raise RuntimeError("Relationship router not found by router discovery.")
 
@@ -85,7 +87,14 @@ class TestCoreDatesRegistryDriven:
     async def test_uses_registry_predicates_in_facts_query(self):
         """The facts query is parameterised with the registry's contact predicates."""
         registry_rows = [{"predicate": "has-birthday"}, {"predicate": "has-anniversary"}]
-        fact_rows = [_date_fact_row("has-anniversary", "2020-06-15")]
+        fact_rows = [
+            _date_fact_row("has-anniversary", "2020-06-15")
+            | {
+                "confirmation_status": "legacy_verified",
+                "content_authority": None,
+                "reported_by": {"entity_id": None, "name": None, "availability": "legacy_unknown"},
+            }
+        ]
 
         mock_pool = AsyncMock()
         mock_pool.fetchrow = AsyncMock(return_value=_owner_row())  # owner-role gate
@@ -109,6 +118,8 @@ class TestCoreDatesRegistryDriven:
         # A row stored under the registry-only predicate is rendered.
         body = resp.json()
         assert any(item["predicate"] == "has-anniversary" for item in body["items"])
+        assert body["items"][0]["confirmation_status"] == "legacy_verified"
+        assert body["items"][0]["reported_by"]["availability"] == "legacy_unknown"
 
     async def test_empty_registry_returns_no_core_dates(self):
         """No registered date predicates → empty block, no facts query issued."""
@@ -203,9 +214,10 @@ class TestFactsDrillNarrativePagination:
         narrative = [_narrative_fact_row()]
         app, mock_pool = _facts_app(identity, narrative)
 
-        # An opaque-but-valid cursor encodes (created_at, id). Build one via the
-        # router's own encoder to avoid coupling to the wire format.
-        cursor = _encode_cursor(datetime(2026, 3, 1, tzinfo=UTC), uuid4())
+        # An opaque-but-valid cursor encodes (created_at, id).
+        cursor = encode_cursor(
+            (datetime(2026, 3, 1, tzinfo=UTC), uuid4()), scope="relationship-facts"
+        )
         resp = await _get(
             app,
             f"/api/relationship/entities/{ENTITY_ID}/facts?store=all&limit=20&cursor={cursor}",
@@ -217,12 +229,3 @@ class TestFactsDrillNarrativePagination:
         assert "narrative" not in stores, "cursored pages must not re-append narrative rows"
         # Only the identity store was queried — the narrative fetch was skipped.
         assert mock_pool.fetch.await_count == 1
-
-
-def _encode_cursor(created_at: datetime, fact_id: UUID) -> str:
-    """Encode a facts cursor using the router's own encoder."""
-    app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_encode_facts_cursor"):
-            return router_module._encode_facts_cursor(created_at, fact_id)
-    raise RuntimeError("facts cursor encoder not found on the relationship router")

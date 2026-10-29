@@ -200,7 +200,7 @@ explicit exact-row compare-and-swap action. A generic catalog `PUT` is not the a
 new `vision=true` declaration or an identity-changing write to an existing true row. Existing
 unchanged historical declarations retain their current behavior until explicitly moved into the
 managed proof lifecycle. Do not use a text-only canary or manually set `vision=true` to claim
-proof under the new contract.
+proof under the new contract. The Models page shows declarations, not proof.
 
 **Never give `attachment_view` structured output.** Codex CLI and Claude Code forward only
 `structuredContent` when a tool result carries it, dropping `content[]` and the image with it
@@ -219,6 +219,22 @@ The quota system prevents runaway costs by limiting token consumption per model 
 `record_token_usage()` writes to `public.token_usage_ledger` once per invoked spawner attempt. The row references the matching `public.model_dispatch_attempts.id`: parseable provider usage is stored with `usage_source=measured`, while a timeout or other invocation with no parseable usage stores `usage_source=unmeasurable` and NULL token buckets. Historical rows remain `measured` with a NULL attempt link. Month-to-date pricing sums measured rows and separately reports `unmeasurable_attempts`, so failover storms and unknown usage cannot disappear behind one confident session total. Recording remains best-effort: errors are logged and never propagate to the caller.
 
 The ledger also carries a token digest for five tracked layers of the composed system prompt (`base_prompt_tokens`, `timezone_instruction_tokens`, `context_preamble_tokens`, `routing_instructions_tokens`, `memory_context_tokens`, from `spawner_context.compose_prompt_digest()`) and `resume_outcome` (whether a conversational turn resumed a provider-native session: `resumed`, `resume_failed_retried_cold`, `resume_failed_terminal`, or `NULL` when resume was never attempted). The separately governed blind-spot preamble is outside this ledger schema. Both fields are additive and nullable — a caller with no composed prompt of its own (the discretion dispatcher lane) omits them and the columns stay honestly `NULL` rather than a fabricated `0`.
+
+## The model-call kernel
+
+`butlers.core.model_call.call_model(pool, spec, attempt_fn, adapter_for=..., sink=...)` is the
+one attempt loop for single-call (session-less) model invocations. It owns tier resolution and
+spend routing rules, the monthly spend ceiling (before the first attempt and before every
+relaunch), per-entry quota skips, failover classification, same-tier failover, attempt rows, usage
+recording and the failover metrics. The caller supplies only `attempt_fn`, which invokes a resolved
+adapter for one candidate. `CallSpec.max_relaunches` bounds runtime-failure relaunches (RFC 0038
+D14 callers pass `1`); a failure whose exception carries captured `tool_calls` is never relaunched.
+Every call is also capped at `MAX_ATTEMPTS` (5) invocations and quota skips. Adapters come from
+`butlers.core.runtimes.registry.AdapterRegistry`, the only place that special-cases the Codex
+runtime's construction.
+
+The connector `DiscretionDispatcher` runs on the kernel. The Spawner's session loop and the
+Switchboard's structured classifier keep their own loops for now.
 
 ## Resolution Flow in the Spawner
 
@@ -309,6 +325,16 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
 - **Account key** is `model_catalog.allowance_account`, or the entry's `runtime_type` when NULL.
   It is catalog identity (it says which provider account an entry draws on), not an operational
   limit; the one-hour default window is a code constant, not a setting.
+- **Catalog writer**: the existing Models Add/Edit forms and catalog POST/PUT expose
+  `allowance_account`. A non-null label is a strict lowercase slug of 1–64 characters,
+  `[a-z0-9][a-z0-9_-]{0,63}`. It is a global grouping key: reusing a label across runtimes
+  groups their allowance state. A create omission or null uses the runtime default;
+  an omitted update preserves the label, explicit null clears it, and a valid label replaces it.
+  The editor trims a nonblank label; a blank field sends null. API callers must send the exact
+  slug without whitespace. Priority and enabled changes preserve the account.
+  Labels do not select or provision credentials, and no account is guessed or backfilled.
+  Resolver cache behavior remains unchanged: process-local decisions can persist for five seconds;
+  saving a field does not promise immediate invalidation in every daemon.
 - **Exclusion**: every resolver (`_RESOLVE_SQL`, the intent-aware candidate query, and
   `_NEXT_SAME_TIER_SQL`) drops every entry on an account with `state='exhausted'` and
   `reset_at > now()`, even entries never attempted. The receipt records them as

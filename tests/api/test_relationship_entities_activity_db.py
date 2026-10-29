@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -69,9 +69,9 @@ def activity_app(pool: asyncpg.Pool) -> FastAPI:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app()
-    for name, module in app.state.butler_routers:
+    for name, _module in app.state.butler_routers:
         if name == "relationship":
-            app.dependency_overrides[module._get_db_manager] = lambda: db
+            app.dependency_overrides[get_db] = lambda: db
             break
     else:  # pragma: no cover
         raise AssertionError("relationship router not discovered")
@@ -172,10 +172,22 @@ async def test_direct_writes_and_identity_values_round_trip_through_activity(
     assert ("narrative", str(loan["id"])) not in by_id
     assert sum(item["predicate"] == "loan" for item in items) == 1
     assert by_id[("identity", str(identity_id))]["summary"] == "exact.identity@example.test"
-    assert all(
-        set(item) == {"id", "ts", "kind", "src", "store", "predicate", "episode_id", "summary"}
-        for item in items
-    )
+    original_keys = {"id", "ts", "kind", "src", "store", "predicate", "episode_id", "summary"}
+    attribution_keys = {
+        "content_authority",
+        "reported_by",
+        "confirmed_at",
+        "confirmed_by_entity_id",
+        "confirmation_source",
+        "confirmation_status",
+    }
+    assert all(set(item) - attribution_keys == original_keys for item in items)
+    assert all(set(item) == original_keys | attribution_keys for item in items)
+    identity = by_id[("identity", str(identity_id))]
+    assert identity["content_authority"] == "system"
+    assert identity["confirmation_status"] == "unconfirmed"
+    assert identity["reported_by"] == {"entity_id": None, "name": None, "availability": "system"}
+    assert all(item["content_authority"] is None for item in items if item["store"] == "narrative")
 
 
 async def test_activity_preserves_cross_store_collisions_and_bins_before_pagination(

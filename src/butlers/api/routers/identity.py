@@ -18,10 +18,10 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.identity import normalize_email_sender
 
@@ -35,11 +35,6 @@ router = APIRouter(prefix="/api/identity", tags=["identity"])
 # (unlike a query failure): it is an approximation bound on an otherwise
 # healthy read, so aggregates_available stays True when hit.
 _MAX_SCANNED_ROWS = 200_000
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 class EmailMatchRate(BaseModel):
@@ -62,7 +57,8 @@ class EmailMatchRate(BaseModel):
 @router.get("/email-match-rate")
 async def get_email_match_rate(
     lookback_days: int = Query(default=180, ge=1, le=3650),
-    db_mgr: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db_mgr: Db,
 ) -> ApiResponse[EmailMatchRate]:
     """Return the email sender -> entity match-rate metric.
 

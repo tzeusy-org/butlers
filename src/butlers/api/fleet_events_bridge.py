@@ -79,6 +79,8 @@ def _bridge_to_event_bus(event_type: str, data: dict[str, Any]) -> None:
 def _on_notify(_conn: asyncpg.Connection, _pid: int, channel: str, payload: str) -> None:
     """asyncpg ``add_listener`` callback: parse and bridge one NOTIFY payload."""
     if channel != FLEET_EVENTS_CHANNEL:
+        # Neither channel names nor payloads are trusted diagnostic content.
+        logger.warning("fleet events bridge: dropping notification from foreign channel")
         return
     try:
         envelope = json.loads(payload)
@@ -132,7 +134,11 @@ async def run_fleet_events_listener(
             conn = await connect_fn()
             await conn.add_listener(FLEET_EVENTS_CHANNEL, notify_cb)
             logger.info("fleet_events_bridge: LISTEN active on channel %r", FLEET_EVENTS_CHANNEL)
-            while not conn.is_closed():
+            # asyncpg has no awaitable close signal for a LISTEN connection, so
+            # probe it on the health interval.
+            while True:
+                if conn.is_closed():
+                    break
                 await asyncio.sleep(health_poll_interval_s)
             logger.warning("fleet_events_bridge: LISTEN connection closed; reconnecting")
         except asyncio.CancelledError:

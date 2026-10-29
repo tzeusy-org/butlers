@@ -44,7 +44,7 @@ transitory shells, plans only unambiguous reference-free pairs, and refuses ever
 operator supplies the exact current plan digest.
 
 ID: REQ-entity-identity-002
-Source: docs/superpowers/specs/2026-08-24-whatsapp-identity-reconciliation-design.md §Reconciliation Command
+Source: docs/plans/2026-08-24-whatsapp-identity-reconciliation-design.md §Reconciliation Command
 Scope: v1-mandatory
 
 #### Scenario: Reconciliation defaults to dry-run

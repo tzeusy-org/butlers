@@ -3,12 +3,12 @@
 - [x] 1.1 Implement the shared notification metadata normalizer in `src/butlers/api/routers/notifications.py` and route the global list, butler-scoped list, and mark-read response through its one-layer object-or-null contract, including decoder-limit `_raw` fallback (REQ-core-notify-001).
 - [x] 1.2 Add direct and endpoint regressions in `tests/api/test_notifications.py` for mappings, `null`, encoded objects, malformed and decoder-limited strings, every inner non-object string result, actual non-string non-objects, and no-recursive-decode behavior across all three response paths (REQ-core-notify-001).
 - [x] 1.3 Assert the API compatibility work preserves existing effective-status, degraded-source, pagination, and mark-read behavior rather than changing delivery or status semantics.
-- [x] 1.4 Update `docs/frontend/backend-api-contract.md` with the exact object-or-null normalization matrix, including decoder-limit `_raw` fallback, and all three affected response paths.
+- [x] 1.4 Update `docs/api_and_protocols/response-conventions.md` with the exact object-or-null normalization matrix, including decoder-limit `_raw` fallback, and all three affected response paths.
 
 ## 2. Serving-writer deployment evidence gate
 
-- [ ] 2.1 Preserve or extend the real-Postgres writer regression in `roster/switchboard/tests/test_deliver_search_path_integration.py` so a normal `log_notification()` write is proven to persist a JSONB object through the registered codec (REQ-core-notify-002).
-- [ ] 2.2 Prepare the read-only operational evidence procedure that enumerates every active notification-writer process, container/image digest or runtime revision, command, and bind-mounted source; prove each serves #3458 (`7d2bea3bc`) or a descendant rather than relying on checkout or merge state (REQ-core-notify-002).
+- [ ] 2.1 Preserve or extend the real-Postgres JSONB writer regressions in `roster/switchboard/tests/test_tools.py` (structured mapping, JSON-safe normalization, `None` and empty metadata) so a normal `log_notification()` write is proven to persist a JSONB object through the registered codec; retain `test_deliver_search_path_integration.py` as the distinct search-path/delivery-placement owner (REQ-core-notify-002).
+- [ ] 2.2 Prepare the read-only operational evidence procedure in `docs/operations/notification-metadata-repair.md` that enumerates every active notification-writer process, container/image digest or runtime revision, command, and bind-mounted source; prove each serves #3458 (`7d2bea3bc`) or a descendant rather than relying on checkout or merge state (REQ-core-notify-002).
 - [ ] 2.3 Record the active Switchboard migration frontier, aggregate-only pre-repair candidate-band bounds/counts, and a bounded post-deploy observation window with no new JSONB string metadata rows; do not print raw metadata, messages, recipients, or row identifiers (REQ-core-notify-002).
 - [ ] 2.4 Treat missing/stale process evidence, a frontier mismatch, a new string row, or candidate-band growth as an external deployment blocker; stop before any historical mutation and do not substitute manual SQL or a runtime workaround (REQ-core-notify-002).
 
@@ -23,3 +23,8 @@
 
 - [ ] 4.1 Run focused API, writer, and Switchboard migration tests; run the applicable Ruff checks/format check and the migration-chain guard after the final Switchboard revision is known.
 - [ ] 4.2 Re-run `openspec validate repair-notification-metadata-read --strict`, review the API documentation against the implemented response matrix, and hand off the actual commands, aggregate evidence, deployment decision, and any external blocker without claiming a repair ran when the gate did not pass.
+
+The four checked Section 1 states are preserved historical states. The former task 1.4 document
+path was retired; its precise matrix now belongs in the surviving response-conventions document.
+Source preparation and pointer correction do not certify current serving writers, complete any
+unchecked Section 2 task, authorize Section 3.1, or claim migration/archive execution.

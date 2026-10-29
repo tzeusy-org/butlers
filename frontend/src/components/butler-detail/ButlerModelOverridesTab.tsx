@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
-import type { ButlerModelOverride, ComplexityTier, ModelCatalogEntry } from "@/api/types.ts";
+import type { ButlerModelOverride, ComplexityTier, ModelCatalogEntry, PricingMap } from "@/api/types.ts";
 import { ComplexityBadge, COMPLEXITY_TIERS, complexityLabel } from "@/components/general/ComplexityBadge.tsx";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
+import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -131,12 +133,69 @@ function EffectiveModelsTable({ butlerName }: { butlerName: string }) {
 // Override upsert dialog
 // ---------------------------------------------------------------------------
 
+interface PricePreviewProps {
+  before?: ModelCatalogEntry;
+  after?: ModelCatalogEntry;
+  pricing?: PricingMap;
+  pricingFailed: boolean;
+  pricingPending: boolean;
+}
+
+function previewUnavailable({ before, after, pricing, pricingFailed }: PricePreviewProps) {
+  return pricingFailed || ![before, after].every((entry) => {
+    const rates = entry && pricing?.[entry.model_id];
+    return rates && [rates.input_per_million, rates.output_per_million]
+      .every((rate) => Number.isFinite(rate) && rate >= 0);
+  });
+}
+
+function formatRate(rate: number) {
+  return rate > 0 && rate < 0.01 ? String(rate) : rate.toFixed(2);
+}
+
+function OverridePricePreview(props: PricePreviewProps) {
+  if (props.pricingPending) {
+    return <p role="status" className="text-sm text-muted-foreground">Loading cost preview...</p>;
+  }
+  if (previewUnavailable(props)) {
+    return (
+      <p role="status" className="text-sm text-[var(--amber-text)]">
+        Cost preview unavailable. You can still save with a reason.
+      </p>
+    );
+  }
+  return (
+    <div className="space-y-2 text-sm" aria-label="Cost preview">
+      <p className="font-medium">Catalog rates in USD per 1M tokens (base tier)</p>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+        {([["Before", props.before!], ["After", props.after!]] as const).map(([label, entry]) => {
+          const rate = props.pricing![entry.model_id];
+          return (
+            <div key={label} className="contents">
+              <dt>{label}</dt>
+              <dd>
+                <span className="block">{entry.alias} ({entry.model_id})</span>
+                ${formatRate(rate.input_per_million)} input / ${formatRate(rate.output_per_million)} output
+              </dd>
+            </div>
+          );
+        })}
+      </dl>
+      <p className="text-xs text-muted-foreground">
+        Overrides change routing settings, not provider rates. Actual model selection and spend
+        depend on routing, context and usage.
+      </p>
+    </div>
+  );
+}
+
 interface OverrideDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   catalogEntries: ModelCatalogEntry[];
   existingOverride?: ButlerModelOverride | null;
-  onSubmit: (catalogEntryId: string, complexityTier: ComplexityTier | null) => void;
+  onSubmit: (catalogEntryId: string, complexityTier: ComplexityTier | null, reason: string, unavailable: boolean) => void;
+  price: Omit<PricePreviewProps, "before" | "after">;
   isSubmitting: boolean;
 }
 
@@ -146,6 +205,7 @@ function OverrideDialog({
   catalogEntries,
   existingOverride,
   onSubmit,
+  price,
   isSubmitting,
 }: OverrideDialogProps) {
   const formKey = open ? (existingOverride?.id ?? "new") : "closed";
@@ -164,6 +224,7 @@ function OverrideDialog({
           key={formKey}
           catalogEntries={catalogEntries}
           existingOverride={existingOverride}
+          price={price}
           onSubmit={onSubmit}
           onCancel={() => onOpenChange(false)}
           isSubmitting={isSubmitting}
@@ -177,12 +238,14 @@ function OverrideFormFields({
   catalogEntries,
   existingOverride,
   onSubmit,
+  price,
   onCancel,
   isSubmitting,
 }: {
   catalogEntries: ModelCatalogEntry[];
   existingOverride?: ButlerModelOverride | null;
-  onSubmit: (catalogEntryId: string, complexityTier: ComplexityTier | null) => void;
+  onSubmit: (catalogEntryId: string, complexityTier: ComplexityTier | null, reason: string, unavailable: boolean) => void;
+  price: Omit<PricePreviewProps, "before" | "after">;
   onCancel: () => void;
   isSubmitting: boolean;
 }) {
@@ -193,7 +256,13 @@ function OverrideFormFields({
     existingOverride?.complexity_tier ?? "inherit",
   );
 
-  const isValid = catalogEntryId !== "";
+  const [reason, setReason] = useState("");
+  const selected = catalogEntries.find((entry) => entry.id === catalogEntryId);
+  const previous = existingOverride
+    ? catalogEntries.find((entry) => entry.id === existingOverride.catalog_entry_id)
+    : selected;
+  const preview = { ...price, before: previous, after: selected };
+  const isValid = catalogEntryId !== "" && reason.trim().length > 0;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -201,6 +270,8 @@ function OverrideFormFields({
     onSubmit(
       catalogEntryId,
       complexityTier === "inherit" ? null : complexityTier,
+      reason.trim(),
+      previewUnavailable(preview),
     );
   }
 
@@ -253,6 +324,16 @@ function OverrideFormFields({
         </p>
       </div>
 
+      <OverridePricePreview {...preview} />
+      {existingOverride && catalogEntryId !== existingOverride.catalog_entry_id && (
+        <p className="text-sm text-muted-foreground">Choosing another catalog entry adds its override; the existing entry stays unchanged.</p>
+      )}
+      <div className="space-y-2">
+        <Label htmlFor="override-reason">Reason</Label>
+        <Textarea id="override-reason" value={reason} maxLength={2000} required
+          onChange={(event) => setReason(event.target.value)} disabled={isSubmitting}
+          placeholder="Why is this override needed?" />
+      </div>
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting}>
           Cancel
@@ -379,6 +460,8 @@ export default function ButlerModelOverridesTab({
   const catalogEntries = catalogData?.data ?? [];
   const overrides = overridesData?.data ?? [];
 
+  const pricing = usePricingMap();
+  const price = { pricing: pricing.data, pricingFailed: pricing.isError, pricingPending: pricing.isPending };
   const upsertMutation = useUpsertButlerModelOverrides(butlerName);
   const deleteMutation = useDeleteButlerModelOverride(butlerName);
 
@@ -386,6 +469,9 @@ export default function ButlerModelOverridesTab({
   const [editingOverride, setEditingOverride] = useState<ButlerModelOverride | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ButlerModelOverride | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteReason, setDeleteReason] = useState("");
+  const deleteEntry = catalogEntries.find((entry) => entry.id === deleteTarget?.catalog_entry_id);
+  const deletePreview = { ...price, before: deleteEntry, after: deleteEntry };
 
   function handleAddClick() {
     setEditingOverride(null);
@@ -399,15 +485,19 @@ export default function ButlerModelOverridesTab({
 
   function handleDeleteClick(override: ButlerModelOverride) {
     setDeleteTarget(override);
+    setDeleteReason("");
     setDeleteDialogOpen(true);
   }
 
   function handleOverrideSubmit(
     catalogEntryId: string,
     complexityTier: ComplexityTier | null,
+    reason: string,
+    unavailable: boolean,
   ) {
     upsertMutation.mutate(
-      [{ catalog_entry_id: catalogEntryId, complexity_tier: complexityTier, enabled: true }],
+      { reason, price_preview_unavailable: unavailable,
+        overrides: [{ catalog_entry_id: catalogEntryId, complexity_tier: complexityTier, enabled: true }] },
       {
         onSuccess: () => {
           toast.success("Model override saved");
@@ -423,8 +513,9 @@ export default function ButlerModelOverridesTab({
   }
 
   function handleDeleteConfirm() {
-    if (!deleteTarget) return;
-    deleteMutation.mutate(deleteTarget.id, {
+    if (!deleteTarget || !deleteReason.trim()) return;
+    deleteMutation.mutate({ overrideId: deleteTarget.id, reason: deleteReason.trim(),
+      price_preview_unavailable: previewUnavailable(deletePreview) }, {
       onSuccess: () => {
         toast.success(`Override for "${deleteTarget.alias}" removed`);
         setDeleteDialogOpen(false);
@@ -489,6 +580,7 @@ export default function ButlerModelOverridesTab({
           if (!open) setEditingOverride(null);
         }}
         catalogEntries={catalogEntries}
+        price={price}
         existingOverride={editingOverride}
         onSubmit={handleOverrideSubmit}
         isSubmitting={upsertMutation.isPending}
@@ -505,6 +597,12 @@ export default function ButlerModelOverridesTab({
               global catalog settings.
             </DialogDescription>
           </DialogHeader>
+          <OverridePricePreview {...deletePreview} />
+          <div className="space-y-2">
+            <Label htmlFor="override-delete-reason">Reason</Label>
+            <Textarea id="override-delete-reason" value={deleteReason} maxLength={2000} required
+              onChange={(event) => setDeleteReason(event.target.value)} disabled={deleteMutation.isPending} />
+          </div>
           <DialogFooter>
             <Button
               variant="outline"
@@ -516,7 +614,7 @@ export default function ButlerModelOverridesTab({
             <Button
               variant="destructive"
               onClick={handleDeleteConfirm}
-              disabled={deleteMutation.isPending}
+              disabled={deleteMutation.isPending || !deleteReason.trim()}
             >
               {deleteMutation.isPending ? "Removing..." : "Remove"}
             </Button>

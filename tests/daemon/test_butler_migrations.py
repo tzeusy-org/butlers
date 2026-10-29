@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,6 +27,7 @@ from butlers.migrations import (
     _discover_module_chains,
     _resolve_chain_dir,
     get_all_chains,
+    get_module_migration_chains,
     has_butler_chain,
     run_migrations,
 )
@@ -66,21 +68,56 @@ def test_build_alembic_config_and_run_migrations() -> None:
 
     # chain='all' upgrades each discovered chain in deterministic order
     mock_cfg = MagicMock()
+    admission_order = []
     with (
         patch(
             "butlers.migrations.get_all_chains", return_value=["core", "approvals", "switchboard"]
         ),
         patch("butlers.migrations._build_alembic_config", return_value=mock_cfg),
         patch("butlers.migrations.command.upgrade") as mock_upgrade,
-        patch("butlers.migrations._bootstrap_extensions"),
+        patch(
+            "butlers.migrations.check_bootstrap_database",
+            side_effect=lambda _url: admission_order.append("bootstrap"),
+            create=True,
+        ),
+        patch(
+            "butlers.migrations._bootstrap_extensions",
+            side_effect=lambda _url: admission_order.append("extensions"),
+        ),
     ):
         asyncio.run(run_migrations("postgresql://db", chain="all", schema="switchboard"))
 
+    # REQ-database-security-011: online admission precedes the first runner DDL.
+    assert admission_order == ["bootstrap", "extensions"]
     assert mock_upgrade.call_args_list == [
         ((mock_cfg, "core@head"),),
         ((mock_cfg, "approvals@head"),),
         ((mock_cfg, "switchboard@head"),),
     ]
+
+    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError
+
+    with (
+        patch(
+            "butlers.migrations.check_bootstrap_database",
+            side_effect=BootstrapPrerequisiteError("missing or untrusted"),
+        ) as admit,
+        patch("butlers.migrations._bootstrap_extensions") as extensions,
+        patch("butlers.migrations._build_alembic_config") as build,
+        patch("butlers.migrations.command.upgrade") as upgrade,
+    ):
+        with pytest.raises(BootstrapPrerequisiteError):
+            asyncio.run(run_migrations("postgresql://unused"))
+        admit.assert_called_once()
+        extensions.assert_not_called()
+        build.assert_not_called()
+        upgrade.assert_not_called()
+    with patch("butlers.migrations.check_bootstrap_database") as admit:
+        with pytest.raises(ValueError, match="Invalid migration schema"):
+            asyncio.run(run_migrations("postgresql://unused", schema="invalid-schema"))
+        with pytest.raises(ValueError, match="Unknown migration chain"):
+            asyncio.run(run_migrations("postgresql://unused", chain="absent_chain"))
+        admit.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +160,26 @@ def test_discover_chains(tmp_path) -> None:
         assert expected in _discover_butler_chains()
     for expected in ["approvals", "contacts", "memory"]:
         assert expected in _discover_module_chains()
+
+    # Real Health declarations include HA's mandatory approval dependency;
+    # its public module name resolves to the owning roster/home directory.
+    from butlers.config import load_config
+    from butlers.modules.registry import default_registry
+
+    root = Path(__file__).resolve().parents[2]
+    registry = default_registry()
+    for name in ("home", "health"):
+        config = load_config(root / "roster" / name)
+        modules = registry.load_from_config(config.modules)
+        chains = get_module_migration_chains(modules, name)
+        assert {"contacts", "approvals"}.issubset(config.modules)
+        if name == "home":
+            assert "home_assistant" not in chains  # own butler chain already runs
+        else:
+            assert chains["home_assistant"] == "home"
+        assert {"contacts", "approvals", "memory"}.issubset(chains.values())
+    brokers = registry.load_from_config({"insight_broker": {}, "owner_conditions_broker": {}})
+    assert get_module_migration_chains(brokers, "health") == {}
 
 
 # ---------------------------------------------------------------------------
@@ -197,9 +254,7 @@ class StubModule(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_mod"
+    name = "stub_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -213,7 +268,7 @@ class StubModule(Module):
         self.tools_registered = True
 
     def migration_revisions(self) -> str | None:
-        return "stub_mod"
+        raise AssertionError("Startup and CLI must discover directories, not call this hook")
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None
@@ -258,6 +313,42 @@ def _make_butler_toml(
 
 def _patch_infra():
     mock_pool = AsyncMock()
+
+    async def _runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    mock_conn.transaction = MagicMock(side_effect=_transaction)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield mock_conn
+
+    mock_pool.acquire = MagicMock(side_effect=_acquire)
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -271,7 +362,7 @@ def _patch_infra():
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -287,7 +378,9 @@ def _patch_infra():
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=MagicMock()),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "recover_route_inbox": patch.object(
@@ -307,6 +400,12 @@ async def _run_daemon_with_migration_tracking(
     patches = _patch_infra()
     call_log: list[str] = []
     schema_log: list[str | None] = []
+    module_root = butler_dir / "module_chains"
+    migrations = module_root / "stub_mod" / "migrations"
+    migrations.mkdir(parents=True)
+    (migrations / "001_stub.py").write_text(
+        "# Directory presence, not a hook, selects this chain.\n"
+    )
 
     with (
         patches["db_from_env"],
@@ -318,10 +417,11 @@ async def _run_daemon_with_migration_tracking(
         patches["sync_schedules"],
         patches["FastMCP"],
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["recover_route_inbox"],
+        patch("butlers.migrations.MODULES_DIR", module_root),
     ):
         mock_has_chain.return_value = has_chain
 
@@ -334,11 +434,36 @@ async def _run_daemon_with_migration_tracking(
         daemon = ButlerDaemon(butler_dir, registry=registry)
         await daemon.start()
 
+        daemon_calls, daemon_schemas = list(call_log), list(schema_log)
+        call_log.clear()
+        schema_log.clear()
+        from butlers.cli import _migrate_all
+
+        with (
+            patch("butlers.modules.registry.default_registry", return_value=registry),
+            patch("butlers.migrations.run_migrations", side_effect=track_migration),
+            patch("butlers.migrations.has_butler_chain", return_value=has_chain),
+            patch(
+                "butlers.db.db_params_from_env",
+                return_value={
+                    "user": "test",
+                    "password": "test",
+                    "host": "localhost",
+                    "port": 5432,
+                },
+            ),
+        ):
+            await _migrate_all({daemon.config.name: butler_dir}, dry_run=False)
+        assert call_log == daemon_calls
+        assert schema_log == daemon_schemas
+
     return call_log, schema_log
 
 
 async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -> None:
-    """Migration ordering: with chain runs core→butler→module; without chain skips butler.
+    """REQ-core-modules-010: directory selection agrees across CLI and daemon.
+
+    Migration ordering: with chain runs core→butler→module; without chain skips butler.
     All chains receive the butler's configured schema."""
     registry_with_mod = ModuleRegistry()
     registry_with_mod.register(StubModule)
@@ -368,3 +493,195 @@ async def test_butler_migration_ordering_and_schema_forwarding(tmp_path: Path) -
         butler_dir3, registry_with_mod, has_chain=True
     )
     assert schema_log == ["relationship", "relationship", "relationship"]
+
+
+def test_bootstrap_checker_is_read_only_fail_closed_and_distinguishes_connection_errors(
+    tmp_path: Path,
+) -> None:
+    """REQ-database-security-011: software classification; catalog proof is real-PG elsewhere."""
+    from sqlalchemy.exc import ProgrammingError
+
+    from butlers import bootstrap_prerequisite as prerequisite
+
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+        def one(self):
+            return ("normal_migration", False)
+
+    class Connection:
+        def __init__(self, bad_at=None, bad_value=False, installed=False):
+            self.calls = []
+            self.bad_at = bad_at
+            self.bad_value = bad_value
+            self.installed = installed
+
+        def execute(self, sql, params=None):
+            query = str(sql)
+            self.calls.append((query, params))
+            if len(self.calls) == self.bad_at:
+                return Result(self.bad_value)
+            if query in prerequisite._INSTALLED.values():
+                return Result(self.installed)
+            return Result(True)
+
+    from tests.bootstrap_prerequisite_helpers import _historical_runner
+
+    historical = _historical_runner(tmp_path)
+    assert Path(historical["__file__"]).is_relative_to(tmp_path)
+    assert set(historical["get_all_chains"]()) == set(get_all_chains())
+    assert historical["get_chain_head"]("core") == __import__(
+        "butlers.migrations", fromlist=["get_chain_head"]
+    ).get_chain_head("core")
+    # The actual immutable generators own the transient cross-schema read ACL;
+    # it cannot be a stable prerequisite for reaching its ordinary repair.
+    import importlib.util
+
+    root = Path(__file__).resolve().parents[2]
+    commands = []
+    for filename, function, args in (
+        (
+            "core_001_foundation.py",
+            "_apply_default_privileges",
+            ("relationship", "butler_relationship_rw"),
+        ),
+        ("core_077_relationship_switchboard_read_grants.py", "upgrade", ()),
+    ):
+        source = root / "alembic" / "versions" / "core" / filename
+        spec = importlib.util.spec_from_file_location("actual_acl_" + source.stem, source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(
+            module,
+            "_execute_best_effort",
+            side_effect=lambda statement, **_kwargs: commands.append(statement),
+        ):
+            getattr(module, function)(*args)
+    assert (
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA "switchboard" REVOKE ALL ON TABLES FROM "butler_relationship_rw"'
+        in commands
+    )
+    assert (
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA "switchboard" GRANT SELECT ON TABLES TO "butler_relationship_rw"'
+        in commands
+    )
+    assert (
+        'ALTER DEFAULT PRIVILEGES IN SCHEMA "relationship" GRANT SELECT, INSERT, UPDATE, DELETE, TRIGGER, REFERENCES ON TABLES TO "butler_relationship_rw"'
+        in commands
+    )
+    profile = prerequisite._default_profile()
+    assert {
+        "role": "butler_relationship_rw",
+        "schema": "switchboard",
+        "kind": "r",
+        "privilege": "SELECT",
+    } not in profile
+    assert {
+        "role": "butler_relationship_rw",
+        "schema": "relationship",
+        "kind": "r",
+        "privilege": "INSERT",
+    } in profile
+    assert {
+        "role": "butler_general_rw",
+        "schema": "general",
+        "kind": "r",
+        "privilege": "INSERT",
+    } in profile
+
+    accepted = Connection()
+    prerequisite.check_bootstrap_connection(accepted)
+    assert len(accepted.calls) == 12
+    assert all(query.lstrip().startswith(("SELECT", "WITH")) for query, _ in accepted.calls)
+    assert not any("bootstrap_configuration WHERE" in query for query, _ in accepted.calls)
+    # NULL/nonboolean 'true' cannot stand in for positively inspected catalog state.
+    for index in (2, 3, 4, 5, 6, 8, 10, 12):
+        for value in (False, None, "true", 1):
+            with pytest.raises(
+                prerequisite.BootstrapPrerequisiteError, match="missing or untrusted|unreadable"
+            ):
+                prerequisite.check_bootstrap_connection(Connection(index, value))
+    with pytest.raises(prerequisite.BootstrapPrerequisiteError, match="unreadable"):
+        prerequisite.check_bootstrap_connection(Connection(installed=None))
+    finalized = Connection(installed=True)
+    prerequisite.check_bootstrap_connection(finalized)
+    assert all("pg_catalog.pg_roles" in finalized.calls[index][0] for index in (7, 9, 11))
+    assert all(":migration_role" in finalized.calls[index][0] for index in (7, 9, 11))
+    assert prerequisite._qualified_predicate(
+        "SELECT current_user, pg_roles.oid, 'pg_roles current_user' -- pg_roles\nFROM pg_roles"
+    ) == (
+        "SELECT CAST(:migration_role AS pg_catalog.name), pg_catalog.pg_roles.oid, "
+        "'pg_roles current_user' -- pg_roles\nFROM pg_catalog.pg_roles"
+    )
+    unreadable = MagicMock()
+    unreadable.execute.side_effect = ProgrammingError(
+        "private-sql", {"password": "sensitive"}, Exception()
+    )
+    with pytest.raises(prerequisite.BootstrapPrerequisiteError, match="unreadable") as error:
+        prerequisite.check_bootstrap_connection(unreadable)
+    assert "private-sql" not in str(error.value) and "sensitive" not in str(error.value)
+    engine = MagicMock()
+    engine.connect.side_effect = ConnectionError("connection failed")
+    with patch.object(prerequisite, "create_engine", return_value=engine):
+        with pytest.raises(ConnectionError, match="connection failed"):
+            prerequisite.check_bootstrap_database("postgresql://unused")
+    engine.dispose.assert_called_once()
+
+
+def test_direct_online_environment_admits_before_ddl_and_offline_never_attests() -> None:
+    """REQ-database-security-011; REQ-database-security-012; REQ-deployment-hardening-010: both entrypoints fail closed."""
+    import runpy
+
+    from butlers.bootstrap_prerequisite import BootstrapPrerequisiteError
+
+    env = Path(__file__).resolve().parents[2] / "alembic" / "env.py"
+    context = MagicMock()
+    context.is_offline_mode.return_value = False
+    context.config.get_main_option.side_effect = lambda name: {
+        "sqlalchemy.url": "postgresql://unused",
+        "butlers.target_schema": "probe",
+        "version_table_schema": "probe",
+    }.get(name)
+    connection = MagicMock()
+    connection.__enter__.return_value = connection
+    engine = MagicMock()
+    engine.connect.return_value = connection
+    events = []
+    connection.rollback.side_effect = lambda: events.append("rollback")
+    connection.exec_driver_sql.side_effect = lambda _sql: events.append("ddl")
+    context.configure.side_effect = lambda **_kwargs: events.append("configure")
+    with (
+        patch("alembic.context", context),
+        patch("sqlalchemy.create_engine", return_value=engine),
+        patch(
+            "butlers.bootstrap_prerequisite.check_bootstrap_connection",
+            side_effect=lambda _connection: events.append("admit"),
+        ),
+    ):
+        runpy.run_path(str(env))
+    assert events[:4] == ["admit", "rollback", "ddl", "ddl"]
+    assert events[4] == "configure"
+    events.clear()
+    with (
+        patch("alembic.context", context),
+        patch("sqlalchemy.create_engine", return_value=engine),
+        patch(
+            "butlers.bootstrap_prerequisite.check_bootstrap_connection",
+            side_effect=BootstrapPrerequisiteError("missing or untrusted"),
+        ),
+        pytest.raises(BootstrapPrerequisiteError),
+    ):
+        runpy.run_path(str(env))
+    assert events == []
+    context.is_offline_mode.return_value = True
+    with (
+        patch("alembic.context", context),
+        patch("sqlalchemy.create_engine", return_value=engine),
+        patch("butlers.bootstrap_prerequisite.check_bootstrap_connection") as admission,
+    ):
+        runpy.run_path(str(env))
+    admission.assert_not_called()

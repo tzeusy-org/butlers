@@ -37,6 +37,7 @@ from butlers.jobs.home import (
     _require_ha_source_healthy,
     _send_notify,
 )
+from butlers.testing.records import row
 
 pytestmark = pytest.mark.unit
 
@@ -75,17 +76,6 @@ def _make_pool(
     pool.fetch = AsyncMock(return_value=fetch_return or [])
     pool.execute = AsyncMock()
     return pool
-
-
-class _FakeRecord:
-    def __init__(self, data: dict[str, Any]) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def keys(self) -> Any:
-        return self._data.keys()
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +214,8 @@ async def test_load_thresholds_per_key_fallback_and_type_casting():
 async def test_read_entity_snapshot():
     """Returns all rows; domain filter restricts results; empty raises EmptyEntitySnapshotError."""
     rows = [
-        _FakeRecord(
-            {"entity_id": "sensor.temp", "state": "72", "attributes": {}, "last_updated": None}
-        ),
-        _FakeRecord(
-            {"entity_id": "light.living", "state": "on", "attributes": {}, "last_updated": None}
-        ),
+        row(**{"entity_id": "sensor.temp", "state": "72", "attributes": {}, "last_updated": None}),
+        row(**{"entity_id": "light.living", "state": "on", "attributes": {}, "last_updated": None}),
     ]
     pool = _make_pool(fetch_return=rows)
     result = await _read_entity_snapshot(pool)
@@ -253,9 +239,7 @@ async def test_read_entity_snapshot():
 async def test_read_entity_snapshot_unmeasurable_on_outage():
     """An unhealthy or missing ha_source_health row raises before querying the snapshot."""
     rows = [
-        _FakeRecord(
-            {"entity_id": "sensor.temp", "state": "72", "attributes": {}, "last_updated": None}
-        )
+        row(**{"entity_id": "sensor.temp", "state": "72", "attributes": {}, "last_updated": None})
     ]
 
     # Simulated outage: an explicit error status short-circuits before the

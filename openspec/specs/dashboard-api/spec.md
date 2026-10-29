@@ -8,12 +8,16 @@ Defines the complete data access layer connecting the Butlers dashboard frontend
 ### Requirement: FastAPI Application Factory
 The `create_app()` function in `src/butlers/api/app.py` SHALL build the FastAPI application with CORS middleware, lifespan handler, error handlers, static file serving, and router registration. The lifespan handler initializes `MCPClientManager`, `PricingConfig`, and `DatabaseManager` singletons on startup and tears them down on shutdown.
 
+ID: REQ-dashboard-api-070
+Source: bu-q11586.3 accepted S1 registry/dependency packet
+Scope: v1-mandatory
+
 #### Scenario: Application startup
 - **WHEN** the FastAPI lifespan starts
 - **THEN** `init_dependencies()` discovers all butlers from the roster directory and registers them in the `MCPClientManager` singleton
 - **AND** `init_pricing()` loads `pricing.toml` into the `PricingConfig` singleton
 - **AND** `init_db_manager()` creates asyncpg pools for each discovered butler plus the shared credential pool
-- **AND** `wire_db_dependencies()` overrides the `_get_db_manager` stub in every static and dynamic router module
+- **AND** core and dynamic router modules consume one public `get_db`/`Db` dependency backed by that singleton, with the existing optional/uninitialized-read adapter preserved
 
 #### Scenario: CORS configuration
 - **WHEN** `create_app(cors_origins=None)` is called
@@ -314,7 +318,11 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 - **AND** each operation records an audit log entry
 
 ### Requirement: Butler-Specific Route Auto-Discovery
-`src/butlers/api/router_discovery.py` SHALL scan `roster/{butler}/api/router.py` files and dynamically load them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code.
+`src/butlers/api/router_discovery.py` SHALL scan `roster/{butler}/api/router.py` files and dynamically load them via `importlib`. Butler-specific routers extend the API surface without modifying core router registration code. Direct butlers.api._roster.<butler>.router imports SHALL resolve on demand to the same actual router module used by explicit discovery, preserving the existing {butler_name}_api_router execution/cache identity. Its models namespace SHALL expose the router's actual local model objects. Installing the namespace resolver SHALL NOT mount or execute every router. Explicit discovery/create_app SHALL still mount the complete healthy router set and preserve dependency overrides, sorted traversal and optional invalid-router warnings/skips. Failed newly-created loads SHALL NOT be cached as successful routers, and explicit custom roster roots SHALL not reuse a different file solely by matching a butler name.
+
+ID: REQ-dashboard-api-066
+Source: bu-ly3lv5.4 released by bu-7lh5ew; performance-discipline; actual owning source and existing contract
+Scope: v1-mandatory
 
 #### Scenario: Discovery of butler routers
 - **WHEN** `discover_butler_routers()` is called
@@ -327,9 +335,19 @@ The session list/aggregate endpoints MUST interpret a bare `YYYY-MM-DD` `from_da
 - **AND** modules without `router` or with non-APIRouter exports are logged as warnings and skipped
 
 #### Scenario: DB dependency wiring
-- **WHEN** `wire_db_dependencies()` is called with dynamic modules
-- **THEN** each dynamic module with a `_get_db_manager` stub has it overridden with the `get_db_manager` singleton
-- **AND** the override applies via FastAPI's `dependency_overrides` mechanism
+- **WHEN** a dynamic module declares its database dependency
+- **THEN** it consumes the public `get_db`/`Db` singleton dependency shared with core routers
+- **AND** callers may override that public dependency via FastAPI's `dependency_overrides` mechanism
+
+#### Scenario: Namespace and discovery share the actual router
+- **WHEN** a butler router or models namespace is requested and explicit discovery later runs
+- **THEN** the requested router body has executed once and both paths share its actual module/model identities
+- **AND** the healthy router is mounted with its existing database dependency wiring
+
+#### Scenario: Invalid optional router remains visibly optional
+- **WHEN** explicit bulk discovery encounters an invalid optional router
+- **THEN** it warns and skips as already governed
+- **AND** direct import of a failing requested router does not return a partial successful module
 
 ### Requirement: Butler Discovery and Status Probing
 `src/butlers/api/routers/butlers.py` SHALL provide butler list and detail endpoints that combine static config discovery with live MCP status probing.
@@ -764,6 +782,8 @@ All endpoints under the new `/api/secrets/*` namespace and the generalised `/api
 
 ### Requirement: Calendar Workspace
 `src/butlers/api/routers/calendar_workspace.py` provides a normalized calendar read surface, metadata endpoint, sync trigger, and mutation endpoints for both user-view and butler-view events. It SHALL additionally expose a read-only accounts surface (`GET /api/calendar/accounts`) and a per-calendar source enable/disable mutation (`POST /api/calendar/sources`); the sync trigger SHALL accept a `full` recovery flag and the metadata endpoint SHALL carry a per-source `error_kind` so the workspace can render the correct Recover/Reconnect CTA. No new table is introduced — source enable/disable reuses the existing `calendar_sources` projection rows, and the accounts surface reuses `public.google_accounts` plus the Google Calendar connector health.
+
+**Amendment (bu-q11586.7, owner decision bu-kf3n4i = A).** The workspace is an operator view. `POST /api/calendar/workspace/user-events` SHALL accept `action="create"` only (the quick-add confirmation); `update` and `delete` SHALL be rejected with HTTP 422. The dashboard API SHALL NOT expose duplicate review, dedup-rule or keep-separate writes, free-slot search (`find-time`), `.ics` export, subscribe or import, or a mutation-undo route. The workspace read keeps collapsing cross-source duplicates with the stored dedup rules and keep-separate pins. Every calendar MCP tool (`calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, instance edits, attendees and proposals) stays registered and unchanged for butlers and chat.
 
 #### Scenario: Workspace read
 - **WHEN** `GET /api/calendar/workspace?view=user&start=...&end=...` is called
@@ -1270,118 +1290,6 @@ Scope: v1-mandatory
   `L3` escalation label
 - **AND** commitments at `L2` or `L3` are visually emphasized
 
-### Requirement: Calendar ICS Export
-
-The dashboard API SHALL expose `GET /api/calendar/export/ics`, a read-only
-data-portability export that streams the calendar workspace entries for a date
-range as a `text/calendar` (iCalendar / VCALENDAR) file generated with the
-`icalendar` library. The export SHALL reuse the existing workspace
-read/projection and accept the same `view`, `butlers`, `sources`, `status`, and
-`source_type` filters as `GET /api/calendar/workspace`, so the exported set
-matches what the workspace read returns for the same inputs. Each entry SHALL
-become a VEVENT whose `SUMMARY` is the entry title verbatim — the `BUTLER:`
-prefix on butler-authored events MUST be preserved. The endpoint MUST perform no
-provider write, MUST NOT spawn an LLM session, and MUST NOT require a database
-migration. ICS subscribe (`webcal`) and `.ics` import are out of scope.
-
-#### Scenario: Range exported as valid VCALENDAR
-
-- **WHEN** `GET /api/calendar/export/ics` is called with a valid `view`, `start`,
-  and `end`
-- **THEN** the response is `text/calendar` with a `Content-Disposition: attachment`
-  header and a body that parses as a valid VCALENDAR containing one VEVENT per
-  workspace entry in the range, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
-
-#### Scenario: Butler title prefix preserved
-
-- **WHEN** the exported range includes a butler-authored event whose title begins
-  with the `BUTLER:` prefix
-- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
-
-#### Scenario: Empty range yields an empty calendar
-
-- **WHEN** the requested range contains no entries
-- **THEN** the endpoint returns HTTP 200 with a valid VCALENDAR that contains no
-  VEVENT components, rather than an error
-
-#### Scenario: Invalid range rejected
-
-- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum,
-  or a `status`/`source_type` facet value is unknown
-- **THEN** the endpoint returns HTTP 400 and writes nothing; a request missing
-  the required `start`/`end` parameters returns HTTP 422
-
-### Requirement: Calendar ICS Subscribe Feed
-
-The dashboard API SHALL expose `GET /api/calendar/subscribe.ics`, a read-only
-live ICS feed an external calendar application can subscribe to (for example via
-`webcal://`). On each fetch the endpoint SHALL re-render the **current** calendar
-workspace entries — over a rolling window relative to the request time (the
-default window is `now − 30 days … now + 60 days`, within the 90-day workspace
-range cap) — as a `text/calendar` (iCalendar / VCALENDAR) body generated with the
-`icalendar` library, reusing the same projection, the `view` / `butlers` /
-`sources` / `status` / `source_type` filters, and the `BUTLER:` title-prefix
-preservation as `GET /api/calendar/export/ics`. The response SHALL use
-`Content-Disposition: inline` so clients treat it as a subscription feed rather
-than a one-shot download. The endpoint MUST perform no provider write, MUST NOT
-spawn an LLM session, MUST NOT require a database migration, and MUST be served
-behind the same network boundary as the other dashboard/calendar endpoints (no
-new unauthenticated surface, no per-feed token).
-
-#### Scenario: Feed re-renders current workspace entries
-
-- **WHEN** `GET /api/calendar/subscribe.ics` is fetched
-- **THEN** the response is HTTP 200 `text/calendar` with a
-  `Content-Disposition: inline` header and a body that parses as a valid
-  VCALENDAR containing one VEVENT per current workspace entry in the rolling
-  window, each with `UID`, `DTSTART`, `DTEND`, and `SUMMARY`
-
-#### Scenario: Butler title prefix preserved
-
-- **WHEN** the feed window includes a butler-authored event whose title begins
-  with the `BUTLER:` prefix
-- **THEN** that event's VEVENT `SUMMARY` retains the `BUTLER:` prefix verbatim
-
-#### Scenario: Unknown facet rejected
-
-- **WHEN** a `status` or `source_type` facet value is unknown
-- **THEN** the endpoint returns HTTP 400 and writes nothing
-
-### Requirement: Calendar ICS Import With Dedup
-
-The dashboard API SHALL expose `POST /api/calendar/import/ics`, which accepts an
-uploaded `.ics` file plus a target `butler_name` (and optional `calendar_id`),
-parses its VEVENT components, and creates the events in the user calendar through
-the existing `calendar_create_event` MCP path. The import SHALL be **deduplicated
-against existing workspace entries** using the read-model's existing
-`(title, starts_epoch)` collapse key: an event whose collapse key matches an
-existing workspace entry — including every event when the same `.ics` is imported
-again — MUST be skipped rather than creating a duplicate. Duplicate VEVENTs within
-the uploaded file itself MUST also be collapsed. The endpoint SHALL return the
-`parsed`, `imported`, and `skipped_duplicates` counts, where
-`imported + skipped_duplicates == parsed`. The endpoint MUST require no database
-migration.
-
-#### Scenario: New events imported
-
-- **WHEN** a `.ics` containing events not present in the workspace is imported
-- **THEN** each such event is created via `calendar_create_event` and the
-  response reports `imported` equal to the number of new events with
-  `skipped_duplicates` of 0
-
-#### Scenario: Re-importing the same file is a no-op
-
-- **WHEN** a `.ics` whose events already exist in the workspace (the
-  `(title, starts_epoch)` collapse key matches existing entries) is imported
-- **THEN** no `calendar_create_event` call is made for those events and the
-  response reports `imported` of 0 with `skipped_duplicates` equal to the parsed
-  event count
-
-#### Scenario: Empty or invalid payload rejected
-
-- **WHEN** the uploaded file is empty or is not parseable as iCalendar
-- **THEN** the endpoint returns HTTP 400 and creates nothing
-
 ### Requirement: Prep Rail Surfaces Merged Message Context
 
 The meeting-prep rail read `GET /api/calendar/workspace/prep/{event_id}` SHALL
@@ -1400,98 +1308,6 @@ open to a structured empty payload when no contribution exists.
 #### Scenario: Message context surfaced without request-time cross-butler read
 - **WHEN** the prep rail read serves an event with email message context
 - **THEN** the `message_context` is read only from `calendar.v_prep_contributions` (the precomputed cached view), with no on-demand `SELECT` against any sibling schema and no LLM/Gmail session opened while serving the request
-
-### Requirement: Calendar Duplicate-Cluster Review
-
-The dashboard API SHALL expose `GET /api/calendar/workspace/duplicates`, a
-read-only surface that exposes the cross-source duplicate clusters the workspace
-read-model collapses. For a `view` + `start` + `end` range it SHALL re-run the
-same two-pass dedup over the un-collapsed workspace rows and return every cluster
-of more than one member the dedup would collapse: the kept survivor (lowest
-keyset), the collapsed-away `duplicate_entries`, the `match_pass`
-(`origin_ref` | `title`) that grouped them, the `member_count`, and a
-`keep_separate` flag. Clusters with fewer members than the active
-`noisy_threshold` SHALL be omitted. The endpoint MUST be fail-open: any read
-failure SHALL yield HTTP 200 with `available=false` and an empty `clusters` list,
-never an HTTP 500. It MUST perform no provider write and MUST NOT spawn an LLM
-session.
-
-#### Scenario: Collapsed cluster exposed
-
-- **WHEN** the same event is synced into multiple butler schemas (identical
-  `origin_ref` + start) and `GET /api/calendar/workspace/duplicates` is called
-  for a range covering it
-- **THEN** the response contains one cluster with `match_pass="origin_ref"`,
-  `member_count` equal to the number of copies, a `kept_entry`, and the remaining
-  copies as `duplicate_entries`, and `available=true`
-
-#### Scenario: Below-threshold clusters omitted
-
-- **WHEN** a cluster's member count is less than the active `noisy_threshold`
-- **THEN** that cluster is not included in the returned `clusters` list
-
-#### Scenario: Fail-open on read failure
-
-- **WHEN** the underlying workspace read fails
-- **THEN** the endpoint returns HTTP 200 with `available=false` and an empty
-  `clusters` list rather than an error
-
-#### Scenario: Invalid range rejected
-
-- **WHEN** `end` is not after `start`, or the range exceeds the 90-day maximum
-- **THEN** the endpoint returns HTTP 400; a request missing the required
-  `start`/`end` parameters returns HTTP 422
-
-### Requirement: Calendar Dedup Rules
-
-The dashboard API SHALL expose `PATCH /api/calendar/workspace/dedup-rules` to
-persist the workspace-global cross-source dedup rules: a `match_strategy` of
-`exact` (origin-ref identity pass only), `balanced` (origin-ref + title/start
-collapse; the default), or `aggressive` (as `balanced` but normalising titles by
-stripping non-alphanumerics), and a `noisy_threshold` (minimum cluster size for
-the review surface to report a cluster, at least 2). Omitted fields SHALL be left
-unchanged. An unknown `match_strategy` SHALL be rejected without persisting. The
-live workspace read SHALL honor the persisted rules so that changing the strategy
-changes what the read collapses. The rules SHALL persist across requests.
-
-#### Scenario: Strategy and threshold persisted
-
-- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a valid
-  `match_strategy` and `noisy_threshold`
-- **THEN** the endpoint returns HTTP 200 with the new rules and a subsequent read
-  of the rules returns the persisted values
-
-#### Scenario: Unknown strategy rejected
-
-- **WHEN** `PATCH /api/calendar/workspace/dedup-rules` is called with a
-  `match_strategy` outside `exact`/`balanced`/`aggressive`
-- **THEN** the endpoint rejects the request (HTTP 400 or 422) and does not change
-  the persisted rules
-
-### Requirement: Calendar Keep-Separate Override
-
-The dashboard API SHALL expose `POST /api/calendar/workspace/duplicates/keep-separate`
-to pin or unpin a duplicate cluster (identified by its `cluster_key`) so the
-dedup does not collapse it. When pinned (`keep_separate=true`) the workspace read
-SHALL keep all members of that cluster as distinct entries, and the review
-surface SHALL still report the cluster with its `keep_separate` flag set. When
-unpinned (`keep_separate=false`) the override SHALL be removed and the cluster
-SHALL collapse again under the active rules. Overrides SHALL persist across
-requests.
-
-#### Scenario: Pinned cluster is not collapsed
-
-- **WHEN** a cluster is pinned via `POST /api/calendar/workspace/duplicates/keep-separate`
-  with `keep_separate=true`
-- **THEN** the workspace read keeps every member of that cluster as a distinct
-  entry, and the duplicates surface still lists the cluster with
-  `keep_separate=true`
-
-#### Scenario: Unpin restores collapse
-
-- **WHEN** a previously-pinned cluster is unpinned with `keep_separate=false`
-- **THEN** the override is removed and the cluster collapses again under the
-  active dedup rules
 
 ### Requirement: Calendar Mutation Audit-Trail Read Endpoint
 
@@ -1554,91 +1370,6 @@ self-explaining and deep-linkable to the originating session.
   history — the frontend renders a "some sources unavailable" note. A clean
   fan-out (or a legitimately empty log) reports `sources_available: true`
   (default), and clients that ignore the field observe the prior shape.
-
-### Requirement: Calendar Mutation Undo Endpoint
-
-`src/butlers/api/routers/calendar_workspace.py` SHALL expose
-`POST /api/calendar/workspace/undo/{action_id}` that reverses a single previously
-logged calendar mutation. The endpoint SHALL synthesize the inverse mutation from
-the logged `calendar_action_log` row (`action_payload` plus the captured
-pre-mutation state in `action_result`) and dispatch it through the **existing**
-calendar MCP tools with a **fresh `request_id`**; it SHALL NOT introduce a new
-MCP tool and SHALL NOT reverse an action that was never applied, was already
-undone, or whose pre-state is unavailable.
-
-#### Scenario: Undo an update reverse-applies the captured pre-state
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an
-  `applied` `workspace_user_update` row whose `action_result` carries the
-  pre-mutation event state
-- **THEN** an inverse `calendar_update_event` is dispatched that restores the
-  event's pre-state fields (title, start/end, timezone, location, description,
-  attendees, recurrence, calendar id, and linked people) with a freshly generated
-  `request_id`
-- **AND** an empty captured people set is dispatched as `entity_ids: []` plus
-  `clear_entity_ids: true`, so undo restores an originally-unlinked event rather
-  than preserving newly added links
-- **AND** the undo dispatch is itself recorded in `calendar_action_log` (so it is
-  idempotent and appears in the audit trail)
-- **AND** the response reports the undone `action_id`, the inverse tool invoked,
-  and the new `request_id`
-
-#### Scenario: Undo a delete recreates the event from the pre-image
-
-- **WHEN** the undone row is an `applied` `workspace_user_delete` whose
-  `action_result` carries the pre-deletion event state
-- **THEN** an inverse `calendar_create_event` is dispatched from the captured
-  pre-image with a fresh `request_id`, recreating the event and its linked people
-  on its home calendar
-
-#### Scenario: Undo a create deletes the created event
-
-- **WHEN** the undone row is an `applied` `workspace_user_create`
-- **THEN** an inverse `calendar_delete_event` is dispatched against the created
-  event id (from the row's `origin_ref`/`action_result`) with a fresh `request_id`
-
-#### Scenario: Undo of a non-applied action fails fast
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` targets a row whose
-  `action_status` is `pending`, `failed`, or `noop`
-- **THEN** the endpoint returns a fail-fast error (HTTP 409) naming the row's
-  status and stating that only an `applied` mutation can be undone
-- **AND** no inverse mutation is dispatched
-
-#### Scenario: Undo of a missing or expired pre-state fails fast with diagnostics
-
-- **WHEN** the targeted row exists and is `applied` but its `action_result` lacks
-  the captured pre-mutation state (e.g. it was logged before pre-state capture, or
-  the event no longer exists to restore against)
-- **THEN** the endpoint returns a fail-fast error (HTTP 422) whose detail names
-  the `action_id`, the `action_type`, and the reason the inverse could not be
-  reconstructed (missing/expired pre-state)
-- **AND** no inverse mutation is dispatched
-- **BECAUSE** silently guessing an inverse on a single-owner calendar could
-  materialize a wrong event or a wrong restore
-
-#### Scenario: Undo of an unknown action id returns not found
-
-- **WHEN** `{action_id}` does not match any `calendar_action_log` row **and every
-  targeted calendar schema's owner-lookup fan-out responded successfully**
-- **THEN** the endpoint returns HTTP 404 and dispatches no mutation
-
-#### Scenario: Undo owner-lookup inconclusive on a source failure returns 503
-
-- **WHEN** `{action_id}` matches no returned row but at least one targeted calendar
-  schema's owner-lookup fan-out FAILED (so the owning schema may simply have been
-  unreachable)
-- **THEN** the endpoint returns HTTP 503 (retryable) naming that one or more
-  calendar sources were unavailable, and dispatches no mutation
-- **BECAUSE** a transient source failure MUST NOT be reported as a definitive 404
-  "this action does not exist" — that would fabricate absence from a degraded read
-
-#### Scenario: Repeated undo of the same action is rejected
-
-- **WHEN** `POST /api/calendar/workspace/undo/{action_id}` is called for an action
-  whose inverse mutation has already been dispatched and recorded
-- **THEN** the endpoint fails fast (HTTP 409) reporting the action was already
-  undone, rather than dispatching a second inverse
 
 ### Requirement: Calendar Workspace Single-Entry Lookup
 
@@ -1745,135 +1476,6 @@ The read MUST be fail-open and honest: a resolution-query failure SHALL NOT drop
 #### Scenario: Backward-compatible additive shape
 - **WHEN** a client that predates this change reads the workspace response
 - **THEN** it observes the prior `UnifiedCalendarEntry` shape unchanged, with entry-level `linked_people` defaulting to `[]`, and the response envelope's `people_source_available` defaulting to `true` (both optional/additive)
-
-#### Scenario: User event removes its final linked person
-- **WHEN** `POST /api/calendar/workspace/user-events` receives an `action="update"` payload with `entity_ids: []` and `clear_entity_ids: true`
-- **THEN** the dashboard API forwards both values unchanged to `calendar_update_event`
-- **AND** the calendar projection removes the event's existing people links
-- **AND** the API rejects a clear signal paired with omitted or non-empty `entity_ids`
-- **AND** a title-only update, or an empty `entity_ids` value without the explicit flag, preserves existing people links
-
-### Requirement: Decisions Digest Endpoint
-
-The dashboard API SHALL expose `GET /api/decisions` as a read-only
-`ApiResponse<DecisionBeadSummary[]>` wrapper around
-`butlers.jobs.decision_review.compute_decision_digest()`. The endpoint MUST
-NOT re-implement the label-only classifier, escalation calculation, or
-exported-JSONL reader; it MUST NOT call `bd`, Dolt, the convention linter, or
-any decision mutation/default-application path. An open decision is a
-non-epic bead with the `decision` label, and title text alone MUST NOT include
-a record.
-
-Each summary SHALL retain the existing `id`, `title`, `priority`, `created_at`,
-`age_hours`, and escalation fields, and SHALL additionally project:
-
-- `description`: the exported string description or `null` when it is absent
-  or not a string;
-- `options`: the ordered exported `metadata.decision.options` strings or
-  `null` when they cannot be trusted;
-- `default`: the exported `metadata.decision.default` string or `null` when it
-  cannot be trusted;
-- `due_at`: the exported native Beads `due_at` timestamp or `null` when it is
-  absent or invalid;
-- `structured_details_available`: whether the governed decision metadata and
-  native deadline are valid; and
-- `structured_details_unavailable_reason`: `null` when details are available,
-  otherwise a named missing or malformed source reason.
-
-The projection SHALL preserve option order. It SHALL mark structured details
-available only when `metadata.decision.options` is a non-empty ordered list of
-distinct non-blank strings, `metadata.decision.default` is a non-blank string
-that exactly matches an option, and `due_at` is a valid native timestamp. It
-MUST NOT sort, normalize, infer, apply, or silently replace an option/default
-or deadline. Missing decision metadata and malformed decision metadata SHALL
-remain distinguishable through the unavailable reason.
-
-The response `meta` SHALL retain `decisions_available: boolean`. Missing,
-stale, or unreadable exports SHALL return `data: []` with
-`decisions_available: false` and `unavailable_reason`; a readable export with
-zero decisions SHALL return `decisions_available: true` and an empty list.
-`meta.export_as_of` SHALL retain the export mtime whenever it can be stat'd,
-including a stale export. Open decisions SHALL remain oldest-first.
-
-#### Scenario: Valid structured context preserves order and the native deadline
-
-- **WHEN** a readable export contains an open decision with a string description,
-  ordered valid options, a matching default, and a valid `due_at`
-- **THEN** its API summary contains those values without reordering or inference
-- **AND** `structured_details_available` is `true`
-- **AND** `structured_details_unavailable_reason` is `null`
-
-#### Scenario: Malformed metadata is visible without degrading the whole export
-
-- **WHEN** a readable export contains an otherwise eligible decision whose
-  `metadata.decision.options` or default violates the decision convention
-- **THEN** the response still contains that decision and
-  `meta.decisions_available` remains `true`
-- **AND** that decision reports `structured_details_available: false` with a
-  named malformed-metadata reason
-- **AND** the endpoint MUST NOT turn the invalid source into a calm empty
-  options/default result
-
-#### Scenario: Missing structured metadata is distinct from malformed metadata
-
-- **WHEN** a readable export contains an eligible decision with no
-  `metadata.decision` mapping
-- **THEN** that decision reports `structured_details_available: false` with a
-  named missing-metadata reason
-- **AND** it is not reported as a malformed whole export
-
-#### Scenario: Degraded export never reads as an all-clear
-
-- **WHEN** the beads export is missing, stale, or unreadable
-- **THEN** `GET /api/decisions` returns HTTP 200 with `data: []`
-- **AND** `meta.decisions_available` is `false`
-- **AND** `meta.unavailable_reason` names the export failure
-
-#### Scenario: Escalated decision carries blocking detail
-
-- **WHEN** an open decision has blocked an open P1 bug or deploy-marked bead
-  for more than 48 hours
-- **THEN** its unchanged escalation fields describe the longest-blocked hit
-
-#### Scenario: A stale export still reports its known age
-
-- **WHEN** the export is readable but stale enough to set
-  `decisions_available: false`
-- **THEN** `meta.export_as_of` remains populated with the export mtime
-
-### Requirement: Scheduled Decision-Convention Lint Uses Live Candidates
-
-The scheduled full-export marker-lint selection SHALL select only `open`,
-`in_progress`, and `blocked` issues before linting. When
-`scripts/lint_decision_beads.py` receives a full export through
-`--check-unlabeled-markers` without explicit issue IDs, that filter SHALL
-apply to both decision-labeled records and unlabeled title-marker matches so
-closed history does not create a weekly owner-facing migration alert.
-
-The scheduled decision-review subprocess SHALL retain fail-closed handling:
-missing/unreadable inputs, unexpected exits, malformed output, or output whose
-result records are not `{id: str, title: str, ok: bool, violations: list[str]}`
-MUST return an unavailable scheduled result and record the existing failed
-attention-ledger path without raising. A successful zero-candidate result
-SHALL remain the normal `no_decisions` result. Explicit issue ids and ordinary
-non-strict `--status all` audits SHALL retain forensic historical visibility.
-
-#### Scenario: Closed malformed records do not enter the weekly lint lane
-
-- **WHEN** scheduled marker-mode lint reads a full export containing both an
-  open malformed candidate and a closed malformed candidate
-- **THEN** only the open candidate is returned as a lint violation
-- **AND** the closed record creates no owner-facing migration alert
-
-#### Scenario: Scheduled lint failure is unavailable rather than calm
-
-- **WHEN** the scheduled marker-mode lint script or input is unavailable, its
-  process exits unexpectedly, or its output is malformed
-- **THEN** the scheduled digest returns unavailable with a `data_unavailable:`
-  reason and continues scheduler processing without raising
-- **AND** it MUST NOT return `available: true` with `outcome: "no_decisions"`
-
----
 
 ### Requirement: Memory stats expose typed graph-health coverage
 
@@ -2116,56 +1718,6 @@ solely because its episode is deleted.
 - **THEN** the response MUST report source state `unresolved`
 - **AND** it MUST NOT claim that the source is available or absent by design
 
-### Requirement: Snapshot-backed Bead detail endpoint
-
-The dashboard API SHALL expose additive `GET /api/beads/{id}` as
-`ApiResponse<BeadDetail>`, using only the bounded shared snapshot reader. A
-successful response SHALL include `meta.export_as_of`, the mounted export
-mtime, and a `data` object with only: `id`, `title`, `status`, `priority`,
-`type`, `description`, `design`, `acceptance_criteria`, `labels`,
-`created_at`, `updated_at`, `started_at`, `closed_at`, `due_at`, bounded
-`dependencies`, and `external_ref`. A dependency summary SHALL contain only
-`id`, `title`, `status`, `priority`, and `type`; it SHALL be limited to the
-first 20 direct dependencies in source order.
-
-The endpoint MUST NOT return notes, metadata, comments, identities,
-credentials, raw records, raw dependency edges, arbitrary hrefs, or fields
-not listed above. It MUST NOT call `bd`, Dolt, GitHub, a database, an external
-service, or a tracker mutation path.
-
-When the snapshot is readable and sufficiently fresh but lacks the requested
-ID, the endpoint SHALL return HTTP 404 `ErrorResponse` with code
-`BEAD_NOT_FOUND`. When the snapshot is missing, stale, oversized, unreadable,
-or malformed, it SHALL return HTTP 503 `ErrorResponse` with code
-`BEAD_SNAPSHOT_UNAVAILABLE`; `error.details.export_as_of` SHALL be present as
-an ISO timestamp or `null`. It MUST NOT return 404 until availability has been
-established.
-
-#### Scenario: Fresh matching record returns a bounded allowlist
-
-- **WHEN** a readable export newer than the freshness limit contains the
-  requested ID
-- **THEN** `GET /api/beads/{id}` returns HTTP 200 with an `ApiResponse`
-  containing only the specified safe fields
-- **AND** `meta.export_as_of` equals the export mtime
-- **AND** dependency summaries contain no more than 20 source-order direct
-  records
-
-#### Scenario: Fresh snapshot distinguishes a missing ID
-
-- **WHEN** a readable sufficiently fresh export does not contain the
-  requested ID
-- **THEN** `GET /api/beads/{id}` returns HTTP 404 with code
-  `BEAD_NOT_FOUND`
-
-#### Scenario: Unavailable snapshot never becomes not found
-
-- **WHEN** the export is missing, stale, oversized, unreadable, or malformed
-- **THEN** `GET /api/beads/{id}` returns HTTP 503 with code
-  `BEAD_SNAPSHOT_UNAVAILABLE`
-- **AND** `error.details.export_as_of` is present even when its value is null
-- **AND** the endpoint does not return HTTP 404 or an empty success payload
-
 ### Requirement: Exact Audit-To-Issues Evidence Door
 `GET /api/issues/group-for-audit/{audit_id}` SHALL resolve one `public.audit_log` row to the exact Issues group the feed itself would compute, and SHALL state absence explicitly rather than returning an empty result the caller could render as calm.
 
@@ -2266,7 +1818,8 @@ The API SHALL publish its complete route inventory through the FastAPI-generated
 
 #### Scenario: Ingestion-events list uses the cursor envelope and channels filter
 - **WHEN** `GET /api/ingestion/events` is called with `limit` and an optional opaque `cursor` taken from the preceding response
-- **THEN** the response uses the cursor envelope `{ "data": T[], "meta": { "next_cursor": string | null, "has_more": boolean } }` and returns no `total` or `offset`
+- **THEN** the response uses the shared `Page[T]` envelope `{ "items": T[], "next_cursor": string | null, "limit": integer }` and returns no `total`, `offset` or `has_more` (a non-null `next_cursor` means more rows remain)
+- **AND** a cursor that is malformed, tampered with, or issued by another endpoint is rejected with HTTP 400
 - **AND** `channels` is the primary comma-separated source-channel filter
 - **AND** there is no single-value channel alias; an empty `channels=` applies no channel filter
 
@@ -2388,3 +1941,137 @@ The API SHALL publish its complete route inventory through the FastAPI-generated
   survived, above the rows when some did)
 - **AND** a reachable queue with `meta.sources_degraded` absent or empty keeps
   its honest empty state and calm verdict
+
+### Requirement: Explicit Unanswered Calendar Invitations
+
+GET /api/calendar/workspace/invitations SHALL return only current projected
+provider occurrences with a literal self=true attendee whose exact needsAction
+status has explicit provider provenance. The endpoint SHALL be read-only and
+preserve every existing workspace and RSVP/transparency radar scenario.
+
+ID: REQ-dashboard-api-067
+Source: bu-q7vx1q.17; explicit-status preserving adjudication; RFC 0006; dashboard-design-language
+Scope: v1-mandatory
+
+#### Scenario: Only explicit unanswered occurrences are admitted
+- **WHEN** the projection includes unanswered, accepted, declined, tentative, no-self, missing/malformed/legacy status, self-organizer, solo and cancelled occurrences
+- **THEN** only genuinely explicit unanswered occurrences with another party are returned with stable instance entry IDs
+- **AND** ambiguous status candidates are omitted and admission is unavailable rather than fabricated empty
+- **AND** valid response_status or raw responseStatus is supported only with literal true explicit-status provenance
+
+#### Scenario: Deduplication precedes eligibility and pagination
+- **WHEN** duplicate provider copies or a stale unanswered copy coexist with a newer accepted copy
+- **THEN** the current workspace dedup strategy and keep-separate rules are applied before eligibility and keyset page slicing
+- **AND** deterministic operational source ownership is retained without rewriting physical ledgers
+- **AND** the start/end window is ordered and at most 90 days, limit is 1..200, and remaining eligible rows expose has_more and next_cursor
+- **AND** malformed or wrong-window/timezone cursors are refused
+- **AND** relevant current same-origin tombstones and moved copies participate before final window filtering, so newer cancelled or out-of-window copies cannot resurrect stale invitations
+
+#### Scenario: Organizer and conflict evidence are honest
+- **WHEN** an invitation is listed
+- **THEN** its organizer is the projected event organizer, a labelled organizer-attendee fallback, or explicitly unknown
+- **AND** a conflict door identifies only a real radar issue whose events include that canonical entry ID
+- **AND** missing or degraded conflict evidence is unknown, never an invented conflict-free verdict
+
+#### Scenario: Failed sources retain successful data without calm
+- **WHEN** any events, operational-source or conflict read fails, or candidate status admission is unknown
+- **THEN** HTTP 200 retains successful invitation rows and observed issue doors with issues_available=false and named content-blind sources_degraded
+- **AND** only complete available empty reads return issues_available=true with an empty list
+
+#### Scenario: Calendar strip preserves loading and partial evidence
+- **WHEN** the Calendar page reads its visible window
+- **THEN** the opener shows invitation rows and organizer labels with keyboard-operable entry and earned conflict doors
+- **AND** loading and unavailable invitation sources suppress the Calendar calm verdict; retained rows survive refresh/error
+- **AND** only available nonloading empty reads say no unanswered invitations, and bounded remaining pages remain reachable
+- **AND** the strip adds no provider mutation or RSVP action; entry details retain existing server-derived permission boundaries
+
+### Requirement: Approval origin survives list and detail projection
+
+The authenticated approval read API SHALL preserve explicit server-stored prepared origin in every list, history and detail projection used by the approval rail and selected dossier, using additive nullable `origin: "prepared" | null` classification. Only the exact stored string `"prepared"` SHALL establish Prepared; absent, legacy, malformed or unrecognized origin SHALL remain unknown, never inferred from action status, an absent push or a missing delivery receipt. The API SHALL preserve existing read availability, redaction, authorization, action identity and delivery-failure truth; origin SHALL confer no decision, execution, delivery, retry or provider authority.
+
+ID: REQ-dashboard-api-068
+Source: prepared-approval-origin-presentation/design.md; heart-and-soul/security.md Approval Gates; owner-released run13 S3 (bu-3b6goa)
+Scope: v1-mandatory
+
+#### Scenario: Persisted prepared origin reaches every approval projection
+
+- **WHEN** an owning producer has persisted an action with exact `origin="prepared"` and that action is read through the paginated action list, flat or history summary and selected detail
+- **THEN** each applicable response preserves the same explicit prepared classification for the same action
+- **AND** intended digest-only non-send remains distinct from a confirmed failed push.
+
+#### Scenario: Unknown origin cannot be inferred from absence
+
+- **WHEN** a readable action has absent, legacy, malformed or unrecognized origin, including an action with no push outcome or delivery receipt
+- **THEN** summary and detail return `origin=null` and no projection invents prepared origin
+- **AND** existing status, independently observed delivery failure and unknown delivery evidence retain their own meaning.
+
+#### Scenario: Unavailable origin source preserves incomplete coverage
+
+- **WHEN** an eligible approval source or selected-detail read fails or is degraded
+- **THEN** the API retains the existing named degraded or unavailable response contract instead of fabricating an action, Prepared classification or complete empty result
+- **AND** successful other-source rows retain their own observed origin without certifying complete coverage.
+
+#### Scenario: Origin projection preserves redaction and action authority
+
+- **WHEN** an authenticated reader inspects a prepared action containing sensitive tool arguments or execution data, or an unauthorized reader attempts the same read
+- **THEN** existing redaction and read authorization rules remain enforced
+- **AND** neither origin nor delivery context exposes recipient identity, callback material, action keys, raw provider responses or raw errors
+- **AND** no origin field changes approval, execution, retry or provider permissions.
+
+#### Scenario: Repeated reads preserve action identity without mutation
+
+- **WHEN** a prepared action is repeatedly read or a selected dossier is changed to another action
+- **THEN** origin remains bound to the actual action ID and owning source returned by that read
+- **AND** the read creates no approval, push, execution, origin backfill or other persistent mutation.
+
+### Requirement: Approved Calendar Invitation Response Surface
+
+The dashboard API SHALL expose authenticated occurrence-only POST /api/calendar/workspace/respond and mounted Accept/Decline/Tentative controls using one typed mutation handler. A verified click MUST compose the exact canonical pending command with the existing approval decision and owning shared executor, never raw provider dispatch or a caller bypass. Pending, rejected, uncertain, noop, applied and projection-unavailable outcomes MUST remain distinct.
+
+ID: REQ-dashboard-api-069
+Source: bu-q7vx1q.18 original AC2,5,6; dashboard owner auth; module-calendar Approval-Bound Self Invitation Response; design.md
+Scope: v1-mandatory
+
+#### Scenario: Verified owner click decides and dispatches the exact parked command
+
+- **WHEN** an authenticated owner submits a valid response for an eligible workspace occurrence
+- **THEN** POST /api/calendar/workspace/respond parks the canonical owning command and uses the existing verified decision and shared executor for that exact pending id/digest
+- **AND** no standing rule or caller bypass is created
+- **AND** no effect precedes approved execution
+
+#### Scenario: Invalid admission is not a fabricated absence or authority
+
+- **WHEN** lookup is degraded/ambiguous, source identity changed, or caller injects actor, account, recipient, ETag or approval id
+- **THEN** the API refuses effect with a safe truthful admission error
+- **AND** missing capability is distinct from an empty invitation list
+- **AND** invitation response capability and the displayed owning butler belong to the retained physical entry; a fresher copy without response capability does not borrow a different source owner
+- **AND** it performs no backfill, OAuth scope expansion or provider mutation
+
+#### Scenario: Response controls share one typed handler
+
+- **WHEN** the owner activates Accept, Decline or Tentative by keyboard, palette or contextual control
+- **THEN** one handler submits one response command and acknowledges pending state
+- **AND** double click reuses the request key
+- **AND** focus and accessible control names are preserved
+
+#### Scenario: Pending or uncertain response remains truthful
+
+- **WHEN** approval is pending/rejected or the provider effect is uncertain
+- **THEN** the mounted workspace keeps honest invitation/decision state and offers the matching review/error door
+- **AND** it adds no optimistic accepted badge, success receipt
+- **AND** degraded projection remains visible
+- **AND** GET /api/calendar/workspace/responses/{command_id} reads the source-qualified durable receipt without approving or dispatching a command
+- **AND** inverse=true follows only the original command's retained inverse claim and verifies its reciprocal binding, including after the invitation leaves the inbox
+- **AND** an unavailable inverse read retains the last receipt and never replays the original response or reserves a replacement inverse
+
+#### Scenario: Applied receipt is distinct from current projection
+
+- **WHEN** the own provider result verifies response while projection is unavailable or stale
+- **THEN** the API and mounted workspace show the applied receipt and projection availability separately
+- **AND** a replacement source/entry cannot receive the stale response
+
+#### Scenario: Existing permission and radar behavior survives
+
+- **WHEN** response verbs and receipts are added to the calendar workspace
+- **THEN** existing invitation explicit-status admission, radar, entry details, CRUD permissions and loading/partial/clean-empty contracts remain intact
+- **AND** the new operation does not infer consent from missing response/push data or alter provider/tool defaults

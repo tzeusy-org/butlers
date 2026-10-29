@@ -50,7 +50,21 @@ export interface PaginatedResponse<T> {
 }
 
 /**
- * Keyset (cursor) pagination metadata for the cross-butler session list.
+ * The one cursor-paginated list envelope (`Page[T]` in `src/butlers/api/pagination.py`).
+ * `next_cursor` is opaque and null on the last page: "is there more" is
+ * `next_cursor !== null`. `sources_degraded` names fan-out sources that failed
+ * for this page (absent when every source answered).
+ */
+export interface CursorPage<T> {
+  items: T[];
+  next_cursor: string | null;
+  limit: number;
+  sources_degraded?: string[] | null;
+}
+
+/**
+ * Keyset (cursor) pagination metadata for the cross-butler session list, the
+ * one cursor list still off {@link CursorPage} (it retires at the RFC 0038 D19 switch).
  * Drops the expensive `count(*)` total in favour of an opaque forward cursor.
  * `next_cursor` is base64url-encoded and opaque to the client; pass it back as
  * the `cursor` query param to fetch the next (older) page.
@@ -393,6 +407,8 @@ export interface NotificationSummary {
   session_id: string | null;
   trace_id: string | null;
   created_at: string;
+  approval_review?: { action_id: string; butler: "messenger" } | null;
+  approval_review_state?: "available" | "none" | "unavailable";
 }
 
 /** Health-check response. */
@@ -1307,36 +1323,6 @@ export interface CalendarAuditParams {
   butler?: string;
 }
 
-/**
- * Audit action types that have a reconstructable inverse mutation and can be
- * reversed via POST /api/calendar/workspace/undo/{action_id}. Mirrors the
- * backend ``_UNDO_INVERSE_TOOL`` map in
- * ``api/routers/calendar_workspace.py`` — user-lane create/update/delete only.
- */
-export const CALENDAR_UNDOABLE_ACTION_TYPES: ReadonlySet<string> = new Set([
-  "workspace_user_create",
-  "workspace_user_update",
-  "workspace_user_delete",
-]);
-
-/**
- * Response payload for POST /api/calendar/workspace/undo/{action_id}.
- *
- * The endpoint synthesizes and dispatches the inverse mutation server-side
- * with a freshly generated ``request_id`` (``undo-<uuid>``) — the client sends
- * no body and does not supply the request_id; it is returned here so the UI can
- * surface/audit the reversal. ``undone`` is ``true`` only when the inverse
- * dispatch succeeded and the original action was marked undone.
- */
-export interface CalendarUndoResponse {
-  action_id: string;
-  action_type: string;
-  inverse_tool: string;
-  request_id: string;
-  undone: boolean;
-  result: Record<string, unknown>;
-}
-
 /** Source-level freshness metadata for workspace rendering. */
 export interface CalendarWorkspaceSourceFreshness {
   source_id: string;
@@ -1368,6 +1354,12 @@ export interface CalendarWorkspaceSourceFreshness {
    * failed) and is skipped by the sync loop. Defaults to `true`.
    */
   sync_enabled: boolean;
+  /**
+   * Whether a sync verdict applies. Only provider sources sync; internal
+   * sources (schedules, reminders) are projected locally and never get a
+   * cursor, so their null `last_synced_at` is normal, not "never synced".
+   */
+  sync_applicable: boolean;
 }
 
 /** Coarse per-source sync error classification surfaced alongside `last_error`. */
@@ -1418,65 +1410,6 @@ export interface CalendarWorkspaceReadResponse {
    * lanes (they do not fan out the events read).
    */
   entries_source_available?: boolean;
-}
-
-/** Cross-source dedup match strategy. Mirrors the backend `match_strategy` enum. */
-export type CalendarDedupMatchStrategy = "exact" | "balanced" | "aggressive";
-
-/**
- * The active cross-source dedup rules (workspace-global).
- *
- * `match_strategy` selects which collapse passes run; `noisy_threshold` is the
- * minimum cluster size for a cluster to be surfaced on the review panel.
- */
-export interface CalendarDedupRulesModel {
-  match_strategy: CalendarDedupMatchStrategy;
-  noisy_threshold: number;
-}
-
-/** PATCH body for the dedup rules; omitted fields are left unchanged. */
-export interface CalendarDedupRulesUpdateRequest {
-  match_strategy?: CalendarDedupMatchStrategy;
-  noisy_threshold?: number;
-}
-
-/**
- * One collapsed cross-source duplicate cluster surfaced for review.
- *
- * `kept_entry` is the survivor the read keeps; `duplicate_entries` are the
- * copies the dedup collapses away. When `keep_separate` is true the user has
- * pinned this cluster so the read does NOT collapse it.
- */
-export interface CalendarDuplicateCluster {
-  cluster_key: string;
-  match_pass: "origin_ref" | "title";
-  member_count: number;
-  keep_separate: boolean;
-  kept_entry: UnifiedCalendarEntry;
-  duplicate_entries: UnifiedCalendarEntry[];
-}
-
-/**
- * Response payload for GET /api/calendar/workspace/duplicates.
- *
- * `available` is `false` only when the underlying read could not run; an empty
- * `clusters` list with `available=true` genuinely means no duplicates were
- * collapsed in the window.
- */
-export interface CalendarDuplicatesResponse {
-  clusters: CalendarDuplicateCluster[];
-  rules: CalendarDedupRulesModel;
-  available: boolean;
-}
-
-/** Query params for GET /api/calendar/workspace/duplicates. */
-export interface CalendarDuplicatesParams {
-  view: "user" | "butler";
-  start: string;
-  end: string;
-  timezone?: string;
-  butlers?: string[];
-  sources?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1530,18 +1463,50 @@ export interface ConflictScanParams {
   overloaded_day_hours?: number;
 }
 
-/** Body to pin/unpin a duplicate cluster as keep-separate. */
-export interface CalendarKeepSeparateRequest {
-  cluster_key: string;
-  keep_separate: boolean;
-  match_pass?: "origin_ref" | "title";
-  label?: string;
+export interface CalendarInvitationEntry {
+  entry_id: string;
+  title: string;
+  start_at: string;
+  end_at: string;
+  timezone: string;
+  organizer: string | null;
+  organizer_source: "event" | "attendee" | "unknown";
+  butler_name: string | null;
+  conflict_issues: ConflictIssue[];
+  response_configured?: boolean;
 }
 
-/** Result of a keep-separate toggle. */
-export interface CalendarKeepSeparateResponse {
-  cluster_key: string;
-  keep_separate: boolean;
+export interface CalendarResponseRequest {
+  entry_id: string;
+  request_id: string;
+  response_status: "accepted" | "declined" | "tentative";
+  send_updates: "none" | "all" | "externalOnly";
+}
+
+export interface CalendarResponseReceipt {
+  status: "pending_approval" | "approved" | "rejected" | "uncertain" | "noop" | "applied" | "failed";
+  command_id: string | null;
+  approval_id: string | null;
+  source_butler: string;
+  projection_available: boolean;
+  reason: string | null;
+}
+
+export interface CalendarInvitationsResponse {
+  entries: CalendarInvitationEntry[];
+  issues_available: boolean;
+  conflicts_available: boolean;
+  sources_degraded: string[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface CalendarInvitationsParams {
+  start: string;
+  end: string;
+  timezone?: string;
+  limit?: number;
+  cursor?: string;
 }
 
 /** One `kind` bucket inside a day-briefing butler group (e.g. `bill_due`). */
@@ -1725,34 +1690,6 @@ export interface CalendarWorkspaceMetaResponse {
   sources_available?: boolean;
 }
 
-/** Query parameters for GET /api/calendar/export/ics (one-shot .ics download). */
-export interface CalendarIcsExportParams {
-  view: CalendarWorkspaceView;
-  /** Inclusive ISO-8601 range start. */
-  start: string;
-  /** Exclusive ISO-8601 range end. */
-  end: string;
-  butlers?: string[];
-  sources?: string[];
-  status?: CalendarWorkspaceStatusFacet;
-  source_type?: UnifiedCalendarSourceType;
-}
-
-/** One event created from an imported .ics payload. */
-export interface CalendarIcsImportedEvent {
-  title: string;
-  start_at: string;
-  all_day: boolean;
-}
-
-/** Result of POST /api/calendar/import/ics (import-with-dedup). */
-export interface CalendarIcsImportResponse {
-  parsed: number;
-  imported: number;
-  skipped_duplicates: number;
-  imported_events: CalendarIcsImportedEvent[];
-}
-
 /** Per-account Google Calendar connector health state. */
 export type CalendarAccountHealthState =
   "healthy" | "degraded" | "error" | "unknown";
@@ -1900,20 +1837,15 @@ export interface CalendarWorkspaceSyncResponse {
   triggered_count: number;
 }
 
-/** Allowed mutation actions for user-view calendar events. */
-export type CalendarWorkspaceUserMutationAction =
-  "create" | "update" | "delete";
+/** The only user-view calendar mutation the dashboard issues (operator view). */
+export type CalendarWorkspaceUserMutationAction = "create";
 
 /** Allowed actions for butler-lane event mutations. */
 export type CalendarWorkspaceButlerMutationAction =
   "create" | "update" | "delete" | "toggle" | "dismiss" | "snooze";
 
 /**
- * Request payload for POST /api/calendar/workspace/user-events.
- *
- * For an update, linked people use `entity_ids` as a replacement set. Sending
- * `entity_ids: []` together with `clear_entity_ids: true` deliberately removes
- * every link; omitted or empty IDs without that flag preserve existing links.
+ * Request payload for POST /api/calendar/workspace/user-events (create only).
  */
 export interface CalendarWorkspaceUserMutationRequest {
   butler_name: string;
@@ -1936,48 +1868,6 @@ export interface CalendarSuggestedSlot {
   start_at: string; // ISO 8601
   end_at: string; // ISO 8601
   timezone: string;
-}
-
-/** Part-of-day bucket for the free-slot finder's soft ranking constraints. */
-export type CalendarFindTimePartOfDay = "morning" | "afternoon" | "evening";
-
-/** Structured (pre-parsed) constraints for POST /api/calendar/workspace/find-time. */
-export interface CalendarFindTimeConstraints {
-  part_of_day?: CalendarFindTimePartOfDay | null;
-  /** iCal weekday codes (MO…SU) to rank lower. */
-  avoid_weekdays?: string[];
-}
-
-/** Request payload for POST /api/calendar/workspace/find-time. */
-export interface CalendarWorkspaceFindTimeRequest {
-  butler_name: string;
-  duration_minutes: number;
-  search_start: string; // ISO 8601
-  search_end: string; // ISO 8601
-  calendar_ids?: string[] | null;
-  constraints?: CalendarFindTimeConstraints | null;
-  limit?: number;
-}
-
-/** Response payload for POST /api/calendar/workspace/find-time. */
-export interface CalendarWorkspaceFindTimeResponse {
-  /** Ranked open slots, earliest-first with constraint matches preferred. */
-  slots: CalendarSuggestedSlot[];
-  duration_minutes: number;
-  calendar_ids: string[];
-  /**
-   * Honest degraded signal (fail-open). `false` when the cross-source free/busy
-   * lookup could not produce availability (butler/MCP transport failure or a
-   * structured provider authentication/request failure); `slots` is then empty
-   * because nothing was checked — NOT because the calendar is open. `reason` is
-   * always the fixed, content-blind message
-   * `Free/busy lookup unavailable; try again shortly.`; raw provider diagnostics
-   * are never exposed. Render "free/busy unavailable" with `reason`, not "no
-   * open slots".
-   */
-  available: boolean;
-  /** Fixed, content-blind unavailable reason when `available` is `false`. */
-  reason: string | null;
 }
 
 /** Response payload for calendar workspace mutation endpoints. */
@@ -2249,7 +2139,7 @@ export interface Label {
  * When secured=true and value is null, the value is masked.
  * Use GET /relationship/entities/{entityId}/secrets/{infoId} to retrieve the real value.
  */
-export interface ContactInfoEntry {
+export interface ContactInfoEntry extends FactAttribution {
   id: string;
   type: string;
   value: string | null; // null when secured=true and not yet revealed
@@ -2618,6 +2508,26 @@ export interface ExpectedSignal {
   evaluated_at: string;
 }
 
+export interface HealthBaseline {
+  metric_key: string;
+  state: "ready" | "insufficient_history" | "unmeasurable" | "stale" | "no_baseline";
+  band: { low: number; high: number } | null;
+  center: number | null;
+  unit: string | null;
+  n_observed: number;
+  n_expected: number;
+  coverage: number;
+  computed_at: string | null;
+  stale: boolean;
+  method_version: string | null;
+}
+
+export interface HealthBaselinesResponse {
+  baselines: HealthBaseline[] | null;
+  available: boolean;
+  degraded_reason: string | null;
+}
+
 export interface ExpectedSignalsResponse {
   signals: ExpectedSignal[] | null;
   available: boolean;
@@ -2952,6 +2862,15 @@ export interface Episode {
   last_referenced_at: string | null;
   expires_at: string | null;
   metadata: Record<string, unknown>;
+  /**
+   * Recovery-safe lifecycle dossier (bu-kqnum.14.3). The error and reason strings are the
+   * sanitized category summaries the consolidator stores; worker lease internals are never
+   * exposed. The API always returns all four.
+   */
+  consolidation_attempts: number;
+  last_consolidation_error: string | null;
+  dead_letter_reason: string | null;
+  next_consolidation_retry_at: string | null;
 }
 
 /** Availability of a durable reference to an episode source. */
@@ -2975,6 +2894,9 @@ export interface Fact {
   supersedes_id: string | null;
   /** Reverse supersession lookup (bu-awo8k.8): id of the fact that supersedes this one. */
   superseded_by?: string | null;
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
   entity_id: string | null;
   entity_name: string | null;
   object_entity_id: string | null;
@@ -3016,6 +2938,9 @@ export interface MemoryRule {
   /** Server-derived authorship of the content this rule came from (null on legacy rows). */
   content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
   authority_entity_id?: string | null;
+  authority_entity_name?: string | null;
+  endorsed_by?: string | null;
+  endorsed_by_name?: string | null;
   /** Set when the owner endorsed a held rule. */
   endorsed_at?: string | null;
   /** True while the rule is invisible to sessions, awaiting owner endorsement. */
@@ -3078,6 +3003,24 @@ export interface GraphHealthPoolCoverage {
 export interface GraphHealthCoverage {
   coverage: "complete" | "incomplete" | "unknown";
   pools: GraphHealthPoolCoverage[];
+}
+
+/**
+ * Pagination metadata for the memory list routes (episodes, facts, rules,
+ * inspect). Each fans out across butler pools and, when one pool errors, drops
+ * it and names it in `pools_failed` rather than failing the request, so a page
+ * (including an empty one) may be incomplete. Absent or empty means every
+ * queried pool answered.
+ */
+export interface MemoryPaginationMeta extends PaginationMeta {
+  /** Names of memory pools whose query failed and were dropped from the page and total. */
+  pools_failed?: string[];
+}
+
+/** Paginated memory list response carrying the degraded-pool meta. */
+export interface MemoryPaginatedResponse<T> {
+  data: T[];
+  meta: MemoryPaginationMeta;
 }
 
 /**
@@ -3234,6 +3177,8 @@ export interface FactParams {
 
 /** Query parameters for rule list endpoints. */
 export interface RuleParams {
+  /** Restrict the register to unendorsed held guidance. */
+  held?: boolean;
   q?: string;
   scope?: string;
   maturity?: string;
@@ -3426,6 +3371,8 @@ export interface ApprovalAction {
   agent_summary?: string | null;
   session_id?: string | null;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   decided_by?: string | null;
   decided_at?: string | null;
   execution_result?: Record<string, unknown> | null;
@@ -3481,6 +3428,8 @@ export interface ApprovalSummary {
   status: string;
   created_at: string;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   why?: string | null;
   /** Durable execution evidence used to distinguish eligible stalled rows. */
   execution_result?: Record<string, unknown> | null;
@@ -3551,12 +3500,26 @@ export interface ApprovalsFlatListResponse {
 }
 
 /** Full dossier for GET /api/approvals/{id}. */
+export interface DisplayedApprovalCall {
+  tool_name: string;
+  args_digest: string;
+}
+
+export interface ApprovalCallPreview {
+  title: string;
+  facts: { label: string; value: string }[];
+  displayed_call: DisplayedApprovalCall;
+}
+
 export interface ApprovalDetail {
+  call_preview?: ApprovalCallPreview | null;
   id: string;
   title: string;
   butler: string;
   created_at: string;
   expires_at?: string | null;
+  /** Exact server-stored classification; absent or null means origin unknown. */
+  origin?: "prepared" | null;
   why?: string | null;
   evidence?: ApprovalEvidence[];
   blast_radius?: ApprovalBlastRadius | null;
@@ -3609,6 +3572,7 @@ export interface ApprovalsPolicy {
 }
 
 export interface ApprovalApproveRequest {
+  displayed_call?: DisplayedApprovalCall | null;
   edits?: Record<string, unknown> | null;
 }
 
@@ -3711,6 +3675,8 @@ export interface ApprovalRuleParams {
 }
 
 export interface ApprovalRuleCreateRequest {
+  /** Butler whose schema owns the rule (required by POST /approvals/rules). */
+  butler: string;
   tool_name: string;
   arg_constraints: Record<string, unknown>;
   description: string;
@@ -4157,9 +4123,13 @@ export interface ConnectorStats {
  * Pipeline funnel statistics (GET /api/ingestion/pipeline?window=24h).
  * Sourced from Prometheus via PromQL with 60s TTL cache.
  * aggregates_available=false means Prometheus is unreachable — all numeric
- * fields are zero in that case.
+ * funnel fields are zero in that case; scrub and backlog flags are independent.
  */
 export interface PipelineStats {
+  /** Fresh Switchboard scrub-operation estimates, including attempts; absent on older servers. */
+  bearer_scrub_counts?: { auth_code: number; reset_link: number; magic_link: number } | null;
+  /** Independent Prometheus availability; only true makes scrub zeros measured values. */
+  bearer_scrub_available?: boolean;
   window: string;
   aggregates_available: boolean;
   ingested: number;
@@ -4424,18 +4394,6 @@ export interface IngestionEventSession {
   model: string | null;
 }
 
-/** Cursor pagination metadata returned by keyset-paginated endpoints. */
-export interface CursorPaginationMeta {
-  next_cursor: string | null;
-  has_more: boolean;
-}
-
-/** API response wrapper for cursor-paginated list endpoints. */
-export interface CursorPaginatedResponse<T> {
-  data: T[];
-  meta: CursorPaginationMeta;
-}
-
 /** Query parameters for GET /api/ingestion/events (cursor-paginated). */
 export interface IngestionEventsParams {
   limit?: number;
@@ -4587,8 +4545,8 @@ export interface IngestionHistogramResponse {
 /**
  * Response from GET /api/ingestion/events/dropped-known.
  *
- * `available=false` means the filtered-event store could not be read: the
- * counts are then meaningless and must never be rendered as zero.
+ * `available=false` means complete classification is unknown. Positive counts
+ * remain a lower bound only with counts_available; failed-read zeros are placeholders.
  */
 export interface IngestionDroppedKnownSummary {
   available: boolean;
@@ -4597,6 +4555,10 @@ export interface IngestionDroppedKnownSummary {
   dropped: number;
   /** Distinct (rule, sender) cases behind `dropped`. */
   episodes: number;
+  counts_available: boolean;
+  classification_available: boolean;
+  uncertain_drops: number | null;
+  availability_reason: "none" | "counts_unavailable" | "registry_unavailable" | "classification_unknown" | "historical_uncertainty";
 }
 
 /** One replay attempt entry from public.audit_log. */
@@ -5223,6 +5185,8 @@ export interface ModelCatalogEntry {
   /** Number of qualifying (success + runtime_failure) attempts in the
    *  evidence window, regardless of whether that met the min-samples bar. */
   routing_sample_count: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** Current server-owned cascade impact for one catalog deletion. */
@@ -5253,6 +5217,29 @@ export interface ModelAttentionEpisode {
 export interface ModelAttentionObservation {
   available: boolean;
   episodes: Record<string, ModelAttentionEpisode>;
+}
+
+export interface AllowanceEntry {
+  id: string;
+  alias: string;
+}
+
+export type AllowanceState = "available" | "exhausted" | "unknown";
+export type AllowanceResetSource = "parsed" | "default_window" | "unknown";
+
+export interface AllowanceAccount {
+  account_key: string;
+  state: AllowanceState;
+  reset_at: string | null;
+  reset_source: AllowanceResetSource;
+  first_seen_at: string;
+  updated_at: string;
+  entries: AllowanceEntry[];
+}
+
+export interface AllowanceObservation {
+  available: boolean;
+  accounts: AllowanceAccount[];
 }
 
 export interface ModelAttentionReissueResult {
@@ -5302,6 +5289,8 @@ export interface ModelCatalogCreate {
   enabled?: boolean;
   priority?: number;
   session_timeout_s?: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** Request body for updating a catalog entry (all fields optional). */
@@ -5314,6 +5303,8 @@ export interface ModelCatalogUpdate {
   enabled?: boolean;
   priority?: number;
   session_timeout_s?: number;
+  /** Global allowance grouping label; null uses the runtime default. */
+  allowance_account?: string | null;
 }
 
 /** A single per-butler model override joined with catalog alias. */
@@ -5333,6 +5324,16 @@ export interface ButlerModelOverrideUpsert {
   enabled?: boolean;
   priority?: number | null;
   complexity_tier?: ComplexityTier | null;
+}
+
+/** Required request-level explanation for a consequential override mutation. */
+export interface ButlerModelOverrideReason {
+  reason: string;
+  price_preview_unavailable?: boolean;
+}
+
+export interface ButlerModelOverridesWrite extends ButlerModelOverrideReason {
+  overrides: ButlerModelOverrideUpsert[];
 }
 
 /** Response from the model test endpoint. */
@@ -5635,6 +5636,32 @@ export interface OverdueContactsResponse {
   contacts: OverdueContact[];
   cadence_available: boolean;
   unmeasurable_count: number;
+}
+
+// ---------------------------------------------------------------------------
+// Pending meeting debriefs (bu-q7vx1q.63)
+// ---------------------------------------------------------------------------
+
+export interface PendingDebriefAttendee {
+  entity_id: string | null;
+  name: string | null;
+  email: string | null;
+}
+
+export interface PendingDebrief {
+  debrief_id: string;
+  /** The batch number the Telegram prompt shows; the reply is prefixed with it. */
+  number: number | null;
+  event_title: string | null;
+  occurrence_start: string;
+  prompted_at: string;
+  attendees: PendingDebriefAttendee[];
+}
+
+/** Response from GET /api/relationship/meeting-debriefs/pending */
+export interface PendingDebriefsResponse {
+  debriefs: PendingDebrief[];
+  debriefs_available: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -7514,7 +7541,7 @@ export interface CompareEntitiesRequest {
  * row belongs to so the two-column diff can place it. ``last_seen`` is null on
  * narrative-store rows (no ``last_seen`` column).
  */
-export interface CompareFact {
+export interface CompareFact extends FactAttribution {
   id: string;
   entity_id: string;
   predicate: string;
@@ -7847,7 +7874,7 @@ export interface ConditionEntry {
  * "sending" and "uncertain" never do, and nothing here can resend.
  */
 export interface ConditionAttention {
-  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" */
+  /** "pending" | "worker_unavailable" | "sending" | "sent" | "failed" | "uncertain" | "unavailable" | "not_raised" | "within_grace" */
   status: string;
   episode_id: string | null;
   created_at: string | null;
@@ -8816,14 +8843,6 @@ export interface PromptUpdateRequest {
   prompt: string;
 }
 
-/** A tool grant entry for a butler. */
-export interface ButlerTool {
-  name: string;
-  description: string | null;
-  allowed: boolean;
-  scope: string | null;
-}
-
 /** Memory tier access metadata for a butler. */
 export interface MemoryAccess {
   read: ("short" | "mid" | "long")[];
@@ -9113,7 +9132,7 @@ export type EntityFactStalenessBand = "fresh" | "aging" | "stale";
  * Note: ``source_event_id`` is not yet a column in relationship.entity_facts.
  * Use ``src`` for source attribution until that column is added.
  */
-export interface EntityFact {
+export interface EntityFact extends FactAttribution {
   id: string;
   subject: string;
   predicate: string;
@@ -9131,19 +9150,6 @@ export interface EntityFact {
   store: EntityFactStore;
   /** Read-time staleness band (``"fresh"`` / ``"aging"`` / ``"stale"``). */
   staleness_band: EntityFactStalenessBand;
-}
-
-/**
- * Keyset (cursor) response envelope for
- * GET /api/butlers/relationship/entities/{id}/facts.
- *
- * Ordered ``created_at DESC, id DESC`` per the repo cursor convention; there is
- * no ``total`` field. ``next_cursor`` is null on the last page.
- */
-export interface EntityFactsResponse {
-  items: EntityFact[];
-  next_cursor: string | null;
-  has_more: boolean;
 }
 
 /** Validity filter for the facts drill (active rows vs. superseded history). */
@@ -9189,7 +9195,7 @@ export interface ActivityBin {
 }
 
 /** One canonical row in the merged entity activity stream. */
-export interface EntityActivityItem {
+export interface EntityActivityItem extends FactAttribution {
   id: string;
   ts: string | null;
   kind: string;
@@ -9245,7 +9251,7 @@ export type DeltaFactStore = "identity" | "narrative";
  * narrative origin; ``changed_at`` is the per-store change timestamp that beat
  * the view mark.
  */
-export interface DeltaFactEntry {
+export interface DeltaFactEntry extends FactAttribution {
   id: string;
   subject: string;
   predicate: string;
@@ -9281,7 +9287,7 @@ export interface DeltaFactsResponse {
  * ``next_occurrence`` is the next calendar occurrence of (month, day) on or
  * after the request date; ``days_until`` is the integer day count to it.
  */
-export interface CoreDateEntry {
+export interface CoreDateEntry extends FactAttribution {
   id: string;
   predicate: string;
   value: string;
@@ -9931,7 +9937,7 @@ export interface SecretsAuditParams {
  * `object` is the fact value (e.g. "alice@example.com").
  * `value_hash` is SHA-256[:16] of the object, used as the DELETE path segment.
  */
-export interface ContactFact {
+export interface ContactFact extends FactAttribution {
   id: string;
   predicate: string;
   object: string;
@@ -10111,119 +10117,6 @@ export interface InsightCandidatesParams {
 }
 
 export type InsightFeedbackVerdict = "useful" | "not_now" | "never";
-
-// ---------------------------------------------------------------------------
-// Owner Decision Desk -- Decisions lane (bu-ckkpz.2, epic bu-ckkpz)
-// Read from GET /api/decisions
-// ---------------------------------------------------------------------------
-
-/**
- * One open, decision-marked bead, oldest-first (mirrors
- * `butlers.jobs.decision_review.DecisionBead` / `EscalationHit`).
- *
- * Detection is resolved server-side: only open, non-epic beads carrying the
- * `decision` label appear. Title text never classifies a decision. This
- * The digest projects source-authored context when it is valid: description,
- * ordered options, default, and due-at. It deliberately omits mutation
- * controls: this remains a read-only source view.
- */
-export interface DecisionBeadSummary {
-  id: string;
-  title: string;
-  priority: number | null;
-  created_at: string;
-  age_hours: number;
-  /** Source-authored Bead description, when present. */
-  description: string | null;
-  /** Source-authored decision options, preserved in Bead metadata order. */
-  options: string[] | null;
-  /** Source-authored default option, when valid. */
-  default: string | null;
-  /** Source-authored due timestamp, when present and parseable. */
-  due_at: string | null;
-  /** Whether all structured decision metadata projected without degradation. */
-  structured_details_available: boolean;
-  /** A machine-readable reason when structured detail is partial or unavailable. */
-  structured_details_unavailable_reason: string | null;
-  /** True when this decision has blocked a P1 bug or a deploy-marked bead for >48h. */
-  escalated: boolean;
-  escalated_blocked_id?: string | null;
-  escalated_blocked_title?: string | null;
-  /** "p1_bug" | "deploy" */
-  escalated_blocked_kind?: string | null;
-  escalated_block_hours?: number | null;
-}
-
-/**
- * Metadata for GET /api/decisions. `decisions_available: false` means the
- * beads-export digest could not be read (missing/stale/unreadable) -- the
- * empty `data` MUST NOT be rendered as "no decisions waiting" (fleet-wide
- * degraded-envelope convention -- see CLAUDE.md API Conventions). A genuine
- * zero (export readable, zero decision-marked beads open) reports
- * `decisions_available: true` with an empty list.
- */
-export interface DecisionsListMeta extends ApiMeta {
-  decisions_available: boolean;
-  unavailable_reason?: string | null;
-  /**
-   * ISO timestamp of the beads export file's own mtime, whenever known
-   * (bu-hmdqz.6) -- lets the frontend render an honest "as of" plaque
-   * instead of trusting hour-precision computed ages against a single-file
-   * bind-mount that tolerates up to 14 days of staleness before
-   * `decisions_available` flips to `false`. `null`/absent only when the
-   * export was never reached (e.g. missing file).
-   */
-  export_as_of?: string | null;
-}
-
-/** GET /api/decisions response: open decision beads + digest-availability meta. */
-export interface DecisionsListResponse {
-  data: DecisionBeadSummary[];
-  meta: DecisionsListMeta;
-}
-
-// ---------------------------------------------------------------------------
-// Snapshot-backed Bead detail -- GET /api/beads/{id}
-// ---------------------------------------------------------------------------
-
-/** One bounded direct dependency summary; never a raw snapshot edge. */
-export interface BeadDependencySummary {
-  id: string;
-  title: string | null;
-  status: string | null;
-  priority: number | null;
-  type: string | null;
-}
-
-/** Strict allowlist returned by GET /api/beads/{id}. */
-export interface BeadDetail {
-  id: string;
-  title: string | null;
-  status: string | null;
-  priority: number | null;
-  type: string | null;
-  description: string | null;
-  design: string | null;
-  acceptance_criteria: string | null;
-  labels: string[];
-  created_at: string | null;
-  updated_at: string | null;
-  started_at: string | null;
-  closed_at: string | null;
-  due_at: string | null;
-  dependencies: BeadDependencySummary[];
-  /** Display-only source text; never use it as a navigation target. */
-  external_ref: string | null;
-}
-
-export interface BeadDetailMeta extends ApiMeta {
-  export_as_of: string | null;
-}
-
-export interface BeadDetailResponse {
-  data: BeadDetail;
-  meta: BeadDetailMeta;
-}
 
 // ---------------------------------------------------------------------------
 // Rule-promotion approvals surface (bu-o62bc, bead 4)
@@ -10492,4 +10385,22 @@ export interface TasteWorksParams {
 export interface TasteVerdictsParams {
   offset?: number;
   limit?: number;
+}
+
+export interface FactAttribution {
+  verified?: boolean;
+  confirmation_status?: "owner_asserted" | "owner_confirmed" | "legacy_verified" | "unconfirmed";
+  content_authority?: "owner" | "owner_device" | "third_party" | "system" | "mixed" | null;
+  reported_by?: {
+    entity_id: string | null;
+    name: string | null;
+    availability: "available" | "unavailable" | "deleted" | "forgotten" | "merged" | "unresolved" | "legacy_unknown" | "system";
+  } | null;
+  confirmed_at?: string | null;
+  confirmed_by_entity_id?: string | null;
+  confirmation_source?: string | null;
+}
+
+export interface CandidateIdentityFact extends ContactFact {
+  validity: "candidate";
 }

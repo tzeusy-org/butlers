@@ -3,6 +3,8 @@
 **Status:** Implemented (Slices 1–3)
 **Date:** 2026-09-15
 
+Governing doctrine: [vision.md rule 3, no direct sibling-schema access](../../heart-and-soul/vision.md#non-negotiable-rules) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (per-butler schemas; `public` is the only controlled shared surface).
+
 ## Context
 
 Money known by one butler must sometimes be reconciled against evidence owned by

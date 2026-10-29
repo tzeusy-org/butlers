@@ -53,8 +53,8 @@ from butlers.api.deps import (
     ButlerConnectionInfo,
     ButlerUnreachableError,
     MCPClientManager,
+    OptionalDb,
     get_butler_configs,
-    get_db_manager,
     get_mcp_manager,
     get_pricing,
 )
@@ -115,18 +115,6 @@ def _is_tool_absent_error(exc: Exception, info: ButlerConnectionInfo) -> bool:
         and isinstance(exc, ToolError)
         and str(exc).startswith("Unknown tool:")
     )
-
-
-def _get_db_manager() -> DatabaseManager | None:
-    """Return dashboard DB manager when initialized, otherwise None.
-
-    Ledger-authoritative aggregate routes surface a degraded response when this
-    is unavailable; they never substitute session-derived prices.
-    """
-    try:
-        return get_db_manager()
-    except RuntimeError:
-        return None
 
 
 # The Spend dashboard's dollar-bearing aggregate surfaces share this single
@@ -808,7 +796,8 @@ _FLEET_ATTENTION_REASON_COPY = ATTENTION_REASON_COPY
 )
 async def get_fleet_halt_runtime_attention(
     _owner: str = Depends(require_dashboard_owner_control),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[FleetHaltAttentionObservation]:
     """Return sanitized durable alert evidence without weakening Spend data."""
     if db is None:
@@ -852,7 +841,8 @@ async def get_cost_summary(
     butler: str | None = Query(None, description="Filter to a single butler by name"),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendSummary]:
     """Return aggregate cost summary across all butlers.
 
@@ -1007,7 +997,8 @@ async def get_daily_costs(
     butler: str | None = Query(None, description="Filter to a single butler by name"),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[DailySpend]]:
     """Return daily cost time series aggregated across all butlers.
 
@@ -1221,7 +1212,8 @@ async def get_top_sessions(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[TopSession]]:
     """Return most expensive sessions across all butlers.
 
@@ -1473,7 +1465,8 @@ async def get_costs_by_schedule(
     mgr: MCPClientManager = Depends(get_mcp_manager),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[ScheduleCost]]:
     """Return per-schedule cost analysis across all butlers.
 
@@ -1598,7 +1591,8 @@ async def get_spend_breakdown(
     by: Literal["butler", "model", "feature", "purpose"] = Query(
         "butler", description="Dimension to break spend down by"
     ),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
     mgr: MCPClientManager = Depends(get_mcp_manager),
@@ -1733,7 +1727,8 @@ class ForecastResponse(BaseModel):
 
 @router.get("/forecast", response_model=ApiResponse[ForecastResponse])
 async def get_spend_forecast(
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     pricing: PricingConfig = Depends(get_pricing),
 ) -> ApiResponse[ForecastResponse]:
@@ -1965,7 +1960,8 @@ class SpendRuleUpdate(BaseModel):
 
 @router.get("/rules", response_model=ApiResponse[list[SpendRule]])
 async def list_spend_rules(
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[list[SpendRule]]:
     """Return all spend routing rules ordered by position."""
     if db is None:
@@ -2002,7 +1998,8 @@ async def list_spend_rules(
 async def create_spend_rule(
     body: SpendRuleCreate,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendRule]:
     """Create a new spend routing rule.
 
@@ -2085,7 +2082,8 @@ async def update_spend_rule(
     rule_id: str,
     body: SpendRuleUpdate,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendRule]:
     """Update an existing spend routing rule by ID.
 
@@ -2195,7 +2193,8 @@ async def update_spend_rule(
 async def delete_spend_rule(
     rule_id: str,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> None:
     """Delete a spend routing rule by ID.
 
@@ -2259,7 +2258,8 @@ class SpendCeilingUpdate(BaseModel):
 async def update_spend_ceiling(
     body: SpendCeilingUpdate,
     request: Request,
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[SpendCeiling]:
     """Set the monthly spend ceiling.
 

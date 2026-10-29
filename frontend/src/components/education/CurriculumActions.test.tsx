@@ -2,6 +2,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
+import { render, screen } from "@testing-library/react";
 import { createRoot, type Root } from "react-dom/client";
 
 vi.mock("@/hooks/use-education", () => ({
@@ -52,4 +53,17 @@ describe("CurriculumActions status tone", () => {
     expect(badge!.style.borderColor).toBe(TONE_COLORS[tone]);
     expect(badge!.style.color).toBe(TONE_COLORS[tone]);
   });
+});
+
+
+it("offers draft abandonment and refuses empty or unproven abandoned reactivation", () => {
+  const { container, unmount } = render(<CurriculumActions mindMapId="map" status="draft" nodeCount={0} />);
+  expect(container.textContent).toContain("Setting up");
+  expect(screen.getByRole("button", { name: "Abandon" })).toBeTruthy();
+  unmount();
+  for (const nodeCount of [undefined, 0, 1]) {
+    const view = render(<CurriculumActions mindMapId="map" status="abandoned" nodeCount={nodeCount} />);
+    expect((screen.getByRole("button", { name: "Re-activate" }) as HTMLButtonElement).disabled).toBe(!nodeCount);
+    view.unmount();
+  }
 });

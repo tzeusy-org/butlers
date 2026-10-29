@@ -27,9 +27,11 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from fastmcp import FastMCP
 
 from butlers.config import ApprovalConfig, ApprovalRiskTier, GatedToolConfig
 from butlers.modules.approvals.gate import apply_approval_gates
+from butlers.testing.mcp import tool_fn
 from tests.daemon.test_dashboard_lane_tools import (
     _clear_routing_context,
     _make_switchboard_dir,
@@ -40,37 +42,6 @@ from tests.daemon.test_dashboard_lane_tools import (
 from tests.modules.test_module_approvals import MockDB
 
 pytestmark = pytest.mark.unit
-
-
-def _make_fake_target_mcp() -> tuple[Any, dict[str, Any]]:
-    """Minimal fake FastMCP surface for a target butler's own tools."""
-    from unittest.mock import MagicMock
-
-    class FakeTool:
-        def __init__(self, name: str, fn: Any):
-            self.name = name
-            self.fn = fn
-
-    tools: dict[str, Any] = {}
-    mcp = MagicMock()
-
-    def get_tool(name: str) -> Any:
-        return tools.get(name)
-
-    async def _get_tool_async(name: str) -> Any:
-        return tools.get(name)
-
-    mcp.get_tool = _get_tool_async
-
-    def tool_decorator(*_a, **_kw):
-        def dec(fn):
-            tools[fn.__name__] = FakeTool(fn.__name__, fn)
-            return fn
-
-        return dec
-
-    mcp.tool = tool_decorator
-    return mcp, tools
 
 
 async def test_action_request_parks_zero_writes_no_completion_claim(
@@ -84,7 +55,7 @@ async def test_action_request_parks_zero_writes_no_completion_claim(
     replies: list[str] = []
 
     target_pool = MockDB()
-    target_mcp, _tools = _make_fake_target_mcp()
+    target_mcp = FastMCP("dashboard-propose-then-act")
     from butlers.testing.approval_parking_fake import record_pending_action
 
     monkeypatch.setattr(
@@ -109,7 +80,7 @@ async def test_action_request_parks_zero_writes_no_completion_claim(
         target_pool,
         butler_name="finance",
     )
-    gated_tool = await target_mcp.get_tool("finance_send_payment_reminder")
+    gated_tool = await tool_fn(target_mcp, "finance_send_payment_reminder")
 
     async def _fake_target_dispatch(*_args: Any, **kwargs: Any) -> dict[str, Any]:
         envelope = kwargs["args"]
@@ -120,7 +91,7 @@ async def test_action_request_parks_zero_writes_no_completion_claim(
         assert "ACTION REQUEST" in context_text
         assert "Do NOT write directly" in context_text
 
-        gate_result = await gated_tool.fn(
+        gate_result = await gated_tool(
             to="unknown-recipient@example.com",
             amount=42.0,
             _why="Owner asked to send a payment reminder.",
@@ -169,14 +140,14 @@ async def test_statement_applies_write_and_replies_with_confirmation(tmp_path: P
     domain_writes: list[dict[str, Any]] = []
     replies: list[str] = []
 
-    target_mcp, _tools = _make_fake_target_mcp()
+    target_mcp = FastMCP("dashboard-propose-then-act")
 
     @target_mcp.tool()
     async def finance_record_transaction(merchant: str, amount: float) -> dict:
         domain_writes.append({"merchant": merchant, "amount": amount})
         return {"status": "recorded"}
 
-    write_tool = await target_mcp.get_tool("finance_record_transaction")
+    write_tool = await tool_fn(target_mcp, "finance_record_transaction")
 
     async def _fake_target_dispatch(*_args: Any, **kwargs: Any) -> dict[str, Any]:
         envelope = kwargs["args"]
@@ -184,7 +155,7 @@ async def test_statement_applies_write_and_replies_with_confirmation(tmp_path: P
         assert "STATEMENT" in context_text
         assert "Apply it" in context_text
 
-        write_result = await write_tool.fn(merchant="Amazon", amount=45.99)
+        write_result = await write_tool(merchant="Amazon", amount=45.99)
         assert write_result["status"] == "recorded"
         replies.append("Recorded: Amazon transaction for $45.99 — correct?")
         return {"result": {"status": "accepted"}}

@@ -47,6 +47,20 @@ def test_relationship_job_schedules_have_registered_handlers() -> None:
             missing.append(job_name)
 
     assert not missing, f"Relationship deterministic jobs not registered: {missing}"
+    # bu-idc5mx.4: the two reminder schedules are deterministic jobs with no prompt.
+    by_name = {s["name"]: s for s in schedules}
+    for name, cron, job_name in (
+        ("upcoming-dates-check", "0 8 * * *", "upcoming_dates_check"),
+        ("relationship-maintenance", "0 9 * * 1", "relationship_maintenance"),
+    ):
+        schedule = by_name[name]
+        assert (schedule["cron"], schedule.get("dispatch_mode"), schedule.get("job_name")) == (
+            cron,
+            "job",
+            job_name,
+        )
+        assert "prompt" not in schedule
+        assert callable(relationship_jobs.get(job_name))
 
 
 @pytest.mark.asyncio

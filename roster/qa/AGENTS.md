@@ -38,10 +38,24 @@ step sequence of each, consult the `patrol-operations` skill.
   receive `PATH` and approved build-tool variables, never GitHub credentials or
   generic publication authority. Only the trusted deterministic publisher owns
   the dedicated QA credential (RFC0015, restricted publication authority).
-- Current `build_sandbox_env()` still injects `GH_TOKEN`; this is a migration gap,
-  not an allowed fallback or proof of confinement. The adopted publisher must
-  remain unavailable until process/filesystem isolation is proven. This source
-  guidance does not activate the publisher or change live credentials.
+- Agent sessions (initial investigation and review follow-up) are spawned with
+  `build_agent_env()`, which never carries `GH_TOKEN` or any git credential
+  variable. Automated publication fails closed: no `git push`, no `gh pr create`;
+  the attempt fails with `publication_unavailable` (follow-up: `last_follow_up_error`)
+  until the isolated publisher and process/filesystem isolation are proven. The
+  dispatcher keeps the token only for read-only PR-status polling, which addresses
+  the PR by URL from a neutral cwd. Follow-up fetch/worktree preparation runs in the
+  shared `repo_root` that agents can write (`.git/hooks`, `.git/config`), so it holds
+  no token. These dispatcher git paths run through `butlers.core.git_env` (an
+  allowlisted environment with no daemon secrets, plus command-line config that
+  neutralises hooks, fsmonitor, credential helpers, `core.sshCommand`, `core.askPass`
+  and the `ext::` and `git://` transports): the main refresh, follow-up fetch/worktree
+  preparation, the worktree create/remove/reap helpers, the managed-clone refresh and the
+  commit diff snapshot (`--no-ext-diff --no-textconv`) and no-op branch detection
+  (`--no-show-signature`). Named-remote fetches pin `--upload-pack=git-upload-pack`.
+  Residual, not covered: `url.*.insteadOf` and `filter.*` config. The retired local
+  healing dispatcher has no push path. This does not activate the isolated QA publisher
+  or change live credentials.
 - Never pass butler DB credentials, API keys, or OAuth tokens to investigation agents
 
 ### Isolation First

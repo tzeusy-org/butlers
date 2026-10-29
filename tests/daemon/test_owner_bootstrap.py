@@ -267,5 +267,5 @@ class TestConcurrentStartupSafety:
 
         await asyncio.gather(*[_ensure_owner_entity(p) for p in pools3])
         assert len(insert_calls) == 3
-        for sql, args in insert_calls:
+        for _sql, args in insert_calls:
             assert any("owner" in str(arg).lower() for arg in args)

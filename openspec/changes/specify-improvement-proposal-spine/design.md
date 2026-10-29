@@ -1,5 +1,14 @@
 # Design: unified improvement proposals and gated amendment PRs
 
+## Current fold-in disposition
+
+The full `AGENTS.md Read/Write Access` requirement (`REQ-core-skills-004`) is now owned by
+`generalist-lead-focused-delegation/specs/core-skills/spec.md`. This change has no remaining
+`core-skills` delta. Its 20 `improvement-proposal-spine` requirements and 41 scenarios remain
+active and unchanged, together with every historical task state and outstanding owner-review,
+implementation, verification and archive gate. This is the source-emptied-of-moved-deltas
+disposition, not a whole-source archive or an implementation approval.
+
 ## Context
 
 `bu-8cdl1.15`'s shaping pass found two shipped, intentional systems answering "how does a butler
@@ -36,8 +45,8 @@ Goals:
   against without further design work.
 - Backfill and dual-write both legacy systems without loss, duplication, or vocabulary drift,
   while leaving them fully intact and authoritative until an explicit future read-cutover.
-- Reconcile `core-skills`'s direct-write authority and the active k3s DB-fallback delta so no
-  runtime session ever gets a silent, unaudited identity-write path.
+- Preserve the provenance of the `core-skills` direct-write boundary now folded into General,
+  so no runtime session gets a silent, unaudited identity-write path.
 - Name QA's reusable primitives and draw the line at `_create_qa_pr`/`healing_attempts` so the
   spine's PR adapter is substrate reuse, not a QA-authority claim.
 
@@ -272,49 +281,38 @@ representation (step 1) lands and is verified. This ordering means a partial cut
 landed, dual-write not yet — is always safely rollback-able to "read from legacy tables only,"
 because the legacy tables are still the only rows anything writes during that window.
 
-### D13: `core-skills` boundary is preventive, and its delta is authored as a full superset of the active k3s change's own delta
+### D13: `core-skills` boundary is folded into General; helpers remain tooling-only
 
-Today, no MCP tool wires a runtime butler session to `write_agents_md`/`append_agents_md` (a
-full-repo call-site scan finds only test callers and the functions' own definitions in
-`src/butlers/core/skills.py`). This draft's `core-skills` change is therefore preventive: it closes
-a latent authority (the functions exist, are importable, and the active `k3s-deployment-helm-chart`
-change extends their DB-fallback reach) before any future tool exposes either path to a runtime
-session, rather than revoking an exercised capability.
+The historical source delta was preventive: its call-site scan found no MCP tool wiring a
+runtime session to `write_agents_md`/`append_agents_md`. A fresh static scan at the fold's base
+`f6a842e60941b69077f54de5e5dab20558c91a38` finds the helper definitions in
+`src/butlers/core/skills.py` and their test consumers, with no registered production wrapper or
+named production caller. `append_agents_md` reads/writes the path directly; the old delta's
+claim that it composes the other two helpers was not a current callgraph fact. Importability
+does not grant a model tool, and a static scan is not runtime-execution evidence.
 
-Because `k3s-deployment-helm-chart` is an active, unarchived change whose own `## MODIFIED
-Requirements` block already rewrites the same `AGENTS.md Read/Write Access` requirement (adding the
-`state`-table fallback for read-only filesystems), this draft's own block cannot be authored as an
-independent, narrower addition the way the `notify-confirm-interaction` precedent kept its three
-touched files' `## ADDED`-only blocks disjoint from the sibling `decision-loop-one-tap-approvals`
-change (that precedent's proposal.md "Coexistence note" — additive requirement names only, never a
-second `## MODIFIED` block on the same requirement). This draft's situation is the harder case that
-precedent explicitly avoided: two changes really do need to modify the same requirement. Two changes
-modifying the same requirement name against the same baseline is exactly what
-`scripts/check_spec_overwrites.py` polices for content loss on archive, and `openspec archive`
-itself has no cross-change conflict detection — it resolves whichever change archives against
-whatever is currently in `openspec/specs/` at that moment.
+General now owns the complete `AGENTS.md Read/Write Access` block as `REQ-core-skills-004`.
+The source's seven scenario names and the target's six form an eight-name union: the five shared
+helper/content/workflow scenarios, the existing goal/sandbox prohibition, and both source
+[TARGET-STATE] scenarios. Pure tooling read/overwrite/append semantics, absent-file reads,
+content principles and skill references remain. The source's old runtime-instance consumer and
+content-boundary trigger yield to the target's developer/deployment-only rule under RFC 0038
+D1/D2/D3/D15; the target's stronger goal/sandbox ban remains whole. No runtime-facing MCP tool
+may reach either writer directly or through a thin wrapper.
 
-This draft resolves it explicitly rather than leaving it for an archive-time surprise: its
-`core-skills` delta is authored as a full superset, carrying forward every scenario from
-`k3s-deployment-helm-chart`'s own MODIFIED block verbatim (the DB-fallback-on-read-only-filesystem
-scenarios) and adding the new runtime-tool-surface boundary scenario on top. This means:
+The future `propose_amendment` scenario applies only to proposed changes to git-tracked roster
+`AGENTS.md` content. It retains the roster target kind, corresponding target adapter and explicit
+owner accept before any tracked-file effect; proposing alone grants no execution authority.
+It neither registers a new tool nor replaces or adds an approval gate to the distinct D2
+guidance-notes `record` capability (`REQ-core-skills-003`), whose owner-authority, exposure and
+verified-lineage rules remain unchanged. Future spine adapters still depend on the existing
+approval and implementation gates below. This source no longer edits `core-skills`, and task
+5.1 must not reapply its former block. No ratchet or canonical baseline spec is changed.
 
-- If this draft archives first, `k3s-deployment-helm-chart`'s own delta becomes redundant with (not
-  contradicted by) what is now in `openspec/specs/core-skills/spec.md` — its author rebases its
-  block to a no-op or drops it, since every scenario it wanted is already present.
-- If `k3s-deployment-helm-chart` archives first, this draft's block, if archived unchanged, would
-  still carry forward every scenario correctly (it was authored as a superset of that exact text),
-  but its author should re-diff against the just-archived baseline before archiving to confirm
-  nothing in `k3s-deployment-helm-chart`'s final merged text drifted from what this draft copied.
-
-Either order is safe from silent content loss; neither is a no-op that this draft can force by
-itself. `proposal.md`'s Impact section names this as the exact prerequisite acceptance criterion 2
-requires, rather than presenting the sequencing as already resolved.
-
-**Update 2026-09-26 (bu-60pwv6.3):** the owner abandoned `k3s-deployment-helm-chart` (staying on
-Docker) and the change was removed without archiving, so the sequencing above no longer applies.
-The DB-fallback scenarios this delta copied from it now have no sponsor; task 2.5 (bu-60pwv6.27)
-drops them before review.
+The `k3s-deployment-helm-chart` change once also modified this requirement (adding a `state`-table
+DB fallback for read-only filesystems). The owner abandoned it (staying on Docker) and it was
+removed without archiving (bu-60pwv6.3), so no cross-change sequencing applies. An earlier draft of
+this delta copied that change's DB-fallback scenarios; task 2.5 (bu-60pwv6.27) dropped them.
 
 ## Rejected alternatives
 
@@ -400,8 +398,9 @@ activation, or deployment is required or authorized by this draft.
    returns GO or corrections are applied and re-reviewed.
 2. Obtain separate owner approval naming the exact reviewed commit before any implementation of
    `bu-8cdl1.15` or its decomposed children claims this contract as authority.
-3. Resolved 2026-09-26: `k3s-deployment-helm-chart` was abandoned and removed, so no
-   `core-skills` sequencing remains; drop its copied DB-fallback scenarios (task 2.5).
+3. Resolved 2026-09-26: `k3s-deployment-helm-chart` was abandoned and removed; the copied
+   DB-fallback scenarios were dropped (task 2.5). The later General fold-in owns the complete
+   `core-skills` block; this source has no remaining delta to sequence or sync for that capability.
 4. Implementation proceeds only under `bu-8cdl1.15`'s already-existing decomposition sequence
    (representation/backfill → transactional producers/adapters while legacy readers remain
    authoritative → dashboard read/review cutover → owner-authenticated DB effect adapters and

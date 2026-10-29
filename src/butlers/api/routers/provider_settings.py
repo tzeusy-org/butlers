@@ -19,20 +19,16 @@ from typing import Any
 
 import asyncpg
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings/providers", tags=["provider-settings"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -136,11 +132,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 def _probe_url_for_provider(provider_type: str, config: dict[str, Any]) -> str | None:
@@ -171,7 +167,8 @@ def _probe_url_for_provider(provider_type: str, config: dict[str, Any]) -> str |
 
 @router.get("", response_model=ApiResponse[list[ProviderConfig]])
 async def list_providers(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[ProviderConfig]]:
     """Return all provider configurations ordered by provider_type.
 
@@ -198,7 +195,8 @@ async def list_providers(
 @router.post("", response_model=ApiResponse[ProviderConfig], status_code=201)
 async def create_provider(
     body: ProviderConfigCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ProviderConfig]:
     """Register a new provider configuration. Returns 409 on duplicate provider_type."""
     pool = _shared_pool(db)
@@ -216,14 +214,14 @@ async def create_provider(
             body.config,
             body.enabled,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Provider '{body.provider_type}' already exists",
-        )
+        ) from exc
     except Exception as exc:
         logger.error("Failed to create provider config: %s", exc)
-        raise HTTPException(status_code=500, detail="Failed to create provider config")
+        raise HTTPException(status_code=500, detail="Failed to create provider config") from exc
 
     if row is None:
         raise HTTPException(status_code=500, detail="Insert returned no row")
@@ -240,7 +238,8 @@ async def create_provider(
 async def update_provider(
     provider_type: str,
     body: ProviderConfigUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ProviderConfig]:
     """Update a provider configuration. Only provided fields are changed."""
     updates = body.model_dump(exclude_none=True)
@@ -275,7 +274,7 @@ async def update_provider(
         row = await pool.fetchrow(sql, *params)
     except Exception as exc:
         logger.error("Failed to update provider config '%s': %s", provider_type, exc)
-        raise HTTPException(status_code=500, detail="Failed to update provider config")
+        raise HTTPException(status_code=500, detail="Failed to update provider config") from exc
 
     if row is None:
         raise HTTPException(
@@ -294,7 +293,8 @@ async def update_provider(
 @router.delete("/{provider_type}", response_model=ApiResponse[dict])
 async def delete_provider(
     provider_type: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a provider configuration by provider_type."""
     pool = _shared_pool(db)
@@ -322,7 +322,8 @@ async def delete_provider(
 )
 async def test_connectivity(
     provider_type: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConnectivityResult]:
     """Probe the provider's configured base URL and return success/error with latency.
 

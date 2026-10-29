@@ -12,6 +12,7 @@
  * - validity: ledger filter: 'active' | 'fading' | 'superseded' | 'expired' | 'retracted'. Default 'active'.
  * - maturity: rules filter: 'all' | 'candidate' | 'established' | 'proven' | 'anti_pattern'. Default 'all'.
  * - status:   daybook filter: 'pending' | 'consolidated' | 'dead_letter'. Absent by default (= all).
+ * - held:     true restricts the rules register to guidance waiting for endorsement.
  * - offset:   pagination offset for the focused register. Default 0.
  *
  * Default-valued params are NOT written to the URL so deep-links stay short and
@@ -38,6 +39,8 @@ export type MemoryMaturity = 'all' | 'candidate' | 'established' | 'proven' | 'a
 export type MemoryEpisodeStatus = 'pending' | 'consolidated' | 'dead_letter'
 
 export interface MemoryUrlState {
+  /** Only held guidance in the rules register; omitted for the default view. */
+  held?: boolean
   /** Focused register. Defaults to 'facts' when absent. */
   register: MemoryRegister
   /** Submitted search query. Null when no search is active. */
@@ -157,6 +160,7 @@ export function serializeMemoryState(state: Partial<MemoryUrlState>): URLSearchP
   if (state.maturity && state.maturity !== DEFAULT_MATURITY) {
     params.set('maturity', state.maturity)
   }
+  if (state.held === true) params.set('held', 'true')
   if (state.status) {
     params.set('status', state.status)
   }
@@ -169,6 +173,7 @@ export function serializeMemoryState(state: Partial<MemoryUrlState>): URLSearchP
 
 export function parseMemoryState(searchParams: URLSearchParams): MemoryUrlState {
   return {
+    ...(searchParams.get('held') === 'true' ? { held: true } : {}),
     register: parseRegister(searchParams.get('register')),
     q: parseQuery(searchParams.get('q')),
     kind: parseKind(searchParams.get('kind')),
@@ -183,7 +188,7 @@ export function parseMemoryState(searchParams: URLSearchParams): MemoryUrlState 
 // Hook
 // ---------------------------------------------------------------------------
 
-const URL_KEYS = ['register', 'q', 'kind', 'validity', 'maturity', 'status', 'offset'] as const
+const URL_KEYS = ['register', 'q', 'kind', 'validity', 'maturity', 'status', 'offset', 'held'] as const
 
 /**
  * Read and write /memory URL state.

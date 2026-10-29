@@ -25,8 +25,8 @@ import pytest
 
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.notifications import _get_db_manager as _notif_get_db
-from butlers.api.routers.qa import _get_db_manager as _qa_get_db
+from butlers.api.deps import get_db as _notif_get_db
+from butlers.api.deps import get_db as _qa_get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit

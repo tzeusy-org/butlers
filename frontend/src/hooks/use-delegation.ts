@@ -11,14 +11,15 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { listDelegationLedger, type DelegationLedgerParams } from "@/api/index.ts";
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
+// No fleet event type covers delegation ledger rows, so this local poll is the primary path.
+const DELEGATION_LEDGER_POLL_MS = 30_000;
 
 export function useDelegationLedger(params: DelegationLedgerParams = {}) {
-  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["delegation-ledger", params],
     queryFn: () => listDelegationLedger(params),
-    refetchInterval,
+    refetchInterval: DELEGATION_LEDGER_POLL_MS,
   });
 }
 

@@ -11,8 +11,6 @@ downstream responsibilities of the Switchboard after ingest acceptance.
 
 Environment Variables (from docs/connectors/telegram_bot.md):
     SWITCHBOARD_MCP_URL: SSE endpoint URL for Switchboard MCP server (required)
-    CONNECTOR_PROVIDER: "telegram" (required)
-    CONNECTOR_CHANNEL: "telegram_bot" (required)
     CONNECTOR_POLL_INTERVAL_S: Poll interval in seconds (required for polling)
     CONNECTOR_MAX_INFLIGHT: Max concurrent ingest submissions (optional, default 8)
     CONNECTOR_HEALTH_PORT: HTTP port for health endpoint (optional, default 40081)
@@ -43,11 +41,17 @@ from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
+from butlers.connectors.telegram_spans import bot_in_reply_to_ref, bot_message_spans
+from butlers.conversation_identity import (
+    telegram_bot_message_identity,
+    telegram_bot_update_identity,
+)
 from butlers.core.approval_callbacks import (
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER,
     APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY,
@@ -66,6 +70,8 @@ from butlers.identity import resolve_owner_channel_via_definer
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
 from butlers.storage import BlobStorageStartupError, BlobStore, S3BlobStore
 from butlers.telegram_api import edit_telegram_message_text, remove_telegram_inline_keyboard
+
+_DESCRIPTOR = connector_descriptor("telegram_bot")
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +121,9 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
     "executed": "✅ Approved",
     "rejected": "❌ Rejected",
     "expired": "⏰ Expired",
+    "changed_since_shown": (
+        "⚠️ Changed since shown. Nothing was executed; open the dashboard to review the new call."
+    ),
 }
 
 
@@ -224,8 +233,8 @@ class TelegramBotConnectorConfig:
     switchboard_mcp_url: str
 
     # Connector identity
-    provider: str = "telegram"
-    channel: str = "telegram_bot"
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
     endpoint_identity: str = field(default="")
 
     # Telegram credentials
@@ -266,8 +275,8 @@ class TelegramBotConnectorConfig:
         if not switchboard_mcp_url:
             raise ValueError("SWITCHBOARD_MCP_URL environment variable is required")
 
-        provider = os.environ.get("CONNECTOR_PROVIDER", "telegram")
-        channel = os.environ.get("CONNECTOR_CHANNEL", "telegram_bot")
+        provider = _DESCRIPTOR.provider
+        channel = _DESCRIPTOR.channel
 
         telegram_token = os.environ.get("BUTLER_TELEGRAM_TOKEN") or None
 
@@ -292,6 +301,16 @@ class TelegramBotConnectorConfig:
             health_port=health_port,
             internal_api_url=internal_api_url,
         )
+
+
+def _replay_message_metadata(update: dict[str, Any]) -> dict[str, Any]:
+    """Provider exposure facts without retaining a filtered message's body."""
+    for key in ("message", "edited_message", "channel_post"):
+        msg = update.get(key)
+        if isinstance(msg, dict):
+            spans = bot_message_spans(msg, _extract_normalized_text(msg) or "")
+            return {"untrusted_spans": spans or None, "in_reply_to_ref": bot_in_reply_to_ref(msg)}
+    return {}
 
 
 class TelegramBotConnector:
@@ -344,7 +363,7 @@ class TelegramBotConnector:
 
         # Metrics
         self._metrics = ConnectorMetrics(
-            connector_type="telegram_bot",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=config.endpoint_identity,
         )
 
@@ -475,7 +494,7 @@ class TelegramBotConnector:
     def _start_heartbeat(self) -> None:
         """Initialize and start heartbeat background task."""
         heartbeat_config = HeartbeatConfig.from_env(
-            connector_type="telegram_bot",
+            connector_type=_DESCRIPTOR.connector_type,
             endpoint_identity=self._config.endpoint_identity,
             version=None,  # Could be set from env or git sha
         )
@@ -875,10 +894,14 @@ class TelegramBotConnector:
         """
         async with self._semaphore:
             update_id = str(update.get("update_id", "unknown"))
+            _conversation_id, _reply_target_ref = telegram_bot_update_identity(update)
+            envelope = None
             try:
                 # Approval callbacks are control-plane decisions, never
                 # ingest.v1 events. Keep the older chronicler ``cgi:`` callback
                 # path additive, then benignly acknowledge all other buttons.
+                if await self._maybe_handle_confirm_callback(update):
+                    return
                 if await self._maybe_handle_approval_callback(update):
                     return
                 if await self._maybe_handle_gap_interview_callback(update):
@@ -919,13 +942,16 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            **_replay_message_metadata(update),
                         ),
                     )
                     return
@@ -953,13 +979,16 @@ class TelegramBotConnector:
                             provider=self._config.provider,
                             endpoint_identity=self._config.endpoint_identity,
                             external_event_id=update_id,
-                            external_thread_id=self._extract_chat_id(update),
+                            external_thread_id=None,
+                            external_conversation_id=_conversation_id,
+                            reply_target_ref=_reply_target_ref,
                             observed_at=datetime.now(UTC).isoformat(),
                             sender_identity=self._extract_sender_identity(update),
                             # Filtered-content privacy tier (bu-glbjx): content
                             # the connector chose not to submit persists a bounded
                             # preview only; the full raw payload is NOT retained.
                             raw={},
+                            **_replay_message_metadata(update),
                         ),
                     )
                     return
@@ -981,7 +1010,7 @@ class TelegramBotConnector:
                 self._filtered_event_buffer.record(
                     external_message_id=update_id,
                     source_channel=self._config.channel,
-                    sender_identity="unknown",
+                    sender_identity=self._extract_sender_identity(update),
                     subject_or_preview=None,
                     filter_reason=FilteredEventBuffer.reason_submission_error(),
                     full_payload=FilteredEventBuffer.full_payload(
@@ -989,14 +1018,78 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=self._extract_chat_id(update),
+                        external_thread_id=None,
+                        external_conversation_id=_conversation_id,
+                        reply_target_ref=_reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
-                        sender_identity="unknown",
+                        sender_identity=self._extract_sender_identity(update),
                         raw=update,
+                        normalized_text=(
+                            envelope["payload"].get("normalized_text") if envelope else None
+                        ),
+                        untrusted_spans=(
+                            envelope["payload"].get("untrusted_spans")
+                            if envelope
+                            else _replay_message_metadata(update).get("untrusted_spans")
+                        ),
+                        in_reply_to_ref=(
+                            envelope["event"].get("in_reply_to_ref")
+                            if envelope
+                            else _replay_message_metadata(update).get("in_reply_to_ref")
+                        ),
                     ),
                     status="error",
                     error_detail=str(exc),
                 )
+
+    async def _maybe_handle_confirm_callback(self, update: dict[str, Any]) -> bool:
+        """Forward authenticated informational taps; never call a domain or approval sink."""
+        from butlers.core.confirm_tokens import verify_confirm_token
+
+        callback = update.get("callback_query")
+        if not isinstance(callback, dict):
+            return False
+        token = callback.get("data")
+        if not isinstance(token, str) or not token.startswith("cfm1:"):
+            return False
+        callback_id = str(callback.get("id", ""))
+        sender = callback.get("from")
+        message = callback.get("message")
+        chat = message.get("chat") if isinstance(message, dict) else None
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        chat_id = chat.get("id") if isinstance(chat, dict) else None
+        secret = self._config.approval_callback_secret
+        credential = self._config.approval_callback_connector_token
+        toast = ""
+        if (
+            sender_id is not None
+            and chat_id is not None
+            and secret
+            and credential
+            and self._config.internal_api_url
+            and verify_confirm_token(token, chat_id=str(chat_id), secret=secret) is not None
+        ):
+            toast = "Couldn't record that right now. Please try again."
+            try:
+                response = await self._http_client.post(
+                    f"{self._config.internal_api_url.rstrip('/')}/api/confirms/callback",
+                    headers={"X-Butlers-Confirm-Callback-Token": credential},
+                    json={"token": token, "sender_id": str(sender_id), "chat_id": str(chat_id)},
+                )
+                if response.status_code == 200:
+                    data = response.json().get("data", {})
+                    status = data.get("status")
+                    toast = {
+                        "answered": "Answer recorded. Applying it now.",
+                        "expired": "This question has expired.",
+                        "already_handled": "Already handled.",
+                        "refused": "",
+                    }.get(status, toast)
+            except Exception:  # No callback data/credentials in exception logs.
+                logger.warning("Confirm callback service unavailable")
+        if callback_id:
+            await self._answer_callback_query(callback_id, toast)
+        return True
 
     async def _maybe_handle_approval_callback(self, update: dict[str, Any]) -> bool:
         """Apply one signed owner approval callback without entering ingestion.
@@ -1120,6 +1213,16 @@ class TelegramBotConnector:
         await self._edit_approval_callback_message(callback_query, resolved_status)
         return True
 
+    async def _is_primary_owner_callback(self, callback_query: dict[str, Any]) -> bool:
+        sender = callback_query.get("from")
+        sender_id = sender.get("id") if isinstance(sender, dict) else None
+        if self._db_pool is None or sender_id is None:
+            return False
+        owner_channel = await resolve_owner_channel_via_definer(
+            self._db_pool, "telegram_bot", str(sender_id)
+        )
+        return owner_channel is not None and owner_channel[1]
+
     async def _maybe_ack_unhandled_callback(self, update: dict[str, Any]) -> bool:
         """Clear the Telegram spinner for foreign/unsupported button callbacks."""
         callback_query = update.get("callback_query")
@@ -1194,6 +1297,8 @@ class TelegramBotConnector:
                     APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token,
                 },
             )
+            if response.status_code == 409 and "changed since shown" in response.text:
+                return "changed_since_shown"
             if response.status_code >= 400:
                 return None
             payload = response.json()
@@ -1322,7 +1427,7 @@ class TelegramBotConnector:
                     chat_id = str(chat["id"])
                     break
         return IngestionEnvelope(
-            source_channel="telegram_bot",
+            source_channel=_DESCRIPTOR.channel,
             raw_key=chat_id,
         )
 
@@ -1612,7 +1717,8 @@ class TelegramBotConnector:
         - source.provider: "telegram"
         - source.endpoint_identity: receiving bot identity
         - event.external_event_id: update_id
-        - event.external_thread_id: chat.id:message_id (fallback: chat.id)
+        - event.external_conversation_id: stable Telegram chat/topic identity
+        - event.reply_target_ref: chat.id:message_id
         - event.observed_at: current timestamp (RFC3339)
         - sender.identity: message.from.id
         - payload.raw: full Telegram update JSON
@@ -1650,11 +1756,7 @@ class TelegramBotConnector:
             sender_id = str(msg["from"].get("id", "unknown"))
 
         message_id = msg.get("message_id")
-
-        # Build thread identity as chat_id:message_id for reply targeting
-        thread_identity = (
-            f"{chat_id}:{message_id}" if chat_id and message_id is not None else chat_id
-        )
+        external_conversation_id, reply_target_ref = telegram_bot_message_identity(msg)
 
         # Canonical idempotency key: tg:<chat_id>:<message_id>
         # Uses chat_id + message_id (unique per chat) so that bot and user-client
@@ -1682,10 +1784,13 @@ class TelegramBotConnector:
                         provider=self._config.provider,
                         endpoint_identity=self._config.endpoint_identity,
                         external_event_id=update_id,
-                        external_thread_id=thread_identity,
+                        external_thread_id=None,
+                        external_conversation_id=external_conversation_id,
+                        reply_target_ref=reply_target_ref,
                         observed_at=datetime.now(UTC).isoformat(),
                         sender_identity=sender_id,
                         raw={},
+                        **_replay_message_metadata(update),
                     ),
                     status="error",
                     error_detail=media_failure_reason,
@@ -1697,6 +1802,21 @@ class TelegramBotConnector:
         }
         if attachments:
             payload["attachments"] = attachments
+        # Forwarded and quoted third-party text (RFC 0038 D5). The forwarding owner stays the
+        # sender; the span is what starts the goal exposed at admission.
+        untrusted_spans = bot_message_spans(msg, normalized_text)
+        if untrusted_spans:
+            payload["untrusted_spans"] = untrusted_spans
+
+        event: dict[str, Any] = {
+            "external_event_id": update_id,
+            "external_conversation_id": external_conversation_id,
+            "reply_target_ref": reply_target_ref,
+            "observed_at": datetime.now(UTC).isoformat(),
+        }
+        in_reply_to_ref = bot_in_reply_to_ref(msg)
+        if in_reply_to_ref is not None:
+            event["in_reply_to_ref"] = in_reply_to_ref
 
         # Build ingest.v1 envelope
         return {
@@ -1706,11 +1826,7 @@ class TelegramBotConnector:
                 "provider": self._config.provider,
                 "endpoint_identity": self._config.endpoint_identity,
             },
-            "event": {
-                "external_event_id": update_id,
-                "external_thread_id": thread_identity,
-                "observed_at": datetime.now(UTC).isoformat(),
-            },
+            "event": event,
             "sender": {
                 "identity": sender_id,
             },
@@ -1771,17 +1887,6 @@ class TelegramBotConnector:
     # -------------------------------------------------------------------------
     # Internal: FilteredEventBuffer helpers
     # -------------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_chat_id(update: dict[str, Any]) -> str | None:
-        """Extract chat ID string from a Telegram update, or None if absent."""
-        for msg_key in ("message", "edited_message", "channel_post"):
-            msg = update.get(msg_key)
-            if isinstance(msg, dict):
-                chat = msg.get("chat")
-                if isinstance(chat, dict) and "id" in chat:
-                    return str(chat["id"])
-        return None
 
     @staticmethod
     def _extract_sender_identity(update: dict[str, Any]) -> str:

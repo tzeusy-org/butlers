@@ -45,9 +45,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers import google_health as gh_module
-from butlers.api.routers import oauth as oauth_module
-from butlers.api.routers import secrets_v2 as sv2_module
+from butlers.api.deps import get_db, get_db_optional
 from butlers.api.routers.google_health import GOOGLE_HEALTH_SCOPE_URLS
 from butlers.api.routers.oauth import _clear_state_store
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -284,12 +282,11 @@ def _make_db(state: _SharedPoolState, *, heartbeat_row: dict[str, Any] | None = 
 
 
 def _make_app(db: MagicMock) -> Any:
-    """Build a FastAPI app with all three router _get_db_manager stubs overridden."""
+    """Build a FastAPI app sharing the required and optional DB dependencies."""
     app = create_app(api_key="")
-    # Override all three router _get_db_manager stubs to return our mock DB.
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db
-    app.dependency_overrides[sv2_module._get_db_manager] = lambda: db
-    app.dependency_overrides[gh_module._get_db_manager] = lambda: db
+    # Both dependency policies resolve the same manager after startup.
+    app.dependency_overrides[get_db_optional] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return app
 
 

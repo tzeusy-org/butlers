@@ -31,7 +31,8 @@ _schema_mod = MagicMock()
 _schema_mod.table_columns = AsyncMock()
 sys.modules["butlers.tools.relationship._schema"] = _schema_mod
 
-_contacts_mod = _load_module("contacts_test_mod", _CONTACTS_PATH)
+# Private copy: this owner injects a synthetic schema inspector at import time.
+_contacts_mod = _load_module("_contacts_test_mod", _CONTACTS_PATH)
 _entities_mod = _load_module("entities_test_mod", _ENTITIES_PATH)
 
 contact_create = _contacts_mod.contact_create

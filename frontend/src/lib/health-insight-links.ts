@@ -15,8 +15,8 @@ export function insightHref(
     return measurementDoorHref(measurementDoor);
   }
 
-  // Map known health signal categories to their fixed, same-origin sub-pages.
-  // Untrusted metadata never controls a destination or query parameter.
+  // Destinations remain fixed and same-origin; only known, typed filter values
+  // from metadata may enter encoded query parameters.
   //
   // These MUST match the exact category strings run_insight_scan() submits
   // (roster/health/jobs/health_jobs.py) -- before bu-ep4ks.7 this switch used
@@ -26,8 +26,12 @@ export function insightHref(
   switch (category) {
     case "medication-refill":
       return "/health/medications";
-    case "symptom-trend":
-      return "/health/symptoms";
+    case "symptom-trend": {
+      const name = metadata?.name;
+      return typeof name === "string" && name.trim()
+        ? `/health/symptoms?${new URLSearchParams({ name })}`
+        : "/health/symptoms";
+    }
     case "correlation-adherence":
       // Adherence dip preceding a symptom flare -- the leading signal is
       // medication adherence.

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { useRef, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter, useLocation } from "react-router"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
@@ -24,7 +24,8 @@ vi.mock("@/hooks/use-approvals", () => ({
   useApprovalActions: vi.fn(),
 }))
 
-vi.mock("@/hooks/use-approval-decisions", () => ({
+vi.mock("@/hooks/use-approval-decisions", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/hooks/use-approval-decisions")>(),
   useApprovalDecisionMutations: vi.fn(),
 }))
 
@@ -62,18 +63,31 @@ import { useApprovalActions } from "@/hooks/use-approvals"
 import { useApprovalDecisionMutations } from "@/hooks/use-approval-decisions"
 import { useButlerActivityFeed } from "@/hooks/use-butler-analytics"
 
+const displayedCall = { tool_name: "telegram_send_message", args_digest: "a".repeat(64) };
+function useReviewedDecisionsMock(decisions: ReturnType<typeof useApprovalDecisionMutations>) {
+  const [review, setReview] = useState<{ id: string; preview: {
+    title: string; facts: { label: string; value: string }[]; displayed_call: typeof displayedCall;
+  } } | null>(null);
+  const requestReview = useCallback(async (id: string) => setReview({ id, preview: {
+    title: "Review stored call", facts: [{ label: "Message", value: "Complete reviewed body" }],
+    displayed_call: displayedCall,
+  } }), []);
+  const cancelReview = useCallback(() => setReview(null), []);
+  return { ...decisions, review, requestReview, cancelReview };
+}
+
 let approveMutate: ReturnType<typeof vi.fn>
 let denyMutate: ReturnType<typeof vi.fn>
 
 function useConcurrentApprovalDecisionMock() {
   const [latestPendingId, setLatestPendingId] = useState<string | undefined>(undefined)
   const neverSettles = useRef(new Promise<never>(() => {}))
-  const startApproval = (id: string) => {
-    setLatestPendingId(id)
+  const startApproval = (view: { id: string }) => {
+    setLatestPendingId(view.id)
     return neverSettles.current
   }
 
-  return {
+  return useReviewedDecisionsMock({
     approveMut: {
       mutate: startApproval,
       mutateAsync: startApproval,
@@ -85,7 +99,7 @@ function useConcurrentApprovalDecisionMock() {
     scheduledDecisions: new Map(),
     scheduleDecision: vi.fn(),
     cancelDecision: vi.fn(),
-  } as unknown as ReturnType<typeof useApprovalDecisionMutations>
+  } as unknown as ReturnType<typeof useApprovalDecisionMutations>)
 }
 
 function LocationProbe() {
@@ -119,7 +133,7 @@ function renderOverviewLive() {
 beforeEach(() => {
   approveMutate = vi.fn().mockResolvedValue(undefined)
   denyMutate = vi.fn().mockResolvedValue(undefined)
-  vi.mocked(useApprovalDecisionMutations).mockReturnValue({
+  vi.mocked(useApprovalDecisionMutations).mockImplementation(() => useReviewedDecisionsMock({
     approveMut: {
       mutate: approveMutate,
       mutateAsync: approveMutate,
@@ -136,7 +150,7 @@ beforeEach(() => {
     scheduledDecisions: new Map(),
     scheduleDecision: vi.fn(),
     cancelDecision: vi.fn(),
-  } as unknown as ReturnType<typeof useApprovalDecisionMutations>)
+  } as unknown as ReturnType<typeof useApprovalDecisionMutations>))
 
   vi.mocked(useButler).mockReturnValue({
     data: {
@@ -533,8 +547,9 @@ describe("ButlerOverviewTab -- doors", () => {
     renderOverviewLive()
 
     fireEvent.click(screen.getByRole("button", { name: "Approve Send draft follow-up" }))
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed call" }))
 
-    expect(approveMutate).toHaveBeenCalledWith("approval-1")
+    expect(approveMutate).toHaveBeenCalledWith({ id: "approval-1", displayed_call: displayedCall })
   })
 
   it("rejects an awaiting action inline", () => {
@@ -588,9 +603,11 @@ describe("ButlerOverviewTab -- doors", () => {
     const firstApprove = screen.getByRole("button", { name: "Approve Prepare first report" })
     const secondApprove = screen.getByRole("button", { name: "Approve Prepare second report" })
     fireEvent.click(firstApprove)
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed call" }))
     expect(firstApprove.textContent).toBe("Approving…")
 
     fireEvent.click(secondApprove)
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed call" }))
 
     expect(firstApprove.textContent).toBe("Approving…")
     expect(secondApprove.textContent).toBe("Approving…")
@@ -611,6 +628,7 @@ describe("ButlerOverviewTab -- doors", () => {
 
     const approve = screen.getByRole("button", { name: "Approve Send draft follow-up" })
     fireEvent.click(approve)
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed call" }))
     expect(approve.textContent).toBe("Approving…")
 
     if (!resolveApproval) throw new Error("Expected the approval request to start")
@@ -637,6 +655,7 @@ describe("ButlerOverviewTab -- doors", () => {
 
     const approve = screen.getByRole("button", { name: "Approve Send draft follow-up" })
     fireEvent.click(approve)
+    fireEvent.click(screen.getByRole("button", { name: "Approve reviewed call" }))
     expect(approve.textContent).toBe("Approving…")
     expect(approve.hasAttribute("disabled")).toBe(true)
 

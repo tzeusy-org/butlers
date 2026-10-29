@@ -7,8 +7,9 @@
 
 ## Overview
 
-`deploy/helm/butlers` is the Kubernetes counterpart of `docker-compose.yml`. The chart installs one
-release named `butlers` into one of two namespaces:
+Helm on k3s is the production deployment path. `deploy/helm/butlers` installs one
+release named `butlers` into one of two namespaces. The table describes repository
+configuration; it does not attest that a production release is running:
 
 | | `butlers-dev` (`values.dev.yaml`) | `butlers` (`values.prod.yaml`) |
 | --- | --- | --- |
@@ -35,7 +36,6 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 | `log-init`, `log-cleanup` | Shared PVC `butlers-logs` + CronJob `butlers-log-cleanup` |
 | `wa_bridge_socket` volume | PVC `butlers-wa-bridge` (Unix socket shared by three pods on one node) |
 | `runtime_*` CLI volumes | PVC `butlers-runtime-home`, one subPath per CLI |
-| host `.beads/issues.export.jsonl` | Optional (`beadsExport.enabled`, default off): CronJob `butlers-beads-export` writing PVC `butlers-beads-export`, mounted read-only at `/app/.beads` (see [Beads export](#beads-export)) |
 
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
@@ -47,38 +47,32 @@ Not ported (compose remains the only path for these):
 - `connector-live-listener` (needs `/dev/snd`);
 - the observability profile (the cluster's `lgtm` stack and `otel.example.ts.net` replace it);
 
-## Beads export
+## Engineering tracker isolation
 
-`/api/decisions`, the beads tiles, `GET /api/beads/{id}` and `jobs/decision_review` read
-`/app/.beads/issues.export.jsonl`. With `beadsExport.enabled=false` (default) nothing is mounted
-and they report unavailable. With it enabled, CronJob `butlers-beads-export` runs `bd export`
-against the Dolt tracker every `beadsExport.schedule`, writes a temp file on the PVC and renames
-it into place. `dashboard-api` and `butlers-up` mount the PVC read-only as a directory (not a
-`subPath`, which would pin the replaced inode). A failed run leaves the previous file; once it is
-older than `STALE_BEADS_EXPORT_AGE` readers report unavailable, never empty.
+Owner decision bu-g2zuv2 = A (2026-10-21) retires the Decision Desk and beads
+projection from the product. The Helm retirement removes the exporter,
+applier CronJob, export PVC declaration, tracker ExternalSecret declaration,
+runtime mounts and bridge image build. Legacy `beadsExport` values cannot
+re-enable them. No live resource or credential operation is performed by a
+source change; operators review the rendered upgrade and its resource pruning.
+Existing export data and secrets are not manually deleted by this change.
 
-Trust boundary: only the CronJob pod receives the Dolt host and the credential Secret
-(`beadsExport.credentialSecretName`); runtime pods get just the PVC, which holds only the export
-file. Enabling it places a tracker credential in the namespace, which
-`REQ-beads-projection-001` makes owner-gated, so do not enable it without owner approval
-(owner decision on credential placement and the exporter image: `bu-sng0tu`).
+The independent `tracker-egress` NetworkPolicy stays enabled in dev and now
+selects **every pod**, with no bridge exception. `trackerEgress.enabled` retains
+the existing environment posture (dev true, production false).
+`trackerEgress.deniedCidrs` contains every tracker IPv4 address as `/32`;
+`scripts/k8s/site-helm-args.sh` resolves the existing site host input
+`BEADS_DOLT_SERVER_HOST`. Missing CIDRs fail closed when the deny is enabled.
+The existing IPv4-only and complete-address preconditions still apply; this
+configuration is not evidence of a live network probe or a production rollout.
 
-Open facts, all unverified; confirm each before enabling:
-
-- `bd` is not in any image. The app image does not contain it, so `beadsExport.image` must be a
-  dedicated exporter image with a `bd` version pinned to match the tracker host.
-- `bd export` may need a scratch `.beads/metadata.json` workspace inside the pod; the script does
-  not create one.
-- The `BEADS_DOLT_*` env names the CronJob sets are unconfirmed against the pinned `bd` version.
-- Dolt reachability from `butlers-dev` pods is untested.
-
-Storage: the export PVC is `ReadWriteOnce`, written by the CronJob and read by two runtime pods.
-That only works with single-node k3s scheduling. Before going multi-node, require co-scheduling of
-those pods or switch `storage.storageClassName` to an RWX class.
-
-Once those are settled, set `beadsExport.image`, `beadsExport.doltHost` and
-`beadsExport.credentialSecretName` in `values.local.yaml`. Roll back by setting
-`beadsExport.enabled=false`.
+The frontend pages, backend endpoints, Switchboard jobs/TOML, Telegram decision
+transport and Compose/deploy export plumbing are retired in source. Stored
+intent and prompt history remains. No table drop is included: code removal
+must be deployed and every old reader and writer actually stopped before a
+later separately reviewed destructive migration. Rolling back source does not
+promise to restore historical data removed by that later migration. No live
+resource or credential action is part of source retirement.
 
 ## Ingress
 
@@ -98,6 +92,14 @@ namespace. Host-originated connections reach pods from the `cni0` address `10.42
 address is both the policy's allowed source and `dashboardAuth.trustedProxyPeers`; it plays the
 role the Docker bridge gateway played under compose. The NodePort Services use
 `externalTrafficPolicy: Local`, so remote clients keep their own source IP and are refused.
+
+## Notification metadata repair evidence
+
+Before any historical notification metadata repair, follow the read-only
+[serving-writer evidence procedure](notification-metadata-repair.md). It accounts for actual
+Switchboard and in-process dashboard writers, source/image/mount provenance, the required #3458
+ancestry, applied migration frontier and bounded aggregate-only observations. This link grants no
+live execution, deployment/restart, production access or historical-migration authority.
 
 ## Deploy
 
@@ -123,6 +125,14 @@ make deploy-dev                                             # helm upgrade --ins
 make status-dev
 ```
 
+`make deploy-*` runs through `scripts/k8s/record-deploy.sh`, so each release appends one
+`public.deployments` row with `source='deploy'` and `serving_mode='image'`: `success` once `dashboard-api`, `butlers-up` and the optional enabled `butlers-control`
+rollouts have finished, `failed` when `helm upgrade` or a rollout fails. The row is written by
+`butlers deployments record` inside the `dashboard-api` pod (`kubectl exec`), so no database
+credential leaves the cluster. The target keeps the release's exit status; if the pod is
+unreachable it prints that no row was recorded, and a failed write after a good release only
+warns. Boot rows (`source='boot'`) are separate: a pod restart is not a release.
+
 ### Iterating on a change
 
 Commit, then ship the commit from `deploy/helm/butlers`:
@@ -133,17 +143,95 @@ bws run --project-id "$BWS_PROJECT_ID" -- make ship-dev   # build + push images,
 
 `ship-*` runs `build-push.sh` and deploys the tag it prints. Migrations run automatically: they are
 an initContainer of `dashboard-api`, so every rollout runs `butlers db migrate` before the new API
-starts. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
+starts. Migrations only *check* the privileged bootstrap
+([reviewed-bootstrap.md](../data_and_storage/reviewed-bootstrap.md)); they never create it. So on
+dev `deploy-*` first runs `bootstrap-dev` (`scripts/k8s/bootstrap-db.sh dev <tag>`). That target
+reruns the deployed tag's `scripts/init-db.sql`, which is idempotent:
+
+- It runs as the CloudNativePG local superuser inside the `postgres-dev` primary pod, via
+  `kubectl exec`, so no superuser password is involved.
+- It takes the normal connecting login from the `butlers-bws` Secret, without printing it.
+
+Without this step, a tag whose migrations need a newer bootstrap surface fails in the
+`migrations` initContainer after the old pods are gone. `core_277` did this on 2026-10-27
+(bu-8jtq10). Prod has no privileged bootstrap configured here: `bootstrap-prod` only prints a
+reminder, and the operator runs `init-db.sql` by hand before `deploy-prod`. `dashboard-api`, `butlers-up` and the connectors use the Recreate strategy, so old and new
 pods never overlap. The image installs dependencies before copying `src/`, so a commit that touches
 only source rebuilds and pulls a few tens of MB (measured: `ship-dev` about 2.5 minutes, the API
 unavailable for about 70 seconds, every pod ready after about 3 minutes); a `uv.lock` or `Dockerfile.base` change rebuilds
 the multi-GB dependency layer and takes about 12 minutes.
 Compose's hotreload has no equivalent here: `butlers-dev` is the live system and only runs
 committed images. To roll back, `make deploy-dev TAG=<previous sha>` (`helm -n butlers-dev
-history butlers` lists the tags).
+history butlers` lists the tags). This renders the *current* chart with the older image and runs
+that tag's bootstrap.
+
+Do not use `helm rollback` across a chart change that removed a `helm.sh/resource-policy: keep`
+resource. Rolling back to revision 13, which still declared the retired `butlers-beads-export`
+PVC, failed with `no PersistentVolumeClaim with the name "butlers-beads-export" found`. The
+failure is recorded as revision 15, although the PVC still exists.
 
 The prod targets (`secrets-prod`, `image-prod`, `deploy-prod`) are the same with
 `/secrets/.bws.prod.env`.
+
+### Rolling back the conversation-identity split (core_265, sw_041)
+
+A plain `make deploy-dev TAG=<previous sha>` is not enough to undo bu-7exe4.2. The new image
+migrates data: `core_265` collapses Telegram anchors into `public.core_265_*` snapshots, and
+`sw_041` backfills `external_conversation_id` into `switchboard.message_inbox`. Older images do
+not know either revision, so their `butlers db migrate` initContainer cannot start on the
+upgraded schema. The rollout is stop-the-world in both directions. Connectors and Switchboard
+must flip together: the old `IngestEventV1` (`extra="forbid"`) rejects the new
+`external_conversation_id` / `reply_target_ref` fields, and the new validator rejects a
+`telegram_bot` envelope that lacks them.
+
+1. Stop every writer: scale `butlers-up`, `dashboard-api`, and every connector Deployment to 0,
+   and confirm no pod is left.
+2. With the **current** image, which still contains both revisions, and the migration-role
+   database URL, downgrade `sw_041`. Then downgrade core to `core_261` in every schema whose
+   `alembic_version` is at `core_265` or a later core revision. Schemas below that never ran
+   the split and are skipped; asking alembic to "downgrade" one to `core_261` would fail midway.
+   `core_265` restores only when the last of the selected schemas leaves it, so an interrupted
+   pass restores nothing and can simply be rerun.
+
+   ```python
+   from alembic import command
+   from alembic.script import ScriptDirectory
+   from sqlalchemy import create_engine, text
+   from butlers.migrations import _build_alembic_config
+
+   url = "<migration-role database URL>"  # e.g. read from the pod env; never print it
+   script = ScriptDirectory.from_config(_build_alembic_config(url, ["core"]))
+   # core_265 and every later core revision: only these schemas hold the split.
+   split = {rev.revision for rev in script.walk_revisions(base="core_265", head="heads")}
+   with create_engine(url).connect() as conn:
+       schemas = conn.execute(text(
+           "SELECT table_schema FROM information_schema.tables WHERE table_name = 'alembic_version'"
+       )).scalars().all()
+       core_schemas = [
+           schema for schema in schemas
+           if split & set(conn.execute(text(
+               f'SELECT version_num FROM "{schema}".alembic_version'
+           )).scalars())
+       ]
+   command.downgrade(
+       _build_alembic_config(url, ["switchboard"], target_schema="switchboard"),
+       "switchboard@sw_040",
+   )
+   for schema in core_schemas:
+       command.downgrade(_build_alembic_config(url, ["core"], target_schema=schema), "core@core_261")
+   ```
+
+   The last `core_265` downgrade verifies its restore against the snapshots. If a row written
+   after the upgrade holds an original anchor identity, it raises `core_265 downgrade cannot
+   restore ...`, and the whole downgrade rolls back with the snapshots kept. Resolve the named
+   conflict and rerun. `sw_041` downgrade only drops its index; the backfilled JSON key is inert
+   to older code.
+3. Only then `make deploy-dev TAG=<previous sha>` (or `scripts/k8s/deploy-dev.sh <sha>`), which
+   restarts the connectors and Switchboard on the old envelope together.
+
+Never start the old image against the upgraded schema, and never run old connectors against the
+new Switchboard (or the reverse). Upgrading again later re-runs `core_265` from fresh
+snapshots.
 
 - `make image-*` tags images with the 12-character commit SHA and refuses a dirty worktree
   unless `ALLOW_DIRTY=1`. `make deploy-*` uses the same `TAG` (override with `TAG=<sha>`).
@@ -197,13 +285,21 @@ hotreload. The original Compose-to-k3s cutover is complete. Its earlier
 `make secrets-dev` staging recipe predates dev's BWS-owned ExternalSecrets and
 is not the current deployment or rollback procedure.
 
-Compose remains a supported production/off-cluster deployment path and a local
-path for a non-live database. `scripts/compose.sh --prod` retains the production
+Compose is the retained pre-cutover off-cluster path, pending deletion in
+bu-dss7he.14, and a local path for a non-live database. Production deployment
+uses Helm on k3s (`make -C deploy/helm/butlers ship-prod`, or `deploy-prod` for
+an already-pushed tag). `scripts/compose.sh --prod` retains the pre-cutover
 Compose configuration; it does not authorize starting a fleet against a database
-already owned by Kubernetes. The launcher checks `butlers-up` replicas in the
-matching namespace (`butlers-dev` for dev, `butlers` for prod) and refuses a
-competing fleet. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
+already owned by Kubernetes. In dev the launcher checks both `butlers-up` and
+`butlers-control`, including observed replicas while scaled-down pods remain;
+either active role refuses a competing fleet. Production retains the unsplit
+`butlers-up` replica check in `butlers`. Its `BUTLERS_ALLOW_COMPOSE_WITH_K8S=1` override is only for a
 non-live database, never a live-fleet cutover shortcut.
+With a selected local Kubernetes context, a failed or malformed ownership query
+refuses all Compose lifecycle actions. Only successful absent/zero responses
+permit startup. Standalone hosts without kubectl or a selected context remain
+supported; local configuration is inspected without contacting a cluster, and
+invalid configuration refuses rather than being treated as standalone.
 
 The protected restore-drill executor remains Docker-only: it attests Docker
 cgroups and host iptables. Production Compose includes the protected fragment;
@@ -217,34 +313,83 @@ the cluster LGTM stack instead.
 Normal dev image rollback redeploys an already-pushed tag through
 `scripts/k8s/deploy-dev.sh <sha>`. Returning database ownership to Compose is a
 separate, coordinated cutover: never run two sets of schedulers and connector
-sessions against the same database.
+sessions against the same database. Stop both dev runtime Deployments and
+confirm their pods terminate before returning ownership to Compose or an
+unsplit release. For the reverse cutover, stop the complete Compose project
+before either Kubernetes role starts. A source preflight is not an atomic lock;
+the live aggregate cap and exclusive transition still need operational proof.
 
 ## Security posture differences from compose
 
-- `dashboard-api` runs `privileged` (`dashboardApi.privileged`). Compose grants the dashboard's
-  Bubblewrap login sandbox an unmasked `/proc` plus a custom seccomp profile; Kubernetes can only
-  express that with user namespaces (`hostUsers: false` + `procMount: Unmasked` + a node-installed
-  `Localhost` seccomp profile). Setting `privileged: false` keeps AppArmor unconfined but breaks
-  dashboard-driven CLI login.
+### Accepted dashboard API posture
 
-  **Dropping `privileged` is not viable on the current node.** Probe run in `butlers-dev`
-  (2026-10-03; server v1.36.5+k3s1, node kernel 5.15.0-194-generic, containerd overlayfs
-  snapshotter; throwaway pod from the app image mounting a local-path PVC, a dummy Secret and an
-  emptyDir, running a Bubblewrap bootstrap with `--unshare-user/-pid/-ipc/-uts --as-pid-1 --tmpfs /
-  --proc /proc --dev /dev`; probe resources deleted afterwards):
+The owner accepted the existing k3s `dashboardApi.privileged: true` posture on
+2026-10-04 (`bu-hkjj9y`, option A). It retains dashboard-driven Bubblewrap CLI
+login. The [shared chart values](../../deploy/helm/butlers/values.yaml) already
+set this value to `true`; the dev and prod overlays inherit it, and the
+[dashboard API template](../../deploy/helm/butlers/templates/dashboard-api.yaml)
+applies it only to the `dashboard-api` application container. No chart value
+change is needed to record this decision.
 
-  | Variant | Result |
-  | --- | --- |
-  | `hostUsers:false` + `procMount: Unmasked` + seccomp `Localhost` + AppArmor Unconfined | Admitted (`--dry-run=server` ok), pod stuck `ContainerCreating` |
-  | Same, seccomp `Unconfined` (control separating profile from userns) | Same failure |
-  | `privileged: true` (control) | Bubblewrap bootstrap passes, PVC/Secret/emptyDir mounts usable |
+This is the accepted legacy dashboard login posture. It does not waive Compose's
+deployment constraints, change credential custody or approval authority, or
+relax the separate session-host and invocation-isolation requirements in
+[RFC 0038, D3](../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md#d3-session-sandbox).
+The goal-runtime cutover remains separate work.
 
-  Failure event (both userns variants, so the cause is user namespaces, not the seccomp profile):
-  `failed to create containerd container: snapshotter "overlayfs" doesn't support idmap mounts on
-  this host, configure slow_chown ...`. Pod user namespaces need idmapped-mount support in the
-  snapshotter, which needs a newer kernel (overlayfs idmap arrives around 6.3). The Localhost
-  seccomp profile was not exercised, so whether it is installed on the node is unknown and
-  owner-supplied. Revisit after a kernel upgrade; until then keep `privileged: true`. Alternatives
-  (a dedicated sandbox sidecar, or accepting `privileged`) are tracked as a follow-up.
-- The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet. It only ran
-  when the launcher had passwordless sudo.
+### Configured compensating controls and their limits
+
+The following controls are present in repository configuration. Their deployment
+and effectiveness have not been re-verified by recording this decision.
+
+| Control | Configured behavior | Limit |
+| --- | --- | --- |
+| Host ingress restriction | With `hostIngress.restrict: true` (the shared default), the [host-ingress NetworkPolicy](../../deploy/helm/butlers/templates/networkpolicy.yaml) selects dashboard API, frontend and OwnTracks pods and admits ingress from `hostIngress.nodeSourceCidr` or pods in the same namespace. | This is an ingress rule, not owner authentication or an egress allowlist. It allows same-namespace pods; actual CNI enforcement and the node-source address require deployment evidence. |
+| NodePort source preservation | The dashboard NodePort Service uses `externalTrafficPolicy: Local`, preserving client source IPs for the configured ingress/proxy checks. Tailscale Serve is the documented HTTPS entry point. | Source preservation and the intended proxy path do not prove the live firewall, Serve configuration, or protection of every node address. Network membership does not identify the owner. |
+| Dashboard owner authentication | The [dev overlay](../../deploy/helm/butlers/values.dev.yaml) enables the chart's canonical origin, RP ID and trusted-proxy configuration. The [owner-authentication boundary](../identity_and_secrets/dashboard-owner-auth.md) independently checks dashboard request authority. | The [prod overlay](../../deploy/helm/butlers/values.prod.yaml) has `dashboardAuth.enabled: false` and does not supply that browser configuration. Do not infer live enrollment, working proxy attribution, or prod passkey protection from the chart; optional API-key provisioning is separate. |
+| Declared mounts | The dashboard template declares its PVC and Secret mounts, with backups and the runtime-probe signing-key mount read-only. It declares no Docker socket or `hostPath` mount. | Read-only mounts and application authentication do not contain a privileged container compromise or protect the host from an escape. They do not replace the CLI sandbox's existing isolation and credential-handling requirements. |
+
+The accepted posture retains broad privilege in the dashboard API container.
+Ingress restriction, HTTPS and dashboard authentication reduce ordinary network
+exposure; they do not establish a host-security boundary for that container.
+The host remains trusted under the [security model](../../about/heart-and-soul/security.md#threat-boundaries).
+Neither this decision nor the historical compatibility probe proves current
+sandbox isolation, credential isolation, or node hardening.
+
+### Historical compatibility probe
+
+Dropping `privileged` failed on the node probed in `butlers-dev` on 2026-10-03.
+That dated evidence reported server v1.36.5+k3s1, kernel
+5.15.0-194-generic and the containerd overlayfs snapshotter. A throwaway pod from
+the app image mounted a local-path PVC, a dummy Secret and an emptyDir and ran
+a Bubblewrap bootstrap with `--unshare-user/-pid/-ipc/-uts --as-pid-1 --tmpfs /
+--proc /proc --dev /dev`. Probe resources were deleted afterwards.
+
+| Variant | Result |
+| --- | --- |
+| `hostUsers:false` + `procMount: Unmasked` + seccomp `Localhost` + AppArmor Unconfined | Admitted (`--dry-run=server` ok), pod stuck `ContainerCreating` |
+| Same, seccomp `Unconfined` (control separating profile from userns) | Same failure |
+| `privileged: true` (control) | Bubblewrap bootstrap passes, PVC/Secret/emptyDir mounts usable |
+
+Both userns variants reported the same failure event:
+`failed to create containerd container: snapshotter "overlayfs" doesn't support idmap mounts on
+this host, configure slow_chown ...`. This distinguished the observed
+user-namespace/idmapped-mount failure from the seccomp profile. The Localhost
+seccomp profile was not exercised; its presence on the node remains unknown
+from this probe. The historical follow-up identified a newer kernel (overlayfs
+idmap around 6.3) as a possible prerequisite, not proof that an upgrade would
+make the complete alternative work. These are dated probe facts, not a current
+node inventory.
+
+Option A is accepted. A dedicated sandbox sidecar or a userns mode was not
+selected by that decision. Any later posture change needs its own authorization
+and current compatibility evidence; this documentation update authorizes no
+re-probe, kernel change, provisioning or rollout.
+
+### Egress gap
+
+The compose egress firewall (`scripts/egress-firewall.sh`) has no equivalent yet.
+It only ran when the launcher had passwordless sudo. The host-ingress policy
+above does not supply that parity; the separate tracker-egress policy does not
+provide the general private-network allowlist either. Egress parity remains
+tracked in `bu-viat6h.6`.

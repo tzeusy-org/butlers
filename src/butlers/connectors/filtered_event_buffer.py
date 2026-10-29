@@ -57,24 +57,44 @@ Full-payload shape
 
     {
         "source": {"channel": ..., "provider": ..., "endpoint_identity": ...},
-        "event":  {"external_event_id": ..., "external_thread_id": ..., "observed_at": ...},
+        "event":  {"external_event_id": ..., "external_thread_id": ...,
+                   "external_conversation_id": ..., "reply_target_ref": ...,  # optional
+                   "in_reply_to_ref": ..., "observed_at": ...},  # reference optional
         "sender": {"identity": ...},
-        "payload": {"raw": ..., "normalized_text": ...},
+        "payload": {"raw": ..., "normalized_text": ..., "untrusted_spans": ...},
         "control": {"policy_tier": ...},
         "drop_context": {"important_dropped": true, "basis": "known_contact"},  # optional
     }
 
 ``drop_context`` is stored-row metadata, not envelope content: replay strips it
 before the envelope is rebuilt (the envelope model forbids unknown keys).
+Exposure markers and the opaque replied-message locator remain envelope fields.
+Unchanged retained text keeps exact spans; privacy omission, bearer scrubbing,
+NUL removal or detector-failure withholding conservatively marks the retained text
+with the original known exposure kinds. Malformed metadata stays rejectable.
+Historical rows without these optional fields cannot recover facts never stored.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+import os
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+from butlers.conversation_identity import (
+    telegram_bot_update_identity,
+    telegram_conversation_id,
+    whatsapp_conversation_id,
+)
+from butlers.ingestion_bearer_scrub import (
+    scrub_envelope,
+    scrub_filtered_preview,
+    scrub_message_text,
+)
+from butlers.ingestion_spans import collapse_spans
 
 if TYPE_CHECKING:
     import asyncpg
@@ -158,10 +178,67 @@ def _sanitize_replay_payload(payload_dict: dict[str, Any]) -> None:
         if isinstance(raw, dict):
             fallback = raw.get("subject", "") or raw.get("snippet", "") or ""
         payload_section["normalized_text"] = fallback or "[no text]"
+        if "untrusted_spans" in payload_section:
+            payload_section["untrusted_spans"] = collapse_spans(
+                payload_section["normalized_text"], payload_section["untrusted_spans"]
+            )
 
     control_section = payload_dict.get("control")
     if isinstance(control_section, dict) and control_section.get("policy_tier") is None:
         control_section.pop("policy_tier", None)
+
+    source_section = payload_dict.get("source")
+    event_section = payload_dict.get("event")
+    if isinstance(source_section, dict) and isinstance(event_section, dict):
+        _split_legacy_conversation_identity(
+            source_section.get("channel"), event_section, payload_section
+        )
+
+
+def _split_legacy_conversation_identity(
+    channel: Any, event_section: dict[str, Any], payload_section: Any
+) -> None:
+    """Give a pre-split stored envelope the keys live ingress emits today.
+
+    Rows recorded before bu-7exe4.2 carry only ``external_thread_id``. Telegram
+    bot rows rebuild both keys from the retained update when one exists, so a
+    forum-topic message keeps its topic; otherwise the chat prefix of the legacy
+    target is the conversation. Telegram user-client and WhatsApp rows stored
+    the bare chat id or JID. Bounded by filtered-event retention: once every
+    pre-split row has aged out, this adapter can be deleted.
+    """
+    if event_section.get("external_conversation_id"):
+        return
+    legacy_target = event_section.get("external_thread_id")
+    conversation_id: str | None = None
+    reply_target_ref: str | None = None
+    if channel == "telegram_bot":
+        raw = payload_section.get("raw") if isinstance(payload_section, dict) else None
+        if isinstance(raw, dict):
+            conversation_id, reply_target_ref = telegram_bot_update_identity(raw)
+        if conversation_id is None and legacy_target:
+            conversation_id = telegram_conversation_id(str(legacy_target).partition(":")[0])
+            reply_target_ref = str(legacy_target)
+    elif channel == "telegram_user_client" and legacy_target:
+        conversation_id = telegram_conversation_id(str(legacy_target))
+    elif channel == "whatsapp_user_client" and legacy_target:
+        conversation_id = whatsapp_conversation_id(str(legacy_target))
+    if conversation_id is None:
+        return
+    event_section["external_conversation_id"] = conversation_id
+    if reply_target_ref is not None:
+        event_section.setdefault("reply_target_ref", reply_target_ref)
+
+
+def _raise_site(exc: BaseException) -> str:
+    """``file:line:func`` of the innermost frame that raised ``exc`` (no locals, no message)."""
+    tb = exc.__traceback__
+    if tb is None:
+        return "unknown"
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    code = tb.tb_frame.f_code
+    return f"{os.path.basename(code.co_filename)}:{tb.tb_lineno}:{code.co_name}"
 
 
 async def drain_replay_pending(
@@ -179,11 +256,14 @@ async def drain_replay_pending(
     - Submit via *submit_fn*.
     - Mark status=replay_complete on success or replay_failed on error.
 
-    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent connector instances never
-    process the same row twice.  The SELECT and all UPDATEs share a single
+    Uses ``FOR UPDATE SKIP LOCKED`` so concurrent drains skip actively locked
+    rows. The SELECT and all UPDATEs share a single
     connection and transaction so the row locks are held until every status
     update commits — defeating the race window that would otherwise exist
-    between connection-per-update calls.
+    between connection-per-update calls. Submission and status commit are not
+    exactly-once delivery: an uncertain commit can cause resubmission with the
+    same event identity for ingest deduplication. Failed submissions require an
+    explicit replay request before another drain attempts them.
 
     Args:
         pool: asyncpg pool with access to the ``connectors`` schema.
@@ -221,9 +301,11 @@ async def drain_replay_pending(
                             payload_dict: dict[str, Any] = json.loads(raw_payload)
                         except Exception as exc:
                             _log.warning(
-                                "replay drain: failed to parse full_payload for id=%s: %s",
+                                "replay drain: failed to parse full_payload for id=%s "
+                                "(error_class=%s raised_at=%s)",
                                 row_id,
-                                exc,
+                                type(exc).__name__,
+                                _raise_site(exc),
                             )
                             await conn.execute(
                                 _REPLAY_UPDATE_SQL,
@@ -260,10 +342,12 @@ async def drain_replay_pending(
                     except Exception as exc:
                         error_msg = str(exc)
                         _log.warning(
-                            "replay drain: failed to replay message %s (id=%s): %s",
+                            "replay drain: failed to replay message %s (id=%s) "
+                            "(error_class=%s raised_at=%s)",
                             external_message_id,
                             row_id,
-                            exc,
+                            type(exc).__name__,
+                            _raise_site(exc),
                         )
                         await conn.execute(
                             _REPLAY_UPDATE_SQL,
@@ -272,8 +356,76 @@ async def drain_replay_pending(
                             row_id,
                             received_at,
                         )
+    except Exception as exc:
+        # No exc_info: an UPDATE failing inside a replay ``except`` chains the replay
+        # exception as __context__, and the formatted traceback would print its text.
+        _log.warning(
+            "replay drain: failed to query replay_pending rows (error_class=%s raised_at=%s)",
+            type(exc).__name__,
+            _raise_site(exc),
+        )
+
+
+# Fixed marker stored in place of text when the bearer detector fails.
+_WITHHELD = "[withheld: bearer scrub unavailable]"
+
+
+def _scrub_stored_event(
+    full_payload: dict[str, Any], error_detail: str | None
+) -> tuple[dict[str, Any], str | None]:
+    """Withhold bearer material from the persisted payload and error detail.
+
+    Uses the shared envelope scrub connectors apply before submit, with the same
+    domain/aggressive hints for ``error_detail``.  A detector failure withholds
+    the text fields (never logging them) and leaves metadata, and so the
+    drop/status decision, untouched.
+    """
+    if not isinstance(full_payload, Mapping):
+        # Callers pass envelope dicts; a legacy string shape has no envelope to scrub.
+        return full_payload, error_detail
+    try:
+        # Normalize to JSON primitives first so non-native leaves (bytes, sets,
+        # objects) are scrubbed as the text they will be persisted as.
+        normalized = json.loads(json.dumps(full_payload, default=str))
+        inner = normalized.get("payload")
+        if isinstance(inner, dict) and isinstance(inner.get("normalized_text"), str):
+            text = inner["normalized_text"]
+            inner["normalized_text"] = text.replace("\x00", "")
+            if text != inner["normalized_text"] and "untrusted_spans" in inner:
+                inner["untrusted_spans"] = collapse_spans(
+                    inner["normalized_text"], inner["untrusted_spans"]
+                )
+        payload, _ = scrub_envelope(normalized)
+        if "payload" not in full_payload:
+            # scrub_envelope materialises an empty payload; keep the row shape as-is.
+            payload.pop("payload", None)
+        error = error_detail
+        if error is not None:
+            error = scrub_message_text(
+                error,
+                source=full_payload.get("source") or {},
+                sender=full_payload.get("sender") or {},
+            )
+        return payload, error
     except Exception:
-        _log.warning("replay drain: failed to query replay_pending rows", exc_info=True)
+        logger.warning("filtered event bearer scrub failed; withholding payload text")
+        withheld = dict(full_payload)
+        if "payload" in full_payload:
+            inner = full_payload["payload"]
+            if isinstance(inner, Mapping):
+                # Keep sibling keys; withhold the two text-bearing fields.
+                inner = dict(inner)
+                for key in ("normalized_text", "raw"):
+                    if inner.get(key) is not None:
+                        inner[key] = _WITHHELD if key == "normalized_text" else {}
+                if "untrusted_spans" in inner:
+                    inner["untrusted_spans"] = collapse_spans(
+                        inner.get("normalized_text") or "[no text]", inner["untrusted_spans"]
+                    )
+                withheld["payload"] = inner
+            elif inner is not None:
+                withheld["payload"] = {}
+        return withheld, (None if error_detail is None else _WITHHELD)
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +481,7 @@ class FilteredEventBuffer:
             received_at: Override the received timestamp (defaults to now UTC).
         """
         ts = received_at if received_at is not None else datetime.now(UTC)
+        stored_payload, stored_error = _scrub_stored_event(full_payload, error_detail)
         self._rows.append(
             (
                 ts,
@@ -337,7 +490,12 @@ class FilteredEventBuffer:
                 external_message_id,
                 source_channel,
                 sender_identity,
-                subject_or_preview,
+                scrub_filtered_preview(
+                    subject_or_preview,
+                    connector_type=self._connector_type,
+                    sender_identity=sender_identity,
+                    full_payload=full_payload,
+                ),
                 filter_reason,
                 status,
                 # Sanitize to JSON-safe primitives (e.g. datetimes -> str via
@@ -349,8 +507,8 @@ class FilteredEventBuffer:
                 # jsonb-typed STRING instead of an OBJECT (bu-dycxq — same
                 # anti-pattern as bu-cymc4/bu-x92jw). The replay-drain read
                 # path below still tolerates legacy string-shaped rows.
-                json.loads(json.dumps(full_payload, default=str)),
-                error_detail,
+                json.loads(json.dumps(stored_payload, default=str)),
+                stored_error,
             )
         )
 
@@ -542,9 +700,14 @@ class FilteredEventBuffer:
         observed_at: str,
         sender_identity: str,
         raw: Any,
+        external_conversation_id: str | None = None,
+        reply_target_ref: str | None = None,
         normalized_text: str | None = None,
         policy_tier: str | None = None,
         important_dropped_basis: str | None = None,
+        classification: dict[str, Any] | None = None,
+        untrusted_spans: list[dict[str, Any]] | None = None,
+        in_reply_to_ref: str | None = None,
     ) -> dict[str, Any]:
         """Build an ``ingest.v1``-shaped payload dict for storage.
 
@@ -556,11 +719,21 @@ class FilteredEventBuffer:
             provider: Provider name (e.g. ``"gmail"``).
             endpoint_identity: Endpoint identity of the connector.
             external_event_id: Provider-assigned event/message ID.
-            external_thread_id: Provider-assigned thread ID (optional).
+            external_thread_id: Provider-assigned thread ID (optional), for
+                producers that have not split conversation identity from
+                reply targeting.
             observed_at: ISO-8601 timestamp when the event was observed.
             sender_identity: Normalised sender identity string.
             raw: Raw provider payload (any JSON-serialisable value).
+            external_conversation_id: Stable conversation key (optional).
+            reply_target_ref: Per-message reply target (optional).
+            in_reply_to_ref: Opaque locator for an earlier replied-to message,
+                distinct from the current message's reply target. Replay retains
+                it exactly; only later admission resolves it.
             normalized_text: Normalised text body (optional).
+            untrusted_spans: Provider-marked forwarded, quoted or embedded spans.
+                Exact records survive unchanged text. If privacy omits the text,
+                whole-placeholder spans retain the kinds without restoring a body.
             policy_tier: Policy tier assigned to the message (optional).
             important_dropped_basis: Set (e.g. ``"known_contact"``) when the
                 drop silently discards a message the owner would want to see.
@@ -572,10 +745,28 @@ class FilteredEventBuffer:
         payload_section: dict[str, Any] = {"raw": raw}
         if normalized_text is not None:
             payload_section["normalized_text"] = normalized_text
+        if untrusted_spans is not None:
+            payload_section["untrusted_spans"] = (
+                untrusted_spans
+                if normalized_text is not None
+                else collapse_spans("[no text]", untrusted_spans)
+            )
 
         control_section: dict[str, Any] = {}
         if policy_tier is not None:
             control_section["policy_tier"] = policy_tier
+
+        event_section: dict[str, Any] = {
+            "external_event_id": external_event_id,
+            "external_thread_id": external_thread_id,
+            "observed_at": observed_at,
+        }
+        if external_conversation_id is not None:
+            event_section["external_conversation_id"] = external_conversation_id
+        if reply_target_ref is not None:
+            event_section["reply_target_ref"] = reply_target_ref
+        if in_reply_to_ref is not None:
+            event_section["in_reply_to_ref"] = in_reply_to_ref
 
         stored: dict[str, Any] = {
             "source": {
@@ -583,11 +774,7 @@ class FilteredEventBuffer:
                 "provider": provider,
                 "endpoint_identity": endpoint_identity,
             },
-            "event": {
-                "external_event_id": external_event_id,
-                "external_thread_id": external_thread_id,
-                "observed_at": observed_at,
-            },
+            "event": event_section,
             "sender": {
                 "identity": sender_identity,
             },
@@ -599,4 +786,15 @@ class FilteredEventBuffer:
                 "important_dropped": True,
                 "basis": important_dropped_basis,
             }
+        if classification is not None:
+            # The producer freezes a fixed, content-free projection, never contacts.
+            from butlers.core.known_contact_state import parse_projection, utc_timestamp
+
+            projection = parse_projection(classification)
+            observed = utc_timestamp(classification.get("observed_at"))
+            if projection is not None and observed is not None:
+                stored.setdefault(DROP_CONTEXT_KEY, {})["classification"] = {
+                    **projection,
+                    "observed_at": observed.isoformat(),
+                }
         return stored

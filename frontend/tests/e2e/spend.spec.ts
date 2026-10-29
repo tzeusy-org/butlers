@@ -1,3 +1,4 @@
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
  * Spend Page - /spend  [bu-86c4c.11, JARVIS audit move 8]
  *
@@ -33,7 +34,7 @@
  *     WebSocket mock is needed here.
  */
 
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
 // Shared fixture data
@@ -62,8 +63,9 @@ function buildForecastDays() {
   return days;
 }
 
-const MOCK_FORECAST = {
+const MOCK_FORECAST: ResponseOf<"getSpendForecast"> = {
   data: {
+    projection_confidence: "normal",
     days: buildForecastDays(),
     projected_eom_usd: 5.42,
     days_in_month: DAYS_IN_MONTH,
@@ -82,7 +84,7 @@ const MOCK_FORECAST_WITH_CEILING = {
   },
 };
 
-const MOCK_BREAKDOWN = {
+const MOCK_BREAKDOWN: ResponseOf<"getSpendBreakdown"> = {
   data: {
     by: "butler",
     breakdown: {
@@ -100,7 +102,7 @@ const MOCK_RULES = {
 
 // Daily series (drives the honest per-butler-per-day stacked chart) and the
 // summary/top-sessions/by-schedule endpoints the merged page also queries.
-const MOCK_DAILY = {
+const MOCK_DAILY: ResponseOf<"getDailyCosts"> = {
   data: [
     { date: "2026-05-16", cost_usd: 0.6, sessions: 20, input_tokens: 50000, output_tokens: 25000, by_butler: { inbox: 0.6 } },
     { date: "2026-05-17", cost_usd: 0.7, sessions: 22, input_tokens: 52000, output_tokens: 26000, by_butler: { inbox: 0.4, calendar: 0.3 } },
@@ -127,7 +129,7 @@ async function installBaseMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(MOCK_FORECAST),
+        body: mockJson("getSpendForecast", MOCK_FORECAST),
       });
     } else {
       route.continue();
@@ -140,7 +142,7 @@ async function installBaseMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(MOCK_BREAKDOWN),
+        body: mockJson("getSpendBreakdown", MOCK_BREAKDOWN),
       });
     } else {
       route.continue();
@@ -153,7 +155,7 @@ async function installBaseMocks(page: Page) {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(MOCK_RULES),
+        body: mockJson("getSpendRules", MOCK_RULES),
       });
     } else {
       route.continue();
@@ -163,7 +165,7 @@ async function installBaseMocks(page: Page) {
   // Daily series — feeds the "what changed" stacked chart.
   await page.route("**/api/spend/daily**", (route) => {
     if (route.request().method() === "GET") {
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_DAILY) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getDailyCosts", MOCK_DAILY) });
     } else {
       route.continue();
     }
@@ -176,7 +178,7 @@ async function installBaseMocks(page: Page) {
   // with an optional query string and nothing else after it.
   await page.route(/\/api\/spend(\?.*)?$/, (route) => {
     if (route.request().method() === "GET") {
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_SUMMARY) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getCostSummary", MOCK_SUMMARY) });
     } else {
       route.continue();
     }
@@ -185,14 +187,14 @@ async function installBaseMocks(page: Page) {
   // Evidence layer
   await page.route("**/api/spend/top-sessions**", (route) => {
     if (route.request().method() === "GET") {
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_TOP_SESSIONS) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getTopSessions", MOCK_TOP_SESSIONS) });
     } else {
       route.continue();
     }
   });
   await page.route("**/api/spend/by-schedule**", (route) => {
     if (route.request().method() === "GET") {
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_BY_SCHEDULE) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getCostsBySchedule", MOCK_BY_SCHEDULE) });
     } else {
       route.continue();
     }
@@ -295,7 +297,7 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: null, meta: {} }),
+        body: mockJson("updateSpendCeiling", { data: { monthly_usd: 10, updated_at: new Date().toISOString() }, meta: {} }),
       });
     } else {
       route.continue();
@@ -311,7 +313,7 @@ test("spend: ceiling-update flow submits PUT and re-renders with new ceiling", a
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(body),
+        body: mockJson("getSpendForecast", body),
       });
     } else {
       route.continue();

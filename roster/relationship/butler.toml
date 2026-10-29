@@ -28,47 +28,19 @@ schema = "relationship"
 [butler.switchboard]
 url = "http://localhost:41100/mcp"
 
+# Deterministic reminder jobs (bu-idc5mx.4): fixed templates over the existing reads, sent
+# through the owner-notify boundary. No session, no model.
 [[butler.schedule]]
 name = "upcoming-dates-check"
 cron = "0 8 * * *"
-max_token_budget = 200_000
-prompt = """
-You have MCP tools wired into this session. Use them directly — do NOT explore
-the codebase, read source files, probe HTTP endpoints, or run shell commands.
-
-1. Call `upcoming_dates(days_ahead=7)` to get birthdays and anniversaries.
-2. If the result is empty, exit silently (no notification needed).
-3. If dates are found, draft a concise reminder and deliver via
-   notify(channel="telegram", intent="send", message=<reminders>).
-"""
+dispatch_mode = "job"
+job_name = "upcoming_dates_check"
 
 [[butler.schedule]]
 name = "relationship-maintenance"
 cron = "0 9 * * 1"
-max_token_budget = 300_000
-prompt = """
-You have MCP tools wired into this session. Use them directly — do NOT explore
-the codebase, read source files, probe HTTP endpoints, or run shell commands.
-
-Use the reconnect-planner skill to rank overdue contacts by Dunbar tier-weighted urgency
-and suggest the top 3 reconnections for this week.
-
-Steps:
-1. Call contacts_overdue(). If cadence_available is false, do not send any relationship
-   maintenance or all-clear notification; the interaction source is not measurable. Otherwise,
-   use the returned contacts with their dunbar_tier, dunbar_score, and effective_cadence fields.
-2. For each overdue contact, compute urgency = (days_since_last_interaction / effective_cadence)
-   * tier_weight + context_bonus, where tier_weight is:
-   tier 5=5.0, tier 15=3.0, tier 50=2.0, tier 150=1.0, tier 500=0.5.
-   Add context_bonus: +2.0 for upcoming date within 14 days, +1.0 for pending gift,
-   +0.5 for positive emotional context in recent notes.
-3. Sort by urgency descending, pick the top 3.
-4. For each suggestion, gather context: last interaction, upcoming dates, notes, gifts.
-5. Deliver the ranked suggestions via notify(channel="telegram", intent="send", message=<suggestions>).
-
-If fewer than 3 contacts are overdue, suggest only those that qualify.
-If cadence_available is true and no contacts are overdue, send: "All your key relationships are up to date — no overdue check-ins this week."
-"""
+dispatch_mode = "job"
+job_name = "relationship_maintenance"
 
 [[butler.schedule]]
 name = "daily_briefing_contribution"
@@ -159,8 +131,9 @@ job_name = "email_identity_enrichment"
 # sweep. Re-adding it would throw UndefinedTableError every 30 minutes.
 
 [modules.calendar]
+response_enabled = true
 provider = "google"
-groups = ["core"]
+groups = ["core", "response"]
 
 [modules.calendar.conflicts]
 policy = "suggest"
@@ -169,6 +142,7 @@ policy = "suggest"
 providers = [{type = "google"}, {type = "telegram"}]
 include_other_contacts = false
 
+# The only butler that syncs contacts (it owns entities); the roster test pins this.
 [modules.contacts.sync]
 enabled = true
 run_on_startup = true
@@ -190,11 +164,12 @@ enabled = true
 risk_tier = "medium"
 
 [modules.relationship]
-# The enabled Relationship groups are manifesto-owned. The mixed entity group
-# remains disabled until the adopted read-only split is implemented; activating
-# it today would also expose two writes the owner explicitly kept pruned.
+# The enabled Relationship groups are manifesto-owned. The entity group adds
+# exactly six reads; entity_write stays inactive, keeping all three grouped
+# writes unavailable on this roster (owner decision bu-t89d9m, option A).
 groups = [
     "contacts",
+    "contacts_ingress",  # fixed owning backfill report/read; no legacy-group expansion
     "contacts_extended",
     "interactions",
     "relationships",
@@ -202,6 +177,7 @@ groups = [
     "notes",
     "tracking",
     "management",
+    "entity",
 ]
 
 # Google Drive module (optional — requires 'drive' scope on connected Google account).
@@ -210,3 +186,8 @@ groups = [
 # account = ""              # Google account email (default: primary account)
 # max_read_size_bytes = 10485760  # 10 MB cap for drive_read_file
 # butler_folder_name = "butlers"  # root folder name at Drive root for butler outputs
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.
+
+[modules.approvals.gated_tools.calendar_respond]
+risk_tier = "medium"

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -13,6 +13,14 @@ from butlers.tools.switchboard.connector.heartbeat import (
     heartbeat,
     parse_connector_heartbeat,
 )
+
+
+def _pool():
+    pool = AsyncMock()
+    pool.acquire = MagicMock()
+    pool.acquire.return_value.__aenter__.return_value = pool
+    pool.transaction = MagicMock()
+    return pool
 
 
 @pytest.fixture
@@ -94,6 +102,11 @@ def test_parse_heartbeat_unknown_connector_type(valid_heartbeat_payload):
     with pytest.raises(ValueError, match="Unknown connector_type"):
         parse_connector_heartbeat(valid_heartbeat_payload)
 
+    for connector_type in ("telegram_user", "live-listener", "whatsapp", "discord", "discord_user"):
+        valid_heartbeat_payload["connector"]["connector_type"] = connector_type
+        with pytest.raises(ValueError, match="Unknown connector_type"):
+            parse_connector_heartbeat(valid_heartbeat_payload)
+
 
 def test_parse_heartbeat_invalid_connector_type_format(valid_heartbeat_payload):
     """Test that invalid connector_type format raises ValueError."""
@@ -157,7 +170,7 @@ def test_parse_heartbeat_degraded_state_with_error(valid_heartbeat_payload):
 async def test_heartbeat_first_submission_self_registration(valid_heartbeat_payload):
     """Test first heartbeat from unknown connector creates registry entry."""
     # Mock pool that returns None for previous snapshot (self-registration case)
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = None
     pool.execute.return_value = None
 
@@ -180,7 +193,7 @@ async def test_heartbeat_subsequent_submission_updates_registry(valid_heartbeat_
     instance_id = valid_heartbeat_payload["connector"]["instance_id"]
 
     # Mock pool that returns previous snapshot (same instance_id)
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = {
         "instance_id": uuid.UUID(instance_id),
         "counter_messages_ingested": 30,
@@ -204,7 +217,7 @@ async def test_heartbeat_instance_id_change_detection(valid_heartbeat_payload):
     valid_heartbeat_payload["connector"]["instance_id"] = new_instance_id
 
     # Mock pool that returns previous snapshot with different instance_id
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = {
         "instance_id": uuid.uuid4(),  # Different instance
         "counter_messages_ingested": 100,
@@ -226,7 +239,7 @@ async def test_heartbeat_invalid_envelope_returns_error(valid_heartbeat_payload)
     """Test that invalid envelope raises ValueError."""
     valid_heartbeat_payload["schema_version"] = "invalid"
 
-    pool = AsyncMock()
+    pool = _pool()
 
     with pytest.raises(ValueError, match="Invalid connector.heartbeat.v1 envelope"):
         await heartbeat(pool, valid_heartbeat_payload)
@@ -238,7 +251,7 @@ async def test_heartbeat_counter_deltas_computed_correctly(valid_heartbeat_paylo
     instance_id = valid_heartbeat_payload["connector"]["instance_id"]
 
     # Mock pool that returns previous snapshot
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = {
         "instance_id": uuid.UUID(instance_id),
         "counter_messages_ingested": 30,  # current=42, delta=12
@@ -259,7 +272,7 @@ async def test_heartbeat_counter_deltas_computed_correctly(valid_heartbeat_paylo
 @pytest.mark.asyncio
 async def test_heartbeat_appends_to_log_table(valid_heartbeat_payload):
     """Test that heartbeat appends to connector_heartbeat_log."""
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = None
     pool.execute.return_value = None
 
@@ -280,7 +293,7 @@ async def test_heartbeat_appends_to_log_table(valid_heartbeat_payload):
 @pytest.mark.asyncio
 async def test_heartbeat_ensures_partition_exists(valid_heartbeat_payload):
     """Test that heartbeat ensures partition exists for received_at."""
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = None
     pool.execute.return_value = None
 
@@ -304,7 +317,7 @@ async def test_heartbeat_degraded_state_without_error_message(valid_heartbeat_pa
     valid_heartbeat_payload["status"]["state"] = "degraded"
     valid_heartbeat_payload["status"]["error_message"] = None
 
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = None
     pool.execute.return_value = None
 
@@ -323,6 +336,13 @@ def test_parse_heartbeat_with_capabilities(valid_heartbeat_payload):
     valid_heartbeat_payload["capabilities"] = {"backfill": True}
     envelope = parse_connector_heartbeat(valid_heartbeat_payload)
     assert envelope.capabilities == {"backfill": True}
+    # The new object is normalized before generic validation diagnostics.
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
+
+    for malformed in ["CONTACT-token-error", {"state": "CONTACT-token-error"}]:
+        valid_heartbeat_payload["capabilities"][CLASSIFICATION_KEY] = malformed
+        parsed = parse_connector_heartbeat(valid_heartbeat_payload)
+        assert parsed.capabilities == {"backfill": True, CLASSIFICATION_KEY: None}
 
 
 def test_parse_heartbeat_without_capabilities(valid_heartbeat_payload):
@@ -351,13 +371,11 @@ def test_parse_heartbeat_capabilities_multiple_flags(valid_heartbeat_payload):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_payload):
+async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_payload, caplog):
     """Test that capabilities from heartbeat are persisted to connector_registry."""
-    import json
-
     valid_heartbeat_payload["capabilities"] = {"backfill": True}
 
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = None
     pool.execute.return_value = None
 
@@ -372,7 +390,20 @@ async def test_heartbeat_with_capabilities_stored_in_registry(valid_heartbeat_pa
     assert "capabilities" in sql
     # The last positional arg (after checkpoint_updated_at) should be capabilities JSON
     capabilities_arg = args[-1]
-    assert capabilities_arg == json.dumps({"backfill": True})
+    assert capabilities_arg == {"backfill": True}
+    from butlers.core.known_contact_state import CLASSIFICATION_KEY
+
+    caplog.set_level("INFO")
+    sentinel = "private-contact raw-error provider-token epoch-sentinel"
+    valid_heartbeat_payload["capabilities"][CLASSIFICATION_KEY] = {
+        "state": sentinel,
+        "reason": sentinel,
+        "admission_epoch": sentinel,
+    }
+    assert (await heartbeat(pool, valid_heartbeat_payload)).status == "accepted"
+    assert sentinel not in caplog.text and "epoch-sentinel" not in caplog.text
+    assert "backfill" in caplog.text
+    assert pool.execute.call_args_list[-3].args[-1] == {"backfill": True, CLASSIFICATION_KEY: None}
 
 
 @pytest.mark.asyncio
@@ -381,7 +412,7 @@ async def test_heartbeat_without_capabilities_stores_null(valid_heartbeat_payloa
     # Ensure no capabilities in payload
     valid_heartbeat_payload.pop("capabilities", None)
 
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = None
     pool.execute.return_value = None
 
@@ -400,12 +431,10 @@ async def test_heartbeat_without_capabilities_stores_null(valid_heartbeat_payloa
 @pytest.mark.asyncio
 async def test_heartbeat_capabilities_updated_on_subsequent_heartbeat(valid_heartbeat_payload):
     """Test that capabilities are updated on every heartbeat upsert."""
-    import json
-
     instance_id = valid_heartbeat_payload["connector"]["instance_id"]
     valid_heartbeat_payload["capabilities"] = {"backfill": False}
 
-    pool = AsyncMock()
+    pool = _pool()
     pool.fetchrow.return_value = {
         "instance_id": uuid.UUID(instance_id),
         "counter_messages_ingested": 30,
@@ -428,4 +457,10 @@ async def test_heartbeat_capabilities_updated_on_subsequent_heartbeat(valid_hear
     assert "capabilities = EXCLUDED.capabilities" in sql
     # Last arg should be the JSON capabilities
     capabilities_arg = args[-1]
-    assert capabilities_arg == json.dumps({"backfill": False})
+    assert capabilities_arg == {"backfill": False}
+
+    # Malformed declarations cannot crash heartbeat admission or declare a feed.
+    for kind in ([], {}, False, 1, None, "unknown"):
+        valid_heartbeat_payload["capabilities"] = {"backfill": False, "channel_kind": kind}
+        parsed = parse_connector_heartbeat(valid_heartbeat_payload)
+        assert parsed.capabilities == {"backfill": False}

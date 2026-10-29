@@ -32,17 +32,30 @@ historical corruption and a replay silently failing to parse ``full_payload``.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import json
 import shutil
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
 import pytest
+from fastapi import HTTPException
 
+from butlers.api.deps import get_db
+from butlers.api.routers.ingestion_events import bulk_retry_ingestion_events, replay_ingestion_event
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.core.ingestion_events import ingestion_dropped_known_summary
 from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
+from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -54,11 +67,12 @@ pytestmark = [
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    """Provision the core chain — connectors.filtered_events."""
+    """Actual heads for filtered rows, runtime registry and contact-query SQL."""
     return create_migrated_test_db(
         postgres_container,
         migration_db_name(),
-        chains=["core"],
+        chains=["core", "switchboard", "relationship"],
+        schemas={"switchboard": "switchboard", "relationship": "relationship"},
     )
 
 
@@ -86,12 +100,68 @@ def _sample_payload() -> dict:
         sender_identity="sender@example.com",
         raw={"headers": [], "body": "Hello"},
         normalized_text="Hello",
-        policy_tier="full",
+        policy_tier="default",
     )
 
 
+async def _queue_replay(pool, row_id, *, bulk=False):
+    db = SimpleNamespace(credential_shared_pool=lambda: pool, pool=lambda _: pool)
+    request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+    if bulk:
+        assert await bulk_retry_ingestion_events(request, {"event_ids": [str(row_id)]}, db=db) == {
+            "results": [{"event_id": str(row_id), "status": "replay_pending"}],
+            "succeeded": 1,
+            "failed": 0,
+        }
+    else:
+        assert await replay_ingestion_event(str(row_id), request, db=db) == {
+            "status": "replay_pending",
+            "id": str(row_id),
+        }
+
+
+@asynccontextmanager
+async def _register_replay(pool, connector_type, endpoint):
+    """Borrow one registry key without leaking replay authority into other tests."""
+    previous = await pool.fetchrow(
+        "SELECT replay_safe FROM switchboard.connector_registry "
+        "WHERE connector_type=$1 AND endpoint_identity=$2",
+        connector_type,
+        endpoint,
+    )
+    try:
+        await pool.execute(
+            "INSERT INTO switchboard.connector_registry(connector_type,endpoint_identity,replay_safe) "
+            "VALUES($1,$2,true) ON CONFLICT(connector_type,endpoint_identity) "
+            "DO UPDATE SET replay_safe=true",
+            connector_type,
+            endpoint,
+        )
+        yield
+    finally:
+        if previous is None:
+            await pool.execute(
+                "DELETE FROM switchboard.connector_registry "
+                "WHERE connector_type=$1 AND endpoint_identity=$2",
+                connector_type,
+                endpoint,
+            )
+        else:
+            await pool.execute(
+                "UPDATE switchboard.connector_registry SET replay_safe=$3 "
+                "WHERE connector_type=$1 AND endpoint_identity=$2",
+                connector_type,
+                endpoint,
+                previous["replay_safe"],
+            )
+
+
+# Requires SQLSTATE 55P03 from the lock timeout before the holder rolls back.
+@pytest.mark.faketime_fragile
 @pytest.mark.pg_clock
-async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg.Pool) -> None:
+async def test_record_and_flush_round_trips_full_payload_as_object(
+    pool: asyncpg.Pool, postgres_container
+) -> None:
     """record() + flush() persist full_payload as a jsonb OBJECT, not a
     jsonb-typed string."""
     buf = FilteredEventBuffer(
@@ -123,6 +193,384 @@ async def test_record_and_flush_round_trips_full_payload_as_object(pool: asyncpg
     assert stored["source"]["channel"] == "email"
     assert stored["payload"]["normalized_text"] == "Hello"
 
+    from contextlib import asynccontextmanager
+    from unittest.mock import patch
+
+    from butlers.connectors import filtered_event_buffer as buffer_module
+    from scripts.scrub_filtered_event_previews import scrub_existing_previews
+    from tests.three_seams_helpers import baseline_function, preview_label_controls
+
+    old_record = baseline_function("record", vars(buffer_module))
+    old_buffer = FilteredEventBuffer(connector_type="gmail", endpoint_identity="synthetic-old")
+    old_record(
+        old_buffer,
+        external_message_id="causal-old",
+        source_channel="email",
+        sender_identity="person@example.test",
+        subject_or_preview="Your verification code is 482913",
+        filter_reason="validation_error",
+        full_payload={"source": {"provider": "gmail"}},
+    )
+    await old_buffer.flush(pool)
+    assert (
+        await pool.fetchval(
+            "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='causal-old'"
+        )
+        == "Your verification code is 482913"
+    )
+    current_buffer = FilteredEventBuffer(
+        connector_type="telegram_user", endpoint_identity="synthetic-current"
+    )
+    label_controls = preview_label_controls("telegram_user")
+    for name, sender, preview, expected, payload in [
+        (
+            "gmail-code",
+            "person@example.test",
+            "Your verification code is 482913",
+            "Your verification code is [auth-code withheld: example.test]",
+            {"source": {"provider": "gmail"}},
+        ),
+        (
+            "telegram-code",
+            "777000",
+            "482913",
+            "[auth-code withheld: telegram]",
+            {"source": {"provider": "telegram"}, "sender": {"identity": "other"}},
+        ),
+        (
+            "participant",
+            "other",
+            "482913",
+            "[auth-code withheld: telegram_user]",
+            {"sender": {"participants": ["777000"]}},
+        ),
+        (
+            "ordinary",
+            "person@example.test",
+            "Order 482913 on 2031-03-09",
+            "Order 482913 on 2031-03-09",
+            {},
+        ),
+        ("null", "777000", None, None, {}),
+        *[
+            (f"hint-{name}-{kind}", sender, preview, expected, hints)
+            for name, sender, preview, expected, control in label_controls
+            for kind, hints in (("object", control), ("legacy", json.dumps(control)))
+        ],
+    ]:
+        current_buffer.record(
+            external_message_id=name,
+            source_channel="email",
+            sender_identity=sender,
+            subject_or_preview=preview,
+            filter_reason="validation_error",
+            full_payload=payload,
+        )
+        await current_buffer.flush(pool)
+        async with pool.acquire() as readback:
+            persisted = await readback.fetchrow(
+                "SELECT * FROM connectors.filtered_events WHERE external_message_id=$1", name
+            )
+        assert persisted["subject_or_preview"] == expected
+        assert persisted["sender_identity"] == sender and persisted["full_payload"] == payload
+        assert (
+            persisted["filter_reason"] == "validation_error" and persisted["status"] == "filtered"
+        )
+        assert (
+            persisted["source_channel"] == "email"
+            and persisted["endpoint_identity"] == "synthetic-current"
+        )
+        assert persisted["error_detail"] is None
+    with patch(
+        "butlers.ingestion_bearer_scrub.scrub_text", side_effect=RuntimeError("private 482913")
+    ):
+        current_buffer.record(
+            external_message_id="detector-error",
+            source_channel="telegram",
+            sender_identity="777000",
+            subject_or_preview="482913",
+            filter_reason="validation_error",
+            full_payload={},
+        )
+    await current_buffer.flush(pool)
+    assert (
+        await pool.fetchval(
+            "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='detector-error'"
+        )
+        is None
+    )
+
+    cutoff = datetime.now(UTC)
+    # Historical operator rows use the same real table/codec, including a legacy
+    # JSONB string and malformed hint payload. Nothing here reaches deployed data.
+    for name, sender, preview, payload in [
+        ("historic-telegram", "777000", "482913", {}),
+        ("historic-legacy", "777000", "482913", json.dumps({"source": {"provider": "telegram"}})),
+        ("historic-malformed", "777000", "482913", "not-json"),
+        *[
+            (f"historic-hint-{name}-{kind}", sender, preview, hints)
+            for name, sender, preview, _, control in label_controls
+            for kind, hints in (("object", control), ("legacy", json.dumps(control)))
+        ],
+    ]:
+        await pool.execute(
+            "INSERT INTO connectors.filtered_events(received_at,connector_type,endpoint_identity,external_message_id,source_channel,sender_identity,subject_or_preview,filter_reason,status,full_payload) VALUES($1,'telegram_user','synthetic-history',$2,'telegram',$3,$4,'validation_error','filtered',$5::jsonb)",
+            cutoff,
+            name,
+            sender,
+            preview,
+            payload,
+        )
+    # Both a future row and a pre-existing typed placeholder are planted positive
+    # sentinels for cutoff exclusion and idempotence.
+    await pool.execute(
+        "INSERT INTO connectors.filtered_events(received_at,connector_type,endpoint_identity,external_message_id,source_channel,sender_identity,subject_or_preview,filter_reason,status,full_payload) VALUES($1,'telegram_user','synthetic-history','future','telegram','777000','482913','validation_error','filtered','{}'::jsonb)",
+        cutoff + timedelta(seconds=1),
+    )
+    before = {
+        r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+    }
+    dry = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2, dry_run=True)
+    assert dry.verdict == "DRY-RUN" and dry.changed == 4 + 2 * len(label_controls)
+    assert {
+        r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+    } == before
+
+    class FaultPool:
+        """Inject failures around real transactions; never replace SQL results."""
+
+        def __init__(self, fault):
+            self.fault = fault
+            self.updates = 0
+            self.fired = False
+
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as conn:
+                parent = self
+
+                class Connection:
+                    async def fetch(self, *args):
+                        return await conn.fetch(*args)
+
+                    async def fetchrow(self, *args):
+                        if parent.fault == "readback" and not parent.fired:
+                            parent.fired = True
+                            raise TimeoutError("synthetic independent readback failure")
+                        return await conn.fetchrow(*args)
+
+                    async def execute(self, sql, *args):
+                        if sql.startswith("UPDATE"):
+                            parent.updates += 1
+                            if parent.fault == "rollback" and parent.updates == 2:
+                                raise LookupError("synthetic batch failure")
+                        return await conn.execute(sql, *args)
+
+                    @asynccontextmanager
+                    async def transaction(self):
+                        async with conn.transaction():
+                            yield
+                        if parent.fault == "lost-ack" and not parent.fired:
+                            parent.fired = True
+                            raise TimeoutError("synthetic acknowledgement loss after commit")
+
+                yield Connection()
+
+    failed = await scrub_existing_previews(FaultPool("rollback"), cutoff=cutoff, batch_size=500)
+    assert failed.verdict == "INCOMPLETE" and failed.phase == "update" and failed.cursor is None
+    assert {
+        r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+    } == before
+    unknown = await scrub_existing_previews(FaultPool("lost-ack"), cutoff=cutoff, batch_size=500)
+    assert unknown.verdict == "UNKNOWN" and unknown.phase == "commit" and unknown.cursor is None
+    # Independent witness proves the durable write even though its caller lost ack.
+    assert "482913" not in await pool.fetchval(
+        "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='causal-old'"
+    )
+    recovered = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
+    assert recovered.verdict == "COMPLETE" and recovered.changed == 0
+    after = {r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")}
+    for key, row in after.items():
+        expected = before[key]
+        assert {k: v for k, v in row.items() if k != "subject_or_preview"} == {
+            k: v for k, v in expected.items() if k != "subject_or_preview"
+        }
+        if row["external_message_id"] == "future":
+            assert row["subject_or_preview"] == "482913"
+        elif (
+            row["external_message_id"].startswith("historic-")
+            or row["external_message_id"] == "causal-old"
+        ):
+            assert (
+                "withheld:" in row["subject_or_preview"]
+                and "482913" not in row["subject_or_preview"]
+                and "synthetic-reset-token" not in row["subject_or_preview"]
+            )
+    for name, _, _, expected, _ in label_controls:
+        for kind in ("object", "legacy"):
+            assert (
+                await pool.fetchval(
+                    "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id=$1",
+                    f"historic-hint-{name}-{kind}",
+                )
+                == expected
+            )
+    again = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
+    assert again.verdict == "COMPLETE" and again.changed == 0
+    resume = (datetime.fromisoformat(again.cursor[0]), __import__("uuid").UUID(again.cursor[1]))
+    resumed = await scrub_existing_previews(pool, cutoff=cutoff, resume_after=resume, batch_size=2)
+    assert resumed.verdict == "COMPLETE" and resumed.scanned == 0
+
+    # Detector failure during historical apply withholds only the preview.
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
+    )
+    before_failure = await pool.fetchrow(
+        "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+    )
+    with patch(
+        "butlers.ingestion_bearer_scrub.scrub_text", side_effect=RuntimeError("private 482913")
+    ):
+        withheld = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=2)
+    assert withheld.verdict == "COMPLETE"
+    after_failure = await pool.fetchrow(
+        "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+    )
+    assert after_failure["subject_or_preview"] is None
+    assert {k: v for k, v in dict(after_failure).items() if k != "subject_or_preview"} == {
+        k: v for k, v in dict(before_failure).items() if k != "subject_or_preview"
+    }
+    # The detector was deliberately failed on every non-null eligible preview;
+    # the future-cutoff sentinel remains untouched.
+    after = {r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")}
+
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
+    )
+    readback_unknown = await scrub_existing_previews(FaultPool("readback"), cutoff=cutoff)
+    assert (
+        readback_unknown.verdict == "UNKNOWN"
+        and readback_unknown.phase == "readback"
+        and readback_unknown.cursor is None
+    )
+    assert "withheld:" in await pool.fetchval(
+        "SELECT subject_or_preview FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+    )
+    assert (await scrub_existing_previews(pool, cutoff=cutoff)).changed == 0
+    # Retention may remove an already verified row. A repair must not resurrect it.
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM connectors.filtered_events WHERE external_message_id='historic-malformed'"
+        )
+        == 1
+    )
+    await pool.execute(
+        "DELETE FROM connectors.filtered_events WHERE external_message_id='historic-malformed'"
+    )
+    assert (await scrub_existing_previews(pool, cutoff=cutoff)).verdict == "COMPLETE"
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM connectors.filtered_events WHERE external_message_id='historic-malformed'"
+        )
+        == 0
+    )
+    after = {r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")}
+
+    # No SKIP LOCKED shortcut: a real second connection holds an eligible row.
+    async with pool.acquire() as locked:
+        txn = locked.transaction()
+        await txn.start()
+        try:
+            await locked.fetchrow(
+                "SELECT id FROM connectors.filtered_events WHERE external_message_id='causal-old' FOR UPDATE"
+            )
+            blocked = await scrub_existing_previews(pool, cutoff=cutoff, batch_size=500)
+            assert (
+                blocked.verdict == "INCOMPLETE"
+                and blocked.sqlstate == "55P03"
+                and blocked.cursor is None
+            )
+        finally:
+            await txn.rollback()
+    assert (await scrub_existing_previews(pool, cutoff=cutoff)).verdict == "COMPLETE"
+    # Disposable unsupported operator demonstrates both SELECT and UPDATE denial;
+    # no production grant widening or live identity inspection is involved.
+    assert not await pool.fetchval(
+        "SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname=current_user"
+    )
+    database = await pool.fetchval("SELECT current_database()")
+    normal_role = (await pool.fetchval("SELECT current_user")).replace('"', '""')
+    denied_role = "preview_scrub_denied_" + database
+    admin_url = migration_bootstrap_db_url(postgres_container, database)
+    admin = await asyncpg.connect(admin_url.replace("postgresql+psycopg2://", "postgresql://"))
+    try:
+        await admin.execute(f'CREATE ROLE "{denied_role}" NOLOGIN')
+    except BaseException:
+        await admin.close()
+        raise
+    try:
+        # Fixture administration only: permit the normal login to SET ROLE without
+        # inheriting any denied-role privileges or gaining CREATEROLE/SUPERUSER.
+        await admin.execute(f'GRANT "{denied_role}" TO "{normal_role}"')
+
+        class DeniedPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as connection:
+                    await connection.execute(f'SET ROLE "{denied_role}"')
+                    try:
+                        assert await connection.fetchval("SELECT current_user") == denied_role
+                        yield connection
+                    finally:
+                        await connection.execute("RESET ROLE")
+
+        denied = await scrub_existing_previews(DeniedPool(), cutoff=cutoff)
+        assert denied.verdict == "INCOMPLETE" and denied.sqlstate == "42501"
+        assert {
+            r["id"]: dict(r) for r in await pool.fetch("SELECT * FROM connectors.filtered_events")
+        } == after
+        await admin.execute(
+            f'GRANT USAGE ON SCHEMA connectors TO "{denied_role}"; '
+            f'GRANT SELECT ON connectors.filtered_events TO "{denied_role}"'
+        )
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET subject_or_preview='482913' WHERE external_message_id='historic-telegram'"
+        )
+        # SELECT alone is sufficient for dry run, but FOR UPDATE and UPDATE
+        # both require write privilege. Classify the first reached failure honestly.
+        assert (
+            await scrub_existing_previews(DeniedPool(), cutoff=cutoff, dry_run=True)
+        ).verdict == "DRY-RUN"
+        async with DeniedPool().acquire() as denied_connection:
+            with pytest.raises(asyncpg.InsufficientPrivilegeError) as standalone_denial:
+                await denied_connection.execute(
+                    "UPDATE connectors.filtered_events SET subject_or_preview=NULL WHERE external_message_id='historic-telegram'"
+                )
+            assert standalone_denial.value.sqlstate == "42501"
+        pre_denial = await pool.fetchrow(
+            "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+        )
+        denied_write = await scrub_existing_previews(DeniedPool(), cutoff=cutoff)
+        assert (
+            denied_write.verdict == "INCOMPLETE"
+            and denied_write.phase == "select"
+            and denied_write.sqlstate == "42501"
+        )
+        assert (
+            await pool.fetchrow(
+                "SELECT * FROM connectors.filtered_events WHERE external_message_id='historic-telegram'"
+            )
+            == pre_denial
+        )
+    finally:
+        try:
+            await admin.execute(f'DROP OWNED BY "{denied_role}"; DROP ROLE "{denied_role}"')
+        finally:
+            await admin.close()
+    assert not await pool.fetchval(
+        "SELECT rolcreaterole OR rolsuper FROM pg_roles WHERE rolname=current_user"
+    )
+
 
 @pytest.mark.pg_clock
 async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool) -> None:
@@ -145,6 +593,7 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
     submitted: list[dict] = []
 
     async def _submit(envelope: dict) -> None:
+        parse_ingest_envelope(envelope)
         submitted.append(envelope)
 
     await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", _submit)
@@ -158,6 +607,124 @@ async def test_drain_replay_pending_handles_clean_object_row(pool: asyncpg.Pool)
         "msg-clean",
     )
     assert row["status"] == "replay_complete"
+
+    # Real SQL/status uncertainty: submission succeeds but status persistence
+    # fails. The transaction rolls back and an explicit later drain resubmits
+    # exactly the same event identity and exposure facts for ingest dedupe.
+    # Email remains categorically unsafe even when its registry row says safe.
+    async with _register_replay(pool, "gmail", "gmail:user:alice@example.com"):
+        email_id = await pool.fetchval(
+            "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-clean'"
+        )
+        with pytest.raises(HTTPException) as denied:
+            await _queue_replay(pool, email_id)
+        assert denied.value.status_code == 409
+        assert (
+            await pool.fetchval(
+                "SELECT status FROM connectors.filtered_events WHERE id=$1", email_id
+            )
+            == "replay_complete"
+        )
+
+    # The authorized scenarios use distinct legitimate Telegram rows.
+    endpoint = "telegram:bot:jsonb-test"
+    async with _register_replay(pool, "telegram_bot", endpoint):
+        buf = FilteredEventBuffer(connector_type="telegram_bot", endpoint_identity=endpoint)
+        payload = _sample_payload()
+        payload["source"] = {
+            "channel": "telegram_bot",
+            "provider": "telegram",
+            "endpoint_identity": endpoint,
+        }
+        payload["sender"]["identity"] = "987"
+        payload["event"].pop("external_thread_id")
+        payload["event"]["external_conversation_id"] = "telegram:100"
+        payload["event"]["reply_target_ref"] = "100:9"
+        payload["control"]["policy_tier"] = "default"
+        payload["payload"]["untrusted_spans"] = [{"kind": "quoted", "start": 1, "end": 4}]
+        payload["event"]["in_reply_to_ref"] = "opaque-prior"
+        variants = [
+            ("uncertain", copy.deepcopy(payload)),
+            ("bad-kind", copy.deepcopy(payload)),
+            ("bad-entry", copy.deepcopy(payload)),
+            ("bad-container", copy.deepcopy(payload)),
+            ("known-kind", copy.deepcopy(payload)),
+        ]
+        variants[1][1]["payload"]["untrusted_spans"] = [{"kind": "unknown", "start": 0, "end": 1}]
+        variants[2][1]["payload"]["untrusted_spans"] = ["broken"]
+        variants[3][1]["payload"]["untrusted_spans"] = {"bad": 1}
+        variants[4][1]["payload"]["untrusted_spans"] = [
+            {"kind": "embedded", "start": 100, "end": 200}
+        ]
+        row_ids = {}
+        for name, variant in variants:
+            variant["event"]["external_event_id"] = name
+            buf.record(
+                external_message_id=name,
+                source_channel="telegram_bot",
+                sender_identity="987",
+                subject_or_preview=None,
+                filter_reason="validation_error",
+                full_payload=variant,
+            )
+            await buf.flush(pool)
+            row_ids[name] = await pool.fetchval(
+                "SELECT id FROM connectors.filtered_events WHERE external_message_id=$1", name
+            )
+
+        accepted = []
+
+        async def validate(envelope):
+            parsed = parse_ingest_envelope(envelope)
+            accepted.append(copy.deepcopy(envelope))
+            return parsed
+
+        class FailedStatusConnection:
+            def __init__(self, connection):
+                self.connection = connection
+
+            def __getattr__(self, name):
+                return getattr(self.connection, name)
+
+            async def execute(self, *args):
+                raise RuntimeError("synthetic status persistence uncertainty")
+
+        class FailedStatusPool:
+            @asynccontextmanager
+            async def acquire(self):
+                async with pool.acquire() as connection:
+                    yield FailedStatusConnection(connection)
+
+        await _queue_replay(pool, row_ids["uncertain"])
+        await drain_replay_pending(FailedStatusPool(), "telegram_bot", endpoint, validate)
+        assert len(accepted) == 1
+        assert (
+            await pool.fetchval(
+                "SELECT status FROM connectors.filtered_events WHERE id=$1", row_ids["uncertain"]
+            )
+            == "replay_pending"
+        )
+        await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
+        assert accepted[0] == accepted[1]
+        assert accepted[1]["event"]["in_reply_to_ref"] == "opaque-prior"
+        assert accepted[1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
+        for name, _ in variants[1:]:
+            await _queue_replay(pool, row_ids[name])
+        await drain_replay_pending(pool, "telegram_bot", endpoint, validate)
+        statuses = {
+            r["external_message_id"]: r["status"]
+            for r in await pool.fetch(
+                "SELECT external_message_id,status FROM connectors.filtered_events"
+            )
+        }
+        assert all(
+            statuses[n] == "replay_failed" for n in ("bad-kind", "bad-entry", "bad-container")
+        )
+        assert statuses["known-kind"] == "replay_complete"
+        assert accepted[-1]["payload"]["untrusted_spans"] == [
+            {"kind": "embedded", "start": 100, "end": 200}
+        ]
+        assert parse_ingest_envelope(accepted[-1]).payload.untrusted_spans[0].start == 0
 
 
 async def test_drain_replay_pending_handles_legacy_string_shaped_row(pool: asyncpg.Pool) -> None:
@@ -203,6 +770,7 @@ async def test_drain_replay_pending_handles_legacy_string_shaped_row(pool: async
     submitted: list[dict] = []
 
     async def _submit(envelope: dict) -> None:
+        parse_ingest_envelope(envelope)
         submitted.append(envelope)
 
     await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", _submit)
@@ -215,6 +783,62 @@ async def test_drain_replay_pending_handles_legacy_string_shaped_row(pool: async
         "msg-legacy",
     )
     assert row["status"] == "replay_complete"
+
+    assert "untrusted_spans" not in submitted[0]["payload"]
+    assert "in_reply_to_ref" not in submitted[0]["event"]
+    # A distinct legitimate Telegram legacy-string row traverses the authorized
+    # queue; the original Gmail historical/direct-drain population stays above.
+    endpoint = "telegram:bot:legacy-test"
+    payload["source"] = {
+        "channel": "telegram_bot",
+        "provider": "telegram",
+        "endpoint_identity": endpoint,
+    }
+    payload["sender"]["identity"] = "987"
+    payload["event"].pop("external_thread_id")
+    payload["event"].update(
+        external_event_id="msg-legacy-marked",
+        external_conversation_id="telegram:100",
+        reply_target_ref="100:9",
+        in_reply_to_ref="legacy-opaque-ref",
+    )
+    payload["payload"]["untrusted_spans"] = [{"kind": "forwarded", "start": 0, "end": 5}]
+    buf = FilteredEventBuffer(connector_type="telegram_bot", endpoint_identity=endpoint)
+    buf.record(
+        external_message_id="msg-legacy-marked",
+        source_channel="telegram_bot",
+        sender_identity="987",
+        subject_or_preview="Hello",
+        filter_reason="submission_error",
+        status="error",
+        full_payload=payload,
+    )
+    await buf.flush(pool)
+    row_id = await pool.fetchval(
+        "SELECT id FROM connectors.filtered_events WHERE external_message_id='msg-legacy-marked'"
+    )
+    await pool.execute(
+        "UPDATE connectors.filtered_events SET full_payload=$1::jsonb WHERE id=$2",
+        json.dumps(payload),
+        row_id,
+    )
+    assert isinstance(
+        await pool.fetchval(
+            "SELECT full_payload FROM connectors.filtered_events WHERE id=$1", row_id
+        ),
+        str,
+    )
+    async with _register_replay(pool, "telegram_bot", endpoint):
+        await _queue_replay(pool, row_id, bulk=True)
+
+        async def validating_submit(envelope):
+            parse_ingest_envelope(envelope)
+            submitted.append(envelope)
+
+        await drain_replay_pending(pool, "telegram_bot", endpoint, validating_submit)
+        assert len(submitted) == 2
+        assert submitted[-1]["event"]["in_reply_to_ref"] == "legacy-opaque-ref"
+        assert submitted[-1]["payload"]["untrusted_spans"] == payload["payload"]["untrusted_spans"]
 
 
 async def test_buggy_write_path_would_have_corrupted_full_payload_into_a_string(
@@ -278,7 +902,9 @@ def _known_drop_payload(message_id: str, *, marked: bool) -> dict:
 
 
 @pytest.mark.pg_clock
-async def test_dropped_known_summary_counts_open_marked_drops_only(pool: asyncpg.Pool) -> None:
+async def test_dropped_known_summary_counts_open_marked_drops_only(
+    pool: asyncpg.Pool, migrated_db_url: str, monkeypatch, caplog
+) -> None:
     """Marked, still-unanswered drops count; unmarked, replayed and pending ones do not,
     and one (rule, sender) pair is a single episode however many messages it dropped."""
     buf = FilteredEventBuffer(
@@ -309,6 +935,338 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(pool: asyncpg
 
     assert summary == {"dropped": 3, "episodes": 2}
 
+    # bu-q7vx1q.43 V3 baseline: preserve the original marked-count positive,
+    # then isolate one actual drop whose first contact query cannot execute.
+    # No new snapshot/context API is a prerequisite of this counterexample.
+    from unittest.mock import AsyncMock
+
+    import httpx
+    from fastapi import FastAPI
+
+    from butlers.api.db import DatabaseManager
+    from butlers.api.routers.ingestion_events import router
+    from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
+    from butlers.connectors.gmail_policy import GmailPolicyEvaluator
+
+    await pool.execute("TRUNCATE TABLE connectors.filtered_events")
+    # A real successful empty read also proves that the contact schema/query
+    # is usable; the failure below is the deliberately closed second pool.
+    empty_evaluator = GmailPolicyEvaluator(pool)
+    assert await empty_evaluator.get_known_contacts() == frozenset()
+    assert empty_evaluator._cache_loaded_at > float("-inf"), (
+        "An empty return after a swallowed SQL failure is not a successful-empty positive"
+    )
+    contact_pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+    )
+    await contact_pool.close()
+    registry_pool = await asyncpg.create_pool(
+        migrated_db_url,
+        min_size=1,
+        max_size=2,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "switchboard, public"},
+    )
+    try:
+        runtime = GmailConnectorRuntime(
+            GmailConnectorConfig(
+                switchboard_mcp_url="http://switchboard.example.test/unused",
+                connector_endpoint_identity="gmail:user:availability@example.test",
+                gmail_client_id="synthetic-client-id",
+                gmail_client_secret="synthetic-client-secret",
+                gmail_refresh_token="synthetic-refresh-token",
+            ),
+            db_pool=contact_pool,
+        )
+        # Only provider responses are synthetic. Actual evaluator, handler,
+        # label policy, buffering, codec, aggregate and API code remain wired.
+        monkeypatch.setattr(runtime, "_fetch_sent_message_ids", AsyncMock(return_value=frozenset()))
+        monkeypatch.setattr(
+            runtime,
+            "_fetch_message",
+            AsyncMock(
+                return_value={
+                    "id": "m-classification-unavailable",
+                    "threadId": "synthetic-thread",
+                    "internalDate": "1708000000000",
+                    "labelIds": ["SPAM"],
+                    "payload": {
+                        "headers": [
+                            {"name": "From", "value": "stranger@example.test"},
+                            {"name": "Subject", "value": "Synthetic filtered message"},
+                        ],
+                        "mimeType": "text/plain",
+                        "body": {"data": ""},
+                    },
+                }
+            ),
+        )
+        await runtime._refresh_policy_tier_assigner()
+        assert any(
+            record.name == "butlers.connectors.gmail_policy"
+            and "DB refresh failed" in record.getMessage()
+            for record in caplog.records
+        ), "The actual first contact query must reach its DB exception path"
+        await runtime._ingest_single_message("m-classification-unavailable")
+        assert len(runtime._filtered_event_buffer) == 1
+        await runtime._filtered_event_buffer.flush(pool)
+        async with pool.acquire() as readback:
+            row = await readback.fetchrow(
+                "SELECT status, jsonb_typeof(full_payload) AS kind, full_payload "
+                "FROM connectors.filtered_events WHERE external_message_id = $1",
+                "m-classification-unavailable",
+            )
+        assert row is not None
+        assert row["status"] == "filtered"
+        assert row["kind"] == "object"
+        assert row["full_payload"]["payload"]["raw"] == {}
+
+        manager = DatabaseManager()
+        manager._shared_pool = pool
+        manager._pools["switchboard"] = registry_pool
+        app = FastAPI()
+        app.include_router(router)
+        app.dependency_overrides[get_db] = lambda: manager
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://dashboard.example.test"
+        ) as client:
+            response = await client.get("/api/ingestion/events/dropped-known?window=24h")
+        assert response.status_code == 200
+        result = response.json()
+        assert result["dropped"] == 0
+        assert result["episodes"] == 0
+        # FIRST causal assertion: today's readable zero loses the DB-failure
+        # history. Future classification keys/epoch helpers are not needed.
+        assert result["available"] is False, (
+            "A persisted drop after an actual first contact-query failure is "
+            "unknown even when the filtered aggregate reads zero successfully"
+        )
+
+        # Same real gate species: admitted unknown, actual query success, failed
+        # loaded publication, then recovery of CURRENT truth only.
+        from types import SimpleNamespace
+
+        from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+        from butlers.core.known_contact_state import CLASSIFICATION_KEY
+        from butlers.core_tools._base import ToolContext
+        from butlers.core_tools._switchboard import register_switchboard_tools
+
+        registered = {}
+
+        def capture_tool(_group, **options):
+            def register(fn):
+                registered[options.get("name", fn.__name__)] = fn
+                return fn
+
+            return register
+
+        import asyncio
+
+        before_registration = set(asyncio.all_tasks())
+        register_switchboard_tools(
+            ToolContext(
+                daemon=SimpleNamespace(_pipeline=None, _buffer=None),
+                pool=registry_pool,
+                spawner=None,
+                butler_name="switchboard",
+                butler_type=None,
+                is_switchboard=True,
+                is_messenger=False,
+                route_metrics=None,
+            ),
+            SimpleNamespace(),
+            capture_tool,
+        )
+        await asyncio.gather(*(set(asyncio.all_tasks()) - before_registration))
+        fail_loaded = True
+
+        async def call_tool(name, arguments):
+            check = arguments["capabilities"][CLASSIFICATION_KEY]
+            if fail_loaded and check["state"] == "loaded":
+                raise TimeoutError("synthetic private-error token-sentinel")
+            return await registered[name](**arguments)
+
+        publisher = ConnectorHeartbeat(
+            HeartbeatConfig("gmail", runtime._config.connector_endpoint_identity),
+            SimpleNamespace(call_tool=call_tool),
+            runtime._metrics,
+            runtime._get_health_state,
+            get_capabilities=runtime._get_capabilities,
+            get_contact_snapshot=runtime._gmail_policy_evaluator.peek_snapshot,
+        )
+        runtime._heartbeat = publisher
+        assert await publisher.publish_once()  # accepted startup unknown
+        runtime._gmail_policy_evaluator._db_pool = pool
+        await runtime._refresh_policy_tier_assigner()
+        empty_loaded = runtime._gmail_policy_evaluator.peek_snapshot()
+        assert empty_loaded.state == "loaded" and empty_loaded.contacts == frozenset()
+
+        async def api_summary():
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://dashboard.example.test"
+            ) as client:
+                response = await client.get("/api/ingestion/events/dropped-known?window=24h")
+            assert response.status_code == 200
+            return response.json()
+
+        # Read back actual provider-time and classification-time fields from a
+        # separate acquisition, after another refresh and delayed buffer flush.
+        runtime._fetch_message.return_value["id"] = "m-loaded-empty"
+        await runtime._ingest_single_message("m-loaded-empty")
+        frozen_empty = dict(
+            runtime._filtered_event_buffer._rows[-1][9]["drop_context"]["classification"]
+        )
+        entity = await pool.fetchval(
+            "INSERT INTO public.entities(canonical_name) VALUES($1) RETURNING id",
+            "Synthetic priority",
+        )
+        await pool.execute(
+            "INSERT INTO public.priority_contacts(contact_id, entity_id) VALUES($1,$1)",
+            entity,
+        )
+        await pool.execute(
+            "INSERT INTO relationship.entity_facts(subject,predicate,object,object_kind,src) "
+            "VALUES($1,'has-email',$2,'literal','q43-synthetic')",
+            entity,
+            "known@example.test",
+        )
+        runtime._gmail_policy_evaluator._cache_loaded_at -= 901
+        await runtime._refresh_policy_tier_assigner()
+        known_loaded = runtime._gmail_policy_evaluator.peek_snapshot()
+        assert known_loaded.state == "loaded" and known_loaded.contacts == frozenset(
+            {"known@example.test"}
+        )
+        for suffix, provider_date in [
+            ("old", "1"),
+            ("future", "4102444800000"),
+            ("malformed", "not-a-date"),
+        ]:
+            message = runtime._fetch_message.return_value
+            message["payload"]["headers"][0]["value"] = "known@example.test"
+            message["internalDate"] = provider_date
+            await runtime._ingest_single_message(f"m-known-{suffix}")
+        assert len(runtime._filtered_event_buffer) == 4
+        await runtime._filtered_event_buffer.flush(pool)
+        async with pool.acquire() as readback:
+            persisted = await readback.fetch(
+                "SELECT external_message_id, full_payload, received_at FROM connectors.filtered_events "
+                "WHERE external_message_id LIKE 'm-known-%' OR external_message_id='m-loaded-empty'"
+            )
+        assert len(persisted) == 4
+        for persisted_row in persisted:
+            payload = persisted_row["full_payload"]
+            classification = payload["drop_context"]["classification"]
+            success = datetime.fromisoformat(classification["last_success_at"])
+            observed = datetime.fromisoformat(classification["observed_at"])
+            assert classification["state"] == "loaded"
+            assert 0 <= (observed - success).total_seconds() <= 900
+            assert payload["payload"]["raw"] == {}
+            assert observed <= persisted_row["received_at"]
+            if persisted_row["external_message_id"] == "m-loaded-empty":
+                assert classification == frozen_empty
+                assert "important_dropped" not in payload["drop_context"]
+            else:
+                assert payload["drop_context"]["important_dropped"] is True
+                assert classification["observed_at"] != payload["event"]["observed_at"]
+        unknown_current = await api_summary()
+        assert unknown_current["dropped"] == 3 and unknown_current["counts_available"] is True
+        assert unknown_current["classification_available"] is False
+        assert unknown_current["uncertain_drops"] == 1 and unknown_current["available"] is False
+        assert runtime._get_health_state() == ("healthy", None)
+        fail_loaded = False
+        assert await publisher.publish_once()
+        recovered = await api_summary()
+        assert recovered["classification_available"] is True
+        assert recovered["available"] is False and recovered["uncertain_drops"] == 1
+        async with pool.acquire() as readback:
+            original = await readback.fetchval(
+                "SELECT full_payload FROM connectors.filtered_events WHERE external_message_id=$1",
+                "m-classification-unavailable",
+            )
+        assert original == row["full_payload"]  # recovery never rewrites history
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET status='replay_pending' WHERE external_message_id=$1",
+            "m-classification-unavailable",
+        )
+        assert (await api_summary())["uncertain_drops"] == 1
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET status='replay_complete' WHERE external_message_id=$1",
+            "m-classification-unavailable",
+        )
+        assert (await api_summary())["available"] is True
+
+        # A wholly unobserved failed send cannot revoke previous fresh evidence.
+        fail_loaded = True
+        assert await publisher.publish_once() is False
+        assert (await api_summary())["available"] is True
+        await registry_pool.execute(
+            "UPDATE switchboard.connector_registry SET last_heartbeat_at=now()-interval '301 seconds' "
+            "WHERE connector_type='gmail' AND endpoint_identity=$1",
+            runtime._config.connector_endpoint_identity,
+        )
+        assert (await api_summary())["classification_available"] is False
+        fail_loaded = False
+        assert await publisher.publish_once()
+        await registry_pool.execute(
+            "UPDATE switchboard.connector_registry SET capabilities=jsonb_set(capabilities, "
+            "'{known_contact_check,last_success_at}',to_jsonb((now()-interval '901 seconds')::text)) "
+            "WHERE connector_type='gmail' AND endpoint_identity=$1",
+            runtime._config.connector_endpoint_identity,
+        )
+        assert (await api_summary())["classification_available"] is False
+        # New actual query/ordinary admitted publication repairs current age.
+        runtime._gmail_policy_evaluator._cache_loaded_at -= 901
+        await runtime._refresh_policy_tier_assigner()
+        assert (await api_summary())["available"] is True
+
+        # Legacy, malformed, future and clock-incoherent HISTORY stays unknown;
+        # independently retain all positive counts and window/status semantics.
+        loaded_payload = persisted[0]["full_payload"]
+        import copy
+
+        for suffix, classification in [
+            ("legacy", None),
+            ("malformed", {"state": "contact-error-token"}),
+            ("future", {**frozen_empty, "last_success_at": "2100-01-01T00:00:00+00:00"}),
+            ("clock", {**frozen_empty, "observed_at": "2000-01-01T00:00:00+00:00"}),
+        ]:
+            planted = copy.deepcopy(loaded_payload)
+            planted["drop_context"] = {"classification": classification}
+            runtime._filtered_event_buffer.record(
+                external_message_id=f"m-uncertain-{suffix}",
+                source_channel="email",
+                sender_identity="synthetic@example.test",
+                subject_or_preview=None,
+                filter_reason="label_exclude:SPAM",
+                full_payload=planted,
+            )
+        await runtime._filtered_event_buffer.flush(pool)
+        invalid_history = await api_summary()
+        assert invalid_history["uncertain_drops"] == 4 and invalid_history["dropped"] == 3
+        await pool.execute(
+            "UPDATE connectors.filtered_events SET received_at=now()-interval '25 hours' "
+            "WHERE external_message_id LIKE 'm-uncertain-%'"
+        )
+        assert (await api_summary())["available"] is True
+        # Excluded row roles do not create authority; a genuinely empty complete
+        # read is positive, while a real applicable legacy row is not.
+        await registry_pool.execute(
+            "DELETE FROM switchboard.connector_registry WHERE connector_type='gmail'"
+        )
+        assert (await api_summary())["available"] is True
+        await registry_pool.execute(
+            "INSERT INTO switchboard.connector_registry(connector_type,endpoint_identity,operational_role) "
+            "VALUES('gmail','gmail:user:legacy@example.test','runtime_instance')"
+        )
+        assert (await api_summary())["classification_available"] is False
+        await registry_pool.execute(
+            "UPDATE switchboard.connector_registry SET operational_role='checkpoint' "
+            "WHERE endpoint_identity='gmail:user:legacy@example.test'"
+        )
+        assert (await api_summary())["available"] is True
+    finally:
+        await registry_pool.close()
+
 
 @pytest.mark.pg_clock
 async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) -> None:
@@ -323,13 +1281,25 @@ async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) 
         subject_or_preview="Hello",
         filter_reason=FilteredEventBuffer.reason_policy_rule("global_rule", "skip", "keyword"),
         status="replay_pending",
-        full_payload=_known_drop_payload("m-replay", marked=True),
+        full_payload={
+            **_known_drop_payload("m-replay", marked=True),
+            "drop_context": {
+                "important_dropped": True,
+                "basis": "known_contact",
+                "classification": {
+                    "state": "loaded",
+                    "reason": "none",
+                    "observed_at": "private-sentinel",
+                },
+            },
+        },
     )
     await buf.flush(pool)
 
     submitted: list[dict] = []
 
     async def _submit(envelope: dict) -> None:
+        parse_ingest_envelope(envelope)
         submitted.append(envelope)
 
     await drain_replay_pending(pool, "gmail", "gmail:user:alice@example.com", _submit)
@@ -339,3 +1309,139 @@ async def test_replay_of_marked_drop_submits_clean_envelope(pool: asyncpg.Pool) 
     # Once replayed the drop is answered, so it no longer counts as outstanding harm.
     summary = await ingestion_dropped_known_summary(pool, from_dt=datetime(2000, 1, 1, tzinfo=UTC))
     assert summary == {"dropped": 0, "episodes": 0}
+
+    from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
+    from butlers.ingestion_policy import PolicyDecision
+
+    connector = TelegramBotConnector(
+        TelegramBotConnectorConfig(
+            switchboard_mcp_url="http://localhost:41100/sse",
+            provider="telegram",
+            channel="telegram_bot",
+            endpoint_identity="telegram:bot:replay-test",
+            telegram_token="synthetic-token",
+        ),
+        cursor_pool=MagicMock(),
+    )
+    endpoint = connector._config.endpoint_identity
+    connector_type = connector._config.provider
+    async with _register_replay(pool, connector_type, endpoint):
+        for stage in ("policy", "submission"):
+            update_id = 301 if stage == "policy" else 302
+            update = {
+                "update_id": update_id,
+                "message": {
+                    "message_id": update_id,
+                    "chat": {"id": 100},
+                    "from": {"id": 987},
+                    "text": "owner introduction; quoted third-party text",
+                    "entities": [{"type": "blockquote", "offset": 20, "length": 22}],
+                    "reply_to_message": {"message_id": 5},
+                },
+            }
+            original = await connector._normalize_to_ingest_v1(update)
+            with (
+                patch.object(
+                    connector._ingestion_policy,
+                    "evaluate",
+                    return_value=PolicyDecision(
+                        action="block" if stage == "policy" else "pass_through",
+                        matched_rule_type="chat_id",
+                    ),
+                ),
+                patch.object(
+                    connector._global_ingestion_policy,
+                    "evaluate",
+                    return_value=PolicyDecision(action="pass_through"),
+                ),
+                patch.object(
+                    connector,
+                    "_submit_to_ingest",
+                    AsyncMock(side_effect=ValueError("synthetic failure")),
+                ),
+            ):
+                await connector._process_update(update)
+            await connector._filtered_event_buffer.flush(pool)
+            row = await pool.fetchrow(
+                "SELECT * FROM connectors.filtered_events WHERE external_message_id=$1",
+                str(update_id),
+            )
+            stored = row["full_payload"]
+            assert isinstance(stored, dict)
+            assert row["status"] == ("filtered" if stage == "policy" else "error")
+            assert stored["event"]["in_reply_to_ref"] == "100:5"
+            assert stored["sender"]["identity"] == "987"
+            if stage == "policy":
+                assert stored["payload"]["raw"] == {}
+                assert "normalized_text" not in stored["payload"]
+                assert update["message"]["text"] not in str(stored)
+            else:
+                assert (
+                    stored["payload"]["normalized_text"] == original["payload"]["normalized_text"]
+                )
+                assert (
+                    stored["payload"]["untrusted_spans"] == original["payload"]["untrusted_spans"]
+                )
+            await _queue_replay(pool, row["id"])
+            entered, release = asyncio.Event(), asyncio.Event()
+            delivered, competing = [], []
+
+            async def submit(envelope, delivered=delivered, entered=entered, release=release):
+                parse_ingest_envelope(envelope)
+                delivered.append(copy.deepcopy(envelope))
+                entered.set()
+                await asyncio.wait_for(release.wait(), 5)
+                raise ValueError("synthetic failed submit")
+
+            async def other_submit(envelope, competing=competing):
+                competing.append(envelope)
+
+            first = asyncio.create_task(
+                drain_replay_pending(pool, connector_type, endpoint, submit)
+            )
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                await asyncio.wait_for(
+                    drain_replay_pending(pool, connector_type, endpoint, other_submit), 5
+                )
+                assert competing == []  # the first real connection still holds the row lock
+            finally:
+                release.set()
+                await asyncio.wait_for(first, 5)
+            assert (
+                await pool.fetchval(
+                    "SELECT status FROM connectors.filtered_events WHERE id=$1", row["id"]
+                )
+                == "replay_failed"
+            )
+            await drain_replay_pending(pool, connector_type, endpoint, other_submit)
+            assert competing == []  # no automatic retry of replay_failed
+            await _queue_replay(pool, row["id"], bulk=True)
+
+            async def retry_submit(envelope, delivered=delivered):
+                parse_ingest_envelope(envelope)
+                delivered.append(copy.deepcopy(envelope))
+
+            await drain_replay_pending(pool, connector_type, endpoint, retry_submit)
+            assert delivered[0] == delivered[1]
+            assert (
+                delivered[1]["event"]["external_event_id"] == original["event"]["external_event_id"]
+            )
+            assert delivered[1]["event"]["in_reply_to_ref"] == "100:5"
+            assert delivered[1]["event"]["reply_target_ref"] != "100:5"
+            assert "drop_context" not in delivered[1]
+            if stage == "submission":
+                assert (
+                    delivered[1]["payload"]["untrusted_spans"]
+                    == original["payload"]["untrusted_spans"]
+                )
+            else:
+                assert delivered[1]["payload"]["untrusted_spans"] == [
+                    {"kind": "quoted", "start": 0, "end": len("[no text]")}
+                ]
+            assert (
+                await pool.fetchval(
+                    "SELECT status FROM connectors.filtered_events WHERE id=$1", row["id"]
+                )
+                == "replay_complete"
+            )

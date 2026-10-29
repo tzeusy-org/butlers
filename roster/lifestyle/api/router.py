@@ -8,44 +8,31 @@ fetched page length (docs/api_and_protocols/response-conventions.md).
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginatedResponse, PaginationMeta
+from butlers.roster_imports import roster_module
 
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("lifestyle_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["lifestyle_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("lifestyle", "api/models", api_source=__file__)
 
-    TasteSummary = _models.TasteSummary
-    TasteSummaryQueryAvailability = _models.TasteSummaryQueryAvailability
-    TasteWork = _models.TasteWork
-    TasteVerdict = _models.TasteVerdict
-else:
-    raise RuntimeError("Failed to load lifestyle API models")
+TasteSummary = _models.TasteSummary
+TasteSummaryQueryAvailability = _models.TasteSummaryQueryAvailability
+TasteWork = _models.TasteWork
+TasteVerdict = _models.TasteVerdict
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/lifestyle", tags=["lifestyle"])
 
 BUTLER_DB = "lifestyle"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -55,11 +42,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Lifestyle butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +89,8 @@ async def _run_summary_query(
 
 @router.get("/taste/summary", response_model=ApiResponse[TasteSummary])
 async def get_taste_summary(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TasteSummary]:
     """Return ledger-wide counts: works/signals/verdicts totals, works and
     signals grouped by kind, and a 7-day recent-signal count.
@@ -203,7 +191,8 @@ async def list_taste_works(
     kind: str | None = Query(None, description="Filter by work kind, e.g. 'track'."),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[TasteWork]:
     """List works in the taste ledger, newest first."""
     pool = _pool(db)
@@ -252,7 +241,8 @@ async def list_taste_works(
 async def list_taste_verdicts(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[TasteVerdict]:
     """List owner-asserted taste verdicts (including migrated legacy facts),
     newest first."""

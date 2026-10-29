@@ -211,7 +211,7 @@ async def test_session_lifecycle(tmp_path):
         sandbox=_TestSandbox(),
     )
     await session.start()
-    await session.wait(timeout=5.0)
+    await session.wait(timeout_s=5.0)
 
     assert session.auth_url == "https://auth.openai.com/codex/device"
     assert session.device_code == "TEST-12345"
@@ -249,7 +249,7 @@ async def test_codex_session_never_logs_device_code_or_callback_error(tmp_path, 
     )
     with caplog.at_level("INFO", logger="butlers.cli_auth.session"):
         await session.start()
-        await session.wait(timeout=5.0)
+        await session.wait(timeout_s=5.0)
 
     assert session.state == "failed"
     assert session.message == "Codex authentication was not saved to the system authority."
@@ -277,7 +277,7 @@ async def test_codex_session_fails_when_global_persistence_is_not_confirmed(tmp_
         sandbox=_TestSandbox(),
     )
     await session.start()
-    await session.wait(timeout=5.0)
+    await session.wait(timeout_s=5.0)
 
     assert session.state == "failed"
     assert session.message == "Codex authentication was not saved to the system authority."
@@ -1384,7 +1384,7 @@ async def test_test_endpoint_reconciles_codex_auth_before_fencing_probe_result(
         assert passed_store is store
         assert butler_name == "dashboard"
         events.append("reconcile")
-        token_path.write_text(authority_b, encoding="utf-8")
+        await asyncio.to_thread(token_path.write_text, authority_b, encoding="utf-8")
         return CodexAuthSyncResult(expected_store_value=authority_b)
 
     async def _probe(probed_provider, *_args, **_kwargs) -> AuthHealthResult:
@@ -1447,7 +1447,7 @@ async def test_test_endpoint_withholds_result_when_codex_authority_changes_durin
 
     async def _reconcile(token_path: Path, *_args, **_kwargs) -> CodexAuthSyncResult:
         events.append("reconcile")
-        token_path.write_text(authority_b, encoding="utf-8")
+        await asyncio.to_thread(token_path.write_text, authority_b, encoding="utf-8")
         return CodexAuthSyncResult(expected_store_value=authority_b)
 
     async def _probe(*_args, **_kwargs) -> AuthHealthResult:

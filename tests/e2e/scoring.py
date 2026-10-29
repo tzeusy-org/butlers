@@ -284,7 +284,7 @@ def compute_routing_scorecard(
     if scenario_tags:
         # Collect all unique tags from the entries' scenarios
         all_tags: set[str] = set()
-        for sid, tags in scenario_tags.items():
+        for _sid, tags in scenario_tags.items():
             all_tags.update(tags)
 
         for tag in sorted(all_tags):

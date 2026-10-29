@@ -28,6 +28,7 @@ class RelationshipModuleConfig(ToolGroupMixin, BaseModel):
                address_add, address_list, address_update, address_remove,
                channel_add, channel_list, channel_search,
                contact_export_vcard, contact_import_vcard
+    contacts_ingress : contacts_report_channel, contacts_resolve_channel
     interactions : interaction_log, interaction_list, fact_set, fact_list
     relationships : relationship_add, relationship_list, relationship_remove,
                     relationship_type_get, relationship_types_list,
@@ -40,8 +41,10 @@ class RelationshipModuleConfig(ToolGroupMixin, BaseModel):
     tracking : task_create, task_list, task_complete, task_delete,
                loan_create, loan_settle, loan_list
     management : dunbar_tier_set, stay_in_touch_set, contacts_overdue
-    entity : entity_resolve, entity_get, entity_update, entity_set_posture,
-             entity_neighbors, relationship_lookup
+    entity : entity_resolve, entity_get, entity_neighbors,
+             relationship_fact_evidence, relationship_predicate_coverage,
+             relationship_lookup
+    entity_write : entity_update, relationship_record_coverage, entity_set_posture
 
     ``relationship_assert_fact`` (the central entity_facts writer) is registered
     unconditionally, not via a group — approval dispatch depends on it. See
@@ -60,20 +63,11 @@ class RelationshipModule(Module):
         self._db: Any = None
         self._chronicler_pool: Any = None  # Lazy pool for chronicler schema (episode repoint)
 
-    @property
-    def name(self) -> str:
-        return "relationship"
+    name = "relationship"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return RelationshipModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # relationship tables already exist via separate migrations
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

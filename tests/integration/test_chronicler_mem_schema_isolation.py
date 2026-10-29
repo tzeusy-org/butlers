@@ -33,7 +33,7 @@ import httpx
 import pytest
 from sqlalchemy import create_engine, text
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.background import dispatch_scheduled_task
 from butlers.db import Database, register_jsonb_codec
 from butlers.modules.memory import MemoryModule, MemoryModuleConfig
@@ -227,7 +227,7 @@ async def test_memory_link_api_reads_chronicler_mem_not_domain_schema(isolated_d
             episode_id,
         )
         app = create_app()
-        app.dependency_overrides[_get_db_manager] = lambda: _SchemaAwareSinglePoolDB(pool)
+        app.dependency_overrides[get_db] = lambda: _SchemaAwareSinglePoolDB(pool)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -347,7 +347,7 @@ async def test_scheduled_maintenance_uses_chronicler_memory_runtime(
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
     module = MemoryModule()
@@ -477,7 +477,7 @@ async def test_scheduled_consolidation_uses_chronicler_memory_runtime(
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
     module = MemoryModule()
@@ -551,7 +551,7 @@ async def test_session_hooks_keep_chronicler_private_pool_when_other_daemons_sta
         password=parsed.password or "postgres",
         min_pool_size=1,
         max_pool_size=3,
-        strict_role_enforcement=False,
+        role="butler_chronicler_rw",
     )
     await domain_db.connect()
 

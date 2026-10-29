@@ -115,6 +115,8 @@ class TestFindOpenCase:
         pool = _pool(fetchrow=None)
         assert await find_open_case(pool, "health:owner:respiratory-illness") is None
 
+    # Spec: REQ-fleet-case-file-001
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_returns_the_row_as_a_dict(self) -> None:
         pool = _pool(fetchrow=_CASE_ROW)
         result = await find_open_case(pool, "health:owner:respiratory-illness")
@@ -154,6 +156,8 @@ class TestOpenCase:
         result = await open_case(pool, correlation_key="health:owner:respiratory-illness")
         assert result == _CASE_ROW
 
+    # Spec: REQ-fleet-case-file-003
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_duplicate_active_key_is_refused_with_the_existing_case_id(self) -> None:
         pool = _pool(
             fetchrow_side_effect=[
@@ -242,6 +246,8 @@ class TestProposePosture:
         result = await propose_posture(pool, case_id=_CASE_ID, posture="urgent")
         assert result == updated
 
+    # Spec: REQ-fleet-case-file-002
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_closed_case_is_refused(self) -> None:
         pool = _pool(fetchrow=None, fetchval="closed")
         with pytest.raises(FleetCaseError, match="already closed"):
@@ -335,6 +341,8 @@ class TestWriteCaseLink:
         "linked_at": "2026-09-06T00:00:00+00:00",
     }
 
+    # Spec: REQ-fleet-case-file-012
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_invalid_link_kind_is_refused_before_any_query(self) -> None:
         pool = _pool()
         with pytest.raises(FleetCaseError, match="link_kind"):
@@ -399,6 +407,8 @@ class TestEvaluateCaseAttention:
     _CORRELATION_KEY = "health:owner:respiratory-illness"
     _QUIET_POLICY = {"quiet_start_hour": 22, "quiet_end_hour": 7, "timezone": "UTC"}
 
+    # Spec: REQ-fleet-case-file-009
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_closed_case_never_bypasses(self, monkeypatch) -> None:
         get_policy_mock = AsyncMock()
         monkeypatch.setattr(fleet_cases_module, "get_approvals_policy_quiet_hours", get_policy_mock)
@@ -415,6 +425,8 @@ class TestEvaluateCaseAttention:
         assert result == {"bypass": False, "reason": "case_closed", "attention_ledger_id": None}
         get_policy_mock.assert_not_awaited()
 
+    # Spec: REQ-fleet-case-file-009
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_non_urgent_posture_never_bypasses(self, monkeypatch) -> None:
         get_policy_mock = AsyncMock()
         monkeypatch.setattr(fleet_cases_module, "get_approvals_policy_quiet_hours", get_policy_mock)
@@ -431,6 +443,8 @@ class TestEvaluateCaseAttention:
         assert result == {"bypass": False, "reason": "not_urgent", "attention_ledger_id": None}
         get_policy_mock.assert_not_awaited()
 
+    # Spec: REQ-fleet-case-file-009
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_urgent_but_quiet_hours_inactive_does_not_bypass(self, monkeypatch) -> None:
         monkeypatch.setattr(
             fleet_cases_module,
@@ -559,6 +573,8 @@ class TestRunLapseSweep:
 
     _NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
+    # Spec: REQ-fleet-case-file-010
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_defaults_to_the_module_staleness_window_and_eligible_postures(self) -> None:
         pool = _pool(fetch=[])
         result = await run_lapse_sweep(pool, now=self._NOW)
@@ -747,6 +763,8 @@ class TestBackfillFromOwnerConditions:
         assert opened_at == self._FIRST_DETECTED
         assert closed_at == self._RESOLVED
 
+    # Spec: REQ-fleet-case-file-011
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_falls_back_to_default_outcome_without_a_resolution_reason(self) -> None:
         source_row = self._owner_condition_row(metadata=None)
         pool = _pool()
@@ -860,6 +878,8 @@ class TestBackfillFromOwnerConditions:
         assert ref == source_row["id"]
         assert metadata is None
 
+    # Spec: REQ-fleet-case-file-014
+    # Partial helper behavior over mocked data; not PostgreSQL/transport proof.
     async def test_repairs_the_missing_link_onto_an_already_backfilled_case(self) -> None:
         """A case an earlier (pre-Slice-7) run already created has no link --
         backfill_historical_case returns None (already backfilled), but the

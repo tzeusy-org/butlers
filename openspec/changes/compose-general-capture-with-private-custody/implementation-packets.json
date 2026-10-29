@@ -1,4 +1,25 @@
 {
+  "authority_disposition": {
+    "status": "historical-packet; goal-runtime successor conversion pending",
+    "governing_contract": "RFC 0038 D1/D2/D4/D5/D7/D15; RFC 0037 surviving capture/privacy/source-fence contracts",
+    "moved_delta": {
+      "source": "compose-general-capture-with-private-custody/specs/butler-general/spec.md",
+      "target": "generalist-lead-focused-delegation/specs/butler-general/spec.md",
+      "requirement": "General Butler Tool Surface",
+      "disposition": "source delta removed; complete ordinary-capture scenario folded into same-name target block; collection/item/calendar inventory retained under control-plane registration"
+    },
+    "retained_source": "All six general-capture requirements remain active and unchanged; no source archive.",
+    "historical_fields": "Every original top-level field and complete packet field below is preserved for nine-outcome comparison and outstanding-delivery reconciliation. Packet-complete flags, owned_paths, holds, migration numbers, source snapshots, test estimates and old classifier/session/route/spawner language describe that historical plan, not current source allocation or runnable successor instructions. Existing runnable_now=false remains in force.",
+    "superseded_surfaces": [
+      "structured_classify.py and capture-intent classifier references: no classifier successor; reasoning enters deterministic goal admission after held commit.",
+      "route.py/generic target-session dispatch and spawner lanes: retired by D1/D2; goal calls use the D7 broker and owning-domain verification, and infrastructure traffic uses authorized service-plane contracts.",
+      "current server-held session/source binding: a session locator is not authority; origin/cause and exact source binding are server-held at D5 admission, and goal capability calls require active invocation/grant and domain assertions.",
+      "per-butler conversation/detail UI and module paths: historical locations, not permission to retain a legacy session ingress or bypass the adopted goal surface."
+    ],
+    "surviving_obligations": "Commit and return an opaque held receipt before reasoning/target effects; principal/source/canonical-payload idempotency and changed-payload refusal; domain-owned ledgers/receipts/collections/search; atomic General target+version+routed receipt; owning specialist receipt before finalization; no blind replay of unknown outcome, peer SQL or shadow storage; ordinary/private name equivalence, bounded source-authorized search/catalog, immutable versions and commit-valid source fences, privacy retirement, truthful accessible held/refused/unavailable UI and source-reference attachments, content-blind audit/errors and no raw diagnostic copies. All nine original outcomes remain required.",
+    "successor_authority": "One deterministic ingress-deduplicated goal admission under D5 with server-held origin/cause, exposure, ceiling and budget. Existing capture receipt idempotency remains independent. Configured capability registration plus D4/D7 grants/assertions authorize ordinary operations; D4/D15 exclude all private-custody content and model-facing custody tools. No new wire field, grant or model-function exception.",
+    "delivery_status": "PENDING successor implementation and fresh complete behavior evidence; no new task completion, source reservation, live/private/provider/database operation, deployment or archive is authorized by this metadata."
+  },
   "baseline": "c1085ad335b97deddd30cb09d5e4d982d83896a2",
   "adopted_manifest": "7b97e54600398001330aa5180f9d1ed269db4ce73e104a3de46260fab672c5c7",
   "source_id": "bu-2jtfw.9.1",

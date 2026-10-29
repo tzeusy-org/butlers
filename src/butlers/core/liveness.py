@@ -32,10 +32,10 @@ CLOCK_SKEW_TOLERANCE = timedelta(minutes=5)
 def derive_liveness(last_heartbeat_at: datetime | None) -> str:
     """Derive liveness status from last heartbeat timestamp.
 
-    Liveness thresholds (from docs/connectors/heartbeat.md):
-    - online: heartbeat within last 5 minutes
-    - stale: heartbeat between 5-15 minutes ago
-    - offline: no heartbeat for 15+ minutes or never seen
+    Liveness thresholds (from openspec/specs/connector-base-spec/spec.md):
+    - online: heartbeat age under 5 minutes (within future-skew tolerance)
+    - stale: heartbeat age from 5 through 15 minutes, inclusive
+    - offline: heartbeat age over 15 minutes or never seen
 
     A future-dated heartbeat (more than 5 minutes ahead of server clock) is
     treated as offline rather than online to avoid false-healthy reports under
@@ -57,7 +57,7 @@ def derive_liveness(last_heartbeat_at: datetime | None) -> str:
 
     if age < -300:  # more than 5 minutes in the future — clock skew
         return "offline"
-    elif age <= 300:  # 5 minutes
+    elif age < 300:  # under 5 minutes
         return "online"
     elif age <= 900:  # 15 minutes
         return "stale"

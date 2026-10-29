@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // MealForm — reusable add/edit form for logged meals [bu-5oeoq]
 //
@@ -80,9 +82,11 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
   const [fat, setFat] = useState(nutritionField(meal, "fat_g"));
   const [notes, setNotes] = useState(meal?.notes ?? "");
 
+  const draft = useDraft("health.meal", [isEdit ? "edit" : "create", meal?.id ?? "new"], { type, description, eatenAt, calories, protein, carbs, fat, notes }, (next) => { setType(next.type as typeof type); setDescription(next.description as typeof description); setEatenAt(next.eatenAt as typeof eatenAt); setCalories(next.calories as typeof calories); setProtein(next.protein as typeof protein); setCarbs(next.carbs as typeof carbs); setFat(next.fat as typeof fat); setNotes(next.notes as typeof notes); });
+
   const createMutation = useCreateMeal();
   const updateMutation = useUpdateMeal();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   function handleError(err: unknown) {
     const message =
@@ -112,6 +116,9 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
     const nutrition = buildNutrition();
     const eatenIso = eatenAtToIso(eatenAt);
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
         await updateMutation.mutateAsync({
@@ -124,7 +131,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
             notes: trimmedNotes === "" ? null : trimmedNotes,
           },
         });
-        toast.success("Meal updated.");
+        if (draft.current(submission)) toast.success("Meal updated.");
       } else {
         await createMutation.mutateAsync({
           type,
@@ -133,16 +140,17 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
           nutrition,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        toast.success("Meal logged.");
+        if (draft.current(submission)) toast.success("Meal logged.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.current(submission)) handleError(err);
+    } finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="meal-form">
+      <DraftNotice session={draft.session} />
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-2">
           <Label htmlFor="meal-type">Type</Label>
@@ -240,7 +248,7 @@ export function MealForm({ meal, onDone, onCancel }: MealFormProps) {
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>

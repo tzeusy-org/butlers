@@ -21,12 +21,12 @@ from sqlalchemy import create_engine
 from alembic import command
 from butlers.api import dashboard_audit_middleware
 from butlers.api.app import create_app
+from butlers.api.deps import get_db_optional
 from butlers.api.routers import home_person_mappings as mapping_router
 from butlers.api.routers.home_person_mappings import (
     _LOCK_NAMESPACE,
     MappingBatch,
     _decide_batch,
-    _get_db_manager,
     _key_digest,
 )
 from butlers.db import register_jsonb_codec
@@ -113,7 +113,7 @@ def seams(monkeypatch):
 def _mounted(seams, app=None):
     """The production app and owner middleware, wired to the observed DB manager."""
     app = app if app is not None else create_authenticated_domain_app()
-    app.dependency_overrides[_get_db_manager] = lambda: seams.manager
+    app.dependency_overrides[get_db_optional] = lambda: seams.manager
     return app
 
 
@@ -1120,7 +1120,7 @@ async def test_mounted_structural_refusals_are_fixed_422_without_writes(
             (audit["outcome"], audit["failure_category"])
             for audit in await _audits(mapping_pool, details["receipt"])
         ] == [("refused", "request_invalid")], name
-        for header, value in key_headers:
+        for _header, value in key_headers:
             assert not await mapping_pool.fetchval(
                 "SELECT EXISTS (SELECT 1 FROM public.ha_person_mapping_receipts "
                 "WHERE key_digest = $1 AND outcome = 'success')",

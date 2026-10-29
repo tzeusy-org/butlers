@@ -25,7 +25,7 @@ one.
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import shutil
 import sys
 import uuid
@@ -69,14 +69,9 @@ def _load_relationship_api_router() -> ModuleType:
     module_name = "relationship_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    router_path = (
-        Path(__file__).parents[1] / "api" / "router.py"
-    )  # roster/relationship/api/router.py
-    spec = importlib.util.spec_from_file_location(module_name, router_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    (Path(__file__).parents[1] / "api" / "router.py")  # roster/relationship/api/router.py
+    module = importlib.import_module("butlers.api._roster.relationship.router")
+    assert module.__spec__ is not None and module.__spec__.loader is not None
     return module
 
 

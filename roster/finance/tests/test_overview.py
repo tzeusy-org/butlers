@@ -19,6 +19,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+_THIS_FILE = Path(__file__).resolve()
+
 _docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -210,7 +212,7 @@ async def _insert_snapshot(
 
 
 async def _apply_expected_signal_migrations(pool) -> None:
-    root = Path(__file__).resolve().parents[3]
+    root = _THIS_FILE.parents[3]
     for filename in (
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",

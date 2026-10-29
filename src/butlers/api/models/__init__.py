@@ -79,34 +79,13 @@ class PaginatedResponse[T](BaseModel):
     meta: PaginationMeta
 
 
-class CursorPaginationMeta(BaseModel):
-    """Pagination metadata for cursor-based (keyset) list endpoints.
-
-    Replaces offset+total with an opaque cursor token.
-    """
-
-    next_cursor: str | None = None
-    has_more: bool
-
-
-class CursorPaginatedResponse[T](BaseModel):
-    """API response wrapper for cursor-paginated list endpoints.
-
-    ``{"data": [T, ...], "meta": CursorPaginationMeta}``
-    """
-
-    data: list[T]
-    meta: CursorPaginationMeta
-
-
 class KeysetMeta(BaseModel):
-    """Keyset (cursor) pagination metadata that also echoes the page ``limit``.
+    """Keyset (cursor) pagination metadata for the sessions list only.
 
     ``{"limit": 50, "next_cursor": "<opaque>|null", "has_more": true}``
 
-    Distinct from :class:`CursorPaginationMeta` (which omits ``limit``) so the
-    sessions list can surface the effective page size without disturbing other
-    cursor-paginated endpoints.
+    Sessions keep this envelope until the RFC 0038 D19 switch retires them; every
+    other cursor-paginated endpoint returns :class:`butlers.api.pagination.Page`.
     """
 
     limit: int
@@ -167,7 +146,6 @@ class ButlerSummary(BaseModel):
     db: str = ""
     description: str | None = None
     modules: list[str] = Field(default_factory=list)
-    schedule_count: int = 0
     sessions_24h: int = 0
     last_session_started_at: datetime | None = None
 
@@ -695,8 +673,6 @@ __all__ = [
     "ConversationStats",
     "ConversationSummary",
     "ConversationUpdateRequest",
-    "CursorPaginatedResponse",
-    "CursorPaginationMeta",
     "DailyActivity",
     "DailyActivityBucket",
     "DailySpend",

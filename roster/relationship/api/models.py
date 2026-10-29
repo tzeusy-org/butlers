@@ -41,7 +41,37 @@ class Label(BaseModel):
     color: str | None = None
 
 
-class ContactInfoEntry(BaseModel):
+class FactReporter(BaseModel):
+    """Available live reporter; unavailable history never fabricates a name."""
+
+    entity_id: UUID | None = None
+    name: str | None = None
+    availability: Literal[
+        "available",
+        "unavailable",
+        "deleted",
+        "forgotten",
+        "merged",
+        "unresolved",
+        "legacy_unknown",
+        "system",
+    ]
+
+
+class FactAttribution(BaseModel):
+    confirmation_status: Literal[
+        "owner_asserted", "owner_confirmed", "legacy_verified", "unconfirmed"
+    ] = "unconfirmed"
+    content_authority: Literal["owner", "owner_device", "third_party", "system", "mixed"] | None = (
+        None
+    )
+    reported_by: FactReporter | None = None
+    confirmed_at: datetime | None = None
+    confirmed_by_entity_id: UUID | None = None
+    confirmation_source: str | None = None
+
+
+class ContactInfoEntry(FactAttribution):
     """A single contact_info row for a contact.
 
     The ``value`` field is set to ``None`` when ``secured=True`` and the
@@ -355,6 +385,32 @@ class OverdueContactsResponse(BaseModel):
     contacts: list[OverdueContact]
     cadence_available: bool
     unmeasurable_count: int
+
+
+class PendingDebriefAttendee(BaseModel):
+    """An attendee frozen into a debrief snapshot (active-posture entities only)."""
+
+    entity_id: str | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class PendingDebrief(BaseModel):
+    """One prompted, unanswered meeting debrief."""
+
+    debrief_id: str
+    number: int | None = None
+    event_title: str | None = None
+    occurrence_start: str
+    prompted_at: str
+    attendees: list[PendingDebriefAttendee]
+
+
+class PendingDebriefsResponse(BaseModel):
+    """Pending debriefs; ``debriefs_available`` is false when the read failed."""
+
+    debriefs: list[PendingDebrief]
+    debriefs_available: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -1126,7 +1182,7 @@ class PromoteEntityRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ContactFact(BaseModel):
+class ContactFact(FactAttribution):
     """One contact-fact triple returned by ``GET /entities/{id}/contacts``.
 
     ``id`` is the fact UUID in ``relationship.entity_facts``.
@@ -1417,7 +1473,7 @@ class DismissQueueResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ActivityEntry(BaseModel):
+class ActivityEntry(FactAttribution):
     """A single entry in the entity activity stream.
 
     The ``src`` field discriminates the origin:
@@ -1483,7 +1539,7 @@ class ActivityResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class EntityFactEntry(BaseModel):
+class EntityFactEntry(FactAttribution):
     """One triple from ``relationship.entity_facts`` for the entity provenance grid.
 
     Returned by ``GET /entities/{id}/facts`` — the Workbench-mode provenance
@@ -1527,23 +1583,6 @@ class EntityFactEntry(BaseModel):
     #: never stored on the row.  Confidence (``conf``) and staleness are separate
     #: axes (lifecycle §"Age").
     staleness_band: str
-
-
-class EntityFactsResponse(BaseModel):
-    """Keyset-paginated response for ``GET /entities/{id}/facts``.
-
-    Keyset (cursor) pagination per the repo convention (CLAUDE.md §"Cursor
-    Pagination"): ordered ``created_at DESC, id DESC``, no ``total`` field.
-
-    - ``items`` — the page of fact rows (active identity rows by default;
-      labeled narrative rows additionally when ``store=all``).
-    - ``next_cursor`` — opaque cursor for the next page (``None`` on last page).
-    - ``has_more`` — True when more rows exist beyond this page.
-    """
-
-    items: list[EntityFactEntry]
-    next_cursor: str | None = None
-    has_more: bool
 
 
 # ---------------------------------------------------------------------------
@@ -1598,7 +1637,7 @@ class ViewMarkResponse(BaseModel):
     marked_at: datetime
 
 
-class DeltaFactEntry(BaseModel):
+class DeltaFactEntry(FactAttribution):
     """One fact that changed since the entity's view mark.
 
     Carries the same provenance shape as the facts-drill rows so the detail page
@@ -1640,7 +1679,7 @@ class DeltaFactsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class CoreDateEntry(BaseModel):
+class CoreDateEntry(FactAttribution):
     """A date-kind fact with its owner-relevant next occurrence.
 
     Server-extracted from the facts API (not client-side string matching).
@@ -1694,7 +1733,7 @@ class CompareRequest(BaseModel):
     entity_b: UUID = Field(..., description="UUID of the second entity to compare.")
 
 
-class CompareFact(BaseModel):
+class CompareFact(FactAttribution):
     """One fact row in a compare block, carrying full provenance.
 
     Used for the per-entity ``identity_facts`` / ``narrative_facts`` blocks and
@@ -1794,3 +1833,18 @@ class DismissPairResponse(BaseModel):
     entity_b: UUID
     outcome: Literal["dismissed"]
     shared_facts: list[CompareFact]
+
+
+class IdentityFactDecisionResponse(BaseModel):
+    fact_id: UUID
+    decision: Literal["adopt", "reject", "confirm"]
+    decided_at: datetime
+    replayed: bool
+
+
+class CandidateFact(ContactFact):
+    validity: Literal["candidate"] = "candidate"
+
+
+class CandidateFactsResponse(BaseModel):
+    facts: list[CandidateFact]

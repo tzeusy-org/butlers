@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -22,7 +23,9 @@ from fastmcp import Client as MCPClient
 from opentelemetry import trace
 from opentelemetry.context import Context as OtelContext
 
+from butlers.conversation_identity import event_conversation_identity
 from butlers.core.dashboard_turns import reconcile_route_recovery
+from butlers.core.model_routing import coerce_complexity_tier
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
     route_inbox_mark_errored,
@@ -63,7 +66,7 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
     """Build request context and pipeline tool args for a buffered inbox ref."""
     channel = ref.source.get("channel", "unknown")
     endpoint_identity = ref.source.get("endpoint_identity", "unknown")
-    external_thread_id = ref.event.get("external_thread_id")
+    external_conversation_id, reply_target_ref = event_conversation_identity(ref.event)
     addressed = bool(ref.source.get("addressed", False))
     sender_identity = ref.sender.get("identity", "unknown")
 
@@ -93,7 +96,9 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         "source_channel": channel,
         "source_endpoint_identity": f"{channel}:{endpoint_identity}",
         "source_sender_identity": source_sender_identity,
-        "source_thread_identity": external_thread_id,
+        "source_thread_identity": reply_target_ref,
+        "external_conversation_id": external_conversation_id,
+        "reply_target_ref": reply_target_ref,
         "trace_context": {},
     }
     if addressed:
@@ -116,7 +121,9 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         "source_endpoint_identity": f"{channel}:{endpoint_identity}",
         "sender_identity": sender_identity,
         "external_event_id": ref.event.get("external_event_id", ""),
-        "external_thread_id": external_thread_id,
+        "external_thread_id": reply_target_ref,
+        "external_conversation_id": external_conversation_id,
+        "reply_target_ref": reply_target_ref,
         "source_tool": "ingest",
         "request_id": ref.request_id,
         "request_context": request_context,
@@ -135,6 +142,23 @@ def build_buffer_pipeline_inputs(ref: Any) -> tuple[dict[str, Any], dict[str, An
         tool_args["attachments"] = ref.attachments
 
     return request_context, tool_args
+
+
+def build_switchboard_buffer(
+    daemon: Any, pool: Any, process_fn: Callable[[Any], Awaitable[None]]
+) -> None:
+    """Create the Switchboard DurableBuffer around an injected message processor.
+
+    The buffer depends only on the pool, the butler's BufferConfig and the
+    processor it is given; it never reads ``daemon.spawner``.
+    """
+    from butlers.core.buffer import DurableBuffer
+
+    daemon._buffer = DurableBuffer(
+        config=daemon.config.buffer,
+        pool=pool,
+        process_fn=process_fn,
+    )
 
 
 def wire_pipelines(daemon: Any, pool: Any) -> None:
@@ -211,6 +235,11 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             detail = result.get("error") if isinstance(result, dict) else None
             raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
 
+    from butlers.core.fact_authority import FactSourceContextRegistry, register_source_registry
+
+    daemon._fact_source_registry = FactSourceContextRegistry(pool)
+    register_source_registry(daemon._fact_source_registry)
+
     pipeline = MessagePipeline(
         switchboard_pool=pool,
         dispatch_fn=daemon.spawner.trigger,
@@ -255,7 +284,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         observability_request_id = (
             opaque_route_ref(ref.request_id) if content_blind_observability else ref.request_id
         )
-        external_thread_id = ref.event.get("external_thread_id")
+        _, reply_target_ref = event_conversation_identity(ref.event)
         _, _buf_tool_args = build_buffer_pipeline_inputs(ref)
 
         # Fire reaction before pipeline processing (telegram_bot only).
@@ -264,7 +293,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
             if callable(react_fn):
                 try:
                     await react_fn(
-                        external_thread_id=external_thread_id,
+                        external_thread_id=reply_target_ref,
                         reaction=REACTION_IN_PROGRESS,
                     )
                 except Exception:
@@ -324,7 +353,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                 terminal_reaction = REACTION_FAILURE if routing_failed else REACTION_SUCCESS
                 try:
                     await react_fn(
-                        external_thread_id=external_thread_id,
+                        external_thread_id=reply_target_ref,
                         reaction=terminal_reaction,
                     )
                 except Exception:
@@ -333,14 +362,7 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
                         observability_request_id,
                     )
 
-    # Create the durable buffer
-    from butlers.core.buffer import DurableBuffer
-
-    daemon._buffer = DurableBuffer(
-        config=daemon.config.buffer,
-        pool=pool,
-        process_fn=_buffer_process,
-    )
+    build_switchboard_buffer(daemon, pool, _buffer_process)
 
     wired_modules: list[str] = []
     for mod in daemon._active_modules:
@@ -391,7 +413,22 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
             opaque_route_ref(row_id) if raw_content_blind_recovery else row_id
         )
         try:
-            parsed = parse_route_envelope(route_envelope)
+            # This private field is written only after the fixed source verifier
+            # accepted the original route. It is never part of the public ABI.
+            public_envelope = dict(route_envelope)
+            frozen_report = public_envelope.pop("_fact_source_report", None)
+            public_envelope.pop("_fact_source_receipt", None)
+            parsed = parse_route_envelope(public_envelope)
+            if frozen_report is not None:
+                from butlers.core.fact_authority import _current_report
+
+                receiver = daemon._fact_receiver_registry
+                recovered_report = await receiver.recover_report(
+                    row_id,
+                    processing_claim_id,
+                    daemon.config.switchboard_url,
+                )
+                _current_report.set(recovered_report)
         except Exception as exc:
             failure_class = type(exc).__name__
             logger.warning(
@@ -430,10 +467,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
         recovered_routing_context["request_context"] = {
             "source_channel": parsed.request_context.source_channel
         }
-        if parsed.request_context.source_sender_entity_id:
-            recovered_routing_context["source_entity_id"] = (
-                parsed.request_context.source_sender_entity_id
-            )
+        sender_entity_id = parsed.request_context.source_sender_entity_id
+        if isinstance(sender_entity_id, str) and sender_entity_id.strip():
+            recovered_routing_context["source_entity_id"] = sender_entity_id.strip()
         if isinstance(parsed.input.context, dict):
             conceptual_message = parsed.input.context.get("conceptual_message")
             if isinstance(conceptual_message, dict):
@@ -467,7 +503,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 request_id=parsed.request_context.request_id,
                                 route_inbox_id=row_id,
                             )
-                        except Exception:
+                        except Exception as exc:
                             logger.exception(
                                 "route_inbox recovery: could not reconcile dashboard "
                                 "predecessor id=%s",
@@ -477,7 +513,7 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                                 raise RouteInboxLeaseLost(
                                     "route inbox processing lease was lost during "
                                     "dashboard recovery reconciliation"
-                                )
+                                ) from exc
                             await route_inbox_mark_errored(
                                 pool,
                                 row_id,
@@ -517,6 +553,46 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                         )
                         return
 
+                    # Match the live route's anchor semantics under the existing
+                    # heartbeat, after any dashboard predecessor reconciliation.
+                    conversation_id: uuid.UUID | None = None
+                    source_channel = parsed.request_context.source_channel
+                    source_thread_identity = parsed.request_context.source_thread_identity
+                    external_conversation_id = parsed.request_context.external_conversation_id
+                    if source_thread_identity or external_conversation_id:
+                        try:
+                            if source_channel == "dashboard":
+                                from butlers.api.conversations import (
+                                    conversation_get_by_id_any_butler,
+                                )
+
+                                existing_conversation = await conversation_get_by_id_any_butler(
+                                    pool, uuid.UUID(source_thread_identity)
+                                )
+                                if existing_conversation is not None:
+                                    conversation_id = existing_conversation["id"]
+                            elif external_conversation_id:
+                                from butlers.api.conversations import (
+                                    conversation_get_or_create_by_thread,
+                                )
+
+                                conversation, _ = await conversation_get_or_create_by_thread(
+                                    pool,
+                                    butler_name=daemon.config.name,
+                                    source_channel=source_channel,
+                                    external_conversation_id=external_conversation_id,
+                                    first_message=parsed.input.prompt,
+                                )
+                                conversation_id = conversation["id"]
+                        except Exception as exc:
+                            logger.debug(
+                                "conversation anchor lookup/create failed for "
+                                "butler=%s source_channel=%s failure_class=%s",
+                                daemon.config.name,
+                                source_channel,
+                                type(exc).__name__,
+                            )
+
                     result = await route_inbox_wait_while_claimed(
                         pool,
                         row_id,
@@ -527,6 +603,9 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                             context=context_text,
                             trigger_source="route",
                             request_id=route_request_id,
+                            complexity=coerce_complexity_tier(
+                                parsed.input.complexity, strict=False
+                            ),
                             # Recovery dispatches replay the original ingest;
                             # request_id is the same UUID7 the switchboard wrote
                             # as public.ingestion_events.id, so persist it as the
@@ -534,6 +613,8 @@ async def recover_route_inbox(daemon: Any, pool: asyncpg.Pool) -> None:
                             # chronicler contact-resolution join (mirrors the
                             # primary route handler in core_tools/_routing.py).
                             ingestion_event_id=route_request_id,
+                            conversation_id=conversation_id,
+                            attachments=parsed.input.attachments,
                             # Recovered dashboard work must rejoin the same durable
                             # turn, otherwise a Stop during a process restart could
                             # not prevent the replayed target runtime from starting.

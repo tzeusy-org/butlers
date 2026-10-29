@@ -50,9 +50,7 @@ const STATE_TOKENS = [
   "--muted-foreground",
 ] as const;
 
-// Keep semantic role values literal. The visual-role guard deliberately
-// rejects dynamically assembled var(...) references outside ButlerMark, even
-// when their eventual property is a semantic role.
+// Keep semantic role values literal so each role's token family stays greppable.
 const LOCAL_CATEGORY_VALUES = [
   "var(--categorical-1)",
   "var(--categorical-2)",
@@ -82,7 +80,7 @@ export const VISUAL_TOKEN_ROLE_REGISTRY = {
   "butler-identity": {
     specRole: "Butler identity",
     resolver: "ButlerMark (private)",
-    tokenFamily: "--category-1..12",
+    tokenFamily: "ButlerMark palette map (no CSS variable)",
     requiredSignal: "letter-mark only",
     slotCount: 12,
     legendRequired: false,

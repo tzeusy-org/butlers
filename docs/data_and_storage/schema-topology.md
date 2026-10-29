@@ -32,6 +32,10 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 - **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable
   summary plus provenance pointers back to the owning butler's schema. It is not a canonical store;
   full recall routes back to the owning schema.
+- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation; core_268 adds set-once `new_object_id` and set-once `result` (checked after the stage-forward rule), a result/stage CHECK and a held-row delete guard):
+  one row per attempt and closed operation kind, with binding/payload digests, stage and result.
+  Only `butler_qa_rw` writes (forced RLS); every runtime role reads. An unresolved row holds its
+  fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
@@ -197,3 +201,31 @@ psql -h localhost -U butlers -d butlers -c \
 - [Migration Patterns](migration-patterns.md) -- How schema-scoped migrations work
 - [State Store](state-store.md) -- The KV JSONB store within each butler schema
 - [Credential Store](credential-store.md) -- Secret storage across schemas
+
+## Relationship report attribution topology
+
+`rel_037` is additive after immutable `rel_036`: it owns fact report/confirmation columns,
+candidate occurrence uniqueness, private approval lineage and exact identity-decision receipts.
+It does not alter the effective-time transition indexes, reserve the held cutover successor,
+add a global grant, or change cross-butler schema isolation. Downgrade refuses classified data
+instead of erasing provenance. The canonical Relationship resolver/writer remain on the
+Relationship runtime role; Switchboard uses their registered MCP interface.
+
+`core_261` separately owns the nullable private `public.dashboard_messages.fact_owner_admission`
+field, because dashboard conversations work without Relationship startup. The actual admitted
+API producer stamps a new user message and binds its normalized accepted content. Old messages
+and core-only installations below this additive revision stay unstamped; retries preserve that
+unknown state. A caller's dashboard label, actor, status or boolean is not this producer witness.
+The shared public-table grants and trusted-host premise remain unchanged; the stamp is not a
+credential or protection against a compromised trusted database actor.
+
+## Dark Switchboard goal ledger
+
+`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions,goal_inbox}`
+for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
+`runtime_config.goal_admission_config` snapshot in each migrated core schema;
+only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
+non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
+backup while denying other runtimes after bootstrap regrants. See
+[goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
+source keys, lock order, policy snapshots and actual verification obligations.

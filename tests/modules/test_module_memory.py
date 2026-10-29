@@ -1053,6 +1053,61 @@ class TestToolDelegation:
             source_schema="test-butler",
         )
 
+        # Actual registered closure: first construction must yield the event loop.
+        # This is a controlled constructor/domain delegate, not provider execution.
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        owner_thread = threading.get_ident()
+        constructor_threads: list[int] = []
+
+        def construct():
+            constructor_threads.append(threading.get_ident())
+            started.set()
+            try:
+                assert release.wait(2), "constructor control was not released"
+                return mod._embedding_engine
+            finally:
+                finished.set()
+
+        writing.memory_store_fact.reset_mock()
+        with patch.object(mod, "_get_embedding_engine", construct):
+            invocation = asyncio.create_task(
+                tools["memory_store_fact"](
+                    subject="user", predicate="likes", content="coffee", entity_id=entity_uuid
+                )
+            )
+            try:
+                assert await asyncio.to_thread(started.wait, 1)
+                assert not invocation.done()
+                assert constructor_threads != [owner_thread]
+                writing.memory_store_fact.assert_not_called()
+            finally:
+                release.set()
+                await invocation
+            writing.memory_store_fact.assert_called_once()
+
+            # Cancellation while acquiring an engine does not call the domain writer.
+            started.clear()
+            release.clear()
+            finished.clear()
+            writing.memory_store_fact.reset_mock()
+            invocation = asyncio.create_task(
+                tools["memory_store_fact"](
+                    subject="user", predicate="likes", content="coffee", entity_id=entity_uuid
+                )
+            )
+            try:
+                assert await asyncio.to_thread(started.wait, 1)
+                invocation.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await invocation
+                writing.memory_store_fact.assert_not_called()
+            finally:
+                release.set()
+                assert await asyncio.to_thread(finished.wait, 1)
+            writing.memory_store_fact.assert_not_called()
+
     @pytest.mark.parametrize(
         ("valid_at", "retention_class"),
         [
@@ -1620,3 +1675,159 @@ class TestRegistryDiscovery:
 
         registry = default_registry()
         assert "memory" in registry.available_modules
+
+
+@pytest.fixture
+def runtime_role_boundary(monkeypatch):
+    """Exercise real Database ownership without a network or invented SQL results."""
+    from butlers.db import Database
+
+    connection = AsyncMock()
+    connection.terminate = MagicMock()
+    connection.fetchval.return_value = True
+    connect = AsyncMock(return_value=connection)
+    pools = []
+
+    async def create_pool(**kwargs):
+        pool = AsyncMock()
+        pool.fetchval.return_value = None
+        pools.append((pool, kwargs))
+        return pool
+
+    monkeypatch.setattr("butlers.db.asyncpg.connect", connect)
+    monkeypatch.setattr("butlers.db.asyncpg.create_pool", AsyncMock(side_effect=create_pool))
+    return Database, connection, connect, pools
+
+
+class TestOwnedRuntimePools:
+    async def test_actual_private_startup_retains_primary_role(
+        self, runtime_role_boundary, monkeypatch
+    ):
+        Database, connection, _, pools = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        await primary.connect()
+        module = MemoryModule()
+        monkeypatch.setattr(module, "_register_default_maintenance_schedules", AsyncMock())
+        try:
+            await module.on_startup(MemoryModuleConfig(memory_schema="chronicler_mem"), primary)
+            assert module._memory_db.role == "butler_chronicler_rw"
+            assert pools[1][1]["server_settings"] == {"search_path": "chronicler_mem,public"}
+            connection.reset_mock()
+            await pools[1][1]["setup"](connection)
+            await pools[1][1]["setup"](connection)
+            assert connection.execute.await_count == 2
+            connection.execute.assert_awaited_with('SET ROLE "butler_chronicler_rw"')
+            assert connection.fetchval.await_count == 2
+            connection.fetchval.assert_awaited_with(
+                "SELECT has_schema_privilege($1, 'USAGE')", "chronicler_mem"
+            )
+            # Same-owner lazy domain pool uses the held role, never a guessed sibling role.
+            await module._get_or_create_chronicler_pool()
+            assert pools[-1][1]["setup"].__self__.role == primary.role
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    @pytest.mark.parametrize("owner", ["chronicler", "relationship"])
+    async def test_same_owner_lazy_pool_and_sibling_refusal(self, runtime_role_boundary, owner):
+        Database, connection, connect, pools = runtime_role_boundary
+        primary = Database("butlers", schema=owner, role=f"butler_{owner}_rw")
+        await primary.connect()
+        module = MemoryModule()
+        module._db = primary
+        own = getattr(module, f"_get_or_create_{owner}_pool")
+        sibling = getattr(
+            module,
+            "_get_or_create_relationship_pool"
+            if owner == "chronicler"
+            else "_get_or_create_chronicler_pool",
+        )
+        try:
+            await own()
+            connection.reset_mock()
+            await pools[-1][1]["setup"](connection)
+            connection.execute.assert_awaited_once_with(f'SET ROLE "butler_{owner}_rw"')
+            count = connect.await_count
+            with pytest.raises(RuntimeError, match="owned schema"):
+                await sibling()
+            assert connect.await_count == count
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    @pytest.mark.parametrize("failure", ["unverified", "missing-role", "wrong-role", "unrelated"])
+    async def test_private_pool_refuses_unproven_owner_before_io(
+        self, runtime_role_boundary, failure
+    ):
+        Database, _, connect, _ = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        if failure != "unverified":
+            await primary.connect()
+        if failure == "missing-role":
+            primary.role = None
+        elif failure == "wrong-role":
+            primary.role = "butler_relationship_rw"
+        module = MemoryModule()
+        module._db = primary
+        module._config = MemoryModuleConfig(
+            memory_schema="other_private" if failure == "unrelated" else "chronicler_mem"
+        )
+        count = connect.await_count
+        try:
+            with pytest.raises(RuntimeError):
+                await module._ensure_memory_schema_pool()
+            assert connect.await_count == count
+            assert module._memory_db is None
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    async def test_private_acl_and_owner_revocation_fail_each_acquire(self, runtime_role_boundary):
+        Database, connection, _, pools = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        await primary.connect()
+        module = MemoryModule()
+        module._db = primary
+        module._config = MemoryModuleConfig(memory_schema="chronicler_mem")
+        try:
+            await module._ensure_memory_schema_pool()
+            setup = pools[-1][1]["setup"]
+            connection.fetchval.return_value = False
+            with pytest.raises(RuntimeError, match="acquisition failed"):
+                await setup(connection)
+            connection.fetchval.return_value = True
+            primary._verified_role = None
+            with pytest.raises(RuntimeError):
+                await setup(connection)
+            primary._verified_role = primary.role
+            # A delivered schema without USAGE must also refuse initial pool publication.
+            await module._memory_db.close()
+            module._memory_db = None
+            connection.fetchval.side_effect = [True, False]
+            count = len(pools)
+            with pytest.raises(RuntimeError, match="acquisition failed"):
+                await module._ensure_memory_schema_pool()
+            assert len(pools) == count
+            assert module._memory_db is None
+        finally:
+            await module.on_shutdown()
+            await primary.close()
+
+    async def test_private_verification_cancel_closes_owned_connection(self, runtime_role_boundary):
+        Database, connection, _, pools = runtime_role_boundary
+        primary = Database("butlers", schema="chronicler", role="butler_chronicler_rw")
+        await primary.connect()
+        module = MemoryModule()
+        module._db = primary
+        module._config = MemoryModuleConfig(memory_schema="chronicler_mem")
+        connection.fetchval.side_effect = [True, asyncio.CancelledError()]
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await module._ensure_memory_schema_pool()
+            connection.terminate.assert_called_once()
+            assert len(pools) == 1
+            assert module._memory_db is None
+            primary.pool.close.assert_not_awaited()
+        finally:
+            await module.on_shutdown()
+            await primary.close()

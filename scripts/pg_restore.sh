@@ -434,6 +434,179 @@ if [[ "$HAS_FLEET_EVIDENCE" == true ]]; then
     END \$\$;" >/dev/null
 fi
 
+# D13 adds a non-public durable proof/receipt interface. The original public
+# audit above remains intact; its successful exit cannot certify this schema.
+# Only a fixed boolean crosses from the dump into the catalog predicate. Read
+# the whole stream so pipefail still detects decompression errors. A legacy
+# dump may lack this schema; a modern dump must never certify its complete loss.
+STEPUP_METADATA=$(gunzip -c "$BACKUP_FILE" | awk '
+  /^CREATE SCHEMA (dashboard_stepup|"dashboard_stepup");/ ||
+  /^CREATE (TABLE|FUNCTION) (dashboard_stepup|"dashboard_stepup")\./ { required=1 }
+  /^COPY dashboard_stepup\.bindings \(.*\) FROM stdin;$/ { copies++; copying=1; next }
+  copying && $0 == "\\." { copying=0; next }
+  copying { rows++ }
+  END { print (required ? "true" : "false"), copies+0, rows+0 }')
+read -r STEPUP_EXPECTED STEPUP_COPY_COUNT STEPUP_ROW_COUNT <<< "$STEPUP_METADATA"
+# Missing/partial or
+# laundered ownership refuses promotion, including when psql continued after a
+# failed ALTER OWNER during an otherwise populated restore.
+STEPUP_INTACT=$(PGPASSWORD="$PG_PASSWORD" psql \
+  --host="$PG_HOST" --port="$PG_PORT" --username="$PG_USER" \
+  --dbname="$TARGET_DB" --no-password --no-align --tuples-only \
+  --set=ON_ERROR_STOP=1 --quiet -c "
+DO \$stepup_stage\$
+DECLARE revision_schema text; modern boolean; restored_rows bigint;
+BEGIN
+ IF to_regnamespace('dashboard_stepup') IS NULL THEN
+  IF $STEPUP_EXPECTED THEN
+   RAISE EXCEPTION 'required dashboard step-up schema missing';
+  END IF;
+  FOR revision_schema IN
+   SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE c.relname='alembic_version' AND c.relkind='r'
+  LOOP
+   EXECUTE format('SELECT EXISTS(SELECT FROM %I.alembic_version WHERE CASE
+     WHEN version_num ~ ''^core_[0-9]+$'' THEN
+      substring(version_num FROM 6)::numeric >= 277 ELSE false END)',revision_schema)
+    INTO modern;
+   IF modern THEN RAISE EXCEPTION 'recorded dashboard step-up schema missing'; END IF;
+  END LOOP;
+ END IF;
+ IF $STEPUP_EXPECTED THEN
+  IF $STEPUP_COPY_COUNT<>1 OR to_regclass('dashboard_stepup.bindings') IS NULL THEN
+   RAISE EXCEPTION 'required dashboard step-up receipt data missing';
+  END IF;
+  EXECUTE 'SELECT count(*) FROM dashboard_stepup.bindings' INTO restored_rows;
+  IF restored_rows<>$STEPUP_ROW_COUNT THEN
+   RAISE EXCEPTION 'dashboard step-up receipt population differs from dump';
+  END IF;
+ END IF;
+END \$stepup_stage\$;
+SELECT CASE WHEN to_regnamespace('dashboard_stepup') IS NULL THEN NOT $STEPUP_EXPECTED ELSE
+ EXISTS(SELECT FROM pg_namespace n JOIN pg_roles boot ON boot.oid=n.nspowner
+   WHERE n.nspname='dashboard_stepup' AND boot.rolsuper
+    AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-stepup:core_277'
+    AND EXISTS(SELECT FROM pg_class c JOIN pg_roles own ON own.oid=c.relowner
+      WHERE c.relnamespace=n.oid AND c.relname='bindings' AND c.relkind='r'
+       AND own.rolname='dashboard_stepup_owner'
+       AND NOT(own.rolcanlogin OR own.rolsuper OR own.rolcreaterole OR own.rolcreatedb
+        OR own.rolreplication OR own.rolbypassrls)
+       AND NOT EXISTS(SELECT FROM pg_auth_members WHERE roleid=own.oid OR member=own.oid)
+       AND NOT EXISTS(SELECT FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+        WHERE a.grantee<>own.oid AND (a.grantee=0 OR a.privilege_type<>'SELECT')))
+    AND 3=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid
+      AND p.proname IN('install_interface','finalize_interface','deactivate_interface')
+      AND p.proowner=boot.oid AND p.pronargs=0 AND p.prosecdef
+      AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[])
+    AND 2=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
+      WHERE p.pronamespace=n.oid AND own.rolname='dashboard_stepup_owner' AND p.prosecdef
+       AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+       AND ((p.proname='ceremony' AND p.proargtypes='25 3802'::oidvector)
+        OR (p.proname='consume' AND p.proargtypes='25 25 25 25 25 25 25 3802'::oidvector)))
+    AND NOT EXISTS(SELECT FROM pg_proc p
+      CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+      WHERE p.pronamespace=n.oid AND a.grantee=0)) END")
+if [[ "$STEPUP_INTACT" != "t" ]]; then
+  echo "[restore] SECURITY FAILURE: dashboard step-up ownership/ACL is incomplete; do NOT promote." >&2
+  exit 1
+fi
+
+# Ordinary owner-creation receipts and the shared owner clause store must not
+# disappear from a modern dump. Export only fixed presence/population counts.
+ATTENTION_METADATA=$(gunzip -c "$BACKUP_FILE" | awk '
+ /^CREATE SCHEMA (dashboard_attention|"dashboard_attention");/ ||
+ /^CREATE (TABLE|FUNCTION) (dashboard_attention|"dashboard_attention")\./ { required=1 }
+ /^COPY (dashboard_attention\.(tickets|stamps|candidate_causes|final_claims)|public\.break_through_clauses) \(.*\) FROM stdin;$/ {
+  key=$2; copies[key]++; copying=key; next
+ }
+ copying && $0 == "\\." { copying=""; next }
+ copying { rows[copying]++ }
+ END { print (required ? "true" : "false"),
+  copies["dashboard_attention.tickets"]+0,rows["dashboard_attention.tickets"]+0,
+  copies["dashboard_attention.stamps"]+0,rows["dashboard_attention.stamps"]+0,
+  copies["dashboard_attention.candidate_causes"]+0,rows["dashboard_attention.candidate_causes"]+0,
+  copies["dashboard_attention.final_claims"]+0,rows["dashboard_attention.final_claims"]+0,
+  copies["public.break_through_clauses"]+0,rows["public.break_through_clauses"]+0 }')
+read -r ATTENTION_EXPECTED ATC ATR ASC ASR ACC ACR AFC AFR ABC ABR <<< "$ATTENTION_METADATA"
+ATTENTION_INTACT=$(PGPASSWORD="$PG_PASSWORD" psql \
+ --host="$PG_HOST" --port="$PG_PORT" --username="$PG_USER" --dbname="$TARGET_DB" \
+ --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 --quiet -c "
+DO \$attention_stage\$
+DECLARE ns text; modern boolean; item record; actual bigint;
+BEGIN
+ IF to_regnamespace('dashboard_attention') IS NULL THEN
+  IF $ATTENTION_EXPECTED THEN RAISE EXCEPTION 'required owner attention schema missing'; END IF;
+  FOR ns IN SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+   WHERE c.relname='alembic_version' AND c.relkind='r' LOOP
+   EXECUTE format('SELECT EXISTS(SELECT FROM %I.alembic_version WHERE CASE WHEN version_num ~ ''^core_[0-9]+$'' THEN substring(version_num FROM 6)::numeric>=278 ELSE false END)',ns) INTO modern;
+   IF modern THEN RAISE EXCEPTION 'recorded owner attention schema missing'; END IF;
+  END LOOP;
+ ELSIF $ATTENTION_EXPECTED THEN
+  FOR item IN SELECT * FROM (VALUES
+   ('dashboard_attention.tickets',$ATC,$ATR),('dashboard_attention.stamps',$ASC,$ASR),
+   ('dashboard_attention.candidate_causes',$ACC,$ACR),('dashboard_attention.final_claims',$AFC,$AFR),('public.break_through_clauses',$ABC,$ABR)
+  ) AS t(relation,copies,rows) LOOP
+   IF item.copies<>1 OR to_regclass(item.relation) IS NULL THEN
+    RAISE EXCEPTION 'owner attention dump population missing'; END IF;
+   EXECUTE format('SELECT count(*) FROM %s',item.relation::regclass) INTO actual;
+   IF actual<>item.rows THEN RAISE EXCEPTION 'owner attention dump population differs'; END IF;
+  END LOOP;
+ END IF;
+END \$attention_stage\$;
+CREATE FUNCTION pg_temp.owner_attention_intact(expected boolean)
+RETURNS boolean LANGUAGE plpgsql SECURITY INVOKER
+SET search_path=pg_catalog,pg_temp AS \$attention_catalog\$
+BEGIN
+ IF to_regnamespace('dashboard_attention') IS NULL THEN
+  RETURN NOT expected;
+ END IF;
+ IF to_regclass('dashboard_attention.bootstrap_configuration') IS NULL THEN
+  RETURN false;
+ END IF;
+ RETURN
+ EXISTS(SELECT FROM pg_namespace n JOIN pg_roles boot ON boot.oid=n.nspowner
+  WHERE n.nspname='dashboard_attention' AND boot.rolsuper
+   AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-attention:core_278'
+   AND 3=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid AND p.proowner=boot.oid
+    AND p.proname IN('install_interface','finalize_interface','deactivate_interface')
+    AND p.pronargs=0 AND p.prorettype='void'::regtype AND p.prosecdef AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[])
+   AND 10=(SELECT count(*) FROM pg_proc p WHERE p.pronamespace=n.oid)
+   AND 7=(SELECT count(*) FROM pg_proc p JOIN pg_roles own ON own.oid=p.proowner
+    WHERE p.pronamespace=n.oid AND own.rolname='dashboard_attention_owner' AND p.prosecdef AND p.provolatile='v'
+     AND p.proconfig=ARRAY['search_path=pg_catalog, pg_temp']::text[]
+     AND (p.oid,p.prorettype) IN (VALUES
+      (to_regprocedure('dashboard_attention.api(text,jsonb)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.consume(text,text,text,text,text,text,uuid)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.definition_digest(text,uuid)'),'text'::regtype),
+      (to_regprocedure('dashboard_attention.evaluate(jsonb)'),'jsonb'::regtype),
+      (to_regprocedure('dashboard_attention.final_claim(text,uuid,timestamp with time zone)'),'boolean'::regtype),
+      (to_regprocedure('dashboard_attention.remember(uuid,jsonb)'),'boolean'::regtype),
+      (to_regprocedure('dashboard_attention.candidate_origin(uuid)'),'jsonb'::regtype)))
+   AND 5=(SELECT count(*) FROM pg_class c JOIN pg_roles own ON own.oid=c.relowner
+    WHERE c.oid IN(to_regclass('dashboard_attention.tickets'),to_regclass('dashboard_attention.stamps'),
+     to_regclass('dashboard_attention.candidate_causes'),to_regclass('dashboard_attention.final_claims'),to_regclass('public.break_through_clauses'))
+     AND c.relkind='r' AND own.rolname='dashboard_attention_owner'
+     AND (c.oid<>to_regclass('dashboard_attention.final_claims') OR
+      (SELECT string_agg(attname,',' ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid=c.oid AND attnum>0 AND NOT attisdropped)='namespace,task_id,original_next_run_at,definition_digest,revoked')
+     AND NOT(own.rolcanlogin OR own.rolinherit OR own.rolsuper OR own.rolcreaterole OR own.rolcreatedb OR own.rolreplication OR own.rolbypassrls)
+     AND NOT EXISTS(SELECT FROM pg_auth_members WHERE roleid=own.oid OR member=own.oid)
+     AND NOT EXISTS(SELECT FROM aclexplode(COALESCE(c.relacl,acldefault('r',c.relowner))) a
+      WHERE a.grantee<>own.oid AND (a.grantee IS DISTINCT FROM
+       (SELECT migration_role::text::regrole::oid FROM dashboard_attention.bootstrap_configuration WHERE singleton)
+       OR a.privilege_type<>'SELECT' OR a.is_grantable))
+     AND NOT EXISTS(SELECT FROM pg_attribute att CROSS JOIN LATERAL aclexplode(att.attacl) a
+      WHERE att.attrelid=c.oid AND att.attnum>0 AND a.grantee<>own.oid))
+   AND NOT EXISTS(SELECT FROM pg_proc p CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) a
+    WHERE p.pronamespace=n.oid AND a.grantee=0));
+END
+\$attention_catalog\$;
+SELECT pg_temp.owner_attention_intact($ATTENTION_EXPECTED)")
+if [[ "$ATTENTION_INTACT" != "t" ]]; then
+ echo "[restore] SECURITY FAILURE: owner attention interface is incomplete; do NOT promote." >&2
+ exit 1
+fi
+
 echo "[restore] done — '${TARGET_DB}' is populated"
 echo ""
 echo "Next step: verify integrity with:"

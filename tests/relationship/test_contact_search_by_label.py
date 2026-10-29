@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.testing.records import Record
 from butlers.tools.relationship.labels import contact_search_by_label
 
 pytestmark = pytest.mark.unit
@@ -31,19 +32,11 @@ _EID2 = uuid.uuid4()
 
 
 # ---------------------------------------------------------------------------
-# Fake row: a dict subclass that mimics asyncpg Record attribute access
+# Domain row builders
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-
-def _contact_row(**extra: Any) -> _Row:
+def _contact_row(**extra: Any) -> Record:
     """Minimal contact row as returned by the contact-anchored branch."""
     base: dict[str, Any] = {
         "id": _CID,
@@ -58,10 +51,10 @@ def _contact_row(**extra: Any) -> _Row:
         "canonical_name": "Alice Smith",
     }
     base.update(extra)
-    return _Row(base)
+    return Record(base)
 
 
-def _entity_row(**extra: Any) -> _Row:
+def _entity_row(**extra: Any) -> Record:
     """Minimal entity-anchored row as returned by the entity-anchored branch."""
     base: dict[str, Any] = {
         "id": None,
@@ -69,7 +62,7 @@ def _entity_row(**extra: Any) -> _Row:
         "name": "Bob Entity",
     }
     base.update(extra)
-    return _Row(base)
+    return Record(base)
 
 
 def _make_pool(*, contact_rows: list | None = None, entity_rows: list | None = None) -> Any:

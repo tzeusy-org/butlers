@@ -57,6 +57,18 @@ still contains the baseline's characters and reads as preserved. Clause matching
 is also a heuristic (see COVERAGE_THRESHOLD / CONTIGUITY_THRESHOLD), so treat a
 green run as "nothing obviously deleted", not as proof the block was rebuilt.
 
+Known limitation (bu-flpugx): coverage is a character fraction, so a short dropped item
+inside a long clause still clears COVERAGE_THRESHOLD. Dropping `page_context` and
+`captured_at` from the 15 backticked field names of dashboard-conversations "each entry
+includes: ..." (PR #4654) scored 0.858 and counted as carried forward. A rule that every
+backticked token of a baseline clause must survive was measured and NOT adopted: on the
+active changes it added 48 findings (19 even when a clause that gains a new backticked
+token is tolerated), and spot checks showed false positives (a token reworded or moved
+into a neighbouring clause, e.g. `enabled_sources` kept inside
+`[modules.qa].enabled_sources`; `schedule:chronicler_day_close` restated as
+`chronicler_day_close`). Reviewers must therefore read the carried-forward long list
+clauses of a MODIFIED block themselves; a green run does not vouch for them.
+
 Usage:
   python3 scripts/check_spec_overwrites.py                    # gate (ratchet)
   python3 scripts/check_spec_overwrites.py --update-baseline  # freeze current state

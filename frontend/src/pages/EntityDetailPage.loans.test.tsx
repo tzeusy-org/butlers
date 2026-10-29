@@ -18,6 +18,8 @@ import { useEntity } from "@/hooks/use-memory";
 import { useEntityLoans } from "@/hooks/use-entities";
 import type { EntityDetail, EntityLoan } from "@/api/types";
 
+const RealNumberFormat = Intl.NumberFormat;
+
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
   return {
@@ -156,6 +158,11 @@ function renderPage() {
 }
 
 beforeEach(() => {
+  // Resolve only the unspecified browser locale. Keep real ICU currency
+  // formatting and the component's options so cents conversion stays exercised.
+  vi.spyOn(Intl, "NumberFormat").mockImplementation((locales, options) =>
+    new RealNumberFormat(locales ?? "en-US", options),
+  );
   vi.mocked(useSearchParams).mockReturnValue([
     new URLSearchParams("mode=editorial"),
     vi.fn(),
@@ -169,20 +176,26 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
 describe("LoansPanel — amount formatting", () => {
   it("renders amount_cents as real currency, not raw cents", () => {
     vi.mocked(useEntityLoans).mockReturnValue({
-      data: [makeLoan({ amount_cents: "15000", currency: "USD" })],
+      data: [
+        makeLoan({ amount_cents: "15000", currency: "USD" }),
+        makeLoan({ id: "loan-2", amount_cents: "15023", currency: "USD" }),
+      ],
       isLoading: false,
     } as unknown as ReturnType<typeof useEntityLoans>);
 
     renderPage();
 
     expect(screen.getByText("$150.00")).toBeTruthy();
+    expect(screen.getByText("$150.23")).toBeTruthy();
     expect(screen.queryByText("15000")).toBeNull();
+    expect(screen.queryByText("15023")).toBeNull();
     expect(screen.queryByText(/USD 15000/)).toBeNull();
   });
 
@@ -195,5 +208,6 @@ describe("LoansPanel — amount formatting", () => {
     renderPage();
 
     expect(screen.getByText("IOU, amount TBD")).toBeTruthy();
+    expect(screen.queryByText(/\$/)).toBeNull();
   });
 });

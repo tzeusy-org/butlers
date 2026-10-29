@@ -47,10 +47,11 @@ import time
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.connectors.telegram_user_client_consent import (
     is_account_wide_ingestion_consent_granted,
     load_account_wide_ingestion_consent,
@@ -67,13 +68,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/telegram", tags=["telegram"])
 
 # ---------------------------------------------------------------------------
-# Dependency stub (wired at startup via wire_db_dependencies)
+# Shared database dependency
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -137,13 +133,13 @@ def _get_pool(db: DatabaseManager):
     """Resolve the shared or first available pool."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         butler_names = list(db.butler_names)
         if not butler_names:
             raise HTTPException(
                 status_code=503,
                 detail="No database pool available.",
-            )
+            ) from exc
         return db.pool(butler_names[0])
 
 
@@ -232,19 +228,20 @@ async def _persist_verified_telegram_session(
 @router.post("/session/send-code", response_model=SendCodeResponse)
 async def send_code(
     req: SendCodeRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SendCodeResponse:
     """Start Telegram auth: send OTP code to the user's phone."""
     try:
         from telethon import TelegramClient
         from telethon.sessions import StringSession
-    except ImportError:
+    except ImportError as exc:
         raise HTTPException(
             status_code=503,
             detail=(
                 "Telethon is not installed on the server. Install with: uv pip install telethon"
             ),
-        )
+        ) from exc
 
     pool = _get_pool(db)
     store = CredentialStore(pool)
@@ -262,7 +259,7 @@ async def send_code(
         raise HTTPException(
             status_code=400,
             detail=f"Failed to send code: {exc}",
-        )
+        ) from exc
     finally:
         await client.disconnect()
 
@@ -289,15 +286,16 @@ async def send_code(
 @router.post("/session/verify", response_model=VerifyCodeResponse)
 async def verify_code(
     req: VerifyCodeRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> VerifyCodeResponse:
     """Complete Telegram auth: verify OTP code and persist session."""
     try:
         from telethon import TelegramClient
         from telethon.errors import SessionPasswordNeededError
         from telethon.sessions import StringSession
-    except ImportError:
-        raise HTTPException(status_code=503, detail="Telethon is not installed.")
+    except ImportError as exc:
+        raise HTTPException(status_code=503, detail="Telethon is not installed.") from exc
 
     pool = _get_pool(db)
     store = CredentialStore(pool)
@@ -410,7 +408,7 @@ async def verify_code(
         raise HTTPException(
             status_code=400,
             detail=f"Sign-in failed: {exc}",
-        )
+        ) from exc
     finally:
         try:
             await client.disconnect()
@@ -420,7 +418,8 @@ async def verify_code(
 
 @router.get("/session/status", response_model=SessionStatusResponse)
 async def session_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> SessionStatusResponse:
     """Check whether Telegram user credentials are configured on the owner entity."""
     pool = _get_pool(db)

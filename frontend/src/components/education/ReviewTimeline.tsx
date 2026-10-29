@@ -108,7 +108,8 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
   // useQueries so the query count tracks the live map list without violating
   // React's rules of hooks — no arbitrary cap, no map silently dropped.
   const reviewResults = useAllPendingReviews(mapIds);
-  const reviewsError = reviewResults.some((result) => result.isError);
+  const failedMaps = mindMaps.filter((_, index) => reviewResults[index]?.isError);
+  const incomplete = mindMapsError || reviewResults.some((result) => result.isError || (!result.isSuccess && !result.data));
 
   // Owner-configured timezone anchors the Today / This-week boundaries so
   // bucketing is host-timezone independent (bu-fhsph).
@@ -173,21 +174,16 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
     }
   }, [selectedKey]);
 
-  if (mindMapsError || reviewsError) {
-    return (
-      <Section>
-        <SectionContent className="flex h-48 items-center justify-center">
-          <SourceDegradedNote
-            label="Review schedule"
-            detail="unavailable"
-            testId="review-timeline-degraded"
-          />
-        </SectionContent>
-      </Section>
-    );
-  }
+  const degraded = (
+    <>
+      {mindMapsError && <SourceDegradedNote label="Curriculum list" detail="could not be reached" />}
+      {failedMaps.map((map) => (
+        <SourceDegradedNote key={map.id} label={map.title} detail="review schedule could not be reached" testId="review-timeline-degraded" />
+      ))}
+    </>
+  );
 
-  if (allEntries.length === 0) {
+  if (allEntries.length === 0 && !incomplete) {
     return (
       <Section>
         <SectionContent className="flex h-48 items-center justify-center text-muted-foreground">
@@ -199,6 +195,7 @@ export default function ReviewTimeline({ onSelectNode }: ReviewTimelineProps) {
 
   return (
     <div className="space-y-4">
+      {degraded}
       {groups.map((group) => (
         <Section key={group.label}>
           <SectionHeader className="pb-2">

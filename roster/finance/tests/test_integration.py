@@ -31,151 +31,39 @@ pytestmark = [
     pytest.mark.skipif(not _docker_available, reason="Docker not available"),
 ]
 
-# ---------------------------------------------------------------------------
-# Schema DDL (inline so each test gets a clean, isolated database)
-# ---------------------------------------------------------------------------
 
-_DDL_ACCOUNTS = """
-CREATE TABLE IF NOT EXISTS accounts (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    institution TEXT NOT NULL,
-    type        TEXT NOT NULL
-                    CHECK (type IN ('checking', 'savings', 'credit', 'investment')),
-    name        TEXT,
-    last_four   CHAR(4),
-    currency    CHAR(3) NOT NULL DEFAULT 'USD',
-    metadata    JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
+# Actual migrations finish synchronously before the async native pool starts.
+@pytest.fixture
+def migrated_db_url(postgres_container):
+    from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
-_DDL_TRANSACTIONS = """
-CREATE TABLE IF NOT EXISTS transactions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-    source_message_id TEXT,
-    posted_at         TIMESTAMPTZ NOT NULL,
-    merchant          TEXT NOT NULL,
-    description       TEXT,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    category          TEXT NOT NULL,
-    payment_method    TEXT,
-    receipt_url       TEXT,
-    external_ref      TEXT,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_DDL_TRANSACTIONS_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_transactions_posted_at ON transactions (posted_at DESC)",
-    "CREATE INDEX IF NOT EXISTS idx_transactions_merchant ON transactions (merchant)",
-    "CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions (category)",
-    "CREATE INDEX IF NOT EXISTS idx_transactions_source_message_id"
-    " ON transactions (source_message_id)",
-    """CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe
-        ON transactions (source_message_id, merchant, amount, posted_at)
-        WHERE source_message_id IS NOT NULL""",
-]
-
-_DDL_SUBSCRIPTIONS = """
-CREATE TABLE IF NOT EXISTS subscriptions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    service           TEXT NOT NULL,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    frequency         TEXT NOT NULL
-                          CHECK (frequency IN (
-                              'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                          )),
-    next_renewal      DATE NOT NULL,
-    status            TEXT NOT NULL
-                          CHECK (status IN ('active', 'cancelled', 'paused')),
-    auto_renew        BOOLEAN NOT NULL DEFAULT true,
-    payment_method    TEXT,
-    account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
-    source_message_id TEXT,
-    cancellation_url    TEXT,
-    notice_period_days  INTEGER
-                            CHECK (notice_period_days IS NULL OR notice_period_days >= 0),
-    cancel_by           DATE,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
-_DDL_BILLS = """
-CREATE TABLE IF NOT EXISTS bills (
-    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    payee                  TEXT NOT NULL,
-    amount                 NUMERIC(14, 2) NOT NULL,
-    currency               CHAR(3) NOT NULL,
-    due_date               DATE NOT NULL,
-    frequency              TEXT NOT NULL
-                               CHECK (frequency IN (
-                                   'one_time', 'weekly', 'monthly',
-                                   'quarterly', 'yearly', 'custom'
-                               )),
-    status                 TEXT NOT NULL
-                               CHECK (status IN ('pending', 'paid', 'overdue')),
-    payment_method         TEXT,
-    account_id             UUID REFERENCES accounts(id) ON DELETE SET NULL,
-    source_message_id      TEXT,
-    statement_period_start DATE,
-    statement_period_end   DATE,
-    paid_at                TIMESTAMPTZ,
-    metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
-    autopay                BOOLEAN NOT NULL DEFAULT false,
-    predicted              BOOLEAN NOT NULL DEFAULT false,
-    payee_key              TEXT,
-    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT bills_zero_amount_not_overdue
-        CHECK (NOT (amount = 0 AND status = 'overdue'))
-)
-"""
-
-
-async def _provision_all_tables(pool) -> None:
-    """Create all finance tables needed for cross-tool integration tests."""
-    await pool.execute(_DDL_ACCOUNTS)
-    await pool.execute(_DDL_TRANSACTIONS)
-    for idx_sql in _DDL_TRANSACTIONS_INDEXES:
-        await pool.execute(idx_sql)
-    await pool.execute(_DDL_SUBSCRIPTIONS)
-    await pool.execute(_DDL_BILLS)
-
-
-# ---------------------------------------------------------------------------
-# Shared fixture: full schema
-# ---------------------------------------------------------------------------
+    return create_migrated_test_db(
+        postgres_container, migration_db_name(), chains=["core", "finance"]
+    )
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Provision a fresh database with all finance tables."""
-    async with provisioned_postgres_pool() as p:
-        await _provision_all_tables(p)
+async def pool(migrated_db_url):
+    import asyncpg
+
+    from butlers.db import register_jsonb_codec
+
+    p = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
+        await p.executemany(
+            "INSERT INTO categories(name,display_name) VALUES($1,$2) ON CONFLICT(name) DO NOTHING",
+            [(name, name) for name in ("banking", "misc", "refunds", "rent")],
+        )
         yield p
-        # track_bill() schedules a fire-and-forget SPO-mirror write via
-        # asyncio.create_task (bills._background_tasks). This DDL doesn't
-        # provision public.facts/predicate_registry, so that write always
-        # fails -- but it still round-trips a real query first. If it is
-        # still in flight when provisioned_postgres_pool's `finally: await
-        # db.close()` runs after this fixture returns, the query races pool
-        # teardown and can surface as pool-closed/CancelledError instead of
-        # the swallowed UndefinedTableError (bu-1qt3r). Drain before yielding
-        # control back so the mirror always finishes against a live pool.
+    finally:
         from butlers.tools.finance import bills as _bills_module
 
         pending = [t for t in _bills_module._background_tasks if not t.done()]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+        await p.close()
 
 
 # ---------------------------------------------------------------------------
@@ -517,9 +405,12 @@ class TestSubscriptionAndTransactionWorkflow:
             next_renewal=today + timedelta(days=30),
         )
 
-        # Price change upsert
-        sub_v2 = await track_subscription(
+        # An authenticated owner confirms the new baseline through the registered tool.
+        from roster.finance.tests.test_tools import _registered_subscription_write
+
+        sub_v2 = await _registered_subscription_write(
             pool=pool,
+            owner=True,
             service="Spotify",
             amount=11.99,
             currency="USD",
@@ -1188,7 +1079,7 @@ class TestSchemaValidation:
             "idx_transactions_merchant",
             "idx_transactions_category",
             "idx_transactions_source_message_id",
-            "uq_transactions_dedupe",
+            "uq_txn_source_dedupe",
         }
         for idx in expected_indexes:
             assert idx in index_names, f"Missing index: {idx}"

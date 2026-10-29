@@ -98,6 +98,7 @@ async def test_invoke():
             env={"GOOGLE_API_KEY": "gk-test"},
         )
     assert result_text == "Task done."
+    assert mock_sub.call_args.kwargs["env"]["GOOGLE_API_KEY"] == "gk-test"
     cmd = mock_sub.call_args[0]
     assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
 
@@ -115,10 +116,11 @@ async def test_invoke():
         ]
     )
     mock_proc.communicate = AsyncMock(return_value=(output_lines.encode(), b""))
-    with patch(_EXEC, return_value=mock_proc):
+    with patch(_EXEC, return_value=mock_proc) as empty_sub:
         result_text2, tool_calls, _ = await adapter.invoke(
             prompt="use tools", system_prompt="", mcp_servers={}, env={}
         )
+    assert empty_sub.call_args.kwargs["env"] == {}
     assert (
         result_text2 == "Complete" and len(tool_calls) == 1 and tool_calls[0]["name"] == "state_get"
     )
@@ -176,3 +178,21 @@ async def test_invoke_nonzero_exit_records_process_info() -> None:
     assert info["exit_code"] == 1
     assert info["runtime_type"] == "gemini"
     assert "auth error" in info["stderr"]
+
+
+def test_build_config_file_carries_the_invocation_header(tmp_path: Path):
+    """The Spawner's per-invocation binding header survives into gemini_mcp.json (bu-m2zcah)."""
+    from butlers.core.fact_authority import INVOCATION_HEADER
+
+    config_path = GeminiAdapter().build_config_file(
+        mcp_servers={
+            "my-butler": {
+                "url": "http://localhost:9100/mcp",
+                "headers": {INVOCATION_HEADER: "synthetic-binding"},
+            }
+        },
+        tmp_dir=tmp_path,
+    )
+
+    entry = json.loads(config_path.read_text())["mcpServers"]["my-butler"]
+    assert entry["headers"] == {"X-Butlers-Fact-Invocation": "synthetic-binding"}

@@ -75,7 +75,7 @@ job_name = "eligibility_sweep"
 # (bu-ep4ks.9 slice 5). Ticks every 30 minutes across a 06:15-11:45 UTC
 # window instead of a single fixed 08:00 UTC slot: delivery_cycle's
 # daily_hold_mode=True holds the digest until the owner is first not
-# suppressed by dnd/meeting/sleeping/quiet_hours, force-delivers past the
+# suppressed by dnd/focused/meeting/sleeping/quiet_hours, force-delivers past the
 # hard fallback deadline (11:00 UTC — the 11:15/11:45 ticks in this window
 # guarantee at least one attempt after it), and defers the whole digest on
 # a travel day. Idempotent across ticks: once a tick delivers, candidates
@@ -85,6 +85,7 @@ job_name = "eligibility_sweep"
 [[butler.schedule]]
 name = "insight-delivery-cycle"
 cron = "15,45 6-11 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
 
@@ -112,6 +113,7 @@ job_name = "insight_urgent_subcycle"
 [[butler.schedule]]
 name = "commitment-escalation"
 cron = "40 5 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "commitment_escalation"
 
@@ -119,6 +121,7 @@ job_name = "commitment_escalation"
 [[butler.schedule]]
 name = "spend-rule-savings"
 cron = "15 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "spend_rule_savings"
 
@@ -134,26 +137,15 @@ cron = "50 * * * *"
 dispatch_mode = "job"
 job_name = "rule_promotion_trigger"
 
-# Decision-review digest (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk") —
-# weekly digest of open owner-decision beads ("N decisions waiting, oldest
-# Xd"), Monday 09:00 UTC. Reads the beads JSONL export bind-mounted into this
-# container (see docker-compose.yml + butlers.jobs.decision_review's module
-# docstring for why: no butler daemon has a live path to the Dolt/bd server).
+# Dropped-known watch (bu-q7vx1q.88.2) — opens one standing owner condition per
+# (filter_reason, sender) episode of drops from known contacts, every 15 minutes
+# (the Gmail known-contact refresh horizon). Does nothing while classification
+# is unknown.
 [[butler.schedule]]
-name = "decision-review-digest"
-cron = "0 9 * * 1"
+name = "dropped-known-watch"
+cron = "*/15 * * * *"
 dispatch_mode = "job"
-job_name = "decision_review_digest"
-
-# P1/deploy decision-block age escalation (bu-ckkpz.4) — every 6h, escalates
-# once (via the same notify/attention-ledger path, debounced through
-# public.audit_log) when an open decision bead has blocked a P1 bug or a
-# deploy-marked bead for more than 48h.
-[[butler.schedule]]
-name = "decision-escalation-check"
-cron = "0 */6 * * *"
-dispatch_mode = "job"
-job_name = "decision_escalation_check"
+job_name = "dropped_known_watch"
 
 # Domain-event-bus delivery reconciliation sweep (bu-1yw6d, PR #3585 review
 # follow-up) — re-drives pending/failed public.domain_event_deliveries rows
@@ -175,5 +167,8 @@ job_name = "domain_event_reconciliation_sweep"
 [[butler.schedule]]
 name = "fleet-case-lapse-sweep"
 cron = "10 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.

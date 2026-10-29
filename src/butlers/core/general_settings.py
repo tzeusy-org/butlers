@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import asyncpg
 
-from butlers.core.state import state_get, state_set
+from butlers.core.state import decode_jsonb, state_set
 
 logger = logging.getLogger(__name__)
 
@@ -172,8 +172,17 @@ def _normalize_stored_settings(stored: object) -> StoredGeneralSettings:
 
 
 async def load_general_settings(pool: asyncpg.Pool) -> GeneralSettings:
-    """Load general settings from the shared state table, defaulting safely."""
-    stored = await state_get(pool, GENERAL_SETTINGS_STATE_KEY)
+    """Load general settings from ``public.state``, defaulting safely.
+
+    The read is schema-qualified: a butler pool's ``search_path`` puts the butler's own
+    ``state`` table ahead of ``public``, so an unqualified read there would miss the owner's
+    settings and silently fall back to the UTC defaults (bu-ko02so).
+    """
+    raw = await pool.fetchval(
+        "SELECT value FROM public.state WHERE key = $1",
+        GENERAL_SETTINGS_STATE_KEY,
+    )
+    stored = decode_jsonb(raw) if raw is not None else None
     normalized = _normalize_stored_settings(stored)
     return {
         "timezone": normalized["timezone"],
@@ -208,6 +217,28 @@ async def save_general_settings(
     }
     await state_set(pool, GENERAL_SETTINGS_STATE_KEY, normalized)
     return await load_general_settings(pool)
+
+
+async def load_configured_general_timezone(pool: asyncpg.Pool) -> str | None:
+    """Return the owner's saved general timezone name, or ``None`` when unset.
+
+    Reads ``public.state`` explicitly: ``settings.general`` lives in the shared table, but a
+    butler pool's ``search_path`` puts the butler's own ``state`` table first, so the
+    unqualified read in :func:`butlers.core.state.state_get` would see the butler's table.
+    Unlike :func:`load_general_settings` this does not default to UTC, so a caller can tell
+    "never configured" from "configured as UTC".  The name is returned as stored (not
+    validated); a missing row, a missing or blank ``timezone`` and a non-object value all
+    return ``None``.
+    """
+    raw = await pool.fetchval(
+        "SELECT value FROM public.state WHERE key = $1",
+        GENERAL_SETTINGS_STATE_KEY,
+    )
+    if raw is None:
+        return None
+    stored = decode_jsonb(raw)
+    name = stored.get("timezone") if isinstance(stored, dict) else None
+    return name.strip() if isinstance(name, str) and name.strip() else None
 
 
 async def resolve_general_timezone(pool: asyncpg.Pool | None) -> str:

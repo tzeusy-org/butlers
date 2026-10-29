@@ -17,10 +17,10 @@ Covers:
 
 from __future__ import annotations
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import ValidationError
 
 from butlers.modules.base import Module
@@ -29,6 +29,7 @@ from butlers.modules.google_drive import (
     GoogleDriveModule,
     _infer_mime_type,
 )
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -41,24 +42,6 @@ EXPECTED_DRIVE_TOOLS = {
     "drive_move_file",
     "drive_search_files",
 }
-
-
-def _make_mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
 
 
 # ---------------------------------------------------------------------------
@@ -109,14 +92,14 @@ class TestGoogleDriveConfig:
 class TestToolRegistration:
     async def test_registers_expected_tools(self) -> None:
         module = GoogleDriveModule()
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("providers8-google-drive-tools")
         await module.register_tools(mcp=mcp, config={}, db=None, butler_name="test-butler")
-        assert set(mcp._registered_tools.keys()) == EXPECTED_DRIVE_TOOLS
+        assert set((await registered_tools(mcp)).keys()) == EXPECTED_DRIVE_TOOLS
 
     async def test_butler_name_param_takes_precedence_over_db_schema(self) -> None:
         """butler_name param is stored directly and wins over db.schema."""
         module = GoogleDriveModule()
-        mcp = _make_mock_mcp()
+        mcp = FastMCP("providers8-google-drive-tools")
         db = MagicMock()
         db.schema = "schema_value"
         await module.register_tools(mcp=mcp, config={}, db=db, butler_name="param_value")

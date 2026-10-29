@@ -108,7 +108,7 @@ _MOCK_BUTLERS = [
 ]
 
 # Patch targets — mirror the paths the shipped code imports from.
-_CLASSIFY_BUTLERS_PATH = "butlers.tools.switchboard.routing.classify._load_available_butlers"
+_REGISTRY_BUTLERS_PATH = "butlers.tools.switchboard.registry.registry.load_available_butlers"
 _ROUTE_PATH = "butlers.tools.switchboard.routing.route.route"
 
 _RETAINED_DASHBOARD_CONVERSATION_COLUMNS = {
@@ -342,7 +342,7 @@ async def test_dashboard_message_lineage_end_to_end(pool):
         message_text=message_text,
         pinned_target=_TARGET_BUTLER,
     )
-    with patch(_CLASSIFY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
+    with patch(_REGISTRY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
         ingest_response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
 
     assert ingest_response.status == "accepted"
@@ -516,7 +516,7 @@ async def test_dashboard_message_spawn_failure_leaves_no_orphaned_lineage(pool):
         message_text=message_text,
         pinned_target=_TARGET_BUTLER,
     )
-    with patch(_CLASSIFY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
+    with patch(_REGISTRY_BUTLERS_PATH, new_callable=AsyncMock, return_value=_MOCK_BUTLERS):
         ingest_response = await ingest_v1(pool, envelope, enable_thread_affinity=False)
     assert ingest_response.status == "accepted"
     ingest_request_id: UUID = ingest_response.request_id

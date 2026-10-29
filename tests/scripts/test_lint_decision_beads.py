@@ -511,3 +511,152 @@ def test_cli_check_unlabeled_markers_explicit_ids_unaffected(tmp_path):
     )
     assert proc.returncode == 1
     assert [result["id"] for result in json.loads(proc.stdout)] == ["bu-closed-marker"]
+
+
+@pytest.mark.parametrize("violation", [False, True], ids=["warning_only", "warning_and_violation"])
+def test_cli_renderability_warnings_preserve_exit_contract(tmp_path, violation):
+    option = "private-option-" + "x" * 513
+    issue = _decision_issue(
+        labels=[] if violation else ["decision"],
+        metadata={"decision": {"options": [option, "Hold"], "default": "Hold"}},
+    )
+    fixture = tmp_path / "oversized.json"
+    fixture.write_text(json.dumps([issue]))
+    proc = _run_cli("--issues-json-file", str(fixture), "--json")
+    assert proc.returncode == int(violation)
+    result = json.loads(proc.stdout)[0]
+    assert result["ok"] is (not violation)
+    assert bool(result["violations"]) is violation
+    assert any("option 1" in warning and "512" in warning for warning in result["warnings"])
+    assert all(option not in warning for warning in result["warnings"])
+    human = _run_cli("--issues-json-file", str(fixture))
+    assert human.returncode == int(violation)
+    assert "Telegram renderability (advisory)" in human.stdout
+    assert option not in human.stdout
+
+
+def _renderability_context():
+    from datetime import UTC, datetime
+
+    return datetime(2026, 10, 15, 12, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["option_512", "option_513", "message_4096", "message_4097", "both_lengths", "malformed_shape"],
+)
+def test_renderability_warning_boundaries(case):
+    now = _renderability_context()
+    issue = _decision_issue(created_at="2026-10-15T10:00:00Z")
+    if case.startswith("option_"):
+        issue["metadata"] = {
+            "decision": {"options": ["x" * int(case[-3:]), "Hold"], "default": "Hold"}
+        }
+    elif case == "both_lengths":
+        issue["metadata"] = {"decision": {"options": ["x" * 4100, "Hold"], "default": "Hold"}}
+    elif case == "malformed_shape":
+        issue["metadata"] = {"decision": {"options": ["x" * 513, None, ""], "default": "missing"}}
+    else:
+        wanted = int(case[-4:])
+        issue["title"] = ""
+        # Empty titles use the bead id, so start with one literal character.
+        issue["title"] = "t"
+        initial, lower_bound = ldb._estimated_prompt_length(issue, now=now)
+        assert lower_bound is False
+        issue["title"] += "t" * (wanted - initial)
+        assert ldb._estimated_prompt_length(issue, now=now)[0] == wanted
+    result = ldb.lint_issue(issue, now=now)
+    assert result.ok is (case != "malformed_shape")
+    assert any("option" in w for w in result.warnings) is (
+        case in {"option_513", "both_lengths", "malformed_shape"}
+    )
+    assert any("prompt" in w for w in result.warnings) is (case in {"message_4097", "both_lengths"})
+    assert all("x" * 100 not in w for w in result.warnings)
+    if case == "malformed_shape":
+        assert any("non-blank strings" in v for v in result.violations)
+        assert ldb._estimated_prompt_length(issue, now=now) is None
+        assert ldb.lint_issue(None).warnings == []
+        assert ldb.lint_issue(_decision_issue(metadata=[])).warnings == []
+    first = ldb.LintResult("one", "one")
+    second = ldb.LintResult("two", "two")
+    first.warnings.append("independent")
+    assert second.warnings == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "hours",
+        "days_default_repeat",
+        "future_creation",
+        "offset_due",
+        "naive_due",
+        "missing_due",
+        "unicode",
+        "newlines_two_digit_numbering",
+        "incomplete_dates_lower_bound",
+    ],
+)
+def test_estimated_prompt_length_follows_current_template(case):
+    from datetime import timedelta
+
+    now = _renderability_context()
+    issue = _decision_issue(created_at=(now - timedelta(hours=3)).isoformat())
+    if case == "days_default_repeat":
+        issue["created_at"] = (now - timedelta(days=14)).isoformat()
+        issue["metadata"] = {"decision": {"options": ["d" * 500, "Hold"], "default": "d" * 500}}
+    elif case == "future_creation":
+        issue["created_at"] = (now + timedelta(days=1)).isoformat()
+    elif case == "offset_due":
+        issue["due_at"] = "2026-10-16T00:30:00+08:00"
+    elif case == "naive_due":
+        issue["due_at"] = "2026-10-16T00:30:00"
+    elif case == "missing_due":
+        issue.pop("due_at")
+    elif case == "unicode":
+        issue["title"] = "🙂e\u0301 title"
+        issue["metadata"] = {"decision": {"options": ["🙂" * 512, "e\u0301"], "default": "e\u0301"}}
+    elif case == "newlines_two_digit_numbering":
+        issue["metadata"] = {
+            "decision": {"options": [f"{i}\n next " for i in range(12)], "default": "10\n next "}
+        }
+    elif case == "incomplete_dates_lower_bound":
+        issue["created_at"] = "not-a-date"
+        issue["due_at"] = "present-but-invalid"
+        issue["title"] = "t" * 4097
+    # Fixed receipts from the independent formatter before product retirement.
+    expected = {
+        "hours": (181, False),
+        "days_default_repeat": (1163, False),
+        "future_creation": (181, False),
+        "offset_due": (181, False),
+        "naive_due": (181, False),
+        "missing_due": (165, True),
+        "unicode": (645, False),
+        "newlines_two_digit_numbering": (308, False),
+        "incomplete_dates_lower_bound": (4224, True),
+    }
+    assert ldb._estimated_prompt_length(issue, now=now) == expected[case]
+    result = ldb.lint_issue(issue, now=now)
+    if case == "incomplete_dates_lower_bound":
+        assert result.ok  # Existing linter checks due presence, not timestamp validity.
+        assert any("lower bound" in w for w in result.warnings)
+    if case == "missing_due":
+        assert any("deadline" in v for v in result.violations)
+    if case == "unicode":
+        assert not any("option" in w for w in result.warnings)
+
+
+def test_warning_cli_runs_with_only_stdlib(tmp_path):
+    fixture = tmp_path / "isolated.json"
+    fixture.write_text(json.dumps([_decision_issue(title="t" * 4097)]))
+    proc = subprocess.run(
+        [sys.executable, "-I", "-S", str(_SCRIPT), "--issues-json-file", str(fixture), "--json"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)[0]["warnings"]

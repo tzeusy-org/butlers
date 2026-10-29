@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -32,7 +34,7 @@ def _load_finance_router():
     import importlib.util
     import sys
 
-    module_name = "finance_api_router_test"
+    module_name = "_finance_api_router_test"
     if module_name in sys.modules:
         return sys.modules[module_name]
 
@@ -257,7 +259,7 @@ def _make_app(
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     return app, mock_pool
 
@@ -1440,7 +1442,7 @@ async def test_list_distinct_merchants_empty():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1477,7 +1479,7 @@ async def test_list_distinct_merchants_with_results():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1505,7 +1507,7 @@ async def test_list_distinct_merchants_passes_filters():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1548,7 +1550,7 @@ async def test_bulk_update_transactions_success():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1582,7 +1584,7 @@ async def test_bulk_update_transactions_empty_ops():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1612,7 +1614,7 @@ async def test_bulk_update_transactions_too_many_ops():
     ]
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1635,7 +1637,7 @@ async def test_bulk_update_transactions_value_error_422():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1669,7 +1671,7 @@ async def test_transactions_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1689,7 +1691,7 @@ async def test_subscriptions_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1709,7 +1711,7 @@ async def test_obligations_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1733,7 +1735,7 @@ _BULK_TXN = {
 
 
 def _make_bulk_facts_mock(result: dict) -> MagicMock:
-    """Return a mock finance_facts_tools module with bulk_record_transactions."""
+    """Return a mock canonical finance facts module with bulk_record_transactions."""
     mock_facts = MagicMock()
     mock_facts.bulk_record_transactions = AsyncMock(return_value=result)
     return mock_facts
@@ -1753,7 +1755,7 @@ async def test_bulk_ingest_transactions_success():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1794,7 +1796,7 @@ async def test_bulk_ingest_transactions_second_batch_all_skipped():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1828,7 +1830,7 @@ async def test_bulk_ingest_transactions_per_row_errors():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1878,7 +1880,7 @@ async def test_bulk_ingest_transactions_account_id_inheritance():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1903,7 +1905,7 @@ async def test_bulk_ingest_transactions_source_metadata():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -1945,7 +1947,7 @@ async def test_bulk_ingest_transactions_503_when_pool_unavailable():
 
     app = FastAPI()
     app.include_router(_finance_router_mod.router)
-    app.dependency_overrides[_finance_router_mod._get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1967,7 +1969,7 @@ async def test_bulk_ingest_transactions_value_error_propagates_422():
     )
 
     app, _ = _make_app()
-    with patch.dict("sys.modules", {"finance_facts_tools": mock_facts}):
+    with patch.dict("sys.modules", {"butlers.tools.finance.facts": mock_facts}):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -2025,3 +2027,38 @@ async def test_expected_signals_failure_is_degraded_not_empty_all_clear():
         "available": False,
         "degraded_reason": "expected_signals_unavailable",
     }
+
+
+@pytest.mark.asyncio
+async def test_subscription_field_claims_readback_keeps_raw_values_and_unverified_origins():
+    row = _sub_row(service="Synthetic extracted service", amount="10", currency="USD")
+    row.update(
+        renewal_source="owner",
+        price_source="extracted",
+        service_source="extracted",
+        date_epoch=3,
+        price_epoch=0,
+        value_revision=9,
+        field_claims=[
+            {
+                "field": "price",
+                "value": {"amount": "12", "currency": "EUR"},
+                "epoch": 0,
+                "resolved": False,
+            }
+        ],
+    )
+    app, _ = _make_app(fetch_rows=[row], fetchval_return=1)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/finance/subscriptions")
+    assert response.status_code == 200
+    stored = response.json()["data"][0]
+    assert (stored["service"], stored["amount"], stored["currency"]) == (
+        "Synthetic extracted service",
+        "10",
+        "USD",
+    )
+    assert stored["date_epoch"] == 3 and stored["price_source"] == "extracted"
+    assert stored["field_claims"] == row["field_claims"]

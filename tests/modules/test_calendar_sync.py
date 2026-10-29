@@ -185,7 +185,7 @@ class TestRruleOccurrences:
             window_end=window_end,
         )
         assert len(occurrences) >= 1
-        for occ_start, occ_end in occurrences:
+        for occ_start, _occ_end in occurrences:
             assert window_end >= occ_start >= start
 
     def test_no_occurrences_outside_window(self):

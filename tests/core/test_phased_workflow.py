@@ -21,10 +21,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.core.healing.dispatch import (
-    HealingConfig,
-    _run_healing_session,
-)
 from butlers.core.healing.fingerprint import FingerprintResult
 from butlers.core.healing.tracking import create_or_join_attempt
 from butlers.core.qa.dispatch import (
@@ -111,19 +107,6 @@ def _make_fp() -> FingerprintResult:
         call_site="src/butlers/jobs.py:run",
         sanitized_message="connection failed",
     )
-
-
-def _make_healing_config(**kwargs) -> HealingConfig:
-    defaults = {
-        "enabled": True,
-        "severity_threshold": 2,
-        "cooldown_minutes": 60,
-        "max_concurrent": 2,
-        "circuit_breaker_threshold": 5,
-        "timeout_minutes": 30,
-    }
-    defaults.update(kwargs)
-    return HealingConfig(**defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -278,122 +261,6 @@ async def test_qa_self_recursion_barrier_non_qa_butler_not_affected():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_healing_dispatch_records_phase_session_on_success():
-    """_run_healing_session calls record_phase_session when session is launched."""
-    pool = _make_qa_pool()
-    spawner = _make_spawner(success=True)
-    session_id = spawner.trigger.return_value.session_id
-    attempt_id = uuid.uuid4()
-    phase_session_id = uuid.uuid4()
-
-    with (
-        patch(
-            "butlers.core.healing.dispatch.record_phase_session",
-            new_callable=AsyncMock,
-            return_value=phase_session_id,
-        ) as mock_record_phase,
-        patch(
-            "butlers.core.healing.dispatch.update_phase_session_status",
-            new_callable=AsyncMock,
-        ) as mock_update_phase,
-        patch(
-            "butlers.core.healing.dispatch.update_attempt_status",
-            new_callable=AsyncMock,
-        ),
-        patch(
-            "butlers.core.healing.dispatch._is_unfixable",
-            return_value=False,
-        ),
-        patch(
-            "butlers.core.healing.dispatch._create_pr",
-            new_callable=AsyncMock,
-            return_value=("https://github.com/org/repo/pull/1", 1, None),
-        ),
-        patch(
-            "butlers.core.healing.dispatch.get_attempt",
-            new_callable=AsyncMock,
-            return_value={"created_at": None, "session_ids": []},
-        ),
-        patch(
-            "butlers.core.healing.dispatch.remove_healing_worktree",
-            new_callable=AsyncMock,
-        ),
-    ):
-        await _run_healing_session(
-            pool=pool,
-            repo_root=Path("/tmp/repo"),
-            attempt_id=attempt_id,
-            branch_name="healing/fix-abc",
-            worktree_path=Path("/tmp/wt"),
-            fp=_make_fp(),
-            butler_name="finance",
-            trigger_source="external",
-            agent_context=None,
-            config=_make_healing_config(),
-            spawner=spawner,
-            gh_token=None,
-        )
-
-    # record_phase_session must have been called with the correct phase label
-    mock_record_phase.assert_called_once()
-    call_kwargs = mock_record_phase.call_args
-    assert call_kwargs.args[2] == "diagnose_and_fix"  # phase
-    assert call_kwargs.args[3] == session_id  # session_id
-
-    # update_phase_session_status should have been called with "completed" on success
-    mock_update_phase.assert_called_once()
-    assert mock_update_phase.call_args.args[2] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_healing_dispatch_marks_phase_session_failed_on_agent_failure():
-    """_run_healing_session marks phase session as failed when agent fails."""
-    pool = _make_qa_pool()
-    spawner = _make_spawner(success=False)
-    spawner.trigger.return_value.error = "agent crashed"
-    attempt_id = uuid.uuid4()
-    phase_session_id = uuid.uuid4()
-
-    with (
-        patch(
-            "butlers.core.healing.dispatch.record_phase_session",
-            new_callable=AsyncMock,
-            return_value=phase_session_id,
-        ),
-        patch(
-            "butlers.core.healing.dispatch.update_phase_session_status",
-            new_callable=AsyncMock,
-        ) as mock_update_phase,
-        patch(
-            "butlers.core.healing.dispatch.update_attempt_status",
-            new_callable=AsyncMock,
-        ),
-        patch(
-            "butlers.core.healing.dispatch.remove_healing_worktree",
-            new_callable=AsyncMock,
-        ),
-    ):
-        await _run_healing_session(
-            pool=pool,
-            repo_root=Path("/tmp/repo"),
-            attempt_id=attempt_id,
-            branch_name="healing/fix-abc",
-            worktree_path=Path("/tmp/wt"),
-            fp=_make_fp(),
-            butler_name="finance",
-            trigger_source="external",
-            agent_context=None,
-            config=_make_healing_config(),
-            spawner=spawner,
-            gh_token=None,
-        )
-
-    # Phase session should be marked failed
-    mock_update_phase.assert_called_once()
-    assert mock_update_phase.call_args.args[2] == "failed"
-
-
 # ---------------------------------------------------------------------------
 # QA dispatch: record_phase_session on successful spawn
 # ---------------------------------------------------------------------------
@@ -464,9 +331,10 @@ async def test_qa_dispatch_records_phase_session_on_success():
     assert call_args.args[2] == "investigate"  # phase
     assert call_args.args[3] == session_id  # session_id
 
-    # update_phase_session_status should be called with "completed" on success
+    # Publication fails closed, so the phase session ends "failed" with the fixed reason
     mock_update_phase.assert_called_once()
-    assert mock_update_phase.call_args.args[2] == "completed"
+    assert mock_update_phase.call_args.args[2] == "failed"
+    assert mock_update_phase.call_args.kwargs["error_detail"] == "publication_unavailable"
 
 
 @pytest.mark.asyncio
@@ -529,7 +397,7 @@ async def test_qa_dispatch_marks_phase_session_failed_on_agent_failure():
 
 
 def test_workflow_deadline_distinct_from_session_timeout():
-    """HealingConfig.timeout_minutes is the per-session limit; workflow_deadline is set at creation.
+    """QaDispatchConfig.timeout_minutes is the per-session limit; workflow_deadline is set at creation.
 
     This is a structural/contract test: the workflow_deadline_at column is set
     via create_or_join_attempt(workflow_deadline_minutes=N), which defaults to 60,
@@ -537,7 +405,7 @@ def test_workflow_deadline_distinct_from_session_timeout():
     These two values are independent — the workflow can span multiple sessions.
     """
     # The per-session watchdog timeout
-    config = _make_healing_config(timeout_minutes=30)
+    config = QaDispatchConfig(timeout_minutes=30)
     assert config.timeout_minutes == 30
 
     # The workflow deadline is a separate parameter to create_or_join_attempt,

@@ -59,7 +59,7 @@ class _ClaimTrackingPool:
         self.fetchrow_calls: list[str] = []
 
     async def fetchval(self, query: str, *args: Any) -> object:
-        """Schema probes: report presence of optional columns."""
+        """Unexpected schema discovery is never required on migrated stores."""
         if "information_schema.columns" in query:
             col = args[1] if len(args) > 1 else ""
             # Return the requested column as present when it's "task_type" or "until_at"
@@ -125,6 +125,7 @@ def _make_due_task(
         "next_run_at": next_run_at or _now,
         "until_at": until_at,
         "max_token_budget": None,
+        "continuity": False,
     }
 
 

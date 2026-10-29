@@ -25,7 +25,7 @@
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { Time } from "@/components/ui/time";
-import { ButlerPanelGrid, ErrorLine, KpiCell, Panel } from "./atoms";
+import { ButlerPanelGrid, ErrorLine, KpiCell, Panel } from "@/components/ui/atoms";
 import { useButlerMemoryStats } from "@/hooks/use-butler-analytics";
 import { useMemoryRecentWrites } from "@/hooks/use-memory";
 import type { Episode } from "@/api/types";

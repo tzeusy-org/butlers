@@ -41,21 +41,22 @@ For a new reader, the recommended order follows data flow from startup through r
 | [0020](rfcs/0020-calendar-cross-domain-overlay-read-exception.md) | Calendar Cross-Domain Overlay Read Exception | Accepted | Calendar overlays use scheduled deterministic precompute into a read-only cached view, zero LLM at render (RFC 0010 criteria). |
 | [0021](rfcs/0021-decision-loop-one-tap-approvals-and-decision-memory.md) | Decision Loop: One-Tap Approvals and Decision Memory | Accepted | One-tap Telegram approvals with signed callbacks, structured decision dossier, deterministic decision-memory writeback. |
 | [0022](rfcs/0022-cross-process-event-transport.md) | Cross-Process Event Transport (NOTIFY/LISTEN Fleet Event Bridge) | Accepted | PostgreSQL bridge decision and trade-offs; behavioral contract in [core-fleet-events](../../openspec/specs/core-fleet-events/spec.md). |
-| [0023](rfcs/0023-durable-approval-delivery-intent-recovery.md) | Durable Approval Delivery Intent Recovery | Accepted | Pending actions atomically coupled to a delivery intent; fenced recovery that never mutates the parked domain action. |
+| [0023](rfcs/0023-durable-approval-delivery-intent-recovery.md) | Durable Approval Delivery Intent Recovery | Accepted | Schema-local intent and fenced Messenger recovery decision; behavioral contract in [approval-delivery-intent-recovery](../../openspec/specs/approval-delivery-intent-recovery/spec.md), operational activation separately gated. |
 | [0024](rfcs/0024-messenger-private-email-correspondence-ledger.md) | Messenger-Private Email Correspondence Ledger | Proposed | Privacy-minimized Messenger outbound evidence ledger with bounded, aggregate-only Relationship enrichment. |
-| [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | Draft | Tracker-host exporter publishes a minimal active Beads projection to PostgreSQL for bounded runtime readers. |
+| [0025](rfcs/0025-tracker-host-beads-projection-exporter.md) | Tracker-Host Beads Projection Exporter | Withdrawn | Owner decision bu-g2zuv2 = A retires the product bridge; effective tracker isolation remains. |
 | [0026](rfcs/0026-commitment-lifecycle.md) | Evidence-Backed Commitment Lifecycle | Draft | Owner-condition ledger gains resolution, commitment metadata, closure receipts, escalation, and lifecycle evidence. |
 | [0027](rfcs/0027-runtime-tool-surface-discovery.md) | Runtime Tool Surface Discovery and Exposure | Accepted | Runtime-native Tool Search and deferred schema loading over an adapter-bounded corpus; canonical MCP listing stays complete. |
 | [0028](rfcs/0028-home-physical-actuation-contract.md) | Home Physical Actuation Contract | Accepted | Fail-closed HA risk map, approval boundary, per-attempt receipt, post-condition proof, rollback hints. |
 | [0029](rfcs/0029-expected-signals-and-honest-absence.md) | Expected Signals and Honest Absence | Accepted | Shared present/absent/unmeasurable ledger, producer-liveness join, producer-owned upserts, degraded rendering. |
 | [0030](rfcs/0030-system-plane-read-exception.md) | System-Plane Read Exception | Accepted | Concierge answers system-plane questions via column-allowlisted read-only UNION views (RFC 0010 plus a sixth guardrail). |
-| [0031](rfcs/0031-public-entity-graph-projection.md) | Public Entity Graph Projection | Draft | Write-behind `public.entity_graph_edges` projection with withheld stub edges, enabling zero-LLM graph traversal. |
-| [0032](rfcs/0032-fleet-case-file.md) | Fleet Case File | Implemented | Durable per-situation case object for multi-butler correlated clusters; Switchboard-only case writes, open idempotent evidence. |
+| [0031](rfcs/0031-public-entity-graph-projection.md) | Public Entity Graph Projection | **Decision record; implementation partial.** Source-owned public projection with atomic writer effects, sensitivity count-only stubs and zero-LLM traversal. The complete contract lives in entity-graph; dossier API/UI, historical recovery and migrated substrate proof remain mandatory, with S7 grant/activity findings explicit. |
+| [0032](rfcs/0032-fleet-case-file.md) | Fleet Case File | Decision record; conformance partial | Canonical fleet-case-file contract preserves all mandatory behavior; immutable evidence, honest read outages and transport/lifecycle proof remain incomplete. |
 | [0033](rfcs/0033-fleet-cost-claims.md) | Fleet Cost Claims | Implemented | Typed sibling-asserted money claims, role-fenced Finance verdicts, honest reconciliation coverage. |
 | [0034](rfcs/0034-messenger-voice-egress.md) | Messenger-Owned Voice Egress | Draft | Messenger-owned local-first voice delivery: explicit initiation, presence, DND suppression, replay fencing, text fallback. |
 | [0035](rfcs/0035-bounded-post-delivery-approval-reminders.md) | Bounded Post-Delivery Approval Reminders | Proposed | At most two distinct-channel reminders after confirmed approval delivery, within expiry, quiet-hours, and burst limits. |
 | [0036](rfcs/0036-models-exact-path-vision-proof.md) | Models Exact-Path Vision Proof | Accepted | Bounded diagnostic controls and explicit proof application; implementation and real evidence remain gated. |
 | [0037](rfcs/0037-general-capture-and-private-source-boundaries.md) | General Capture and Private Source Boundaries | Accepted | Durable ordinary capture, source-owned receipts, private-safe vocabulary/search and source-fence readiness; implementation remains outstanding. |
+| [0038](rfcs/0038-goal-runtime-and-capability-authorization.md) | Goal Runtime and Capability Authorization | Accepted | Switchboard control plane admits goals, sandboxes lead and depth-1 child sessions, brokers origin-derived grants with exposure gating and domain-verified signed calls; `transact` disabled and messages to anyone but the owner always need owner approval; hard cutover replaces classify-and-route. |
 
 The RFC header is the single home for status detail (slices landed, gates, owner sign-off). The Status
 column is a one-word summary of it.
@@ -63,6 +64,7 @@ column is a one-word summary of it.
 ## Related
 
 - [ideas-ledger.md](ideas-ledger.md) — parked ideas from the JARVIS pursuit dossiers, each with why it was parked and its unpark condition.
+- [decisions/](decisions/2026-10-14-doctrine-focused-delegation.md) — dated doctrine amendment records; the 2026-10-14 record adopts the generalist-lead goal architecture and its hard cutover.
 
 ## Conventions
 
@@ -75,3 +77,4 @@ column is a one-word summary of it.
 - **Normative language:** "MUST", "SHOULD", "MAY" follow their usual meaning.
 - **Cross-references:** By RFC number (e.g., "see RFC 0003").
 - **Date:** ISO 8601 format.
+- **Governing doctrine:** New and amended RFCs carry one `Governing doctrine:` line linking the specific vision.md non-negotiable rule or the architecture.md, security.md, development.md or v1.md section they implement, or a `Doctrine exception:` line stating scope and guardrails. Older RFCs that cite doctrine only in body text are carried as they are until `bu-bda935` rewrites them.

@@ -34,7 +34,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, override
 from urllib.parse import urlparse
 
 from butlers.core.child_env import without_owner_auth
@@ -1900,6 +1900,7 @@ class CodexAdapter(RuntimeAdapter):
             "</user_prompt>"
         )
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -2204,7 +2205,7 @@ class CodexAdapter(RuntimeAdapter):
                         subprocess_attempt_count,
                         first_exc,
                     )
-                    raise first_exc
+                    raise exc  # the first failure (first_exc); the retries did not recover
 
                 if self._last_process_info:
                     self._last_process_info["retry_attempted"] = True
@@ -2367,7 +2368,7 @@ class CodexAdapter(RuntimeAdapter):
         cmd: list[str],
         env: dict[str, str],
         cwd: Path | None,
-        timeout: int,
+        timeout_s: int,
         cmd_for_log: str,
         mcp_servers: dict[str, Any],
         prompt_input: str,
@@ -2414,7 +2415,7 @@ class CodexAdapter(RuntimeAdapter):
 
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 proc.communicate(prompt_input.encode("utf-8")),
-                timeout=timeout,
+                timeout=timeout_s,
             )
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
@@ -2482,7 +2483,7 @@ class CodexAdapter(RuntimeAdapter):
             return _parse_codex_output(stdout, stderr, returncode)
 
         except TimeoutError:
-            logger.error("Codex CLI timed out after %ds", timeout)
+            logger.error("Codex CLI timed out after %ds", timeout_s)
             self._last_process_info = {
                 "pid": proc.pid if proc else None,
                 "exit_code": -1,
@@ -2497,7 +2498,7 @@ class CodexAdapter(RuntimeAdapter):
             if proc:
                 proc.kill()
                 await proc.wait()
-            raise TimeoutError(f"Codex CLI timed out after {timeout} seconds") from None
+            raise TimeoutError(f"Codex CLI timed out after {timeout_s} seconds") from None
 
         except asyncio.CancelledError:
             # Owner-initiated Stop (Spawner.cancel_session) cancels the task
@@ -2595,6 +2596,14 @@ class CodexAdapter(RuntimeAdapter):
             escaped_url = rewritten_url.replace("\\", "\\\\").replace('"', '\\"')
             toml_lines.append(f"[mcp_servers.{server_name}]")
             toml_lines.append(f'url = "{escaped_url}"')
+            headers = server_cfg.get("headers")
+            if isinstance(headers, dict) and headers:
+                entries = ", ".join(
+                    f"{json.dumps(key)} = {json.dumps(value)}"
+                    for key, value in headers.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                )
+                toml_lines.append("http_headers = { " + entries + " }")
 
             normalized_transport, inferred_transport = _resolve_transport_details(
                 server_cfg, rewritten_url

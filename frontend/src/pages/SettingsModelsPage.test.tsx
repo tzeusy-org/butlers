@@ -62,6 +62,12 @@ vi.mock("@/hooks/use-model-catalog", () => ({
     isLoading: false,
     isError: false,
   })),
+  useModelAllowance: vi.fn(() => ({
+    data: { data: { available: true, accounts: [] } },
+    isLoading: false,
+    isError: false,
+    isForbidden: false,
+  })),
   useReissueModelAttention: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetModelTokenLimits: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResetModelUsage: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -635,6 +641,24 @@ describe("SettingsModelsPage — untested model row", () => {
   });
 });
 
+/** RFC 0036: capability chips are read-only declarations, never proof. */
+describe("SettingsModelsPage — capability chips", () => {
+  it.each([
+    [undefined, "Vision: Unknown"],
+    [false, "Vision: Declared unsupported"],
+    [true, "Vision: Declared supported"],
+  ])("renders vision=%s as %s without proof marks", (vision, label) => {
+    const capabilities: Record<string, boolean> =
+      vision === undefined ? { tool_use: true, bogus_feature: true } : { vision };
+    setHookState({ entries: [makeModel({ capabilities })] });
+    const html = renderPage();
+    expect(html).toContain(label);
+    expect(html).not.toContain("✓");
+    expect(html).not.toContain("bogus_feature");
+    expect(html.toLowerCase()).not.toContain("verified vision");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Disabled model row visual treatment
 // ---------------------------------------------------------------------------
@@ -751,6 +775,7 @@ describe("SettingsModelsPage — EditModelDialog", () => {
   // -------------------------------------------------------------------------
 
   it("opens the edit dialog when the Edit button is clicked", async () => {
+    setHookState({ entries: [makeModel({ allowance_account: "acct-a" })] });
     mountPage();
     const editBtn = screen.getByLabelText("Edit claude-sonnet");
     await act(async () => {
@@ -758,6 +783,7 @@ describe("SettingsModelsPage — EditModelDialog", () => {
     });
     // Dialog title should appear
     expect(screen.getByText(/Edit model/)).toBeTruthy();
+    expect((screen.getByLabelText("Allowance account") as HTMLInputElement).value).toBe("acct-a");
   });
 
   it("closes the dialog when Cancel is clicked", async () => {
@@ -870,6 +896,12 @@ describe("SettingsModelsPage — EditModelDialog", () => {
       fireEvent.change(aliasInput, { target: { value: "renamed-sonnet" } });
     });
 
+    const accountInput = screen.getByLabelText("Allowance account");
+    await act(async () => { fireEvent.change(accountInput, { target: { value: "Wrong.Label" } }); });
+    expect((screen.getByRole("button", { name: /save/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toContain("lowercase");
+    expect(mutate).not.toHaveBeenCalled();
+    await act(async () => { fireEvent.change(accountInput, { target: { value: " acct-b " } }); });
     const saveBtn = screen.getByRole("button", { name: /save/i });
     await act(async () => {
       fireEvent.click(saveBtn);
@@ -880,6 +912,7 @@ describe("SettingsModelsPage — EditModelDialog", () => {
         id: "model-1",
         body: expect.objectContaining({
           alias: "renamed-sonnet",
+          allowance_account: "acct-b",
           runtime_type: "claude",
           complexity_tier: "workhorse",
           priority: 10,
@@ -890,6 +923,11 @@ describe("SettingsModelsPage — EditModelDialog", () => {
       }),
       expect.any(Object),
     );
+    await act(async () => {
+      fireEvent.change(accountInput, { target: { value: "" } });
+      fireEvent.click(saveBtn);
+    });
+    expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({body: expect.objectContaining({allowance_account: null})}), expect.any(Object));
   });
 
   // -------------------------------------------------------------------------
@@ -1155,6 +1193,7 @@ describe("SettingsModelsPage — AddModelDialog", () => {
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({
         alias: "my-new-model",
+        allowance_account: null,
         model_id: "claude-x-1",
         runtime_type: "claude",
         complexity_tier: "workhorse",
@@ -1165,6 +1204,14 @@ describe("SettingsModelsPage — AddModelDialog", () => {
       }),
       expect.any(Object),
     );
+    const accountInput = screen.getByLabelText("Allowance account");
+    await act(async () => { fireEvent.change(accountInput, { target: { value: "A.invalid" } }); });
+    expect((screen.getByRole("button", { name: /add model/i }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => {
+      fireEvent.change(accountInput, { target: { value: " acct-a " } });
+      fireEvent.click(screen.getByRole("button", { name: /add model/i }));
+    });
+    expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({allowance_account: "acct-a"}), expect.any(Object));
   });
 
   it("surfaces a duplicate-alias (409) error via toast and keeps dialog open", async () => {

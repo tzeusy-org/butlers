@@ -774,7 +774,9 @@ describe("Spec scenario -- detail body remains token-only", () => {
   });
 
   it("no hex or oklch color literals appear in the rendered page body", () => {
-    const html = renderPage();
+    // ButlerMark owns the butler identity palette and applies it inline as a
+    // light-dark() pair; that is the one sanctioned colour literal.
+    const html = renderPage().replace(/light-dark\(oklch\([^)]*\), oklch\([^)]*\)\)/g, "");
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,6}[^;]/);
     expect(html).not.toContain("oklch(");
   });

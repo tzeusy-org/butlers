@@ -43,11 +43,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     _capability_for_scope,
     _catalogue_row_capability_or_none,
     _fetch_capability_probe_logs_bulk,
-    _get_db_manager,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -184,7 +184,7 @@ def _make_db(shared_pool: AsyncMock) -> MagicMock:
 
 def _build_app(mock_db: MagicMock) -> TestClient:
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 

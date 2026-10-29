@@ -15,14 +15,12 @@ cross-connector matrix.
 
 from __future__ import annotations
 
-import base64
 import datetime
-import importlib.util
 import json
 import logging
 import math
 import os
-import sys
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Literal
@@ -33,17 +31,19 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
-    CursorPaginatedResponse,
-    CursorPaginationMeta,
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.config import load_config
 from butlers.core.mcp_urls import runtime_mcp_url
-from butlers.modules.metrics.prometheus import async_query
+from butlers.core.prometheus import async_query
+from butlers.roster_imports import roster_module
+from butlers.tools.switchboard.registry import registry as _registry
 from butlers.tools.switchboard.registry.registry import (
     _derive_eligibility_state as _derive_butler_eligibility_state,
 )
@@ -52,62 +52,47 @@ from butlers.tools.switchboard.registry.registry import (
 )
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("switchboard_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["switchboard_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("switchboard", "api/models", api_source=__file__)
 
-    RegistryEntry = _models.RegistryEntry
-    RoutingEntry = _models.RoutingEntry
-    HeartbeatRequest = _models.HeartbeatRequest
-    HeartbeatResponse = _models.HeartbeatResponse
-    SetEligibilityRequest = _models.SetEligibilityRequest
-    SetEligibilityResponse = _models.SetEligibilityResponse
-    ConnectorStatsHourly = _models.ConnectorStatsHourly
-    ConnectorStatsDaily = _models.ConnectorStatsDaily
-    FanoutRow = _models.FanoutRow
-    IngestionOverviewStats = _models.IngestionOverviewStats
-    BackfillJobEntry = _models.BackfillJobEntry
-    BackfillJobSummary = _models.BackfillJobSummary
-    CreateBackfillJobRequest = _models.CreateBackfillJobRequest
-    BackfillLifecycleResponse = _models.BackfillLifecycleResponse
-    ThreadAffinitySettings = _models.ThreadAffinitySettings
-    ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
-    ThreadOverrideUpsert = _models.ThreadOverrideUpsert
-    ThreadOverrideEntry = _models.ThreadOverrideEntry
-    EligibilitySegment = _models.EligibilitySegment
-    EligibilityHistoryResponse = _models.EligibilityHistoryResponse
-    RoutingInstruction = _models.RoutingInstruction
-    RoutingInstructionCreate = _models.RoutingInstructionCreate
-    RoutingInstructionUpdate = _models.RoutingInstructionUpdate
-    validate_condition = _models.validate_condition
-    IngestionRule = _models.IngestionRule
-    IngestionRuleCreate = _models.IngestionRuleCreate
-    IngestionRuleUpdate = _models.IngestionRuleUpdate
-    IngestionRuleTestRequest = _models.IngestionRuleTestRequest
-    IngestionRuleTestResult = _models.IngestionRuleTestResult
-    IngestionRuleTestResponse = _models.IngestionRuleTestResponse
-    BulkIngestionRuleRequest = _models.BulkIngestionRuleRequest
-    BulkIngestionRuleOutcome = _models.BulkIngestionRuleOutcome
-    BulkIngestionRuleResponse = _models.BulkIngestionRuleResponse
-    validate_ingestion_action = _models.validate_ingestion_action
-    validate_rule_type_for_scope = _models.validate_rule_type_for_scope
-    InsightCandidate = _models.InsightCandidate
-    InsightFeedbackResponse = _models.InsightFeedbackResponse
-    FleetCaseSummary = _models.FleetCaseSummary
-    FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
-    FleetCaseLinkEntry = _models.FleetCaseLinkEntry
-    FleetCaseDetail = _models.FleetCaseDetail
-    RulePromotionSuggestion = _models.RulePromotionSuggestion
-    RulePromotionAutoApplied = _models.RulePromotionAutoApplied
-    RulePromotionSurface = _models.RulePromotionSurface
-    RulePromotionDismissRequest = _models.RulePromotionDismissRequest
-    RulePromotionRuleEnabledRequest = _models.RulePromotionRuleEnabledRequest
-    RulePromotionStats = _models.RulePromotionStats
-else:
-    raise RuntimeError("Failed to load switchboard API models")
+RegistryEntry = _models.RegistryEntry
+RoutingEntry = _models.RoutingEntry
+HeartbeatRequest = _models.HeartbeatRequest
+HeartbeatResponse = _models.HeartbeatResponse
+SetEligibilityRequest = _models.SetEligibilityRequest
+SetEligibilityResponse = _models.SetEligibilityResponse
+FanoutRow = _models.FanoutRow
+BackfillJobEntry = _models.BackfillJobEntry
+BackfillJobSummary = _models.BackfillJobSummary
+CreateBackfillJobRequest = _models.CreateBackfillJobRequest
+BackfillLifecycleResponse = _models.BackfillLifecycleResponse
+ThreadAffinitySettings = _models.ThreadAffinitySettings
+ThreadAffinitySettingsUpdate = _models.ThreadAffinitySettingsUpdate
+ThreadOverrideUpsert = _models.ThreadOverrideUpsert
+ThreadOverrideEntry = _models.ThreadOverrideEntry
+RoutingInstruction = _models.RoutingInstruction
+RoutingInstructionCreate = _models.RoutingInstructionCreate
+RoutingInstructionUpdate = _models.RoutingInstructionUpdate
+validate_condition = _models.validate_condition
+IngestionRule = _models.IngestionRule
+IngestionRuleCreate = _models.IngestionRuleCreate
+IngestionRuleUpdate = _models.IngestionRuleUpdate
+IngestionRuleTestRequest = _models.IngestionRuleTestRequest
+IngestionRuleTestResult = _models.IngestionRuleTestResult
+IngestionRuleTestResponse = _models.IngestionRuleTestResponse
+validate_ingestion_action = _models.validate_ingestion_action
+validate_rule_type_for_scope = _models.validate_rule_type_for_scope
+InsightCandidate = _models.InsightCandidate
+InsightFeedbackResponse = _models.InsightFeedbackResponse
+FleetCaseSummary = _models.FleetCaseSummary
+FleetCaseEvidenceEntry = _models.FleetCaseEvidenceEntry
+FleetCaseLinkEntry = _models.FleetCaseLinkEntry
+FleetCaseDetail = _models.FleetCaseDetail
+RulePromotionSuggestion = _models.RulePromotionSuggestion
+RulePromotionAutoApplied = _models.RulePromotionAutoApplied
+RulePromotionSurface = _models.RulePromotionSurface
+RulePromotionDismissRequest = _models.RulePromotionDismissRequest
+RulePromotionRuleEnabledRequest = _models.RulePromotionRuleEnabledRequest
+RulePromotionStats = _models.RulePromotionStats
 
 logger = logging.getLogger(__name__)
 
@@ -191,13 +176,6 @@ router = APIRouter(prefix="/api/switchboard", tags=["switchboard"])
 
 BUTLER_DB = "switchboard"
 _ROSTER_DIR = Path(__file__).resolve().parents[2]
-_REGISTRY_MODULE_NAME = "switchboard_registry_tools"
-_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "tools" / "registry" / "registry.py"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -207,11 +185,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Switchboard butler database is not available",
-        )
+        ) from exc
 
 
 async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> bool:
@@ -226,22 +204,11 @@ async def _register_missing_butler_from_roster(pool: Any, butler_name: str) -> b
         return False
 
     try:
-        if _REGISTRY_MODULE_NAME in sys.modules:
-            registry_module = sys.modules[_REGISTRY_MODULE_NAME]
-        else:
-            spec = importlib.util.spec_from_file_location(_REGISTRY_MODULE_NAME, _REGISTRY_PATH)
-            if spec is None or spec.loader is None:
-                raise RuntimeError(f"Failed to load registry tools from {_REGISTRY_PATH}")
-            registry_module = importlib.util.module_from_spec(spec)
-            sys.modules[_REGISTRY_MODULE_NAME] = registry_module
-            spec.loader.exec_module(registry_module)
-
-        register_butler = registry_module.register_butler
         config = load_config(config_dir)
         endpoint_url = runtime_mcp_url(config.port)
         modules = list(config.modules.keys())
         capabilities = sorted(set(modules) | {"trigger"})
-        await register_butler(
+        await _registry.register_butler(
             pool,
             config.name,
             endpoint_url,
@@ -273,7 +240,8 @@ async def list_routing_log(
     until: str | None = Query(None, description="Filter up to this timestamp (inclusive)"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[RoutingEntry]:
     """List routing log entries with optional filters, paginated."""
     pool = _pool(db)
@@ -344,7 +312,8 @@ async def list_routing_log(
 
 @router.get("/registry", response_model=ApiResponse[list[RegistryEntry]])
 async def list_registry(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[RegistryEntry]]:
     """List all registered butlers from the switchboard registry.
 
@@ -416,7 +385,8 @@ async def list_insight_candidates(
         ),
     ),
     limit: int = Query(50, ge=1, le=500, description="Maximum number of rows to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[InsightCandidate]]:
     """List proactive-insight candidates from ``public.insight_candidates``.
 
@@ -522,7 +492,8 @@ async def _record_feedback(
 @router.post("/insights/{insight_id}/useful", response_model=ApiResponse[InsightFeedbackResponse])
 async def mark_insight_useful(
     insight_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict[str, Any]]:
     """Record useful feedback and reverse a family mute/snooze."""
     return await _record_feedback(pool=_pool(db), insight_id=insight_id, verdict="useful")
@@ -532,7 +503,8 @@ async def mark_insight_useful(
 async def snooze_insight(
     insight_id: UUID,
     snooze_until: datetime.datetime = Body(..., embed=True),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict[str, Any]]:
     """Record bounded not-now feedback for an insight family."""
     return await _record_feedback(
@@ -543,7 +515,8 @@ async def snooze_insight(
 @router.post("/insights/{insight_id}/mute", response_model=ApiResponse[InsightFeedbackResponse])
 async def mute_insight(
     insight_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict[str, Any]]:
     """Record an indefinite never verdict for an insight family."""
     return await _record_feedback(pool=_pool(db), insight_id=insight_id, verdict="never")
@@ -565,29 +538,7 @@ _FLEET_CASE_EVIDENCE_LIMIT = 500
 _FLEET_CASE_LINKS_LIMIT = 500
 
 
-def _encode_fleet_case_cursor(updated_at: datetime.datetime, row_id: str) -> str:
-    """Encode a ``(updated_at, id)`` keyset position into an opaque cursor."""
-    payload = {"ua": updated_at.isoformat(), "id": str(row_id)}
-    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode()
-
-
-def _decode_fleet_case_cursor(cursor: str) -> tuple[datetime.datetime, str]:
-    """Decode an opaque cursor string back to ``(updated_at, id)``.
-
-    Raises:
-        ValueError: If the cursor is malformed or cannot be decoded.
-    """
-    try:
-        raw = base64.urlsafe_b64decode(cursor.encode())
-        payload = json.loads(raw)
-        updated_at = datetime.datetime.fromisoformat(payload["ua"])
-        row_id: str = payload["id"]
-        return updated_at, row_id
-    except (KeyError, ValueError, TypeError) as exc:
-        raise ValueError(f"Invalid cursor: {exc}") from exc
-
-
-@router.get("/cases", response_model=CursorPaginatedResponse[FleetCaseSummary])
+@router.get("/cases", response_model=Page[FleetCaseSummary])
 async def list_fleet_cases(
     state: str | None = Query(
         None,
@@ -608,8 +559,9 @@ async def list_fleet_cases(
             "Omit to fetch the first page."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[FleetCaseSummary]:
+    *,
+    db: Db,
+) -> Page[FleetCaseSummary]:
     """List fleet cases from ``public.fleet_cases`` (RFC 0032), newest-updated first.
 
     Read-only SELECT — every butler role has SELECT on ``fleet_cases`` (see
@@ -649,12 +601,11 @@ async def list_fleet_cases(
                 ),
             )
 
-    cursor_pos: tuple[datetime.datetime, str] | None = None
-    if cursor is not None:
-        try:
-            cursor_pos = _decode_fleet_case_cursor(cursor)
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=f"Invalid cursor: {exc}") from exc
+    cursor_pos = (
+        decode_cursor(cursor, (datetime.datetime, str), scope="fleet-cases")
+        if cursor is not None
+        else None
+    )
 
     pool = _pool(db)
 
@@ -689,9 +640,7 @@ async def list_fleet_cases(
         )
     except Exception:
         logger.warning("fleet_cases not available; returning empty page", exc_info=True)
-        return CursorPaginatedResponse[FleetCaseSummary](
-            data=[], meta=CursorPaginationMeta(next_cursor=None, has_more=False)
-        )
+        return Page[FleetCaseSummary](items=[], limit=limit)
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
@@ -713,18 +662,16 @@ async def list_fleet_cases(
     next_cursor = None
     if has_more and page_rows:
         last = page_rows[-1]
-        next_cursor = _encode_fleet_case_cursor(last["updated_at"], str(last["id"]))
+        next_cursor = encode_cursor((last["updated_at"], str(last["id"])), scope="fleet-cases")
 
-    return CursorPaginatedResponse[FleetCaseSummary](
-        data=data,
-        meta=CursorPaginationMeta(next_cursor=next_cursor, has_more=has_more),
-    )
+    return Page[FleetCaseSummary](items=data, next_cursor=next_cursor, limit=limit)
 
 
 @router.get("/cases/{case_id}", response_model=ApiResponse[FleetCaseDetail])
 async def get_fleet_case(
     case_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[FleetCaseDetail]:
     """Return one fleet case with its accreted evidence and ledger links.
 
@@ -826,7 +773,8 @@ async def get_fleet_case(
 async def receive_heartbeat(
     request: Request,
     body: HeartbeatRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> HeartbeatResponse:
     """Receive a liveness heartbeat from a butler.
 
@@ -836,6 +784,9 @@ async def receive_heartbeat(
       protected operator policy retains the quarantine
     - ``active``: ``last_seen_at`` updated, state unchanged
     """
+    if re.fullmatch(r"[a-z][a-z0-9_]*", body.butler_name) is None:
+        raise HTTPException(status_code=422, detail="Invalid butler name")
+
     pool = _pool(db)
 
     now = datetime.datetime.now(datetime.UTC)
@@ -1007,7 +958,8 @@ async def set_butler_eligibility(
     name: str,
     request: Request,
     body: SetEligibilityRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[SetEligibilityResponse]:
     """Transition a butler's eligibility state (operator action).
@@ -1093,285 +1045,6 @@ async def set_butler_eligibility(
 
 
 # ---------------------------------------------------------------------------
-# GET /registry/{name}/eligibility-history — 24h eligibility timeline
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/registry/{name}/eligibility-history",
-    response_model=ApiResponse[EligibilityHistoryResponse],
-)
-async def get_eligibility_history(
-    name: str,
-    hours: int = Query(default=24, ge=1, le=168),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[EligibilityHistoryResponse]:
-    """Return an eligibility timeline for a butler over the requested window.
-
-    Builds Datadog-style segments from the eligibility audit log.  Each segment
-    represents a contiguous period in one eligibility state.
-    """
-    pool = _pool(db)
-    now = datetime.datetime.now(datetime.UTC)
-    window_start = now - datetime.timedelta(hours=hours)
-
-    # Verify butler exists
-    current = await pool.fetchrow(
-        "SELECT eligibility_state FROM switchboard.butler_registry WHERE name = $1",
-        name,
-    )
-    if current is None:
-        raise HTTPException(status_code=404, detail=f"Butler '{name}' not found in registry")
-
-    current_state: str = current["eligibility_state"]
-
-    rows = await pool.fetch(
-        "SELECT previous_state, new_state, observed_at"
-        " FROM switchboard.butler_registry_eligibility_log"
-        " WHERE butler_name = $1 AND observed_at >= $2"
-        " ORDER BY observed_at ASC",
-        name,
-        window_start,
-    )
-
-    def _ts(dt: datetime.datetime) -> str:
-        return dt.isoformat()
-
-    segments: list[EligibilitySegment] = []
-
-    if not rows:
-        # No transitions — single segment covering the full window
-        segments.append(
-            EligibilitySegment(
-                state=current_state,
-                start_at=_ts(window_start),
-                end_at=_ts(now),
-            )
-        )
-    else:
-        # First segment: window_start → first transition
-        first_row = rows[0]
-        segments.append(
-            EligibilitySegment(
-                state=first_row["previous_state"],
-                start_at=_ts(window_start),
-                end_at=_ts(first_row["observed_at"]),
-            )
-        )
-        # Middle segments: each transition's new_state until the next transition
-        for i, row in enumerate(rows):
-            seg_start = row["observed_at"]
-            seg_end = rows[i + 1]["observed_at"] if i + 1 < len(rows) else now
-            segments.append(
-                EligibilitySegment(
-                    state=row["new_state"],
-                    start_at=_ts(seg_start),
-                    end_at=_ts(seg_end),
-                )
-            )
-
-    return ApiResponse[EligibilityHistoryResponse](
-        data=EligibilityHistoryResponse(
-            butler_name=name,
-            segments=segments,
-            window_start=_ts(window_start),
-            window_end=_ts(now),
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
-# GET /ingestion/overview — overview aggregates
-# ---------------------------------------------------------------------------
-
-
-@router.get("/ingestion/overview", response_model=ApiResponse[IngestionOverviewStats])
-async def get_ingestion_overview(
-    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[IngestionOverviewStats]:
-    """Return aggregate ingestion overview statistics.
-
-    Drives the stat-row cards on the Overview tab:
-    - total ingested
-    - total skipped (tier 3)
-    - total metadata-only (tier 2)
-    - LLM calls saved (deterministic pre-LLM handling)
-    - active connectors count
-
-    Also provides tier breakdown counts for the donut chart.
-
-    ``total_ingested`` is derived from ``message_inbox`` as the sum of all
-    tier1 + tier2 + tier3 messages in the period.  This ensures that messages
-    processed by internal modules are counted correctly.
-
-    Falls back gracefully when tables are missing.
-    """
-    pool = _pool(db)
-
-    hours = _PERIOD_HOURS.get(period, 24)
-
-    # Active connectors: those with a heartbeat in the last N hours
-    try:
-        active_connectors = await pool.fetchval(
-            "SELECT count(*)"
-            " FROM switchboard.connector_registry"
-            " WHERE last_heartbeat_at >= now() - make_interval(hours => $1)"
-            " AND state = 'healthy'",
-            hours,
-        )
-        active_connectors = int(active_connectors or 0)
-    except Exception:
-        logger.warning("connector_registry not available for active count", exc_info=True)
-        active_connectors = 0
-
-    tier1_full_count = 0
-    tier2_metadata_count = 0
-    tier3_skip_count = 0
-
-    # Compute inbox_cutoff for both tier breakdown and total_ingested.
-    inbox_cutoff: Any = datetime.datetime.now(datetime.UTC) - (
-        datetime.timedelta(hours=24)
-        if period == "24h"
-        else datetime.timedelta(days=7 if period == "7d" else 30)
-    )
-
-    # Tier breakdown from message_inbox processing_metadata JSONB.
-    # total_ingested is derived here as tier1+tier2+tier3 so that messages
-    # ingested via internal modules (which bypass the connector rollup tables)
-    # are always counted.  No double-counting occurs because each message_inbox
-    # row has exactly one policy_tier assignment.
-    try:
-        tier_row = await pool.fetchrow(
-            """
-            SELECT
-                count(*) FILTER (
-                    WHERE processing_metadata->>'policy_tier' = 'tier1'
-                    OR processing_metadata->>'policy_tier' IS NULL
-                ) AS tier1_full,
-                count(*) FILTER (
-                    WHERE processing_metadata->>'policy_tier' = 'tier2'
-                ) AS tier2_metadata,
-                count(*) FILTER (
-                    WHERE processing_metadata->>'policy_tier' = 'tier3'
-                ) AS tier3_skip
-            FROM switchboard.message_inbox
-            WHERE received_at >= $1
-            """,
-            inbox_cutoff,
-        )
-        if tier_row:
-            tier1_full_count = int(tier_row["tier1_full"] or 0)
-            tier2_metadata_count = int(tier_row["tier2_metadata"] or 0)
-            tier3_skip_count = int(tier_row["tier3_skip"] or 0)
-    except Exception:
-        logger.warning("message_inbox not available for tier breakdown; using zeros", exc_info=True)
-
-    # total_ingested = all rows in message_inbox for the period (tier1+tier2+tier3).
-    # This is the canonical source of truth for ingestion volume.
-    total_ingested = tier1_full_count + tier2_metadata_count + tier3_skip_count
-
-    # LLM calls saved = tier2 + tier3 (messages handled without full LLM classification)
-    llm_calls_saved = tier2_metadata_count + tier3_skip_count
-
-    # Total skipped = tier3 messages
-    total_skipped = tier3_skip_count
-    # Total metadata-only = tier2 messages
-    total_metadata_only = tier2_metadata_count
-
-    overview = IngestionOverviewStats(
-        period=period,
-        total_ingested=total_ingested,
-        total_skipped=total_skipped,
-        total_metadata_only=total_metadata_only,
-        llm_calls_saved=llm_calls_saved,
-        active_connectors=active_connectors,
-        tier1_full_count=tier1_full_count,
-        tier2_metadata_count=tier2_metadata_count,
-        tier3_skip_count=tier3_skip_count,
-    )
-    return ApiResponse[IngestionOverviewStats](data=overview)
-
-
-# ---------------------------------------------------------------------------
-# GET /ingestion/volume — aggregate ingestion volume time-series
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/ingestion/volume",
-    response_model=ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]],
-)
-async def get_ingestion_volume(
-    period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
-    """Return aggregate ingestion volume time-series from connector_heartbeat_log.
-
-    Aggregates counter deltas across all connectors, bucketed by hour or day.
-    Used to populate the volume chart on the Connectors tab.
-    """
-    pool = _pool(db)
-    trunc = _DB_TRUNC[period]
-    interval = _DB_INTERVAL[period]
-
-    try:
-        rows = await pool.fetch(
-            f"""
-            SELECT bucket,
-                SUM(delta_ingested)::bigint AS messages_ingested,
-                SUM(delta_failed)::bigint AS messages_failed
-            FROM (
-                SELECT
-                    date_trunc('{trunc}', received_at) AS bucket,
-                    connector_type,
-                    endpoint_identity,
-                    GREATEST(0, MAX(counter_messages_ingested)
-                        - MIN(NULLIF(counter_messages_ingested, 0))) AS delta_ingested,
-                    GREATEST(0, MAX(counter_messages_failed)
-                        - MIN(NULLIF(counter_messages_failed, 0))) AS delta_failed
-                FROM switchboard.connector_heartbeat_log
-                WHERE received_at >= NOW() - INTERVAL '{interval}'
-                GROUP BY bucket, connector_type, endpoint_identity
-            ) per_connector
-            GROUP BY bucket
-            ORDER BY bucket
-            """,
-        )
-    except Exception:
-        logger.warning(
-            "connector_heartbeat_log not available for aggregate volume",
-            exc_info=True,
-        )
-        return ApiResponse(data=[])
-
-    if period == "24h":
-        data: list = [
-            ConnectorStatsHourly(
-                connector_type="all",
-                endpoint_identity="all",
-                hour=row["bucket"].isoformat(),
-                messages_ingested=int(row["messages_ingested"]),
-                messages_failed=int(row["messages_failed"]),
-            )
-            for row in rows
-        ]
-    else:
-        data = [
-            ConnectorStatsDaily(
-                connector_type="all",
-                endpoint_identity="all",
-                day=row["bucket"].date().isoformat(),
-                messages_ingested=int(row["messages_ingested"]),
-                messages_failed=int(row["messages_failed"]),
-            )
-            for row in rows
-        ]
-
-    return ApiResponse(data=data)
-
-
-# ---------------------------------------------------------------------------
 # GET /ingestion/fanout — cross-connector fanout matrix
 # ---------------------------------------------------------------------------
 
@@ -1449,7 +1122,8 @@ async def _ingestion_fanout_from_db(
 @router.get("/ingestion/fanout", response_model=ApiResponse[list[FanoutRow]])
 async def get_ingestion_fanout(
     period: PeriodLiteral = Query("24h", description="Time window: 24h, 7d, or 30d"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[FanoutRow]]:
     """Return the cross-connector × butler fanout matrix.
 
@@ -1527,9 +1201,6 @@ _BACKFILL_ALLOWED_STATUSES = frozenset(
 )
 
 # Status transitions allowed per lifecycle action
-_BACKFILL_PAUSE_FROM = frozenset({"pending", "active"})
-_BACKFILL_CANCEL_FROM = frozenset({"pending", "active", "paused", "cost_capped", "error"})
-_BACKFILL_RESUME_FROM = frozenset({"paused"})
 
 
 def _row_to_backfill_summary(r: Any) -> Any:
@@ -1597,7 +1268,8 @@ async def list_backfill_jobs(
     status: str | None = Query(None, description="Filter by job status"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[BackfillJobSummary]:
     """Return a paginated list of backfill jobs.
 
@@ -1670,7 +1342,8 @@ async def list_backfill_jobs(
 async def create_backfill_job(
     request: Request,
     body: CreateBackfillJobRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackfillJobEntry]:
     """Create a new backfill job and queue it as pending.
 
@@ -1706,9 +1379,9 @@ async def create_backfill_job(
             body.daily_cost_cap_cents,
             now,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to create backfill job")
-        raise HTTPException(status_code=503, detail="Failed to create backfill job")
+        raise HTTPException(status_code=503, detail="Failed to create backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=503, detail="No row returned after insert")
@@ -1740,7 +1413,8 @@ async def create_backfill_job(
 @router.get("/backfill/{job_id}", response_model=ApiResponse[BackfillJobEntry])
 async def get_backfill_job(
     job_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackfillJobEntry]:
     """Return the full details of a single backfill job by id.
 
@@ -1759,9 +1433,9 @@ async def get_backfill_job(
             " WHERE id = $1",
             job_id,
         )
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to fetch backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
+        raise HTTPException(status_code=503, detail="Failed to fetch backfill job") from exc
 
     if row is None:
         raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
@@ -1778,45 +1452,37 @@ async def get_backfill_job(
 async def pause_backfill_job(
     job_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackfillLifecycleResponse]:
     """Pause an active or pending backfill job.
 
-    Only jobs in 'pending' or 'active' state may be paused.
+    Jobs in 'pending' or 'active' state may be paused; already paused is idempotent.
     Returns 404 if the job does not exist.
     Returns 409 if the job is in a terminal or incompatible state.
     Returns 503 on database error.
     """
-    pool = _pool(db)
+    from butlers.tools.switchboard.backfill.controls import (
+        BackfillDatabaseError,
+        BackfillJobNotFound,
+        BackfillStateConflict,
+        backfill_pause,
+    )
 
     try:
-        row = await pool.fetchrow(
-            "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
-            job_id,
-        )
-    except Exception:
-        logger.exception("Failed to fetch backfill job %s for pause", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
-
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
-
-    current_status = str(row["status"])
-    if current_status not in _BACKFILL_PAUSE_FROM:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot pause job in status '{current_status}'. "
-            f"Must be one of: {sorted(_BACKFILL_PAUSE_FROM)}",
-        )
-
+        parsed_id = UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid job id") from exc
     try:
-        await pool.fetchrow(
-            "UPDATE switchboard.backfill_jobs SET status='paused', updated_at=now() WHERE id = $1",
-            job_id,
-        )
-    except Exception:
-        logger.exception("Failed to pause backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to pause backfill job")
+        await backfill_pause(_pool(db), job_id=parsed_id)
+    except BackfillJobNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found") from exc
+    except BackfillStateConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail) from exc
+    except BackfillDatabaseError as exc:
+        raise HTTPException(status_code=503, detail=exc.http_detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Failed to pause backfill job") from exc
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -1844,49 +1510,38 @@ async def pause_backfill_job(
 async def cancel_backfill_job(
     job_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackfillLifecycleResponse]:
     """Cancel a backfill job.
 
     Jobs in 'pending', 'active', 'paused', 'cost_capped', or 'error' state may
-    be cancelled.  Terminal states 'completed' and 'cancelled' cannot be
-    cancelled again.
+    be cancelled. Already cancelled is idempotent; completed jobs refuse cancellation.
     Returns 404 if the job does not exist.
     Returns 409 if the job is in a terminal state that disallows cancellation.
     Returns 503 on database error.
     """
-    pool = _pool(db)
+    from butlers.tools.switchboard.backfill.controls import (
+        BackfillDatabaseError,
+        BackfillJobNotFound,
+        BackfillStateConflict,
+        backfill_cancel,
+    )
 
     try:
-        row = await pool.fetchrow(
-            "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
-            job_id,
-        )
-    except Exception:
-        logger.exception("Failed to fetch backfill job %s for cancel", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
-
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
-
-    current_status = str(row["status"])
-    if current_status not in _BACKFILL_CANCEL_FROM:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot cancel job in status '{current_status}'. "
-            f"Must be one of: {sorted(_BACKFILL_CANCEL_FROM)}",
-        )
-
+        parsed_id = UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid job id") from exc
     try:
-        await pool.fetchrow(
-            "UPDATE switchboard.backfill_jobs"
-            " SET status='cancelled', updated_at=now()"
-            " WHERE id = $1",
-            job_id,
-        )
-    except Exception:
-        logger.exception("Failed to cancel backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to cancel backfill job")
+        await backfill_cancel(_pool(db), job_id=parsed_id)
+    except BackfillJobNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found") from exc
+    except BackfillStateConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail) from exc
+    except BackfillDatabaseError as exc:
+        raise HTTPException(status_code=503, detail=exc.http_detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Failed to cancel backfill job") from exc
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -1914,7 +1569,8 @@ async def cancel_backfill_job(
 async def resume_backfill_job(
     job_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[BackfillLifecycleResponse]:
     """Resume a paused backfill job.
 
@@ -1923,36 +1579,27 @@ async def resume_backfill_job(
     Returns 409 if the job is not in 'paused' state.
     Returns 503 on database error.
     """
-    pool = _pool(db)
+    from butlers.tools.switchboard.backfill.controls import (
+        BackfillDatabaseError,
+        BackfillJobNotFound,
+        BackfillStateConflict,
+        backfill_resume,
+    )
 
     try:
-        row = await pool.fetchrow(
-            "SELECT status FROM switchboard.backfill_jobs WHERE id = $1",
-            job_id,
-        )
-    except Exception:
-        logger.exception("Failed to fetch backfill job %s for resume", job_id)
-        raise HTTPException(status_code=503, detail="Failed to fetch backfill job")
-
-    if row is None:
-        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found")
-
-    current_status = str(row["status"])
-    if current_status not in _BACKFILL_RESUME_FROM:
-        raise HTTPException(
-            status_code=409,
-            detail=f"Cannot resume job in status '{current_status}'. "
-            f"Must be one of: {sorted(_BACKFILL_RESUME_FROM)}",
-        )
-
+        parsed_id = UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid job id") from exc
     try:
-        await pool.fetchrow(
-            "UPDATE switchboard.backfill_jobs SET status='pending', updated_at=now() WHERE id = $1",
-            job_id,
-        )
-    except Exception:
-        logger.exception("Failed to resume backfill job %s", job_id)
-        raise HTTPException(status_code=503, detail="Failed to resume backfill job")
+        await backfill_resume(_pool(db), job_id=parsed_id)
+    except BackfillJobNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"Backfill job '{job_id}' not found") from exc
+    except BackfillStateConflict as exc:
+        raise HTTPException(status_code=409, detail=exc.http_detail) from exc
+    except BackfillDatabaseError as exc:
+        raise HTTPException(status_code=503, detail=exc.http_detail) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail="Failed to resume backfill job") from exc
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -1972,35 +1619,14 @@ async def resume_backfill_job(
 
 
 # ---------------------------------------------------------------------------
-# GET /backfill/{job_id}/progress — backfill progress metrics
-# ---------------------------------------------------------------------------
-
-
-@router.get("/backfill/{job_id}/progress", response_model=ApiResponse[BackfillJobEntry])
-async def get_backfill_job_progress(
-    job_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[BackfillJobEntry]:
-    """Return progress metrics for a single backfill job.
-
-    Returns the same full job detail as GET /backfill/{job_id} — the caller
-    can read rows_processed, rows_skipped, cost_spent_cents, status, and cursor
-    to render a live progress view.
-
-    Returns 404 if the job does not exist.
-    Returns 503 on database error.
-    """
-    return await get_backfill_job(job_id=job_id, db=db)
-
-
-# ---------------------------------------------------------------------------
 # Thread affinity settings endpoints
 # ---------------------------------------------------------------------------
 
 
 @router.get("/thread-affinity/settings", response_model=ThreadAffinitySettings)
 async def get_thread_affinity_settings(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ThreadAffinitySettings:
     """Get current global thread-affinity routing settings.
 
@@ -2042,7 +1668,8 @@ async def get_thread_affinity_settings(
 async def update_thread_affinity_settings(
     request: Request,
     body: ThreadAffinitySettingsUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ThreadAffinitySettings:
     """Update global thread-affinity routing settings.
 
@@ -2104,7 +1731,8 @@ async def update_thread_affinity_settings(
 
 @router.get("/thread-affinity/overrides", response_model=list[ThreadOverrideEntry])
 async def list_thread_affinity_overrides(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[ThreadOverrideEntry]:
     """List all per-thread affinity overrides.
 
@@ -2135,7 +1763,8 @@ async def upsert_thread_affinity_override(
     thread_id: str,
     request: Request,
     body: ThreadOverrideUpsert,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ThreadOverrideEntry:
     """Create or update a per-thread affinity override.
 
@@ -2192,7 +1821,8 @@ async def upsert_thread_affinity_override(
 async def delete_thread_affinity_override(
     thread_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Delete a per-thread affinity override.
 
@@ -2254,7 +1884,8 @@ def _row_to_routing_instruction(row: Any) -> RoutingInstruction:
 @router.get("/routing-instructions", response_model=ApiResponse[list[RoutingInstruction]])
 async def list_routing_instructions(
     enabled: bool | None = Query(None, description="Filter by enabled state"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[RoutingInstruction]]:
     """List active (non-deleted) routing instructions.
 
@@ -2303,7 +1934,8 @@ async def list_routing_instructions(
 async def create_routing_instruction(
     request: Request,
     body: RoutingInstructionCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RoutingInstruction]:
     """Create a new routing instruction."""
     pool = _pool(db)
@@ -2347,7 +1979,8 @@ async def update_routing_instruction(
     instruction_id: str,
     request: Request,
     body: RoutingInstructionUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RoutingInstruction]:
     """Partially update a routing instruction.
 
@@ -2358,8 +1991,8 @@ async def update_routing_instruction(
 
     try:
         UUID(instruction_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id FROM switchboard.routing_instructions WHERE id = $1 AND deleted_at IS NULL",
@@ -2442,7 +2075,8 @@ async def update_routing_instruction(
 async def delete_routing_instruction(
     instruction_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete a routing instruction.
 
@@ -2454,8 +2088,8 @@ async def delete_routing_instruction(
 
     try:
         UUID(instruction_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="instruction_id must be a valid UUID") from exc
 
     now = datetime.datetime.now(datetime.UTC)
     result = await pool.execute(
@@ -2510,11 +2144,6 @@ async def _assert_route_to_eligible(pool: Any, action: str) -> None:
         )
 
 
-# Module-level evaluator cache keyed by scope. Populated lazily by the /test
-# endpoint and invalidated on mutations.
-_ingestion_evaluators: dict[str, Any] = {}
-
-
 def _row_to_ingestion_rule(r: Any) -> IngestionRule:
     """Convert an asyncpg row to an IngestionRule model."""
     condition = r["condition"]
@@ -2537,16 +2166,6 @@ def _row_to_ingestion_rule(r: Any) -> IngestionRule:
     )
 
 
-def _invalidate_ingestion_cache() -> None:
-    """Invalidate all cached IngestionPolicyEvaluator instances.
-
-    Called after any mutation (create/update/delete) to ensure evaluators
-    pick up changes on their next refresh cycle.
-    """
-    for evaluator in _ingestion_evaluators.values():
-        evaluator.invalidate()
-
-
 # ---------------------------------------------------------------------------
 # GET /ingestion-rules — list rules with optional filters
 # ---------------------------------------------------------------------------
@@ -2565,7 +2184,8 @@ async def list_ingestion_rules(
             "instead of the active set. Powers the archived-rules view."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[IngestionRule]]:
     """List ingestion rules with optional filters.
 
@@ -2628,7 +2248,8 @@ async def list_ingestion_rules(
 async def create_ingestion_rule(
     request: Request,
     body: IngestionRuleCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionRule]:
     """Create a new ingestion rule.
 
@@ -2646,7 +2267,7 @@ async def create_ingestion_rule(
     try:
         validate_ingestion_action(body.action, body.scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # For global scope route_to, validate target butler exists
     if body.scope == "global":
@@ -2654,15 +2275,15 @@ async def create_ingestion_rule(
 
     # Re-validate and normalise condition
     try:
-        validated_condition = validate_condition(body.rule_type, body.condition)
+        validated_condition = validate_condition(body.rule_type, body.condition, body.action)
     except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Validate rule_type compatibility with scope
     try:
         validate_rule_type_for_scope(body.rule_type, body.scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     row = await pool.fetchrow(
         "INSERT INTO switchboard.ingestion_rules"
@@ -2680,8 +2301,6 @@ async def create_ingestion_rule(
         body.name,
         body.description,
     )
-
-    _invalidate_ingestion_cache()
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -2711,7 +2330,8 @@ async def create_ingestion_rule(
 @router.get("/ingestion-rules/{rule_id}", response_model=ApiResponse[IngestionRule])
 async def get_ingestion_rule(
     rule_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionRule]:
     """Get a single ingestion rule by ID.
 
@@ -2721,8 +2341,8 @@ async def get_ingestion_rule(
 
     try:
         UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID") from exc
 
     row = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
@@ -2747,7 +2367,8 @@ async def update_ingestion_rule(
     rule_id: str,
     request: Request,
     body: IngestionRuleUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionRule]:
     """Partially update an ingestion rule.
 
@@ -2764,8 +2385,8 @@ async def update_ingestion_rule(
 
     try:
         UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID") from exc
 
     existing = await pool.fetchrow(
         "SELECT id, scope, rule_type, condition, action, priority, enabled,"
@@ -2787,13 +2408,13 @@ async def update_ingestion_rule(
     try:
         validate_ingestion_action(effective_action, effective_scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Validate rule_type-scope compatibility
     try:
         validate_rule_type_for_scope(effective_rule_type, effective_scope)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # For global scope route_to, validate target butler exists
     if effective_scope == "global":
@@ -2809,10 +2430,22 @@ async def update_ingestion_rule(
 
     if body.condition is not None:
         try:
-            validated_condition = validate_condition(effective_rule_type, body.condition)
+            validated_condition = validate_condition(
+                effective_rule_type, body.condition, effective_action
+            )
         except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         updates["condition"] = validated_condition
+    elif body.action is not None:
+        # An action change must not strand the except-known-contacts option on a verdict
+        # that cannot honor it.
+        stored_condition = existing["condition"]
+        if isinstance(stored_condition, str):
+            stored_condition = json.loads(stored_condition)
+        try:
+            validate_condition(effective_rule_type, stored_condition, effective_action)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     if body.priority is not None:
         updates["priority"] = body.priority
@@ -2877,8 +2510,6 @@ async def update_ingestion_rule(
     if row is None:
         raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
 
-    _invalidate_ingestion_cache()
-
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     audit_body = {k: v for k, v in updates.items() if k not in ("condition",)}
     await emit_dashboard_audit(
@@ -2905,7 +2536,8 @@ async def update_ingestion_rule(
 async def delete_ingestion_rule(
     rule_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Soft-delete an ingestion rule.
 
@@ -2917,8 +2549,8 @@ async def delete_ingestion_rule(
 
     try:
         UUID(rule_id)
-    except ValueError:
-        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="rule_id must be a valid UUID") from exc
 
     now = datetime.datetime.now(datetime.UTC)
     result = await pool.execute(
@@ -2932,8 +2564,6 @@ async def delete_ingestion_rule(
     rows_affected = int(result.split(" ")[-1]) if result else 0
     if rows_affected == 0:
         raise HTTPException(status_code=404, detail=f"Ingestion rule '{rule_id}' not found")
-
-    _invalidate_ingestion_cache()
 
     # Explicit audit — middleware also fires; this carries the semantic operation label.
     await emit_dashboard_audit(
@@ -2956,7 +2586,8 @@ async def delete_ingestion_rule(
 @router.post("/ingestion-rules/test", response_model=IngestionRuleTestResponse)
 async def test_ingestion_rule(
     body: IngestionRuleTestRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> IngestionRuleTestResponse:
     """Dry-run: evaluate a test envelope against active ingestion rules.
 
@@ -2985,6 +2616,7 @@ async def test_ingestion_rule(
         headers=body.envelope.headers,
         mime_parts=body.envelope.mime_parts,
         raw_key=body.envelope.raw_key,
+        known_contact=body.envelope.known_contact,
     )
 
     decision = evaluator.evaluate(envelope)
@@ -2999,138 +2631,6 @@ async def test_ingestion_rule(
     )
 
     return IngestionRuleTestResponse(data=result)
-
-
-# ---------------------------------------------------------------------------
-# POST /ingestion-rules/bulk — bulk enable/disable/delete
-# ---------------------------------------------------------------------------
-
-
-@router.post("/ingestion-rules/bulk", response_model=BulkIngestionRuleResponse)
-async def bulk_ingestion_rules(
-    body: BulkIngestionRuleRequest,
-    request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> BulkIngestionRuleResponse:
-    """Apply a bulk operation (enable, disable, delete) to a list of rule ids.
-
-    Accepts a JSON body:
-      { "op": "enable" | "disable" | "delete", "ids": ["<uuid>", ...] }
-
-    Constraints:
-    - Max 100 ids per request (enforced in the Pydantic model).
-    - Connector-scoped rules may only have action='block'. For op='enable',
-      any connector-scoped rule that has action != 'block' (e.g. migrated
-      incorrectly) is skipped with error_reason='scope_action_invalid'.
-    - Unknown or already-deleted ids return per-id outcome 'not_found'.
-    - A single audit.append() entry is written for the batch on success.
-
-    Returns HTTP 400 on validation failure (bad op, too many ids).
-    Returns HTTP 200 with per-id outcomes (including partial success).
-    """
-    pool = _pool(db)
-    op = body.op
-    ids = body.ids
-    now = datetime.datetime.now(datetime.UTC)
-
-    results: list[BulkIngestionRuleOutcome] = []
-    affected = 0
-
-    for rule_id in ids:
-        # Validate UUID format
-        try:
-            UUID(rule_id)
-        except ValueError:
-            results.append(
-                BulkIngestionRuleOutcome(
-                    id=rule_id,
-                    outcome="error_reason",
-                    error_reason="invalid_uuid",
-                )
-            )
-            continue
-
-        # Fetch the rule to check existence and scope
-        row = await pool.fetchrow(
-            "SELECT id, scope, action, enabled, deleted_at "
-            "FROM switchboard.ingestion_rules WHERE id = $1",
-            rule_id,
-        )
-
-        if row is None or row["deleted_at"] is not None:
-            results.append(BulkIngestionRuleOutcome(id=rule_id, outcome="not_found"))
-            continue
-
-        rule_scope = row["scope"]
-        rule_action = row["action"]
-
-        # Connector-scope block-only enforcement at handler level (§3.10 spec mandate)
-        if op == "enable" and rule_scope.startswith("connector:"):
-            if rule_action != "block":
-                results.append(
-                    BulkIngestionRuleOutcome(
-                        id=rule_id,
-                        outcome="error_reason",
-                        error_reason="scope_action_invalid",
-                    )
-                )
-                continue
-
-        # Apply the operation
-        if op == "enable":
-            await pool.execute(
-                "UPDATE switchboard.ingestion_rules "
-                "SET enabled = TRUE, updated_at = $1 WHERE id = $2",
-                now,
-                rule_id,
-            )
-        elif op == "disable":
-            await pool.execute(
-                "UPDATE switchboard.ingestion_rules "
-                "SET enabled = FALSE, updated_at = $1 WHERE id = $2",
-                now,
-                rule_id,
-            )
-        elif op == "delete":
-            await pool.execute(
-                "UPDATE switchboard.ingestion_rules"
-                " SET deleted_at = $1, enabled = FALSE, updated_at = $1"
-                " WHERE id = $2",
-                now,
-                rule_id,
-            )
-
-        results.append(BulkIngestionRuleOutcome(id=rule_id, outcome="ok"))
-        affected += 1
-
-    # Invalidate the evaluator cache once for the entire batch
-    if affected > 0:
-        _invalidate_ingestion_cache()
-
-    # Emit a single audit entry for the batch
-    affected_ids = [r.id for r in results if r.outcome == "ok"]
-    if affected_ids:
-        try:
-            await emit_dashboard_audit(
-                db,
-                butler="switchboard",
-                operation=f"ingestion_rule_bulk_{op}",
-                method="POST",
-                path="/api/switchboard/ingestion-rules/bulk",
-                path_params={},
-                body={"op": op, "ids": affected_ids, "count": len(affected_ids)},
-                response_status=200,
-                request=request,
-            )
-        except Exception:
-            logger.warning(
-                "bulk_ingestion_rules: failed to emit audit for op=%s ids=%s",
-                op,
-                affected_ids,
-                exc_info=True,
-            )
-
-    return BulkIngestionRuleResponse(op=op, results=results, affected=affected)
 
 
 # ---------------------------------------------------------------------------
@@ -3176,7 +2676,8 @@ def _row_to_rule_promotion_auto_applied(r: Any) -> RulePromotionAutoApplied:
     response_model=ApiResponse[RulePromotionSurface],
 )
 async def list_rule_promotion_suggestions(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RulePromotionSurface]:
     """The rule-promotion approvals banner payload.
 
@@ -3251,7 +2752,8 @@ async def list_rule_promotion_suggestions(
     response_model=ApiResponse[RulePromotionStats],
 )
 async def get_rule_promotion_stats(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[RulePromotionStats]:
     """Aggregate rule-promotion metrics for the approvals dashboard tile (bead 6).
 
@@ -3356,8 +2858,8 @@ async def get_rule_promotion_stats(
 def _parse_suggestion_id(suggestion_id: str) -> uuid.UUID:
     try:
         return uuid.UUID(suggestion_id)
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=422, detail="invalid suggestion id")
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail="invalid suggestion id") from exc
 
 
 @router.post(
@@ -3367,7 +2869,8 @@ def _parse_suggestion_id(suggestion_id: str) -> uuid.UUID:
 async def confirm_rule_promotion_suggestion(
     suggestion_id: str,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[IngestionRule]:
     """Owner-confirm a pending suggestion: mint its ingestion_rules row.
 
@@ -3385,9 +2888,8 @@ async def confirm_rule_promotion_suggestion(
     try:
         rule_row = await apply_suggestion(pool, sid, decided_by="owner")
     except SuggestionNotApplicable as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
-    _invalidate_ingestion_cache()
     await emit_dashboard_audit(
         db,
         butler="switchboard",
@@ -3406,7 +2908,8 @@ async def dismiss_rule_promotion_suggestion(
     suggestion_id: str,
     request: Request,
     body: RulePromotionDismissRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse:
     """Dismiss a pending suggestion (no rule minted).
 
@@ -3466,7 +2969,8 @@ async def set_rule_promotion_rule_enabled(
     suggestion_id: str,
     request: Request,
     body: RulePromotionRuleEnabledRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse:
     """Reversibly enable/disable the ingestion rule an auto-applied promotion minted.
 
@@ -3498,7 +3002,6 @@ async def set_rule_promotion_rule_enabled(
     if updated is None:
         raise HTTPException(status_code=404, detail="minted rule not found or archived")
 
-    _invalidate_ingestion_cache()
     await emit_dashboard_audit(
         db,
         butler="switchboard",

@@ -1,3 +1,4 @@
+import { mockJson, type ResponseOf } from "./fixtures/api-responses";
 /**
  * OAuth full roundtrip e2e test [bu-idkeh]
  *
@@ -47,7 +48,7 @@ import { test, expect, type Page } from "@playwright/test";
 // for expired/revoked/scope_mismatch states).
 // ---------------------------------------------------------------------------
 
-const MOCK_INVENTORY_WITH_EXPIRED = {
+const MOCK_INVENTORY_WITH_EXPIRED: ResponseOf<"getSecretsInventory"> = {
   data: {
     user: [
       {
@@ -103,7 +104,7 @@ async function mockSecretsRoutes(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify(MOCK_INVENTORY_WITH_EXPIRED),
+      body: mockJson("getSecretsInventory", MOCK_INVENTORY_WITH_EXPIRED),
     });
   });
 
@@ -111,7 +112,7 @@ async function mockSecretsRoutes(
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ breaks: [] }),
+      body: mockJson("getBreaksCatalogue", { data: [], meta: { catalogue_available: true } }),
     });
   });
 }
@@ -193,7 +194,7 @@ test("oauth roundtrip: delayed callback response cannot complete the flow early"
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("reauthorizeUserCredential", { meta: {},
         data: {
           redirect_url: "/oauth/google/callback?code=delayed-code&state=delayed-state",
         },
@@ -255,7 +256,7 @@ test("oauth roundtrip: google re-authorize click → redirect → callback → t
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("reauthorizeUserCredential", { meta: {},
         data: {
           redirect_url: "/oauth/google/callback?code=stub-e2e-code&state=stub-e2e-state",
         },
@@ -330,7 +331,7 @@ test("oauth roundtrip: callback returns oauth_error → error param stripped (wa
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
+      body: mockJson("reauthorizeUserCredential", { meta: {},
         data: {
           redirect_url: "/oauth/google/callback?code=fail-code&state=fail-state",
         },

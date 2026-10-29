@@ -2199,6 +2199,7 @@ async def _store_edge_fact_and_read_graph_edge(db_url: str, *, sensitivity: str)
         await pool.close()
 
 
+# REQ-entity-graph-003: sensitivity shape or withheld traversal assertions only.
 @pytest.mark.parametrize(
     "sensitivity,expect_withheld",
     [("normal", False), ("pii", True), ("confidential", True)],
@@ -2284,6 +2285,7 @@ async def _supersede_edge_fact_and_read_graph_edges(db_url: str) -> dict:
         await pool.close()
 
 
+# REQ-entity-graph-002: actual source transaction/projection effect asserted here.
 def test_edge_fact_supersession_moves_the_projected_edge(memory_migrated_db: str) -> None:
     """Superseding an edge-fact deletes the old row's edge and projects the new one."""
     result = asyncio.run(_supersede_edge_fact_and_read_graph_edges(memory_migrated_db))
@@ -2334,6 +2336,7 @@ async def _forget_edge_fact_and_check_graph_edge(db_url: str) -> dict:
         await pool.close()
 
 
+# REQ-entity-graph-002: actual source transaction/projection effect asserted here.
 def test_forget_memory_retracts_the_projected_edge(memory_migrated_db: str) -> None:
     """RFC 0031: retracting an edge-fact removes its projected edge in the same txn."""
     result = asyncio.run(_forget_edge_fact_and_check_graph_edge(memory_migrated_db))
@@ -2381,6 +2384,7 @@ async def _store_edge_fact_with_projection_failure(
         await pool.close()
 
 
+# REQ-entity-graph-002: actual source transaction/projection effect asserted here.
 def test_edge_fact_projection_failure_rolls_back_the_source_write(
     memory_migrated_db: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2439,6 +2443,8 @@ async def _backfill_edge_fact_twice(db_url: str) -> dict:
         await pool.close()
 
 
+# REQ-entity-graph-001: natural-key rerun assertions only.
+# REQ-entity-graph-004: repeat-call helper idempotence only; recovery invocation remains uncovered.
 def test_backfill_memory_facts_edges_is_idempotent(memory_migrated_db: str) -> None:
     """Re-running the backfill over an already-backfilled row never duplicates its edge."""
     result = asyncio.run(_backfill_edge_fact_twice(memory_migrated_db))

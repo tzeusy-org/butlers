@@ -47,6 +47,7 @@ name = "insight_scan"
 # Insight pillar. Changed from the prior monthly "0 7 15 * *"; the job is
 # per-deployment (not per-pageview) so weekly stays cost-safe.
 cron = "0 7 * * 1"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "insight_scan"
 
@@ -58,6 +59,15 @@ name = "baseline_watch"
 cron = "30 6 * * *"
 dispatch_mode = "job"
 job_name = "baseline_watch"
+
+# Pre-appointment visit brief (bu-jv1moa.15): deterministic, zero LLM. Briefs the owner once,
+# up to two days before each appointment on Health's own calendar, for the period since the
+# previous visit. Owner-only; nothing reaches the clinic.
+[[butler.schedule]]
+name = "health_visit_brief"
+cron = "0 8 * * *"
+dispatch_mode = "job"
+job_name = "health_visit_brief"
 
 # Atmosphere health advisory (bu-8bnn9, follow-up from bu-ep4ks.16 slice 1):
 # reads the shared home-location atmosphere feed and surfaces an advisory
@@ -89,17 +99,18 @@ policy = "suggest"
 provider = "google"
 include_other_contacts = false
 
+# Relationship is the only butler that syncs contacts (it owns entities).
 [modules.contacts.sync]
-enabled = true
-run_on_startup = true
-interval_minutes = 15
-full_sync_interval_days = 6
+enabled = false
 
 [modules.health]
 
 [modules.home_assistant]
 groups = ["core", "history"]
 read_only = true
+
+# Home Assistant requires approval machinery, including in read-only mode.
+[modules.approvals]
 
 # Maintenance schedules (memory_decay_sweep, memory_consolidation,
 # memory_episode_cleanup, memory_purge_superseded, memory_consolidation_backfill)
@@ -111,3 +122,5 @@ groups = ["core", "entity", "preferences"]
 [modules.google_drive]
 
 [modules.google_health]
+
+# RFC 0015: core always registers the error relay; no module opt-in is required.

@@ -72,6 +72,7 @@ from typing import Any
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -115,11 +116,11 @@ DEFAULT_MIN_DWELL_MINUTES = 20
 # device can legitimately ping less often than a moving one.
 DEFAULT_MAX_GAP_MINUTES = 60
 
-# Points whose device timestamp deviates from server ingestion time by more
+# Points whose device timestamp runs ahead of server ingestion time by more
 # than this threshold are treated as having an implausible device clock and
-# are clamped to recorded_at — identical rationale/default to
-# owntracks.py's CLOCK_SKEW_THRESHOLD_HOURS (same evidence rows, same defect
-# class).
+# are clamped to recorded_at; late (buffered offline) points keep their ts.
+# Identical rationale/default to owntracks.py's CLOCK_SKEW_THRESHOLD_HOURS
+# (same evidence rows, same defect class).
 CLOCK_SKEW_THRESHOLD_HOURS = 4
 
 # A cluster centroid within this distance of an owner-declared reference
@@ -564,8 +565,9 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
     ) -> tuple[dict[str, Any] | None, list[str]]:
         """Sanitize one raw row; see ``owntracks.py``'s twin method for rationale.
 
-        Applies the same clock-skew clamp (ts -> recorded_at when device
-        clock is implausible) and finite-float coordinate guard as the
+        Applies the same clock-skew clamp (ts -> recorded_at when the device
+        ts is future-dated past the threshold; late buffered fixes keep their
+        ts) and finite-float coordinate guard as the
         sibling point-projection adapter, since both read identical raw
         rows and are equally exposed to the same data-quality defects.
         """
@@ -582,7 +584,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         recorded_at = row["recorded_at"]
         if isinstance(recorded_at, datetime) and recorded_at.tzinfo is not None:
             delta = ts - recorded_at
-            if abs(delta) > self.clock_skew_threshold:
+            if delta > self.clock_skew_threshold:
                 warnings.append(
                     f"OwnTracks row {row_ref} has implausible device timestamp "
                     f"(ts={ts.isoformat()}, recorded_at={recorded_at.isoformat()}, "
@@ -725,25 +727,26 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             evidence_ids = await self._fetch_location_point_event_ids(conn, span)
             evidence_refs = evidence_refs_from_event_ids(evidence_ids)
 
-            episode = await upsert_episode(
-                conn,
-                Episode(
-                    source_name=self.source_name,
-                    source_ref=source_ref,
-                    episode_type=EPISODE_TYPE_PLACE,
-                    start_at=span.start_at,
-                    end_at=span.end_at,
-                    precision=Precision.EXACT,
-                    title=f"Place: {label}",
-                    payload=payload,
-                    privacy=Privacy.NORMAL,
-                    layer=Layer.ACTIVITY,
-                    confidence=confidence,
-                    evidence_refs=evidence_refs,
-                ),
-            )
-            ep_id = episode.id if episode is not None else None
-            await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+            async with owner_episode_transaction(conn):
+                episode = await upsert_episode(
+                    conn,
+                    Episode(
+                        source_name=self.source_name,
+                        source_ref=source_ref,
+                        episode_type=EPISODE_TYPE_PLACE,
+                        start_at=span.start_at,
+                        end_at=span.end_at,
+                        precision=Precision.EXACT,
+                        title=f"Place: {label}",
+                        payload=payload,
+                        privacy=Privacy.NORMAL,
+                        layer=Layer.ACTIVITY,
+                        confidence=confidence,
+                        evidence_refs=evidence_refs,
+                    ),
+                )
+                ep_id = episode.id if episode is not None else None
+                await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
         return episode
 
     @staticmethod

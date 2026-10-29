@@ -32,15 +32,12 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
-from butlers.api.routers.healing import _get_db_manager as _healing_get_db
-from butlers.api.routers.healing import _get_dispatch_fn
+from butlers.api.deps import get_db as _healing_get_db
+from butlers.api.deps import get_db_optional as _spotify_get_db
 from butlers.api.routers.spotify import (
     _clear_state_store as _spotify_clear_states,
 )
 from butlers.api.routers.spotify import _exchange_code_for_tokens, _TokenExchangeError
-from butlers.api.routers.spotify import (
-    _get_db_manager as _spotify_get_db,
-)
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -101,7 +98,6 @@ class TestHealingAPI:
         db = _mock_db_shared(pool)
         app = create_app(api_key="")
         app.dependency_overrides[_healing_get_db] = lambda: db
-        app.dependency_overrides[_get_dispatch_fn] = lambda: None
         return app, pool
 
     @pytest.mark.parametrize(

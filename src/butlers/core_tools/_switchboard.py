@@ -7,10 +7,10 @@ import json
 import logging
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from butlers.conversation_identity import event_conversation_identity
 from butlers.core.permissions import CROSS_BUTLER_PERMISSION, check_permission
 from butlers.core.telemetry import tool_span
 from butlers.core_tools._base import ToolContext
@@ -253,8 +253,6 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     if not ctx.is_switchboard:
         return
 
-    import importlib.util as _ilu
-
     from butlers.core.model_routing import coerce_complexity_tier
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
@@ -268,19 +266,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     pool = ctx.pool
     butler_name = ctx.butler_name
 
-    _hb_path = (
-        Path(__file__).resolve().parents[3]
-        / "roster"
-        / "switchboard"
-        / "tools"
-        / "connector"
-        / "heartbeat.py"
-    )
-    _hb_spec = _ilu.spec_from_file_location("roster_switchboard_heartbeat", _hb_path)
-    assert _hb_spec is not None and _hb_spec.loader is not None
-    _hb_mod = _ilu.module_from_spec(_hb_spec)
-    _hb_spec.loader.exec_module(_hb_mod)
-    _connector_heartbeat = _hb_mod.heartbeat
+    from butlers.tools.switchboard.connector.heartbeat import heartbeat as _connector_heartbeat
 
     pipeline = daemon._pipeline
     # DurableBuffer instance created by _wire_pipelines (may be None if
@@ -314,7 +300,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
 
         channel = source.get("channel", "unknown")
         endpoint_identity = source.get("endpoint_identity", "unknown")
-        external_thread_id = event.get("external_thread_id")
+        external_conversation_id, reply_target_ref = event_conversation_identity(event)
         addressed = bool(source.get("addressed", False))
         request_context: dict[str, Any] = {
             "request_id": request_id,
@@ -322,7 +308,9 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "source_channel": channel,
             "source_endpoint_identity": f"{channel}:{endpoint_identity}",
             "source_sender_identity": sender.get("identity", "unknown"),
-            "source_thread_identity": external_thread_id,
+            "source_thread_identity": reply_target_ref,
+            "external_conversation_id": external_conversation_id,
+            "reply_target_ref": reply_target_ref,
             "trace_context": {},
         }
         if addressed:
@@ -345,7 +333,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             if callable(_react_fn):
                 try:
                     await _react_fn(
-                        external_thread_id=external_thread_id,
+                        external_thread_id=reply_target_ref,
                         reaction=REACTION_IN_PROGRESS,
                     )
                 except Exception:
@@ -391,7 +379,9 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "source_endpoint_identity": f"{channel}:{endpoint_identity}",
             "sender_identity": _sender_identity,
             "external_event_id": event.get("external_event_id", ""),
-            "external_thread_id": external_thread_id,
+            "external_thread_id": reply_target_ref,
+            "external_conversation_id": external_conversation_id,
+            "reply_target_ref": reply_target_ref,
             "source_tool": "ingest",
             "request_id": request_id,
             "request_context": request_context,
@@ -451,7 +441,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 terminal_reaction = REACTION_FAILURE if routing_failed else REACTION_SUCCESS
                 try:
                     await _react_fn(
-                        external_thread_id=external_thread_id,
+                        external_thread_id=reply_target_ref,
                         reaction=terminal_reaction,
                     )
                 except Exception:
@@ -640,6 +630,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             if isinstance(request_context, dict)
             else None
         )
+        external_conversation_id = (
+            request_context.get("external_conversation_id")
+            if isinstance(request_context, dict)
+            else None
+        )
 
         if dashboard_turn_id is not None:
             # This read is only a fast rejection. The target's route.execute
@@ -721,6 +716,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             "source_endpoint_identity": "switchboard",
             "source_sender_identity": source_sender_identity,
             "source_thread_identity": source_thread_identity,
+            "external_conversation_id": external_conversation_id,
             "trace_context": {},
         }
         _src_contact_id = routing_ctx.get("source_contact_id")
@@ -951,6 +947,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         scope: str,
         question: str,
         target: str | None = None,
+        system_tool: str | None = None,
+        system_args: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """QUESTION TOOL — call this for a dashboard question with an
         identifiable owning butler or scope.
@@ -967,6 +965,29 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
                 history.
             target: Required when scope="domain" — the butler whose domain
                 owns the answer. Omit for scope="system".
+            system_tool: Existing Concierge read tool for scope="system":
+                dashboard_read_fleet_status, dashboard_read_butler_detail(butler),
+                dashboard_read_sessions_recent(limit, cursor, butler, only_errors),
+                dashboard_read_session_detail(session_id),
+                dashboard_read_sessions_aggregate(since_days),
+                dashboard_read_sessions_trigger_breakdown(since_days),
+                dashboard_read_fleet_errors_recent(limit, since_days),
+                dashboard_read_fleet_search(limit, butler, trigger_source, model,
+                error_class, status), dashboard_read_timeline_recent(limit, cursor,
+                only_errors), dashboard_read_butler_activity(butler, limit),
+                dashboard_read_spend_summary(period: today/week/month),
+                dashboard_read_spend_daily(days),
+                dashboard_read_spend_top_sessions(limit, since_days),
+                dashboard_read_spend_breakdown_by_butler(since_days),
+                dashboard_read_spend_breakdown_by_model(since_days), or
+                dashboard_read_insight_delivery_state. Use spend_daily(days=2)
+                for yesterday; cite the date actually returned. These tools
+                expose operational metadata only, never prompts or domain data.
+            system_args: Only the selected read tool's named arguments. On
+                success, write a final answer grounded solely in returned data;
+                retain estimates, missing/unpriced usage, dates and limits.
+                The pipeline persists that answer with the returned source.
+
         """
         if scope not in ("domain", "system"):
             return {
@@ -1012,15 +1033,18 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             _routing_ctx[_DASHBOARD_LANE_CLAIM_KEY] = "answer"
 
         if scope == "system":
-            # Concierge / dashboard_read tools do not exist yet (bu-0ynlk.3) —
-            # fall back to an honest decline rather than guessing or routing.
-            return await _dashboard_cannot_answer(
+            from butlers.core_tools._dashboard_system_answer import read_system_answer
+
+            return await read_system_answer(
+                pool=pool,
+                route=_switchboard_route,
+                source_butler=butler_name,
                 routing_ctx=_routing_ctx,
-                question_summary=question,
-                scope_checked=["system"],
-                reason=(
-                    "System-scope questions are not yet supported (no Concierge tools available)."
-                ),
+                question=question,
+                tool_name=system_tool,
+                tool_args=system_args,
+                decline=_dashboard_cannot_answer,
+                validate_read_arguments=ctx.daemon._validate_dashboard_read_arguments,
             )
 
         if not isinstance(target, str) or not target.strip():
@@ -1142,7 +1166,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     ) -> dict[str, Any]:
         """Shared dead-letter + honest-decline implementation for
         ``cannot_answer`` and ``answer_question``'s scope="system" fallback
-        (Concierge not yet available — bu-0ynlk.3).
+        when a Concierge read cannot supply grounded evidence.
         """
         from butlers.core.dashboard_turns import claim_dead_letter, mark_terminal
         from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter

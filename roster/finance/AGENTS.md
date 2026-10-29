@@ -92,6 +92,7 @@ calls the registered handler directly with no ephemeral LLM session:
 
 - **`insight-scan`** (daily 07:00): `run_insight_scan` proposes spending anomalies (category-level, 3-month rolling average), upcoming bills, budget thresholds (owner-configured warn/alert), annual subscription renewals, and subscription price changes (absorbs `subscription-renewal-alerts`' `detect_price_changes()`; absorbs `budget-status-check`)
 - **`bill-reconciliation-sweep`** (weekly Sun 21:15): `run_bill_reconciliation_sweep` runs `reconcile_bills()` (deterministic mutation, un-gated) then proposes candidates for auto-settled bills, ambiguous matches, and untracked `predict_bills()` patterns (replaces `upcoming-bills-check`)
+- **`cost-claim-reconciliation-sweep`** (bu-q7vx1q.45): after `reconcile_cost_claims`, opens one `finance:memorial-claim` owner condition per live loan claim against a `memorial` counterparty and proposes one `memorial-claim` candidate ("retract or keep?") on the opened transition only; never changes the claim
 - **`anomaly-insight-scan`** (daily 21:00): `run_anomaly_insight_scan` performs per-transaction anomaly detection via `anomaly_scan()`, capped at 10 candidates/run (replaces `anomaly-digest`)
 - **`monthly-finance-digest`** (1st of month 09:00): `run_monthly_finance_digest` emits one consolidated candidate combining prior-month spend, budget status, and subscription audit (merges `monthly-spending-summary` + `subscription-audit-monthly`, which duplicated bullets)
 

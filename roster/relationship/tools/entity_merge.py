@@ -180,6 +180,49 @@ async def _lock_and_plan_facts(
         raise TemporalOccurrenceCollisionError
 
 
+async def _lock_candidate_reports(conn: asyncpg.Connection, source: UUID, target: UUID) -> None:
+    """Lock held identity slots and rows before any merge write.
+
+    The caller owns both entity rows. Duplicate default/occurrence reports keep
+    the target row and preserve the losing original as superseded history.
+    """
+    from butlers.tools.relationship.identity_slots import lock_identity_slots
+
+    rows = await conn.fetch(
+        "SELECT subject,predicate,object FROM relationship.entity_facts "
+        "WHERE subject=ANY($1::uuid[]) AND validity='candidate' ORDER BY id",
+        [source, target],
+    )
+    await lock_identity_slots(
+        conn, ((row["predicate"], row["object"], row["subject"]) for row in rows)
+    )
+    await conn.fetch(
+        "SELECT id FROM relationship.entity_facts WHERE subject=ANY($1::uuid[]) "
+        "AND validity='candidate' ORDER BY id FOR UPDATE",
+        [source, target],
+    )
+
+
+async def _move_candidate_reports(conn: asyncpg.Connection, source: UUID, target: UUID) -> None:
+    """Move already locked reports; preserve target duplicates as history."""
+    await conn.execute(
+        "UPDATE relationship.entity_facts src SET validity='superseded',updated_at=now() "
+        "WHERE src.subject=$1 AND src.validity='candidate' AND EXISTS("
+        "SELECT 1 FROM relationship.entity_facts dst WHERE dst.subject=$2 "
+        "AND dst.validity='candidate' AND dst.predicate=src.predicate "
+        "AND dst.object=src.object AND dst.effective_period_id IS NOT DISTINCT FROM "
+        "src.effective_period_id)",
+        source,
+        target,
+    )
+    await conn.execute(
+        "UPDATE relationship.entity_facts SET subject=$2,updated_at=now() "
+        "WHERE subject=$1 AND validity='candidate'",
+        source,
+        target,
+    )
+
+
 def _rowcount(command_tag: Any) -> int:
     try:
         return int(str(command_tag).rsplit(" ", 1)[-1])
@@ -250,7 +293,9 @@ async def merge_entity_pair(
             if locked_guard is not None:
                 await locked_guard(conn, locked_pair)
 
+            await _lock_candidate_reports(conn, source_entity_id, target_entity_id)
             await _lock_and_plan_facts(conn, source_entity_id, target_entity_id)
+            await _move_candidate_reports(conn, source_entity_id, target_entity_id)
 
             merge_evidence = await compute_merge_evidence(
                 conn,
@@ -277,6 +322,25 @@ async def merge_entity_pair(
                 for key, value in source_metadata.items()
                 if key not in {"deleted_at", "merged_into", "unidentified"}
             }
+            # The immediate singleton index includes tombstones. Release only
+            # the source's owner role before assigning the union to the target;
+            # both locked rows and every later write share this transaction.
+            # The union above uses the original source roles, so owner is kept
+            # by the survivor and all other source roles remain on its history.
+            tombstone_metadata = {
+                **source_metadata,
+                "merged_into": str(target_entity_id),
+            }
+            await conn.execute(
+                """
+                UPDATE public.entities
+                SET metadata = $1, roles = array_remove(roles, 'owner'),
+                    updated_at = now()
+                WHERE id = $2
+                """,
+                tombstone_metadata,
+                source_entity_id,
+            )
             await conn.execute(
                 """
                 UPDATE public.entities
@@ -487,21 +551,6 @@ async def merge_entity_pair(
                     )
             except asyncpg.UndefinedTableError:
                 pass
-
-            tombstone_metadata = {
-                **source_metadata,
-                "merged_into": str(target_entity_id),
-            }
-            await conn.execute(
-                """
-                UPDATE public.entities
-                SET metadata = $1,
-                    updated_at = now()
-                WHERE id = $2
-                """,
-                tombstone_metadata,
-                source_entity_id,
-            )
 
             review_id = await write_merge_review(
                 conn,

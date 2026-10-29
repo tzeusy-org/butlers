@@ -39,15 +39,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from butlers.connectors import discretion_dispatcher as discretion_dispatcher_module
 from butlers.connectors.discretion import DiscretionEvaluator, discretion_evaluations_total
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.core import model_call
 from butlers.core.failover_classifier import FailoverDecision
 from butlers.core.model_routing import QuotaStatus, SpendRoutingResult
 
 pytestmark = pytest.mark.unit
 
 _MODULE = "butlers.connectors.discretion_dispatcher"
+_KERNEL = "butlers.core.model_call"
 
 
 def _allowed_quota() -> QuotaStatus:
@@ -76,15 +77,13 @@ def _make_adapter(side_effect: list[object]) -> MagicMock:
 
 
 def test_discretion_dispatcher_reuses_shared_failover_classifier() -> None:
-    """DiscretionDispatcher must import and call the *same* classifier
+    """DiscretionDispatcher's kernel must call the *same* classifier
     Spawner._run() uses, not a forked/duplicate implementation.
     """
-    from butlers.connectors import discretion_dispatcher
     from butlers.core import failover_classifier
 
-    assert (
-        discretion_dispatcher.classify_failover_eligibility
-        is failover_classifier.classify_failover_eligibility
+    assert model_call.classify_failover_eligibility is (
+        failover_classifier.classify_failover_eligibility
     )
 
 
@@ -110,12 +109,12 @@ async def test_call_passes_adapter_process_info_to_classifier() -> None:
         return FailoverDecision(eligible=False, reason="test_stub")
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.classify_failover_eligibility", side_effect=_fake_classify),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.classify_failover_eligibility", side_effect=_fake_classify),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="boom"):
             await dispatcher.call("hi")
@@ -150,17 +149,17 @@ async def test_call_retries_next_same_tier_candidate_on_eligible_failure() -> No
 
     with (
         patch(
-            f"{_MODULE}.resolve_model_with_effective_tier",
+            f"{_KERNEL}.resolve_model_with_effective_tier",
             AsyncMock(return_value=first_catalog),
         ),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(
-            f"{_MODULE}.next_same_tier_candidate",
+            f"{_KERNEL}.next_same_tier_candidate",
             AsyncMock(return_value=second_candidate),
         ) as mock_next,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         result = await dispatcher.call("hi", identity="tg:1")
 
@@ -196,12 +195,12 @@ async def test_call_does_not_retry_ineligible_failure() -> None:
     adapter = _make_adapter(side_effect=[ValueError("malformed prompt")])
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock()) as mock_next,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.next_same_tier_candidate", AsyncMock()) as mock_next,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         with pytest.raises(ValueError, match="malformed prompt"):
             await dispatcher.call("hi")
@@ -227,12 +226,12 @@ async def test_call_raises_same_tier_failover_exhausted_when_no_candidates_remai
     adapter = _make_adapter(side_effect=[RuntimeError("Connection error.")])
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()) as mock_record,
+        patch(f"{_KERNEL}.next_same_tier_candidate", AsyncMock(return_value=None)),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()) as mock_record,
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -269,22 +268,22 @@ async def test_call_skips_quota_denied_selected_candidate_before_invocation(
     identity_marker = "identity-must-not-appear-in-quota-provenance"
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=selected)),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=selected)),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules",
+            f"{_KERNEL}.apply_spend_routing_rules",
             AsyncMock(return_value=SpendRoutingResult(resolved=selected[:5])),
         ),
         patch(
-            f"{_MODULE}.check_token_quota",
+            f"{_KERNEL}.check_token_quota",
             AsyncMock(side_effect=[_denied_quota(), _allowed_quota()]),
         ) as mock_quota,
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter) as mock_adapter,
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(
-            f"{_MODULE}.next_same_tier_candidate",
+            f"{_KERNEL}.next_same_tier_candidate",
             AsyncMock(return_value=fallback),
         ) as mock_next,
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with caplog.at_level(logging.INFO):
             result = await dispatcher.call(
@@ -337,22 +336,22 @@ async def test_call_exhausts_same_tier_when_all_discretion_candidates_are_quota_
         return [second, None][len(attempted_id_snapshots) - 1]
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules",
+            f"{_KERNEL}.apply_spend_routing_rules",
             AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
         ),
         patch(
-            f"{_MODULE}.check_token_quota",
+            f"{_KERNEL}.check_token_quota",
             AsyncMock(side_effect=[_denied_quota(), _denied_quota()]),
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(
-            f"{_MODULE}.next_same_tier_candidate",
+            f"{_KERNEL}.next_same_tier_candidate",
             side_effect=_next_same_tier,
         ),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -405,27 +404,27 @@ async def test_call_keeps_runtime_failure_and_quota_skip_in_one_same_tier_chain(
         return first
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(side_effect=_resolve)),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(side_effect=_resolve)),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules",
+            f"{_KERNEL}.apply_spend_routing_rules",
             AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
         ),
         patch(
-            f"{_MODULE}.check_token_quota",
+            f"{_KERNEL}.check_token_quota",
             AsyncMock(side_effect=[_allowed_quota(), _denied_quota(), _allowed_quota()]),
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(
-            f"{_MODULE}.classify_failover_eligibility",
+            f"{_KERNEL}.classify_failover_eligibility",
             return_value=FailoverDecision(eligible=True, reason="provider_unavailable:test"),
         ),
         patch(
-            f"{_MODULE}.next_same_tier_candidate",
+            f"{_KERNEL}.next_same_tier_candidate",
             side_effect=_next_same_tier,
         ),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
-        patch(f"{_MODULE}.record_dispatch_attempt", AsyncMock()) as record_attempt,
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as record_attempt,
     ):
         result = await dispatcher.call("hi")
 
@@ -448,7 +447,7 @@ async def test_quota_skips_consume_the_existing_same_tier_attempt_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A denied candidate consumes a cap slot even though no adapter runs."""
-    monkeypatch.setattr(discretion_dispatcher_module, "_MAX_FAILOVER_ATTEMPTS", 2)
+    monkeypatch.setattr(model_call, "MAX_ATTEMPTS", 2)
     pool = MagicMock()
     dispatcher = DiscretionDispatcher(pool=pool)
 
@@ -464,22 +463,22 @@ async def test_quota_skips_consume_the_existing_same_tier_attempt_cap(
         return second
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=first)),
         patch(
-            f"{_MODULE}.apply_spend_routing_rules",
+            f"{_KERNEL}.apply_spend_routing_rules",
             AsyncMock(return_value=SpendRoutingResult(resolved=first[:5])),
         ),
         patch(
-            f"{_MODULE}.check_token_quota",
+            f"{_KERNEL}.check_token_quota",
             AsyncMock(side_effect=[_denied_quota(), _denied_quota()]),
         ),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(
-            f"{_MODULE}.next_same_tier_candidate",
+            f"{_KERNEL}.next_same_tier_candidate",
             side_effect=_next_same_tier,
         ),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(
             RuntimeError, match=r"same_tier_failover_exhausted.*2 attempt\(s\).*safety cap"

@@ -9,12 +9,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestEnvelopeV1,
     NotifyRequestV1,
+    parse_notify_request,
+)
+from butlers.tools.switchboard.routing.contracts import (
     RouteEnvelopeV1,
     RouteRequestContextV1,
-    parse_notify_request,
     parse_route_envelope,
 )
 
@@ -34,7 +36,8 @@ def _valid_ingest_payload() -> dict[str, Any]:
         },
         "event": {
             "external_event_id": "update-123",
-            "external_thread_id": "chat-456",
+            "external_conversation_id": "telegram:chat-456",
+            "reply_target_ref": "chat-456:123",
             "observed_at": now,
         },
         "sender": {"identity": "user-123"},
@@ -89,6 +92,28 @@ def test_ingest_v1_valid_envelope() -> None:
     assert envelope.source.channel == "telegram_bot"
     assert envelope.payload.normalized_text == "ping"
 
+    from butlers.connectors.catalog import ingress_pairs
+
+    for channel, provider in ingress_pairs():
+        payload = _valid_ingest_payload()
+        payload["source"].update(channel=channel, provider=provider)
+        assert IngestEnvelopeV1.model_validate(payload).source.provider == provider
+
+
+def test_ingest_v1_telegram_bot_requires_split_conversation_identity() -> None:
+    payload = _valid_ingest_payload()
+    payload["event"].pop("external_conversation_id")
+
+    with pytest.raises(ValidationError, match="external_conversation_id"):
+        IngestEnvelopeV1.model_validate(payload)
+
+
+def test_ingest_v1_telegram_bot_accepts_conversation_and_reply_target() -> None:
+    envelope = IngestEnvelopeV1.model_validate(_valid_ingest_payload())
+
+    assert envelope.event.external_conversation_id == "telegram:chat-456"
+    assert envelope.event.reply_target_ref == "chat-456:123"
+
 
 def test_ingest_v1_accepts_email_channel_with_gmail_provider() -> None:
     payload = _valid_ingest_payload()
@@ -122,6 +147,15 @@ def test_notify_v1_valid_request() -> None:
     assert request.schema_version == "notify.v1"
     assert request.delivery.intent == "send"
     assert request.delivery.channel == "telegram"
+
+    retired = _valid_notify_payload()
+    retired["delivery"]["intent"] = "decision_request"
+    with pytest.raises(ValidationError) as exc_info:
+        parse_notify_request(retired)
+    assert any(
+        error["loc"] == ("delivery", "intent") and error["type"] == "literal_error"
+        for error in exc_info.value.errors()
+    )
 
 
 def test_route_v1_valid_request_via_contract_parser() -> None:
@@ -492,7 +526,7 @@ class TestIngestionTierContract:
 
     def test_tier1_full_envelope_valid(self) -> None:
         """Tier 1 (full) envelope accepts non-null raw payload."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         envelope = IngestEnvelopeV1.model_validate(self._base_email_payload())
         assert envelope.control.ingestion_tier == "full"
@@ -500,7 +534,7 @@ class TestIngestionTierContract:
 
     def test_tier2_metadata_envelope_valid(self) -> None:
         """Tier 2 (metadata) envelope accepts null raw with subject-only text."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         envelope = IngestEnvelopeV1.model_validate(self._tier2_email_payload())
         assert envelope.control.ingestion_tier == "metadata"
@@ -509,7 +543,7 @@ class TestIngestionTierContract:
 
     def test_default_ingestion_tier_is_full(self) -> None:
         """When ingestion_tier is omitted, it defaults to 'full'."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._base_email_payload()
         del payload["control"]["ingestion_tier"]
@@ -519,7 +553,7 @@ class TestIngestionTierContract:
 
     def test_tier2_with_non_null_raw_rejected(self) -> None:
         """Tier 2 envelopes must have payload.raw=null."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._tier2_email_payload()
         payload["payload"]["raw"] = {"some": "body content"}  # violates tier 2 constraint
@@ -532,7 +566,7 @@ class TestIngestionTierContract:
 
     def test_tier1_with_null_raw_rejected(self) -> None:
         """Tier 1 envelopes must have a non-null raw dict."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._base_email_payload()
         payload["payload"]["raw"] = None  # violates tier 1 constraint
@@ -545,7 +579,7 @@ class TestIngestionTierContract:
 
     def test_invalid_ingestion_tier_rejected(self) -> None:
         """Unknown ingestion_tier values are rejected by the contract."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = self._base_email_payload()
         payload["control"]["ingestion_tier"] = "skip"  # Tier 3 is connector-side only
@@ -558,7 +592,7 @@ class TestIngestionTierContract:
 
     def test_backward_compat_no_ingestion_tier_field_in_control(self) -> None:
         """Envelopes without ingestion_tier in control remain valid (backward compat)."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = {
             "schema_version": "ingest.v1",
@@ -569,6 +603,8 @@ class TestIngestionTierContract:
             },
             "event": {
                 "external_event_id": "upd_001",
+                "external_conversation_id": "telegram:legacy-chat",
+                "reply_target_ref": "legacy-chat:1",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user_001"},
@@ -581,7 +617,7 @@ class TestIngestionTierContract:
 
     def test_tier2_spec_example_from_policy_doc(self) -> None:
         """Validate the exact Tier 2 JSON example from email_ingestion_policy.md section 5.2."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         payload = {
             "schema_version": "ingest.v1",
@@ -611,3 +647,79 @@ class TestIngestionTierContract:
         assert envelope.control.ingestion_tier == "metadata"
         assert envelope.payload.raw is None
         assert "Subject:" in envelope.payload.normalized_text
+
+
+# ---------------------------------------------------------------------------
+# Exposure markers: untrusted_spans, in_reply_to_ref (bu-xmueeq)
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_v1_exposure_markers_default_to_absent() -> None:
+    """Envelopes that predate the markers stay valid and carry none of them."""
+    envelope = IngestEnvelopeV1.model_validate(_valid_ingest_payload())
+
+    assert envelope.payload.untrusted_spans is None
+    assert envelope.event.in_reply_to_ref is None
+
+
+def test_ingest_v1_accepts_exposure_markers() -> None:
+    payload = _valid_ingest_payload()
+    payload["payload"]["normalized_text"] = "  fwd: pay account 12-34  "
+    payload["payload"]["untrusted_spans"] = [
+        {"kind": "forwarded", "start": 5, "end": 22, "origin_display_name": "Mallory"}
+    ]
+    payload["event"]["in_reply_to_ref"] = "chat-456:5"
+
+    envelope = IngestEnvelopeV1.model_validate(payload)
+
+    (span,) = envelope.payload.untrusted_spans
+    assert envelope.payload.normalized_text[span.start : span.end] == "pay account 12-34"
+    assert span.origin_display_name == "Mallory"
+    assert envelope.event.in_reply_to_ref == "chat-456:5"
+
+
+@pytest.mark.parametrize(
+    "span",
+    [
+        {"kind": "quoted", "start": 2, "end": 99},
+        {"kind": "quoted", "start": 3, "end": 1},
+        {"kind": "quoted", "start": 2, "end": 2},
+    ],
+)
+def test_ingest_v1_misfit_span_fails_closed_to_the_whole_text(span: dict[str, Any]) -> None:
+    """A span that does not fit is a connector bug; it marks everything rather than nothing."""
+    payload = _valid_ingest_payload()
+    payload["payload"]["untrusted_spans"] = [span]
+
+    envelope = IngestEnvelopeV1.model_validate(payload)
+
+    (fitted,) = envelope.payload.untrusted_spans
+    assert (fitted.kind, fitted.start, fitted.end) == ("quoted", 0, len("ping"))
+
+
+def test_ingest_v1_rejects_misfit_span_model_instance() -> None:
+    from butlers.tools.switchboard.contracts import IngestPayloadV1, IngestUntrustedSpanV1
+
+    with pytest.raises(ValidationError, match="untrusted_span_out_of_range|does not fit"):
+        IngestPayloadV1(
+            raw={},
+            normalized_text="ping",
+            untrusted_spans=(IngestUntrustedSpanV1(kind="quoted", start=0, end=9),),
+        )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("payload", "untrusted_spans", [{"kind": "pasted", "start": 0, "end": 4}]),
+        # Channel kind is a registered per-connector fact (REQ-connector-base-spec-003), so an
+        # envelope cannot set it.
+        ("source", "channel_kind", "feed"),
+    ],
+)
+def test_ingest_v1_rejects_unknown_marker_values(section: str, field: str, value: Any) -> None:
+    payload = _valid_ingest_payload()
+    payload[section][field] = value
+
+    with pytest.raises(ValidationError):
+        IngestEnvelopeV1.model_validate(payload)

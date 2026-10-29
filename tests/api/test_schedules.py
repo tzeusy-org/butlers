@@ -8,16 +8,20 @@ Drops: field-by-field assertions, mock-wiring call_args checks.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import HTTPException
+from fastmcp.client.client import CallToolResult
+from mcp.types import TextContent
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.routers.schedules import _coerce_complexity, _get_db_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
+from butlers.api.routers.schedules import _call_mcp_tool, _coerce_complexity
 
 pytestmark = pytest.mark.unit
 
@@ -63,7 +67,7 @@ def _wire_db(app, *, fetch_rows=None):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas", "switchboard"]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_db, mock_pool
 
 
@@ -77,7 +81,7 @@ def _wire_mcp(app, *, result=None):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas"]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app, mock_client
 
@@ -92,7 +96,7 @@ def _wire_unreachable(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = mock_pool
     mock_db.butler_names = ["atlas"]
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mock_mgr
     return app
 
@@ -157,7 +161,7 @@ async def test_list_coerces_legacy_complexity(app, stored, expected):
 async def test_list_503_when_db_unavailable(app):
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.side_effect = KeyError("no pool")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -200,19 +204,38 @@ async def test_crud_endpoint_status_codes(app, method, path_tpl, body, exp_statu
                 "target": f"schedule:{sid}",
             },
         }
-    _wire_mcp(app, result=_mock_mcp_result(result))
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    for wire_result in (
+        _mock_mcp_result(result),
+        CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(result))],
+            structured_content=None,
+            meta=None,
+        ),
+    ):
+        _wire_mcp(app, result=wire_result)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            if method == "POST":
+                resp = await client.post(path, json=body)
+            elif method == "PUT":
+                resp = await client.put(path, json=body)
+            elif method == "DELETE":
+                resp = await client.delete(path)
+            else:
+                resp = await client.patch(path, json={"enabled": False})
+        assert resp.status_code == exp_status
+        assert resp.json()["data"] == result
         if method == "POST":
-            resp = await client.post(path, json=body)
-        elif method == "PUT":
-            resp = await client.put(path, json=body)
-        elif method == "DELETE":
-            resp = await client.delete(path)
-        else:
-            resp = await client.patch(path, json={"enabled": False})
-    assert resp.status_code == exp_status
+            # Exercise the private metadata path with the same real SDK result
+            # shape; the real cookie -> MCP -> SQL positive remains PG-owned.
+            mgr = app.dependency_overrides[get_mcp_manager]()
+            assert (
+                await _call_mcp_tool(
+                    mgr, "atlas", "schedule_create", body, meta={"private": "synthetic"}
+                )
+                == result
+            )
 
 
 async def test_toggle_returns_server_observed_receipt_and_requested_state(app):
@@ -326,6 +349,52 @@ async def test_crud_503_when_butler_unreachable(app, method, path_tpl, body):
         else:
             resp = await client.patch(path, json=body)
     assert resp.status_code == 503
+
+    private_text = "synthetic-private-result"
+    success_looking = {"id": str(sid), "status": "created", "private": private_text}
+    for wire_result in (
+        CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(success_looking))],
+            structured_content=success_looking,
+            meta=None,
+            is_error=True,
+        ),
+        CallToolResult(content=[], structured_content=success_looking, meta=None),
+        CallToolResult(
+            content=[TextContent(type="text", text=private_text)],
+            structured_content=None,
+            meta=None,
+        ),
+        CallToolResult(
+            content=[TextContent(type="text", text='["synthetic-private-result"]')],
+            structured_content=None,
+            meta=None,
+        ),
+    ):
+        _, mock_client = _wire_mcp(app)
+        mock_client.call_tool.return_value = wire_result
+        mgr = app.dependency_overrides[get_mcp_manager]()
+        with pytest.raises(HTTPException) as refused:
+            await _call_mcp_tool(
+                mgr, "atlas", "schedule_create", body or {}, meta={"private": private_text}
+            )
+        assert refused.value.status_code == 503
+        assert refused.value.detail == "Owner creation unavailable; retry the same operation"
+        assert private_text not in refused.value.detail
+        if wire_result.is_error:
+            # Explicit SDK error must also refuse ordinary CRUD, even when
+            # its content and structured payload look like successful create.
+            with pytest.raises(HTTPException) as ordinary:
+                await _call_mcp_tool(mgr, "atlas", "schedule_create", body or {})
+            assert ordinary.value.status_code == 503
+            assert private_text not in ordinary.value.detail
+    mock_client.call_tool.side_effect = RuntimeError(private_text)
+    with pytest.raises(HTTPException) as raised:
+        await _call_mcp_tool(
+            mgr, "atlas", "schedule_create", body or {}, meta={"private": private_text}
+        )
+    assert raised.value.status_code == 503
+    assert raised.value.detail == "Owner creation unavailable; retry the same operation"
 
 
 @pytest.mark.parametrize(

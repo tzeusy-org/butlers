@@ -43,6 +43,7 @@ from butlers.api.degraded import DegradedSources
 from butlers.api.deps import (
     ButlerConnectionInfo,
     MCPClientManager,
+    OptionalDb,
     get_butler_configs,
     get_mcp_manager,
     get_pricing,
@@ -116,16 +117,6 @@ class ConsoleResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 _QUERY_TIMEOUT_S = 8.0
-
-
-def _get_db_manager() -> DatabaseManager | None:
-    """Return the dashboard DatabaseManager if available, otherwise None."""
-    from butlers.api.deps import get_db_manager
-
-    try:
-        return get_db_manager()
-    except RuntimeError:
-        return None
 
 
 async def _count_active_butlers(
@@ -704,7 +695,8 @@ async def get_settings_console(
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     pricing: PricingConfig = Depends(get_pricing),
-    db: DatabaseManager | None = Depends(_get_db_manager),
+    *,
+    db: OptionalDb,
 ) -> ApiResponse[ConsoleResponse]:
     """Aggregate header counts + attention items for the Settings Console page.
 

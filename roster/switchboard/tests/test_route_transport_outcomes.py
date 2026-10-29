@@ -18,9 +18,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.core.approval_delivery_transport import TrustedRecoveryContext
 from butlers.tools.switchboard.notification.deliver import deliver
 from butlers.tools.switchboard.routing.route import route
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     TransportErrorClass,
     TransportErrorDetail,
     TransportNotAttempted,
@@ -63,7 +64,7 @@ def _resolves_target() -> Any:
 
 class TestTransportVocabulary:
     def test_only_not_attempted_is_retryable(self) -> None:
-        transport = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport = sys.modules["butlers.tools.switchboard.transport"]
 
         assert transport.RECIPIENT_UNAVAILABLE.retryable is True
         assert transport.POLICY_DENIED.retryable is True
@@ -128,7 +129,7 @@ class TestTransportVocabulary:
         )
 
     def test_envelope_roundtrip(self) -> None:
-        transport = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport = sys.modules["butlers.tools.switchboard.transport"]
 
         for result in (
             transport.CONFIRMED,
@@ -606,7 +607,12 @@ def _recovery_envelope() -> dict[str, Any]:
             "recipient": "owner-synthetic",
             "message": "Synthetic approval.",
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
         "recovery": {
             "operation": "handoff",
             "subject_kind": "action",
@@ -825,7 +831,13 @@ class TestDeliverPostSendBookkeeping:
                 pool,
                 notify_request=_recovery_envelope(),
                 source_butler="relationship",
-                trusted_source="relationship",
+                verified_context=TrustedRecoveryContext.from_internal_dict(
+                    {
+                        "issuer": "relationship",
+                        "owning_schema": "relationship",
+                        **_recovery_envelope()["recovery"],
+                    }
+                ),
             )
 
         expected_target.assert_called_once_with("relationship")
@@ -879,7 +891,13 @@ class TestDeliverPostSendBookkeeping:
                 pool,
                 notify_request=_recovery_envelope(),
                 source_butler="relationship",
-                trusted_source="relationship",
+                verified_context=TrustedRecoveryContext.from_internal_dict(
+                    {
+                        "issuer": "relationship",
+                        "owning_schema": "relationship",
+                        **_recovery_envelope()["recovery"],
+                    }
+                ),
             )
 
         assert result == {
@@ -924,7 +942,13 @@ class TestDeliverPostSendBookkeeping:
                 pool,
                 notify_request=_recovery_envelope(),
                 source_butler="relationship",
-                trusted_source="relationship",
+                verified_context=TrustedRecoveryContext.from_internal_dict(
+                    {
+                        "issuer": "relationship",
+                        "owning_schema": "relationship",
+                        **_recovery_envelope()["recovery"],
+                    }
+                ),
             )
 
         assert result == {"status": "recovery", "handoff": {"classification": "confirmed"}}
@@ -1030,7 +1054,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_uncertain_route_failure_is_not_reported_as_retryable(self) -> None:
         pool = _mock_pool()
-        transport_mod = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport_mod = sys.modules["butlers.tools.switchboard.transport"]
 
         route_result = {
             "error": "TimeoutError: deadline",
@@ -1056,7 +1080,7 @@ class TestDeliverPostSendBookkeeping:
 
     async def test_pre_send_failure_stays_distinguishable(self) -> None:
         pool = _mock_pool()
-        transport_mod = sys.modules["butlers.tools.switchboard.routing.transport"]
+        transport_mod = sys.modules["butlers.tools.switchboard.transport"]
 
         route_result = {
             "error": "Butler 'messenger' not found in registry",
@@ -1195,3 +1219,83 @@ class TestNoEventLoopStarvation:
         with _resolves_target():
             with pytest.raises(asyncio.CancelledError):
                 await route(pool, "messenger", "route.execute", {}, call_fn=call_fn)
+
+
+def test_public_notify_refuses_link_claims_and_raw_urls():
+    from copy import deepcopy
+
+    from pydantic import ValidationError
+
+    from butlers.tools.switchboard.contracts import parse_notify_request
+
+    base = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Review",
+        },
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
+    }
+    for field, value in (
+        ("dashboard_url", "https://attacker.example.test"),
+        ("url", "https://attacker.example.test"),
+        ("host", "dashboard.example.test"),
+        ("provenance", "dashboard"),
+        ("server_built", True),
+    ):
+        forged = deepcopy(base)
+        forged["actions"][0][field] = value
+        with pytest.raises(ValidationError):
+            parse_notify_request(forged)
+    forged = deepcopy(base)
+    forged["actions"][0] = {
+        "verb": "open_link",
+        "reference": base["actions"][0]["reference"],
+        "label": "Open dashboard",
+        "url": "https://dashboard.example.test/approvals",
+        "host": "dashboard.example.test",
+        "provenance": "dashboard",
+    }
+    with pytest.raises(ValidationError, match="server delivery output"):
+        parse_notify_request(forged)
+
+
+async def test_telegram_effect_reconnect_requires_pre_transport_proof():
+    from importlib import import_module
+
+    mod = import_module("butlers.tools.switchboard.routing.route")
+    for tool, args, error, expected in [
+        (
+            "telegram_send_message",
+            {"chat_id": "123", "text": "long"},
+            OSError(errno.ECONNRESET, "controlled reset"),
+            1,
+        ),
+        (
+            "route.execute",
+            {
+                "input": {
+                    "context": {
+                        "notify_request": {"delivery": {"channel": "telegram", "intent": "send"}}
+                    }
+                }
+            },
+            OSError(errno.ECONNRESET, "controlled reset"),
+            1,
+        ),
+        ("telegram_send_message", {}, OSError(errno.ECONNREFUSED, "controlled refusal"), 2),
+        ("state_get", {}, OSError(errno.ECONNRESET, "controlled reset"), 2),
+    ]:
+        client = MagicMock(call_tool=AsyncMock(side_effect=error))
+        with patch.object(mod, "_get_cached_router_client", AsyncMock(return_value=client)):
+            with pytest.raises((ConnectionError, OSError)):
+                await mod._call_tool_with_router_client("http://localhost:9999/mcp/", tool, args)
+        assert client.call_tool.await_count == expected

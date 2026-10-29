@@ -116,6 +116,7 @@ __all__ = [
     "ConditionTransition",
     "commitment_fingerprint",
     "create_commitment",
+    "validate_commitment_creation",
     "list_active_commitments",
     "list_entity_commitments",
     "normalize_action_description",
@@ -364,8 +365,7 @@ async def _post_write_commitment_edges(
 # ---------------------------------------------------------------------------
 
 
-async def create_commitment(
-    pool: asyncpg.Pool,
+def validate_commitment_creation(
     *,
     source: str,
     summary: str,
@@ -378,34 +378,12 @@ async def create_commitment(
     deadline: datetime | str | None = None,
     initial_grace_seconds: float = DEFAULT_INITIAL_GRACE_SECONDS,
     sphere: str | None = None,
-) -> ConditionTransition | None:
-    """Create (or re-confirm) one commitment on the owner condition ledger.
+) -> dict[str, Any]:
+    """Validate a creation without database access and build its closed metadata.
 
-    ``source`` follows the ledger's ``"{origin_butler}:{category}"``
-    convention (``"relationship:commitment"``, ``"health:follow-up"``);
-    ``action_description`` is the stable statement of what was promised and
-    feeds the fingerprint, while ``summary`` is the display prose and does
-    not. ``counterparty_entity_id`` is a ``public.entities`` UUID, or
-    ``None`` for a commitment with no other party.
-
-    Returns the ``ConditionTransition`` for the affected episode —
-    ``"opened"`` for a first-ever commitment, ``"reopened"`` after a prior
-    episode resolved, ``"confirmed"``/``"escalation_due"`` when an
-    equivalent commitment is already active (REQ-commitment-lifecycle-002:
-    the duplicate confirms, it does not fork).
-
-    Returns ``None``, without any database access, when ``confidence`` is
-    below :data:`CREATION_CONFIDENCE_THRESHOLD` — a judgement that this is
-    not yet a commitment, not an error. See this module's docstring for why
-    that is a return value while malformed input is an exception.
-
-    Raises ``ValueError`` — before touching the pool — for an empty
-    ``source``/``summary``/``action_description``, an unknown ``kind`` or
-    ``direction``, a non-string ``counterparty_entity_id``, a ``confidence``
-    outside 0.0-1.0, an ``evidence_opened`` without a ``source``, an
-    unparseable ``deadline``, a ``sphere`` other than ``work``/``personal``, or
-    a negative ``initial_grace_seconds``. ``sphere`` is the owner's declaration
-    and is stored only when given.
+    Batch producers can preflight every item with this same validator before
+    effects. ``create_commitment`` always calls it again; preflight cannot bypass
+    validation or the common producer's write path.
     """
     caller = "create_commitment"
     _require_text(caller, "source", source)
@@ -427,9 +405,6 @@ async def create_commitment(
     if sphere is not None and sphere not in COMMITMENT_SPHERES:
         raise ValueError(f"{caller}: sphere must be one of {sorted(COMMITMENT_SPHERES)}")
 
-    if checked_confidence < CREATION_CONFIDENCE_THRESHOLD:
-        return None
-
     metadata: dict[str, Any] = {
         "class": COMMITMENT_METADATA_CLASS,
         "kind": kind,
@@ -442,6 +417,73 @@ async def create_commitment(
         metadata["deadline"] = deadline_iso
     if sphere is not None:
         metadata["sphere"] = sphere
+
+    return metadata
+
+
+async def create_commitment(
+    pool: asyncpg.Pool,
+    *,
+    source: str,
+    summary: str,
+    kind: str,
+    direction: str,
+    counterparty_entity_id: str | None,
+    confidence: float,
+    evidence_opened: dict[str, Any],
+    action_description: str,
+    deadline: datetime | str | None = None,
+    initial_grace_seconds: float = DEFAULT_INITIAL_GRACE_SECONDS,
+    sphere: str | None = None,
+    transaction_connection: asyncpg.Connection | None = None,
+) -> ConditionTransition | None:
+    """Create (or re-confirm) one commitment on the owner condition ledger.
+
+    ``source`` follows the ledger's ``"{origin_butler}:{category}"``
+    convention (``"relationship:commitment"``, ``"health:follow-up"``);
+    ``action_description`` is the stable statement of what was promised and
+    feeds the fingerprint, while ``summary`` is the display prose and does
+    not. ``counterparty_entity_id`` is a ``public.entities`` UUID, or
+    ``None`` for a commitment with no other party.
+
+    Returns the ``ConditionTransition`` for the affected episode —
+    ``"opened"`` for a first-ever commitment, ``"reopened"`` after a prior
+    episode resolved, ``"confirmed"``/``"escalation_due"`` when an
+    equivalent commitment is already active (REQ-commitment-lifecycle-002:
+    the duplicate confirms, it does not fork).
+
+    Returns ``None``, without any database access, when ``confidence`` is
+    below :data:`CREATION_CONFIDENCE_THRESHOLD` — a judgement that this is
+    not yet a commitment, not an error. See this module's docstring for why
+    that is a return value while malformed input is an exception.
+
+    ``transaction_connection`` composes the same write and projections inside an
+    internal caller's active transaction, without acquiring or committing another
+    connection. Omitting it preserves the pool-owned transaction path.
+
+    Raises ``ValueError`` — before touching the pool — for an empty
+    ``source``/``summary``/``action_description``, an unknown ``kind`` or
+    ``direction``, a non-string ``counterparty_entity_id``, a ``confidence``
+    outside 0.0-1.0, an ``evidence_opened`` without a ``source``, an
+    unparseable ``deadline``, a ``sphere`` other than ``work``/``personal``, or
+    a negative ``initial_grace_seconds``. ``sphere`` is the owner's declaration
+    and is stored only when given.
+    """
+    metadata = validate_commitment_creation(
+        source=source,
+        summary=summary,
+        kind=kind,
+        direction=direction,
+        counterparty_entity_id=counterparty_entity_id,
+        confidence=confidence,
+        evidence_opened=evidence_opened,
+        action_description=action_description,
+        deadline=deadline,
+        initial_grace_seconds=initial_grace_seconds,
+        sphere=sphere,
+    )
+    if metadata["confidence"] < CREATION_CONFIDENCE_THRESHOLD:
+        return None
 
     observation = Observation(
         fingerprint=commitment_fingerprint(
@@ -465,6 +507,11 @@ async def create_commitment(
             counterparty_entity_id=counterparty_entity_id,
         )
 
+    connection_kwargs = (
+        {"transaction_connection": transaction_connection}
+        if transaction_connection is not None
+        else {}
+    )
     transitions = await owner_conditions.reconcile_snapshot(
         pool,
         source=source,
@@ -472,6 +519,7 @@ async def create_commitment(
         snapshot_complete=False,
         initial_grace_seconds=initial_grace_seconds,
         post_write=_post_write,
+        **connection_kwargs,
     )
     return transitions[0] if transitions else None
 

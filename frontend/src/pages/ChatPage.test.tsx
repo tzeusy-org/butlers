@@ -9,7 +9,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 
 import { ApiError } from "@/api/client";
@@ -21,7 +21,9 @@ vi.mock("@/hooks/use-conversations.ts", () => ({
   useConversationMessages: vi.fn(),
 }));
 vi.mock("@/hooks/use-pricing-map.ts", () => ({ usePricingMap: vi.fn() }));
-vi.mock("@/hooks/use-conversation-turn.ts", () => ({ useConversationTurn: vi.fn() }));
+vi.mock("@/hooks/use-conversation-turn.ts", () => ({
+  useConversationTurn: vi.fn(),
+}));
 
 import ChatPage from "./ChatPage";
 import {
@@ -31,11 +33,14 @@ import {
 } from "@/hooks/use-conversations.ts";
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
+import { WIDGET_BUTLER } from "@/components/chat/chat-constants.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMock = any;
 
-function makeConversation(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+function makeConversation(
+  overrides: Partial<ConversationSummary> = {},
+): ConversationSummary {
   return {
     id: "conversation-1",
     butler_name: "switchboard",
@@ -103,7 +108,9 @@ afterEach(() => {
 
 describe("ChatPage — route resolution (bu-0ynlk.11)", () => {
   it("resolves /chat to the composer with no conversation loaded", () => {
-    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: [] },
+    } as AnyMock);
     vi.mocked(useConversationById).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -125,7 +132,9 @@ describe("ChatPage — route resolution (bu-0ynlk.11)", () => {
   });
 
   it("resolves /chat/:conversationId, fetching the cross-butler detail for that id", () => {
-    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: [] },
+    } as AnyMock);
     vi.mocked(useConversationById).mockReturnValue({
       data: makeConversation(),
       isLoading: false,
@@ -144,11 +153,15 @@ describe("ChatPage — route resolution (bu-0ynlk.11)", () => {
     renderPage("/chat/conversation-1");
 
     expect(screen.getByTestId("chat-page")).toBeTruthy();
-    expect(vi.mocked(useConversationById)).toHaveBeenCalledWith("conversation-1");
+    expect(vi.mocked(useConversationById)).toHaveBeenCalledWith(
+      "conversation-1",
+    );
   });
 
   it("renders a not-found state for an unknown conversation id, not a blank thread", () => {
-    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: [] },
+    } as AnyMock);
     vi.mocked(useConversationById).mockReturnValue({
       data: undefined,
       isLoading: false,
@@ -199,7 +212,9 @@ describe("ChatPage — route resolution (bu-0ynlk.11)", () => {
 
 describe("ChatPage — #m-{id} anchor scroll (bu-0ynlk.11)", () => {
   it("scrolls to and focuses the message named by the URL fragment once messages have loaded", () => {
-    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: [] },
+    } as AnyMock);
     vi.mocked(useConversationById).mockReturnValue({
       data: makeConversation(),
       isLoading: false,
@@ -229,7 +244,9 @@ describe("ChatPage — #m-{id} anchor scroll (bu-0ynlk.11)", () => {
   });
 
   it("loads the thread without scrolling when the fragment names a message that isn't there", () => {
-    vi.mocked(useConversations).mockReturnValue({ data: { data: [] } } as AnyMock);
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: [] },
+    } as AnyMock);
     vi.mocked(useConversationById).mockReturnValue({
       data: makeConversation(),
       isLoading: false,
@@ -258,5 +275,206 @@ describe("ChatPage — #m-{id} anchor scroll (bu-0ynlk.11)", () => {
     expect(scrollIntoViewSpy).not.toHaveBeenCalledWith(
       expect.objectContaining({ block: "center" }),
     );
+  });
+});
+
+describe("ChatPage — owner gate before send (bu-p5umi2.1)", () => {
+  const OWNER = "relationship";
+
+  function mockSurroundings(
+    sendText = vi.fn(),
+    overrides: Record<string, unknown> = {},
+  ) {
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: [] },
+    } as AnyMock);
+    vi.mocked(useConversationMessages).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      refetch: vi.fn(),
+    } as AnyMock);
+    vi.mocked(usePricingMap).mockReturnValue({ data: null } as AnyMock);
+    const handleStop = vi.fn();
+    vi.mocked(useConversationTurn).mockReturnValue({
+      streaming: null,
+      visibleMessages: [],
+      sendError: null,
+      setSendError: vi.fn(),
+      isStreaming: false,
+      hasActiveRuntime: false,
+      contextPreview: { policy: "snapshot", label: "Chat", context: null },
+      includeContext: true,
+      toggleIncludeContext: vi.fn(),
+      sendText,
+      handleStop,
+      abandonCurrentStream: vi.fn(),
+      resetTurnState: vi.fn(),
+      ...overrides,
+    } as AnyMock);
+    return { sendText, handleStop };
+  }
+
+  function routes() {
+    return (
+      <MemoryRouter initialEntries={["/chat/conversation-1"]}>
+        <Routes>
+          <Route path="/chat/:conversationId" element={<ChatPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+  }
+
+  it("names an ownership lookup failure, keeps typed text and retries only the lookup", () => {
+    const { sendText } = mockSurroundings();
+    const refetch = vi.fn();
+    const resolved = {
+      data: makeConversation({ butler_name: OWNER }),
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch,
+    };
+    const failed = {
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new ApiError("UNKNOWN_ERROR", "boom", 500),
+      refetch,
+    };
+    vi.mocked(useConversationById).mockReturnValue(resolved as AnyMock);
+
+    const view = renderPage("/chat/conversation-1");
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "draft text" },
+    });
+
+    // The lookup result is lost (cache reset): ownership is no longer known.
+    vi.mocked(useConversationById).mockReturnValue(failed as AnyMock);
+    view.rerender(routes());
+
+    expect(screen.getByTestId("chat-page-owner-unresolved")).toBeTruthy();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "draft text",
+    );
+    expect(
+      (screen.getByLabelText("Send message") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(vi.mocked(useConversationMessages).mock.calls.at(-1)?.[0]).toBe("");
+
+    fireEvent.click(screen.getByText("Retry"));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(sendText).not.toHaveBeenCalled();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "draft text",
+    );
+
+    vi.mocked(useConversationById).mockReturnValue(resolved as AnyMock);
+    view.rerender(routes());
+
+    expect(screen.queryByTestId("chat-page-owner-unresolved")).toBeNull();
+    expect(vi.mocked(useConversationMessages)).toHaveBeenLastCalledWith(
+      OWNER,
+      "conversation-1",
+    );
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "draft text",
+    );
+    fireEvent.click(screen.getByLabelText("Send message"));
+    expect(sendText).toHaveBeenCalledWith("draft text");
+  });
+
+  it("keeps the established owner and Stop when a background lookup refetch fails", () => {
+    const { handleStop } = mockSurroundings(vi.fn(), {
+      hasActiveRuntime: true,
+    });
+    vi.mocked(useConversationById).mockReturnValue({
+      data: makeConversation({ butler_name: OWNER }),
+      isLoading: false,
+      isError: true,
+      error: new ApiError("UNKNOWN_ERROR", "boom", 500),
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    renderPage("/chat/conversation-1");
+
+    expect(screen.getByTestId("chat-page-owner-stale")).toBeTruthy();
+    expect(screen.queryByTestId("chat-page-owner-unresolved")).toBeNull();
+    expect(vi.mocked(useConversationMessages)).toHaveBeenLastCalledWith(
+      OWNER,
+      "conversation-1",
+    );
+    fireEvent.click(screen.getByTestId("chat-stop-button"));
+    expect(handleStop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an earlier route's lookup result bind or unlock a newer route", () => {
+    const { sendText } = mockSurroundings();
+    vi.mocked(useConversationById).mockReturnValue({
+      data: makeConversation({ id: "conversation-1", butler_name: OWNER }),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    renderPage("/chat/conversation-2");
+
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).disabled).toBe(
+      true,
+    );
+    for (const [name] of vi.mocked(useConversationMessages).mock.calls) {
+      expect(name).toBe("");
+    }
+    for (const [options] of vi.mocked(useConversationTurn).mock.calls) {
+      expect(options.butlerName).toBe(WIDGET_BUTLER);
+    }
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("keeps bare /chat send-capable through Switchboard", () => {
+    const { sendText } = mockSurroundings();
+    vi.mocked(useConversationById).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as AnyMock);
+
+    renderPage("/chat");
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(screen.getByLabelText("Send message"));
+
+    expect(sendText).toHaveBeenCalledWith("hello");
+    expect(
+      vi.mocked(useConversationTurn).mock.calls.at(-1)?.[0].butlerName,
+    ).toBe(WIDGET_BUTLER);
+    expect(screen.queryByTestId("chat-page-owner-unresolved")).toBeNull();
+  });
+
+  it("does not replay a failed send from the banner while the owner is unresolved", () => {
+    const { sendText } = mockSurroundings(vi.fn(), {
+      sendError: {
+        kind: "generic",
+        message: "Send failed",
+        failedText: "earlier text",
+        messageId: "message-9",
+      },
+    });
+    vi.mocked(useConversationById).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+    } as AnyMock);
+
+    renderPage("/chat/conversation-1");
+    fireEvent.click(
+      within(screen.getByTestId("chat-widget-error-banner")).getByText("Retry"),
+    );
+
+    expect(sendText).not.toHaveBeenCalled();
   });
 });

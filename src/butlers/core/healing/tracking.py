@@ -131,6 +131,43 @@ def _decode_row(row: asyncpg.Record) -> HealingAttemptRow:
 
 
 # ---------------------------------------------------------------------------
+# Publication lineage hold (REQ-qa-publication-authority-006)
+# ---------------------------------------------------------------------------
+
+#: Operation stages that hold a fingerprint's lineage.  ``egress_started`` is
+#: included because the row is persisted before egress: a crash, watchdog or
+#: lost response after that point may already have created a remote resource.
+#: Only a recorded reconciliation (stage ``reconciled``) releases the hold.
+_PUBLICATION_HOLD_EXISTS_SQL = """
+    EXISTS (
+        SELECT 1
+        FROM public.qa_publication_operations AS op
+        JOIN public.healing_attempts AS held ON held.id = op.attempt_id
+        WHERE held.fingerprint = $1
+          AND op.stage IN ('egress_started', 'ambiguous')
+    )
+"""
+
+
+#: Public name of the hold predicate (binds the fingerprint as ``$1``) for callers that fold
+#: it into their own INSERT, so no caller re-derives the held stages.
+PUBLICATION_HOLD_EXISTS_SQL = _PUBLICATION_HOLD_EXISTS_SQL
+
+
+class PublicationLineageHeld(RuntimeError):
+    """A fresh attempt was refused because an unresolved publication holds the lineage."""
+
+    def __init__(self, fingerprint: str) -> None:
+        super().__init__(f"publication lineage held for fingerprint={fingerprint!r}")
+        self.fingerprint = fingerprint
+
+
+async def get_publication_hold(pool: asyncpg.Pool, fingerprint: str) -> bool:
+    """Return True while an ambiguous publication holds *fingerprint*'s lineage."""
+    return bool(await pool.fetchval(f"SELECT {_PUBLICATION_HOLD_EXISTS_SQL}", fingerprint))
+
+
+# ---------------------------------------------------------------------------
 # Atomic attempt creation
 # ---------------------------------------------------------------------------
 
@@ -146,6 +183,7 @@ async def create_or_join_attempt(
     sanitized_msg: str | None = None,
     qa_patrol_id: uuid.UUID | None = None,
     workflow_deadline_minutes: int = 60,
+    enforce_publication_hold: bool = False,
 ) -> tuple[uuid.UUID, bool]:
     """Atomically create a new healing attempt or join an existing active one.
 
@@ -187,6 +225,12 @@ async def create_or_join_attempt(
         Hard limit (in minutes) for the entire workflow.  Stored as an
         immutable ``workflow_deadline_at`` timestamp set once at row creation.
         Defaults to 60 minutes.  Only applied to newly inserted rows.
+    enforce_publication_hold:
+        When true, a new row is never inserted while an unresolved
+        ``qa_publication_operations`` row holds this fingerprint's lineage
+        (checked in the same statement as the insert).  Joining an existing
+        active attempt is still allowed; with no active attempt to join,
+        :class:`PublicationLineageHeld` is raised.
 
     Returns
     -------
@@ -206,17 +250,20 @@ async def create_or_join_attempt(
     # We distinguish "was inserted" vs "was joined" by comparing the RETURNING
     # xmax value: on a fresh INSERT xmax=0; on an UPDATE xmax>0.  An
     # alternative is to use a CTE with an explicit flag column.
-    sql = """
+    sql = (
+        """
         WITH inserted AS (
             INSERT INTO public.healing_attempts (
                 fingerprint, butler_name, status, severity,
                 exception_type, call_site, sanitized_msg, session_ids,
                 qa_patrol_id, workflow_deadline_at
             )
-            VALUES (
-                $1, $2, 'investigating', $3, $4, $5, $6, ARRAY[$7::uuid], $8::uuid,
-                now() + ($9 * INTERVAL '1 minute')
-            )
+            SELECT
+                $1::text, $2::text, 'investigating', $3::integer, $4::text, $5::text, $6::text,
+                ARRAY[$7::uuid], $8::uuid, now() + ($9::integer * INTERVAL '1 minute')
+            WHERE NOT ($10::boolean AND """
+        + _PUBLICATION_HOLD_EXISTS_SQL
+        + """)
             ON CONFLICT (fingerprint)
             WHERE status IN ('investigating', 'pr_open')
             DO UPDATE
@@ -235,6 +282,7 @@ async def create_or_join_attempt(
         SELECT id, existing_exc_type, existing_call_site, was_inserted
         FROM inserted
     """
+    )
     row = await pool.fetchrow(
         sql,
         fingerprint,
@@ -246,7 +294,16 @@ async def create_or_join_attempt(
         str(session_id),
         str(qa_patrol_id) if qa_patrol_id is not None else None,
         workflow_deadline_minutes,
+        enforce_publication_hold,
     )
+
+    if row is None and enforce_publication_hold:
+        # The hold suppressed the insert.  An already-active attempt may still
+        # be joined (it is the same lineage); otherwise nothing new is allocated.
+        active = await get_active_attempt(pool, fingerprint)
+        if active is not None:
+            return active["id"], False
+        raise PublicationLineageHeld(fingerprint)
 
     if row is None:
         # Should not happen — the INSERT always returns a row.
@@ -459,7 +516,9 @@ async def get_recent_attempt(
     """Return the most recent terminal attempt for *fingerprint* closed within the window.
 
     Used for cooldown gate checks: prevents re-investigating an error that was
-    recently resolved (or failed) within *window_minutes*.
+    recently resolved (or failed) within *window_minutes*.  A lineage held by an
+    unresolved publication is returned as ``{"publication_held": True, ...}``
+    regardless of the window, so cooldown expiry never releases it.
 
     Parameters
     ----------
@@ -475,6 +534,11 @@ async def get_recent_attempt(
     HealingAttemptRow or None
         The most recently closed terminal attempt, or None if none exists.
     """
+    if await get_publication_hold(pool, fingerprint):
+        # An unresolved publication outlives the cooldown window: report it as
+        # the blocking record so every cooldown gate treats the lineage as held.
+        return {"publication_held": True, "fingerprint": fingerprint}
+
     row = await pool.fetchrow(
         """
         SELECT *
@@ -823,6 +887,7 @@ async def create_dispatch_event(
     *,
     reason: str | None = None,
     attempt_id: uuid.UUID | None = None,
+    event_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Record a dispatch decision in ``public.healing_dispatch_events``.
 
@@ -850,11 +915,54 @@ async def create_dispatch_event(
         a ``novelty_join`` decision may link to the existing active attempt that
         was joined.
 
+    event_id:
+        Optional stable decision identity for retries of the same dispatch.
+        Reuses the first durable event, including its original reason; refuses
+        an identity already bound to a different finding lineage or decision.
+
     Returns
     -------
     uuid.UUID
-        The newly created dispatch event ID.
+        The durable dispatch event ID (newly created or reused).
     """
+    if event_id is not None:
+        inserted = await pool.fetchval(
+            """
+            INSERT INTO public.healing_dispatch_events
+                (fingerprint, butler_name, decision, reason, attempt_id, id)
+            VALUES ($1, $2, $3, $4, $5::uuid, $6::uuid)
+            ON CONFLICT (id) DO NOTHING
+            RETURNING id
+            """,
+            fingerprint,
+            butler_name,
+            decision,
+            reason,
+            str(attempt_id) if attempt_id is not None else None,
+            event_id,
+        )
+        if inserted is None:
+            # A separate statement sees a concurrent inserter after its commit;
+            # a same-statement CTE can retain an older invisible snapshot.
+            existing = await pool.fetchrow(
+                """
+                SELECT fingerprint, butler_name, decision, reason, attempt_id
+                FROM public.healing_dispatch_events WHERE id = $1
+                """,
+                event_id,
+            )
+            if existing is None or any(
+                existing[key] != value
+                for key, value in (
+                    ("fingerprint", fingerprint),
+                    ("butler_name", butler_name),
+                    ("decision", decision),
+                    ("attempt_id", attempt_id),
+                )
+            ):
+                raise ValueError("dispatch event identity is bound to a different decision")
+        return event_id
+
     event_id = await pool.fetchval(
         """
         INSERT INTO public.healing_dispatch_events

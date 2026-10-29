@@ -44,6 +44,8 @@ from butlers.testing.migration import (
     migration_db_name,
 )
 
+_THIS_FILE = Path(__file__).resolve()
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -633,7 +635,7 @@ async def _assert_l2_roster_seed_and_boot_retry_preserve_existing_authority(
     """A daemon can start before classification without seeding over owner policy."""
     from butlers.tools.switchboard.registry.registry import seed_missing_roster_butlers
 
-    roster_dir = Path(__file__).resolve().parents[2] / "roster"
+    roster_dir = _THIS_FILE.parents[2] / "roster"
     pool = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=4, init=register_jsonb_codec
     )
@@ -734,7 +736,7 @@ async def _assert_l2_receiver_records_under_narrow_role_without_dashboard_owner_
     )
     from butlers.core.utils import generate_uuid7_string
 
-    config = load_config(Path(__file__).resolve().parents[2] / "roster" / "health")
+    config = load_config(_THIS_FILE.parents[2] / "roster" / "health")
     expected = ExpectedDaemon(config.name, config.port, "butlers-up")
     pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
     assert pool is not None

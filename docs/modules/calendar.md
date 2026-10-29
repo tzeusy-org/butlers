@@ -16,10 +16,10 @@ Key capabilities:
 - **Conflict detection** -- pre-write overlap checking with configurable policies (suggest alternatives, fail, or allow with approval gate).
 - **Butler-managed events** -- dedicated subcalendar for butler-generated schedules and reminders, tagged with `BUTLER:` prefix.
 - **Polling-based sync** -- periodic sync from the provider with local projection for fast dashboard queries.
-- **Attendee management** -- RSVP tracking, add/remove attendees.
+- **Attendee data** -- retain provider attendee/RSVP details on events and attendee fields on event create/update. Standalone attendee add/remove tools are retired.
 - **Approval integration** -- overlap overrides and high-impact actions (e.g., cancelling events with external attendees) route through the approvals module.
 
-Source: `src/butlers/modules/calendar.py`.
+Source: `src/butlers/modules/calendar/` (the public module class is in `__init__.py`).
 
 ## Configuration
 
@@ -39,7 +39,7 @@ suggestion_count = 3
 [modules.calendar.sync]
 enabled = true
 interval_minutes = 5
-window_days = 30
+full_sync_window_days = 30
 ```
 
 ### Credentials
@@ -53,10 +53,10 @@ When `calendar_id` is not explicitly configured, the module auto-discovers or cr
 
 ## Tools Provided
 
-Tools are registered in `CalendarModule.register_tools` (`src/butlers/modules/calendar.py`); read
+Tools are registered in `CalendarModule.register_tools` (`src/butlers/modules/calendar/__init__.py`); read
 it for the current names and signatures. The families:
 
-- **Event CRUD** (`calendar_*_event`, `calendar_*_event_instance`, attendee add/remove) -- read and
+- **Event CRUD** (`calendar_*_event`, `calendar_*_event_instance`) -- read and
   write provider events; every create/update runs through the conflict engine below. Instance
   tools edit or delete one occurrence of a recurring event.
 - **Butler-managed events** (`calendar_*_butler_event`) -- schedules and reminders the butler owns,
@@ -67,6 +67,10 @@ it for the current names and signatures. The families:
   `calendar_propose_event` (stages a pending proposal for review without writing to the provider).
 - **Calendar and sync management** -- list calendars, set the primary calendar, check sync
   status, and force a sync cycle.
+
+The retired `attendees` group registers no tools, even when explicitly listed. Default and empty
+group configurations still expose every retained group. Approval-bound invitation responses and
+their historical-owner fence retain their existing registration and authority contracts.
 
 ## Conflict Detection
 
@@ -95,7 +99,7 @@ Projection status is tracked as `fresh`, `stale`, or `failed`.
 
 ## Rate Limiting
 
-Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).
+Ordinary Google Calendar API calls include retry logic for `429 Too Many Requests` and `503 Service Unavailable` with exponential backoff (max 3 retries, base 1s).
 
 ## Database Tables
 
@@ -105,7 +109,52 @@ The module does not own dedicated Alembic migrations (`migration_revisions()` re
 
 None. The calendar module is a leaf module. When the approvals module is co-loaded, the daemon wires an approval enqueuer callback via `set_approval_enqueuer()`.
 
+## Package ownership
+
+`butlers.modules.calendar` remains the real import surface. Its `__init__.py` defines the
+single `CalendarModule` and directly exports the existing types and helpers from their
+owners. Plain behavior mixins operate on that same module instance; static tool registrars
+run synchronously inside `register_tools` and preserve typed callable signatures and order.
+
+- `models.py`, `constants.py`, `errors.py`, and `time_helpers.py`: validated values and primitives.
+- `provider.py`, `google.py`, `google_mapping.py`, and `oauth.py`: the provider contract,
+  Google transport/conversion and token lifecycle.
+- `event_tools.py`, `butler_events.py`, `tools.py`, and `response_tools.py`: registered callables.
+- `mutations.py`, `recurrence.py`, and `conflicts.py`: existing permission, audit, action-log,
+  recurrence and availability behavior.
+- `projection.py`, `internal_projection.py`, `sync.py`, and `sync_queue.py`: the single live
+  projection and sync engine, including durable force-sync commands and internal sources.
+- `reminders.py`: native reminder operations, due dispatch and reminder tool registration.
+
+The external `calendar_response.py` and `calendar_response_fence.py` retain their existing
+single implementations. This mechanical split does not change response ownership, retire
+the fence, add a response-only registration group or introduce a shared mutation runner.
+The later authorized sync-engine cutover must remove the single implementation in these
+owners, without keeping a second engine. Every Calendar package Python file is limited to
+2,000 physical lines and `CalendarModule.register_tools` to 300 lines.
+
 ## Implementation Notes
+
+- Existing `calendar.write` effect checks refuse a missing permission pool, failed read or malformed row with a typed transient `PermissionUnavailable` before provider writes and workspace mutation preparation. A readable missing row remains default-allow; explicit revocations and approvals still apply. Every fresh or deferred execution rechecks state without a new retry loop. The staged bu-30sah4 fix protects effects first; bu-svqpzo.3 owns the remaining shared callers and final fail-closed policy including spawn.
+
+- `GET /api/calendar/workspace/invitations` reads the current provider projection
+  without provider requests or RSVP writes. Only an explicit `self=true`, exact
+  `needsAction` status and literal `response_status_explicit=true` marker admit an
+  unanswered occurrence. Google parsing retains this projection-only provenance in an ordered
+  `attendee_status_provenance` companion binding email and status; projected
+  attendees remain exactly the unchanged MCP payloads. Unmarked legacy/defaulted
+  status is unknown, omitted and suppresses empty/calm admission until ordinary
+  sync supplies genuine provenance; reads never backfill it.
+- Invitation lookup discovers bounded-window identities, then includes relevant
+  same-origin tombstones and moved copies before deduplication and final window,
+  eligibility and keyset slicing. A stale unanswered copy cannot resurrect a
+  newer accepted, cancelled or out-of-window copy. The window is at
+  most 90 days, limit at most 200, and cursors bind range/timezone. Organizer
+  absence stays unknown; an organizer-attendee fallback is labelled. Radar doors
+  contain only actually observed matching occurrence IDs. Source or conflict
+  failure retains successful rows with unavailable status and named degraded
+  sources. The Calendar strip preserves these states during refresh and has no
+  response action or mutation receipt; invitation response authority is separate.
 
 - `CalendarConfig` requires `provider`; `calendar_id` is optional and resolved at startup.
 - Core `scheduled_tasks` carries calendar-linkage columns (`timezone`, `start_at`, `end_at`,
@@ -128,11 +177,14 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   removes the provider copy before the authoritative local row.
 - Workspace: `/butlers/calendar` (`CalendarWorkspacePage.tsx`) reads `GET /api/calendar/workspace`
   and `/workspace/meta` via `use-calendar-workspace.ts`. Tests cover URL-backed `view=user|butler`,
-  butler-lane grouping, and both create/edit payload shapes. The `dashboard-*`
-  OpenSpec specs must list the mutation endpoints (`/api/calendar/workspace/user-events`, `/butler-events`), the v1
-  recurrence scope (`series` only for provider recurring updates/deletes), and `projection_freshness`
-  / `request_id`.
-- `src/butlers/modules/calendar.py::_normalize_recurrence()` rejects any rule containing `\n` or
+  butler-lane grouping, and the butler-event create/edit payload shapes. The workspace is an
+  operator view (bu-q11586.7): the dashboard no longer edits, deletes, drags, dedups, exports or
+  undoes Google events, and `POST /api/calendar/workspace/user-events` accepts `action: "create"`
+  only (the quick-add confirmation). The `dashboard-*` OpenSpec specs list that route and
+  `/butler-events`, `projection_freshness` and `request_id`. Every calendar MCP write tool,
+  including the provider update/delete and recurrence-scope tools, stays registered for
+  butlers and chat except the separately retired standalone attendee add/remove tools.
+- `src/butlers/modules/calendar/models.py::_normalize_recurrence()` rejects any rule containing `\n` or
   `\r` (iCalendar injection) and
   checks `FREQ` / `DTSTART` / `DTEND` case-insensitively. `CalendarEventCreate` and
   `CalendarEventUpdate` normalise `recurrence_rule` before any provider call.
@@ -147,7 +199,7 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `approved` for the same tool. With approvals unavailable it returns `approval_unavailable` and
   never writes.
 - Malformed provider payloads raise `ValueError`; `CalendarAuthError` is reserved for auth and
-  transport failures. `src/butlers/modules/calendar.py::_GoogleProvider` validates credentials
+  transport failures. `src/butlers/modules/calendar/google.py::_GoogleProvider` validates credentials
   before creating its owned `httpx.AsyncClient`, so a credential error cannot leak a client.
 - Read tools (`calendar_list_events`, `calendar_get_event`) go through the active
   `CalendarProvider`, and a per-call `calendar_id` override never mutates the configured default.
@@ -155,12 +207,13 @@ None. The calendar module is a leaf module. When the approvals module is co-load
   `calendar_sync_cursors`, `calendar_action_log`) are core tables in every migrated schema, keyed
   for idempotency by `UNIQUE (source_id, origin_ref)`, `UNIQUE (event_id, origin_instance_ref)` and
   `UNIQUE (idempotency_key)`, with GiST range indexes for window queries.
-- Workspace mutations (`POST /api/calendar/workspace/user-events` and `/butler-events`, envelope
-  `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
+- Workspace mutations (`POST /api/calendar/workspace/user-events` with `action: "create"` and
+  `/butler-events`, envelope `{butler_name, action, request_id?, payload}`) proxy to MCP tools and return projection freshness
   (from the tool, else `calendar_sync_status`). A repeat `request_id` replays the stored
   `calendar_action_log` result instead of re-executing; approval-queued replays of butler-event
   delete/toggle call `calendar_delete_butler_event(..., _approval_bypass=True)` /
-  `calendar_toggle_butler_event(..., _approval_bypass=True)` (`src/butlers/modules/calendar.py`).
+  `calendar_toggle_butler_event(..., _approval_bypass=True)`
+  (`src/butlers/modules/calendar/butler_events.py`).
 - `POST /api/calendar/workspace/sync` keeps the raw `query_calendar_sources` fan-out, picks one
   canonical owner per calendar (enabled, `core` capability, freshest) and sends it a single
   `calendar_force_sync(queue=true)`, answering `202`. The module persists and serialises the command
@@ -171,3 +224,113 @@ None. The calendar module is a leaf module. When the approvals module is co-load
 
 - [Module System](module-system.md)
 - [Approvals Module](approvals.md)
+
+## Approval-bound invitation responses
+
+`calendar_respond` is opt-in (`response_enabled = true`) and requires the
+explicit `response` group, an enabled owning approval gate and the captured shared
+executor. Only the Messenger and Relationship source configurations install
+this capability. Messenger selects only `groups = ["response"]`; Relationship
+selects `groups = ["core", "response"]` and retains normal Calendar startup.
+Omitted or empty groups retain the full tool surface. An explicit group list
+with responses enabled must include `response`; `core` alone does not select it.
+
+Response-only startup resolves the configured account and canonical DB-backed
+credentials and constructs the lazy provider. It does not discover or create
+calendars, restore or persist calendar targets, clean source ledgers, recover or
+drain force-sync commands, or start sync/internal projection pollers. Response
+admission still requires the existing eligible projected source and verified
+credential account; missing projection state never triggers discovery or
+backfill. Successful approved responses retain their existing projection updates.
+Both owners keep the direct historical `calendar_response_fence_status` read,
+including when response execution is disabled. An invitation owned by a different
+daemon is not rerouted to borrow it. Public arguments are the projection occurrence `entry_id`, an
+accepted/declined/tentative choice, a UUID `request_id` and `send_updates`
+(default `none`; `all` and `externalOnly` are explicit notification choices).
+
+The actual registered pre-gate preparer resolves the owning pool, source,
+credential account, live calendar access role, explicit self participant and
+provider occurrence/ETag. It atomically parks the immutable command with its
+pending action in the existing owning tables. A caller cannot supply private
+bindings or select an account, ETag, actor, recipient, approval or bypass.
+Standing rules and owner-recipient exemptions do not execute this operation.
+
+Authenticated `POST /api/calendar/workspace/respond` composes that exact command
+with the existing verified decision/audit and owning dispatch. The executor
+binds the original arguments to its own task and a verified human decision.
+Token readiness precedes a separately committed one-attempt fence. The dedicated
+Google participant-only PATCH sets `attendeesOmitted=true`, sends only the
+verified self response, and includes `If-Match`; it never uses the generic
+401/429/503 write retry path. Existing operations retain their retry behavior.
+
+Cancellation, restart or an unattributable provider result retains uncertainty.
+Neither a fresh request key, provider readback, source-row replacement nor
+ordinary approval retention clears the physical-target fence. The existing
+action-log record is retained; any future action-log retention must preserve an
+unresolved fence. An attributable provider response is committed before
+projection, so projection failure remains applied-with-projection-unavailable.
+
+Physical-target admission spans the fixed historical response owners Messenger
+and Relationship. Each retains its own command and approval. While holding the
+existing target advisory transaction lock, the claimant checks its own log and
+calls the peer's content-blind `calendar_response_fence_status` through
+Switchboard. The read tool stays registered when response execution is disabled.
+It returns only a protocol-bound clear/unresolved/unavailable verdict. A fresh
+random advisory nonce plus the claimant backend PID lets the peer verify both
+locks in its own database through ordinary-role `pg_locks`; a different database,
+old protocol, incomplete roster, missing peer or malformed unresolved evidence
+cannot authorize egress. No cross-schema SQL or new shared writable table is used.
+
+Coordination uses a separate ordinary-role pool of two connections per daemon,
+one outgoing claim at a time and a ten-second coordination deadline. A peer
+probe only reads its own log and never calls another peer. The transaction uses
+READ COMMITTED, and the marker commits before lock release and provider I/O.
+Normal approval executor row locks remain unchanged. Failed coordination leaves
+the durable command phase intact; retry rechecks that phase, including an
+ambiguous commit, rather than resetting it. Status queries return bounded EXISTS
+results, not historical payloads. A new response owner requires extending the
+historical census on every existing owner before enabling writes.
+
+Deployment must disable new response execution and drain both existing writers
+before activating this protocol on both daemons. Confirm ordinary-role lock
+visibility and both peer tools before re-enabling responses; a partial rollout
+cannot establish the cross-owner invariant while an old writer remains active.
+If rollout fails, keep responses disabled and preserve the owning logs. Rolling
+back to active old writers would restore the bypass. No migration or additional
+database grants are required. Future history retention must preserve all
+unresolved markers and their historical owners.
+
+The mounted controls use the same typed handler for contextual, keyboard and
+palette actions. Receipt state survives inbox-row removal; outcome refresh
+reuses the original key and never optimistically labels an invitation accepted.
+The dashboard offers no Undo for an invitation answer: the `/undo/{action_id}`
+route was removed with the operator-view cut (bu-q11586.7), so a receipt reports
+the outcome only. The module's server-owned inverse reservation
+(`reserve_response_inverse`) and the stored-inverse receipt read below are
+unchanged.
+
+Response review links use the existing approval dossier with the distinct
+`review_source=calendar:<owning-butler>` read selector. The server checks the
+complete configured approvals-source census and the exact command/pending
+private binding before selecting that pool. Missing, duplicate, degraded or
+changed bindings withhold review; the Messenger notification-review selector
+retains its separate admission. Rejected/expired approvals remain terminal on
+registered replay and cannot reappear as a new pending decision.
+
+### Response receipt recovery
+
+Invitation controls use the physical schema that owns the displayed entry, not
+another schema selected for logical source health. A freshest copy in a butler
+without response capability remains visible without response controls; the UI
+does not substitute an older supported copy. A matching writable response owner
+retains its controls.
+
+`GET /api/calendar/workspace/responses/{command_id}?source_butler=<owner>` reads
+the existing durable response receipt. `inverse=true` follows the original
+command's stored inverse claim and verifies the inverse's reciprocal command
+binding. Both reads repeat complete approval-owner admission and do not dispatch,
+approve, reserve, or call a provider. The mounted receipt keeps this identity when
+an inbox row disappears or the undo HTTP reply is lost. A pending inverse remains
+pending until the existing approval executor completes it; its owner-qualified
+approval dossier is the execution recovery door. An unavailable read retains the
+last known receipt and does not replay the original response.

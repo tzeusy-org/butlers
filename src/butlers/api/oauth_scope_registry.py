@@ -22,6 +22,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from butlers.connectors.catalog import (
+    UNSUPPORTED_AUTH,
+    auth_applicability,
+    oauth_scope_manifests,
+)
+
 # ---------------------------------------------------------------------------
 # Scope declaration types
 # ---------------------------------------------------------------------------
@@ -103,226 +109,24 @@ class ScopeManifest:
         return {d.name: d for d in self.all_decls()}
 
 
-# ---------------------------------------------------------------------------
-# Per-connector scope manifests
-# ---------------------------------------------------------------------------
-#
-# These are the required scope sets per connector type. The scope strings MUST
-# match those returned by _compose_provider_default_scopes in oauth.py.
-#
-# When butler.toml [oauth.<provider>] scopes exist, they take precedence at
-# OAuth start time (bu-a2l98). The manifests here define the *minimum required*
-# set that this backend surface checks against observed_scopes.
-
-_SPOTIFY_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="user-read-email",
-            serif_note="Used to identify the Spotify account",
-        ),
-        ScopeDecl(
-            name="user-read-private",
-            serif_note="Used to read account subscription level",
-        ),
-        ScopeDecl(
-            name="user-read-recently-played",
-            serif_note="Used to poll listening history every 10 minutes",
-        ),
-        ScopeDecl(
-            name="user-top-read",
-            serif_note="Powers the weekly listening-summary skill",
-        ),
-        ScopeDecl(
-            name="user-read-playback-state",
-            serif_note="Used to detect what is currently playing",
-        ),
-    ],
-    optional=[
-        ScopeDecl(
-            name="user-modify-playback-state",
-            serif_note="Allows controlling playback on your behalf",
-            category="optional",
-        ),
-        ScopeDecl(
-            name="user-library-read",
-            serif_note="Allows reading your saved tracks and albums",
-            category="optional",
-        ),
-    ],
-    sensitive=[
-        ScopeDecl(
-            name="playlist-modify-public",
-            serif_note="Grants write access to your public Spotify playlists",
-            category="sensitive",
-            approval_reason=(
-                "Required only if you ask the butler to create or edit public playlists"
-            ),
-        ),
-        ScopeDecl(
-            name="playlist-modify-private",
-            serif_note="Grants write access to your private Spotify playlists",
-            category="sensitive",
-            approval_reason=(
-                "Required only if you ask the butler to create or edit private playlists"
-            ),
-        ),
-    ],
-)
-
-_GMAIL_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="openid",
-            serif_note="Used to verify your Google identity",
-        ),
-        ScopeDecl(
-            name="email",
-            serif_note="Used to read your Google account email address",
-        ),
-        ScopeDecl(
-            name="profile",
-            serif_note="Used to read your Google account display name",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/gmail.readonly",
-            serif_note="Used to read your Gmail messages for ingestion",
-        ),
-    ],
-    optional=[
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/contacts",
-            serif_note="Used to sync your Google Contacts into the butler contact registry",
-            category="optional",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/contacts.readonly",
-            serif_note="Used for read-only contact lookups",
-            category="optional",
-        ),
-    ],
-    sensitive=[
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/gmail.modify",
-            serif_note="Grants the butler ability to modify your Gmail messages",
-            category="sensitive",
-            approval_reason=(
-                "Required only if you ask the butler to archive, label, or reply to email"
-            ),
-        ),
-    ],
-)
-
-_GOOGLE_CALENDAR_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="openid",
-            serif_note="Used to verify your Google identity",
-        ),
-        ScopeDecl(
-            name="email",
-            serif_note="Used to read your Google account email address",
-        ),
-        ScopeDecl(
-            name="profile",
-            serif_note="Used to read your Google account display name",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/calendar",
-            serif_note="Used to read and write your Google Calendar events",
-        ),
-    ],
-)
-
-_GOOGLE_DRIVE_MANIFEST = ScopeManifest(
-    # version 2: required scope corrected from drive.readonly to full drive.
-    # The google_drive module writes files and hard-fails startup without the
-    # full drive scope (modules/google_drive: _DRIVE_SCOPE check), so the single
-    # OAuth grant backing this connector must cover full read/write drive. The
-    # connector ingestion path alone only reads, but the grant is shared.
-    version=2,
-    required=[
-        ScopeDecl(
-            name="openid",
-            serif_note="Used to verify your Google identity",
-        ),
-        ScopeDecl(
-            name="email",
-            serif_note="Used to read your Google account email address",
-        ),
-        ScopeDecl(
-            name="profile",
-            serif_note="Used to read your Google account display name",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/drive",
-            serif_note="Used to read your Drive files for ingestion and to manage files",
-        ),
-    ],
-)
-
-_GOOGLE_HEALTH_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="openid",
-            serif_note="Used to verify your Google identity",
-        ),
-        ScopeDecl(
-            name="email",
-            serif_note="Used to read your Google account email address",
-        ),
-        ScopeDecl(
-            name="profile",
-            serif_note="Used to read your Google account display name",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-            serif_note="Used to read your sleep data from Google Health",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-            serif_note="Used to read your activity and fitness data from Google Health",
-        ),
-        ScopeDecl(
-            name="https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
-            serif_note="Used to read your health metrics from Google Health",
-        ),
-    ],
-)
-
-_DISCORD_MANIFEST = ScopeManifest(
-    version=1,
-    required=[
-        ScopeDecl(
-            name="identify",
-            serif_note="Used to read your Discord user ID and username",
-        ),
-        ScopeDecl(
-            name="guilds",
-            serif_note="Used to list the servers you belong to",
-        ),
-        ScopeDecl(
-            name="messages.read",
-            serif_note="Used to read messages from channels you have access to",
-        ),
-    ],
-)
-
-# ---------------------------------------------------------------------------
-# Scope manifest registry — maps connector_type → ScopeManifest
-# ---------------------------------------------------------------------------
-
+# Neutral immutable descriptors are adapted into the existing public API types.
 _OAUTH_MANIFESTS: dict[str, ScopeManifest] = {
-    "spotify": _SPOTIFY_MANIFEST,
-    "gmail": _GMAIL_MANIFEST,
-    "google_calendar": _GOOGLE_CALENDAR_MANIFEST,
-    "google_drive": _GOOGLE_DRIVE_MANIFEST,
-    "google_health": _GOOGLE_HEALTH_MANIFEST,
-    "discord": _DISCORD_MANIFEST,
-    "discord_user": _DISCORD_MANIFEST,  # same OAuth surface, different connector name
+    key: ScopeManifest(
+        version=manifest.version,
+        required=[
+            ScopeDecl(d.name, d.serif_note, d.category, d.approval_reason)
+            for d in manifest.required
+        ],
+        optional=[
+            ScopeDecl(d.name, d.serif_note, d.category, d.approval_reason)
+            for d in manifest.optional
+        ],
+        sensitive=[
+            ScopeDecl(d.name, d.serif_note, d.category, d.approval_reason)
+            for d in manifest.sensitive
+        ],
+    )
+    for key, manifest in oauth_scope_manifests().items()
 }
 
 
@@ -366,114 +170,24 @@ class ConnectorAuthEntry:
 
 
 APPLICABILITY_MATRIX: dict[str, ConnectorAuthEntry] = {
-    "spotify": ConnectorAuthEntry(
-        connector_type="spotify",
-        credential_model="oauth2_pkce",
-        oauth_supported=True,
-    ),
-    "gmail": ConnectorAuthEntry(
-        connector_type="gmail",
-        credential_model="google_oauth",
-        oauth_supported=True,
-    ),
-    "google_calendar": ConnectorAuthEntry(
-        connector_type="google_calendar",
-        credential_model="google_oauth",
-        oauth_supported=True,
-    ),
-    "google_drive": ConnectorAuthEntry(
-        connector_type="google_drive",
-        credential_model="google_oauth",
-        oauth_supported=True,
-    ),
-    "google_health": ConnectorAuthEntry(
-        connector_type="google_health",
-        credential_model="google_oauth",
-        oauth_supported=True,
-    ),
-    "discord": ConnectorAuthEntry(
-        connector_type="discord",
-        credential_model="oauth2",
-        oauth_supported=True,
-    ),
-    "discord_user": ConnectorAuthEntry(
-        connector_type="discord_user",
-        credential_model="oauth2",
-        oauth_supported=True,
-    ),
-    "telegram_bot": ConnectorAuthEntry(
-        connector_type="telegram_bot",
-        credential_model="bot_token",
-        oauth_supported=False,
-        alt_surface_kind="static-token",
-        alt_surface_remediation_path="/settings/secrets#telegram-bot",
-        note="Telegram bot token — rotate via Settings",
-    ),
-    "telegram_user_client": ConnectorAuthEntry(
-        connector_type="telegram_user_client",
-        credential_model="tdlib_session",
-        oauth_supported=False,
-        alt_surface_kind="session-validity",
-        alt_surface_remediation_path="/settings/connectors/telegram-user-client",
-        note="Telegram user client TDLib session — re-pair via mobile flow",
-    ),
-    "owntracks": ConnectorAuthEntry(
-        connector_type="owntracks",
-        credential_model="bearer_token",
-        oauth_supported=False,
-        alt_surface_kind="static-token",
-        alt_surface_remediation_path="/settings/secrets#owntracks",
-        note="OwnTracks bearer token — regenerate via Settings",
-    ),
-    "home_assistant": ConnectorAuthEntry(
-        connector_type="home_assistant",
-        credential_model="long_lived_access_token",
-        oauth_supported=False,
-        alt_surface_kind="static-token",
-        alt_surface_remediation_path="/settings/secrets#home-assistant",
-        note="Home Assistant long-lived access token — rotate via HA UI",
-    ),
-    "whatsapp": ConnectorAuthEntry(
-        connector_type="whatsapp",
-        credential_model="meta_business_app",
-        oauth_supported=False,
-        alt_surface_kind="session-validity",
-        alt_surface_remediation_path="/settings/connectors/whatsapp",
-        note="WhatsApp Meta business app credentials — rotate via Meta Business",
-    ),
-    "steam": ConnectorAuthEntry(
-        connector_type="steam",
-        credential_model="api_key",
-        oauth_supported=False,
-        alt_surface_kind="static-token",
-        alt_surface_remediation_path="/settings/secrets#steam",
-        note="Steam API key — regenerate via Steam Web API",
-    ),
-    "live-listener": ConnectorAuthEntry(
-        connector_type="live-listener",
-        credential_model="internal",
-        oauth_supported=False,
-        alt_surface_kind="static-token",
-        alt_surface_remediation_path="/settings/connectors",
-        note="Internal connector — no remote auth required",
-    ),
-    "filtered_events": ConnectorAuthEntry(
-        connector_type="filtered_events",
-        credential_model="internal",
-        oauth_supported=False,
-        alt_surface_kind="static-token",
-        alt_surface_remediation_path="/settings/connectors",
-        note="Internal connector — no remote auth required",
-    ),
+    selector: ConnectorAuthEntry(
+        connector_type=selector,
+        credential_model=auth.credential_model,
+        oauth_supported=auth.oauth_supported,
+        alt_surface_kind=auth.alt_surface_kind,
+        alt_surface_remediation_path=auth.alt_surface_remediation_path,
+        note=auth.note,
+    )
+    for selector, auth in auth_applicability().items()
 }
 
 _UNSUPPORTED_FALLBACK = ConnectorAuthEntry(
     connector_type="unknown",
-    credential_model="unknown",
-    oauth_supported=False,
-    alt_surface_kind="static-token",
-    alt_surface_remediation_path="/settings/connectors",
-    note="Connector type not recognized — no OAuth surface available",
+    credential_model=UNSUPPORTED_AUTH.credential_model,
+    oauth_supported=UNSUPPORTED_AUTH.oauth_supported,
+    alt_surface_kind=UNSUPPORTED_AUTH.alt_surface_kind,
+    alt_surface_remediation_path=UNSUPPORTED_AUTH.alt_surface_remediation_path,
+    note=UNSUPPORTED_AUTH.note,
 )
 
 

@@ -38,8 +38,18 @@ down_revision = "core_167"
 branch_labels = None
 depends_on = None
 
-_OLD_OUTCOMES = ("delivered", "coalesced", "deferred", "suppressed")
-_NEW_OUTCOMES = (*_OLD_OUTCOMES, "failed")
+# This installer replays for each new core schema against shared public rows.
+# Carry the current cumulative vocabulary, including values introduced later.
+_OUTCOMES = (
+    "delivered",
+    "coalesced",
+    "deferred",
+    "suppressed",
+    "failed",
+    "expired",
+    "withdrawn",
+    "amended",
+)
 
 
 def upgrade() -> None:
@@ -50,14 +60,13 @@ def upgrade() -> None:
     op.execute(f"""
         ALTER TABLE public.attention_ledger
         ADD CONSTRAINT chk_attention_ledger_outcome
-        CHECK (outcome IN ({", ".join(f"'{o}'" for o in _NEW_OUTCOMES)}))
+        CHECK (outcome IN ({", ".join(f"'{o}'" for o in _OUTCOMES)}))
     """)
 
 
 def downgrade() -> None:
-    # Existing 'failed' rows would violate the narrower constraint -- fold
-    # them back into 'deferred' (the pre-migration catch-all) so the
-    # downgrade never leaves the table in a state the old constraint rejects.
+    # Retain the documented failed -> deferred downgrade representation.
+    # Other schemas can still own newer outcomes, so the CHECK stays cumulative.
     op.execute("""
         UPDATE public.attention_ledger
         SET outcome = 'deferred'
@@ -70,5 +79,5 @@ def downgrade() -> None:
     op.execute(f"""
         ALTER TABLE public.attention_ledger
         ADD CONSTRAINT chk_attention_ledger_outcome
-        CHECK (outcome IN ({", ".join(f"'{o}'" for o in _OLD_OUTCOMES)}))
+        CHECK (outcome IN ({", ".join(f"'{o}'" for o in _OUTCOMES)}))
     """)

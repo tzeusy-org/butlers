@@ -133,6 +133,17 @@ class TestPruneSessionProcessLogs:
 
 
 class TestPruneFilteredEventsPartitions:
+    @pytest.fixture(autouse=True)
+    def _june_2026(self, monkeypatch):
+        """Pin the pruner's clock to the 2026-06 these partition names assume."""
+
+        class _June2026(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 6, 18, tzinfo=tz)
+
+        monkeypatch.setattr("butlers.jobs.retention.datetime", _June2026)
+
     async def test_dry_run_lists_eligible_without_dropping(self):
         """With enabled=True, dry_run=True: eligible list returned, no DROP issued."""
         # Simulate partitions: current month 2026-06, keep_months=12 → cutoff = 2025-06

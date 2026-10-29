@@ -30,20 +30,11 @@ class LifestyleModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "lifestyle"
+    name = "lifestyle"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return LifestyleModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # taste-ledger tables live in roster/lifestyle/migrations
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

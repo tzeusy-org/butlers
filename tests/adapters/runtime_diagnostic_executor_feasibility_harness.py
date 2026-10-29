@@ -589,7 +589,7 @@ def _bounded_output(process, input_data=None):
 
     threads = [
         threading.Thread(target=drain, args=(stream, buffer), daemon=True)
-        for stream, buffer in zip((process.stdout, process.stderr), buffers)
+        for stream, buffer in zip((process.stdout, process.stderr), buffers, strict=True)
     ]
     for thread in threads:
         thread.start()

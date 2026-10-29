@@ -8,11 +8,13 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     _ALLOWED_PROVIDERS_BY_CHANNEL,
-    RouteInputV1,
     parse_ingest_envelope,
     parse_notify_request,
+)
+from butlers.tools.switchboard.routing.contracts import (
+    RouteInputV1,
     parse_route_envelope,
 )
 
@@ -46,6 +48,13 @@ def _build_valid_ingest_envelope(
         "sender": {"identity": sender_identity},
         "payload": {"raw": {"text": text}, "normalized_text": text},
     }
+    if channel == "telegram_bot":
+        envelope["event"].update(
+            {
+                "external_conversation_id": "telegram:user123",
+                "reply_target_ref": "user123:1",
+            }
+        )
     if idempotency_key:
         envelope["control"] = {"idempotency_key": idempotency_key}
     return envelope
@@ -360,7 +369,6 @@ def test_notify_contracts():
 
 def test_approval_request_contract_requires_actions_and_decision_tokens():
     """approval_request carries deterministic action affordances, never a bare page."""
-    action_url = "https://dashboard.example.test/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     approval_request = {
         "schema_version": "notify.v1",
         "origin_butler": "relationship",
@@ -374,14 +382,15 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
             {
                 "verb": "approve",
                 "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:a:0123456789abcdef",
-                "dashboard_url": action_url,
             },
             {
                 "verb": "reject",
                 "callback_token": "apr1:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:r:0123456789abcdef",
-                "dashboard_url": action_url,
             },
-            {"verb": "open_dashboard", "dashboard_url": action_url},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
         ],
     }
 
@@ -401,8 +410,11 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
     unsigned_approve = {
         **approval_request,
         "actions": [
-            {"verb": "approve", "dashboard_url": action_url},
-            {"verb": "open_dashboard", "dashboard_url": action_url},
+            {"verb": "approve"},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
         ],
     }
     with pytest.raises(ValidationError, match="callback_token"):
@@ -520,10 +532,10 @@ def test_approval_request_contract_requires_actions_and_decision_tokens():
         )
 
 
+# Spec: REQ-approval-delivery-intent-recovery-004, REQ-core-notify-028; typed recovery shape validates correlation without exporting local authority.
 def test_approval_recovery_contract_is_closed_and_reconcile_is_correlation_only():
     subject_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     subject_key = f"approval:relationship:{subject_id}"
-    action_url = f"https://dashboard.example.test/approvals/{subject_id}"
     handoff = {
         "schema_version": "notify.v1",
         "origin_butler": "relationship",
@@ -537,14 +549,15 @@ def test_approval_recovery_contract_is_closed_and_reconcile_is_correlation_only(
             {
                 "verb": "approve",
                 "callback_token": "synthetic-callback",
-                "dashboard_url": action_url,
             },
             {
                 "verb": "reject",
                 "callback_token": "synthetic-callback",
-                "dashboard_url": action_url,
             },
-            {"verb": "open_dashboard", "dashboard_url": action_url},
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            },
         ],
         "recovery": {
             "operation": "handoff",
@@ -666,3 +679,123 @@ def test_ingest_control_interaction_eligible():
     parsed3 = parse_ingest_envelope(base3)
     assert parsed3.control.interaction_eligible is False
     assert parsed3.control.idempotency_key == "idem-abc"
+
+
+def test_ingest_control_accepts_only_known_automated_kinds():
+    """bu-s11n0s.18: connectors mark auto-replies and bounces; nothing else is accepted."""
+    assert parse_ingest_envelope(_build_valid_ingest_envelope()).control.automated_kind is None
+    for kind in ("auto_reply", "bounce"):
+        base = _build_valid_ingest_envelope()
+        base["control"] = {"automated_kind": kind}
+        assert parse_ingest_envelope(base).control.automated_kind == kind
+    base = _build_valid_ingest_envelope()
+    base["control"] = {"automated_kind": "newsletter"}
+    with pytest.raises(ValidationError):
+        parse_ingest_envelope(base)
+
+
+@pytest.mark.parametrize(
+    "origin,route_key,params,expected_path",
+    [
+        (
+            "https://dashboard.example.test",
+            "approval_detail",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            "/approvals/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        ),
+        ("https://dashboard.example.test/", "approvals_queue", {}, "/approvals"),
+        ("https://dashboard.example.test:443", "approvals_queue", {}, "/approvals"),
+        ("https://dashboard.example.test", "missing", {}, None),
+        ("https://dashboard.example.test", "approval_detail", {"action_id": "not-a-uuid"}, None),
+        ("https://dashboard.example.test", "approval_detail", {"action_id": 1}, None),
+        (
+            "https://dashboard.example.test",
+            "approvals_queue",
+            {"redirect": "https://attacker.example.test"},
+            None,
+        ),
+        ("", "approvals_queue", {}, None),
+        ("http://dashboard.example.test", "approvals_queue", {}, None),
+        ("https://user@dashboard.example.test", "approvals_queue", {}, None),
+        ("https://127.0.0.1", "approvals_queue", {}, None),
+        ("https://127.1", "approvals_queue", {}, None),
+        ("https://0x7f000001", "approvals_queue", {}, None),
+        ("https://[::1]", "approvals_queue", {}, None),
+        ("https://xn--bcher-kva.example", "approvals_queue", {}, None),
+        ("https://dаshboard.example.test", "approvals_queue", {}, None),
+        ("https://K.example.test", "approvals_queue", {}, None),
+        ("https://dashboard.example.test:444", "approvals_queue", {}, None),
+        ("https://dashboard.example.test/path", "approvals_queue", {}, None),
+        ("https://dashboard.example.test?next=unsafe", "approvals_queue", {}, None),
+        ("https://dashboard.example.test#fragment", "approvals_queue", {}, None),
+        (
+            "https://" + ".".join(["a" * 61] * 4),
+            "approval_detail",
+            {"action_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+            None,
+        ),
+    ],
+)
+def test_self_reference_resolution_and_inert_fallback(
+    monkeypatch, origin, route_key, params, expected_path
+):
+    from butlers.tools.switchboard.notification.self_links import (
+        parse_delivered_notify_request,
+        resolve_self_links,
+    )
+
+    monkeypatch.setenv("DASHBOARD_URL", origin)
+    request = {
+        "schema_version": "notify.v1",
+        "origin_butler": "relationship",
+        "delivery": {
+            "intent": "approval_request",
+            "channel": "telegram",
+            "recipient": "12345",
+            "message": "Approval needed",
+        },
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": route_key, "params": params},
+            }
+        ],
+    }
+    resolved = resolve_self_links(parse_notify_request(request))
+    action = resolved.actions[0]
+    if expected_path:
+        assert action.verb == "open_link"
+        assert action.url == "https://dashboard.example.test" + expected_path
+        assert action.host == "dashboard.example.test"
+        assert action.provenance == "dashboard"
+        assert action.label == "Open dashboard.example.test (dashboard)"
+        # Private output is not accepted back through the public tool contract.
+        with pytest.raises(ValidationError, match="server delivery output"):
+            parse_notify_request(resolved.model_dump(mode="json", exclude_none=True))
+    else:
+        assert action.verb == "open_dashboard"
+        assert resolved.delivery.message == "Approval needed\n[link not verified]"
+        assert "url" not in action.model_dump()
+    assert (
+        parse_delivered_notify_request(resolved.model_dump(mode="json", exclude_none=True))
+        == resolved
+    )
+    assert request["delivery"]["message"] == "Approval needed"
+
+
+def test_self_route_registry_matches_actual_phone_entry_paths():
+    import re
+    from pathlib import Path
+
+    from butlers.tools.switchboard.notification.self_links import SELF_ROUTES
+
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "frontend/tests/e2e/phone-entry-routes.ts").read_text()
+    constants = dict(re.findall(r'const (\w+) = "([0-9a-f-]{36})";', source))
+    actual = set(re.findall(r'path: ["`]([^"`]+)["`]', source))
+    for route in SELF_ROUTES.values():
+        if "{action_id}" in route:
+            assert "APPROVAL_ID" in constants
+            uuid.UUID(constants["APPROVAL_ID"])
+            route = route.replace("{action_id}", "${APPROVAL_ID}")
+        assert route in actual, route

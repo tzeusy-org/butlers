@@ -467,22 +467,11 @@ class QaModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "qa"
+    name = "qa"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return QaConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # QA tables (qa_patrols, qa_findings, qa_dismissals) are in the public
-        # schema and managed by the core migration chain (core_051–core_055).
-        return None
 
     # ------------------------------------------------------------------
     # Sensitivity metadata

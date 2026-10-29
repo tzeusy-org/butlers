@@ -1,80 +1,79 @@
-## 1. Draft the contract
+## Amendment status
 
-- [x] 1.1 Specify chat-keyed affinity: extraction of `chat_id` from `event.external_thread_id`
-  (`<chat_id>:<message_id>`, fallback bare `chat_id`), matched against `switchboard.routing_log.
-  thread_id` using the same pattern the pipeline's realtime-history loader already uses.
-- [x] 1.2 Specify a Telegram-specific affinity TTL (default 24h) distinct from and non-interfering
-  with email thread-affinity's existing 30-day default and settings row.
-- [x] 1.3 Specify unavailable-pinned-target fallback: a hit on a no-longer-registered butler is
-  treated as a miss, mirroring `pinned_target`'s existing registry validation.
-- [x] 1.4 Specify concurrent-turn conflict resolution reusing the existing conflict-then-reclassify
-  outcome already proven for email, with no new locking.
-- [x] 1.5 Specify that replay/dedup is inherited from the existing Telegram ingest idempotency
-  guarantee, adding no new dedup mechanism.
-- [x] 1.6 Specify the owner-correction reset path as an extension of the existing `correct_route`
-  tool rather than a new command surface, and draft the `## MODIFIED Requirements` delta for
-  `butler-switchboard`'s Misroute Correction Re-dispatch requirement that preserves every existing
-  scenario while adding the new Telegram-affinity-update scenario.
-- [x] 1.7 Specify the deterministic, bounded target-side routed-context block: additive to
-  classifier-authored context, sole context on an affinity-bypass turn, reusing module-pipeline's
-  existing 15-minute/30-message bound rather than a new number.
-- [x] 1.8 Specify trust fencing for the routed-context block reusing the exact banner/code-fence
-  pattern already shipped in `_format_history_context`.
-- [x] 1.9 Specify the scope boundary: no new cross-channel thread-identity table, no change to email
-  affinity's channel gate or settings, and name the future consolidation path with `bu-0ynlk.15`
-  without blocking on or implementing it (design.md D9).
-- [x] 1.10 Confirm `bu-p6v8k` and `bu-d2ft5` dispositions: both remain open, blocked on this
-  contract per `bu-27dxl.9`'s explicit sequencing; this draft performs no Beads mutation.
+The ten checked entries below record the ORIGINAL draft's completed specification
+work, not acceptance of the goal-runtime conversion or completion of any runtime
+work. Their checkbox states are retained as historical evidence. Goal-runtime
+conversion acceptance is PENDING independent exact-head review and required gates.
+The sixteen unchecked future entries stay unchecked; this spec-only amendment does
+not activate, implement or archive their outcomes.
 
-## 2. Approval gates
+## 1. Historical draft evidence (checked states retained)
 
-- [ ] 2.1 Obtain independent exact-head semantic review of this draft.
-- [ ] 2.2 After review passes, obtain separate owner approval naming the exact reviewed artifact.
-  Any semantic edit invalidates that review and requires a fresh pass.
-- [ ] 2.3 Keep any implementation, migration, credential, or live Telegram API call blocked until
-  this contract is accepted and its own separate authorities are satisfied.
+- [x] 1.1 Historical draft specified `chat_id`/`external_thread_id` affinity extraction.
+  Target affinity retires; current conversation/reply identity follows design D1.
+- [x] 1.2 Historical draft specified a Telegram 24h affinity TTL independent of email.
+  Affinity TTL/reclassification retire; the 15-minute/30-message history bound survives.
+- [x] 1.3 Historical draft specified unavailable-pinned-target classification fallback.
+  No target pin or classification fallback survives in the goal runtime (design D3).
+- [x] 1.4 Historical draft specified conflict-then-reclassify for concurrent turns.
+  No affinity conflict or guessed goal join survives (design D4).
+- [x] 1.5 Historical draft documented inherited Telegram ingest idempotency.
+  Replay/dedup and canonical request lineage survive in goal admission (design D5).
+- [x] 1.6 Historical draft extended `correct_route` and its MODIFIED delta.
+  The entire Misroute Correction Re-dispatch contract now has an explicit REMOVED
+  disposition matching generalist; this check is not a claim that it remains live.
+- [x] 1.7 Historical draft specified bounded target-side context and its two carriers.
+  Bounds survive in goal context; both classification/affinity carriers retire.
+- [x] 1.8 Historical draft specified untrusted-data banner and per-message code fencing.
+  Fencing survives together with per-item stamps and exposure (design D8).
+- [x] 1.9 Historical draft specified no competing thread store and an email boundary.
+  No new store is authorized; target-state email follows generalist (design D9).
+- [x] 1.10 Historical draft recorded `bu-p6v8k` / `bu-d2ft5` sequencing.
+  Sticky routing is obsolete at the switch; continuity survives under the goal runtime.
+  No Beads lifecycle state is changed or inferred by this amendment.
 
-## 3. Future implementation after approval (`bu-p6v8k` / `bu-d2ft5` or an approved successor)
+## 2. Review and separate future authorities
 
-- [ ] 3.1 Generalize `roster/switchboard/tools/triage/thread_affinity.py`'s `source_channel ==
-  "email"` gate to a per-channel dispatch, adding the `chat_id`-based match for `telegram_bot` and a
-  per-channel TTL/override settings surface (schema shape left to the implementer per design.md's
-  Open Questions).
-- [ ] 3.2 Insert the Telegram affinity check into `roster/switchboard/tools/ingestion/ingest.py`'s
-  existing deterministic pipeline, alongside (not replacing) the email thread-affinity step, before
-  LLM classification.
-- [ ] 3.3 Extend `roster/switchboard/tools/routing/correct_route.py` so a `telegram_bot`-channel
-  correction also writes a fresh affinity pin for the corrected butler.
-- [ ] 3.4 Add the deterministic bounded/fenced routed-context block to
-  `src/butlers/core_tools/_switchboard.py::_dispatch_dashboard_target`'s `_effective_context`
-  construction, following the same pattern already used for the dashboard confirm-block, gated to
-  `telegram_bot`-channel routes.
-- [ ] 3.5 Wire the affinity-bypass dispatch path so a hit produces `prompt` = raw incoming message
-  and `input.context` = the deterministic routed-context block, without invoking LLM classification.
+- [ ] 2.1 Obtain independent exact-head semantic review of this conformance amendment.
+- [ ] 2.2 Record any separately required future implementation/adoption authority.
+  Adopted-RFC-conforming text needs no owner exact-text sign-off; this entry creates
+  no such gate for the present canonical spec-only amendment.
+- [ ] 2.3 Keep implementation, migrations, credentials and live Telegram calls subject
+  to their own separate authority; this amended packet performs none of them.
 
-## 4. Future verification after approval (`bu-p6v8k` / `bu-d2ft5` or an approved successor)
+## 3. Future implementation after separate authorization
 
-- [ ] 4.1 Unit tests: `chat_id` extraction from both thread-identity shapes; per-channel TTL
-  resolution defaulting to 24h for `telegram_bot` without changing email's default.
-- [ ] 4.2 Contract tests: new-thread miss, follow-up hit (classification skipped), TTL-expired miss,
-  unavailable-pinned-target miss, and conflict miss — each against the existing `AffinityOutcome`
-  values, no new outcome added.
-- [ ] 4.3 Integration test: `correct_route` on a `telegram_bot`-channel request writes a fresh
-  affinity hit for the corrected butler, verified by a subsequent lookup.
-- [ ] 4.4 Idempotency test: a redelivered Telegram update never reaches the affinity lookup or
-  writes a second `routing_log` row.
-- [ ] 4.5 Routed-context tests: deterministic block present and correctly bounded/fenced on both a
-  classify-then-route turn (additive) and an affinity-bypass turn (sole context); a malicious
-  embedded instruction in a fenced prior message is not followed.
-- [ ] 4.6 Regression test: email's existing thread-affinity suite is unaffected by the per-channel
-  generalization.
-- [ ] 4.7 Run targeted switchboard/pipeline/connector unit and integration tests, repo guards (`make
-  check-guards`), strict OpenSpec and overwrite checks, lint/format, a fresh independent exact-head
-  review, and terminal hosted CI. Report the implementation PR's actual test delta separately.
+- [ ] 3.1 Use the existing `external_conversation_id` and separate reply-target contract
+  for continuity; introduce no target-affinity cache, TTL setting or identity table.
+- [ ] 3.2 Carry bounded conversation continuity into deterministic goal admission and
+  context, with no classification, affinity bypass or route dispatch.
+- [ ] 3.3 Ensure no misroute re-dispatch/re-pinning or replacement domain session is
+  reintroduced; use only the existing goal/new-goal/Stop and capability contracts.
+- [ ] 3.4 Carry the deterministic bounded/fenced history with item stamps and sender
+  provenance under existing goal-context/read boundaries, never a domain prompt.
+- [ ] 3.5 Retain accepted message/request lineage and exact owner-reply binding rules;
+  same-chat history neither authenticates the sender nor selects/joins a goal.
 
-## 5. Archive only after implementation
+## 4. Future verification after separate authorization
 
-- [ ] 5.1 After the separately approved implementation is merged, sync the
-  `telegram-continuity-routed-context` capability plus the `butler-switchboard` delta to their
-  `openspec/specs/` baselines and archive this change. Archival does not authorize deployment or any
-  live Telegram API call.
+- [ ] 4.1 Verify current conversation identity, Telegram forum-topic isolation and
+  distinct reply targets, without reintroducing `event.external_thread_id`.
+- [ ] 4.2 Verify new/follow-up/concurrent/unavailable-domain cases all obey ordinary
+  admission, without sticky targets, TTL reclassification or guessed goal joins.
+- [ ] 4.3 Verify correction cannot re-dispatch a message or launch a domain session;
+  original request/sender evidence remains in its actual admission contract.
+- [ ] 4.4 Verify canonical Telegram replay and crash-safe ingest acceptance resolve
+  duplicate envelopes to the existing goal with no second admission or affinity write.
+- [ ] 4.5 Verify the 15-minute/30-message bound, fences, per-item stamps and monotonic
+  exposure for third-party, forwarded/quoted, tainted or unreadably stamped context.
+- [ ] 4.6 Verify no competing thread store, cross-chat/topic leakage, new grant or
+  unintended live email behavior change; target-state email follows generalist.
+- [ ] 4.7 Run the separately authorized implementation's named affected tests, guards,
+  strict OpenSpec, hygiene, independent exact-head review and terminal hosted CI.
+  Report that implementation's actual test delta separately; this prose delta is zero.
+
+## 5. Future archive after separate authority
+
+- [ ] 5.1 After separately approved implementation/release and archive prerequisites
+  are satisfied, reconcile the adopted deltas with generalist tasks.md 4.2 and archive
+  under the actual release authority. No current sync/archive/deploy is claimed here.

@@ -148,6 +148,9 @@ async def pool(provisioned_postgres_pool):
                 policy_tier              TEXT NOT NULL,
                 triage_decision          TEXT,
                 triage_target            TEXT,
+                sender_authentication    TEXT
+                    CONSTRAINT ck_ingestion_events_sender_authentication
+                    CHECK (sender_authentication IN ('authenticated', 'unverified', 'failed')),
                 CONSTRAINT uq_ingestion_events_dedupe_key UNIQUE (dedupe_key)
             )
             """
@@ -363,6 +366,8 @@ class TestIngestionTierBackwardCompatibility:
             },
             "event": {
                 "external_event_id": "upd_legacy_001",
+                "external_conversation_id": "telegram:legacy-chat",
+                "reply_target_ref": "legacy-chat:1",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user_legacy_001"},

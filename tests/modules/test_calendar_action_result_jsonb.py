@@ -23,7 +23,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.api.routers.calendar_workspace import reconstruct_action_result as workspace_result
 from butlers.calendar_action_result import reconstruct_action_result
 from butlers.modules.calendar import CalendarModule
 from butlers.modules.calendar import reconstruct_action_result as module_result
@@ -32,8 +31,7 @@ pytestmark = pytest.mark.unit
 
 
 class TestReconstructActionResult:
-    def test_workspace_and_module_share_the_single_normalizer(self):
-        assert workspace_result is reconstruct_action_result
+    def test_module_uses_the_single_normalizer(self):
         assert module_result is reconstruct_action_result
 
     def test_plain_object_passes_through(self):

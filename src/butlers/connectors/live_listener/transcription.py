@@ -447,9 +447,9 @@ class WyomingTranscriptionClient(TranscriptionClient):
         if discard_reason is not None:
             _record_discarded(self._mic_name, discard_reason)
             logger.debug(
-                "WyomingTranscriptionClient: discarding result reason=%s text=%r (mic=%s)",
+                "WyomingTranscriptionClient: discarding result reason=%s chars=%d (mic=%s)",
                 discard_reason,
-                transcript_text[:50],
+                len(transcript_text),
                 self._mic_name,
             )
             return None

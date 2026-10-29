@@ -27,8 +27,7 @@ with that template and misdescribe a *pending* decision as an already-made
 one. ``due_at`` is bd's own deadline field (filterable via ``--due-before``/
 ``--overdue``); reusing it avoids inventing a second, text-only deadline
 format. ``metadata`` gives real structured data (a list + a scalar) instead
-of a markdown blob a future consumer (the dashboard Decisions lane, the
-Telegram one-tap-close flow in bu-ckkpz.3) would have to regex back apart.
+of a markdown blob local engineering tools would have to regex back apart.
 
 This script does not touch bd's own ``bd lint`` (which is unaware of the
 ``decision`` label and cannot be extended with custom per-label section
@@ -45,18 +44,9 @@ By default this script only checks issues that ALREADY carry the
 queue where zero beads have adopted the label yet, it discovers zero rows
 and reports a vacuous "clean" pass. ``--check-unlabeled-markers`` widens
 *discovery only* (never explicit issue IDs, which are always checked as
-given) to include only live (``open``, ``in_progress``, or ``blocked``)
-labeled decisions and non-epic beads whose titles match a legacy decision
-marker (``DECISION REQUIRED``, ``OWNER-GATED``, ``OWNER DECISION``,
-``ARCHITECTURAL DECISION``, ``OWNER:``) but lack the label -- see
-:data:`_DECISION_TITLE_MARKERS` and :func:`is_unlabeled_marker_match`.
-Those beads then fail :func:`lint_issue`'s existing "missing 'decision'
-label" check the same way a labeled-but-incomplete bead fails its other
-checks, which is what makes the lint non-vacuous against a live,
-pre-migration queue without resurfacing closed history in the weekly owner
-alert. This is also what ``src/butlers/jobs/decision_review.py``'s weekly
-digest job runs (via ``--issues-json-file`` against the mounted export) to
-flag an attention-ledger row when the convention has unmigrated adopters.
+given) to include live (``open``, ``in_progress``, or ``blocked``) labeled
+decisions and non-epic beads with legacy decision-title prefixes. Those beads
+fail the existing missing-label check rather than silently passing.
 
 Usage:
   python3 scripts/lint_decision_beads.py                  # lint all open decision beads
@@ -81,23 +71,15 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 DECISION_LABEL = "decision"
 
-# The title-marker regex now lives ONLY here: bu-uo37y retired the runtime
-# copy in src/butlers/jobs/decision_review.py (that module classifies decisions
-# by the `decision` label alone). This lint keeps the regex as the safety net
-# that catches a decision-shaped bead filed WITHOUT the label, surfaced to the
-# owner via decision_review.py's weekly `--check-unlabeled-markers` pass (it is
-# an advisory nudge, not a CI gate). `_OPEN_STATUSES` still mirrors the same
-# frozenset in decision_review.py -- keep that one in sync if either changes.
-# The regex is kept inline rather than imported so this script runs standalone
-# (offline `--issues-json-file` mode) without the `butlers` package's
-# DB-touching import chain. Only an actual title prefix is decision-shaped;
-# quoted marker text in meta/dev titles is explanatory prose. The optional
-# ``[`` preserves legacy ``[OWNER-GATED]`` marker titles.
+# Keep legacy title-prefix discovery in the standalone CLI. Quoted marker text
+# in meta/dev titles is explanatory prose; the optional opening bracket keeps
+# legacy OWNER-GATED markers discoverable without importing runtime code.
 _DECISION_TITLE_MARKERS = re.compile(
     r"^\s*\[?(?:DECISION REQUIRED|OWNER[- ]GATED|OWNER DECISION|ARCHITECTURAL DECISION|\bOWNER:)",
     re.IGNORECASE,
@@ -112,9 +94,7 @@ def is_unlabeled_marker_match(issue: Any) -> bool:
     This is ``--check-unlabeled-markers``'s discovery predicate: it widens
     the checked set beyond labeled beads so the convention lint is
     non-vacuous against a queue that still has pre-convention, title-marker
-    decision beads. Excludes epics for the same reason
-    ``decision_review.py::_is_decision_bead`` does -- a container epic (e.g.
-    "Owner Decision Desk...") is not itself a single decision the owner
+    decision beads. A container epic is not itself a single decision the owner
     resolves in one step, even when its title happens to match.
     """
     if not isinstance(issue, dict):
@@ -163,13 +143,94 @@ class LintResult:
     issue_id: str
     title: str
     violations: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return not self.violations
 
 
-def lint_issue(issue: Any) -> LintResult:
+def _estimate_timestamp(value: Any) -> datetime | None:
+    """Source-compatible UTC time, or missing context for an advisory estimate."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+    except (ValueError, OverflowError, TypeError):
+        return None
+
+
+def _estimated_prompt_length(issue: dict[str, Any], *, now: datetime) -> tuple[int, bool] | None:
+    """Return (characters, lower_bound), retaining the standalone stdlib CLI.
+
+    This preserves the historical fixed-template lengths, not delivery
+    eligibility. Independent captured receipts guard all nine formatting cases.
+    Missing dates use the shortest age and omit the due suffix. Never invent
+    options or a default when the structured layout itself is unavailable.
+    """
+    metadata = issue.get("metadata")
+    decision = metadata.get("decision") if isinstance(metadata, dict) else None
+    if not isinstance(decision, dict):
+        return None
+    options = decision.get("options")
+    default = decision.get("default")
+    if (
+        not isinstance(options, list)
+        or not options
+        or any(not isinstance(option, str) or not option.strip() for option in options)
+        or len(set(options)) != len(options)
+        or not isinstance(default, str)
+        or not default.strip()
+        or default not in options
+    ):
+        return None
+    created = _estimate_timestamp(issue.get("created_at"))
+    due = _estimate_timestamp(issue.get("due_at"))
+    age = now - created if created is not None else None
+    age_label = (
+        f"{age.days}d"
+        if age is not None and age.days >= 1
+        else f"{max(int(age.total_seconds() // 3600), 0) if age is not None else 0}h"
+    )
+    issue_id = str(issue.get("id") or "<unknown>")
+    title = str(issue.get("title") or issue_id)
+    lengths = [
+        len("Decision needed: ") + len(title),
+        len(issue_id) + len(", open ") + len(age_label),
+    ]
+    if due is not None:
+        lengths[-1] += len(", due ") + len(due.date().isoformat())
+    lengths.extend(len(f"{index + 1}. ") + len(option) for index, option in enumerate(options))
+    lengths.extend(
+        [len("Default if unanswered: ") + len(default), len("Tap an option to record your choice.")]
+    )
+    return sum(lengths) + len(options) + 5, created is None or due is None
+
+
+def _renderability_warnings(issue: dict[str, Any], *, now: datetime) -> list[str]:
+    warnings = []
+    metadata = issue.get("metadata")
+    decision = metadata.get("decision") if isinstance(metadata, dict) else None
+    options = decision.get("options") if isinstance(decision, dict) else None
+    if isinstance(options, list):
+        for index, option in enumerate(options, start=1):
+            if isinstance(option, str) and len(option) > 512:
+                warnings.append(
+                    f"Telegram option {index} exceeds limit 512: {len(option)} characters"
+                )
+    estimate = _estimated_prompt_length(issue, now=now)
+    if estimate is not None and estimate[0] > 4096:
+        qualification = "; conservative lower bound (incomplete dates)" if estimate[1] else ""
+        warnings.append(
+            f"Telegram prompt exceeds limit 4096: estimated {estimate[0]} characters{qualification}"
+        )
+    return warnings
+
+
+def lint_issue(issue: Any, *, now: datetime | None = None) -> LintResult:
     """Check one issue dict against the decision-bead convention.
 
     Accepts any issue shape returned by `bd show`/`bd list --json` (or the
@@ -222,11 +283,17 @@ def lint_issue(issue: Any) -> LintResult:
     if not issue.get("due_at"):
         violations.append("due_at (deadline) must be set -- e.g. `bd update <id> --due 2026-07-25`")
 
-    return LintResult(issue_id=issue_id, title=title, violations=violations)
+    return LintResult(
+        issue_id=issue_id,
+        title=title,
+        violations=violations,
+        warnings=_renderability_warnings(issue, now=now or datetime.now(UTC)),
+    )
 
 
 def lint_issues(issues: list[Any]) -> list[LintResult]:
-    return [lint_issue(issue) for issue in issues]
+    now = datetime.now(UTC)
+    return [lint_issue(issue, now=now) for issue in issues]
 
 
 class BdUnavailableError(RuntimeError):
@@ -284,14 +351,9 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
     list of issues, or one issue object) or newline-delimited JSON (one
     issue object per line).
 
-    bu-hmdqz.6: the weekly decision_review job feeds this straight from the
-    mounted ``issues.export.jsonl`` file, which is ``bd export``'s own
-    format -- JSONL, not a single JSON array (`bd export --help`: "Each line
-    is a complete JSON object"). Without this fallback, that real input
-    would raise ``json.JSONDecodeError: Extra data`` on the second line and
-    the weekly lint check would silently degrade to "could not obtain issue
-    data" every single run. Tries the single-document parse first so
-    existing offline fixtures (a plain JSON array/object) are unaffected.
+    Native ``bd export`` input is one object per line. Try a whole-document
+    parse first to preserve offline array/object fixtures, then JSONL so a
+    valid multi-row export does not become an acquisition failure.
     """
     try:
         text = path.read_text(encoding="utf-8")
@@ -300,7 +362,7 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
 
     try:
         data: Any = json.loads(text)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as exc:
         records: list[Any] = []
         for line in text.splitlines():
             line = line.strip()
@@ -311,7 +373,9 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise BdUnavailableError(f"failed to read or parse {path}: {exc}") from exc
         if not records:
-            raise BdUnavailableError(f"failed to read or parse {path}: no JSON records found")
+            raise BdUnavailableError(
+                f"failed to read or parse {path}: no JSON records found"
+            ) from exc
         data = records
 
     if isinstance(data, dict):
@@ -324,14 +388,22 @@ def load_issues_from_file(path: Path) -> list[dict[str, Any]]:
 def format_results(results: list[LintResult]) -> str:
     failing = [r for r in results if not r.ok]
     if not failing:
-        return f"lint_decision_beads: clean -- {len(results)} decision bead(s) checked."
-    lines = [
-        f"lint_decision_beads: {len(failing)}/{len(results)} decision bead(s) fail the convention:"
-    ]
-    for r in failing:
-        lines.append(f"  {r.issue_id} ({r.title!r}):")
-        for v in r.violations:
-            lines.append(f"    - {v}")
+        lines = [f"lint_decision_beads: clean -- {len(results)} decision bead(s) checked."]
+    else:
+        lines = [
+            f"lint_decision_beads: {len(failing)}/{len(results)} "
+            "decision bead(s) fail the convention:"
+        ]
+        for r in failing:
+            lines.append(f"  {r.issue_id} ({r.title!r}):")
+            for v in r.violations:
+                lines.append(f"    - {v}")
+    advisory = [r for r in results if r.warnings]
+    if advisory:
+        lines.extend(["", "Telegram renderability (advisory):"])
+        for r in advisory:
+            lines.append(f"  {r.issue_id}:")
+            lines.extend(f"    - {warning}" for warning in r.warnings)
     return "\n".join(lines)
 
 
@@ -394,7 +466,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         json.dump(
             [
-                {"id": r.issue_id, "title": r.title, "ok": r.ok, "violations": r.violations}
+                {
+                    "id": r.issue_id,
+                    "title": r.title,
+                    "ok": r.ok,
+                    "violations": r.violations,
+                    "warnings": r.warnings,
+                }
                 for r in results
             ],
             sys.stdout,

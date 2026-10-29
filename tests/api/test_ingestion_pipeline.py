@@ -16,9 +16,8 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import (
-    _get_db_manager as _connectors_get_db_manager,
-)
+from butlers.api.deps import get_db as _connectors_get_db_manager
+from butlers.api.deps import get_db_optional
 
 pytestmark = pytest.mark.unit
 
@@ -248,7 +247,7 @@ async def test_pipeline_stats_backlog_counts_healthy(app):
     pool = _make_shared_pool(rows=rows)
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
 
     with patch.dict("os.environ", {"PROMETHEUS_URL": ""}, clear=False):
         async with httpx.AsyncClient(
@@ -277,7 +276,7 @@ async def test_pipeline_stats_backlog_counts_query_error(app):
     pool.fetch = AsyncMock(side_effect=RuntimeError("connection lost"))
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_pip_mod._get_db_manager_optional] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1091,3 +1090,192 @@ async def test_cross_summary_counts_by_liveness_not_state(app):
         data["connectors_online"] + data["connectors_stale"] + data["connectors_offline"]
         == data["total_connectors"]
     )
+
+
+# The scrub projection is independent of both the existing funnel and DB backlog.
+def _scrub_sample(kind, value, **labels):
+    return {"metric": {"kind": kind, **labels}, "value": [1234567890, value]}
+
+
+@pytest.mark.parametrize(
+    "case,samples,available,expected,funnel_available",
+    [
+        (
+            "channels",
+            [
+                _scrub_sample("auth_code", "1.25", source_channel="gmail", sender="private"),
+                _scrub_sample("auth_code", "2.5", source_channel="telegram"),
+                _scrub_sample("reset_link", "4"),
+                _scrub_sample("magic_link", "0"),
+            ],
+            True,
+            {"auth_code": 3.75, "reset_link": 4.0, "magic_link": 0.0},
+            True,
+        ),
+        ("empty", [], True, {"auth_code": 0, "reset_link": 0, "magic_link": 0}, True),
+        (
+            "zero",
+            [_scrub_sample("auth_code", "0")],
+            True,
+            {"auth_code": 0, "reset_link": 0, "magic_link": 0},
+            True,
+        ),
+        (
+            "funnel-down",
+            [_scrub_sample("magic_link", "2")],
+            True,
+            {"auth_code": 0, "reset_link": 0, "magic_link": 2},
+            False,
+        ),
+        ("negative", [_scrub_sample("auth_code", "-1")], False, None, True),
+        ("nan", [_scrub_sample("auth_code", "NaN")], False, None, True),
+        ("infinite", [_scrub_sample("auth_code", "Inf")], False, None, True),
+        ("overflow", [_scrub_sample("auth_code", "1e308")] * 2, False, None, True),
+        ("unknown-kind", [_scrub_sample("unadopted", "1")], False, None, True),
+        ("missing-kind", [{"metric": {}, "value": [0, "1"]}], False, None, True),
+        ("missing-value", [{"metric": {"kind": "auth_code"}}], False, None, True),
+        ("bad-value", [_scrub_sample("auth_code", "not-a-number")], False, None, True),
+        ("bool-value", [_scrub_sample("auth_code", True)], False, None, True),
+        ("bad-sample", [None], False, None, True),
+        ("short-value", [{"metric": {"kind": "auth_code"}, "value": [0]}], False, None, True),
+        (
+            "bad-timestamp",
+            [{"metric": {"kind": "auth_code"}, "value": ["not-time", "1"]}],
+            False,
+            None,
+            True,
+        ),
+        (
+            "nonfinite-timestamp",
+            [{"metric": {"kind": "auth_code"}, "value": [float("nan"), "1"]}],
+            False,
+            None,
+            True,
+        ),
+        ("bad-kind-type", [{"metric": {"kind": []}, "value": [0, "1"]}], False, None, True),
+        ("bad-metric", [{"metric": [], "value": [0, "1"]}], False, None, True),
+        ("bad-vector", {"result": []}, False, None, True),
+        ("query-error", [{"error": "private upstream diagnostic"}], False, None, True),
+        ("exception", RuntimeError("private upstream diagnostic"), False, None, True),
+        ("timeout", TimeoutError("private upstream diagnostic"), False, None, True),
+        ("unconfigured", [], False, None, False),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+async def test_pipeline_bearer_scrub_projection(
+    app, case, samples, available, expected, funnel_available, caplog
+):
+    from butlers.api.routers import ingestion_pipeline as pipeline
+
+    pipeline._pipeline_cache.clear()
+    pool = _make_shared_pool(rows=[_backlog_row("failed", 7, is_written_off=False)])
+    db = MagicMock(spec=DatabaseManager)
+    db.credential_shared_pool.return_value = pool
+    app.dependency_overrides[get_db_optional] = lambda: db
+    queries = []
+
+    async def query(url, promql):
+        queries.append(promql)
+        if "butlers_ingest_bearer_scrubbed_total" in promql:
+            if isinstance(samples, Exception):
+                raise samples
+            return samples
+        if not funnel_available:
+            return [{"error": "funnel unavailable"}]
+        if "by (butler_name)" in promql:
+            return [{"metric": {"butler_name": "atlas"}, "value": [0, "3"]}]
+        return [{"metric": {}, "value": [0, "10"]}]
+
+    with (
+        patch.object(
+            pipeline,
+            "_get_prometheus_url",
+            return_value=None if case == "unconfigured" else "http://metrics.invalid",
+        ),
+        patch.object(pipeline, "async_query", side_effect=query),
+        patch.object(pipeline, "async_query_range", return_value=[]),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.get("/api/ingestion/pipeline?window=24h")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["bearer_scrub_available"] is available
+    assert body["bearer_scrub_counts"] == expected
+    assert body["aggregates_available"] is funnel_available
+    assert body["ingested"] == (10 if funnel_available else 0)
+    assert body["backlog_available"] is True
+    assert body["failed_total"] == 7
+    assert "source_channel" not in response.text
+    assert "private" not in response.text
+    assert "private upstream diagnostic" not in caplog.text
+    scrub_queries = [q for q in queries if "bearer_scrubbed" in q]
+    assert scrub_queries == (
+        []
+        if case == "unconfigured"
+        else ["sum by (kind) (increase(butlers_ingest_bearer_scrubbed_total[24h]))"]
+    )
+    pool.execute.assert_not_awaited()
+
+
+async def test_pipeline_bearer_scrub_cache_windows_concurrent_retry(app):
+    import asyncio
+
+    from butlers.api.routers import ingestion_pipeline as pipeline
+
+    pipeline._pipeline_cache.clear()
+    clock = [100.0]
+    calls = []
+    pool = _make_shared_pool(rows=[])
+    db = MagicMock(spec=DatabaseManager)
+    db.credential_shared_pool.return_value = pool
+    app.dependency_overrides[get_db_optional] = lambda: db
+
+    async def query(url, promql):
+        await asyncio.sleep(0)
+        calls.append(promql)
+        if "bearer_scrubbed" in promql:
+            return [_scrub_sample("auth_code", "2.5")]
+        return []
+
+    # Patch this module's clock object, not process-global time.monotonic.
+    with (
+        patch.object(pipeline, "time", monotonic=lambda: clock[0]),
+        patch.object(pipeline, "_get_prometheus_url", return_value="http://metrics.invalid"),
+        patch.object(pipeline, "async_query", side_effect=query),
+        patch.object(pipeline, "async_query_range", return_value=[]),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+
+            async def read(window):
+                response = await client.get("/api/ingestion/pipeline", params={"window": window})
+                assert response.status_code == 200
+                assert response.json()["bearer_scrub_counts"]["auth_code"] == 2.5
+                return response.json()
+
+            await read("24h")
+            first_calls = len(calls)
+            clock[0] = 159.9
+            await read("24h")
+            assert len(calls) == first_calls
+            clock[0] = 160.0
+            await read("24h")
+            assert len(calls) == 2 * first_calls
+            await read("1h")
+            await read("7d")
+            assert len(calls) == 4 * first_calls
+            pipeline._pipeline_cache.clear()
+            results = await asyncio.gather(read("1h"), read("1h"))
+            assert results[0] == results[1]
+            before_retry = len(calls)
+            await read("1h")
+            assert len(calls) == before_retry
+    assert set(q for q in calls if "bearer_scrubbed" in q) == {
+        f"sum by (kind) (increase(butlers_ingest_bearer_scrubbed_total[{window}]))"
+        for window in ("1h", "24h", "7d")
+    }
+    assert pool.fetch.await_count == 8  # Fresh DB backlog on every actual API read.
+    pool.execute.assert_not_awaited()

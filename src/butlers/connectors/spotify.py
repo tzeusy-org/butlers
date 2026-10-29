@@ -27,8 +27,6 @@ Key behaviors:
 
 Environment variables:
 - SWITCHBOARD_MCP_URL (required)
-- CONNECTOR_PROVIDER=spotify (required)
-- CONNECTOR_CHANNEL=spotify (required)
 - SPOTIFY_POLL_ACTIVE_S (optional, default 60): polling interval during active playback
 - SPOTIFY_POLL_IDLE_S (optional, default 300): maximum polling interval during idle
 - SPOTIFY_SESSION_IDLE_TIMEOUT_S (optional, default 300): idle timeout before session close
@@ -60,6 +58,7 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -76,6 +75,7 @@ from butlers.credential_store import (
 )
 from butlers.db import db_params_from_env, schema_search_path, should_retry_with_ssl_disable
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
 from butlers.spotify_credentials import (
     SPOTIFY_CLIENT_ID,
     SPOTIFY_OAUTH_ACCESS,
@@ -83,6 +83,8 @@ from butlers.spotify_credentials import (
     SPOTIFY_OAUTH_REFRESH,
     parse_spotify_token_response,
 )
+
+_DESCRIPTOR = connector_descriptor("spotify")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -93,13 +95,11 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "spotify"
-_CONNECTOR_CHANNEL = "spotify_user_client"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Durable evidence table for Chronicler projection (RFC 0014 §D9).
 _SESSION_EVIDENCE_TABLE = "connectors.spotify_listening_sessions"
 _SPOKEN_SESSION_EVIDENCE_TABLE = "connectors.spotify_spoken_sessions"
-_CONNECTOR_PROVIDER = "spotify"
 
 # Spotify API URLs
 _SPOTIFY_API_BASE = "https://api.spotify.com/v1"
@@ -187,8 +187,6 @@ class SpotifyConnectorConfig:
     """Configuration for the Spotify connector runtime."""
 
     switchboard_mcp_url: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
 
     # Polling
     poll_active_s: int = _DEFAULT_POLL_ACTIVE_S
@@ -220,8 +218,6 @@ class SpotifyConnectorConfig:
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
             poll_active_s=_int("SPOTIFY_POLL_ACTIVE_S", _DEFAULT_POLL_ACTIVE_S),
             poll_idle_s=_int("SPOTIFY_POLL_IDLE_S", _DEFAULT_POLL_IDLE_S),
             session_idle_timeout_s=_int(
@@ -390,13 +386,20 @@ class ListeningSessionTracker:
         return events, closed_sessions
 
     def check_digest_due(self, now: datetime | None = None) -> bool:
-        """Return True if a listening_digest should be emitted."""
+        """Return True if a listening_digest should be emitted.
+
+        A digest is due once the interval has elapsed AND tracks were played
+        since the previous digest.  One long track playing on (overnight rain
+        sounds) otherwise yields an hourly "0 tracks" digest, and each one costs
+        a routing session and a butler session for nothing.
+        """
         if self._state != "active" or self._session is None:
             return False
         if now is None:
             now = datetime.now(UTC)
         elapsed = now - self._session.last_digest_at
-        return elapsed >= self._digest_interval and self._session.track_count > 0
+        new_tracks = self._session.track_count - self._session.last_digest_track_index
+        return elapsed >= self._digest_interval and new_tracks > 0
 
     def mark_digest_emitted(self, now: datetime | None = None) -> None:
         """Record that a digest was just emitted, resetting the timer."""
@@ -994,8 +997,8 @@ def build_context_start_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -1027,8 +1030,9 @@ def build_listening_digest_envelope(
 ) -> dict[str, Any]:
     """Build an ingest.v1 envelope for a spotify.listening_digest event.
 
-    Emitted periodically (default every 60 min) during active listening.
-    Shows only tracks played since the last digest (or session start).
+    Emitted periodically (default every 60 min) during active listening, and
+    only when tracks were played since the last digest (or session start).
+    Shows only those tracks.
     """
     context_label = _resolve_context_label(
         context_uri=session.context_uri,
@@ -1052,8 +1056,8 @@ def build_listening_digest_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -1116,8 +1120,8 @@ def build_session_summary_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -1171,8 +1175,8 @@ def build_spoken_session_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -2077,6 +2081,7 @@ class SpotifyConnector:
             endpoint_identity=identity_label,
         )
         self._heartbeat = ConnectorHeartbeat(
+            channel_kind=CHANNEL_KIND_FEED,
             config=hb_config,
             mcp_client=self._mcp_client,
             metrics=self._metrics,
@@ -2812,8 +2817,8 @@ class SpotifyConnector:
             envelope = {
                 "schema_version": "ingest.v1",
                 "source": {
-                    "channel": _CONNECTOR_CHANNEL,
-                    "provider": _CONNECTOR_PROVIDER,
+                    "channel": _DESCRIPTOR.channel,
+                    "provider": _DESCRIPTOR.provider,
                     "endpoint_identity": self._endpoint_identity,
                 },
                 "event": {

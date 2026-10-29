@@ -234,7 +234,6 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["calendar-overlays"],
         ["calendar-day-briefing"],
         ["calendar-proposals"],
-        ["calendar-duplicates"],
         ["calendar-conflicts"],
         ["calendar-workspace-entry"],
         ["calendar-workspace-search"],
@@ -242,6 +241,7 @@ describe("EVENT_CACHE_REGISTRY", () => {
         ["calendar-workspace-audit"],
       ]),
     );
+    expect(keys(invalidateQueries)).toContainEqual(["calendar-invitations"]);
   });
 
   // Spec: REQ-core-fleet-events-013

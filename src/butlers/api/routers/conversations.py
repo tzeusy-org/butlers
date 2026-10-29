@@ -163,13 +163,8 @@ from butlers.api.conversations import (
     message_set_session_id_if_null,
 )
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
-from butlers.api.models import (
-    CursorPaginatedResponse,
-    CursorPaginationMeta,
-    PaginatedResponse,
-    PaginationMeta,
-)
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
+from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.conversation import (
     ConversationCancelResponse,
     ConversationCreateRequest,
@@ -182,6 +177,7 @@ from butlers.api.models.conversation import (
     MessageCreateRequest,
     MessageSearchResult,
 )
+from butlers.api.pagination import InvalidCursorError, Page
 from butlers.core.dashboard_turns import (
     DashboardTurnResult,
     bind_ingress,
@@ -228,11 +224,6 @@ _SWITCHBOARD_BUTLER: str = "switchboard"
 # handoff, target route recovery, and API process restarts. The map remains for
 # legacy callers that omit a message id and for session-timeout links.
 _ACTIVE_TURNS: dict[UUID, dict[str, str]] = {}
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +283,7 @@ async def _submit_to_switchboard(
     envelope: dict[str, Any],
     *,
     mcp_mgr: MCPClientManager,
+    owner_source_pool: Any | None = None,
 ) -> dict[str, Any] | None:
     """Submit an ingest.v1 envelope to the Switchboard butler via MCP.
 
@@ -308,6 +300,39 @@ async def _submit_to_switchboard(
         a deterministic rejection, not a connectivity failure, so the caller
         surfaces it distinctly rather than inviting a retry.
     """
+    # The exact canonical payload is bound by the authenticated API producer,
+    # before transport. Public dashboard labels/message locators cannot stamp it.
+    if owner_source_pool is not None:
+        from butlers.core.owner_auth_context import in_http_request, verified_http_principal
+
+        if in_http_request.get() and verified_http_principal.get() == "owner":
+            import hashlib
+
+            from butlers.core.fact_authority import dashboard_origin_digest
+
+            has_stamp = await owner_source_pool.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+                "table_schema='public' AND table_name='dashboard_messages' "
+                "AND column_name='fact_owner_admission')"
+            )
+            origin = dashboard_origin_digest(envelope)
+            if has_stamp is True and origin is not None:
+                await owner_source_pool.execute(
+                    "UPDATE public.dashboard_messages SET fact_owner_admission="
+                    "fact_owner_admission || $2::jsonb WHERE id=$1 AND role='user' "
+                    "AND fact_owner_admission IS NOT NULL "
+                    "AND fact_owner_admission->>'accepted_origin_digest' IS NULL "
+                    "AND content=$3 AND conversation_id=$4",
+                    UUID(envelope["event"]["external_event_id"]),
+                    {
+                        "accepted_text_digest": hashlib.sha256(
+                            envelope["payload"]["normalized_text"].encode()
+                        ).hexdigest(),
+                        "accepted_origin_digest": origin,
+                    },
+                    envelope["payload"]["raw"]["message"],
+                    UUID(envelope["payload"]["raw"]["conversation_id"]),
+                )
     try:
         client = await asyncio.wait_for(
             mcp_mgr.get_client(_SWITCHBOARD_BUTLER), timeout=_MCP_DISPATCH_TIMEOUT_S
@@ -541,7 +566,9 @@ async def _stream_conversation_response(
 
     if should_submit:
         try:
-            accepted = await _submit_to_switchboard(butler_name, envelope, mcp_mgr=mcp_mgr)
+            accepted = await _submit_to_switchboard(
+                butler_name, envelope, mcp_mgr=mcp_mgr, owner_source_pool=shared_pool
+            )
         except ValueError as exc:
             failure_turn: DashboardTurnResult | None = None
             if message_id is not None:
@@ -975,6 +1002,67 @@ async def _persist_dashboard_user_message(
     ``page_context``, not from the request body, so a retry never re-sends a
     stale or since-changed page context.
     """
+    from butlers.core.owner_auth_context import in_http_request, verified_http_principal
+
+    if in_http_request.get() and verified_http_principal.get() == "owner":
+        from butlers.core.fact_authority import FactWriteContext
+
+        has_stamp = await pool.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE "
+            "table_schema='public' AND table_name='dashboard_messages' "
+            "AND column_name='fact_owner_admission')"
+        )
+        if has_stamp is not True:
+            # Core-only/older deployments keep ordinary chat processing. Missing
+            # private producer evidence supplies no owner-class fact admission.
+            return await _persist_dashboard_user_message_inner(
+                pool,
+                conversation_id=conversation_id,
+                message=message,
+                message_id=message_id,
+                page_context=page_context,
+            )
+        async with pool.acquire() as conn, conn.transaction():
+            result = await _persist_dashboard_user_message_inner(
+                conn,
+                conversation_id=conversation_id,
+                message=message,
+                message_id=message_id,
+                page_context=page_context,
+            )
+            if result[1]:
+                owner = await conn.fetchrow(
+                    "SELECT id,created_at FROM public.entities WHERE 'owner'=ANY(roles) "
+                    "ORDER BY id LIMIT 1 FOR KEY SHARE"
+                )
+                if owner is None:
+                    raise HTTPException(status_code=409, detail="Registered owner unavailable.")
+                report = FactWriteContext(
+                    "owner_device", owner["id"], owner["created_at"], owner["id"]
+                )
+                await conn.execute(
+                    "UPDATE public.dashboard_messages SET fact_owner_admission=$2 WHERE id=$1",
+                    result[0]["id"],
+                    report.to_record(),
+                )
+            return result
+    return await _persist_dashboard_user_message_inner(
+        pool,
+        conversation_id=conversation_id,
+        message=message,
+        message_id=message_id,
+        page_context=page_context,
+    )
+
+
+async def _persist_dashboard_user_message_inner(
+    pool: Any,
+    *,
+    conversation_id: UUID,
+    message: str,
+    message_id: UUID | None,
+    page_context: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], bool]:
     if message_id is None:
         return (
             await message_create(
@@ -1436,7 +1524,8 @@ async def list_conversations(
     ] = "active",
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationSummary]:
     """List conversations for a butler with optional status filter.
 
@@ -1474,7 +1563,8 @@ async def search_conversations(
     q: str | None = Query(None, description="Search query string"),
     limit: int = Query(20, ge=1, le=100, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationSearchResult]:
     """Search conversations by message content (case-insensitive substring match).
 
@@ -1515,7 +1605,7 @@ async def search_conversations(
 
 @messages_search_router.get(
     "/messages/search",
-    response_model=CursorPaginatedResponse[MessageSearchResult],
+    response_model=Page[MessageSearchResult],
 )
 async def search_messages(
     q: str = Query(..., min_length=1, max_length=512, description="Full-text search query."),
@@ -1539,8 +1629,9 @@ async def search_messages(
     to: str | None = Query(
         None, description="ISO-8601 exclusive upper bound on message created_at."
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> CursorPaginatedResponse[MessageSearchResult]:
+    *,
+    db: Db,
+) -> Page[MessageSearchResult]:
     """Owner-scoped full-text search across every butler's dashboard messages.
 
     Unlike ``GET /api/butlers/{name}/conversations/search`` (per-butler,
@@ -1556,8 +1647,9 @@ async def search_messages(
     even if a new message is inserted between page fetches.
 
     Returns:
-        200 — ``{"data": [...], "meta": {"next_cursor", "has_more"}}``
-        422 — malformed ``cursor``, or ``from``/``to`` is not valid ISO-8601
+        200 — ``{"items": [...], "next_cursor", "limit"}``
+        400 — malformed ``cursor``
+        422 — ``from``/``to`` is not valid ISO-8601
         503 — shared database pool unavailable
     """
     try:
@@ -1589,12 +1681,15 @@ async def search_messages(
             limit=limit,
             cursor=cursor,
         )
+    except InvalidCursorError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    return CursorPaginatedResponse[MessageSearchResult](
-        data=[MessageSearchResult(**item) for item in result["items"]],
-        meta=CursorPaginationMeta(next_cursor=result["next_cursor"], has_more=result["has_more"]),
+    return Page[MessageSearchResult](
+        items=[MessageSearchResult(**item) for item in result["items"]],
+        next_cursor=result["next_cursor"],
+        limit=limit,
     )
 
 
@@ -1606,7 +1701,8 @@ async def search_messages(
 @messages_search_router.get("/{conversation_id}", response_model=ConversationDetail)
 async def get_conversation_by_id(
     conversation_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationDetail:
     """Cross-butler conversation lookup by id (bu-0ynlk.11).
 
@@ -1646,7 +1742,8 @@ async def get_conversation_by_id(
 @router.get("/{name}/conversations/summary")
 async def get_conversation_summary(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationStats:
     """Return aggregate conversation statistics for a butler."""
     try:
@@ -1668,7 +1765,8 @@ async def create_conversation(
     name: str,
     body: ConversationCreateRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Create a new conversation with the first user message.
@@ -1791,7 +1889,8 @@ async def list_messages(
     conversation_id: UUID,
     limit: int = Query(50, ge=1, le=200, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[ConversationMessage]:
     """List messages in a conversation ordered by ``created_at ASC``.
 
@@ -1831,7 +1930,8 @@ async def send_message(
     conversation_id: UUID,
     body: MessageCreateRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> StreamingResponse:
     """Send a follow-up message in an existing conversation.
@@ -1945,7 +2045,8 @@ async def cancel_dashboard_message_turn(
     name: str,
     message_id: UUID,
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationCancelResponse:
     """Stop the one immutable dashboard turn identified by ``message_id``.
 
@@ -1977,7 +2078,8 @@ async def cancel_conversation_turn(
         description="Exact persisted user-message id for durable cancellation.",
     ),
     mcp_mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationCancelResponse:
     """Compatibility cancel for an in-flight conversation turn.
 
@@ -2076,7 +2178,8 @@ async def update_conversation(
     name: str,
     conversation_id: UUID,
     body: ConversationUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ConversationSummary:
     """Update a conversation's title or status.
 

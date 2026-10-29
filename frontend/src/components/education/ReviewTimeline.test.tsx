@@ -183,7 +183,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
 
     renderTimeline();
 
-    expect(screen.getByRole("alert").textContent).toMatch(/review schedule: unavailable/i);
+    expect(screen.getByRole("alert").textContent).toMatch(/curriculum list: could not be reached/i);
     expect(screen.queryByText(/no reviews scheduled/i)).toBeNull();
   });
 
@@ -203,7 +203,7 @@ describe("ReviewTimeline — renders all active mind maps", () => {
 
     renderTimeline();
 
-    expect(screen.getByRole("alert").textContent).toMatch(/review schedule: unavailable/i);
+    expect(screen.getByRole("alert").textContent).toMatch(/Alpha: review schedule could not be reached/i);
     expect(screen.queryByText(/no reviews scheduled/i)).toBeNull();
   });
 });
@@ -433,4 +433,25 @@ describe("ReviewTimeline — j/k queue keyboard path (bu-mmdef)", () => {
     expect(hint.textContent).toContain("Next item");
     expect(hint.textContent).toContain("Previous item");
   });
+});
+
+
+it("keeps successful map reviews during partial failure and clears the named note on recovery", () => {
+  const maps = [makeMap("map-a", "Alpha"), makeMap("map-b", "Rust")];
+  mockUseMindMaps.mockReturnValue({ data: { data: maps } } as unknown as ReturnType<typeof useMindMaps>);
+  mockUseAllPendingReviews.mockReturnValue([
+    { data: [makeReview("node-a", "Successful concept")], isSuccess: true },
+    { data: undefined, isError: true },
+  ] as unknown as ReturnType<typeof useAllPendingReviews>);
+  const view = renderTimeline();
+  expect(screen.getByText("Successful concept")).toBeTruthy();
+  expect(screen.getByRole("alert").textContent).toContain("Rust");
+  expect(screen.queryByText(/no reviews scheduled/i)).toBeNull();
+  mockUseAllPendingReviews.mockReturnValue([
+    { data: [makeReview("node-a", "Successful concept")], isSuccess: true },
+    { data: [makeReview("node-b", "Recovered concept")], isSuccess: true },
+  ] as unknown as ReturnType<typeof useAllPendingReviews>);
+  view.rerender(<AppTimezoneProvider timezone="UTC"><ReviewTimeline onSelectNode={vi.fn()} /></AppTimezoneProvider>);
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(screen.getByText("Recovered concept")).toBeTruthy();
 });

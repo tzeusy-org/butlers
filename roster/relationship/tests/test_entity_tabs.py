@@ -20,6 +20,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -86,9 +87,9 @@ def _app_with_pool(
     app = create_app()
 
     # Find the relationship router module to override its _get_db_manager.
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -813,6 +814,7 @@ def _make_ef_fact_row(**kwargs) -> MagicMock:
     }
     row = MagicMock()
     row.__getitem__ = MagicMock(side_effect=lambda key: data[key])
+    row.get = MagicMock(side_effect=data.get)
     return row
 
 
@@ -867,9 +869,9 @@ def _app_with_pool_linked_contacts(
     mock_db.pool.return_value = mock_pool
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1146,9 +1148,9 @@ def _app_with_entity_pool(
 
     app = create_app()
 
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, mock_pool
@@ -1270,9 +1272,9 @@ def _build_app_with_dual_pools(
     mock_db.pool.side_effect = _pool_lookup
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     return app, rel_pool, sw_pool
@@ -1348,6 +1350,9 @@ class TestEntityMessageThreads:
         sw_candidates = sw_call[0][1]
         assert "alice@example.com" in sw_candidates
         assert "12345" in sw_candidates
+        # A chat groups by its conversation key, not the per-message reply
+        # target; pre-split rows fall back to source_thread_identity.
+        assert "request_context ->> 'external_conversation_id'" in sw_call[0][0]
 
     async def test_limit_clamped_to_100(self):
         app, _, _ = _build_app_with_dual_pools(entity_exists=True)
@@ -1461,9 +1466,9 @@ def _build_app_for_dunbar_patch(
     mock_db.pool.return_value = pool
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+    for butler_name, _router_module in app.state.butler_routers:
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             break
 
     # Patch the engine module the router imports lazily.

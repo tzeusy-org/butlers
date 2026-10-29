@@ -13,6 +13,20 @@ _PRISTINE_DUNBAR_GLOBALS: dict[str, object] = {
 }
 
 
+@pytest.fixture(scope="module")
+def interaction_sync_database(postgres_container):
+    """Provision real named-schema chains once for the owning test module."""
+    from roster.relationship.tests.calendar_projection import create_interaction_sync_database
+
+    return create_interaction_sync_database(postgres_container)
+
+
+@pytest.fixture
+def interaction_sync_pool(interaction_sync_database):
+    """Resettable own-role factory; approval hooks bind its actual yielded pool."""
+    return interaction_sync_database
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_runtest_teardown(item: pytest.Item) -> None:
     """Fail any test that leaves the Dunbar scoring engine's globals patched.

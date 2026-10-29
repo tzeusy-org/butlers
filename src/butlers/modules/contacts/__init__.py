@@ -24,6 +24,7 @@ from butlers.google_credentials import (
 from butlers.modules.base import Module
 
 from .backfill import ContactBackfillEngine
+from .owner import ContactsOwner
 from .sync import (
     DEFAULT_FORCED_FULL_SYNC_DAYS,
     DEFAULT_GOOGLE_PERSON_FIELDS,
@@ -60,11 +61,15 @@ _DEFAULT_ACCOUNT_ID = "default"
 
 
 class ContactsSyncConfig(BaseModel):
-    """Scheduler defaults for incremental and forced full contact sync."""
+    """Scheduler defaults for incremental and forced full contact sync.
+
+    ``enabled`` defaults to False: Relationship is the only butler that syncs contacts (it owns
+    entities), so a butler must opt in explicitly. Sync takes no cross-process lock.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = True
+    enabled: bool = False
     run_on_startup: bool = True
     interval_minutes: int = Field(default=15, ge=1)
     full_sync_interval_days: int = Field(default=6, ge=1)
@@ -229,18 +234,18 @@ class ContactsModule(Module):
         self._db: Any = None
         self._providers: dict[str, ContactsProvider] = {}
         self._runtimes: dict[str, ContactsSyncRuntime] = {}
+        self._switchboard_client: Any = None
+        self._butler_name = ""
 
-    @property
-    def name(self) -> str:
-        return "contacts"
+    def wire_runtime(self, spawner: Any, repo_root: Any, *, switchboard_client: Any = None) -> None:
+        """Bind only daemon-supplied transport; initial unwired reads fail closed."""
+        self._switchboard_client = switchboard_client
+
+    name = "contacts"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return ContactsConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
 
     @property
     def credentials_env(self) -> list[str]:
@@ -262,6 +267,7 @@ class ContactsModule(Module):
         """
         self._config = self._coerce_config(config)
         self._db = db
+        self._butler_name = butler_name
 
         module = self  # capture for closures
 
@@ -688,11 +694,15 @@ class ContactsModule(Module):
                     pool,
                     provider=provider.name,
                     account_id=account_id,
+                    owner=ContactsOwner(
+                        lambda: self._switchboard_client, lambda: self._butler_name
+                    ),
                 )
                 sync_engine = ContactsSyncEngine(
                     provider=provider,
                     state_store=state_store,
                     apply_contact=backfill_engine,
+                    batch_finalizer=backfill_engine if provider.name == "telegram" else None,
                 )
 
                 runtime = ContactsSyncRuntime(
@@ -913,7 +923,7 @@ class ContactsModule(Module):
         }
 
         creds: dict[str, str] = {}
-        for ci_type, label in _TELEGRAM_CI_TYPES.items():
+        for ci_type, _label in _TELEGRAM_CI_TYPES.items():
             value = await resolve_owner_entity_info(pool, ci_type)
             if value:
                 creds[ci_type] = value

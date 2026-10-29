@@ -36,6 +36,7 @@ from butlers.modules.approvals.events import ApprovalEventType, record_approval_
 from butlers.modules.approvals.executor import _approval_write_transaction
 from butlers.modules.approvals.models import ActionStatus, ApprovalRule, PendingAction
 from butlers.modules.approvals.sensitivity import suggest_constraints
+from butlers.modules.approvals.stepup import descriptive_savepoint, remember_rule, run_rule_write
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,73 @@ def _decision_event_actor(actor_id: str) -> str:
     if actor_id == _TELEGRAM_CALLBACK_ACTOR:
         return f"human:{actor_id}"
     return f"user:{actor_id}"
+
+
+async def create_approval_rule(
+    pool: Any,
+    tool_name: str,
+    arg_constraints: dict[str, Any],
+    description: str,
+    expires_at: str | None = None,
+    max_uses: int | None = None,
+    actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
+    """Create only with a current action-bound independent dashboard factor."""
+    parameters = dict(
+        tool_name=tool_name,
+        arg_constraints=arg_constraints,
+        description=description,
+        expires_at=expires_at,
+        max_uses=max_uses,
+    )
+    result = await run_rule_write(
+        pool,
+        "create",
+        parameters,
+        lambda conn: _create_approval_rule_write(conn, **parameters, actor_id=actor_id),
+    )
+    await remember_rule(decision_memory_writer, result)
+    return result
+
+
+async def create_rule_from_action(
+    pool: Any,
+    action_id: str,
+    constraint_overrides: dict[str, Any] | None = None,
+    actor_id: str = "dashboard:rest-api",
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
+    """Create from the locked current action with one consumed confirmation."""
+    parameters = dict(action_id=action_id, constraint_overrides=constraint_overrides)
+    result = await run_rule_write(
+        pool,
+        "from_action",
+        parameters,
+        lambda conn: _create_rule_from_action_write(conn, **parameters, actor_id=actor_id),
+    )
+    await remember_rule(decision_memory_writer, result)
+    return result
+
+
+async def approve_action(
+    pool: Any,
+    action_id: str,
+    actor_id: str = "dashboard:rest-api",
+    create_rule: bool = False,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
+    """Ordinary approvals stay one-tap; combined authority changes commit once."""
+    if not create_rule:
+        return await _approve_action_write(pool, action_id, actor_id, False, decision_memory_writer)
+    result = await run_rule_write(
+        pool,
+        "approve_with_rule",
+        dict(action_id=action_id),
+        lambda conn: _approve_action_write(conn, action_id, actor_id, True, None),
+    )
+    await remember_rule(decision_memory_writer, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +215,7 @@ async def sweep_orphaned_prepared_actions(
     return {"expired_count": len(expired_ids), "expired_ids": expired_ids}
 
 
-async def approve_action(
+async def _approve_action_write(
     pool: Any,
     action_id: str,
     actor_id: str = "dashboard:rest-api",
@@ -217,23 +285,26 @@ async def approve_action(
     # Post-approval autonomy tracker hook (task 7.1)
     # Wrap in try/except so tracker failure doesn't block approval
     try:
-        # Re-read to get decided_at
-        updated_row = await pool.fetchrow("SELECT * FROM pending_actions WHERE id = $1", parsed_id)
-        if updated_row is not None:
-            updated_action = PendingAction.from_row(updated_row)
-            await _record_approval(pool, updated_action)
-            # Use a minimal config namespace with defaults (no module import needed)
-            _default_config = type(
-                "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
-            )()
-            await _check_promotion_threshold(
-                pool=pool,
-                pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
-                tool_name=action.tool_name,
-                tool_args=action.tool_args,
-                config=_default_config,
-                action_id=updated_action.id,
+        async with descriptive_savepoint(pool) as tracker_connection:
+            # Re-read to get decided_at
+            updated_row = await tracker_connection.fetchrow(
+                "SELECT * FROM pending_actions WHERE id = $1", parsed_id
             )
+            if updated_row is not None:
+                updated_action = PendingAction.from_row(updated_row)
+                await _record_approval(tracker_connection, updated_action)
+                # Use a minimal config namespace with defaults (no module import needed)
+                _default_config = type(
+                    "_Config", (), {"promotion_threshold": 5, "suggestion_cooldown_days": 30}
+                )()
+                await _check_promotion_threshold(
+                    pool=tracker_connection,
+                    pattern_fingerprint=_compute_fingerprint(action.tool_name, action.tool_args),
+                    tool_name=action.tool_name,
+                    tool_args=action.tool_args,
+                    config=_default_config,
+                    action_id=updated_action.id,
+                )
     except Exception:
         logger.exception(
             "Autonomy tracker hook failed for action %s — approval not blocked", action_id
@@ -242,14 +313,15 @@ async def approve_action(
     # Optionally create a standing rule
     rule_dict: dict[str, Any] | None = None
     if create_rule:
-        rule_result = await create_rule_from_action(
+        rule_result = await _create_rule_from_action_write(
             pool,
             action_id=action_id,
             actor_id=actor_id,
             decision_memory_writer=decision_memory_writer,
         )
-        if "error" not in rule_result:
-            rule_dict = rule_result
+        if "error" in rule_result:
+            return rule_result
+        rule_dict = rule_result
 
     # Return the approved (not yet executed) state.
     # Callers with access to a tool executor should dispatch execution
@@ -525,7 +597,7 @@ async def abandon_approved_action(
 # ---------------------------------------------------------------------------
 
 
-async def create_approval_rule(
+async def _create_approval_rule_write(
     pool: Any,
     tool_name: str,
     arg_constraints: dict[str, Any],
@@ -611,16 +683,21 @@ async def create_approval_rule(
         occurred_at=now,
     )
 
+    if rule.tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+        await record_admitted_rule(pool, rule.id)
     if decision_memory_writer is not None:
         await decision_memory_writer.record_standing_rule(rule, active=True)
 
     # Rule-creation supersede hook (task 7.3)
     try:
-        await _supersede_matching_suggestions(
-            pool=pool,
-            tool_name=tool_name,
-            arg_constraints=arg_constraints,
-        )
+        async with _approval_write_transaction(pool) as hook_connection:
+            await _supersede_matching_suggestions(
+                pool=hook_connection,
+                tool_name=tool_name,
+                arg_constraints=arg_constraints,
+            )
     except Exception:
         logger.exception("Supersede hook failed for rule %s — rule creation not blocked", rule.id)
 
@@ -632,7 +709,7 @@ async def create_approval_rule(
 # ---------------------------------------------------------------------------
 
 
-async def create_rule_from_action(
+async def _create_rule_from_action_write(
     pool: Any,
     action_id: str,
     constraint_overrides: dict[str, Any] | None = None,
@@ -718,16 +795,21 @@ async def create_rule_from_action(
         occurred_at=now,
     )
 
+    if rule.tool_name == "relationship_assert_fact":
+        from butlers.tools.relationship.fact_authority import record_admitted_rule
+
+        await record_admitted_rule(pool, rule.id)
     if decision_memory_writer is not None:
         await decision_memory_writer.record_standing_rule(rule, active=True)
 
     # Rule-creation supersede hook (task 7.3)
     try:
-        await _supersede_matching_suggestions(
-            pool=pool,
-            tool_name=action.tool_name,
-            arg_constraints=suggested,
-        )
+        async with _approval_write_transaction(pool) as hook_connection:
+            await _supersede_matching_suggestions(
+                pool=hook_connection,
+                tool_name=action.tool_name,
+                arg_constraints=suggested,
+            )
     except Exception:
         logger.exception("Supersede hook failed for rule %s — rule creation not blocked", rule.id)
 

@@ -9,41 +9,55 @@
  * bu-27dxl.6.4) -- previously invisible over the API.
  */
 
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 
 import { getHealingDispatchEvents, type HealingDispatchEventsParams } from "@/api/index.ts";
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
+
+// No fleet event type covers healing gate evaluations, so this local poll is the primary path.
+const HEALING_DISPATCH_EVENTS_POLL_MS = 30_000;
 
 export function useHealingDispatchEvents(params: HealingDispatchEventsParams = {}) {
-  const refetchInterval = useBusAwarePollInterval();
   return useQuery({
     queryKey: ["healing-dispatch-events", params],
     queryFn: () => getHealingDispatchEvents(params),
-    refetchInterval,
+    refetchInterval: HEALING_DISPATCH_EVENTS_POLL_MS,
   });
 }
 
-const SUPPRESSIONS_SAMPLE_LIMIT = 100;
-
 /**
  * Per-fingerprint count of QA dispatches suppressed by an infra condition
- * (decision="infra_condition_open"). One fetch of the most recent events
- * covers every condition row the Standing Conditions panel renders, rather
- * than one request per row. `isError` must gate the caller's render -- a
- * failed fetch means "unknown", not "zero suppressed".
+ * (decision="infra_condition_open"). Fetch only one event per distinct
+ * rendered infrastructure fingerprint: the filtered API's meta.total counts
+ * every match, including events outside the latest global page. A missing or
+ * failed total remains unknown, even when a failed refetch has cached data.
  */
-export function useInfraConditionSuppressionCounts() {
-  const query = useHealingDispatchEvents({
-    decision: "infra_condition_open",
-    limit: SUPPRESSIONS_SAMPLE_LIMIT,
+export function useInfraConditionSuppressionCounts(fingerprints: readonly string[]) {
+  const identities = [...new Set(fingerprints)].sort();
+  const queries = useQueries({
+    queries: identities.map((fingerprint) => ({
+      queryKey: ["infra-condition-suppression-total", fingerprint],
+      queryFn: async () => {
+        const response = await getHealingDispatchEvents({
+          decision: "infra_condition_open",
+          fingerprint,
+          limit: 1,
+        });
+        const total = response.meta?.total;
+        if (!Number.isSafeInteger(total) || total < 0) {
+          throw new Error("QA dispatch suppression total is unavailable");
+        }
+        return total;
+      },
+      refetchInterval: HEALING_DISPATCH_EVENTS_POLL_MS,
+    })),
   });
   const counts = new Map<string, number>();
-  for (const event of query.data?.data ?? []) {
-    counts.set(event.fingerprint, (counts.get(event.fingerprint) ?? 0) + 1);
-  }
+  queries.forEach((query, index) => {
+    if (query.isSuccess) counts.set(identities[index], query.data);
+  });
   return {
     counts,
-    isLoading: query.isLoading,
-    isError: query.isError,
+    isLoading: queries.some((query) => query.isPending),
+    isError: queries.some((query) => query.isError),
   };
 }

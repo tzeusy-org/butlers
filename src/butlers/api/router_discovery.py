@@ -1,7 +1,7 @@
 """Auto-discovery and loading for roster butler API routers.
 
 Scans roster/{butler}/api/router.py files and dynamically loads them
-via importlib. Each loaded router module must export a module-level
+through the owning roster_imports primitive. Each loaded router must export a module-level
 'router' variable (APIRouter instance).
 
 Usage:
@@ -12,55 +12,18 @@ Usage:
         app.include_router(router_module.router)
 """
 
-import importlib.util
+import hashlib
 import logging
-import sys
 from pathlib import Path
 from types import ModuleType
 
 from fastapi import APIRouter
 
+from butlers.roster_imports import _load_file_module as _load_router_module
+
 logger = logging.getLogger(__name__)
 
-# Default roster location relative to the repository root
 _DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3] / "roster"
-
-
-def _load_router_module(router_path: Path, module_name: str) -> ModuleType:
-    """Load a Python module from a file path using importlib.
-
-    If the module is already loaded in sys.modules, returns the existing
-    module to ensure consistency across test and app initialization.
-
-    Parameters
-    ----------
-    router_path:
-        Path to the router.py file.
-    module_name:
-        Unique module name for sys.modules registration.
-
-    Returns
-    -------
-    ModuleType
-        The loaded module.
-
-    Raises
-    ------
-    ValueError
-        If the module spec cannot be loaded.
-    """
-    # Return existing module if already loaded (e.g., from tests)
-    if module_name in sys.modules:
-        return sys.modules[module_name]
-
-    spec = importlib.util.spec_from_file_location(module_name, router_path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f"Could not load spec from {router_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module  # Required for imports to resolve
-    spec.loader.exec_module(module)
-    return module
 
 
 def discover_butler_routers(
@@ -109,6 +72,9 @@ def discover_butler_routers(
             continue
 
         module_name = f"{butler_name}_api_router"
+        if roster_dir.resolve() != _DEFAULT_ROSTER_DIR.resolve():
+            root_key = hashlib.sha256(str(roster_dir.resolve()).encode()).hexdigest()[:12]
+            module_name += f"_{root_key}"
 
         try:
             module = _load_router_module(router_path, module_name)

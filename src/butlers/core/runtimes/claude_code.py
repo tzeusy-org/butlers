@@ -30,7 +30,7 @@ import shutil
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TextIO, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
@@ -64,6 +64,17 @@ def _find_claude_binary() -> str:
             "Install it with: npm install -g @anthropic-ai/claude-code"
         )
     return path
+
+
+def _open_stderr_log(stderr_dir: Path, butler_name: str) -> TextIO:
+    """Open the per-butler stderr log and stamp a session header (blocking file IO)."""
+    stderr_dir.mkdir(parents=True, exist_ok=True)
+    stderr_path = stderr_dir / f"{butler_name}_cc_stderr.log"
+    stderr_log_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stderr_log_file.write(f"\n--- runtime session start: {ts} ---\n")
+    stderr_log_file.flush()
+    return stderr_log_file
 
 
 def _parse_claude_output(
@@ -313,6 +324,7 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             return self._claude_binary
         return _find_claude_binary()
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -414,13 +426,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         stderr_log_file = None
         if self._butler_name and self._log_root is not None:
             try:
-                stderr_dir = self._log_root / "butlers"
-                stderr_dir.mkdir(parents=True, exist_ok=True)
-                stderr_path = stderr_dir / f"{self._butler_name}_cc_stderr.log"
-                stderr_log_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
-                ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                stderr_log_file.write(f"\n--- runtime session start: {ts} ---\n")
-                stderr_log_file.flush()
+                stderr_log_file = await asyncio.to_thread(
+                    _open_stderr_log, self._log_root / "butlers", self._butler_name
+                )
             except OSError:
                 logger.warning(
                     "Could not open Claude CC stderr log for %s",
@@ -602,7 +610,19 @@ class ClaudeCodeAdapter(RuntimeAdapter):
         Path
             Path to the generated mcp.json file.
         """
-        config = {"mcpServers": mcp_servers}
+        # The CLI treats an entry with no ``type`` as stdio, rejects it for lacking
+        # ``command`` and skips the server, which would drop both the connection and its
+        # ``headers``.  Spawner entries stay runtime-neutral; the butler daemon serves
+        # streamable HTTP, so a url entry without a type is declared ``http`` here.
+        servers = {
+            name: (
+                {"type": "http", **entry}
+                if isinstance(entry, dict) and "url" in entry and "type" not in entry
+                else entry
+            )
+            for name, entry in mcp_servers.items()
+        }
+        config = {"mcpServers": servers}
         mcp_json_path = tmp_dir / "mcp.json"
         mcp_json_path.write_text(json.dumps(config, indent=2))
         return mcp_json_path

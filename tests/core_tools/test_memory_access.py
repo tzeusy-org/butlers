@@ -17,6 +17,7 @@ import pytest
 
 from butlers.core_tools._base import ToolContext
 from butlers.core_tools._memory_access import register_memory_access_tool
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -26,16 +27,9 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_pool(facts_dropped=0, episodes_dropped=0, rules_dropped=0, raises=False):
-    """Return an AsyncMock pool that returns seeded drop counts."""
-    pool = AsyncMock()
-
-    if raises:
-        pool.fetchval = AsyncMock(side_effect=RuntimeError("db error"))
-    else:
-        # fetchval is called three times: facts, episodes, rules.
-        pool.fetchval = AsyncMock(side_effect=[facts_dropped, episodes_dropped, rules_dropped])
-    return pool
+def _drop_count_pool(facts_dropped=0, episodes_dropped=0, rules_dropped=0, raises=False):
+    drops = RuntimeError("db error") if raises else [facts_dropped, episodes_dropped, rules_dropped]
+    return fake_pool(fetchval=AsyncMock(side_effect=drops))
 
 
 def _make_memory_module(embedding_model=None):
@@ -120,7 +114,7 @@ async def test_memory_access_with_module_returns_all_stores_and_drops_7d(
 ):
     """Memory module present: all three stores listed; drops_7d sums all tables."""
     daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(facts_dropped=facts, episodes_dropped=episodes, rules_dropped=rules)
+    pool = _drop_count_pool(facts_dropped=facts, episodes_dropped=episodes, rules_dropped=rules)
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -138,7 +132,7 @@ async def test_memory_access_drops_7d_degrades_on_db_error():
     the drop count degrades.
     """
     daemon = SimpleNamespace(_modules=[_make_memory_module()])
-    pool = _make_pool(raises=True)
+    pool = _drop_count_pool(raises=True)
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -158,7 +152,7 @@ async def test_memory_access_embedding_model_from_config():
     """embedding_model is read from module._config.embedding_model when set."""
     mod = _make_memory_module(embedding_model="text-embedding-3-small")
     daemon = SimpleNamespace(_modules=[mod])
-    pool = _make_pool()
+    pool = _drop_count_pool()
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -170,7 +164,7 @@ async def test_memory_access_embedding_model_defaults_to_minilm():
     """When config.embedding_model is None, falls back to all-MiniLM-L6-v2."""
     mod = _make_memory_module(embedding_model=None)
     daemon = SimpleNamespace(_modules=[mod])
-    pool = _make_pool()
+    pool = _drop_count_pool()
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()
@@ -187,7 +181,7 @@ async def test_memory_access_ignores_non_memory_modules():
     """Only a module with name='memory' triggers memory access; others are ignored."""
     other_mod = SimpleNamespace(name="telegram", _config=None)
     daemon = SimpleNamespace(_modules=[other_mod])
-    pool = _make_pool()
+    pool = _drop_count_pool()
     tool = _register_and_grab(daemon, pool=pool)
 
     result = await tool()

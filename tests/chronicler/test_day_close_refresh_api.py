@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
 import json
 import sys
 from datetime import date
@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError
+from butlers.api.deps import ButlerUnreachableError, get_db
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -29,10 +29,7 @@ def _load_chronicler_router():
     module_name = "chronicler_api_router"
     if module_name in sys.modules:
         return sys.modules[module_name]
-    spec = importlib.util.spec_from_file_location(module_name, _ROUTER_PATH)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    module = importlib.import_module("butlers.api._roster.chronicler.router")
     return module
 
 
@@ -59,7 +56,7 @@ def _make_app(
         manager.get_client = AsyncMock(return_value=client)
 
     app = create_app(api_key="")
-    app.dependency_overrides[chronicler_mod._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[chronicler_mod.get_mcp_manager] = lambda: manager
     chronicler_mod.emit_dashboard_audit = AsyncMock()
     return app, manager.get_client, client.call_tool

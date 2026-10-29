@@ -45,6 +45,7 @@ from roster.relationship.tests.evidence_schema import (
     MAX_TEXT_CHARS,
     apply_evidence_schema,
 )
+from roster.relationship.tests.fact_authority_fixtures import approve_fixture, replay_fixture
 
 _PRED_HAS_EMAIL = "has-email"
 _PRED_HAS_PHONE = "has-phone"
@@ -457,9 +458,7 @@ class TestApprovedWriteEvidence:
             pool, owner_entity, _PRED_HAS_EMAIL, value, src="relationship"
         )
         assert result.outcome == AssertOutcome.pending_approval
-        await pool.execute(
-            "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
-        )
+        await approve_fixture(pool, result.action_id)
         return result.action_id
 
     async def test_parked_args_carry_the_action_id_dispatch_needs(self, pool, owner_entity):
@@ -507,11 +506,10 @@ class TestApprovedWriteEvidence:
             observed_at=observed,
         )
         assert result.outcome == AssertOutcome.pending_approval
-        await pool.execute(
-            "UPDATE pending_actions SET status = 'approved' WHERE id = $1", result.action_id
-        )
-        replayed = await relationship_assert_fact(
+        await approve_fixture(pool, result.action_id)
+        replayed = await replay_fixture(
             pool,
+            relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",
@@ -526,8 +524,9 @@ class TestApprovedWriteEvidence:
 
     async def test_approved_replay_writes_the_fact_instead_of_reparking(self, pool, owner_entity):
         action_id = await self._park(pool, owner_entity)
-        result = await relationship_assert_fact(
+        result = await replay_fixture(
             pool,
+            relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",
@@ -543,8 +542,9 @@ class TestApprovedWriteEvidence:
         self, pool, owner_entity
     ):
         action_id = await self._park(pool, owner_entity)
-        result = await relationship_assert_fact(
+        result = await replay_fixture(
             pool,
+            relationship_assert_fact,
             owner_entity,
             _PRED_HAS_EMAIL,
             "owner@example.test",
@@ -810,7 +810,7 @@ class TestKnowledgeGapClosure:
 @pytest.mark.unit
 class TestMcpSurface:
     @staticmethod
-    async def _register():
+    async def _register(groups: list[str] | None = None):
         from fastmcp import FastMCP
 
         from butlers.modules._roster_relationship import (
@@ -822,20 +822,46 @@ class TestMcpSurface:
         mcp = FastMCP("test-relationship")
         await mod.register_tools(
             mcp,
-            RelationshipModuleConfig(groups=["entity"]),
+            RelationshipModuleConfig(groups=["entity"] if groups is None else groups),
             db=None,
             butler_name="relationship",
         )
         return mcp
 
     async def test_evidence_and_coverage_reads_are_registered(self):
-        mcp = await self._register()
+        mcp = await self._register(groups=["entity", "entity_write"])
         names = {t.name for t in await mcp.list_tools()}
         assert {
             "relationship_fact_evidence",
             "relationship_predicate_coverage",
             "relationship_record_coverage",
         } <= names
+
+    @pytest.mark.parametrize(
+        "name,arguments",
+        [
+            ("entity_resolve", {"name": "unavailable target"}),
+            ("entity_get", {"entity_id": "00000000-0000-0000-0000-000000000001"}),
+            ("entity_neighbors", {"entity_id": "00000000-0000-0000-0000-000000000001"}),
+            ("relationship_fact_evidence", {"fact_id": "00000000-0000-0000-0000-000000000001"}),
+            (
+                "relationship_predicate_coverage",
+                {
+                    "entity_id": "00000000-0000-0000-0000-000000000001",
+                    "predicates": ["has-email"],
+                },
+            ),
+            ("relationship_lookup", {"entity_ref": "unavailable target"}),
+        ],
+    )
+    async def test_registered_reads_propagate_unavailable_backend(self, name, arguments):
+        from fastmcp.exceptions import ToolError
+
+        mcp = await self._register()
+        # Real registered handlers with no database must fail through MCP, not
+        # fabricate a domain miss/unknown/unavailable successful response.
+        with pytest.raises(ToolError):
+            await mcp.call_tool(name, arguments)
 
     async def test_assert_tool_has_no_source_parameter_at_all(self):
         """An LLM session cannot name its own source, approved or not (bu-vj46x).
@@ -850,6 +876,10 @@ class TestMcpSurface:
         params = inspect.signature(tool.fn).parameters
         assert "src" not in params
         assert "observed_at" not in params
+        # REQ-relationship-facts-006: owner confirmation is server-derived.
+        assert "verified" not in params
+        assert "content_authority" not in params
+        assert "authority_entity_id" not in params
         with pytest.raises(TypeError):
             await tool.fn(
                 subject=uuid.uuid4(),
@@ -859,7 +889,7 @@ class TestMcpSurface:
             )
 
     async def test_assert_tool_accepts_the_dispatch_replay_shape(self, monkeypatch):
-        """Approval dispatch replays stored tool_args verbatim; the signature must fit."""
+        """New replay uses the public shape; legacy flags normalize privately."""
         import importlib
         from unittest.mock import AsyncMock, MagicMock
 
@@ -891,7 +921,6 @@ class TestMcpSurface:
             "object": "owner@example.test",
             "object_kind": "literal",
             "conf": 1.0,
-            "verified": False,
             "approval_action_id": str(action_id),
             # The canonical effective-time keys every parked action now carries.
             "effective_period_id": str(uuid.uuid4()),

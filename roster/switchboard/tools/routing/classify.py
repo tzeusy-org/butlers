@@ -5,17 +5,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from pathlib import Path
 from typing import Any
 
-from butlers.tools.switchboard.registry import discover_butlers, list_butlers
-from butlers.tools.switchboard.registry.registry import (
-    list_control_plane_candidates,
-    receiver_route_cutover_enabled,
+from butlers.tools.switchboard.registry.registry import (  # noqa: F401 - MessagePipeline import site
+    load_available_butlers as _load_available_butlers,
 )
 
 logger = logging.getLogger(__name__)
-_DEFAULT_ROSTER_DIR = Path(__file__).resolve().parents[3]
 _SCHEDULING_INTENT_RE = re.compile(
     r"\b("
     r"schedule(?:d|ing)?|"
@@ -216,31 +212,3 @@ def _build_routing_guidance(butlers: list[dict[str, Any]]) -> str:
         )
 
     return "\n".join(lines)
-
-
-async def _load_available_butlers(pool: Any) -> list[dict[str, Any]]:
-    """Load butler-typed agents eligible for user-message routing.
-
-    Staffer-typed agents are excluded from the candidate set — they are
-    never valid targets for user-message classification.  They remain
-    reachable via butler-to-staffer routing paths (e.g., notify → messenger).
-    """
-    if receiver_route_cutover_enabled():
-        # Receiver-derived admission keeps an otherwise eligible stale target
-        # visible so route() can perform its single bounded identity recheck.
-        return await list_control_plane_candidates(pool, butler_only=True)
-
-    butlers = await list_butlers(pool, routable_only=True, butler_only=True)
-    if butlers:
-        return butlers
-
-    try:
-        await discover_butlers(pool, _DEFAULT_ROSTER_DIR)
-        butlers = await list_butlers(pool, routable_only=True, butler_only=True)
-    except Exception:
-        logger.exception(
-            "Failed to auto-discover butlers from %s",
-            _DEFAULT_ROSTER_DIR,
-        )
-
-    return butlers

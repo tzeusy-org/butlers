@@ -39,9 +39,7 @@ class StrictModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "strict_mod"
+    name = "strict_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -80,9 +78,7 @@ class AllDefaultsModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "defaults_mod"
+    name = "defaults_mod"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -114,9 +110,7 @@ class NoSchemaModule(Module):
         self._startup_config: Any = None
         self._tools_config: Any = None
 
-    @property
-    def name(self) -> str:
-        return "no_schema_mod"
+    name = "no_schema_mod"
 
     @property
     def config_schema(self) -> type[BaseModel] | None:
@@ -187,6 +181,31 @@ def _patch_infra():
     # so that ``async with pool.acquire() as conn:`` works in route_inbox recovery.
     mock_conn = AsyncMock()
     mock_conn.fetch.return_value = []
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.execute = AsyncMock(return_value=None)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+
+    async def runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=runtime_row)
     mock_pool.acquire = MagicMock(
         return_value=AsyncMock(
             __aenter__=AsyncMock(return_value=mock_conn),
@@ -226,9 +245,9 @@ def _patch_infra():
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "FastMCP": patch("butlers.lifecycle.FastMCP"),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
-            return_value=MockAdapter,
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter",
+            return_value=MockAdapter(),
         ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
@@ -266,7 +285,7 @@ class TestValidConfigPasses:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -294,7 +313,7 @@ class TestValidConfigPasses:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -322,7 +341,7 @@ class TestValidConfigPasses:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -342,10 +361,15 @@ class TestUnconfiguredRequiredSchemaModules:
     async def test_unconfigured_modules_are_skipped(self, tmp_path: Path) -> None:
         """Absent config skips all modules with a config_schema (explicit config required)."""
         butler_dir = _make_butler_toml(tmp_path, modules={})
-        registry = _make_registry(StrictModule, AllDefaultsModule)
+        registry = _make_registry(StrictModule, AllDefaultsModule, NoSchemaModule)
         patches = _patch_infra()
 
         with (
+            patch.object(NoSchemaModule, "on_startup", new_callable=AsyncMock) as omitted_start,
+            patch.object(NoSchemaModule, "register_tools", new_callable=AsyncMock) as omitted_tools,
+            patch.object(
+                NoSchemaModule, "migration_revisions", return_value=None
+            ) as omitted_migration,
             patches["db_from_env"],
             patches["run_migrations"],
             patches["validate_credentials"],
@@ -354,7 +378,7 @@ class TestUnconfiguredRequiredSchemaModules:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -365,6 +389,10 @@ class TestUnconfiguredRequiredSchemaModules:
         loaded_names = {mod.name for mod in daemon._modules}
         assert "strict_mod" not in loaded_names
         assert "defaults_mod" not in loaded_names
+        assert "no_schema_mod" not in loaded_names
+        omitted_start.assert_not_awaited()
+        omitted_tools.assert_not_awaited()
+        omitted_migration.assert_not_called()
 
     async def test_defaults_module_loads_with_empty_config(self, tmp_path: Path) -> None:
         """An empty config section is enough to load a module with all-default fields."""
@@ -381,7 +409,7 @@ class TestUnconfiguredRequiredSchemaModules:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -418,7 +446,7 @@ class TestMissingRequiredField:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -453,7 +481,7 @@ class TestExtraFieldRejected:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -488,7 +516,7 @@ class TestTypeMismatch:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -521,7 +549,7 @@ class TestNoSchemaFallback:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -551,7 +579,7 @@ class TestNoSchemaFallback:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],
@@ -585,7 +613,7 @@ class TestValidationPreventsModuleStartup:
             patches["sync_schedules"],
             patches["FastMCP"],
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["connect_switchboard"],

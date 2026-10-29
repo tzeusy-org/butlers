@@ -1,0 +1,51 @@
+# Exact request provenance for Gmail source health
+
+## Governing authority and provenance
+
+This is the explicitly released narrow bu-ly3lv5.14.1 bug, based on published f2e8a9ae1ab229bb73d5834d71c9396ed6af083e. Distinct corrected proposal review103 and authority addendum3 were adopted before this implementation. They reviewed an unpublished9f8 prospective predicate; that private kit is not composed here. Existing connector-gmail Aggregated Health Status lacks an explicit POST-origin paragraph. This amendment supplies the reviewed clarification without claiming that paragraph was already in the baseline. Original14 P3 and the existing classifier contract supply the boundary. Original14's extraction non-goal and P1 sole ingestion exception remain unchanged.
+
+## Minimal implementation
+
+Keep `_format_google_error`, `get_error_type`, description construction and return behavior. Evaluate the installed `google_oauth_requires_reauthorization` Boolean only for a real `httpx.Response` with its own request, method POST and exact serialized URL `https://oauth2.googleapis.com/token`. HTTPX canonicalizes ordinary host/default-port notation when constructing its URL; comparison uses the actual bound URL, not exception text or caller-supplied metadata. Missing response/request, wrong method/origin/path/query/fragment, malformed or nested payloads provide no reauthorization authority. The existing Google credential parser owns the exact literal code set. This classifier never changes credentials or shared account status.
+
+## Preservation and evidence
+
+The six caller bodies remain complete and unchanged. Actual synthetic HTTP responses enter the unchanged fetch/token error paths, preserving diagnostic strings, exception identity/arguments/traceback, request/metric species, cursor/token/sent cache, sibling health and successful reset. Old predicate, corrected source and restored old predicate controls distinguish the data-origin defect from exact token positives. Software evidence does not qualify providers, PostgreSQL, deployed startup, timing or original14 completion.
+
+## Native preparation and delivery
+
+The delta contains the whole old Aggregated Health Status paragraph and Health model scenario plus exactly the three reviewed scenarios. ROOT reserved `REQ-connector-gmail-001` for this same existing legacy aggregate after the current identifier census; this backfills metadata rather than allocating a new feature requirement. Complete installed validation/generation/disposable application/no-op, refusal/restoration and physical/semantic inverse are preparation only. Tracked baseline sync/archive requires distinct genuine preparation approval and ROOT's separate administration release. No incomplete/cancelled archive exit0 counts as successful archive. Native delivery, exact resulting-source review, terminal normal/protected gates and actual squash remain future obligations; source tests do not earn them.
+
+## Preserving metadata correction
+
+The original a06 preparation's unnumbered aggregate introduced a trace warning and an authoring/strict error. The independently reviewed source predicate remains unchanged. The reserved legacy ID, true design/canonical Source and `v1-mandatory` Scope now form contiguous metadata immediately after the complete normative prose and before all four unchanged scenarios. One blank separator between the old aggregate prose and approved classifier prose is removed to satisfy the installed paragraph grammar; every normative word and scenario body remains exact. The original raw requirement and inverse are retained in the correction evidence. An adjacent citation in the existing origin-classification behavioral test pins the same requirement without a new test species or assertion. No baseline, account, credential, retry, diagnostic, cache, provider or SQL authority changes.
+
+## Rollback
+
+Reverse the scoped source/test/documentation patch and active change. Preserve complete old callbacks/assertions/helpers/signatures/decorators/parameters/markers and all foreign native bodies/modes. The old data-origin misclassification deliberately reappears in restoration controls; restoration is not a correctness approval of old behavior.
+
+## Durable provenance and source-first delivery
+
+The requirement's Source cites the immutable 5eb4b330ec56c3e1c2d6db8cb7cdfeb547caefd7 design body and its Governing authority and provenance / Minimal implementation sections. That exact Git body already exists locally and survives later supported relocation of this active change. Its public permalink remains prospective until the authorized source branch is pushed and the exact remote commit, complete design body and both anchors are verified. The syntax-only trace consumer does not establish public availability.
+
+ROOT adopted the distinct exact-5eb metadata/citation preparation review on 2026-10-11 and released this metadata-only repair and source-first scoped publication. Preserve all normative words, four scenarios, source predicate, diagnostics and complete tests. The source prerequisite requires its own genuine resulting-head review, current normal, full protected queue and actual squash. Supported tracked application/archive remains a separately released stage after those earned events; its administration task and final cumulative delivery task stay unchecked while in progress. Derive the actual archive destination at execution and verify canonical metadata/scenarios, complete outside bodies, immutable provenance and whole inverse before claiming administration success. No future flag or cancelled archive supplies delivery evidence.
+
+## Preserving archive procedure after delivered application
+
+This section records the stage after PR 4470's supported baseline application was genuinely reviewed and delivered at squash a06699b0012705b116961059ba9d5b90997c27c7. The preceding design remains the dated source/preparation record, including its then-pending publication and administration statements. The current canonical target has all 19 requirements and 86 scenarios, including the complete old Health model and exactly three reviewed additions. This procedure changes no normative paragraph, scenario, ID, Source, Scope, source predicate, diagnostic, caller, credential, privacy or account authority.
+
+The original task 2.2 combines sync and archive. Installed OpenSpec counts unchecked tasks before archive, so that item cannot be fulfilled by the same command it blocks. Preserve its complete original wording and successful archive/readback/inverse outcome in the task-history acceptance prose. The executing 2.2 checklist instead names the completed supported application, complete source/scenario/mode/provenance readback and inverse prerequisites. Item 3.1 is earned only for the named PR 4470 application stage, with its distinct genuine review, normal checks, full protected run and actual squash; it does not preapprove this amendment or the later archive.
+
+Deliver this procedural amendment through its own distinct genuine review, current normal checks, full protected merge_group and actual squash before ROOT separately releases ordinary archive. Successful ordinary archive, full destination/date/relocation and canonical/foreign readback/inverse, followed by that stage's genuine review and delivery, remain mandatory acceptance. There is no future checkbox claiming the archive has already succeeded, no parser exemption and no unchecked override. The CLI's prerequisite count cannot prove external delivery. Actual archive is outside this amendment's execution scope.
+
+Rollback restores the complete pre-amendment tasks and design bodies and modes. The canonical baseline, complete active delta/proposal, public immutable 5eb provenance, all other native files and every source/test body remain unchanged. This sequencing repair does not close the administration child, original source bug or parent refactor, waive their complete criteria or supply SQL, provider or timing evidence.
+
+## Supported ordinary archive and installed output-mode correction
+
+The preceding proposal/design/task bodies are retained as dated source, preparation and procedural-amendment history. PR 4471 delivered that amendment at protected squash 0d35c7cef066177e87dc6fef55048fae439100de, after which ROOT separately released ordinary archive. The original task 2.2's successful archive/readback/inverse outcome and every original administration/source/parent criterion remain mandatory.
+
+The currently installed OpenSpec 1.9.0 `--json` branch does not read confirmation from stdin: it returns `archive_confirmation_required` for spec updates without `--yes`, even when every task is complete. The exact JSON refusal and unchanged full native inverse are retained. ROOT authorized only an output-mode correction to the installed ordinary human command, with normal affirmative stdin; no tool, parser, task prerequisite, requirement, scenario or override was changed.
+
+On 2026-10-11 the actual `openspec archive gmail-token-origin-health` command accepted its standard spec-update confirmation, kept all normal validation enabled and succeeded at `openspec/changes/archive/2026-10-11-gmail-token-origin-health`. Its no-op spec application preserves the complete current 19-requirement/86-scenario baseline. Full relocation/body/mode/provenance readback and initialized forward/reverse inverse are recorded in the worker evidence. All four original package bodies survive as prefixes or exact bodies at the archive destination. The immutable published 5eb Source and both anchors continue to identify the reviewed design, rather than a prospective URL or rewritten history.
+
+This stage changes native location and appends truthful stage history only. All source, tests, caller/diagnostic/health/privacy/credential/retry behavior and foreign native files remain unchanged. Distinct resulting-head review, current applicable normal checks, the full protected merge_group and confirmed squash remain pending for the archive PR; no source bug, parent refactor, SQL, provider or timing completion is inferred. Rollback is the initialized inverse of this scoped relocation and two history appendices, restoring the complete 0d35 active package and modes without altering the canonical baseline.

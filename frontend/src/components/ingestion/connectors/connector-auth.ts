@@ -43,6 +43,7 @@
 import { getProviderOAuthStartUrl } from '@/api/client'
 import type { ConnectorSummary } from '@/api/types'
 import { stateTextColorVar } from '@/lib/visual-token-roles'
+import { CONNECTOR_RECOVERY_CAPABILITIES } from './connector-catalog.gen'
 
 /** Derived auth status — maps onto the Dispatch design language. */
 export type DerivedAuthStatus =
@@ -363,16 +364,6 @@ export type ConnectorRecovery =
     }
   | { kind: 'unsupported'; reason: string }
 
-const GOOGLE_OAUTH_CONNECTOR_TYPES = new Set([
-  'google',
-  'gmail',
-  'google_calendar',
-  'google_drive',
-  'google_health',
-])
-
-const WHATSAPP_CONNECTOR_TYPES = new Set(['whatsapp', 'whatsapp_user_client'])
-
 const UNSUPPORTED_RECOVERY_REASON =
   'Recovery is not available because this connector has no supported OAuth or Passport flow in the dashboard.'
 
@@ -389,14 +380,18 @@ export function resolveConnectorRecovery(
   connectorType: string,
   options: ConnectorRecoveryOptions = {},
 ): ConnectorRecovery {
-  if (GOOGLE_OAUTH_CONNECTOR_TYPES.has(connectorType)) {
+  const capability = Object.prototype.hasOwnProperty.call(CONNECTOR_RECOVERY_CAPABILITIES, connectorType)
+    ? CONNECTOR_RECOVERY_CAPABILITIES[connectorType as keyof typeof CONNECTOR_RECOVERY_CAPABILITIES]
+    : undefined
+
+  if (capability?.kind === 'google-oauth') {
     return {
       kind: 'oauth',
       href: getProviderOAuthStartUrl('google', {
         pageOfOrigin: 'ingestion',
         connectorDetailPath: options.connectorDetailPath,
         forceConsent: options.forceConsent,
-        scopeSet: connectorType === 'google_health' ? 'health' : undefined,
+        scopeSet: capability.healthScopeOptIn ? 'health' : undefined,
       }),
     }
   }
@@ -408,11 +403,11 @@ export function resolveConnectorRecovery(
   // Spotify is deliberately absent from the generalized OAuth registry.
   // /secrets?focus=u:spotify lands on the card whose drawer drives the
   // connector-owned flow — same shape as the WhatsApp recovery below.
-  if (connectorType === 'spotify') {
+  if (capability?.kind === 'spotify-passport') {
     return { kind: 'passport', to: '/secrets?focus=u:spotify', action: 'reauthorize' }
   }
 
-  if (WHATSAPP_CONNECTOR_TYPES.has(connectorType)) {
+  if (capability?.kind === 'whatsapp-passport') {
     return { kind: 'passport', to: '/secrets?focus=u:whatsapp', action: 'pair' }
   }
 

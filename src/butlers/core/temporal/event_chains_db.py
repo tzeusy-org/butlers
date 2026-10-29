@@ -31,6 +31,7 @@ _VALID_TRIGGER_TYPES = frozenset(
         "deadline_threshold",
     }
 )
+_WRITABLE_TRIGGER_TYPES = _VALID_TRIGGER_TYPES - {"calendar_event_end"}
 _VALID_STATUSES = frozenset({"active", "paused", "fired", "failed", "disabled"})
 
 
@@ -69,8 +70,8 @@ async def event_chain_create(
     Args:
         pool: asyncpg connection pool.
         name: Human-readable chain name (unique per butler).
-        trigger_type: One of 'calendar_event_end', 'deadline_passed',
-            'deadline_threshold'.
+        trigger_type: One of 'deadline_passed', 'deadline_threshold'.
+            Historical calendar_event_end rows remain readable and removable.
         actions: Ordered list of action dicts. Each must have action_type,
             delay_minutes, and type-specific required fields.
         butler_name: The owning butler's name.
@@ -89,10 +90,10 @@ async def event_chain_create(
         raise ValueError("Event chain name must be a non-empty string")
     name = name.strip()
 
-    if trigger_type not in _VALID_TRIGGER_TYPES:
+    if trigger_type not in _WRITABLE_TRIGGER_TYPES:
         raise ValueError(
             f"Invalid trigger_type: {trigger_type!r}. "
-            f"Must be one of {sorted(_VALID_TRIGGER_TYPES)!r}"
+            f"Must be one of {sorted(_WRITABLE_TRIGGER_TYPES)!r}"
         )
 
     # Validate the actions array (raises ValueError on failure)
@@ -113,8 +114,10 @@ async def event_chain_create(
             actions,
             butler_name,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"An event chain named {name!r} already exists for butler {butler_name!r}")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(
+            f"An event chain named {name!r} already exists for butler {butler_name!r}"
+        ) from exc
     assert row is not None
     return _row_to_dict(row)
 
@@ -150,6 +153,8 @@ async def event_chain_update(
     Raises:
         ValueError: If chain not found, invalid field values, or duplicate name.
     """
+    if trigger_type is not None and trigger_type not in _WRITABLE_TRIGGER_TYPES:
+        raise ValueError(f"Unsupported writable trigger_type: {trigger_type!r}")
     chain_uuid = uuid.UUID(str(chain_id))
 
     # Fetch existing row (ownership check)
@@ -225,8 +230,10 @@ async def event_chain_update(
             """,
             *params,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"An event chain named {name!r} already exists for butler {butler_name!r}")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(
+            f"An event chain named {name!r} already exists for butler {butler_name!r}"
+        ) from exc
     assert row is not None
     return _row_to_dict(row)
 

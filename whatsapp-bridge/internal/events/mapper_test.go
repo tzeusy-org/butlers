@@ -378,3 +378,47 @@ func TestMapMessage_NonZeroParticipantCountPresentInJSON(t *testing.T) {
 		t.Errorf("participant_count: got %v want 12", got)
 	}
 }
+
+func TestMapMessage_ForwardedTextAndMediaCarryIsForwarded(t *testing.T) {
+	fwd := &waE2E.ContextInfo{IsForwarded: proto.Bool(true), ForwardingScore: proto.Uint32(1)}
+	cases := map[string]*waE2E.Message{
+		"text": {ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("Pay account 12-34"), ContextInfo: fwd,
+		}},
+		"image": {ImageMessage: &waE2E.ImageMessage{
+			Mimetype: proto.String("image/jpeg"), Caption: proto.String("look"), ContextInfo: fwd,
+		}},
+	}
+	for name, msg := range cases {
+		be := events.MapMessage(&waEvents.Message{
+			Info:    makeInfo("fwd-"+name, "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
+			Message: msg,
+		}, 0)
+		if be == nil {
+			t.Fatalf("%s: expected non-nil BridgeEvent", name)
+		}
+		var content map[string]any
+		if err := json.Unmarshal(be.Content, &content); err != nil {
+			t.Fatalf("%s: unmarshal content: %v", name, err)
+		}
+		if content["is_forwarded"] != true {
+			t.Errorf("%s: is_forwarded: got %v want true", name, content["is_forwarded"])
+		}
+	}
+}
+
+func TestMapMessage_UnforwardedOmitsIsForwarded(t *testing.T) {
+	be := events.MapMessage(&waEvents.Message{
+		Info: makeInfo("plain", "1234567890@s.whatsapp.net", "9876543210@s.whatsapp.net"),
+		Message: &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+			Text: proto.String("hello"), ContextInfo: &waE2E.ContextInfo{StanzaID: proto.String("q1")},
+		}},
+	}, 0)
+	var content map[string]any
+	if err := json.Unmarshal(be.Content, &content); err != nil {
+		t.Fatalf("unmarshal content: %v", err)
+	}
+	if _, ok := content["is_forwarded"]; ok {
+		t.Errorf("is_forwarded present on an unforwarded message: %v", content)
+	}
+}

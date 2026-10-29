@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -25,7 +24,6 @@ _CONFIG_OVERRIDES = {
     "calendar": {"provider": "google"},
     "contacts": {"provider": "google"},
     "email": {"send_tools": True},
-    "metrics": {"prometheus_query_url": "http://example.invalid"},
     "spotify": {"playback_tools": True},
     "whatsapp": {"send_tools": True},
 }
@@ -84,6 +82,20 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
 
     validate_presentation_inventory(owners, TOOL_PRESENTATION_INVENTORY)
     by_name = {item.canonical_name: item for item in TOOL_PRESENTATION_INVENTORY}
+    retired = {
+        "metrics_define",
+        "metrics_emit",
+        "metrics_list",
+        "metrics_query",
+        "metrics_query_range",
+        "render_chart",
+        "render_document",
+    }
+    assert retired.isdisjoint(owners)
+    assert retired.isdisjoint(by_name)
+    assert {"metrics", "document_renderer"}.isdisjoint(owners.values())
+    assert owners["pipeline.process"] == "pipeline"
+    assert owners["get_attachment"] == "core"
     assert all(
         by_name[name].group_name == (group if group is not None else "direct")
         for name, group in core_groups.items()
@@ -118,6 +130,9 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
         }
     )
 
+    assert by_name["route"].module_name == "switchboard"
+    assert by_name["route"].llm_presentable is False
+
 
 async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
     daemon = ButlerDaemon(
@@ -125,7 +140,9 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         db=SimpleNamespace(pool=AsyncMock()),
     )
     daemon.config = load_config(_REPO_ROOT / "roster" / butler_name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=groups)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(
+        update={"core_groups": groups}
+    )
     daemon.mcp = FastMCP(f"catalog-{butler_name}-{'-'.join(groups)}")
     daemon.spawner = MagicMock()
     before_tasks = asyncio.all_tasks()
@@ -148,6 +165,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {
                 "route.execute",
                 "cancel_session",
+                "report_error",
+                "get_healing_status",
                 "state_get",
                 "state_set",
                 "state_delete",
@@ -158,7 +177,7 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         (
             "general",
             ("switchboard_routing",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "report_error", "get_healing_status"},
             {"ingest", "connector.heartbeat", "route_to_butler"},
         ),
         (
@@ -167,6 +186,8 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
             {
                 "route.execute",
                 "cancel_session",
+                "report_error",
+                "get_healing_status",
                 "answer_question",
                 "cannot_answer",
                 "connector.heartbeat",
@@ -179,7 +200,7 @@ async def _core_catalog(butler_name: str, groups: tuple[str, ...]):
         (
             "switchboard",
             ("delegation",),
-            {"route.execute", "cancel_session"},
+            {"route.execute", "cancel_session", "report_error", "get_healing_status"},
             {"delegate_ask", "delegate_receive", "delegate_answer", "delegate_wake"},
         ),
     ),

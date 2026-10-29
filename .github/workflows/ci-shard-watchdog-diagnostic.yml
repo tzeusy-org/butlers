@@ -1,0 +1,135 @@
+name: CI Shard Watchdog Diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Fixed original profile; invocation requires ROOT release
+        type: choice
+        options: [original-pr4484-unit1]
+        required: true
+      capture_head:
+        description: Reviewed delivered capture commit (full SHA)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  UV_PYTHON: "3.12.15"
+
+concurrency:
+  group: ci-shard-watchdog-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  diagnostic-inventory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.capture_head }}
+          path: capture
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Admit fixed capture source
+        env:
+          CAPTURE_HEAD: ${{ inputs.capture_head }}
+          EXPECTED_PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_PROFILE" = original-pr4484-unit1
+          [[ "$CAPTURE_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git -C capture rev-parse HEAD)" = "$CAPTURE_HEAD"
+      - uses: actions/checkout@v6
+        with:
+          ref: f574f7283daa99fe1666d0b7acec368b1f4ac096
+          path: subject
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+      - name: Original bounded UV installer
+        run: python3 capture/scripts/install_ci_uv.py
+      - name: Preserve original request file-access observer dependency
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+      - name: Original finite frozen editable environment repair
+        working-directory: subject
+        run: python3 scripts/ci_environment.py prepare
+      - name: Fresh original collector classification and opaque correspondence
+        working-directory: subject
+        env:
+          CI_WATCHDOG_PROVIDER_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH="${GITHUB_WORKSPACE}/subject/scripts:${GITHUB_WORKSPACE}/capture/scripts" \
+            uv run --no-sync python ../capture/scripts/ci_watchdog_diagnostics.py prepare \
+              --subject . --capture ../capture \
+              --original ../capture/.github/actions/ci-shard-watchdog-capture/profile.json \
+              --output "${RUNNER_TEMP}/watchdog-inventory"
+      - name: Publish fresh diagnostic inventory only
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-watchdog-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/watchdog-inventory/inventory/*.json
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: false
+
+  diagnostic-unit1:
+    needs: diagnostic-inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.capture_head }}
+          path: capture
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          ref: f574f7283daa99fe1666d0b7acec368b1f4ac096
+          path: subject
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12.15"
+      - name: Original bounded UV installer
+        run: python3 capture/scripts/install_ci_uv.py
+      - name: Preserve original request file-access observer dependency
+        run: |
+          set -euo pipefail
+          if ! command -v strace >/dev/null 2>&1; then
+            sudo apt-get update -q
+            sudo apt-get install -y --no-install-recommends strace
+          fi
+          strace --version
+      - name: Original finite frozen editable environment repair
+        working-directory: subject
+        run: python3 scripts/ci_environment.py prepare
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-watchdog-inventory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/watchdog-current-inventory
+      - name: Original unit1 execution with bounded diagnostic capture
+        uses: ./capture/.github/actions/ci-shard-watchdog-capture
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/ci-coverage/coverage-unit-1.data
+          TEST_EVIDENCE_DIR: ${{ runner.temp }}/ci-artifacts/unit-1
+        with:
+          capture: ${{ github.workspace }}/capture
+          subject: ${{ github.workspace }}/subject
+          inventory: ${{ runner.temp }}/watchdog-current-inventory
+          output: ${{ runner.temp }}/watchdog-unit1
