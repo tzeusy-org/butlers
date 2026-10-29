@@ -287,7 +287,7 @@
     "tests/tools/test_beads_worktree_sync.py"
   ],
   "declarations_digest": "0d8e01911864f50359ecb908ab2110024b798c7a92fe2ab107e090c64ff55ecf",
-  "digest": "e357c009c85b762f5ea82de2f69869c97da55cabeb05d2f9ca6da238f2d1537b",
+  "digest": "9bf3cfcc590ee6567436322d143ebaeea37b8c5e6dc86bac423ba57f6a319a64",
   "global_patterns": [
     "*.md",
     ".claude/skills/*",
@@ -4747,7 +4747,7 @@
       "sha256": "de35737147c18116559e5946b842a5a78b6a7a78857b1840284fc7ab7f73ee0b"
     },
     "src/butlers/modules/approvals/previews.py": {
-      "sha256": "d83cd3e6129247155476a9f45c75f1dd84b2d3bb685fd1faa8dc0065778f834f"
+      "sha256": "e2d3d5985689f10ec2e1e3c299e0747fd4c7e2d57aceba1329bce8f31dc1f33d"
     },
     "src/butlers/modules/approvals/redaction.py": {
       "sha256": "36af66de8795b216256fbc1fb068ff4d61a2f15d0954a0c31381627757a3dfb8"
@@ -7540,7 +7540,7 @@
       "sha256": "6752dae209b06156a4423f1370e5efddb444e12f92ad5a65b73b966c4fe02770"
     },
     "tests/daemon/test_ingest_reaction_lifecycle.py": {
-      "sha256": "a827bebbf883711b5abe3ea94bec063e7ac42aa0b273e63e9dbe5aa9ed47464f"
+      "sha256": "f754849083a835cf32a7cb4c1c18ed9f8b6bb31b3970f840ed78e5de6a2015ab"
     },
     "tests/daemon/test_lifecycle_toml_schedule_sync.py": {
       "sha256": "f506da4ad9bacea5ef4ae53a5aabf96463ca3a345a1ad89ed1dc48da24baa0ac"
@@ -7558,7 +7558,7 @@
       "sha256": "ebc3027aabd55d481ce003a55a4c25be8ecd5a9b86db08f581e49d99cebda287"
     },
     "tests/daemon/test_module_state.py": {
-      "sha256": "d23536d045a360f2ba048cb0420704f56c254054dc73ca05b6534f929df6c700"
+      "sha256": "94a1c18bb32c164e32327c0d600f1d9e03bdf2105b2943395ac65fffaec439c0"
     },
     "tests/daemon/test_non_messenger_approval_command_contracts.py": {
       "sha256": "2e2bedb252980b9509ee7b401a4d38e8d97f075cce9bda10e3ac8803e938e6e2"
@@ -7570,10 +7570,10 @@
       "sha256": "33f8dfec36011d8d525eb76be8138adeb0ee4b0c84ee685fd4876489ff7a0b48"
     },
     "tests/daemon/test_notify_entity_id.py": {
-      "sha256": "b096252fc59d5492be8d4e6de59523ea001beada0b2d5fbdead212df03ad18e9"
+      "sha256": "1e2c0565bf76e6b7bcd2af68b81c3ff55cdd52cc7d7356dd6b4b9216095a6c00"
     },
     "tests/daemon/test_notify_msg_context.py": {
-      "sha256": "35537404cfa8abd5583330becf3b29665e975e50c4085e8327450aa1f6584df5"
+      "sha256": "782164a388473c360ad31d72003a1cffc87bc5c5c05efb75c880dd2bb5d0e10f"
     },
     "tests/daemon/test_notify_react.py": {
       "sha256": "07b15c11524d57622810e418023aa170e3da660ca9357e0cf23091d0c1d56f99"
@@ -8680,7 +8680,7 @@
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     "tests/modules/approvals/test_approval_card_exact_call.py": {
-      "sha256": "6e2db3de269114093ba7021c997922954b15c69a4c088ee7b5251246b774fc18"
+      "sha256": "4d57eda6588485816abbcc5c4e133488f1506251000405338fa41faa34afa7a9"
     },
     "tests/modules/approvals/test_dashboard_stepup.py": {
       "sha256": "7e46de6d81e5258ef613d2c5bccc732dec37a72d4bccfce71bee00d9f69b0e6a"
