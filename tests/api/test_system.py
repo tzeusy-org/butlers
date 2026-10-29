@@ -2141,3 +2141,49 @@ class TestEgressSpan:
         spans = otel_exporter.get_finished_spans()
         egress_spans = [s for s in spans if s.name == "system.egress.read"]
         assert len(egress_spans) == 2
+
+
+@pytest.mark.asyncio
+async def test_background_jobs_never_report_storage_failure_as_an_empty_all_clear():
+    from butlers.core.job_health import JobHealthStore
+
+    app = create_app()
+
+    def unavailable():
+        raise RuntimeError("private-storage-token-sentinel")
+
+    app.state.background_job_health = JobHealthStore(unavailable)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/system/background-jobs")
+    assert response.status_code == 200
+    assert response.json()["data"] == {"jobs_available": False, "jobs": []}
+    assert "private-storage-token-sentinel" not in response.text
+
+    app.state.background_job_health = MagicMock()
+    app.state.background_job_health.read = AsyncMock(
+        return_value={
+            "jobs_available": True,
+            "jobs": [
+                {
+                    "name": "external_deadman",
+                    "job_class": "periodic",
+                    "state": "disabled",
+                    "reason": "disabled",
+                    "last_success_at": None,
+                    "last_progress_at": None,
+                    "error_count": 0,
+                    "consecutive_failures": 0,
+                    "transitions": [],
+                }
+            ],
+        }
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/system/background-jobs")
+    assert response.status_code == 200
+    assert response.json()["data"]["jobs_available"] is True
+    assert response.json()["data"]["jobs"][0]["state"] == "disabled"

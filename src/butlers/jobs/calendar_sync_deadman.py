@@ -97,6 +97,7 @@ from butlers.core.infra_conditions import (
     compute_fingerprint,
     reconcile_snapshot,
 )
+from butlers.core.job_health import record_tick
 from butlers.modules.calendar import (
     DEFAULT_SYNC_INTERVAL_MINUTES,
     PROJECTION_STALENESS_MULTIPLIER,
@@ -459,8 +460,10 @@ async def run_calendar_sync_deadman_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_calendar_sync_deadman_check(db)
+            await record_tick(failed=not summary.get("available", False))
             logger.info("calendar_sync_deadman_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("calendar_sync_deadman_check: tick failed")

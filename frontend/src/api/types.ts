@@ -10404,3 +10404,25 @@ export interface FactAttribution {
 export interface CandidateIdentityFact extends ContactFact {
   validity: "candidate";
 }
+
+/** Persisted work evidence for the dashboard API's supervised background loops. */
+export interface BackgroundJobTransition {
+  state: string;
+  reason: string;
+  occurred_at: string;
+}
+export interface BackgroundJob {
+  name: string;
+  job_class: "periodic" | "continuous";
+  state: "starting" | "ok" | "degraded" | "error" | "disabled" | "unknown" | "stale";
+  reason: string | null;
+  last_success_at: string | null;
+  last_progress_at: string | null;
+  error_count: number;
+  consecutive_failures: number;
+  transitions: BackgroundJobTransition[];
+}
+export interface BackgroundJobFacts {
+  jobs_available: boolean;
+  jobs: BackgroundJob[];
+}

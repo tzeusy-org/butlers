@@ -1262,3 +1262,5 @@ export type {
   TimelineSavedViewFilterSpec,
   TimelineSavedViewUpdateRequest,
 } from "./types.ts";
+
+export { getBackgroundJobFacts } from "./client";

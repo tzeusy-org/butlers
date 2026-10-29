@@ -82,6 +82,7 @@ from butlers.api.routers.secrets_v2 import (
 )
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.job_health import record_tick
 
 logger = logging.getLogger(__name__)
 
@@ -489,10 +490,12 @@ async def run_secrets_staleness_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_secrets_staleness_check(db, staleness_s=staleness_s)
+            await record_tick(failed=bool(summary.get("failed") or summary.get("sources_degraded")))
             logger.info("secrets_staleness_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("secrets_staleness_check: scan failed")
 
 

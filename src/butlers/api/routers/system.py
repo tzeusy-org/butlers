@@ -1,6 +1,6 @@
 """System overview endpoints for the dashboard's /system page.
 
-Surfaces seven ownership-fact domains:
+Surfaces owner-dashboard fact domains:
 
     GET /api/system/instance       -- software version and process uptime
     GET /api/system/database       -- PostgreSQL catalog size breakdown
@@ -13,6 +13,7 @@ Surfaces seven ownership-fact domains:
     GET /api/system/stored-functions -- deployed stored-function bodies vs
                                        the configured bootstrap source (bu-bi5an),
                                        plus unpinned definer search paths (bu-hefzis)
+    GET /api/system/background-jobs -- supervised API work health and bounded history
     GET /api/system/conditions     -- standing condition ledger: infra (bu-27dxl.6.2) or
                                        owner-facing (bu-ep4ks.6), selected via ?ledger=
 
@@ -73,9 +74,10 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from opentelemetry import trace
 from pydantic import BaseModel
 
@@ -1486,3 +1488,35 @@ async def get_conditions(
             conditions_available=True,
         )
     )
+
+
+class BackgroundJobTransition(BaseModel):
+    state: str
+    reason: str
+    occurred_at: datetime
+
+
+class BackgroundJob(BaseModel):
+    name: str
+    job_class: Literal["periodic", "continuous"]
+    state: Literal["starting", "ok", "degraded", "error", "disabled", "unknown", "stale"]
+    reason: str | None
+    last_success_at: datetime | None
+    last_progress_at: datetime | None
+    error_count: int
+    consecutive_failures: int
+    transitions: list[BackgroundJobTransition]
+
+
+class BackgroundJobFacts(BaseModel):
+    jobs_available: bool
+    jobs: list[BackgroundJob]
+
+
+@router.get("/background-jobs", response_model=ApiResponse[BackgroundJobFacts])
+async def get_background_jobs(request: Request) -> ApiResponse[BackgroundJobFacts]:
+    """Read persisted work evidence; missing storage is never an all-clear."""
+    store = getattr(request.app.state, "background_job_health", None)
+    if store is None:
+        return ApiResponse(data=BackgroundJobFacts(jobs_available=False, jobs=[]))
+    return ApiResponse(data=BackgroundJobFacts.model_validate(await store.read()))

@@ -7,6 +7,7 @@ import { standingRuleHeaders } from "./approval-step-up";
  */
 
 import type {
+  BackgroundJobFacts,
   CandidateIdentityFact,
   ApprovalAction,
   ApprovalActionsResponse,
@@ -7084,4 +7085,8 @@ export function getIdentityDecision(entityId: string, factId: string): Promise<{
   fact_id: string; decision: "adopt" | "reject"; decided_at: string; replayed: boolean;
 }> {
   return apiFetch(`/relationship/entities/${encodeURIComponent(entityId)}/identity-facts/${encodeURIComponent(factId)}/decision`);
+}
+
+export function getBackgroundJobFacts(): Promise<ApiResponse<BackgroundJobFacts>> {
+  return apiFetch("/system/background-jobs");
 }
