@@ -746,3 +746,218 @@ def test_resource_reader_guard_and_actual_selected_child(tmp_path: Path) -> None
     # shared privately within the earlier decision cannot outlive that call.
     later = plan_worktree_tests(base, repo_dir=repo)
     assert later.mode == "full" and "READER_REGISTRY_STALE" in later.reason_codes
+
+    # The installed roster finder executes this exact, closed namespace. Its
+    # generic loader remains opaque; a fixed import still needs its real edge.
+    isolated = tmp_path / "canonical-roster"
+    isolated.mkdir()
+    canonical, _ = _repo(isolated)
+    importer = "src/butlers/roster_imports.py"
+    _write(
+        canonical,
+        importer,
+        (Path(resource_readers.__file__).parents[1] / "roster_imports.py").read_text(),
+    )
+    _write(canonical, "src/butlers/__init__.py", "")
+    _write(canonical, "src/butlers/tools/__init__.py", "")
+    _write(canonical, "roster/probe/tools/__init__.py", "")
+    reader = "roster/probe/tools/reader.py"
+    _write(canonical, reader, "def read_from(path):\n    return path.read_text()\n")
+    _write(canonical, "docs/guide.md", "ready")
+    consumer = "tests/api/test_canonical_reader.py"
+    _write(
+        canonical,
+        consumer,
+        "from pathlib import Path\n"
+        "from butlers.tools.probe.reader import read_from\n"
+        "ROOT = Path(__file__).resolve().parents[2]\n"
+        "def test_canonical_reader():\n"
+        "    assert read_from(ROOT / 'docs/guide.md') == 'ready', 'canonical-reader-reached'\n",
+    )
+    # Execute the genuine owning finder first. No import is executed by discovery.
+    driver = (
+        "import sys, importlib\n"
+        f"sys.path.insert(0, {str(canonical / 'src')!r})\n"
+        "from butlers.roster_imports import install_roster_imports\n"
+        "install_roster_imports()\n"
+        "module = importlib.import_module('butlers.tools.probe.reader')\n"
+        "from pathlib import Path\n"
+        f"assert Path(module.__file__).resolve() == Path({str(canonical / reader)!r})\n"
+        "import pytest\n"
+        f"raise SystemExit(pytest.main([{consumer!r}, '-q', '-p', 'no:cacheprovider']))\n"
+    )
+    imported = subprocess.run(
+        [sys.executable, "-c", driver],
+        cwd=canonical,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert imported.returncode == 0 and "1 passed" in imported.stdout, (
+        imported.stdout + imported.stderr
+    )
+    bodies = {p: (canonical / p).read_bytes() for p in resource_readers.sources(canonical)}
+    assert resource_readers._consumer_frontier(bodies, [consumer], reader) == {consumer}, (
+        "successful canonical resource consumer must retain its source edge"
+    )
+    _write(canonical, "docs/guide.md", "broken")
+    reached = subprocess.run(
+        [sys.executable, "-c", driver],
+        cwd=canonical,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert reached.returncode == 1 and "canonical-reader-reached" in reached.stdout
+    _write(canonical, "docs/guide.md", "ready")
+
+    # The real finder and the static edge both prefer a package to a file.
+    package_reader = "roster/probe/tools/reader/__init__.py"
+    _write(canonical, package_reader, bodies[reader].decode())
+    package_driver = driver.replace(str(canonical / reader), str(canonical / package_reader))
+    package_child = subprocess.run(
+        [sys.executable, "-c", package_driver],
+        cwd=canonical,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert package_child.returncode == 0 and "1 passed" in package_child.stdout
+    bodies = {p: (canonical / p).read_bytes() for p in resource_readers.sources(canonical)}
+    assert resource_readers._consumer_frontier(bodies, [consumer], package_reader) == {consumer}
+    assert resource_readers._consumer_frontier(bodies, [consumer], reader) == set()
+    assert resource_readers._consumer_frontier(
+        bodies, [consumer], "roster/probe/tools/__init__.py"
+    ) == {consumer}
+
+    # Shared src owns collisions, including the selected parent package.
+    shared_reader = "src/butlers/tools/probe/reader.py"
+    _write(canonical, "src/butlers/tools/probe/__init__.py", "")
+    _write(canonical, shared_reader, bodies[reader].decode())
+    shared_driver = driver.replace(str(canonical / reader), str(canonical / shared_reader))
+    shared_child = subprocess.run(
+        [sys.executable, "-c", shared_driver],
+        cwd=canonical,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert shared_child.returncode == 0 and "1 passed" in shared_child.stdout
+    shared_bodies = {p: (canonical / p).read_bytes() for p in resource_readers.sources(canonical)}
+    assert resource_readers._consumer_frontier(shared_bodies, [consumer], shared_reader) == {
+        consumer
+    }
+    assert resource_readers._consumer_frontier(shared_bodies, [consumer], package_reader) == set()
+
+    # No alias authority survives a changed/missing owner, missing parent or
+    # unindexed target. Generic and custom-root loader APIs stay opaque.
+    for removed in (importer, "roster/probe/tools/__init__.py"):
+        subset = {p: body for p, body in bodies.items() if p != removed}
+        assert resource_readers._consumer_frontier(subset, [consumer], package_reader) is None
+    changed = {**bodies, importer: bodies[importer] + b"\n# changed owner\n"}
+    assert resource_readers._consumer_frontier(changed, [consumer], package_reader) is None
+    missing = {p: body for p, body in bodies.items() if p not in {reader, package_reader}}
+    assert resource_readers._consumer_frontier(missing, [consumer], package_reader) is None
+    for statement in (
+        "import importlib\nimportlib.import_module('butlers.tools.Probe.reader')\n",
+        "import importlib\nimportlib.import_module('butlers.tools.probe.not-valid')\n",
+        "import importlib\ndef load(name):\n    return importlib.import_module(name)\n",
+        "from butlers.roster_imports import roster_module\n"
+        "def load(name, path, root):\n    return roster_module(name, path, api_source=root)\n",
+    ):
+        assert (
+            resource_readers._consumer_frontier(
+                {**bodies, consumer: statement.encode()}, [consumer], package_reader
+            )
+            is None
+        )
+    outside = tmp_path / "unowned.py"
+    outside.write_text("pass\n")
+    escape = canonical / "roster/probe/tools/escape.py"
+    escape.symlink_to(outside)
+    try:
+        with pytest.raises(ValueError, match="symlink"):
+            resource_readers.sources(canonical)
+    finally:
+        escape.unlink()
+
+    # A fallback child's relative imports retain its canonical package even
+    # when that package's parent was selected from shared src by the real finder.
+    mixed = tmp_path / "mixed-canonical-parent"
+    mixed.mkdir()
+    mixed, _ = _repo(mixed)
+    _write(mixed, importer, bodies[importer].decode())
+    for marker in (
+        "src/butlers/__init__.py",
+        "src/butlers/tools/__init__.py",
+        "src/butlers/tools/probe/__init__.py",
+        "roster/probe/tools/__init__.py",
+    ):
+        _write(mixed, marker, "")
+    mixed_reader = "roster/probe/tools/reader.py"
+    shared_helper = "src/butlers/tools/probe/helper.py"
+    _write(mixed, mixed_reader, "from .helper import read_from\n")
+    _write(mixed, shared_helper, "def read_from(path):\n    return path.read_text()\n")
+    _write(
+        mixed,
+        "roster/probe/tools/helper.py",
+        "def read_from(path):\n    return 'roster-decoy'\n",
+    )
+    _write(mixed, "docs/guide.md", "ready")
+    mixed_consumer = "tests/api/test_mixed_parent.py"
+    _write(
+        mixed,
+        mixed_consumer,
+        "from pathlib import Path\n"
+        "from butlers.tools.probe.reader import read_from\n"
+        "ROOT = Path(__file__).resolve().parents[2]\n"
+        "def test_mixed_parent():\n"
+        "    assert read_from(ROOT / 'docs/guide.md') == 'ready', 'mixed-parent-read-reached'\n",
+    )
+    mixed_driver = (
+        "import sys, importlib\n"
+        f"sys.path.insert(0, {str(mixed / 'src')!r})\n"
+        "from butlers.roster_imports import install_roster_imports\n"
+        "install_roster_imports()\n"
+        "module = importlib.import_module('butlers.tools.probe.reader')\n"
+        "helper = importlib.import_module('butlers.tools.probe.helper')\n"
+        "from pathlib import Path\n"
+        f"assert Path(module.__file__).resolve() == Path({str(mixed / mixed_reader)!r})\n"
+        "assert module.__package__ == 'butlers.tools.probe'\n"
+        f"assert Path(helper.__file__).resolve() == Path({str(mixed / shared_helper)!r})\n"
+        "assert module.read_from.__module__ == 'butlers.tools.probe.helper'\n"
+        "import pytest\n"
+        f"raise SystemExit(pytest.main([{mixed_consumer!r}, '-q', '-p', 'no:cacheprovider']))\n"
+    )
+    mixed_child = subprocess.run(
+        [sys.executable, "-c", mixed_driver],
+        cwd=mixed,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert mixed_child.returncode == 0 and "1 passed" in mixed_child.stdout, (
+        mixed_child.stdout + mixed_child.stderr
+    )
+    mixed_bodies = {p: (mixed / p).read_bytes() for p in resource_readers.sources(mixed)}
+    assert resource_readers._consumer_frontier(mixed_bodies, [mixed_consumer], shared_helper) == {
+        mixed_consumer
+    }, "successful canonical relative helper must retain its actual consumer"
+    _write(mixed, "docs/guide.md", "broken")
+    mixed_read_failure = subprocess.run(
+        [sys.executable, "-c", mixed_driver],
+        cwd=mixed,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert mixed_read_failure.returncode == 1 and (
+        "mixed-parent-read-reached" in mixed_read_failure.stdout
+    )
+    _write(mixed, "docs/guide.md", "ready")

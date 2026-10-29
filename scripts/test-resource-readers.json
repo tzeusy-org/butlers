@@ -286,8 +286,8 @@
     "tests/tools/test_beads_dependency_timestamps.py",
     "tests/tools/test_beads_worktree_sync.py"
   ],
-  "declarations_digest": "2022a329b80afaaff08cee64df5e24b356f4a956bdac75e1235b8105fe5be906",
-  "digest": "01b4ae061b8a62420e92974248f3729f33015229bb8d1e67e4d4fdf4c3fcf325",
+  "declarations_digest": "0d8e01911864f50359ecb908ab2110024b798c7a92fe2ab107e090c64ff55ecf",
+  "digest": "e357c009c85b762f5ea82de2f69869c97da55cabeb05d2f9ca6da238f2d1537b",
   "global_patterns": [
     "*.md",
     ".claude/skills/*",
@@ -329,7 +329,7 @@
     "tool-call-scorecard.md"
   ],
   "no_readers": [],
-  "producer_sha256": "eaccea8c56ec6e88f2789912d95fecbcde49862bf0e543f2b213e0275817fe80",
+  "producer_sha256": "b8715908e4720b35d5137d312e894260a9e6db61a04a628489bf7b5c43003348",
   "readers": {
     "*-tracker-host-beads-projection-exporter.md": [
       "tests/contracts/test_beads_projection_jsonl_consumer_inventory.py"
@@ -5137,7 +5137,7 @@
       "sha256": "b30f6cf638373ec3d91b2918fb1752b35f1656f74e12d46ab799cb321c240200"
     },
     "src/butlers/testing/resource_readers.py": {
-      "sha256": "eaccea8c56ec6e88f2789912d95fecbcde49862bf0e543f2b213e0275817fe80"
+      "sha256": "b8715908e4720b35d5137d312e894260a9e6db61a04a628489bf7b5c43003348"
     },
     "src/butlers/testing/runtime_probe_control.py": {
       "sha256": "5b264ba5fd47085942ae54eca79cfb2aed5c85ecf649f5f761e44689d4e914ee"
@@ -9361,7 +9361,7 @@
       "sha256": "0c64c0ee40b350c2bdfd37a29fb11669a822cd20a1f0ddf9f432e89a26058204"
     },
     "tests/testing/test_scoped_runner.py": {
-      "sha256": "7260f169bcd4b2a79f4799688844cb39bae1e32a2cbece22114159c62c107b04"
+      "sha256": "03c86341c2ea09b48ad8e2ffff63c084465b9719b60548861574acf1dac43dd4"
     },
     "tests/testing/test_source_test_map.py": {
       "sha256": "03b9aea86ccda8ffefdbfd00996017a8d054bb2c32e0a176a76e6c2cc7714fbb"

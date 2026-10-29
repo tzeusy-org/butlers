@@ -11,6 +11,7 @@ import ast
 import fnmatch
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
@@ -22,6 +23,9 @@ DECLARATIONS = "scripts/test-resource-reader-declarations.json"
 READ_METHODS = {"read_text", "read_bytes", "open", "glob", "rglob", "iterdir"}
 UNKNOWN = "\0unresolved"
 ALL_TESTS = "@all-tests"
+# Only this reviewed source owns the fixed roster-tools namespace. A changed
+# importer needs a fresh correspondence review, never guessed name authority.
+_ROSTER_IMPORTER_SHA256 = "29681f4c018168d9dc949f1ae3dfa45cbb4f6510450fcf5ccaefef5feb8764ef"
 _READ_CACHE: dict[tuple[str, str], tuple[frozenset[str], frozenset[str], bool]] = {}
 
 
@@ -254,6 +258,62 @@ def _reads(tree: ast.AST, source: str) -> tuple[set[str], set[str], bool]:
     return patterns, candidates, unknown
 
 
+def _roster_tool_modules(bodies: dict[str, bytes]) -> dict[str, set[str]]:
+    """Mirror fixed tool imports only; never execute a finder or generic loader."""
+    owner = bodies.get("src/butlers/roster_imports.py", b"")
+    if hashlib.sha256(owner).hexdigest() != _ROSTER_IMPORTER_SHA256:
+        return {}
+    aliases: dict[str, set[str]] = {}
+    for path in bodies:
+        parts = path.split("/")
+        if len(parts) < 3 or parts[0] != "roster" or not re.fullmatch(r"[a-z][a-z0-9_]*", parts[1]):
+            continue
+        relative = "/".join(parts[2:])
+        if relative == "tools.py":
+            children = []
+        elif relative.startswith("tools/") and relative.endswith(".py"):
+            children = relative.removeprefix("tools/").removesuffix(".py").split("/")
+            if children[-1] == "__init__":
+                children.pop()
+        else:
+            continue
+        if any(not re.fullmatch(r"[a-z_][a-z0-9_]*", part) for part in children):
+            continue
+        # Resolve every parent: a selected file cannot provide a child package.
+        # PathFinder checks the current parent first; the owning finder falls
+        # back to the corresponding roster path only when no shared source exists.
+        shared_parent = True
+        selected = None
+        for end in range(len(children) + 1):
+            tail = "/".join([parts[1], *children[:end]])
+            shared = "src/butlers/tools/" + tail
+            roster = f"roster/{parts[1]}/tools" + ("/" + "/".join(children[:end]) if end else "")
+            selected = None
+            if shared_parent:
+                selected = next(
+                    (p for p in (shared + "/__init__.py", shared + ".py") if p in bodies),
+                    None,
+                )
+                if selected is None and any(p.startswith(shared + "/") for p in bodies):
+                    # An unindexed namespace directory is not a closed file identity.
+                    break
+            if selected is None:
+                selected = next(
+                    (p for p in (roster + "/__init__.py", roster + ".py") if p in bodies),
+                    None,
+                )
+            if selected is None or not safe_path(selected):
+                break
+            if end < len(children) and not selected.endswith("/__init__.py"):
+                selected = None
+                break
+            shared_parent = selected.startswith("src/")
+        if selected is not None:
+            name = ".".join(["butlers", "tools", parts[1], *children])
+            aliases[name] = {selected}
+    return aliases
+
+
 def _consumer_frontier(bodies: dict[str, bytes], tests: list[str], source: str) -> set[str] | None:
     """Conservative import consumers, including unresolved dynamic loaders.
 
@@ -268,6 +328,13 @@ def _consumer_frontier(bodies: dict[str, bytes], tests: list[str], source: str) 
         modules.setdefault(name, set()).add(path)
         if path.startswith("scripts/"):
             modules.setdefault(Path(path).stem, set()).add(path)
+    canonical_packages: dict[str, set[str]] = {}
+    for name, paths in _roster_tool_modules(bodies).items():
+        modules.setdefault(name, set()).update(paths)
+        for target in paths:
+            canonical_packages.setdefault(target, set()).add(
+                name if Path(target).name == "__init__.py" else name.rpartition(".")[0]
+            )
     edges: dict[str, set[str]] = {path: set() for path in bodies}
     opaque = set()
     for path, body in bodies.items():
@@ -321,18 +388,23 @@ def _consumer_frontier(bodies: dict[str, bytes], tests: list[str], source: str) 
                 ):
                     opaque.add(path)
             elif isinstance(node, ast.ImportFrom):
-                prefix = package.split(".")
+                bases = {node.module or ""}
                 if node.level:
-                    prefix = prefix[: len(prefix) - node.level + 1]
-                    base = ".".join([*prefix, *([node.module] if node.module else [])])
-                else:
-                    base = node.module or ""
-                if (
-                    base.split(".")[0] in {"butlers", "tests", "roster", "scripts"}
-                    and base not in modules
-                ) or (node.level and not base):
-                    opaque.add(path)
-                names = [base, *(base + "." + alias.name for alias in node.names)]
+                    bases = set()
+                    # A fallback file can execute under a canonical shared
+                    # parent. Retain that package and the physical context;
+                    # neither may erase an edge or an unresolved import.
+                    for context in {package, *canonical_packages.get(path, ())}:
+                        prefix = context.split(".")
+                        prefix = prefix[: len(prefix) - node.level + 1]
+                        bases.add(".".join([*prefix, *([node.module] if node.module else [])]))
+                for base in sorted(bases):
+                    if (
+                        base.split(".")[0] in {"butlers", "tests", "roster", "scripts"}
+                        and base not in modules
+                    ) or (node.level and not base):
+                        opaque.add(path)
+                    names.extend([base, *(base + "." + alias.name for alias in node.names)])
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
                 # Also retain named importlib/monkeypatch/subprocess consumers.
                 names = [node.value]
