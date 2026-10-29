@@ -278,6 +278,8 @@ connectors:
     channel: wellness
     healthPort: 40090
     oauth: true
+    # Prevent polling before Health can accept this connector's wellness routes.
+    waitForHealthRoutes: true
 
 # Runtime pods remain isolated from the engineering tracker after bridge retirement.
 # Site CIDRs come from scripts/k8s/site-helm-args.sh; dev retains its existing deny.

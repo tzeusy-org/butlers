@@ -302,6 +302,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`dev_entrypoint.sh`](dev_entrypoint.sh) | `docker-compose.yml`, Helm templates | Container entrypoint for dev services. |
 | [`dashboard_proxy_peer.py`](dashboard_proxy_peer.py) | `compose.sh` | Measures the host-published API's TCP peer for the dashboard-proxy readiness check. |
 | [`oauth_gate.py`](oauth_gate.py) | `docker-compose.yml`, Helm helpers | Polls the database for a Google refresh token and exits 0 when found. |
+| [`wait_for_butler_routes.py`](wait_for_butler_routes.py) | Helm Google Health connector init container | Waits within finite deadlines for the expected daemon identity and literal route acceptance; never recovers old events. |
 | [`site-env.sh`](site-env.sh) | `.envrc`, `k8s/*.sh` | Loads site-specific environment. |
 | [`k8s/`](k8s/) | developers, `make` and Helm flows | Build, push and deploy helpers for the dev cluster. |
 | [`setup_worktree.sh`](setup_worktree.sh) | developers (`AGENTS.md`) | Prepares a newly created worktree with its machine-local pointers and cache links. |
