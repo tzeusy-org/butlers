@@ -15,9 +15,8 @@ silently vanishes from ``asyncio.all_tasks()``. Shutdown cancellation is the
 one and only normal, non-restarting termination -- everything else restarts
 with bounded backoff.
 
-This module intentionally does NOT add a generic heartbeat, a scheduler, or
-a task-health status table. It supervises restart/shutdown semantics only;
-it has no opinion on what the wrapped loop actually does.
+The optional recorder persists work evidence separately from process liveness.
+It neither schedules work nor treats coroutine liveness as a successful tick.
 """
 
 from __future__ import annotations
@@ -25,6 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+
+from butlers.core.job_health import _CURRENT, JobRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ async def _supervise(
     max_backoff_s: float,
     backoff_multiplier: float,
     sleep_fn: SleepFn,
+    health: JobRecorder | None,
 ) -> None:
     """Run ``coro_factory()`` repeatedly, restarting on unexpected return or
     exception with bounded exponential backoff.
@@ -57,23 +59,35 @@ async def _supervise(
     promptly.
     """
     backoff = initial_backoff_s
+    if health is not None:
+        await health.starting()
     while True:
+        token = _CURRENT.set(health)
         try:
             await coro_factory()
         except asyncio.CancelledError:
             logger.info("lifespan loop %r cancelled (shutdown); not restarting", name)
+            if health is not None:
+                await health.stopped()
             raise
         except Exception:
+            if health is not None:
+                await health.tick_failed("loop_crashed")
             logger.exception(
                 "lifespan loop %r crashed unexpectedly; restarting in %.1fs", name, backoff
             )
         else:
+            if health is not None:
+                await health.tick_failed("loop_returned")
             logger.error(
                 "lifespan loop %r returned unexpectedly (expected to run forever); "
                 "restarting in %.1fs",
                 name,
                 backoff,
             )
+
+        finally:
+            _CURRENT.reset(token)
 
         try:
             await sleep_fn(backoff)
@@ -82,6 +96,8 @@ async def _supervise(
                 "lifespan loop %r cancelled during restart backoff (shutdown); not restarting",
                 name,
             )
+            if health is not None:
+                await health.stopped()
             raise
 
         backoff = min(backoff * backoff_multiplier, max_backoff_s)
@@ -95,6 +111,7 @@ def supervise_lifespan_loop(
     max_backoff_s: float = DEFAULT_MAX_BACKOFF_S,
     backoff_multiplier: float = DEFAULT_BACKOFF_MULTIPLIER,
     sleep_fn: SleepFn = asyncio.sleep,
+    health: JobRecorder | None = None,
 ) -> asyncio.Task:
     """Wrap a lifespan background loop in named restart supervision.
 
@@ -125,6 +142,7 @@ def supervise_lifespan_loop(
             max_backoff_s=max_backoff_s,
             backoff_multiplier=backoff_multiplier,
             sleep_fn=sleep_fn,
+            health=health,
         ),
         name=name,
     )

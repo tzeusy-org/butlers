@@ -32,6 +32,7 @@ the run-outcome contract is verifiable without either.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -147,6 +148,10 @@ while IFS= read -r line; do
           printf '1\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-confirm-policy-verified' >> "${log}"
           ;;
+        */job-health-policy-count)
+          printf '2\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-job-health-policy-verified' >> "${log}"
+          ;;
       esac
       output_file=""
       ;;
@@ -228,6 +233,30 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["exit_code"] == 0
     assert receipt["artifact"] == published[0].name
 
+    # Inspect the real script's published gzip stream. Only this fixed health
+    # replay section is checked: arbitrary data bytes are not a framing oracle.
+    with gzip.open(published[0], "rt", encoding="utf-8") as stream:
+        dump = stream.read()
+    health_lines = dump.split("\n-- Butlers owner-only supervised-job health data\n", 1)[
+        1
+    ].splitlines()
+    assert (
+        "SELECT EXISTS(SELECT 1 FROM butlers_job_health_restore_rows) "
+        "AS butlers_job_health_restore_needed \\gset"
+    ) in health_lines
+    assert "\\if :butlers_job_health_restore_needed" in health_lines
+    assert health_lines[-8:] == [
+        "COMMIT;",
+        "RESET ROLE;",
+        "\\else",
+        "\\set ON_ERROR_STOP on",
+        "DO $$ BEGIN RAISE EXCEPTION "
+        "'job health restore requires source table-owner membership'; END $$;",
+        "\\endif",
+        "\\endif",
+        "DROP TABLE butlers_job_health_restore_rows;",
+    ]
+
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):
     """The DB-free harness follows the same psql/snapshot ordering as production."""
@@ -238,6 +267,9 @@ def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Pat
         "snapshot-exported",
         "snapshot-policy-verified",
         "snapshot-confirm-policy-verified",
+        "snapshot-job-health-policy-verified",
+        "scoped-export",
+        "restore-authorization",
         "scoped-export",
         "restore-authorization",
         "scoped-export",

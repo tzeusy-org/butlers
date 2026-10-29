@@ -199,3 +199,44 @@ marker, so an active condition whose marker remains is never re-armed.
 Downgrading below `core_198` is not supported on any database that has reached `core_199`. The
 `core_198` downgrade fails with `core_198 downgrade requires trusted bootstrap rollback interface`
 because the retained objects are present, and nothing restores the pre-outbox schema.
+
+## Dashboard supervised background work
+
+The System page's **Background work** section reads
+`GET /api/system/background-jobs`. These are work facts for the nine existing
+API lifespan supervisors, separate from process liveness and standing-condition
+attention. It neither pages nor schedules work, and does not cover ordinary
+scheduled tasks or the connector fleet.
+
+Periodic jobs record a successful tick only after work completes; caught errors
+and partial-error summaries record failure. Last success becomes overdue after
+the configured interval plus one-quarter interval grace (at least five seconds).
+The continuous fleet-events LISTEN bridge reports connection progress, reconnecting
+after failures, and error after three consecutive failed reconnects. A new API
+instance starts without credit for an older instance's success. Missing evidence
+is unknown, disabled external-deadman configuration is disabled, and storage
+failure is explicitly unavailable. None is an all-clear.
+
+Current health and safe transitions live in `public.dashboard_job_health` and
+`public.dashboard_job_transitions`. Only fixed reason codes, counters and timestamps
+are stored; private exception text, tracebacks and URLs are excluded. Each recording
+transaction retains the newest 100 transitions per job within 30 days, including
+when health remains unchanged. No separate pruning timer is introduced. Forced
+row security preserves the configured ordinary migration/API login's ownership
+after runtime public-table regrants. The health migration resolves that login
+from the existing trusted `dashboard_attention.bootstrap_configuration`; a
+privileged migration re-upgrade does not make the bootstrap creator the API
+health owner. Nonowner runtime identities remain unable to read or write rows.
+
+The normal backup preserves both tables' schema, policies and complete rows.
+Its same-snapshot owner-only staging block restores current health before its
+transition children, requires source-owner membership, and refuses policy drift.
+No diagnostic history is excluded. Restored prior-process health/history is
+historical evidence: a new process starts as starting/unknown until its own
+tick or connection progress succeeds; restore does not manufacture success.
+
+If the section is unavailable, check dashboard database/migration availability.
+The jobs continue running when health recording fails. Apply migrations through
+the normal release procedure; do not grant runtime roles wider access to repair
+this owner-only diagnostic surface. Downgrading the health migration removes its
+two diagnostic tables and history while work continues without persisted evidence.

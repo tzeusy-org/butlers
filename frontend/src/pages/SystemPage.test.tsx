@@ -70,6 +70,7 @@ vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
 vi.mock("@/hooks/use-ingestion", () => ({ useConnectorSummaries: vi.fn() }));
 
 vi.mock("@/hooks/use-system", () => ({
+  useBackgroundJobs: () => ({ isPending: false, isError: false, data: { data: { jobs_available: false, jobs: [] } } }),
   useInstanceFacts: vi.fn(),
   useDatabaseFacts: vi.fn(),
   useBackupFacts: vi.fn(),

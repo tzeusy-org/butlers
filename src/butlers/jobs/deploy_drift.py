@@ -91,6 +91,7 @@ from butlers.core.infra_conditions import (
     get_active_condition,
     reconcile_snapshot,
 )
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.migrations import (
     get_all_chains,
     get_chain_head,
@@ -338,6 +339,7 @@ async def _escalate_drift_l1(
             result="escalated",
         )
     except Exception:
+        mark_tick_incomplete()
         logger.exception("migration drift sentinel: QA escalation failed")
         return {
             "fingerprint": transition.fingerprint,
@@ -500,8 +502,12 @@ async def run_migration_drift_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_migration_drift_check(db)
+            await record_tick(
+                failed=not summary.get("available", False) or summary.get("reconciled") is False
+            )
             logger.info("migration_drift_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("migration_drift_check: tick failed")

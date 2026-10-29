@@ -77,6 +77,25 @@ an older deployment and a first-ever run both look like, and neither is evidence
 that a backup ran. The QA infra-state patrol raises a failed run as its own
 finding (`BackupRunFailed`) on the night it happens.
 
+### Supervised-job health history
+
+`public.dashboard_job_health` and `public.dashboard_job_transitions` remain in
+the backup, including their bounded transition history. Their FORCE RLS policy
+allows only the configured ordinary migration/API identity. The ordinary
+`row_security=off` dump carries schema/owner/policy but omits direct table-data
+COPY; a separate hex-wrapped JSON block exports all rows under that exact owner
+in the same exported snapshot. The snapshot holder locks both relations through
+export and verifies the exact sole owner-conditional policy, refusing an extra,
+restrictive, PUBLIC or drifted policy rather than silently filtering rows.
+
+Restore requires membership in the source table owner, switches only to that
+identity and inserts the parent current-state rows before transition children.
+It preserves UUIDs, counters, timestamps, nulls and reason codes without a PUBLIC
+read grant or wider runtime privilege. An unavailable source owner refuses
+populated replay; no empty history is certified as a recovered populated one.
+A new API process does not treat a restored prior process's success as current;
+existing process fencing and starting/unknown semantics remain mandatory.
+
 ### What the backup does not contain
 
 The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login

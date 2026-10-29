@@ -9,6 +9,7 @@
 
 import { useMemo } from "react";
 
+import { BackgroundJobsSection } from "@/components/system/BackgroundJobsSection";
 import { BackupTile } from "@/components/system/BackupTile";
 import { ButlerHeartbeatTile } from "@/components/system/ButlerHeartbeatTile";
 import { DbSizeTile } from "@/components/system/DbSizeTile";
@@ -141,6 +142,7 @@ function SystemPage() {
           ranked problem list -- instead of leading with version/uptime
           trivia. The tiles below are elaboration, not the message. */}
       <SystemVerdictBanner />
+      <BackgroundJobsSection />
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         <VersionTile />

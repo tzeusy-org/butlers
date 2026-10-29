@@ -68,6 +68,7 @@ import httpx
 
 from butlers.api.db import DatabaseManager
 from butlers.core import audit as audit_router
+from butlers.core.job_health import record_tick
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,7 @@ async def run_external_deadman_loop(
         try:
             pool = db.pool("switchboard")
         except KeyError:
+            await record_tick(failed=True)
             logger.warning("external deadman: switchboard pool unavailable, skipping tick")
             continue
         try:
@@ -333,8 +335,10 @@ async def run_external_deadman_loop(
             summary = await run_external_deadman_check(
                 pool, url, expected_names=tuple(db.configured_butler_names), tick_id=tick_id
             )
+            await record_tick(failed=not summary.get("success", False))
             logger.info("external_deadman_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.warning("external_deadman_check: tick failed")

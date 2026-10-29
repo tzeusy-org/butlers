@@ -56,6 +56,7 @@ from butlers.core.definer_search_path import (
     compute_unpinned_definers,
     log_unpinned_definers,
 )
+from butlers.core.job_health import JobHealthStore
 from butlers.core.stored_function_drift import (
     compute_stored_function_drift,
     log_stored_function_drift,
@@ -182,6 +183,8 @@ async def lifespan(app: FastAPI):
 
     # Initialize DB pools for all discovered butlers
     butler_configs = get_butler_configs()
+    job_health = JobHealthStore(lambda: get_db_manager().pool("switchboard"))
+    app.state.background_job_health = job_health
     secrets_lifecycle_task: asyncio.Task | None = None
     settings_console_delta_task: asyncio.Task | None = None
     secrets_staleness_task: asyncio.Task | None = None
@@ -217,6 +220,7 @@ async def lifespan(app: FastAPI):
                         get_discovery_diagnostics().is_retired,
                     ),
                 ),
+                health=job_health.recorder("fleet_shadow_observer", "periodic", 150),
             )
         )
 
@@ -270,6 +274,7 @@ async def lifespan(app: FastAPI):
             supervise_lifespan_loop(
                 "secrets_lifecycle",
                 lambda: run_secrets_lifecycle_loop(get_db_manager(), interval_s=scan_interval_s),
+                health=job_health.recorder("secrets_lifecycle", "periodic", scan_interval_s),
             )
         )
 
@@ -286,6 +291,7 @@ async def lifespan(app: FastAPI):
             supervise_lifespan_loop(
                 "model_verify",
                 lambda: run_model_verify_loop(get_db_manager(), interval_s=model_verify_interval_s),
+                health=job_health.recorder("model_verify", "periodic", model_verify_interval_s),
             )
         )
 
@@ -305,6 +311,7 @@ async def lifespan(app: FastAPI):
                 supervise_lifespan_loop(
                     "fleet_events_bridge",
                     run_fleet_events_listener,
+                    health=job_health.recorder("fleet_events_bridge", "continuous", 5),
                 )
             )
         except Exception:
@@ -329,6 +336,7 @@ async def lifespan(app: FastAPI):
                     lambda: run_settings_console_delta_loop(
                         butler_configs, get_mcp_manager(), get_pricing(), get_db_manager()
                     ),
+                    health=job_health.recorder("settings_console_delta", "periodic", 5),
                 )
             )
         except Exception:
@@ -357,6 +365,7 @@ async def lifespan(app: FastAPI):
                     interval_s=staleness_interval_s,
                     staleness_s=staleness_window_s,
                 ),
+                health=job_health.recorder("secrets_staleness", "periodic", staleness_interval_s),
             )
         )
 
@@ -376,6 +385,7 @@ async def lifespan(app: FastAPI):
                 supervise_lifespan_loop(
                     "migration_drift",
                     lambda: run_migration_drift_loop(get_db_manager(), interval_s=drift_interval_s),
+                    health=job_health.recorder("migration_drift", "periodic", drift_interval_s),
                 )
             )
         except Exception:
@@ -440,6 +450,9 @@ async def lifespan(app: FastAPI):
                     lambda: run_calendar_sync_deadman_loop(
                         get_db_manager(), interval_s=calendar_deadman_interval_s
                     ),
+                    health=job_health.recorder(
+                        "calendar_sync_deadman", "periodic", calendar_deadman_interval_s
+                    ),
                 )
             )
         except Exception:
@@ -464,11 +477,17 @@ async def lifespan(app: FastAPI):
                         lambda: run_external_deadman_loop(
                             get_db_manager(), url=deadman_url, interval_s=deadman_interval_s
                         ),
+                        health=job_health.recorder(
+                            "external_deadman", "periodic", deadman_interval_s
+                        ),
                     )
                 )
             except Exception:
                 logger.warning("Failed to start external-deadman ping loop", exc_info=True)
         else:
+            await job_health.recorder(
+                "external_deadman", "periodic", DEFAULT_DEADMAN_CHECK_INTERVAL_S
+            ).disabled()
             logger.info(
                 "%s is not set; external-deadman ping loop disabled "
                 "(no outside heartbeat monitor configured)",
