@@ -17,139 +17,20 @@ and connectors. `scripts/k8s/site-helm-args.sh` supplies its site-specific value
 from `BUTLERS_OTLP_ENDPOINT`; the checked-in `http://otel.invalid:4318` is a
 placeholder, not a usable collector.
 
-Use the site's existing Grafana endpoint and access policy. Compose's
-The Compose `--observability` flag and its local Grafana settings do not configure the cluster LGTM
-stack. See [Kubernetes Deployment](kubernetes-deployment.md#deploy) for the
-committed-image workflow and site configuration. This source description does
-not attest live collector reachability or dashboard provisioning.
+Use the site's existing Grafana endpoint and access policy. See
+[Kubernetes Deployment](kubernetes-deployment.md#deploy) for the committed-image
+workflow and site configuration. This source description does not attest live
+collector reachability or dashboard provisioning.
 
-## Legacy/Local Compose Observability Stack
+## Monitoring assets
 
-For an isolated Compose deployment against a non-live database,
-`docker-compose.observability.yml` provides a self-contained observability stack.
-The commands in this section are Compose procedures, not the k3s dev workflow.
-Do not start a second Compose fleet against a database owned by Kubernetes or
-use direct Compose to bypass the launcher's ownership guard.
-
-### Starting the Stack
-
-`scripts/compose.sh --observability` includes `docker-compose.observability.yml`
-and enables the `observability` profile, selecting the collector, Tempo,
-Prometheus and Grafana alongside the launcher's other selected services. Without
-the flag, the launcher omits that fragment. Restore-drill selection, hotreload
-and deployment posture retain their existing behavior.
-
-The launcher still sets `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318`;
-container-local loopback does not address the separate collector container, and
-the dashboard API currently does not receive that variable from the base file.
-Service selection alone does not establish end-to-end telemetry delivery.
-
-To start the isolated stack with those services, include both files explicitly. Replace
-`/path/to/non-live.env` with its environment configuration (including
-`POSTGRES_HOST` and `POSTGRES_PASSWORD` for the non-live database). Use the same
-project, environment file, Compose files and profiles when stopping it:
-
-```bash
-docker compose --env-file /path/to/non-live.env -p butlers-local \
-  -f docker-compose.yml -f docker-compose.observability.yml \
-  --profile observability up -d
-```
-
-If using direct Docker Compose, set the OTLP endpoint environment variable:
-
-```bash
-OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318 \
-  docker compose --env-file /path/to/non-live.env -p butlers-local \
-  -f docker-compose.yml -f docker-compose.observability.yml \
-  --profile observability up -d
-```
-
-### Signal Flow
-
-The local observability stack follows this signal flow:
-
-```
-Butler Daemons + Dashboard API
-  ↓ (OTLP HTTP)
-OpenTelemetry Collector (port 4318)
-  ├─ /v1/traces  → Grafana Tempo
-  └─ /v1/metrics → Prometheus (remote_write)
-
-Connector Health Endpoints (/metrics)
-  ↓ (Prometheus scrape)
-Prometheus
-
-Grafana
-  ├─ Queries Prometheus for metrics
-  └─ Queries Tempo for traces
-```
-
-### Components
-
-- **otel-collector** — OpenTelemetry Collector (port 4318 for OTLP HTTP, 4317 for gRPC)
-  - Receives OTLP signals from all butler services
-  - Routes traces to Tempo via gRPC
-  - Routes metrics to Prometheus via remote_write
-
-- **Tempo** — Grafana Tempo (port 3200)
-  - Receives distributed traces from otel-collector
-  - Provides trace query API for Grafana
-  - Stores traces in local volume (`tempo_data`)
-
-- **Prometheus** — Prometheus metrics database (port 9090)
-  - Scrapes connector health endpoints (prometheus_client text format)
-  - Receives OTLP metrics from otel-collector via remote_write
-  - Stores time-series data in local volume (`prometheus_data`)
-
-- **Grafana** — Grafana dashboards UI (port 3000)
-  - Pre-provisioned with Prometheus and Tempo datasources
-  - Pre-configured dashboards from `observability/grafana/*.json`
-  - Credentials: `admin` / `admin` (overridable via `GF_SECURITY_ADMIN_PASSWORD`)
-  - Anonymous viewer: **enabled in dev posture** (default), **disabled in hardened posture**
-    (see [Deployment Posture](deployment-posture.md))
-
-### Accessing the UI
-
-- **Grafana** — http://localhost:3000
-  - Pre-provisioned dashboards visible on landing page
-  - Datasources already configured (Prometheus, Tempo)
-
-- **Prometheus** — http://localhost:9090
-  - Query interface for metrics
-  - Visualize metrics collected from butlers and connectors
-
-- **Tempo** — http://localhost:3200 (API only)
-  - No native UI; use Grafana's Explore tab to browse traces
-
-### Configuration Files
-
-The local stack is configured by:
-
-- **`docker-compose.observability.yml`** — Service definitions (images, ports, volumes, networks)
-- **`observability/otel-collector/config.yaml`** — OTLP receiver config and routing rules
-- **`observability/prometheus/prometheus.yml`** — Scrape targets for connector health endpoints
-- **`observability/tempo/config.yaml`** — Trace ingestion and storage
-- **`observability/grafana/provisioning/`** — Datasource and dashboard auto-provisioning
-
-### Stopping the Stack
-
-For the direct-start examples above, stop the same isolated project with the
-same environment configuration and the `observability` profile:
-
-```bash
-docker compose --env-file /path/to/non-live.env -p butlers-local \
-  -f docker-compose.yml -f docker-compose.observability.yml \
-  --profile observability down
-```
-
-For a stack started by `scripts/compose.sh`, match that launcher's actual
-configuration instead: dev uses project `butlers-dev` and `.env.dev`, production
-uses `butlers` and `.env.prod`; both enable `dev`, and selected flags add profiles
-such as `hotreload`, `audio` and `observability`. Include the protected
-`docker-compose.restore-drill.yml` fragment if that launch selected it. The
-launcher exports its environment inside its own process, so the parent shell
-still needs the explicit matching `--env-file`. These are isolated/off-cluster
-Compose procedures; they do not stop the k3s dev release.
+The local Compose observability services and launcher option have been retired.
+The cluster LGTM stack remains independently managed. The shared dashboard JSON
+in `observability/grafana/`, paused rules in `observability/grafana-alerting/`
+and the collector/Prometheus/Tempo configuration remain available to their
+cluster provisioning consumers. These files are not evidence that provisioning
+or delivery has executed. Alert rules must be provisioned through Grafana's
+alerting input, separately from its recursive dashboard input.
 
 ## Telemetry Initialization
 
@@ -244,8 +125,8 @@ after an owner explicitly enables evaluation.
 Enabling evaluation or notification delivery, changing a route, or exercising
 an alert requires a separate owner-approved operational change.
 
-Its JSON definition lives in `observability/grafana-alerting/`, mounted only
-at Grafana's alerting-provisioning path. It must remain outside the recursive
+Its JSON definition lives in `observability/grafana-alerting/`, for the cluster's
+separate alerting-provisioning input. It must remain outside the recursive
 dashboard source so Grafana never mistakes the alert rule for a dashboard.
 
 ## Related Pages

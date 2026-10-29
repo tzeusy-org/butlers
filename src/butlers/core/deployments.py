@@ -22,6 +22,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.db import db_params_from_env
 from butlers.migrations import get_chain_revision_ids
 
 logger = logging.getLogger(__name__)
@@ -390,3 +391,10 @@ async def list_recent_deployments(pool: asyncpg.Pool, limit: int = 10) -> list[d
         limit,
     )
     return [dict(r) for r in rows]
+
+
+async def _make_pool() -> asyncpg.Pool:
+    """Open the bounded pool owned by the Helm release-recording command."""
+    params = db_params_from_env()
+    database = os.environ.get("POSTGRES_DB", "butlers")
+    return await asyncpg.create_pool(database=database, min_size=1, max_size=2, **params)

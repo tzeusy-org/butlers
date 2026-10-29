@@ -31,7 +31,7 @@ Metrics summarize system behavior but must avoid high-cardinality labels such as
 - `src/butlers/core/telemetry.py`
 - `src/butlers/core/metrics.py`
 - `src/butlers/core/logging.py`
-- `docker-compose.observability.yml`
+- `observability/grafana/` and `observability/grafana-alerting/` (shared cluster provisioning assets)
 - `tests/telemetry/test_telemetry.py`
 - `tests/core/test_otel_metrics.py`
 

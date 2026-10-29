@@ -48,7 +48,7 @@ database or try to recover this release through a hotreload service.
 **Cause:** the external PostgreSQL is unreachable at the configured host/port.
 The database is **not** a Compose service; it lives on a remote host set by
 `POSTGRES_HOST` / `POSTGRES_PORT` in the `.env.<mode>` file that
-`scripts/compose.sh` sources (`.env.dev` by default, `.env.prod` with `--prod`).
+`scripts/compose.sh` sources (`.env.dev`).
 
 **Diagnosis:**
 ```bash

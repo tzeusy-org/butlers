@@ -50,10 +50,11 @@ uv sync --dev
 
 The script loads `.env.dev` (database connection), builds the image, and starts every butler
 daemon in `butlers-up`, the connectors, the dashboard API, and the Vite frontend. Dev mode
-hot-reloads `src/` and publishes on dev host ports so it can run beside a prod stack
-(`./scripts/compose.sh --prod`); the ports for both modes are in the
-[deployment port map](../../about/lay-and-land/deployment.md#port-assignments). The script header
-documents the flags for the OAuth gate, Tailscale, audio, and observability options.
+hot-reloads `src/` and publishes on dev host ports; see the
+[deployment port map](../../about/lay-and-land/deployment.md#port-assignments).
+The script header documents OAuth, Tailscale, audio and protected restore-drill
+options. Production deployment uses Helm; the production Compose and local
+observability modes are retired.
 
 ### Chronicles map basemap
 

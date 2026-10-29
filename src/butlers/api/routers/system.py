@@ -24,7 +24,7 @@ are gated only by the standard dashboard session boundary (v1 simplification).
 All endpoints are read-only against existing tables, except /api/system/deployments,
 which reads public.deployments (core_163) -- the one new table this module
 introduces. It is written elsewhere (butlers.cli._start_all records process
-boots and butlers deploy records deploy executions; see
+boots and the Helm release command records deploy executions; see
 src/butlers/core/deployments.py), never by this router.
 /api/system/deployments also makes one outbound call per request (cached
 briefly per git_sha): an anonymous GitHub compare against the current

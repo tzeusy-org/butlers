@@ -25,9 +25,8 @@ For a Compose deployment, `butlers-app` and `butlers-app-audio` are built locall
 `scripts/compose.sh`. Their tag defaults to `latest` for local development but
 can be overridden via `BUTLERS_APP_TAG` (see below).
 
-**Observability stack** (`docker-compose.observability.yml`): already pinned to
-specific versions (otel-collector `0.105.0`, Grafana `11.1.0`, Prometheus `v2.53.0`,
-Tempo `2.5.0`) — no changes required.
+Cluster observability image versions are managed with the shared LGTM stack,
+not a local Butlers Compose overlay.
 
 ---
 
@@ -149,7 +148,7 @@ and secret prerequisites; `BUTLERS_APP_TAG` does not select chart images.
 
 Use this path only for a Compose deployment against a database not owned by a
 running Kubernetes fleet. The launcher refuses a competing fleet; its override
-is for non-live databases only. `--prod` retains the production Compose path.
+is for non-live databases only. Production uses the Helm workflow above.
 
 `butlers-app` and `butlers-app-audio` are built locally by `scripts/compose.sh`.
 By default they are tagged `:latest`. For environments where reproducible image
@@ -158,7 +157,7 @@ references matter (CI, staging, production hand-off), set `BUTLERS_APP_TAG`:
 ```bash
 # Pin to the current git commit (recommended for CI/production)
 export BUTLERS_APP_TAG=$(git rev-parse --short HEAD)
-./scripts/compose.sh --prod
+./scripts/compose.sh
 ```
 
 The compose script builds the image to `butlers-app:${BUTLERS_APP_TAG}` and

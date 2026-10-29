@@ -6,16 +6,14 @@
 
 ## Deployment scope
 
-The live dev fleet runs on Kubernetes in `butlers-dev` and uses the cluster's
-existing LGTM stack. The Butlers chart does not deploy Grafana or consume
-the retained Compose observability configuration; Compose's `--observability`
-flag does not change cluster Grafana access. Follow the site's LGTM access policy and
-[Kubernetes Deployment](kubernetes-deployment.md) for the live dev workflow.
+Production and the live dev fleet use Helm on Kubernetes and the cluster's
+existing LGTM stack. The Butlers chart does not deploy Grafana. Follow the site's
+LGTM access policy and [Kubernetes Deployment](kubernetes-deployment.md).
+The local Compose observability overlay and production launcher are retired.
 
-This page describes retained production/local Compose deployments. Use the
-recipes below only against a database not served by a running Kubernetes fleet;
-the Compose launcher refuses a competing fleet. Direct Compose is not a way to
-bypass that ownership guard.
+Development Compose remains only against a database not served by a running
+Kubernetes fleet; its ownership guard remains mandatory. Direct Compose is not a
+way to bypass that guard. Complete dev Compose retirement is separate work.
 
 ## Independent configuration and runtime isolation
 
@@ -23,7 +21,7 @@ Butler runtime pools always establish the configured runtime role before serving
 
 Memory side pools retain the already established primary Database owner role. Only that owner's domain and the existing Chronicler `chronicler_mem` private search path are supported; a private schema never selects another runtime role. The private connection checks schema USAGE under the owner role before publication and on every acquire; table privileges remain PostgreSQL-enforced. Missing private-schema access refuses rather than using the connecting login. Current managed bootstrap/memory migration sources do not establish the Chronicler private grants, so working private-memory access remains a managed-topology prerequisite, not a claim supplied by this runtime change.
 
-The retained Compose launcher defaults `GF_AUTH_ANONYMOUS_ENABLED` to `false`. An operator can explicitly set it to `true` for local viewing; the process configuration diagnostic reports enabled anonymous access without an exemption. This does not configure Kubernetes Grafana or authorize a deployment.
+The process configuration diagnostic still reports configured anonymous Grafana access without an exemption. It does not configure an external Grafana service, establish the cluster access policy or authorize a deployment.
 
 Known-default MinIO/Grafana credentials retain loud service/key-name warnings without exposing values. Absence follows the retained Compose default configuration for this diagnostic; it is not proof of the remote service's credential state. The health endpoint separately reports the actual API DatabaseManager role state, conservatively disabled when unavailable. None of these booleans attests that the whole fleet is secure.
 

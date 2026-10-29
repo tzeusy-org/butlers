@@ -300,7 +300,7 @@ def test_dev_opt_in_requires_password_file_before_lifecycle(tmp_path: Path) -> N
     assert calls == []
 
 
-def test_prod_launcher_requires_password_file_before_lifecycle(tmp_path: Path) -> None:
+def test_prod_launcher_is_retired_before_password_file_or_lifecycle(tmp_path: Path) -> None:
     completed, calls = _run_compose_launcher_harness(
         tmp_path,
         args=("--prod", "--skip-oauth-check", "--skip-tailscale-check"),
@@ -309,7 +309,7 @@ def test_prod_launcher_requires_password_file_before_lifecycle(tmp_path: Path) -
     )
 
     assert completed.returncode == 1
-    assert "RESTORE_DRILL_EXECUTOR_PASSWORD_FILE" in completed.stderr
+    assert "Unknown flag: --prod" in completed.stderr
     assert calls == []
 
 
@@ -328,6 +328,15 @@ def test_protected_launcher_paths_include_the_overlay_and_preserve_prepared_star
     args: tuple[str, ...],
     environment_name: str,
 ) -> None:
+    if "--prod" in args:
+        completed, calls = _run_compose_launcher_harness(
+            tmp_path, args=args, environment_name=environment_name, environment_text=""
+        )
+        assert completed.returncode == 1
+        assert "Unknown flag: --prod" in completed.stderr
+        assert calls == []
+        return
+
     password_file = tmp_path / "password-file"
     password_marker = "test-only-password-marker"
     password_file.write_text(password_marker + "\n", encoding="utf-8")
@@ -395,6 +404,15 @@ def test_protected_launcher_failure_preserves_the_selected_retry_mode(
     failure_stage: str,
     expected_retry_command: str,
 ) -> None:
+    if "--prod" in args:
+        completed, calls = _run_compose_launcher_harness(
+            tmp_path, args=args, environment_name=environment_name, environment_text=""
+        )
+        assert completed.returncode == 1
+        assert "Unknown flag: --prod" in completed.stderr
+        assert calls == []
+        return
+
     password_file = tmp_path / "password-file"
     password_file.write_text("test-only-password-marker\n", encoding="utf-8")
 
@@ -486,7 +504,7 @@ def test_restore_drill_launcher_requires_private_password_file_before_lifecycle(
     )
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# ── Load environment-specific database config")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     bootstrap_boundary = launcher[start:end]
     env = {
         **os.environ,
@@ -540,7 +558,7 @@ def test_restore_drill_launcher_accepts_valid_private_password_file(tmp_path: Pa
     )
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# ── Load environment-specific database config")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     bootstrap_boundary = launcher[start:end]
     completed = subprocess.run(
         ["bash", "-c", "set -euo pipefail\n" + bootstrap_boundary],
@@ -1234,7 +1252,7 @@ def test_restore_drill_launcher_rejects_numeric_executor_identity_before_compose
     """No numeric literal may bypass Docker DNS and reach the executor."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
 
     env = {**os.environ, "RESTORE_DRILL_ENABLED": "true", source_name: numeric_host}
@@ -1268,7 +1286,7 @@ def test_restore_drill_launcher_rejects_dns_identities_outside_canonical_lengths
     """Shell validation must match the executor/deploy DNS label and total bounds."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
 
     completed = subprocess.run(
@@ -1296,7 +1314,7 @@ def test_restore_drill_launcher_accepts_dns_identity_with_a_separate_remote_fire
     """Only the relay target, not the executor TLS identity, may be numeric."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
@@ -1325,7 +1343,7 @@ def test_restore_drill_launcher_rejects_a_dns_host_that_resolves_to_loopback(
     """A TLS hostname resolving to localhost must not make the relay recurse."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -1354,7 +1372,7 @@ def test_restore_drill_launcher_rejects_localhost_with_a_remote_firewall_overrid
     """A safe override cannot turn localhost into an internal TLS relay alias."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
@@ -1386,7 +1404,7 @@ def test_restore_drill_launcher_rejects_noncanonical_numeric_host_before_dns_fal
     """A dotted numeric literal cannot bypass the parser by becoming a DNS name."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -1426,7 +1444,7 @@ def test_restore_drill_launcher_rejects_invalid_port_before_compose(invalid_port
     """An invalid executor port must fail before lifecycle commands can begin."""
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# The restore-drill executor has an internal-only network")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
@@ -1478,7 +1496,7 @@ def test_restore_drill_launcher_rejects_raw_whitespace_endpoint_literals_before_
     environment_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# ── Load environment-specific database config")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     bootstrap_and_endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
@@ -1533,7 +1551,7 @@ def test_restore_drill_launcher_rejects_indented_raw_whitespace_before_source(
     )
     launcher = _COMPOSE_LAUNCHER.read_text(encoding="utf-8")
     start = launcher.index("# ── Load environment-specific database config")
-    end = launcher.index("# ── Mode-dependent configuration", start)
+    end = launcher.index("# ── Development configuration", start)
     bootstrap_and_endpoint_boundary = launcher[start:end]
     env = {
         **os.environ,
