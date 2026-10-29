@@ -229,3 +229,22 @@ non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
 backup while denying other runtimes after bootstrap regrants. See
 [goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
 source keys, lock order, policy snapshots and actual verification obligations.
+
+### Dark canonical perception projections
+
+Core `core_276` installs `public.situation_slots`, `public.timeline`,
+`public.owner_modes`, `public.perception_conditions` and
+`public.perception_suppressions` through the privileged fixed bootstrap.
+`perception_private` holds restrictive source/reference profiles and replay
+receipts; it is not a domain source store. Forced RLS, isolated NOLOGIN ownership
+and dedicated authenticated service identities fence both direct DML and
+writer/read gateways. A bootstrap rerun restores that fence after public grants.
+See [dark perception](perception.md) for exact writer, reader, retraction,
+source-profile, rollback and feeder custody.
+
+These empty/unconfigured projections do not imply live migration or activation.
+`user_context`, the canonical DND generation guard, concern episodes and
+`timeline_saved_views` keep their existing meanings and consumers. Dots `.17`
+uses the exact stable event/CAS API for place; `.21` owns clock/activity/modes
+and consumer activation, `.14` health, and the confirmed routine feeder
+expectations. No parallel presence, clock or life-record store is introduced.
