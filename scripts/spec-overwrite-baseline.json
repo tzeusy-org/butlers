@@ -2095,6 +2095,12 @@
       "excerpt": "- **AND** passes declared butler env vars to the subprocess",
       "kind": "clause",
       "scenario": "Gemini adapter invocation"
+    },
+    {
+      "digest": "19d9a86627e7",
+      "excerpt": "The spawner SHALL delegate to a `RuntimeAdapter` abstract base class. Four concrete adapters are registered: `claude`...",
+      "kind": "prose",
+      "scenario": null
     }
   ],
   "generalist-lead-focused-delegation/core-spawner/Spawner Session Lifecycle": [

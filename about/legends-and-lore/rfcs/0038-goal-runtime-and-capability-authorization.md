@@ -28,12 +28,15 @@ D19's detailed experience contract remains in the dashboard change.
 
 ## Summary
 
-Every reasoning session in Butlers becomes an invocation of a **goal**. One
-deterministic control plane admits goals, derives their authority, launches a
-lead and optional depth-1 children, and brokers every capability call those
-sessions make. Domain butlers stop spawning reasoning sessions and become
-deterministic capability services that own their data, schedules, obligations,
-policies and effect receipts.
+Every reasoning session in Butlers runs within an admitted **goal**: a lead,
+optional depth-1 children, or the narrowly bounded D20 research subcall. One
+deterministic control plane admits goals, derives their authority, launches the
+lead and children, and brokers every capability call they make. Only its goal
+runner launches D20 research after the broker accepts a call from an authorized
+lead or child; research has no capability or delegation authority. Domain
+butlers stop spawning reasoning sessions and become deterministic capability
+services that own their data, schedules, obligations, policies and effect
+receipts.
 
 Today's "a session can only reach its own butler" is a configuration
 convention, not an enforced boundary (see [Context](#context-todays-boundary)).
@@ -42,7 +45,8 @@ model behavior:
 
 1. **Sandboxed sessions.** A runtime process can reach the broker's session
    listener and its model provider and nothing else: no database, no domain
-   port, no credential, no shell, file or web tool.
+   port, no credential, no shell, file or web tool. D20 adds brokered web
+   research on a separate research host; it gives sessions no web tool.
 2. **Grants derived from origin.** Admission computes an authority ceiling from
    who or what started the goal. A model can narrow its authority; it can never
    enlarge it.
@@ -129,7 +133,8 @@ Non-goals:
 | Goal | A durable unit of intent with one origin, one authority ceiling, one budget and one outcome. |
 | Origin | The verified source of a goal: owner, obligation, third party or staffer. |
 | Cause | The goal and effect whose consequence admitted a later goal, if any. |
-| Invocation | One runtime session acting for a goal, either the lead (depth 0) or a child (depth 1). |
+| Invocation | One grant-bearing runtime session acting for an admitted goal, either the lead (depth 0) or a child (depth 1). Unqualified invocation and goal invocation mean these lead/child sessions. |
+| Research invocation | The tokenless, grantless D20 research subcall within an already admitted calling goal, accepted by the broker and launched only by the runner on the research host. It is neither a lead/child invocation nor a D18 outside-goal model function and has no capability or delegation authority or hierarchy depth. |
 | Capability | A model-reachable MCP tool registered by a domain, with authorization metadata in the catalog. |
 | Grant | The capabilities, resources and approval policy one invocation may use. Stored server-side; never in model context. |
 | Exposure | The fact that untrusted third-party content has entered an invocation's context. Monotonic. |
@@ -152,6 +157,9 @@ flowchart TB
         Lead["Lead · depth 0"]
         Child["Child · depth 1"]
     end
+    subgraph ResearchHost["Separate research host (D20)"]
+        Research["Research subcall · no token, grant or MCP"]
+    end
     subgraph Up["butlers-up (domain daemons)"]
         Domains["Domain capability services, schedules, obligations"]
         Approvals["Approvals (owner decisions)"]
@@ -166,6 +174,8 @@ flowchart TB
     Lead -->|"goal.delegate"| Broker
     Broker -->|"child launch request"| Runner
     Runner -->|"launch"| Child
+    Broker -->|"accepted web_research launch request"| Runner
+    Runner -->|"authenticated D20 launch/result channel"| Research
     Lead -->|"MCP + invocation token"| Broker
     Child -->|"MCP + invocation token"| Broker
     Broker -->|"MCP + signed assertion"| Domains
@@ -174,8 +184,13 @@ flowchart TB
 ```
 
 The control plane is deterministic infrastructure in its own process.
-Reasoning happens only inside the sandboxed lead and child processes on the
-session host.
+Lead and child reasoning runs only in their sandboxed processes on the session
+host. The sole additional reasoning path within an admitted goal is D20's
+broker-accepted, runner-launched research subcall on the separate research host.
+It has no route or MCP connection to the broker, no invocation token or grant,
+and cannot start a goal or another reasoning session. The runner's authenticated
+control channel carries its launch and result; D18's outside-goal model kinds
+remain separate.
 
 ## Decisions
 
@@ -275,6 +290,9 @@ before results are accepted.
 Runtime built-in tools are disabled: no shell, filesystem, web fetch or local
 MCP servers, and no provider-hosted tools (server-side web search or fetch,
 remote MCP connectors, code execution), which run outside any network policy.
+These tools stay disabled on the session host for every lead and child. D20
+is the only provider-hosted web-search exception, on the separate research
+host through the broker; it grants no exception to this session sandbox.
 Adapters drop today's permission-bypass flags in favor of the runtime's
 deny-all tool settings plus a strict MCP config naming only the broker. The
 adapter must prove all of this per runtime and model tuple, as RFC 0027
@@ -312,7 +330,7 @@ Effect classes and their default under exposure (owner decision 3):
 
 | Class | Examples | Under exposure |
 |---|---|---|
-| `read` | search memory, list transactions, read calendar | allowed |
+| `read` | search memory, list transactions, read calendar, brokered `web_research` | allowed; `web_research` runs cached under exposure (D20) |
 | `record` | log a measurement, store an attributed fact, propose an insight | allowed and tainted (D6), unless `owner_authority`, which is refused |
 | `communicate` | send email, reply on Telegram, notify a third party, answer a calendar invitation | per-event approval for every call, except `notify` to the owner with link previews disabled and URLs rendered inert, and standing rules whose recipient is the owner or that are template-pinned (D13) |
 | `transact` | spend, pay, book | disabled for every goal (owner decision 8) |
@@ -424,7 +442,7 @@ output.
 |---|---|---|
 | `owner` | RFC 0017 owner-channel authorization, or the dashboard's existing owner authentication | all grantable capabilities, subject to each tool's approval policy and the two owner rules in D4 |
 | `obligation` | a schedule, subscription or commitment declared in git, or created at runtime by an `administer` effect | the declared capability set; default owner domain `read` and `record` plus owner `notify`. A runtime-created obligation's set is at most its creator's grant at creation. |
-| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` (owner decision 7); never `transact`, `actuate` or `administer` |
+| `third_party` | inbound content whose sender is not the verified owner | `read`, non-steering `record`, owner `notify`, and **park-only** `communicate` (owner decision 7); never `transact`, `actuate` or `administer`, and never web research (D20) |
 | `staffer` | a staffer's infrastructure contract (QA triage, Concierge answer) | the capability set declared in that contract |
 
 Rules:
@@ -750,7 +768,10 @@ Admission reserves the budget. `goal.delegate` and every call decrement it in
 the D7 transaction, so concurrent children cannot overspend. The runner meters
 model usage from the runtime's usage stream and terminates an invocation that
 exceeds its turns, tokens or spend between tool calls. Unlike today's
-pre-spawn gates, every budget check fails closed. Exhaustion refuses new work
+pre-spawn gates, every budget check fails closed. D20 research calls reserve
+their per-call tokens, spend, search-call and wall-time allowance in the same
+D7 transaction, subject also to the separate research concurrency and daily
+spend caps. Exhaustion refuses new work
 and ends the goal `budget_exhausted` with whatever results and effects exist.
 
 ### D11. State machines
@@ -930,8 +951,12 @@ never from text, and exposed writes are tainted.
 
 ### D16. Model selection and escalation
 
-Model choice is per invocation, resolved from `public.model_catalog` by role
-(`lead`, `child`, `monitor`) and, for children, the tier the brief requests.
+Model choice for lead and child goal invocations is resolved from
+`public.model_catalog` by role (`lead`, `child`, `monitor`) and, for children,
+the tier the brief requests. The separate `research` resolution role is only
+for D20's bounded subcall within an already admitted goal, not a lead, child or
+D18 outside-goal function. It has the distinct D20 profile and eligibility
+proof; version 1 supports Codex research only.
 Because D3 to D7 do not depend on model behavior, a fast or small model is a
 quality and cost decision, never a security one. Replay evaluation, not this
 RFC, sets the assignments (owner decision 4). Starting defaults:
@@ -950,9 +975,11 @@ epoch exactly as recovery does. Escalation never creates a new goal, and the
 ladder is finite. This lets a monitor start on the cheapest model without
 giving it a path to a new root.
 
-A runtime is eligible for goal invocations only if it supports MCP tool calls
-to the broker, proves the D3 sandbox restrictions, and passes the RFC 0027
-conformance gate for the catalog size it will see.
+A runtime is eligible for lead and child goal invocations only if it supports
+MCP tool calls to the broker, proves the D3 sandbox restrictions, and passes
+the RFC 0027 conformance gate for the catalog size it will see. Research
+eligibility is the separate D20 proof, which grants no MCP or broker access and
+cannot substitute for any lead/child eligibility check.
 
 ### D17. Telemetry and audit
 
@@ -961,7 +988,9 @@ Every span carries `goal_id`, `invocation_id`, `depth` and, for a lead, its
 not session logs, is the record of a goal: admission decision, origin, cause,
 exposure, ceiling digest, grants, delegation tree, budget consumption, effects
 with receipts, approvals and the final outcome. Telemetry stores identifiers and
-digests, never arguments or results.
+digests, never arguments or results. D20 research records in the goal ledger
+add the question, broker-selected mode, event-derived opened URLs, citations,
+usage and outcome; none of those payloads enters telemetry.
 
 ### D18. Model use outside goals
 
@@ -1076,11 +1105,15 @@ synthesis, dashboard quick-add and memory consolidation, becomes an obligation
 or owner goal at the switch rather than a model function. Dashboard fast
 answers are the single named exception.
 
-Any other model use is a goal invocation. Adding a kind to this list requires
+Every other model use SHALL run within an admitted goal: as a lead or child
+invocation, or solely as D20's broker-accepted, runner-launched research
+subcall. Research stays within the calling goal's authority, exposure and
+budget accounting; it is not an additional outside-goal kind, a new admission path
+or a child and receives no invocation token, grant or MCP tools. Adding a kind to this list requires
 an RFC amendment. `define-dashboard-fast-answer-runtime` is re-scoped to the
 dashboard fast-answer kind above (`bu-u5euwb.28`) before approval. Any other
 pending OpenSpec change that adds a model path must be re-scoped as goals or
-as a named kind here before approval.
+as a named kind here before approval. D20 supplies no exception for those paths.
 
 ### D19. Owner surface: one mind, specialized regions
 
@@ -1091,7 +1124,9 @@ mind (owner decision 11). The direction:
 - **Goals are the unit of activity.** The owner sees goals, not sessions: what
   started each goal, its origin and exposure, the lead and its children, the
   regions it drew on, its effects with receipts, its parked approvals, its
-  budget and its outcome, with Stop on any running goal.
+  budget and its outcome, with Stop on any running goal. It also shows D20
+  web research calls: question, mode, event-derived opened URLs, citations,
+  usage and outcome.
 - **Regions replace butler units.** The Butlers page and butler detail pages
   become region pages. A region page shows its data, standing obligations and
   schedules, capabilities and their effect classes, domain guidance, and the
@@ -1119,11 +1154,152 @@ in-thread failure replies, bug-report filing to QA, the read-only answer lane,
 replay-eligible dead letters, and conversation continuity, which D9's
 no-resume rule makes a goal-level concern.
 
+### D20. Brokered web research
+
+**Adopted amendment (2026-10-20):** the owner adopted the D20 text at PR #4540
+head `bd206499` with P1 = A (cached for exposed callers) and P2 = A
+(third-party goals never research), recorded on `bu-cs33zx` at 14:31Z.
+Separate owner merge-enqueue approval remains required. No runtime or
+credential use is authorized by this amendment.
+
+**Research host.** Research runs on a separate container (Compose) or pod
+(Kubernetes), apart from the session host, `butlers-up` and `butlers-control`,
+built from the session host's image and launcher with a research profile.
+Its egress reaches only the configured model provider and cluster DNS. It has
+no route to the broker's session listener, any domain port or service listener,
+PostgreSQL, the Kubernetes API, cloud metadata or arbitrary internet hosts.
+Compose uses an enforcing provider allowlist proxy rather than network
+membership as a security claim; Kubernetes must prove the union of all
+policies selecting the research pod preserves this restriction.
+
+The research host holds no MCP configuration and no domain, database,
+connector or lead credential. Its only credential is the per-invocation
+research model credential, resolved by the goal runner and staged over an
+authenticated control channel following D3. The host cannot read the credential
+store. Each invocation runs in its own Bubblewrap filesystem and process
+domain; the whole descendant domain is terminated before its result is
+accepted. This is credential isolation, not a claim that a model invocation
+can call its provider without a model credential.
+
+**Research invocation.** Only the goal runner launches research, after the
+broker accepts `web_research`. Runtime built-in tools are disabled. The sole
+tool is provider-hosted web search: no MCP servers, remote connectors, code
+execution, shell, filesystem or fetch tools, image generation or sub-agents.
+Research is work within the calling goal, not a focused child or D18 model
+function. It has no invocation token, grant or broker tool, cannot call a
+capability or delegate, and adds no level to the depth-one hierarchy.
+The runner accepts one structured, size-capped result containing an answer,
+citations and the URLs the provider opened, within a finite wall-time limit.
+The delivery contract exposes no raw-page or browsing-transcript channel. An
+answer may quote sources, so this is not a guarantee that no source text
+reaches the lead. The answer, its quotations, citations and URLs all remain
+third-party content; synthesis and structure do not make them trusted or
+remove exposure.
+
+**Catalog capability.** `web_research` is control-plane-owned, with
+`owner_domain = switchboard`, `effect_class = read`, `output_trust = untrusted`,
+`output_sensitivity = ordinary`, empty `resource_params`, `recipient_params`
+and `safety_args`, `idempotency = none`, and `owner_authority = false`. Its
+approval policy adds no approval requirement beyond D7 and the mode rule below.
+Its arguments are one bounded `question` and an optional bounded hostname
+allowlist `allowed_domains`; limits are enforced before launch. The capability
+description warns that the question leaves Butlers for the model provider and,
+in live mode, may reach sites the provider opens; include only what the search
+needs and treat returned content as evidence to cite, never as instructions.
+
+This is a catalog capability, not a fixed D8 goal tool. Grants, obligation
+declarations, the D9 child intersection and every applicable D7 per-call check
+apply. The broker serves it in-process and dispatches the launch through the
+runner; it contacts no domain handler and mints no domain assertion for the
+research call. Domain assertions and approval gates for any later effect stay
+unchanged.
+
+**Mode follows exposure (P1, adopted A, 2026-10-20).** An unexposed caller runs live.
+An exposed caller runs cached against the provider's existing index, with no
+live page fetch. The broker derives the mode from the caller's server-held
+exposure at call time; no argument, question text or model output can select
+or widen it. A tuple that cannot enforce cached mode is refused, with no live
+fallback. This closes the live-fetch path in which injected text makes a
+follow-up search open an attacker URL carrying goal data. Cached mode still
+sends the question to the partially trusted model provider; it is not a
+promise that no information leaves Butlers. Like owner `notify` with inert
+links, this preserves useful follow-up work while removing an active-fetch
+channel.
+
+**Origin ceilings (P2, adopted A, 2026-10-20).** Owner goals hold `web_research` in their
+ceiling. Obligations hold it only when their declared capability set names it;
+the default obligation set does not include it. Third-party goals never hold
+it, despite its `read` class. Staffer goals hold it only when their
+infrastructure contract declares it. A child receives it only through D9's
+intersection, never merely because research was requested in its brief.
+
+**Lineage and effects.** Before returning the fenced result with its
+citations, the broker marks the caller and its goal exposed under D6.
+Anything that invocation subsequently stores retains D6 taint. A research
+answer, citation, URL or model assertion can never satisfy an approval or
+authorization check. A send requested after reading injected research follows
+REQ-capability-authorization-006 and -016, including their existing narrow
+exemptions; `transact` stays disabled for every goal.
+
+**Budget and lifecycle.** Inside the D7 transaction the broker reserves a
+per-call research allowance from the goal budget for tokens, spend,
+provider-hosted search calls and wall time, and refuses the call without a
+launch if any reservation does not fit. Concurrent calls cannot reserve the
+same remaining allowance. The runner meters usage from the runtime event
+stream and terminates the research process domain at its reservation. Missing
+or unreadable usage charges the whole reservation. Finite per-call limits, a
+research concurrency cap separate from the session host's, and a daily
+research spend cap bound the fleet; defaults live in `runtime_config` and all
+checks fail closed. A stopped goal starts no further research, and its running
+research domain is terminated under D14. Launch failures, timeout, incomplete
+usage or unavailable audit evidence are recorded honestly; they are not a
+successful cited answer or a reason to reset the budget or replay work.
+
+**Audit and owner surface.** The goal ledger records the call's question,
+selected mode, URLs the provider opened, citations, usage and outcome. Opened
+URLs come from the runtime/provider event stream, never from the model's
+self-report; unavailable evidence remains explicit and cannot establish a
+profile proof. D17 telemetry carries only identifiers and digests, never
+questions, answers or URLs. The D19 goal page shows the research calls and
+these ledger fields under its existing owner-authenticated surface. This adds
+no new dashboard action or approval bypass.
+
+**Eligibility.** Model resolution adds the `research` role. A runtime/model
+tuple is eligible only after its adapter proves the separate research profile:
+exactly one provider-hosted search tool, no runtime built-in tool, no MCP
+server, live and cached modes honored as selected, bounded usage and the
+required event-derived audit evidence. Version 1 supports Codex only. A name,
+installed binary, generic model verification or an asserted tool list is not
+this proof. Unsupported or unproven tuples refuse launch. No model,
+credential, spend cap or deployment is selected by this amendment; the
+separate owner decision `bu-6qaju2.2` is closed (2026-10-15), answer B:
+reuse the existing Codex ChatGPT-subscription login. Closure does not provision
+a credential or satisfy the existing live-research proof and deployment gates.
+
+**Known limits and non-goals.** In live mode the question can reach any site
+the provider opens. The provider sees questions in both modes under the
+partial trust already granted in `security.md`; search results may contain
+injections, mistakes or stale information. Cached mode may miss newly
+published pages. Browser automation, computer use, logged-in browsing, form
+submission, web writes and purchases are excluded. This amendment enables no
+runtime fetch tool or direct public-internet egress from a Butlers research
+container, and grants no new egress to any other Butlers container. Leads and
+children keep their D3 restrictions.
+
+**Release and owner gate.** Build and prove research dark behind the
+program's default-off switch. No ingress, schedule or live dashboard is wired
+by this amendment. The switch release `bu-enbrs2` remains blocked on the broker
+capability `bu-6qaju2.4` and the existing cutover evidence. P1 adopts cached
+under exposure and live otherwise; P2 adopts excluding third-party goals
+(owner adoption 2026-10-20, `bu-cs33zx`). The finished PR still requires its
+separate owner merge-enqueue approval. Adoption does not launch research or
+release the switch.
+
 ### Details settled during the dark build
 
 Writing the baseline deltas surfaced details this RFC leaves to
 implementation. Each is settled by the dark-build work item that owns it,
-within D1 to D19 and never by weakening the two owner rules of D4:
+within D1 to D20 and never by weakening the two owner rules of D4:
 
 - the mechanism by which service-plane relays and Messenger's delivery
   endpoint authenticate their calling daemon (that they authenticate it, per
@@ -1228,7 +1404,12 @@ All evidence is produced in a dev namespace against the release candidate:
    attempting grandchildren through every creation path, including caused
    admissions and runtime obligations; forged, replayed, expired and
    wrong-audience assertions; stale-epoch tokens; direct calls to domain ports
-   and service listeners from the sandbox; provider-hosted tool use; dashboard
+   and service listeners from the session sandbox; provider-hosted tool use
+   outside D20; injected web content instructing a send; exfiltration through a
+   second research call; a research host reaching the session listener, a
+   domain, service listener, PostgreSQL, the Kubernetes API, cloud metadata or
+   arbitrary internet host; and a research profile exposing any tool beyond
+   provider-hosted search; dashboard
    fast answers whose plan or read results attempt a read off the allowlist, a
    fourth read, a tool call or any effect.
 3. Replay evaluation over a fixed set of recorded owner requests and
@@ -1295,6 +1476,7 @@ built.
 | 9 | Communication with non-owners | Owner amendment at signoff. | Keep the existing rule: "all communication with all entities that are NOT myself (owner) require approval." Per-event approval or an owner-created standing rule, for every goal (D4). |
 | 10 | RFC corpus after cutover | Owner amendment at signoff. | Rewrite and reorganize the RFCs after the rearchitecture (Hard cutover, After the switch). |
 | 11 | Dashboard | Owner amendment at signoff. | Redesign the owner surface: "specialized butlers are going to be more akin to specialized regions of the same brain" (D19). |
+| 12 | Brokered web research | D20: a separate research host, cached under exposure, no third-party goals; P1 = A and P2 = A adopted. | Direction approved 2026-10-15: "Internet search access is pretty important for butlers functionality; feels like we need something like a sandboxed container (without creds exposed) which serves codex instances that have internet search tools?" D20 at PR #4540 head bd206499 adopted 2026-10-20 at 14:31Z (`bu-cs33zx`); separate owner merge-enqueue approval remains required. |
 
 ### Author-detail confirmation
 
@@ -2020,6 +2202,13 @@ release approval or operational authorization.
 
 ## Traceability
 
+Requirement identity reconciliation: historical D20 drafting reference
+`REQ-capability-authorization-017` and published D20 reference
+`REQ-capability-authorization-018` identify the research requirement now numbered
+`REQ-capability-authorization-022`. Original dated records retain those historical
+references. Current requirements 017 and 018 retain their separate always-per-event
+approval-mode and owner-selection meanings.
+
 | Requirement | Decisions |
 |---|---|
 | `goal-orchestration` 001 whole-goal accountability | D1, D11, D12 |
@@ -2030,9 +2219,9 @@ release approval or operational authorization.
 | `goal-orchestration` 006 honest outcomes | D11, D12, D14 |
 | `goal-orchestration` 007 domain care | D2, D5 |
 | `goal-orchestration` 008 single admission path | D1, D2, D18, Hard cutover, later owner decision `bu-u5euwb.21` |
-| `capability-authorization` 001 sandbox | D1, D3 |
+| `capability-authorization` 001 sandbox | D1, D3, D20 |
 | `capability-authorization` 002 catalog metadata | D4 |
-| `capability-authorization` 003 origin ceilings | D5 |
+| `capability-authorization` 003 origin ceilings | D5, D20 |
 | `capability-authorization` 004 grants bound calls | D7 |
 | `capability-authorization` 005 delegation narrows | D9, D13 |
 | `capability-authorization` 006 exposure and taint | D4, D6 |
@@ -2048,3 +2237,4 @@ release approval or operational authorization.
 | `capability-authorization` 016 non-owner communication needs owner approval | D4, D6, D7, D13, owner decision 9 |
 | `capability-authorization` 017 always-per-event approval mode; `module-approvals` 003 and 005; `autonomy-tracker` 001 | D4, D5, D13, later owner decision `bu-p5umi2.4` |
 | `capability-authorization` 018 owner selection records bind selection-bound resource scopes | D4, D5, D7, D9, later owner decision `bu-p5umi2.4` (OQ1) |
+| `capability-authorization` 022 brokered web research | D20; D3 to D7, D9, D10, D16, D17, D19 |

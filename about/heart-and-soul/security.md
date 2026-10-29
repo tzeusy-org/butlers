@@ -41,6 +41,12 @@ from taking actions beyond their intended scope.
   whatever model runs them. Each runs in a sandbox, holds a grant derived from
   its goal's origin, and reaches capabilities only through the broker.
   Approval gates and domain execution checks constrain sensitive operations.
+- **Research invocations.** A separate research sandbox can use only its
+  provider-hosted search profile (RFC 0038 D20). It holds no broker grant or
+  domain, database, connector or lead credential; only its per-invocation model
+  credential is staged for it. Its structured answer, citations and URLs remain
+  untrusted third-party content, and receiving them exposes the caller and its
+  goal. They can inform a decision but never authorize an effect.
 
 ### What is untrusted
 
@@ -140,6 +146,19 @@ the domain and control-plane processes, each in its own execution domain.
   broker rejects these, but the attempt consumes tokens and session time.
 - The sandbox still reaches the model provider, which receives prompt content
   under the partial trust described above.
+
+**Web research.** RFC 0038 D20 admits one broker-owned `web_research`
+capability, executed by the runner on a research container or pod separate from
+the session host, domain services and control plane. Its egress reaches only
+the configured model provider and cluster DNS; it cannot reach the broker,
+domains, service listeners, database, Kubernetes API, cloud metadata or an
+arbitrary internet host. Each invocation has its own execution domain and no
+MCP configuration or credential beyond its staged research model credential.
+The only tool is provider-hosted web search. The broker selects live mode for
+an unexposed caller and cached mode without live page fetch for an exposed
+caller. Results return bounded and fenced as third-party data with citations,
+exposing the caller and goal and retaining taint on later stores. They never
+authorize an effect. Lead and child sessions retain every guarantee above.
 
 ## Schema Isolation
 

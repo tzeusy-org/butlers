@@ -43,6 +43,14 @@ trace the change.
     rewritten and reorganized around the goal architecture as separate work
     (owner decision 10).
 
+14. Brokered web research is the adopted D20 exception (2026-10-20): one catalog capability
+    launches a separate, grant-free research profile within the calling goal,
+    with provider-only egress, untrusted exposing results, exposure-selected
+    live/cached mode, origin ceilings, reserved budgets and event-derived audit.
+    Leads and children retain D3. The owner adopted D20 at PR #4540 head
+    bd206499 on 2026-10-20 at 14:31Z (`bu-cs33zx`), with P1 = A and P2 = A;
+    separate owner merge-enqueue approval remains required.
+
 ## Cutover
 
 No dual-running. The runtime is built dark on main, proven in dev against the

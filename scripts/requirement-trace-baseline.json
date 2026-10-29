@@ -200,7 +200,6 @@
   "generalist-lead-focused-delegation/memory-retention-policy/Rule application audit tracking": "36af9ae4cce271d53692e455eb8a848bb7152cbb276ac064ab580b40a5b1046a",
   "generalist-lead-focused-delegation/model-benchmark-harness/In-memory accumulator as intermediary data layer": "7f1839665f243e8bdd6f529b8a782ef255cd480b85f7f2e56a258f7c96f42558",
   "generalist-lead-focused-delegation/model-benchmark-harness/Model pinning via catalog overrides": "ecb165f5b7b16f6791f7294550e3250e369f8e6860dceff5606db08482cd5932",
-  "generalist-lead-focused-delegation/model-catalog/Model Resolution": "302db0c38d4cc8bc9f9a515fa0fb0848b222cdfedb3816ee1cfb1f153e6248aa",
   "generalist-lead-focused-delegation/model-failover/Failover Attempt Provenance": "55bef3b6611ccc341b75d99f55940acf5ace2a14df39b5e139f583a067a8f79c",
   "generalist-lead-focused-delegation/model-failover/Same-Tier Availability Failover": "6ed9d602970703be4abfb57dc8a0f4e64fa7291d3896d08a962cf8d2ee01d0d6",
   "generalist-lead-focused-delegation/module-approvals/Defense-in-Depth at the Delivery Layer": "78ebb39790837a5be831005e10d41cf581ee72bbb82a31ba2e308d9eaa95e851",
