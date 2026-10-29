@@ -37,6 +37,7 @@ from butlers.tools.switchboard.runtime_attention.outbox import (
 from butlers.tools.switchboard.transport import (
     CONFIRMED,
     RECIPIENT_UNAVAILABLE,
+    TRANSPORT_CONNECTION_LOST,
     TRANSPORT_TIMEOUT,
     TransportOutcome,
     TransportResult,
@@ -323,21 +324,27 @@ def build_messenger_transport(
         if not recipient:
             return RECIPIENT_UNAVAILABLE
 
-        result = await deliver(
-            pool,
-            notify_request={
-                "schema_version": "notify.v1",
-                "origin_butler": "switchboard",
-                "delivery": {
-                    "intent": "send",
-                    "channel": channel,
-                    "recipient": recipient,
-                    "message": _episode_message(episode, dashboard_base_url=dashboard_base_url),
-                },
-            },
-            source_butler="switchboard",
+        from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
+
+        attempt = await deliver_notification(
+            lambda: deliver(
+                pool,
+                source_butler="switchboard",
+                notify_request=owner_notify_request(
+                    origin_butler="switchboard",
+                    channel=channel,
+                    recipient=recipient,
+                    message=_episode_message(episode, dashboard_base_url=dashboard_base_url),
+                ),
+            ),
+            propagate_errors=True,
         )
+        result = attempt.data
         transport = transport_result_from_envelope(result)
+        if transport is None and attempt.outcome in {"partial_delivery", "delivery_uncertain"}:
+            # Telegram accepted a prefix or has an unknown effect. Neither is
+            # a proven not-attempted result, even without a transport fragment.
+            transport = TRANSPORT_CONNECTION_LOST
         if transport is None:
             # A pre-vocabulary envelope (a validation refusal, say) never
             # reached the wire, so it is safely not-attempted.

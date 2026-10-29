@@ -159,3 +159,21 @@ async def test_a_failing_terminal_transition_neither_aborts_the_cycle_nor_reclas
     text = caplog.text
     assert "RuntimeError" in text, "the failure is reported by exception type"
     assert "sentinel-outbox-detail" not in text, "no exception message reaches the log"
+
+
+@pytest.mark.parametrize("terminal", ["partial_delivery", "telegram_effect_uncertain"])
+async def test_messenger_terminal_reply_without_transport_fragment_is_not_retryable(
+    terminal, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from butlers.tools.switchboard.runtime_attention import worker
+
+    deliver = AsyncMock(return_value={"status": "failed", terminal: True, "retryable": False})
+    monkeypatch.setattr(worker, "deliver", deliver)
+    send = worker.build_messenger_transport(
+        object(), resolve_recipient=AsyncMock(return_value="owner")
+    )
+    result = await send(_episode())
+    assert result.outcome is TransportOutcome.UNCERTAIN
+    deliver.assert_awaited_once()

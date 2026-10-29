@@ -63,7 +63,6 @@ ESCALATION_GRACE_SECONDS = 900.0
 #: edge hook and the reconcile job do not both send for the one condition they just opened.
 RETRY_AFTER_SECONDS = 120.0
 _FINGERPRINT_VERSION = 1
-_DELIVER_TIMEOUT_S = 30
 _ORIGIN = "home"
 
 _HAZARD_PHRASE: dict[str, str] = {
@@ -303,60 +302,29 @@ async def send_urgent_notify(pool: asyncpg.Pool, message: str) -> bool:
     hook) binds for the duration of the call.
     """
 
+    from butlers.jobs.owner_notify import DELIVERED, OwnerNotifyBoundary, send_owner_telegram
+
     cause = home_safety_decision()
-
-    async def _record(outcome: str, reason: str | None = None, ref: str | None = None) -> None:
-        await record_attention_event(
-            pool,
-            origin_butler=_ORIGIN,
-            source="notify",
-            outcome=outcome,
-            channel="telegram",
-            intent="send",
-            priority="high",
-            reason=reason,
-            notification_ref=ref,
-            metadata={"attention_cause": cause.cause, "producer": cause.ref},
-        )
-
-    recipient = await resolve_owner_telegram_recipient(pool)
-    if not recipient:
-        logger.warning("home safety: no owner telegram recipient configured")
-        await _record("failed", "no_recipient_configured")
-        return False
-    client = get_current_switchboard_client()
-    if client is None:
-        logger.warning("home safety: switchboard client unavailable")
-        await _record("failed", "switchboard_client_unavailable")
-        return False
-    request = {
-        "schema_version": "notify.v1",
-        "origin_butler": _ORIGIN,
-        "delivery": {
-            "intent": "send",
-            "channel": "telegram",
-            "message": message,
-            "recipient": recipient,
-        },
-    }
-    try:
-        result = await asyncio.wait_for(
-            client.call_tool("deliver", {"source_butler": _ORIGIN, "notify_request": request}),
-            timeout=_DELIVER_TIMEOUT_S,
-        )
-    except Exception as exc:
-        logger.warning("home safety: deliver() failed: %s", type(exc).__name__)
-        await _record("failed", f"delivery_error:{type(exc).__name__}")
-        return False
-    if result.is_error:
-        await _record("failed", "delivery_error:remote_refusal")
-        return False
-    data = result.data
-    if isinstance(data, dict) and data.get("status") == "failed":
-        await _record("failed", "delivery_error:remote_refusal")
-        return False
-    await _record("delivered", ref=data.get("notification_id") if isinstance(data, dict) else None)
-    return True
+    outcome = await send_owner_telegram(
+        pool,
+        origin_butler=_ORIGIN,
+        message=message,
+        log_context="home_safety",
+        priority="high",
+        metadata={"attention_cause": cause.cause, "producer": cause.ref},
+        boundary=OwnerNotifyBoundary(
+            None,
+            resolve_owner_telegram_recipient,
+            get_current_switchboard_client,
+            record_attention_event,
+            lambda result: (
+                "delivery_error:remote_refusal"
+                if result.reason == "delivery_error"
+                else result.reason
+            ),
+        ),
+    )
+    return outcome == DELIVERED
 
 
 async def load_watch(pool: asyncpg.Pool) -> list[WatchEntry]:

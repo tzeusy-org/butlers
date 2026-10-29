@@ -205,35 +205,54 @@ def wire_pipelines(daemon: Any, pool: Any) -> None:
         for every unsent result so identity injection can log the failed attempt
         while retaining its durable no-repeat claim.
         """
-        recipient = await daemon._resolve_default_notify_recipient(
-            channel="telegram",
-            intent="send",
-            recipient=None,
-        )
+        from butlers.core.attention_ledger import record_attention_event
+
+        async def record(outcome: str, reason: str | None = None, ref: str | None = None) -> None:
+            await record_attention_event(
+                pool,
+                origin_butler="switchboard",
+                source="notify",
+                outcome=outcome,
+                channel="telegram",
+                intent="send",
+                priority="medium",
+                reason=reason,
+                notification_ref=ref,
+            )
+
+        try:
+            recipient = await daemon._resolve_default_notify_recipient(
+                channel="telegram",
+                intent="send",
+                recipient=None,
+            )
+        except Exception as exc:
+            await record("failed", "preparation_error:" + type(exc).__name__)
+            raise RuntimeError("Owner recipient unavailable") from None
         if not recipient:
+            await record("failed", "no_recipient_configured")
             raise RuntimeError(
                 "No Telegram recipient configured for unknown-sender owner notification"
             )
 
+        from butlers.jobs.owner_notify import deliver_notification, owner_notify_request
         from butlers.tools.switchboard.notification.deliver import deliver
 
-        result = await deliver(
-            pool,
-            source_butler="switchboard",
-            notify_request={
-                "schema_version": "notify.v1",
-                "origin_butler": "switchboard",
-                "delivery": {
-                    "intent": "send",
-                    "channel": "telegram",
-                    "recipient": recipient,
-                    "message": message,
-                },
-            },
+        result = await deliver_notification(
+            lambda: deliver(
+                pool,
+                source_butler="switchboard",
+                notify_request=owner_notify_request(
+                    origin_butler="switchboard",
+                    message=message,
+                    recipient=recipient,
+                ),
+            )
         )
-        if not isinstance(result, dict) or result.get("status") != "sent":
-            detail = result.get("error") if isinstance(result, dict) else None
-            raise RuntimeError(f"Unknown-sender owner notification failed: {detail or result}")
+        await record(
+            "delivered" if result.delivered else "failed", result.reason, result.notification_ref
+        )
+        result.require_delivered()
 
     from butlers.core.fact_authority import FactSourceContextRegistry, register_source_registry
 

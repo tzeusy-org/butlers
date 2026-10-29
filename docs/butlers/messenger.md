@@ -17,6 +17,11 @@ verify delivery through the daemon health endpoint, the approval-gated adapter t
 `notify()` route outcome, never through retired tracking tables. The retirement of those tables is
 specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tracking-retirement/spec.md).
 
+Shared owner-notify callers use `butlers.jobs.owner_notify` for envelope construction and one
+bounded Switchboard attempt. This helper never selects a direct provider fallback or owns retries.
+Caller quiet-hours, durable claims and attention-outcome policies remain at their existing boundaries;
+see [Notification delivery adapters](../operations/runtime-attention.md#notification-delivery-adapters).
+
 ## Implementation Notes
 
 - Email and Telegram native commands check the live permission matrix at their module effect seam, including deferred approval execution. An unavailable store refuses before traffic with `PermissionUnavailable`; Messenger reports a retryable `target_unavailable` and existing `not_attempted` / `pre_transport` / `policy_denied` evidence. Errors and availability logs omit content, recipients, row reasons and raw database errors. Readable missing rows remain default-allow and explicit revocation/recipient approvals remain separate. This bu-30sah4 effect stage precedes bu-svqpzo.3, which makes remaining shared callers, including spawn, fail closed. No provider-uncertain send gains retry permission.

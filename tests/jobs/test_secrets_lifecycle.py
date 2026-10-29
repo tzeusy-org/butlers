@@ -1208,7 +1208,7 @@ async def test_run_secrets_lifecycle_check_defer_without_recipient_records_faile
     }
 
 
-async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enqueues_retry():
+async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enqueues_retry(caplog):
     """bu-ziuye: when an unexpected exception raises AFTER message + recipient are
     resolved (e.g. deliver() itself raises instead of returning a failed result),
     the failure is retryable — a retry envelope is enqueued on the SAME
@@ -1247,7 +1247,7 @@ async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enq
         # deliver() RAISES (not returns failed) — the exact gap bu-ziuye closes.
         patch(
             "butlers.tools.switchboard.notification.deliver.deliver",
-            new=AsyncMock(side_effect=RuntimeError("boom deep in deliver")),
+            new=AsyncMock(side_effect=RuntimeError("sentinel-private-retry:boom deep in deliver")),
         ),
         patch(
             "butlers.jobs.secrets_lifecycle.insert_deferred_notification",
@@ -1281,6 +1281,9 @@ async def test_run_secrets_lifecycle_check_unexpected_error_after_resolution_enq
     audit_append.assert_not_called()
     assert summary["errors"] == 1
     assert summary["delivered"] == 0
+
+    assert "sentinel-private-retry" not in caplog.text
+    assert "RuntimeError" in caplog.text
 
 
 async def test_run_secrets_lifecycle_check_unexpected_error_before_resolution_no_envelope():

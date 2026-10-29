@@ -405,7 +405,9 @@ async def test_deferred_actual_delivery_rechecks_outage_and_recovery(monkeypatch
     pool = MagicMock()
     pool.fetchrow = AsyncMock(return_value=None)
     pool.fetch = AsyncMock(return_value=[])
-    client = MagicMock(call_tool=AsyncMock(return_value=SimpleNamespace(is_error=False, data={})))
+    client = MagicMock(
+        call_tool=AsyncMock(return_value=SimpleNamespace(is_error=False, data={"status": "sent"}))
+    )
     envelope = {
         "schema_version": "notify.v1",
         "delivery": {

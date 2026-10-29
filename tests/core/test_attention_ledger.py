@@ -666,3 +666,26 @@ class TestFindNotifyDispatchForSession:
             await find_notify_dispatch_for_session(
                 pool, origin_butler="education", session_id="sess-abc"
             )
+
+
+async def test_record_failure_omits_chained_delivery_and_database_payload(caplog):
+    pool = AsyncMock()
+    pool.fetchval.side_effect = ValueError("sentinel-ledger-private-row")
+    try:
+        raise RuntimeError("sentinel-original-private-message-recipient")
+    except RuntimeError:
+        assert (
+            await record_attention_event(
+                pool,
+                origin_butler="home",
+                source="notify",
+                outcome="failed",
+                reason="delivery_error:RuntimeError",
+            )
+            is None
+        )
+    pool.fetchval.assert_awaited_once()
+    assert "ValueError" in caplog.text
+    assert "sentinel-original-private-message-recipient" not in caplog.text
+    assert "sentinel-ledger-private-row" not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)

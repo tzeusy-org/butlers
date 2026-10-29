@@ -1153,3 +1153,32 @@ async def test_verified_cause_is_rechecked_before_actual_notify_dispatch(butler_
     metadata = json.loads(event[11])
     assert metadata["attention_cause"] == "owner_clause" and metadata["cause_ref"] == cause_ref
     assert "PRIVATE_CAUSE_BODY_CANARY" not in json.dumps(metadata)
+
+
+async def test_notify_exception_preserves_safe_error_shape_without_private_text(butler_dir, caplog):
+    sentinel = "sentinel-notify-private-payload"
+    client = _client_raising(ValueError(sentinel))
+    result, pool = await TestNotifyFailurePathsRecordFailedLedgerRow()._run_proxied(
+        butler_dir, client
+    )
+    assert result["status"] == "error"
+    assert result["retryable"] is False
+    assert "Switchboard call failed: ValueError" in result["error"]
+    assert _ledger_row_of(pool, "failed")[9] == "unexpected_error:ValueError"
+    assert sentinel not in caplog.text
+    assert sentinel not in str(result)
+    client.call_tool.assert_awaited_once()
+
+    # A preferences-store error follows the existing immediate-delivery policy,
+    # but its exception text must not enter logs either.
+    healthy_client = _make_mock_client()
+    with patch(
+        "butlers.core.temporal.delivery_db.get_delivery_preferences",
+        new=AsyncMock(side_effect=ValueError(sentinel)),
+    ):
+        delivered, _ = await TestNotifyFailurePathsRecordFailedLedgerRow()._run_proxied(
+            butler_dir, healthy_client
+        )
+    assert delivered["status"] == "ok"
+    assert sentinel not in caplog.text
+    healthy_client.call_tool.assert_awaited_once()

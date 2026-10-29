@@ -327,43 +327,33 @@ async def scheduler_loop(
             raise RuntimeError(
                 "Switchboard client not connected; cannot deliver deferred notification"
             )
-        deliver_args: dict = {
-            "source_butler": butler_name,
-            "notify_request": envelope,
-        }
-        if _client is None and butler_name == "switchboard":
+        from butlers.jobs.owner_notify import deliver_notification
+        from butlers.telegram_api import terminal_telegram_metadata
+
+        if _client is None:
             if _db is None or _db.pool is None:
                 raise RuntimeError("Database not available for deferred notification delivery")
-            from butlers.tools.switchboard.notification.deliver import (
-                deliver as _sw_deliver,
-            )
+            from butlers.tools.switchboard.notification.deliver import deliver as _sw_deliver
 
-            result = await _sw_deliver(
-                _db.pool,
-                source_butler=butler_name,
-                notify_request=envelope,
+            result = await deliver_notification(
+                lambda: _sw_deliver(
+                    _db.pool,
+                    source_butler=butler_name,
+                    notify_request=envelope,
+                ),
+                timeout_s=_DEFERRED_NOTIFY_TIMEOUT_S,
             )
-            if result.get("status") == "failed":
-                from butlers.telegram_api import terminal_telegram_metadata
-
-                if terminal_telegram_metadata(result):
-                    return result
-                raise RuntimeError(f"Deferred notification delivery failed: {result.get('error')}")
         else:
-            result = await asyncio.wait_for(
-                _client.call_tool("deliver", deliver_args),
-                timeout=_DEFERRED_NOTIFY_TIMEOUT_S,
+            result = await deliver_notification(
+                lambda: _client.call_tool(
+                    "deliver",
+                    {"source_butler": butler_name, "notify_request": envelope},
+                ),
+                timeout_s=_DEFERRED_NOTIFY_TIMEOUT_S,
             )
-            from butlers.telegram_api import terminal_telegram_metadata
-
-            if terminal_telegram_metadata(result.data):
-                return result.data
-            if result.is_error:
-                error_text = str(result.content[0].text) if result.content else "Unknown error"
-                raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
-            if isinstance(result.data, dict) and result.data.get("status") == "failed":
-                error_text = str(result.data.get("error") or "Unknown error")
-                raise RuntimeError(f"Deferred notification delivery failed: {error_text}")
+        if terminal_telegram_metadata(result.data):
+            return result.data
+        result.require_delivered()
 
     logger.info(
         "Scheduler loop started (tick_interval_seconds=%d) for butler %s",

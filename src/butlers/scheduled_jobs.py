@@ -154,23 +154,13 @@ async def _run_switchboard_fleet_case_lapse_sweep_job(
 def _build_switchboard_insight_notify_fn(
     pool: asyncpg.Pool,
 ) -> Any:
-    """Build the production notify_fn for the insight delivery cycle.
+    """Bind the broker's existing owner/channel policy to one shared attempt.
 
-    Returns an async callable ``notify_fn(message, metadata) -> dict`` that:
-    1. Reads ``metadata["channel"]`` to determine the delivery channel
-       (falls back to ``"telegram"`` when not set, per spec default).
-    2. Resolves the owner's recipient identifier for that channel from
-       ``public.entity_info``.
-    3. Dispatches via the Switchboard's ``deliver()`` path (direct channel
-       routing — no MCP round-trip through the Switchboard itself).
-    4. Translates ``deliver()``'s ``status="failed"`` to ``status="error"`` so
-       the broker's failure-detection check (``status == "error"``) fires
-       correctly on delivery failure.
-
-    Parameters
-    ----------
-    pool:
-        The shared asyncpg connection pool (captured in the closure).
+    Owner endpoint resolution, including the existing channel fallback, stays
+    here. The shared classifier cannot retry, record a second attention row or
+    change the broker's quiet, dedup, budget, amendment or success bookkeeping.
+    This internal callback returns a safe error classification to the broker's
+    logger; structured public deliver responses remain at the deliver boundary.
     """
 
     async def _notify_fn(message: str, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -178,55 +168,55 @@ def _build_switchboard_insight_notify_fn(
             resolve_owner_entity_info,
             resolve_owner_telegram_recipient,
         )
+        from butlers.jobs.owner_notify import deliver_notification
         from butlers.tools.switchboard.notification.deliver import deliver
 
         channel: str = metadata.get("channel") or "telegram"
-
-        if channel == "telegram":
-            # Resolve the numeric chat id (telegram_chat_id), not the @username
-            # handle; the Telegram delivery API requires a numeric identifier.
-            recipient = await resolve_owner_telegram_recipient(pool)
-            if not recipient:
-                logger.error(
-                    "insight-delivery-cycle: no telegram recipient configured for owner — "
-                    "cannot deliver insight"
-                )
-                return {"status": "error", "error": "No telegram chat ID configured for owner"}
-        elif channel == "email":
-            recipient = await resolve_owner_entity_info(pool, "email")
-            if not recipient:
-                logger.error(
-                    "insight-delivery-cycle: no email address configured for owner — "
-                    "cannot deliver insight via email"
-                )
-                return {"status": "error", "error": "No email address configured for owner"}
-        else:
+        try:
+            if channel == "telegram":
+                # Resolve the numeric endpoint first, retaining the existing
+                # credential resolver's username fallback when no id exists.
+                recipient = await resolve_owner_telegram_recipient(pool)
+                if not recipient:
+                    logger.error("insight-delivery-cycle: owner telegram recipient unavailable")
+                    return {"status": "error", "error": "No telegram chat ID configured for owner"}
+            elif channel == "email":
+                recipient = await resolve_owner_entity_info(pool, "email")
+                if not recipient:
+                    logger.error("insight-delivery-cycle: owner email recipient unavailable")
+                    return {"status": "error", "error": "No email address configured for owner"}
+            else:
+                logger.warning("insight-delivery-cycle: unsupported channel; using telegram")
+                channel = "telegram"
+                recipient = await resolve_owner_telegram_recipient(pool)
+                if not recipient:
+                    return {"status": "error", "error": "No telegram chat ID configured for owner"}
+        except Exception as exc:
             logger.warning(
-                "insight-delivery-cycle: unsupported channel %r; falling back to telegram",
-                channel,
+                "insight-delivery-cycle: recipient resolution failed: %s", type(exc).__name__
             )
-            channel = "telegram"
-            recipient = await resolve_owner_telegram_recipient(pool)
-            if not recipient:
-                return {"status": "error", "error": "No telegram chat ID configured for owner"}
+            return {"status": "error", "error": "recipient_unavailable:" + type(exc).__name__}
 
-        deliver_result = await deliver(
-            pool,
-            channel=channel,
-            message=message,
-            recipient=recipient,
-            source_butler="switchboard",
-            metadata=metadata,
+        attempt = await deliver_notification(
+            functools.partial(
+                deliver,
+                pool,
+                channel=channel,
+                message=message,
+                recipient=recipient,
+                source_butler="switchboard",
+                metadata=metadata,
+            )
         )
-        # Translate deliver()'s "failed" status to "error" so the broker's
-        # failure-detection check (notify_result.get("status") == "error") fires.
-        if isinstance(deliver_result, dict) and deliver_result.get("status") == "failed":
+        if not attempt.delivered:
+            # The broker logs this field. Never forward exception messages or
+            # arbitrary remote error text into that logging boundary.
             return {
                 "status": "error",
-                "error": deliver_result.get("error", "delivery failed"),
-                **terminal_telegram_metadata(deliver_result),
+                "error": attempt.exception_type or attempt.reason or "delivery_error",
+                **terminal_telegram_metadata(attempt.data),
             }
-        return deliver_result
+        return attempt.data
 
     return _notify_fn
 

@@ -105,6 +105,34 @@ FROM public.observe_runtime_attention_conditions();
 A `Fleet condition controller: attention append failed (category=...)` warning names only the
 exception type. `UndefinedFunction` means the database has not reached `core_251`.
 `InsufficientPrivilegeError` means the Dashboard pool cannot `SET ROLE butler_switchboard_rw`.
+## Notification delivery adapters
+
+`butlers.jobs.owner_notify` owns the shared `notify.v1` envelope and bounded, single-attempt
+Switchboard result classification. The helper does not grant interrupt authority, choose a fallback,
+retry, or write an extra attention row. Caller policy and its one outcome writer remain explicit:
+
+| Caller | Existing policy and outcome owner |
+| --- | --- |
+| Relationship reminders, Home jobs, Health briefs | Resolve the owner entity; routine suppression drops; one attention row. Health persists success only after confirmed delivery. |
+| Home safety | Source-validated safety cause keeps its high-priority bypass; one attention row. |
+| Daemon `notify()` | Permission, recipient and quiet/sleep checks precede dispatch; existing defer queue and session/cause linkage remain. |
+| Secrets lifecycle | Existing quiet-window queue, dedup marker and explicit retry owner remain; failure never advances success state. |
+| Deferred scheduler | Re-read attention state; keep the existing pending row on failure; terminal Telegram effects cannot replay. |
+| Unknown-sender review, WhatsApp session alert | Keep the existing single-claim/best-effort policy and record one outcome. |
+| Insight daily/urgent broker | Existing owner/channel resolution (including its channel fallback), quiet/dedup/budget/amend policy and delivery references stay at the broker; one `source="insight"` outcome per candidate, no helper-written row. |
+| Runtime-attention outbox | Keep its fenced lease, typed transport outcome and terminal transition; no second helper-written outcome. |
+| Calendar reminders | Build the shared wire envelope with reminder lineage; its callback still owns delivery and raises for an unsent notification. |
+
+`sent` and the existing MCP `ok` acknowledgement are delivery confirmations. Missing/malformed
+responses, partial delivery and uncertain Telegram effects are never success. Exception logs carry
+only the exception type; structured public delivery-error vocabulary remains unchanged. RFC 0023
+approval delivery is a separate transport and is excluded from this adapter.
+
+Dashboard manual retry/escalation is a separate, explicitly claimed stored-row replay, not a new
+unsolicited owner producer. It excludes approval-recovery rows, validates failed status (and the
+alternate owner endpoint for escalation), then atomically claims before calling `deliver()` once.
+Its original-row forward links and single manual attention outcome remain owned by those endpoints.
+
 ## Definer search path
 
 Every runtime-attention `SECURITY DEFINER` function runs with
