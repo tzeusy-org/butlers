@@ -195,6 +195,22 @@ def _telegram_preview(args: Mapping[str, Any]) -> CallPreview:
     )
 
 
+def _telegram_reaction_preview(args: Mapping[str, Any]) -> CallPreview:
+    if set(args) - {"chat_id", "message_id", "emoji"} - _DOSSIER_KEYS:
+        raise PreviewError("reaction has unshown arguments")
+    message_id = args.get("message_id")
+    if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+        raise PreviewError("message_id is missing or not a positive integer")
+    return CallPreview(
+        title="React to Telegram message",
+        facts=(
+            PreviewFact("Chat", _require_text(args, "chat_id")),
+            PreviewFact("Message ID", str(message_id)),
+            PreviewFact("Emoji", _require_text(args, "emoji")),
+        ),
+    )
+
+
 def _whatsapp_preview(args: Mapping[str, Any]) -> CallPreview:
     _reject_unshown(args, frozenset({"recipient", "text"}))
     return CallPreview(
@@ -229,6 +245,9 @@ def _notify_preview(args: Mapping[str, Any]) -> CallPreview:
 
 register_preview("email_send_message", _email_preview)
 register_preview("telegram_send_message", _telegram_preview)
+register_preview(
+    "telegram_react_to_message", _telegram_reaction_preview, effect_class="communicate"
+)
 register_preview("whatsapp_send_message", _whatsapp_preview)
 register_preview("notify", _notify_preview)
 

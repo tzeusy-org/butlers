@@ -192,7 +192,11 @@ the assistant's description of it. A per-tool preview registry
 (`src/butlers/modules/approvals/previews.py`) turns the stored `tool_args` into
 fact lines: for email sends every To, Cc and Bcc address, the subject
 and the full body; for Telegram, WhatsApp and `notify` sends the recipient and
-text. The assistant's `why`, `blast_radius` and `reversibility` sit under
+text. A `telegram_react_to_message` preview shows the exact stored chat, positive
+native message ID and emoji on both Telegram and the dashboard. Message IDs must
+be integers (not booleans), and chat and emoji must be nonempty text. Missing or
+malformed fields and unknown reaction kwargs, including empty future arguments,
+offer Open only. The assistant's `why`, `blast_radius` and `reversibility` sit under
 "Assistant says" as claims, with URLs defanged (`hxxps://a[.]b/c`) and each
 span rendered in code formatting so it stays literal after the transport's HTML
 escaping. "Started by" names the owning butler (and marks prepared actions).
