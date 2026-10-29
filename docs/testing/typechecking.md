@@ -46,7 +46,16 @@ Before public main has its first baseline, both check and update independently r
 the same actual installed checker/configuration on immutable public source and the
 candidate. Setup accepts only the checker/configuration addition to the public
 locked dependency context. It verifies the public Git blob/mode vector before and
-after checking. Missing public history or an account deleted from public history
+after checking. The input closure also binds visible project-root namespace
+membership, default `typings/` stubs, root modules, native/compiled import files
+(`.so`, `.pyd`, `.dylib` and out-of-cache `.pyc`) and `py.typed` markers, including
+absence, content and Git file modes. Native module/stub links and directory links
+refuse instead of importing an unbound external tree. Only hidden non-importable
+paths are omitted; importable cache namespaces are included. The owned environment
+binds directory membership/kind, file content and Git-style executable modes;
+directory links must resolve inside the captured inputs. Literal `.pth` search paths
+must remain inside this captured input closure.
+Missing public history or an account deleted from public history
 refuses rather than becoming a candidate-only bootstrap. Local public authority is
 `origin/main`; CI uses its frozen event/base/checkout identities. Fetch through the
 ordinary repository workflow when needed, never supply an arbitrary trusted JSON

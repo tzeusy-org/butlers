@@ -312,6 +312,11 @@ def _checkout(root):
         "stale",
         "shrink",
         "local-regrowth",
+        "root-stub",
+        "root-module",
+        "root-namespace",
+        "root-typed",
+        "root-mode",
     ],
 )
 def test_real_runner_refuses_snapshot_races_and_publishes_only_exact_shrink(
@@ -323,6 +328,12 @@ def test_real_runner_refuses_snapshot_races_and_publishes_only_exact_shrink(
     original = _baseline(Counter()) if change == "local-regrowth" else trusted_baseline
     path = tmp_path / "pyright-baseline.json"
     path.write_bytes(original)
+    if change.startswith("root-"):
+        (tmp_path / "typings/probe_dependency").mkdir(parents=True)
+        (tmp_path / "typings/probe_dependency/__init__.pyi").write_text("value: int\n")
+        (tmp_path / "root_dependency.py").write_text("value = 1\n")
+        (tmp_path / "namespace_dependency").mkdir()
+        (tmp_path / "namespace_dependency/py.typed").write_text("")
     identity = {"checker": "1.1.414"}
     monkeypatch.setattr(runtime, "prerequisites", lambda root: ({}, identity.copy()))
     monkeypatch.setattr(runtime, "trusted_base", lambda root: "a" * 40)
@@ -343,7 +354,17 @@ def test_real_runner_refuses_snapshot_races_and_publishes_only_exact_shrink(
         fcntl.flock(held_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def compiler(root, env):
-        if change == "source":
+        if change == "root-stub":
+            (root / "typings/probe_dependency/__init__.pyi").write_text("value: str\n")
+        elif change == "root-module":
+            (root / "root_dependency.py").write_text("value = 'changed'\n")
+        elif change == "root-namespace":
+            (root / "untracked_namespace").mkdir()
+        elif change == "root-typed":
+            (root / "namespace_dependency/py.typed").unlink()
+        elif change == "root-mode":
+            (root / "root_dependency.py").chmod(0o755)
+        elif change == "source":
             (root / "src/sample.py").write_text("changed")
         elif change == "configuration":
             (root / "pyproject.toml").write_text("changed")
@@ -568,6 +589,7 @@ def test_public_archive_is_git_source_authority_not_a_prepared_marker(runtime, t
         for name in ("src", "roster"):
             (directory / name).mkdir()
         (directory / "src/sample.py").write_text("value = 1\n")
+        (directory / "roster/.gitkeep").write_text("")
         (directory / "pyproject.toml").write_text("same configuration")
         (directory / "uv.lock").write_text("same locked environment")
     import subprocess
@@ -710,3 +732,131 @@ def test_installed_wrapper_and_javascript_are_both_bound_by_actual_records(
     else:
         with pytest.raises(runtime.Refusal, match="checker-record"):
             runtime.bundle_identity(distribution)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "stub",
+        "module",
+        "namespace",
+        "typed",
+        "directory",
+        "mode",
+        "file-link",
+        "directory-link",
+        "compiled-so",
+        "compiled-pyd",
+        "compiled-dylib",
+        "compiled-pyc",
+        "cache-module",
+    ],
+)
+def test_native_root_inputs_are_bound_to_snapshot_and_public_git(runtime, tmp_path, change):
+    import subprocess
+
+    root, public = tmp_path / "checkout", tmp_path / "public"
+    for directory in (root, public):
+        directory.mkdir()
+        _checkout(directory)
+        (directory / "src/sample.py").write_text("value = 1\n")
+        (directory / "roster/.gitkeep").write_text("")
+        (directory / "typings/probe_dependency").mkdir(parents=True)
+        (directory / "typings/probe_dependency/__init__.pyi").write_text("value: int\n")
+        (directory / "root_dependency.py").write_text("value = 1\n")
+        (directory / "namespace_dependency").mkdir()
+        (directory / "namespace_dependency/member.py").write_text("value = 1\n")
+        (directory / "namespace_dependency/py.typed").write_text("")
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "native inputs",
+        ],
+        check=True,
+    )
+    base = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"]).decode().strip()
+    runtime.verify_public(root, base, public)
+    before = runtime.snapshot(public, include_environment=True)
+    if change == "stub":
+        (public / "typings/probe_dependency/__init__.pyi").write_text("value: str\n")
+    elif change == "module":
+        (public / "root_dependency.py").write_text("value = 'changed'\n")
+    elif change == "namespace":
+        (public / "namespace_dependency/untracked.pyi").write_text("value: str\n")
+    elif change == "typed":
+        (public / "namespace_dependency/py.typed").unlink()
+    elif change == "directory":
+        (public / "untracked_namespace").mkdir()
+    elif change == "mode":
+        (public / "root_dependency.py").chmod(0o755)
+    elif change == "file-link":
+        (public / "root_dependency.py").unlink()
+        (public / "root_dependency.py").symlink_to(root / "root_dependency.py")
+    elif change == "cache-module":
+        (public / "__pycache__").mkdir()
+        (public / "__pycache__/probe.py").write_text("value: str = 'changed'\n")
+    elif change.startswith("compiled-"):
+        (public / ("extension_dependency." + change.removeprefix("compiled-"))).write_bytes(
+            b"synthetic nonexecuted native import presence"
+        )
+    else:
+        (public / "linked_namespace").symlink_to(
+            root / "namespace_dependency", target_is_directory=True
+        )
+    if change.endswith("link"):
+        with pytest.raises(runtime.Refusal, match="source-link"):
+            runtime.snapshot(public, include_environment=True)
+    else:
+        assert runtime.snapshot(public, include_environment=True) != before
+    with pytest.raises(runtime.Refusal, match="public-source-drift|source-link"):
+        runtime.verify_public(root, base, public)
+
+
+@pytest.mark.parametrize(
+    "target", ["source", "missing", "external", "hidden", "env-directory", "env-mode", "env-link"]
+)
+def test_literal_pth_paths_stay_inside_the_captured_input_closure(runtime, tmp_path, target):
+    _checkout(tmp_path)
+    site = tmp_path / ".venv/lib/python3.12/site-packages"
+    site.mkdir(parents=True)
+    if target.startswith("env-"):
+        carrier = site / "bound.py"
+        carrier.write_text("value = 1\n")
+        before = runtime.snapshot(tmp_path, include_environment=True)
+        if target == "env-directory":
+            (site / "new_namespace").mkdir()
+        elif target == "env-mode":
+            carrier.chmod(0o755)
+        else:
+            external = tmp_path.parent / "external-native-env"
+            external.mkdir(exist_ok=True)
+            (site / "unbound_namespace").symlink_to(external, target_is_directory=True)
+            with pytest.raises(runtime.Refusal, match="source-link"):
+                runtime.snapshot(tmp_path, include_environment=True)
+            return
+        assert runtime.snapshot(tmp_path, include_environment=True) != before
+        return
+    destination = {
+        "source": tmp_path / "src",
+        "missing": tmp_path / "missing",
+        "external": tmp_path.parent / "external-native-input",
+        "hidden": tmp_path / ".hidden-native-input",
+    }[target]
+    if target != "missing":
+        destination.mkdir(exist_ok=True)
+    (site / "probe.pth").write_text(str(destination) + "\n")
+    if target in {"external", "hidden"}:
+        with pytest.raises(runtime.Refusal, match="external-import-path"):
+            runtime.snapshot(tmp_path, include_environment=True)
+    else:
+        assert runtime.snapshot(tmp_path, include_environment=True)

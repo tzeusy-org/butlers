@@ -29,6 +29,8 @@ VERSION = "1.1.414"
 NODE_VERSION = b"v24.22.0\n"
 TIMEOUT = 300
 OUTPUT_LIMIT = 32 * 1024 * 1024
+INPUT_ABI = "native-root-imports-v3"
+NATIVE_SUFFIXES = {".py", ".pyi", ".pyc", ".pyd", ".so", ".dylib"}
 CONFIG = dict(
     typeCheckingMode="basic",
     include=["src", "roster"],
@@ -161,27 +163,88 @@ def environment(node):
     return env
 
 
-def snapshot(root, *, include_environment=False):
-    names = [root / "pyproject.toml", root / "uv.lock"]
+def native_inputs(root):
+    """Bind import roots, namespace membership, stubs and PEP561 markers.
 
-    names += [
-        p
-        for directory in ("src", "roster")
-        for p in (root / directory).rglob("*")
-        if p.is_file() and "__pycache__" not in p.parts
-    ]
+    Include roots select checked files, not all inputs to import resolution.
+    Pyright also searches the project root and its default ``typings`` tree.
+    Visible directories are conservative namespace inputs, even when empty.
+    Only dot-prefixed directories cannot name Python import components.
+    Cache directories can contain importable modules and are bound as well.
+    """
+    values = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for path in directory.iterdir():
+            if path.name.startswith("."):
+                continue
+            relative = path.relative_to(root).as_posix()
+            source = relative.split("/", 1)[0] in {"src", "roster"}
+            native = path.suffix in NATIVE_SUFFIXES or path.name == "py.typed"
+            if path.is_symlink():
+                if native or path.is_dir() or not path.suffix:
+                    raise Refusal("source-link")
+                if not source:
+                    continue
+                data, mode = os.readlink(path).encode(), "120000"
+            elif path.is_dir():
+                values[relative] = ("040000", None)
+                pending.append(path)
+                continue
+            elif path.is_file() and (native or source):
+                data = path.read_bytes()
+                mode = "100755" if path.stat().st_mode & 0o111 else "100644"
+            else:
+                continue
+            oid = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+            values[relative] = (mode, oid, digest(data))
+    return values
+
+
+def snapshot(root, *, include_environment=False):
+    values = sorted(native_inputs(root).items())
+    names = [root / "pyproject.toml", root / "uv.lock"]
     if include_environment:
-        names += [
-            p
-            for p in (root / ".venv").rglob("*")
-            if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"
-        ]
-    values = []
+        for path in (root / ".venv").rglob("*"):
+            if path.is_symlink() and path.is_dir():
+                try:
+                    target = path.resolve().relative_to(root.resolve())
+                except ValueError:
+                    raise Refusal("source-link") from None
+                if target.parts[:1] != (".venv",) and any(p.startswith(".") for p in target.parts):
+                    raise Refusal("source-link")
+                values.append((path.relative_to(root).as_posix(), os.readlink(path)))
+            elif path.is_dir():
+                values.append((path.relative_to(root).as_posix(), "040000"))
+            elif path.is_file():
+                names.append(path)
     for path in sorted(names):
         if path.is_symlink() and path.suffix in {".py", ".pyi"}:
             raise Refusal("source-link")
-        values.append((path.relative_to(root).as_posix(), digest(path.read_bytes())))
-    return digest(json.dumps(values).encode())
+        if path.suffix == ".pth":
+            for line in path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith(("#", "import ", "import\t")):
+                    continue
+                target = (path.parent / line).resolve()
+                if target.is_dir():
+                    try:
+                        relative = target.relative_to(root.resolve())
+                    except ValueError:
+                        raise Refusal("external-import-path") from None
+                    if relative.parts[:1] != (".venv",) and any(
+                        p.startswith(".") for p in relative.parts
+                    ):
+                        raise Refusal("external-import-path")
+        values.append(
+            (
+                path.relative_to(root).as_posix(),
+                digest(path.read_bytes()),
+                "100755" if path.stat().st_mode & 0o111 else "100644",
+            )
+        )
+    return digest(json.dumps(sorted(values, key=lambda item: item[0])).encode())
 
 
 def bundle_identity(dist):
@@ -261,6 +324,7 @@ def location(root, base):
     key = digest(
         (
             base
+            + INPUT_ABI
             + digest(root.joinpath("pyproject.toml").read_bytes())
             + digest(root.joinpath("uv.lock").read_bytes())
         ).encode()
@@ -347,25 +411,26 @@ def prepare(root, base, env):
 
 def verify_public(root, base, public):
     expected = {}
-    for entry in git(root, "ls-tree", "-rz", base, "--", "src", "roster").split(b"\0"):
+    for entry in git(root, "ls-tree", "-rz", base).split(b"\0"):
         if entry:
             metadata, name = entry.split(b"\t", 1)
             mode, kind, oid = metadata.decode().split()
-            expected[name.decode()] = (mode, oid)
-    actual = {}
-    for directory in ("src", "roster"):
-        for path in (public / directory).rglob("*"):
-            if "__pycache__" in path.parts or path.suffix == ".pyc":
+            relative = Path(name.decode())
+            for parent in reversed(relative.parents):
+                if parent == Path("."):
+                    continue
+                if any(p.startswith(".") for p in parent.parts):
+                    break
+                expected[parent.as_posix()] = ("040000", None)
+            if any(p.startswith(".") for p in relative.parts):
                 continue
-            if path.is_symlink():
-                data, mode = os.readlink(path).encode(), "120000"
-            elif path.is_file():
-                data = path.read_bytes()
-                mode = "100755" if path.stat().st_mode & 0o111 else "100644"
-            else:
-                continue
-            oid = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-            actual[path.relative_to(public).as_posix()] = (mode, oid)
+            if (
+                relative.parts[0] in {"src", "roster"}
+                or relative.suffix in NATIVE_SUFFIXES
+                or relative.name == "py.typed"
+            ):
+                expected[relative.as_posix()] = (mode, oid)
+    actual = {name: value[:2] for name, value in native_inputs(public).items()}
     if actual != expected:
         raise Refusal("public-source-drift")
     for name in ("pyproject.toml", "uv.lock"):
