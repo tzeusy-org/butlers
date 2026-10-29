@@ -475,3 +475,366 @@ async def test_health_storage_failure_is_unavailable_and_does_not_stop_work():
     await recorder.tick_ok()
     assert await store.read() == {"jobs_available": False, "jobs": []}
     assert store.unavailable_jobs == {"model_verify"}
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        ("calendar_partial", "error"),
+        ("calendar_no_pool", "error"),
+        ("calendar_escalation", "error"),
+        ("drift_escalation", "error"),
+        ("lifecycle_no_pool", "error"),
+        ("lifecycle_butler_pool", "error"),
+        ("staleness_no_pool", "error"),
+        ("staleness_butler_pool", "error"),
+        ("staleness_collection", "error"),
+        ("staleness_dispatch", "error"),
+        ("staleness_circuit", "error"),
+        ("staleness_http500", "error"),
+        ("staleness_rate_limited", "ok"),
+        ("staleness_missing_credential", "ok"),
+    ],
+)
+async def test_hidden_tick_failures_reach_actual_supervised_work(monkeypatch, fault, expected):
+    """Real checks/sweeps keep their old zero/skip summaries without a false ok."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+    from uuid import UUID
+
+    from fastapi import HTTPException
+
+    from butlers.core.job_health import JobHealthStore
+    from butlers.jobs import (
+        calendar_sync_deadman,
+        deploy_drift,
+        secrets_lifecycle,
+        secrets_staleness,
+    )
+
+    events, summaries = [], []
+    phase = {"recovered": False}
+    gate = asyncio.Queue()
+    shared_pool = MagicMock()
+
+    class RecordingStore(JobHealthStore):
+        async def write(self, spec, state, reason, **evidence):
+            events.append((state, reason, evidence))
+
+    def pool(_):
+        if (
+            fault in {"calendar_no_pool", "lifecycle_butler_pool", "staleness_butler_pool"}
+            and not phase["recovered"]
+        ):
+            raise KeyError("switchboard")
+        return shared_pool
+
+    def credential_pool():
+        if fault.endswith("no_pool") and not phase["recovered"]:
+            raise KeyError("shared_pool")
+        return shared_pool
+
+    db = SimpleNamespace(
+        butler_names=["health"] if fault.endswith("butler_pool") else [],
+        pool=pool,
+        credential_shared_pool=credential_pool,
+    )
+
+    async def sources(_):
+        return [], ["relationship"] if fault == "calendar_partial" and not phase[
+            "recovered"
+        ] else []
+
+    monkeypatch.setattr(calendar_sync_deadman, "query_calendar_sources", sources)
+    if fault != "calendar_escalation":
+        monkeypatch.setattr(
+            calendar_sync_deadman, "reconcile_calendar_conditions", AsyncMock(return_value=[])
+        )
+    escalation_module = deploy_drift if fault == "drift_escalation" else calendar_sync_deadman
+    if fault.endswith("escalation"):
+        # Keep the real compute -> reconcile -> L1 producer -> caught I/O failure chain.
+        monkeypatch.setattr(deploy_drift, "_expected_chains_by_schema", lambda: {})
+        monkeypatch.setattr(
+            escalation_module,
+            "reconcile_snapshot",
+            AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        fingerprint="source-fingerprint",
+                        transition="escalation_due",
+                        escalation_level="L1",
+                    )
+                ]
+            ),
+        )
+
+        async def create_attempt(*_, **__):
+            if not phase["recovered"]:
+                raise RuntimeError("private-hidden-failure-sentinel")
+            return UUID(int=1), True
+
+        monkeypatch.setattr(escalation_module, "create_or_join_attempt", create_attempt)
+        monkeypatch.setattr(escalation_module, "update_attempt_status", AsyncMock())
+        monkeypatch.setattr(escalation_module.audit_router, "append", AsyncMock())
+    if fault != "lifecycle_butler_pool":
+        monkeypatch.setattr(secrets_lifecycle, "_collect_snapshots", AsyncMock(return_value=[]))
+    else:
+        monkeypatch.setattr(secrets_lifecycle, "_fetch_system_secrets", AsyncMock(return_value=[]))
+        monkeypatch.setattr(secrets_lifecycle, "_fetch_cli_secrets", AsyncMock(return_value=[]))
+        monkeypatch.setattr(secrets_lifecycle, "_fetch_user_secrets", AsyncMock(return_value=[]))
+
+    async def system_rows(*_, **__):
+        if fault == "staleness_collection" and not phase["recovered"]:
+            raise RuntimeError("private-hidden-failure-sentinel")
+        return []
+
+    async def user_rows(*_, **__):
+        if fault not in {
+            "staleness_dispatch",
+            "staleness_circuit",
+            "staleness_http500",
+            "staleness_rate_limited",
+            "staleness_missing_credential",
+        }:
+            return []
+        count = (
+            secrets_staleness._CIRCUIT_BREAK_THRESHOLD + 1 if fault == "staleness_circuit" else 1
+        )
+        return [
+            SimpleNamespace(
+                state="ok",
+                type="google_oauth_refresh",
+                last_verified=None,
+                entity_id=str(UUID(int=index + 1)),
+            )
+            for index in range(count)
+        ]
+
+    async def probe(*_, **__):
+        if not phase["recovered"]:
+            codes = {
+                "staleness_http500": 500,
+                "staleness_rate_limited": 429,
+                "staleness_missing_credential": 404,
+            }
+            if fault in codes:
+                raise HTTPException(codes[fault], "private-hidden-failure-sentinel")
+            raise RuntimeError("private-hidden-failure-sentinel")
+        return SimpleNamespace(data=SimpleNamespace(ok=True, message="checked"))
+
+    actual_probe = AsyncMock(side_effect=probe)
+    monkeypatch.setattr(secrets_staleness, "_fetch_system_secrets", system_rows)
+    monkeypatch.setattr(secrets_staleness, "_fetch_cli_secrets", AsyncMock(return_value=[]))
+    monkeypatch.setattr(secrets_staleness, "_fetch_user_secrets", user_rows)
+    monkeypatch.setattr(secrets_staleness, "probe_user_credential", actual_probe)
+
+    if fault.startswith("calendar"):
+        module, name = calendar_sync_deadman, "calendar_sync_deadman"
+        check_name, loop_name = "run_calendar_sync_deadman_check", "run_calendar_sync_deadman_loop"
+    elif fault.startswith("drift"):
+        module, name = deploy_drift, "migration_drift"
+        check_name, loop_name = "run_migration_drift_check", "run_migration_drift_loop"
+    elif fault.startswith("lifecycle"):
+        module, name = secrets_lifecycle, "secrets_lifecycle"
+        check_name, loop_name = "run_secrets_lifecycle_check", "run_secrets_lifecycle_loop"
+    else:
+        module, name = secrets_staleness, "secrets_staleness"
+        check_name, loop_name = "run_secrets_staleness_check", "run_secrets_staleness_loop"
+    real_check = getattr(module, check_name)
+
+    async def observed_check(*args, **kwargs):
+        summary = await real_check(*args, **kwargs)
+        summaries.append(summary)
+        return summary
+
+    async def next_tick(_):
+        await gate.get()
+
+    monkeypatch.setattr(module, check_name, observed_check)
+    monkeypatch.setattr(
+        module, "asyncio", SimpleNamespace(sleep=next_tick, CancelledError=asyncio.CancelledError)
+    )
+    store = RecordingStore(lambda: None)
+    task = supervise_lifespan_loop(
+        name, lambda: getattr(module, loop_name)(db), health=store.recorder(name, "periodic", 10)
+    )
+    try:
+        gate.put_nowait(None)
+        await _run_until(task, lambda: len(events) >= 2)
+        assert events[1][0] == expected
+        assert not task.done()
+        assert len(summaries) == 1  # the real check returned rather than an outer crash
+        if fault.startswith("staleness"):
+            assert summaries[0]["failed"] == 0
+            if fault == "staleness_circuit":
+                assert actual_probe.await_count == secrets_staleness._CIRCUIT_BREAK_THRESHOLD
+                assert summaries[0]["skipped"] == secrets_staleness._CIRCUIT_BREAK_THRESHOLD + 1
+        elif fault.startswith("lifecycle"):
+            assert summaries[0] == {
+                "scanned": 0,
+                "attention": 0,
+                "delivered": 0,
+                "deferred": 0,
+                "suppressed": 0,
+                "errors": 0,
+            }
+        else:
+            assert summaries[0]["available"] is True
+            if fault == "calendar_no_pool":
+                assert summaries[0]["reconciled"] is False
+            if fault.endswith("escalation"):
+                assert summaries[0]["conditions"][0]["reason"] == "escalation_failed"
+                assert summaries[0]["conditions"][0]["escalated"] is False
+        phase["recovered"] = True
+        gate.put_nowait(None)
+        await _run_until(task, lambda: len(events) >= 3)
+        assert events[2][0] == "ok"
+        assert events[2][2]["success"] is True
+        assert len(summaries) == 2
+        assert "private-hidden-failure-sentinel" not in repr(events)
+    finally:
+        await _cancel_and_await(task)
+
+
+@pytest.mark.parametrize(
+    ("fault", "expected"),
+    [
+        ("fleet", "error"),
+        ("qa", "error"),
+        ("attention_query", "error"),
+        ("attention_episode", "error"),
+        ("handoff", "error"),
+        ("policy", "error"),
+        ("paused", "ok"),
+        ("legacy", "ok"),
+    ],
+)
+async def test_actual_shadow_callback_incomplete_work_is_not_a_healthy_probe(
+    monkeypatch, fault, expected
+):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from butlers.core import control_plane_identity as identity
+    from butlers.core import fleet_conditions
+    from butlers.core.job_health import JobHealthStore, mark_tick_incomplete
+
+    events, callbacks = [], []
+    phase = {"recovered": False}
+    gate = asyncio.Queue()
+    now = datetime.now(UTC)
+    cycle = identity.ShadowCycle(True, 1, 1, 0, 1)
+
+    class RecordingStore(JobHealthStore):
+        async def write(self, spec, state, reason, **evidence):
+            events.append((state, reason, evidence))
+
+    def failing(which):
+        if fault == which and not phase["recovered"]:
+            raise RuntimeError("private-controller-failure-sentinel")
+
+    async def fetch(sql, *_):
+        if sql == fleet_conditions._ACTIVE_LEGACY_LIVENESS_SQL:
+            failing("fleet")
+            return []
+        assert sql == fleet_conditions._ACTIVE_ATTENTION_CONDITIONS_SQL
+        failing("attention_query")
+        return [{"id": "condition-1"}]
+
+    async def fetchrow(sql, *_):
+        assert sql == fleet_conditions.LATEST_SCHEDULED_HANDOFF_SQL
+        failing("handoff")
+        return None  # A genuine legacy/missing handoff observation is not a failed query.
+
+    async def fetchval(sql, *_):
+        if sql == fleet_conditions.LAST_QUALIFYING_PATROL_SQL:
+            failing("qa")
+            return now - timedelta(days=1)
+        assert sql == "SELECT clock_timestamp()"
+        return now
+
+    async def policy_row(sql, *_):
+        assert "butler_registry_control_plane" in sql
+        failing("policy")
+        return {
+            "policy_state": "paused" if fault == "paused" else "ready",
+            "policy_provenance": "operator",
+        }
+
+    async def append_episode(sql, *_):
+        assert sql == fleet_conditions._APPEND_ATTENTION_SQL
+        failing("attention_episode")
+        return "episode-1"
+
+    conn = SimpleNamespace(
+        execute=AsyncMock(),
+        fetchrow=AsyncMock(side_effect=policy_row),
+        fetchval=AsyncMock(side_effect=append_episode),
+    )
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=conn)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    pool = SimpleNamespace(
+        fetch=AsyncMock(side_effect=fetch),
+        fetchrow=AsyncMock(side_effect=fetchrow),
+        fetchval=AsyncMock(side_effect=fetchval),
+        acquire=MagicMock(return_value=acquisition),
+    )
+    monkeypatch.setattr(fleet_conditions, "get_active_condition", AsyncMock(return_value=None))
+    reconcile = AsyncMock(return_value=[])
+    monkeypatch.setattr(fleet_conditions, "reconcile_snapshot", reconcile)
+    configs = [
+        SimpleNamespace(
+            name="qa",
+            port=41103,
+            qa_patrol_contract=SimpleNamespace(digest="source-digest", overdue_after_s=300),
+        )
+    ]
+    actual_callback = fleet_conditions.controller_after_cycle(pool, configs)
+
+    async def after_cycle(role_view, seen):
+        result = await actual_callback(role_view, seen)
+        assert result is None  # The controller's existing fault-isolation API is retained.
+        callbacks.append(seen)
+
+    async def observe(*_):
+        await gate.get()
+        return cycle
+
+    monkeypatch.setattr(identity, "run_shadow_cycle", observe)
+    monkeypatch.setattr(identity, "_effective_observer_interval_s", AsyncMock(return_value=0.001))
+    store = RecordingStore(lambda: None)
+    mark_tick_incomplete()  # Outside this supervised task there is no recorder to contaminate.
+    task = supervise_lifespan_loop(
+        "fleet_shadow_observer",
+        lambda: identity.run_shadow_observer_loop(pool, configs, after_cycle=after_cycle),
+        health=store.recorder("fleet_shadow_observer", "periodic", 0.001),
+    )
+    try:
+        gate.put_nowait(None)
+        await _run_until(task, lambda: len(events) >= 2)
+        assert events[1][0] == expected
+        assert callbacks == [cycle]
+        assert not task.done()
+        phase["recovered"] = True
+        mark_tick_incomplete()  # Also cannot poison another task's recovery tick.
+        gate.put_nowait(None)
+        await _run_until(task, lambda: len(events) >= 3)
+        assert events[2][0] == "ok"
+        assert events[2][2]["success"] is True
+        assert callbacks == [cycle, cycle]
+        assert "private-controller-failure-sentinel" not in repr(events)
+        assert conn.execute.await_count >= 4  # Actual role-view acquisition/reset still runs.
+        assert any(
+            call.args[0] == 'SET ROLE "butler_switchboard_rw"'
+            for call in conn.execute.await_args_list
+        )
+        if fault == "paused":
+            assert any(
+                observation.fingerprint == fleet_conditions.QA_PATROL_STOPPED_FINGERPRINT
+                for call in reconcile.await_args_list
+                for observation in call.kwargs["observations"]
+            )
+    finally:
+        await _cancel_and_await(task)

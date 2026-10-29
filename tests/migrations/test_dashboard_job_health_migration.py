@@ -6,26 +6,22 @@ local collection is not a native outcome.
 
 from __future__ import annotations
 
-import importlib.util
+import asyncio
 import shutil
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
+from alembic import command
 from butlers.core.job_health import JOB_SPECS, REASONS, JobHealthStore
+from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     init_db_sql_for_dbapi,
     migration_bootstrap_db_url,
     migration_db_name,
-)
-
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[2] / "alembic/versions/core/core_286_dashboard_job_health.py"
 )
 
 pytestmark = [
@@ -37,24 +33,37 @@ pytestmark = [
 @pytest.mark.asyncio(loop_scope="session")
 async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(postgres_container):
     name = migration_db_name()
-    url = create_migrated_test_db(postgres_container, name, chains=["core"])
+    url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        name,
+        chains=["core"],
+        revisions={"core": "core_286"},
+    )
     owner = make_url(url).username
     assert owner is not None
+
     # Genuine bootstrap replay re-widens public DML. Forced RLS must survive it.
-    admin = create_engine(
-        migration_bootstrap_db_url(postgres_container, name), isolation_level="AUTOCOMMIT"
-    )
-    try:
-        raw = admin.raw_connection()
+    def replay_bootstrap():
+        admin = create_engine(
+            migration_bootstrap_db_url(postgres_container, name), isolation_level="AUTOCOMMIT"
+        )
         try:
-            raw.autocommit = True
-            with raw.cursor() as cursor:
-                cursor.execute("SELECT set_config('butlers.connecting_user', %s, false)", (owner,))
-                cursor.execute(init_db_sql_for_dbapi())
+            raw = admin.raw_connection()
+            try:
+                dbapi = raw.driver_connection
+                dbapi.autocommit = True
+                with dbapi.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT set_config('butlers.connecting_user', %s, false)", (owner,)
+                    )
+                    cursor.execute(init_db_sql_for_dbapi())
+            finally:
+                raw.close()
         finally:
-            raw.close()
-    finally:
-        admin.dispose()
+            admin.dispose()
+
+    await asyncio.to_thread(replay_bootstrap)
 
     pool = await asyncpg.create_pool(
         url.replace("postgresql+psycopg2://", "postgresql://"), min_size=1, max_size=2
@@ -159,28 +168,27 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     finally:
         await pool.close()
 
-    spec = importlib.util.spec_from_file_location("job_health_roundtrip", MIGRATION_PATH)
-    assert spec and spec.loader
-    migration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(migration)
-    engine = create_engine(url)
-    try:
-        for direction in ("downgrade", "upgrade"):
-            statements = []
-            op = MagicMock()
-            op.execute.side_effect = statements.append
-            with patch.object(migration, "op", op):
-                getattr(migration, direction)()
-            with engine.begin() as conn:
-                for statement in statements:
-                    conn.exec_driver_sql(statement)
-                exists = conn.exec_driver_sql(
-                    "SELECT to_regclass('public.dashboard_job_health') IS NOT NULL"
-                ).scalar_one()
-                assert exists is (direction == "upgrade")
-                history = conn.exec_driver_sql(
-                    "SELECT to_regclass('public.dashboard_job_transitions') IS NOT NULL"
-                ).scalar_one()
-                assert history is (direction == "upgrade")
-    finally:
-        engine.dispose()
+    # Real Alembic edges and stamp readbacks, not captured SQL substituted for
+    # the migration runner. All runtime connections are closed before DDL.
+    config = _build_alembic_config(url, chains=["core"])
+    for direction, target, revision in (
+        ("downgrade", "core_282", "core_282"),
+        ("upgrade", "core@core_286", "core_286"),
+    ):
+        await asyncio.to_thread(getattr(command, direction), config, target)
+        conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
+        try:
+            exists = await conn.fetchval(
+                "SELECT to_regclass('public.dashboard_job_health') IS NOT NULL"
+            )
+            assert exists is (direction == "upgrade")
+            history = await conn.fetchval(
+                "SELECT to_regclass('public.dashboard_job_transitions') IS NOT NULL"
+            )
+            assert history is (direction == "upgrade")
+            assert {
+                row["version_num"]
+                for row in await conn.fetch("SELECT version_num FROM public.alembic_version")
+            } == {revision}
+        finally:
+            await conn.close()

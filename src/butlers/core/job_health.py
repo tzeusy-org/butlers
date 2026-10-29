@@ -277,15 +277,18 @@ class JobRecorder:
     def __init__(self, store: JobHealthStore, spec: JobSpec) -> None:
         self.store, self.spec = store, spec
         self.reconnect_failures = 0
+        self.tick_incomplete = False
 
     async def starting(self) -> None:
         await self.store.write(self.spec, "starting", "started")
 
     async def tick_ok(self) -> None:
+        self.tick_incomplete = False
         self.reconnect_failures = 0
         await self.store.write(self.spec, "ok", "tick_ok", success=True, progress=True)
 
     async def tick_failed(self, code: str = "tick_failed") -> None:
+        self.tick_incomplete = False
         safe = code if code in REASONS else "tick_failed"
         await self.store.write(self.spec, "error", safe, failed=True)
 
@@ -308,6 +311,17 @@ class JobRecorder:
 _CURRENT: ContextVar[JobRecorder | None] = ContextVar("dashboard_job_recorder", default=None)
 
 
+def mark_tick_incomplete() -> None:
+    """Retain caught work failure for the current supervised tick only.
+
+    Checks keep their public result and fault-isolation contracts. Direct
+    callers have no recorder, so this adds neither persistence nor policy.
+    """
+    recorder = _CURRENT.get()
+    if recorder is not None:
+        recorder.tick_incomplete = True
+
+
 async def record_tick(*, failed: bool = False, interval_s: float | None = None) -> None:
     """Report only inside supervised API work; direct callers remain unchanged."""
     recorder = _CURRENT.get()
@@ -316,7 +330,7 @@ async def record_tick(*, failed: bool = False, interval_s: float | None = None) 
     if interval_s is not None:
         recorder.spec = JobSpec(recorder.spec.name, recorder.spec.job_class, interval_s)
         recorder.store.specs[recorder.spec.name] = recorder.spec
-    if failed:
+    if failed or recorder.tick_incomplete:
         await recorder.tick_failed("partial_failure")
     else:
         await recorder.tick_ok()

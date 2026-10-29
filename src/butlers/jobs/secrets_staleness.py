@@ -82,7 +82,7 @@ from butlers.api.routers.secrets_v2 import (
 )
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.core.credential_keys import normalize_credential_key
-from butlers.core.job_health import record_tick
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +159,7 @@ async def _collect_probe_targets(
         try:
             pool = db.pool(butler_name)
         except KeyError:
+            mark_tick_incomplete()
             continue
         try:
             rows = await _fetch_system_secrets(
@@ -199,6 +200,7 @@ async def _collect_probe_targets(
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         return targets
 
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
@@ -342,6 +344,8 @@ async def _dispatch_probe(db: DatabaseManager, target: ProbeTarget) -> ProbeOutc
             )
         raise ValueError(f"unknown probe target family {target.family!r}")
     except HTTPException as exc:
+        if 500 <= exc.status_code < 600:
+            mark_tick_incomplete()
         skip_reason = "rate_limited" if exc.status_code == 429 else f"http_{exc.status_code}"
         logger.debug(
             "secrets_staleness: probe skipped for key=%s (%s)", target.canonical_key, skip_reason
@@ -355,6 +359,7 @@ async def _dispatch_probe(db: DatabaseManager, target: ProbeTarget) -> ProbeOutc
             skip_reason=skip_reason,
         )
     except Exception:
+        mark_tick_incomplete()
         if target.family == "cli" and target.cli_provider == "codex":
             # The scheduled path reaches the same Codex device-auth probe as
             # the dashboard. Its exception can retain provider diagnostics,
@@ -383,6 +388,7 @@ async def _sweep(db: DatabaseManager, targets: list[ProbeTarget]) -> list[ProbeO
 
     for target in targets:
         if target.circuit_group in tripped:
+            mark_tick_incomplete()
             outcomes.append(
                 ProbeOutcome(
                     key=target.canonical_key,
@@ -453,6 +459,7 @@ async def run_secrets_staleness_check(
         tracker = DegradedSources(logger)
         targets = await _collect_probe_targets(db, tracker=tracker)
     except Exception:
+        mark_tick_incomplete()
         logger.exception("secrets_staleness_check: target collection failed")
         return {"scanned": 0, "stale": 0, "probed": 0, "ok": 0, "failed": 0, "skipped": 0}
 

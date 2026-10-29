@@ -91,7 +91,7 @@ from butlers.core.infra_conditions import (
     get_active_condition,
     reconcile_snapshot,
 )
-from butlers.core.job_health import record_tick
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.migrations import (
     get_all_chains,
     get_chain_head,
@@ -339,6 +339,7 @@ async def _escalate_drift_l1(
             result="escalated",
         )
     except Exception:
+        mark_tick_incomplete()
         logger.exception("migration drift sentinel: QA escalation failed")
         return {
             "fingerprint": transition.fingerprint,

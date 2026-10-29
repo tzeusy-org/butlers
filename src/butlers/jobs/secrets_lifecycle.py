@@ -138,7 +138,7 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.credential_keys import normalize_credential_key
-from butlers.core.job_health import record_tick
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
     cancel_pending_notifications_matching_line,
@@ -244,6 +244,7 @@ async def _collect_snapshots(
         try:
             pool = db.pool(butler_name)
         except KeyError:
+            mark_tick_incomplete()
             continue
         try:
             rows = await _fetch_system_secrets(
@@ -281,6 +282,7 @@ async def _collect_snapshots(
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         return snapshots
 
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
@@ -679,6 +681,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         logger.warning("secrets_lifecycle_check: no shared credential pool configured; skipping")
         return {
             "scanned": 0,
