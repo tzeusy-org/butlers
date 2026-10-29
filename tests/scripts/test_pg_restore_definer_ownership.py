@@ -626,15 +626,47 @@ def test_restore_script_refuses_to_certify_a_laundered_restore(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 def test_populated_confirm_restore_refuses_missing_source_owner_membership(
-    populated_confirm_artifact: Path, disaster_recovery_target: _Target
+    populated_confirm_artifact: Path, disaster_recovery_target: _Target, source_db_url: str
 ) -> None:
-    result = _run_restore_script(
-        populated_confirm_artifact, disaster_recovery_target, "butlers_confirm_owner_refused"
+    target = disaster_recovery_target
+    admin = target.url("postgres")
+    db_name = "butlers_confirm_owner_refused"
+    source_owner = _query(
+        source_db_url,
+        "SELECT pg_get_userbyid(relowner) FROM pg_class "
+        "WHERE oid='public.pending_confirms'::regclass",
+    )[0]
+    assert source_owner not in ("butler_general_rw", target.login)
+    assert _query(admin, "SELECT to_regrole('butler_general_rw') IS NULL") == [True]
+    # The current artifact imports General captures before its Confirm rows.
+    # Supply only that ordinary runtime prerequisite, never the Confirm owner.
+    _exec(
+        admin,
+        "CREATE ROLE butler_general_rw NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOREPLICATION NOBYPASSRLS",
     )
-    assert result.returncode != 0
-    assert "confirm restore requires source table-owner membership" in (
-        result.stdout + result.stderr
-    )
+    try:
+        _exec(admin, f'GRANT butler_general_rw TO "{target.login}"')
+        assert _query(
+            admin,
+            "SELECT coalesce((SELECT pg_has_role(:login, oid, 'MEMBER') "
+            "FROM pg_roles WHERE rolname=:source_owner), false)",
+            login=target.login,
+            source_owner=source_owner,
+        ) == [False]
+        result = _run_restore_script(
+            populated_confirm_artifact, disaster_recovery_target, "butlers_confirm_owner_refused"
+        )
+        assert result.returncode != 0
+        assert "confirm restore requires source table-owner membership" in (
+            result.stdout + result.stderr
+        )
+    finally:
+        # This module's separate ownership controls require a bare target.
+        _exec(admin, f'DROP DATABASE IF EXISTS "{db_name}" WITH (FORCE)')
+        _exec(admin, f'REVOKE butler_general_rw FROM "{target.login}"')
+        _exec(admin, "DROP ROLE butler_general_rw")
+    assert _query(admin, "SELECT to_regrole('butler_general_rw') IS NULL") == [True]
 
 
 @pytest.mark.db
