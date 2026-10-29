@@ -68,6 +68,8 @@ def _unpack(raw: Any) -> CursorValue:
         if raw[0] == _TAG_UUID:
             return UUID(raw[1])
         raise ValueError("unknown value tag")
+    if type(raw) is int and not -(2**63) <= raw < 2**63:
+        raise ValueError("cursor integer outside signed int64")
     if raw is None or isinstance(raw, str | int | float | bool):
         return raw
     raise ValueError("bad value")
@@ -89,6 +91,7 @@ def decode_cursor(
     ``scope`` is fixed by the server receiver, never taken from the caller or token.
     It distinguishes endpoints even when their keyset types match. ``shape`` checks
     exact value types, including intentional union members, without bool/int coercion.
+    Integer values must fit signed int64, matching database offset parameters.
     This scope is not authorization: every query retains its normal access controls.
     """
     try:
