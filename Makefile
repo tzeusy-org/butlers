@@ -1,4 +1,4 @@
-.PHONY: check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
+.PHONY: typecheck prepare-typecheck update-type-baseline check-lock check-format lint install-lint-tools secrets-scan lint-workflows lint-tools-self-test format test test-unit test-integration test-core test-modules test-e2e test-e2e-validate test-e2e-benchmark test-e2e-frontend test-plan test-ci-unit test-ci-integration test-qg test-qg-serial test-qg-parallel check check-guards check-for-update-joins check-test-budget check-em-dashes check-spec-overwrites check-requirement-trace check-openspec-strict check-countable-tasks check-duplicate-names check-session-links lint-decision-beads lint-decision-beads-strict bump-version release-tag
 
 # Keep quality-gate selection stable across execution modes (coverage expectations unchanged).
 QG_PYTEST_ARGS = tests/ -q --maxfail=1 --tb=short --ignore=tests/test_db.py --ignore=tests/test_migrations.py --ignore=tests/e2e
@@ -8,10 +8,22 @@ BASE ?= origin/main
 
 # One shared lint path: CI's Lint step runs exactly `make lint`. The pinned gitleaks and
 # actionlint come only from `make install-lint-tools`; a missing tool fails, never skips.
+lint: export UV_NO_SYNC = 1
 lint:
 	uv run ruff check src/ tests/ roster/ scripts/
 	uv run --no-sync lint-imports
 	$(MAKE) --no-print-directory secrets-scan lint-workflows lint-tools-self-test
+	$(MAKE) --no-print-directory typecheck
+
+# Explicit setup only: initial public-source checker environment is never installed by a check.
+prepare-typecheck:
+	.venv/bin/python -B scripts/pyright_runtime.py prepare
+
+typecheck:
+	.venv/bin/python -B scripts/pyright_runtime.py check
+
+update-type-baseline:
+	.venv/bin/python -B scripts/pyright_runtime.py update
 
 install-lint-tools:
 	python3 scripts/lint_tools.py install
