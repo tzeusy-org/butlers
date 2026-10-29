@@ -125,6 +125,11 @@ def test_tool_without_registered_preview_gets_open_only() -> None:
     [
         ("telegram_send_message", {"chat_id": "555", "text": "Running late"}, ("555", "Running")),
         (
+            "telegram_react_to_message",
+            {"chat_id": "test-chat", "message_id": 42, "emoji": "👍"},
+            ("Chat: `test-chat`", "Message ID: `42`", "Emoji: `👍`"),
+        ),
+        (
             "whatsapp_send_message",
             {"recipient": "+6591234567", "text": "On my way"},
             ("+659", "On"),
@@ -137,13 +142,49 @@ def test_tool_without_registered_preview_gets_open_only() -> None:
     ],
 )
 def test_channel_sends_render_recipient_and_text(
-    tool_name: str, tool_args: dict[str, Any], expected: tuple[str, str]
+    tool_name: str, tool_args: dict[str, Any], expected: tuple[str, ...]
 ) -> None:
     envelope = _envelope(tool_name, tool_args)
 
     for fragment in expected:
         assert fragment in _message(envelope)
     assert _verbs(envelope) == ["approve", "reject", "open_dashboard"]
+    if tool_name == "telegram_react_to_message":
+        assert previews.dashboard_call_preview(tool_name, tool_args) == {
+            "title": "React to Telegram message",
+            "facts": [
+                {"label": "Chat", "value": "test-chat"},
+                {"label": "Message ID", "value": "42"},
+                {"label": "Emoji", "value": "👍"},
+            ],
+            "displayed_call": {
+                "tool_name": tool_name,
+                "args_digest": previews.args_digest(tool_args),
+            },
+        }
+
+
+def test_reaction_requires_complete_native_arguments_and_no_hidden_kwargs() -> None:
+    valid = {"chat_id": "test-chat", "message_id": 42, "emoji": "👍"}
+    invalid_calls = [
+        {key: value for key, value in valid.items() if key != missing} for missing in valid
+    ]
+    invalid_calls.extend(
+        {**valid, field: value}
+        for field, values in (
+            ("message_id", [True, False, 0, -1, "42", 42.0, None]),
+            ("chat_id", [42, None, "", "  "]),
+            ("emoji", [1, None, "", "  "]),
+        )
+        for value in values
+    )
+    invalid_calls.extend(
+        {**valid, "future_argument": value} for value in (True, "hidden", None, "", [], {})
+    )
+    for args in invalid_calls:
+        assert previews.resolve_call_preview("telegram_react_to_message", args) is None, args
+        assert previews.dashboard_call_preview("telegram_react_to_message", args) is None, args
+        assert _verbs(_envelope("telegram_react_to_message", args)) == ["open_dashboard"], args
 
 
 @pytest.mark.parametrize(
@@ -156,6 +197,7 @@ def test_channel_sends_render_recipient_and_text(
         ("email_send_message", {"to": [], "subject": "s", "body": "b"}),
         ("email_send_message", {"to": "a@x.com", "subject": "s", "body": "has `tick`"}),
         ("telegram_send_message", {"chat_id": "1", "text": "hi", "reply_markup": {"k": 1}}),
+        ("telegram_react_to_message", {"chat_id": "test-chat", "message_id": 42, "emoji": "`👍`"}),
         ("notify", {"entity_id": "e1", "message": "hi"}),
     ],
 )
@@ -190,6 +232,10 @@ def test_control_or_format_characters_get_open_only(field: str, value: str) -> N
     assert "Approve and Reject are not offered" in _message(envelope)
     assert "\x00" not in _message(envelope)
     assert "‮" not in _message(envelope)
+    for reaction_field in ("chat_id", "emoji"):
+        reaction = {"chat_id": "test-chat", "message_id": 42, "emoji": "👍"}
+        reaction[reaction_field] = value
+        assert _verbs(_envelope("telegram_react_to_message", reaction)) == ["open_dashboard"]
 
 
 def test_newlines_in_a_body_still_render() -> None:
@@ -221,6 +267,12 @@ def test_fit_budget_counts_utf16_code_units_not_code_points() -> None:
     assert len(_message(envelope)) < 4096  # the code-point count would have fit
     assert _verbs(envelope) == ["open_dashboard"]
     assert "Too long to show here" in _message(envelope)
+    reaction = _envelope(
+        "telegram_react_to_message",
+        {"chat_id": "test-chat", "message_id": 42, "emoji": "\U0001f600" * 3000},
+    )
+    assert _verbs(reaction) == ["open_dashboard"]
+    assert "Too long to show here" in _message(reaction)
 
 
 def test_underscore_prefixed_keys_are_not_a_blanket_exemption() -> None:

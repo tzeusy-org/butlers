@@ -759,6 +759,13 @@ SHALL refuse while any presentation carries a digest.
 - **WHEN** the body exceeds the fit budget, the tool has no registered preview, or the tool is `administer`
 - **THEN** the card offers Open only
 
+#### Scenario: Telegram reaction card shows the exact native call
+
+- **WHEN** a `telegram_react_to_message` call is parked with nonempty text `chat_id` and `emoji` and a positive integer `message_id` excluding booleans
+- **THEN** Telegram and dashboard previews show all three exact stored arguments through the shared registry
+- **AND** a Telegram card that passes the existing safety and fit checks offers Approve, Reject and Open
+- **AND** missing or malformed arguments or unknown reaction kwargs, including empty future arguments, offer Open only
+
 #### Scenario: Stored call changed after presentation
 
 - **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
