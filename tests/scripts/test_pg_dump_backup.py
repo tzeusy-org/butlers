@@ -816,9 +816,10 @@ def test_scoped_export_rejects_a_policy_changed_between_precheck_and_snapshot(
                     (claim_key, asserted_by, kind, direction, amount, currency,
                      counterparty_label, description)
                 VALUES
-                    ('snapshot-drift-regression', 'relationship', 'receivable', 'inbound',
+                    (%s, 'relationship', 'receivable', 'inbound',
                      25, 'SGD', 'Snapshot fixture', 'Must not be silently filtered')
-                """
+                """,
+                (f"snapshot-drift-regression-{fleet_table or 'cost_claims'}",),
             )
         finally:
             conn.exec_driver_sql("RESET ROLE")

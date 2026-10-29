@@ -39,7 +39,7 @@ def upgrade() -> None:
         CREATE OR REPLACE FUNCTION public.fleet_case_restore_row(
           relation_name text, payload jsonb
         ) RETURNS void LANGUAGE plpgsql SECURITY DEFINER
-        SET search_path = pg_catalog, public SET row_security = on
+        SET search_path = pg_catalog, pg_temp SET row_security = on
         AS $fleet_row$
         BEGIN
           CASE relation_name

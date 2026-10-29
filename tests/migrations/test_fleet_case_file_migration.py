@@ -728,7 +728,7 @@ async def test_offline_restore_importer_is_owner_only_after_bootstrap(
             assert await admin.fetchrow(
                 "SELECT pg_get_userbyid(proowner),prosecdef,proconfig "
                 "FROM pg_proc WHERE oid='public.fleet_case_restore_row(text,jsonb)'::regprocedure"
-            ) == (owner, True, ["search_path=pg_catalog, public", "row_security=on"])
+            ) == (owner, True, ["search_path=pg_catalog, pg_temp", "row_security=on"])
             assert (
                 await admin.fetchrow(
                     "SELECT rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls "
