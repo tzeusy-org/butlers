@@ -93,6 +93,10 @@ plane by name:
 | `public.dnd_generation_mutations` | DND generation mutation audit |
 | `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
 | `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
+| `public.task_continuity` | Task continuity control state; not recovered from this artifact |
+| `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
+| `public.runtime_probe_control_receipts` | Fenced runtime probe control receipts |
+| `public.qa_publication_operations` | Fenced QA publication operation control |
 | `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing
@@ -145,6 +149,42 @@ two files.
 Everything else in the table above is reconstructed by the bootstrap, expiring
 runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
+
+
+### Fleet case history
+
+Fleet recovery now includes all three shared relations: `public.fleet_cases`,
+`public.fleet_case_evidence` and `public.fleet_case_links`. Cases and links are
+forced-RLS tables admitted alongside the three cost tables only while each has
+exactly the existing permissive PUBLIC SELECT policy. Evidence is unfenced;
+its data-only exclusion and separate owner/shape/FK proof keep its DDL and
+validated constraints in the ordinary dump. It is not classified as another
+forced-table exception. These five forced datasets, evidence and Confirm share
+the same exported snapshot. Any changed/restrictive case/link read policy
+refuses publication rather than producing filtered history.
+
+A fixed stage replays complete case rows, then evidence, then links inside one
+`ON_ERROR_STOP` transaction. Hex-encoded JSON preserves UUIDs, timestamps, nulls,
+nested values and text delimiters. Core288's fixed owner-only importer accepts
+only case/link INSERTs; it cannot update/delete, select arbitrary relations or
+suppress constraint failures. The restoring identity must already be a member
+of the exact common source table owner when history is present. Runtime and
+connector roles receive no importer EXECUTE authority. Original runtime policies
+and forced RLS remain binding across bootstrap.
+
+Before certification, the restore script checks complete declared populations,
+both correct validated/enabled case foreign keys and actual orphan absence.
+It never synthesizes parents, deletes evidence or disables constraints to repair
+a dump. A failing new history stage commits none of its rows. Older ordinary
+dumps excluded cases/links but could contain evidence: nonempty such artifacts
+are refused even if generic psql ignored a failed FK statement. Authentic old
+zero-history artifacts retain legacy compatibility only; that does not recover
+Fleet history, establish a migrated serving schema, or certify omitted ledgers.
+
+Real script/role/catalog regression carriers are checked in. Source, framing
+and collection results do not establish the mandatory native PostgreSQL
+roundtrip, bootstrap or migration outcomes; those require actual hosted receipts.
+
 
 ### Forced-RLS cost-claim ledgers
 
