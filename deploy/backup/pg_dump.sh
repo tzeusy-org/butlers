@@ -552,8 +552,8 @@ SET ROLE %I;',
               FROM public.dashboard_job_transitions t ORDER BY 1,2) TO STDOUT;
         COMMIT" \
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
-  printf '\.\n'
-  printf 'SELECT EXISTS(SELECT 1 FROM butlers_job_health_restore_rows) AS butlers_job_health_restore_needed \gset\n\if :butlers_job_health_restore_needed\n'
+  printf '%s\n' '\.'
+  printf '%s\n' 'SELECT EXISTS(SELECT 1 FROM butlers_job_health_restore_rows) AS butlers_job_health_restore_needed \gset' '\if :butlers_job_health_restore_needed'
   PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
     --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
     --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
@@ -571,7 +571,7 @@ SET LOCAL row_security=on;',
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
   printf "INSERT INTO public.dashboard_job_health SELECT (jsonb_populate_record(NULL::public.dashboard_job_health,convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)).* FROM butlers_job_health_restore_rows WHERE ordinal=1 ORDER BY payload_hex;\n"
   printf "INSERT INTO public.dashboard_job_transitions SELECT (jsonb_populate_record(NULL::public.dashboard_job_transitions,convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)).* FROM butlers_job_health_restore_rows WHERE ordinal=2 ORDER BY payload_hex;\n"
-  printf 'COMMIT;\nRESET ROLE;\n\else\n\set ON_ERROR_STOP on\nDO $$ BEGIN RAISE EXCEPTION '\''job health restore requires source table-owner membership'\''; END $$;\n\endif\n\endif\nDROP TABLE butlers_job_health_restore_rows;\n'
+  printf '%s\n' 'COMMIT;' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' 'DO $$ BEGIN RAISE EXCEPTION '"'"'job health restore requires source table-owner membership'"'"'; END $$;' '\endif' '\endif' 'DROP TABLE butlers_job_health_restore_rows;'
 } | gzip > "${TMPFILE}"
 
 printf 'COMMIT;\n\\q\n' >&9
