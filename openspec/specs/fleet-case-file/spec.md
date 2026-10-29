@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define durable, shared per-situation cases, attributed evidence, Switchboard-owned case/link mutation, bounded readers, case-scoped quiet-hours attention, safe lapse and historical backfill. This source translation preserves RFC0032 obligations; source archival does not certify whole-feature runtime conformance. Broker wiring, a dashboard write/UI container, joint objectives, delegate_act mandates, and native Fleet backup/offline restore adoption are outside this source change.
+Define durable, shared per-situation cases, attributed evidence, Switchboard-owned runtime case/link mutation, bounded readers, case-scoped quiet-hours attention, safe lapse and historical backfill. Offline backup and restore SHALL preserve cases, evidence and links through a fixed table-owner-only import path without granting restore capability to runtime roles. Source archival does not certify whole-feature runtime conformance. Broker wiring, a dashboard write/UI container, joint objectives and delegate_act mandates remain outside this source change.
 
 **Implementation Notes:** [Observed gap] REQ-fleet-case-file-007: list_fleet_cases currently catches all fetch exceptions and returns a clean empty page. This conflicts with response-conventions genuine-source honesty; it is not normative required behavior. The existing table-missing test injects generic RuntimeError and is retained as a historical behavior control without a qualified requirement citation. Honest outage classification/response is uncovered and allocated to bu-h40h2b.8 AC1/2/8 in the complete read-availability owner supplement. This source translation does not implement that API fix or select new dashboard DTOs.
 
@@ -114,7 +114,7 @@ Scope: v1-mandatory
 
 ### Requirement: Switchboard Case And Link Write Authority
 
-Only effective current_user butler_switchboard_rw SHALL INSERT or UPDATE fleet_cases or fleet_case_links. Enabled and forced row-level security SHALL enforce that authority despite broad public GRANTs and bootstrap reruns. All roles SHALL retain SELECT as a shared case-file read surface; access to a peer private schema SHALL NOT be conferred by this contract.
+Only effective current_user butler_switchboard_rw SHALL INSERT or UPDATE fleet_cases or fleet_case_links during runtime operation. Enabled and forced row-level security SHALL enforce that authority despite broad public GRANTs and bootstrap reruns. A fixed offline restore-only function MAY INSERT complete historical rows into those two named relations under their exact table-owner authority and existing operator membership precondition; it SHALL NOT permit runtime execution, UPDATE, DELETE, arbitrary relation selection, parent synthesis or relaxed constraints. All roles SHALL retain SELECT as a shared case-file read surface; access to a peer private schema SHALL NOT be conferred by this contract.
 
 ID: REQ-fleet-case-file-006
 Source: RFC 0032 §Write authority and §Alternatives rejected; heart-and-soul/vision.md Rule 3
@@ -135,6 +135,30 @@ Scope: v1-mandatory
 
 - **WHEN** a butler reads a case file
 - **THEN** it reads the public case/evidence/link surface without receiving peer private-schema authority
+
+
+#### Scenario: Complete Fleet history restores with validated foreign keys
+
+- **WHEN** the checked-in backup and restore scripts preserve a complete case/evidence/link family under the source table-owner membership precondition
+- **THEN** complete rows, UUIDs, timestamps, nulls, nested JSON, owners and forced runtime fences are retained
+- **AND** both expected case foreign keys remain validated and enabled before certification
+
+#### Scenario: Policy drift refuses publication
+
+- **WHEN** either forced case/link relation has a changed or restrictive SELECT-applying policy at the exported snapshot
+- **THEN** backup fails loudly without publishing an artifact instead of silently filtering history
+
+#### Scenario: Orphan evidence refuses certification
+
+- **WHEN** a new staged artifact or a legacy ordinary artifact contains evidence without its parent case, or its expected foreign key is missing, unvalidated or disabled
+- **THEN** the checked-in restore script refuses certification without deleting evidence or synthesizing parents
+- **AND** a failing staged history transaction commits none of its case/evidence/link rows
+
+#### Scenario: Restore importer is unavailable to runtime roles
+
+- **WHEN** an ordinary non-owner runtime or connector role invokes the fixed offline importer, including after bootstrap replay
+- **THEN** execution is refused and existing history is unchanged
+- **AND** runtime Switchboard case/link writes and shared reads keep their existing effective-role boundaries
 
 ### Requirement: Bounded Switchboard Case Read Surface
 

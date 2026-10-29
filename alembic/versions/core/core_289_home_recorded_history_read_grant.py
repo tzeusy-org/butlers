@@ -1,7 +1,7 @@
 """Grant Home read access to durable HA transitions, without granting writes.
 
 Revision ID: core_289
-Revises: core_282
+Revises: core_288
 
 Bootstrap may already supply SELECT through migration-role defaults. This
 explicit per-table grant also converges older installations. Missing roles or
@@ -11,7 +11,7 @@ tables are valid on core-only installations; this migration creates neither.
 from alembic import op
 
 revision = "core_289"
-down_revision = "core_282"
+down_revision = "core_288"
 branch_labels = None
 depends_on = None
 

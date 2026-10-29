@@ -22,7 +22,7 @@ def test_home_history_grant_is_select_only_reversible_and_prerequisite_safe(
 ) -> None:
     db_url = create_migration_db(postgres_container, migration_db_name())
     config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core_282")
+    command.upgrade(config, "core_288")
     engine = create_engine(db_url)
     try:
         with engine.begin() as connection:
@@ -93,7 +93,7 @@ def test_home_history_grant_is_select_only_reversible_and_prerequisite_safe(
                         )
                     )
                 blocked.rollback()
-        command.downgrade(config, "core_282")
+        command.downgrade(config, "core_288")
         with engine.connect() as connection:
             assert (
                 connection.execute(
