@@ -222,7 +222,18 @@ Current health and safe transitions live in `public.dashboard_job_health` and
 are stored; private exception text, tracebacks and URLs are excluded. Each recording
 transaction retains the newest 100 transitions per job within 30 days, including
 when health remains unchanged. No separate pruning timer is introduced. Forced
-row security preserves dashboard ownership after runtime public-table regrants.
+row security preserves the configured ordinary migration/API login's ownership
+after runtime public-table regrants. The health migration resolves that login
+from the existing trusted `dashboard_attention.bootstrap_configuration`; a
+privileged migration re-upgrade does not make the bootstrap creator the API
+health owner. Nonowner runtime identities remain unable to read or write rows.
+
+The normal backup preserves both tables' schema, policies and complete rows.
+Its same-snapshot owner-only staging block restores current health before its
+transition children, requires source-owner membership, and refuses policy drift.
+No diagnostic history is excluded. Restored prior-process health/history is
+historical evidence: a new process starts as starting/unknown until its own
+tick or connection progress succeeds; restore does not manufacture success.
 
 If the section is unavailable, check dashboard database/migration availability.
 The jobs continue running when health recording fails. Apply migrations through

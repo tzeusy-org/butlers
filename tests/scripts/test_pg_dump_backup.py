@@ -71,6 +71,7 @@ while IFS= read -r line; do
         */id) printf 'ABCDEF-012345\\n' > "${output_file}" ;;
         */policy-count) printf '3\\n' > "${output_file}" ;;
         */confirm-policy-count) printf '1\\n' > "${output_file}" ;;
+        */job-health-policy-count) printf '2\\n' > "${output_file}" ;;
       esac
       output_file=""
       ;;
@@ -183,6 +184,13 @@ def _read_confirm_backup_set() -> set[str]:
     return set(match.group(1).split())
 
 
+def _read_job_health_backup_set() -> set[str]:
+    source = _SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r'^BACKUP_JOB_HEALTH_DATA_TABLES="([^"]*)"$', source, re.MULTILINE)
+    assert match is not None, "Owner-only supervised-job backup scope is missing"
+    return set(match.group(1).split())
+
+
 # ---------------------------------------------------------------------------
 # Pure-unit guards (no Docker)
 # ---------------------------------------------------------------------------
@@ -219,7 +227,11 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     stub = fake_bin / "pg_dump"
-    stub.write_text('#!/bin/sh\necho "stub failure" >&2\nexit 1\n', encoding="utf-8")
+    dump_called = tmp_path / "pg-dump-called"
+    stub.write_text(
+        '#!/bin/sh\nprintf "called\\n" >> "$BACKUP_TEST_PG_DUMP_CALLED"\necho "stub failure" >&2\nexit 1\n',
+        encoding="utf-8",
+    )
     stub.chmod(0o755)
     psql_stub = fake_bin / "psql"
     psql_stub.write_text(_FAKE_PSQL_SNAPSHOT_HOLDER, encoding="utf-8")
@@ -230,11 +242,14 @@ def test_failed_run_says_so_and_publishes_nothing(tmp_path: Path) -> None:
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "BACKUP_DIR": str(backup_dir),
+        "BACKUP_TEST_PG_DUMP_CALLED": str(dump_called),
     }
     result = subprocess.run(
         ["sh", str(_SCRIPT)], env=env, capture_output=True, text=True, check=False
     )
 
+    assert dump_called.is_file()
+    assert dump_called.read_text(encoding="utf-8") == "called\n"
     assert result.returncode != 0
     assert "FAILED" in result.stderr
     assert list(backup_dir.glob("butlers_*.sql.gz")) == []
@@ -338,10 +353,17 @@ def test_exclusion_set_matches_the_fenced_objects_exactly(bootstrapped_db_url: s
         return schema in excluded_schemas or qualified in excluded_tables
 
     confirm_data_tables = _read_confirm_backup_set()
+    job_health_data_tables = _read_job_health_backup_set()
+    assert (
+        job_health_data_tables
+        == {"public.dashboard_job_health", "public.dashboard_job_transitions"}
+        <= fenced
+    )
     missed = sorted(
         rel
         for rel in fenced
-        if not _is_excluded(rel) and rel not in scoped_data_tables | confirm_data_tables
+        if not _is_excluded(rel)
+        and rel not in scoped_data_tables | confirm_data_tables | job_health_data_tables
     )
     assert not missed, (
         "These relations are fenced away from the backup role but are not "
@@ -559,6 +581,12 @@ def test_script_produces_a_verifiable_artifact(
     for qualified in scoped_data_tables:
         assert f"CREATE TABLE {qualified} " in dump
         assert f"COPY {qualified} " not in dump
+    for qualified in _read_job_health_backup_set():
+        assert f"CREATE TABLE {qualified} " in dump
+        assert f"COPY {qualified} " not in dump
+    assert "-- Butlers owner-only supervised-job health data" in dump
+    assert "INSERT INTO public.dashboard_job_health SELECT" in dump
+    assert "INSERT INTO public.dashboard_job_transitions SELECT" in dump
     assert "-- Butlers scoped cost-claim ledger data" in dump
     assert "SELECT public.cost_claim_restore_row(" in dump
     staged_payloads = [

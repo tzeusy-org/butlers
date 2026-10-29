@@ -14,6 +14,38 @@ depends_on = None
 
 def upgrade():
     op.execute("""
+        DO $job_health_owner$
+        DECLARE owner_name NAME; bootstrap_name NAME; table_name TEXT;
+        BEGIN
+            -- core_278 bootstrap exposes this immutable configuration to the
+            -- ordinary migration login. Do not infer the API owner from the
+            -- migration's current creator, database owner, or a session GUC.
+            SELECT cfg.migration_role, cfg.bootstrap_role
+              INTO STRICT owner_name, bootstrap_name
+              FROM dashboard_attention.bootstrap_configuration cfg
+              JOIN pg_namespace n ON n.nspname='dashboard_attention'
+              JOIN pg_class c ON c.relnamespace=n.oid
+                  AND c.relname='bootstrap_configuration' AND c.relkind='r'
+              JOIN pg_roles b ON b.rolname=cfg.bootstrap_role
+              JOIN pg_roles m ON m.rolname=cfg.migration_role
+             WHERE cfg.singleton AND b.rolsuper AND c.relowner=b.oid
+               AND n.nspowner=b.oid
+               AND obj_description(n.oid,'pg_namespace')='butlers:dashboard-attention:core_278'
+               AND m.rolcanlogin AND NOT (m.rolsuper OR m.rolbypassrls
+                   OR m.rolcreatedb OR m.rolcreaterole OR m.rolreplication)
+               AND current_user IN (cfg.migration_role,cfg.bootstrap_role);
+            FOREACH table_name IN ARRAY
+                ARRAY['dashboard_job_health','dashboard_job_transitions'] LOOP
+                IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                    WHERE n.nspname='public' AND c.relname=table_name
+                      AND (c.relkind<>'r' OR c.relpersistence<>'p'
+                        OR pg_get_userbyid(c.relowner) NOT IN (owner_name,bootstrap_name)))
+                    OR EXISTS (SELECT FROM pg_policies p WHERE p.schemaname='public'
+                        AND p.tablename=table_name AND p.policyname<>'dashboard_job_owner')
+                THEN RAISE EXCEPTION 'dashboard job health ownership or policy is untrusted';
+                END IF;
+            END LOOP;
+        END $job_health_owner$;
         CREATE TABLE IF NOT EXISTS public.dashboard_job_health (
             job_name TEXT PRIMARY KEY CHECK (job_name ~ '^[a-z][a-z0-9_]{0,63}$'),
             job_class TEXT NOT NULL CHECK (job_class IN ('periodic','continuous')),
@@ -53,16 +85,15 @@ def upgrade():
         ALTER TABLE public.dashboard_job_transitions ENABLE ROW LEVEL SECURITY;
         ALTER TABLE public.dashboard_job_transitions FORCE ROW LEVEL SECURITY;
         DO $$ DECLARE table_name TEXT; owner_name NAME; BEGIN
+            SELECT migration_role INTO STRICT owner_name
+                FROM dashboard_attention.bootstrap_configuration WHERE singleton;
             FOREACH table_name IN ARRAY
                 ARRAY['dashboard_job_health','dashboard_job_transitions'] LOOP
-                SELECT pg_get_userbyid(c.relowner) INTO STRICT owner_name
-                    FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-                    WHERE n.nspname='public' AND c.relname=table_name;
-                IF NOT EXISTS (SELECT 1 FROM pg_policies p WHERE p.schemaname='public'
-                    AND p.tablename=table_name AND p.policyname='dashboard_job_owner') THEN
-                    EXECUTE format('CREATE POLICY dashboard_job_owner ON public.%I TO %I '
-                        'USING (true) WITH CHECK (true)', table_name,owner_name);
-                END IF;
+                EXECUTE format('ALTER TABLE public.%I OWNER TO %I',table_name,owner_name);
+                EXECUTE format('DROP POLICY IF EXISTS dashboard_job_owner ON public.%I',table_name);
+                EXECUTE format('CREATE POLICY dashboard_job_owner ON public.%I TO %I '
+                    'USING (current_user = %L::name) WITH CHECK (current_user = %L::name)',
+                    table_name,owner_name,owner_name,owner_name);
             END LOOP;
         END $$;
     """)
