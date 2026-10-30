@@ -5460,5 +5460,37 @@
       "kind": "clause",
       "scenario": "Send email"
     }
+  ],
+  "relationship-real-timestamp-identity/passive-interaction-sync/Message-based interaction detection": [
+    {
+      "kind": "clause",
+      "scenario": "Outgoing deduplication via hour offset",
+      "digest": "9f7bea33ee91",
+      "excerpt": "- **THEN** incoming facts MUST use the existing channel hour offsets (telegram=0, whatsapp=1, email=2)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Outgoing deduplication via hour offset",
+      "digest": "78ece43f1c73",
+      "excerpt": "- **AND** outgoing facts MUST use offset +12 (telegram=12, whatsapp=13, email=14)"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Outgoing deduplication via hour offset",
+      "digest": "d9b9a2ea8c2a",
+      "excerpt": "- **AND** this MUST prevent collision under the existing `interaction_log()` deduplication contract"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Interaction fact creation",
+      "digest": "9f57910938b8",
+      "excerpt": "- **WHEN** a (entity_id, date, channel, direction) group is resolved"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Interaction fact creation",
+      "digest": "c7672ef7c7ca",
+      "excerpt": "- `occurred_at` = the date with direction-appropriate hour offset"
+    }
   ]
 }
