@@ -140,11 +140,16 @@ def _core_300_installation_count() -> int:
 def upgrade() -> None:
     op.execute(_LOCK)
     op.execute(f"ALTER TABLE {_TABLE} ADD COLUMN IF NOT EXISTS {_COLUMN} TIMESTAMPTZ")
-    # Before the new guard exists: the core_268 guard allows a same-stage update.
+    # Before the new guard exists: the core_268 guard allows a same-stage update.  The update
+    # policy admits only butler_qa_rw and FORCE applies it to the owner too, so the backfill
+    # would silently match no rows; lift FORCE for this transactional statement only (the
+    # owner, who just altered the table, then bypasses the policy) and restore it.
+    op.execute(f"ALTER TABLE {_TABLE} NO FORCE ROW LEVEL SECURITY")
     op.execute(
         f"UPDATE {_TABLE} SET {_COLUMN} = now() "
         f"WHERE stage = 'egress_started' AND {_COLUMN} IS NULL"
     )
+    op.execute(f"ALTER TABLE {_TABLE} FORCE ROW LEVEL SECURITY")
     op.execute(
         f"""
         DO $$

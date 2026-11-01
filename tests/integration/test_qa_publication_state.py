@@ -341,7 +341,9 @@ async def _insert_backdated_operation(
 
     operation_id = uuid.uuid4()
     connection = await asyncpg.connect(
-        migration_bootstrap_db_url(postgres_container, migrated_db_url.rsplit("/", 1)[1])
+        migration_bootstrap_db_url(postgres_container, migrated_db_url.rsplit("/", 1)[1]).replace(
+            "postgresql+psycopg2://", "postgresql://"
+        )
     )
     try:
         await connection.execute(
