@@ -53,7 +53,7 @@ import json
 import logging
 import math
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
@@ -668,9 +668,9 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             if seg["source_ref"] is None:
                 # Only a segment that starts fresh this batch can duplicate a
                 # stored episode; a carryover extension already targets one.
-                async with chronicler_pool.acquire() as conn:
+                async with chronicler_pool.acquire() as pooled:
                     merged = await self._merge_overlapping_episode(
-                        conn,
+                        cast(asyncpg.Connection, pooled),
                         endpoint_identity=endpoint_identity,
                         source_ref=seg_source_ref,
                         start_at=effective_start_at,
@@ -679,7 +679,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             if merged is not None:
                 # Never emit a second chunk over the same span: widen the
                 # already-stored episode instead (late or replayed fixes).
-                seg_source_ref = merged["source_ref"]
+                seg_source_ref = str(merged["source_ref"])
                 if merged["start_at"] < effective_start_at:
                     effective_start_at = merged["start_at"]
                     effective_start_lat = merged["start_lat"]

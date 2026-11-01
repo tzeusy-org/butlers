@@ -67,7 +67,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 
@@ -994,7 +994,8 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             "farthest_lon": span.farthest_lon,
             "home_reference": HOME_LABEL,
         }
-        async with chronicler_pool.acquire() as conn:
+        async with chronicler_pool.acquire() as pooled:
+            conn = cast(asyncpg.Connection, pooled)
             async with owner_episode_transaction(conn):
                 episode = await upsert_episode(
                     conn,
