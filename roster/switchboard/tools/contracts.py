@@ -230,6 +230,22 @@ class IngestUntrustedSpanV1(BaseModel):
     """The original author's display name, when the provider names one."""
 
 
+class IngestTranscriptionV1(BaseModel):
+    """Outcome of a connector's own speech-to-text attempt (connector-base-spec).
+
+    Outcome metadata only: never audio bytes or a reference to the audio, and never
+    authorization (RFC 0038 D18).
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_media: NonEmptyStr
+    status: NonEmptyStr
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    language: NonEmptyStr | None = None
+    stt_backend: NonEmptyStr | None = None
+
+
 class IngestPayloadV1(BaseModel):
     """Source payload for canonical ingest payloads.
 
@@ -252,6 +268,8 @@ class IngestPayloadV1(BaseModel):
     """Forwarded, quoted or embedded third-party parts of ``normalized_text``
     (REQ-connector-base-spec-004). Absent means the connector marked nothing. Representation
     only: no routing step reads it."""
+    transcription: IngestTranscriptionV1 | None = None
+    """Connector speech-to-text outcome; absent when no transcription attempt was evaluated."""
 
     @model_validator(mode="before")
     @classmethod

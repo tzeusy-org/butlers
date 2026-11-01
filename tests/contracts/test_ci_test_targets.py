@@ -156,7 +156,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     heavy = {"check-unit", "check-integration"}
     contexts = [("full", "pull_request", "refs/pull/1/merge", full, True)]
     scoped = copy.deepcopy(full)
-    for name in heavy:
+    for name in (*heavy, "check-totals"):
         scoped[name]["result"] = "skipped"
     scoped["route"]["outputs"].update(
         mode="scoped", test_paths='["tests/contracts/test_ci_test_targets.py"]'
@@ -229,6 +229,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             "route",
             "guards",
             "check-preflight",
+            "check-totals",
             "check-affected",
             "frontend-e2e",
             "go-bridge",
@@ -1415,7 +1416,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
         for index, job in enumerate(children, 1):
             artifact = _artifact_step(job=job, artifact_name=f"ci-{lane}-{index}-test-evidence")
-            filenames = ["junit.xml", "top-durations.txt", "collected.json"]
+            filenames = ["junit.xml", "top-durations.txt", "collected.json", "durations.json"]
             if lane == "unit":
                 filenames.append("condensation-refusal-*.json")
             assert artifact["if"] == "always()"
@@ -1547,11 +1548,18 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     ):
         assert command in dry_run
 
-    # The totals check runs after both matrix aggregates; every group's count is
-    # read before a full result is admitted.
-    assert preflight["needs"] == ["route", "guards", "check-unit", "check-integration"]
-    assert preflight["if"].startswith("always()")
+    # Preflight starts beside the groups: its fresh count and budget need no test
+    # result, so an over-budget tree fails early. The totals check runs after both
+    # matrix aggregates; every group's count is read before a full result is admitted.
+    assert preflight["needs"] == ["route"]
     assert "mode == 'full'" in preflight["if"] and "mode == 'scoped'" in preflight["if"]
+    check_totals = jobs["check-totals"]
+    assert check_totals["needs"] == ["route", "check-preflight", "check-unit", "check-integration"]
+    assert check_totals["if"] == (
+        "${{ !cancelled() && needs.route.outputs.mode == 'full' "
+        "&& needs.check-preflight.result == 'success' }}"
+    )
+    assert not any("uv" in step.get("run", "") for step in check_totals["steps"])
     # Each group runs its pytest-split slice through the one lane runner, starting
     # straight after route (bu-29wkwj.2).
     for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
@@ -1572,11 +1580,16 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         for job in jobs.values()
         for step in job.get("steps", [])
     )
-    totals = _workflow_step(
-        job=preflight, name="Check the lane groups add up and stay within the test budget"
+    lane_counts = '"${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"'
+    count = _workflow_step(job=preflight, name="Count each lane and check the test budget")
+    assert count["run"] == (
+        f"uv run --no-sync python scripts/ci_lanes.py count --output {lane_counts}"
     )
+    assert _artifact_step(job=preflight, artifact_name="ci-lane-counts")
+    totals = _workflow_step(job=check_totals, name="Check the lane groups add up")
     assert totals["run"] == (
-        'uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"'
+        'python3 scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts" '
+        "--expected " + lane_counts
     )
 
     # Enumerate weighted antichains of the actual job DAG. Matrix aggregates
@@ -1614,9 +1627,10 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         selected = [i for i in range(len(names)) if mask & (1 << i)]
         if all(mask & ~(compatible[i] | (1 << i)) == 0 for i in selected):
             peak = max(peak, sum(weights[i] for i in selected))
-    assert sum(weights) + 1 == 21  # Includes the mutually exclusive affected row.
-    # Existing fifteen concurrent rows plus the independent Go bridge job.
-    assert peak == 16
+    assert sum(weights) + 1 == 22  # Includes the mutually exclusive affected row.
+    # Fifteen concurrent rows, the independent Go bridge job and the early preflight
+    # count; check-totals runs after the groups and adds no concurrent row.
+    assert peak == 17
     assert "plan" not in jobs and "changes" not in jobs
     route_command = _workflow_step(
         job=changes, name="Classify and conservatively plan with stdlib only"
@@ -1984,6 +1998,7 @@ else:
         "route",
         "guards",
         "check-preflight",
+        "check-totals",
         "check-unit",
         "check-integration",
         "check-affected",
@@ -1999,7 +2014,7 @@ else:
     for step_name in (
         PYTHON_ENVIRONMENT_STEP,
         "Smoke tests (fast gate + release evidence)",
-        "Check the lane groups add up and stay within the test budget",
+        "Count each lane and check the test budget",
     ):
         _workflow_step(job=preflight, name=step_name)
     assert "check_integration_coverage.py" not in str(preflight)

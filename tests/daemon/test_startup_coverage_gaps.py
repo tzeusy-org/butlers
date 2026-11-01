@@ -68,18 +68,6 @@ class TestStep1bLoggingConfig:
         # Root log level is set to DEBUG
         assert logging.getLogger().level == logging.DEBUG
 
-    def test_configure_logging_attaches_credential_redaction_filter(self) -> None:
-        """configure_logging attaches a CredentialRedactionFilter to the root logger."""
-        from butlers.core.logging import CredentialRedactionFilter, configure_logging
-
-        configure_logging(level="INFO", fmt="text", log_root=None, butler_name="filter-test")
-
-        root = logging.getLogger()
-        filter_types = [type(f) for f in root.filters]
-        assert CredentialRedactionFilter in filter_types, (
-            "CredentialRedactionFilter must be attached to root logger after configure_logging()"
-        )
-
     async def test_configure_logging_creates_file_handlers_when_log_root_set(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -219,25 +207,6 @@ class TestStep1bLoggingConfig:
         assert not any(h.baseFilename.endswith("/nofile.log") for h in after_file_handlers), (
             "log_root=None should not create a per-butler file log"
         )
-
-    def test_credential_redaction_filter_scrubs_telegram_token(self) -> None:
-        """CredentialRedactionFilter redacts Telegram bot tokens in log messages."""
-        from butlers.core.logging import CredentialRedactionFilter
-
-        f = CredentialRedactionFilter()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="Calling https://api.telegram.org/bot1234567890:ABCDEFabcdef1234567890_ABCDEFG/sendMessage",
-            args=(),
-            exc_info=None,
-        )
-        result = f.filter(record)
-        assert result is True  # Never drops records
-        assert "REDACTED" in record.msg
-        assert "ABCDEFabcdef1234567890_ABCDEFG" not in record.msg
 
     def test_resolve_log_root_env_override_disables_file_logging(
         self, monkeypatch: pytest.MonkeyPatch

@@ -35,7 +35,7 @@ from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
 )
 from butlers.core.general_settings import resolve_general_timezone
-from butlers.core.logging import resolve_log_root
+from butlers.core.logging import CREDENTIAL_REDACTION, resolve_log_root
 from butlers.core.metrics import init_metrics
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.registry import build_runtime_adapter
@@ -221,6 +221,7 @@ async def _startup_database(daemon: Any, state: StartupState) -> None:
         butler_logger=butler_db_logger,
         butler_name=daemon.config.name,
     )
+    daemon._db_log_handler.addFilter(CREDENTIAL_REDACTION)
     logging.getLogger().addHandler(daemon._db_log_handler)
 
 

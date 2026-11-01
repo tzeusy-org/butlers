@@ -21,6 +21,7 @@ from butlers.migrations import _build_alembic_config
 from butlers.testing.migration import (
     create_migrated_test_db,
     init_db_sql_for_dbapi,
+    load_migration,
     migration_bootstrap_db_url,
     migration_db_name,
 )
@@ -177,7 +178,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     bootstrap_config = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, name), chains=["core"]
     )
-    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_290")
+    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_291")
     await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_292")
     conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
@@ -263,11 +264,27 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     # Two genuine schema-local chains share public health and serving DDL.
     # Leaving one schema must retain data/policies while its peer remains head;
     # only the final schema removes either shared surface.
-    peer_config = _build_alembic_config(
-        migration_bootstrap_db_url(postgres_container, name),
-        chains=["core"],
-        target_schema="general",
+    # Repeat the full chain as the real ordinary migration login, matching
+    # existing multi-schema fixtures. A bootstrap superuser cannot satisfy
+    # core_196's finalized, least-authority interface proof and would retry
+    # its deliberately one-time fixed installer against existing objects.
+    restore_boundary = load_migration(
+        _REPO_ROOT / "alembic/versions/core/core_196_restore_drill_executor_boundary.py"
     )
+    prerequisites = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
+    try:
+        assert await prerequisites.fetchval("SELECT current_user") == owner
+        assert await prerequisites.fetchval(
+            """SELECT rolcanlogin AND NOT (rolsuper OR rolbypassrls OR rolcreatedb
+                OR rolcreaterole OR rolreplication)
+            FROM pg_roles WHERE rolname=current_user"""
+        )
+        # Execute the applied migration's exact positive catalogue proof;
+        # no fixture-local approximation, fake stamp or permissive installer.
+        assert await prerequisites.fetchval(restore_boundary._TRUSTED_FINALIZED_INTERFACE_SQL)
+    finally:
+        await prerequisites.close()
+    peer_config = _build_alembic_config(url, chains=["core"], target_schema="general")
     await asyncio.to_thread(command.upgrade, peer_config, "core@core_292")
     pool = await asyncpg.create_pool(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:

@@ -64,6 +64,21 @@
     },
     {
       "workflow": ".github/workflows/ci.yml",
+      "job": "check-totals",
+      "existing_timeout_minutes": null,
+      "successful_sample_n": 0,
+      "p95_s": null,
+      "candidate_timeout_minutes": 5,
+      "retry_extra_s": 0,
+      "state": "provisional source-derived bound; no healthy whole-job observation or current p95 calibration",
+      "sample_source": "split from check-preflight's totals step (median about 10s of a 168s job): sparse checkout, two artifact downloads and a stdlib comparison; 300s covers slow artifact service reads",
+      "review_uv_nominal_envelope_s": 0,
+      "review_browser_hard_retry_interval_s": 0,
+      "additional_provisional_cold_dependency_allowance_s": 0,
+      "installed_timeout_minutes": 5
+    },
+    {
+      "workflow": ".github/workflows/ci.yml",
       "job": "check-affected",
       "existing_timeout_minutes": null,
       "successful_sample_n": 1,

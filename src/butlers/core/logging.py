@@ -35,6 +35,7 @@ import sys
 import warnings
 from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import Any
 
 import structlog
 from opentelemetry import trace
@@ -136,49 +137,86 @@ def add_otel_context(
 _RE_TELEGRAM_BOT_TOKEN = re.compile(r"/bot\d+:[A-Za-z0-9_-]+/")
 
 # Pattern matching HTTP Authorization / Bearer header values in log text.
-# Matches literal "Bearer <token>" where the token is a non-whitespace sequence.
-_RE_BEARER_TOKEN = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
+# Matches "Bearer <token>" where the token is a non-whitespace run of 16+ chars, so
+# prose such as "bearer scrub failed" survives now that the filter runs on every
+# handler (the record is shared, so caplog and the DB sink see the redaction too).
+_RE_BEARER_TOKEN = re.compile(r"Bearer\s+\S{16,}", re.IGNORECASE)
+
+# Pattern matching credential-bearing URL query parameters, e.g. the Steam Web
+# API ``?key=<api key>``.  Anchored on ``?``/``&`` so pagination cursors such as
+# ``pageToken=`` or ``syncToken=`` are left intact.
+_RE_URL_CREDENTIAL_PARAM = re.compile(
+    r"([?&](?:key|api_key|apikey|access_token|token)=)[^&#\s\"']+", re.IGNORECASE
+)
 
 # Additional known credential shapes can be appended here as the project grows.
 _REDACTION_RULES: list[tuple[re.Pattern[str], str]] = [
     (_RE_TELEGRAM_BOT_TOKEN, "/bot[REDACTED]/"),
     (_RE_BEARER_TOKEN, "Bearer [REDACTED]"),
+    (_RE_URL_CREDENTIAL_PARAM, r"\1[REDACTED]"),
 ]
 
 
 class CredentialRedactionFilter(logging.Filter):
     """Defense-in-depth log filter that scrubs known credential patterns.
 
-    Attached to the root logger by ``configure_logging()``, so it fires
-    regardless of which logger emits the record — including third-party
-    libraries like httpx that log full request URLs.
+    ``configure_logging()`` attaches it to every handler it installs, so it
+    fires regardless of which logger emits the record — including third-party
+    libraries like httpx that log full request URLs.  It must sit on handlers,
+    not on the root logger: a logger's own filters only see records logged
+    directly to it, so a root-logger filter never sees records propagated from
+    ``httpx`` or ``butlers.*`` loggers.
 
     Currently redacts:
     - Telegram bot tokens in URL paths (``/bot<id>:<token>/``)
     - HTTP Bearer tokens (``Authorization: Bearer <token>``)
+    - Credential query parameters (``?key=``, ``&access_token=``, ...)
     """
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
         """Scrub credential patterns from the log record message in-place.
 
-        Always returns ``True`` so the record is never dropped.
+        Always returns ``True`` so the record is never dropped, and never
+        raises: a filter exception would drop the record on that handler.
         """
         try:
+            if isinstance(record.msg, dict):
+                # structlog's ``wrap_for_formatter`` hands handlers the event
+                # dict itself; ``ProcessorFormatter`` later calls ``.copy()`` on
+                # it, so the message must stay a dict.
+                record.msg = _redact_value(record.msg)
+                return True
+
             msg = record.getMessage()
+            redacted = _redact_text(msg)
+            if redacted != msg:
+                # Overwrite the message and clear args so getMessage() won't
+                # re-interpolate the original format string with unredacted args.
+                record.msg = redacted
+                record.args = ()
         except Exception:  # noqa: BLE001
-            return True
-
-        redacted = msg
-        for pattern, replacement in _REDACTION_RULES:
-            redacted = pattern.sub(replacement, redacted)
-
-        if redacted != msg:
-            # Overwrite the message and clear args so getMessage() won't
-            # re-interpolate the original format string with unredacted args.
-            record.msg = redacted
-            record.args = ()
-
+            pass
         return True
+
+
+def _redact_text(text: str) -> str:
+    for pattern, replacement in _REDACTION_RULES:
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _redact_value(value: Any) -> Any:
+    """Redact string leaves of a structlog event value, preserving container types."""
+    if isinstance(value, str):
+        return _redact_text(value)
+    if isinstance(value, dict):
+        return {key: _redact_value(item) for key, item in value.items()}
+    if type(value) in (list, tuple):
+        return type(value)(_redact_value(item) for item in value)
+    return value
+
+
+CREDENTIAL_REDACTION = CredentialRedactionFilter()
 
 
 class ButlerContextFileFilter(logging.Filter):
@@ -282,6 +320,7 @@ def _make_file_handler(path: Path, processors: list) -> logging.handlers.TimedRo
     handler.namer = _gzip_namer
     handler.setFormatter(formatter)
     handler.setLevel(logging.DEBUG)
+    handler.addFilter(CREDENTIAL_REDACTION)
     return handler
 
 
@@ -340,6 +379,7 @@ def configure_logging(
     # -- Console handler (stderr) --
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(CREDENTIAL_REDACTION)
 
     root = logging.getLogger()
 
@@ -356,12 +396,9 @@ def configure_logging(
     root.addHandler(console_handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    # Attach credential redaction filter to the root logger (defense-in-depth).
-    # This fires on every record before any handler processes it, including
-    # records from third-party loggers like httpx that may embed credentials
-    # in full request URLs.
-    root.addFilter(CredentialRedactionFilter())
-
+    # Credential redaction lives on each handler (see CredentialRedactionFilter).
+    # Keeping httpx/httpcore at WARNING is the first line of defence: their INFO
+    # request lines carry full URLs, which embed credentials for some APIs.
     # Suppress noisy third-party loggers on console
     for name in _NOISE_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)

@@ -1,14 +1,13 @@
 """Persist value-free dashboard supervised-job health.
 
 Revision ID: core_292
-Revises: core_290 (actual published served-identity migration after Capture core_287;
-reserved or already allocated revisions are not adopted).
+Revises: core_291 (published ambient projections, following core_290).
 """
 
 from alembic import op
 
 revision = "core_292"
-down_revision = "core_290"
+down_revision = "core_291"
 branch_labels = None
 depends_on = None
 _LOCK = "butlers:core_292:dashboard-job-health"

@@ -76,6 +76,7 @@ _CORE_EXPORTS = (
     ("butlers.api.routers.runtime_config", "router"),
     ("butlers.api.routers.system", "router"),
     ("butlers.api.routers.dashboard_briefing", "router"),
+    ("butlers.api.routers.projections", "router"),
     ("butlers.api.routers.permissions", "router"),
     ("butlers.api.routers.settings_console", "router"),
     ("butlers.api.routers.data_ops", "router"),

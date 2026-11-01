@@ -40,7 +40,17 @@ from butlers.core.qa.dispatch import (
     dispatch_qa_investigation,
 )
 from butlers.core.qa.models import QaFinding
+from butlers.core.qa.publication.binding import OperationKind
+from butlers.core.qa.publication.publisher import QaPublisher
 from butlers.core.qa.triage import TriagedFinding
+from tests.core.qa.publication_fakes import (
+    QA_IDENTITY,
+    FakeLedger,
+    FakeProvider,
+    commit_file,
+    git,
+    init_repo,
+)
 
 
 def _make_finding(severity: int = 1, source_type: str = "log_scanner") -> QaFinding:
@@ -1489,3 +1499,126 @@ async def test_pr_status_polling_keeps_trusted_token():
         await check_open_pr_statuses(pool, Path("/tmp/repo"), gh_token=_AGENT_TOKEN)
 
     assert spawn.call_args.kwargs["env"]["GH_TOKEN"] == _AGENT_TOKEN
+
+
+# ---------------------------------------------------------------------------
+# Trusted publisher (bu-mc01y5.6): synthetic provider and ledger, real git export.
+# ---------------------------------------------------------------------------
+
+_QA_BRANCH = "qa/finance/abcdef123456-1"
+
+
+def _publishing_repo(tmp_path: Path, content: str = "value = 2\n") -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    git(repo, "checkout", "-q", "-b", _QA_BRANCH)
+    commit_file(repo, "src/app.py", content, "fix: guard value")
+    git(repo, "checkout", "-q", "main")
+    return repo, base
+
+
+async def _run_published_investigation(
+    repo: Path,
+    base: str,
+    provider: FakeProvider,
+    ledger: FakeLedger,
+    attempt_id: uuid.UUID,
+    finding: QaFinding | None = None,
+) -> dict[str, AsyncMock]:
+    whitelist = MagicMock()
+    whitelist.ensure_loaded = AsyncMock()
+    whitelist.is_allowed = MagicMock(return_value=(True, "allowed"))
+    publisher = QaPublisher(provider=provider, ledger=ledger, repo_root=repo)
+    spawner = MagicMock()
+    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
+    worktree = repo.parent / "worktree"
+    worktree.mkdir(exist_ok=True)
+    with (
+        patch("butlers.core.qa.dispatch._detect_no_op_branch", AsyncMock(return_value=False)),
+        patch("butlers.core.qa.dispatch._capture_commit_diff_snapshot", AsyncMock(return_value=[])),
+        patch("butlers.core.qa.dispatch.update_attempt_status", AsyncMock(return_value=True)) as up,
+        patch("butlers.core.qa.dispatch.record_pr_drafted_event", AsyncMock()) as drafted,
+        patch("butlers.core.qa.dispatch.record_event", AsyncMock()) as event,
+        patch("butlers.core.qa.dispatch.record_escalated_event", AsyncMock()) as escalated,
+        patch("butlers.core.qa.dispatch._persist_notes_and_remove_worktree", AsyncMock()) as td,
+    ):
+        await _run_investigation_session(
+            pool=_make_pool(),
+            repo_root=repo,
+            attempt_id=attempt_id,
+            finding_id=uuid.uuid4(),
+            branch_name=_QA_BRANCH,
+            worktree_path=worktree,
+            finding=finding or _make_finding(),
+            config=QaDispatchConfig(repo_whitelist=whitelist, publisher=publisher),
+            spawner=spawner,
+            gh_token=None,
+            git_author_name=QA_IDENTITY.name,
+            git_author_email=QA_IDENTITY.email,
+            base_sha=base,
+        )
+    _assert_no_credential(spawner.trigger.await_args.kwargs["env_override"])
+    return {"update": up, "drafted": drafted, "event": event, "escalated": escalated, "td": td}
+
+
+@pytest.mark.asyncio
+async def test_publication_links_bound_pr_to_attempt_via_ledger(tmp_path: Path) -> None:
+    repo, base = _publishing_repo(tmp_path)
+    head = git(repo, "rev-parse", _QA_BRANCH)
+    provider, ledger, attempt_id = FakeProvider(), FakeLedger(), uuid.uuid4()
+
+    mocks = await _run_published_investigation(repo, base, provider, ledger, attempt_id)
+
+    (pr_number,) = provider.prs
+    assert provider.refs == {_QA_BRANCH: head}
+    assert provider.prs[pr_number]["labels"] == ("self-healing", "automated")
+    created = ledger.row(attempt_id, OperationKind.PR_CREATE)
+    assert (created.attempt_id, created.stage, created.new_object_id) == (
+        attempt_id,
+        "succeeded",
+        str(pr_number),
+    )
+    update = mocks["update"].await_args
+    assert update.args[2] == "pr_open" and update.kwargs["pr_number"] == pr_number
+    assert mocks["drafted"].await_args.kwargs["pr_number"] == pr_number
+    assert mocks["td"].await_args.kwargs["delete_branch"] is False
+
+
+@pytest.mark.asyncio
+async def test_lost_pr_response_is_held_ambiguous_without_retry(tmp_path: Path) -> None:
+    repo, base = _publishing_repo(tmp_path)
+    provider = FakeProvider(lose_response_on="create_pull_request")
+    ledger, attempt_id, finding = FakeLedger(), uuid.uuid4(), _make_finding()
+
+    first = await _run_published_investigation(repo, base, provider, ledger, attempt_id, finding)
+    again = await _run_published_investigation(repo, base, provider, ledger, attempt_id, finding)
+
+    assert len(provider.prs) == 1
+    assert [name for name, _ in provider.calls] == ["update_ref", "create_pull_request"]
+    assert ledger.row(attempt_id, OperationKind.PR_CREATE).stage == "ambiguous"
+    for mocks in (first, again):
+        assert mocks["update"].await_args.args[2] == "failed"
+        assert (
+            mocks["update"].await_args.kwargs["error_detail"].startswith("publication_ambiguous:")
+        )
+        mocks["escalated"].assert_awaited_once()
+        mocks["drafted"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_leaking_commit_escalates_anonymization_failed_without_egress(
+    tmp_path: Path,
+) -> None:
+    secret = "sk-ant-abcdefghijklmnopqrst"
+    repo, base = _publishing_repo(tmp_path, content=f"token = '{secret}'\n")
+    provider, attempt_id = FakeProvider(), uuid.uuid4()
+
+    mocks = await _run_published_investigation(repo, base, provider, FakeLedger(), attempt_id)
+
+    assert provider.calls == []
+    assert mocks["update"].await_args.args[2] == "anonymization_failed"
+    escalation = mocks["event"].await_args.kwargs
+    assert (escalation["step"], escalation["detail"]) == ("escalated", "content_leak")
+    assert secret not in repr(mocks["event"].await_args_list + mocks["update"].await_args_list)
+    mocks["drafted"].assert_not_awaited()
+    assert mocks["td"].await_args.kwargs["delete_branch"] is True

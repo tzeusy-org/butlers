@@ -278,6 +278,34 @@ describe("ConversationHeader — rename and archive (REQ-dashboard-chat-ui-017)"
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it("keeps the typed title when a rename races a pending archive of the same conversation", async () => {
+    fakeServer([conversation()]);
+    let finishArchive!: () => void;
+    vi.mocked(updateConversation).mockImplementationOnce(
+      (_butler, _id, body) =>
+        new Promise((resolve) => {
+          finishArchive = () => resolve(conversation(body));
+        }),
+    );
+    render(<Surface selectedId="conv-c" />);
+    await screen.findByText("Trip planning");
+
+    act(() => command("Rename conversation").perform());
+    const input = await screen.findByRole("textbox", { name: "Title for Trip planning" });
+    fireEvent.change(input, { target: { value: "Lisbon trip" } });
+    act(() => void command("Archive conversation").perform());
+    await waitFor(() => expect(updateConversation).toHaveBeenCalledTimes(1));
+    pressKey(input, "Enter");
+
+    const reopened = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Title for Trip planning",
+    });
+    expect(reopened.value).toBe("Lisbon trip");
+    expect(screen.getByText(/still saving\. Save again once it finishes/)).toBeTruthy();
+    expect(updateConversation).toHaveBeenCalledTimes(1);
+    await act(async () => finishArchive());
+  });
+
   it("never reopens a late-failing rename on a different selected conversation", async () => {
     fakeServer([conversation(), conversation({ id: "conv-d", title: "Groceries" })]);
     let rejectRename!: (error: Error) => void;

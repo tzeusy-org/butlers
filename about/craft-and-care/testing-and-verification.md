@@ -102,14 +102,15 @@ booleans and floating-point counts are rejected. Malformed evidence fails withou
 The backend lanes run as pytest-split groups: five unit and six integration children, each
 selecting its slice of the lane's fresh marker selection with `duration_based_chunks` over the
 committed `.test_durations`. Durations only balance the groups; a test without one gets the
-average and still runs. Each child records how many tests it collected, and check-preflight sums
-each lane's groups and compares the sum with one fresh `--collect-only` count of the same
-selection. Missing, extra or duplicate group records and lane-total mismatches fail the run.
+average and still runs. Each child records how many tests it collected; check-preflight takes one
+fresh `--collect-only` count of the same selection beside the groups, and check-totals sums each
+lane's groups and compares the sum with it. Missing, extra or duplicate group records and lane-total mismatches fail the run.
 These totals are count evidence, not per-item execution receipts. The fresh lane counts feed
 both lane budgets. Lane children, affected, Vitest and the browser job (which builds its own
 bundle) start after route; every final required verdict still requires successful guards. The
-nightly covered groups measure per-test durations, and its `durations-refresh` job opens a pull
-request with the merged file instead of pushing to main (bu-29wkwj.2).
+required lane groups publish per-test durations, and the nightly `durations-refresh` job merges
+those of the latest successful merge group and opens a pull request with the merged file instead
+of pushing to main (bu-29wkwj.2, bu-q1hzqn.13).
 
 The scheduled weight observer is retired. The computed partition, inventory collector and
 shard observer remain only for the manual `ci-shard-watchdog-diagnostic.yml` workflow, whose

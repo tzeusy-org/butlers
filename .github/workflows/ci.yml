@@ -98,7 +98,8 @@ jobs:
     timeout-minutes: 35
     # Every mandatory static gate in one job: one checkout, one Python, one
     # Node and frozen dev environment. The moved UV/Ruff/SQL checks retain
-    # their exact scopes; preflight owns the lane totals, test budget and smoke.
+    # their exact scopes; preflight owns the lane counts, test budget and smoke,
+    # and check-totals reconciles the lane totals after the groups finish.
     # The nine former guard jobs each paid their own runner spin-up
     # and checkout to run a script that takes seconds. Each guard step keeps
     # the comment block that explains why it exists; those comments are
@@ -453,11 +454,14 @@ jobs:
   check-preflight:
     timeout-minutes: 27
     runs-on: ubuntu-latest
-    needs: [route, guards, check-unit, check-integration]
+    needs: [route]
     # merge_group: always. pull_request: only when the diff reaches beyond the
     # docs filter (fail-closed, see `changes`). push:main: skipped by design,
     # the merge queue already validated this exact tree.
-    if: always() && needs.guards.result == 'success' && (needs.route.outputs.mode == 'full' || needs.route.outputs.mode == 'scoped')
+    # Starts beside the lane groups, not after them: nothing here needs a test
+    # result, so an over-budget tree fails within minutes instead of after the
+    # whole suite. check-totals compares the groups with these counts later.
+    if: needs.route.outputs.mode == 'full' || needs.route.outputs.mode == 'scoped'
 
     steps:
       - uses: actions/checkout@v6
@@ -465,18 +469,21 @@ jobs:
       - name: Set up the CI Python environment
         uses: ./.github/actions/ci-python-environment
 
-      - name: Download every lane group's evidence
+      - name: Count each lane and check the test budget
+        # One fresh --collect-only count per lane of the same selection the groups
+        # run; check-totals requires the groups to sum to it (bu-29wkwj.2).
         if: needs.route.outputs.mode == 'full'
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ci-*-test-evidence
-          path: ${{ runner.temp }}/ci-test-receipts
+        run: uv run --no-sync python scripts/ci_lanes.py count --output "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
 
-      - name: Check the lane groups add up and stay within the test budget
-        # No group may drop or duplicate a test: each lane's group counts must sum
-        # to one fresh --collect-only count of the same selection (bu-29wkwj.2).
+      - name: Upload the lane counts
         if: needs.route.outputs.mode == 'full'
-        run: uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-lane-counts
+          path: ${{ runner.temp }}/ci-lane-counts/lane-counts.json
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
 
       - name: Smoke tests (fast gate + release evidence)
         id: smoke
@@ -573,6 +580,35 @@ jobs:
           if-no-files-found: error
           overwrite: true
 
+  check-totals:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    needs: [route, check-preflight, check-unit, check-integration]
+    # Full mode only: no group may drop or duplicate a test. Each lane's group
+    # counts must sum to check-preflight's fresh --collect-only count. Standard
+    # library only, so it needs no Python environment setup.
+    if: ${{ !cancelled() && needs.route.outputs.mode == 'full' && needs.check-preflight.result == 'success' }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
+
+      - name: Download the lane counts
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-lane-counts
+          path: ${{ runner.temp }}/ci-lane-counts
+
+      - name: Download every lane group's evidence
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*-test-evidence
+          path: ${{ runner.temp }}/ci-test-receipts
+
+      - name: Check the lane groups add up
+        run: python3 scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts" --expected "${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"
+
   check-unit:
     timeout-minutes: 28
     runs-on: ubuntu-latest
@@ -616,6 +652,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
@@ -697,6 +734,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true
@@ -760,7 +798,7 @@ jobs:
   check:
     timeout-minutes: 3
     runs-on: ubuntu-latest
-    needs: [route, guards, check-preflight, check-unit, check-integration, check-affected, frontend-e2e, go-bridge]
+    needs: [route, guards, check-preflight, check-totals, check-unit, check-integration, check-affected, frontend-e2e, go-bridge]
     if: always()
     steps:
       - name: Fail closed from prerequisite verdicts only
@@ -799,6 +837,7 @@ jobs:
                   "route",
                   "guards",
                   "check-preflight",
+                  "check-totals",
                   "check-unit",
                   "check-integration",
                   "check-affected",
@@ -860,6 +899,7 @@ jobs:
                   "route": "success",
                   "guards": "success",
                   "check-preflight": "success" if mode in {"full", "scoped"} else "skipped",
+                  "check-totals": "success" if mode == "full" else "skipped",
                   "check-affected": "success" if mode == "scoped" else "skipped",
                   "check-unit": "success" if mode == "full" else "skipped",
                   "check-integration": "success" if mode == "full" else "skipped",
