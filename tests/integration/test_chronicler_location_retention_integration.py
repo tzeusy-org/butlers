@@ -33,9 +33,7 @@ _STORED = "SELECT days, version, updated_by FROM location_retention_policy WHERE
 
 @pytest.fixture(scope="module")
 def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["chronicler"]
-    )
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["chronicler"])
 
 
 @pytest.fixture
