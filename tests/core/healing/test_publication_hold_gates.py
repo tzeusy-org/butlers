@@ -17,7 +17,6 @@ import pytest
 from butlers.core.healing.tracking import get_recent_attempt
 from butlers.core.qa.dispatch import QaDispatchConfig, dispatch_qa_investigation
 from butlers.core.qa.relay import QaRelay
-from butlers.core.qa.triage import triage_findings
 from tests.core.qa.test_dispatch import _make_finding, _make_pool, _make_triaged
 
 pytestmark = pytest.mark.unit
@@ -44,65 +43,6 @@ async def test_get_recent_attempt_returns_the_real_attempt_and_never_asks_about_
     assert recent is not None and recent["id"] == row["id"]
     assert "publication_held" not in recent
     pool.fetchval.assert_not_awaited()
-
-
-async def test_get_recent_attempt_is_none_when_no_attempt_closed_in_the_window():
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=True)
-
-    assert await get_recent_attempt(pool, _FP, 0) is None
-
-
-# -- triage ---------------------------------------------------------------------------------
-
-
-async def _triage(*, held: bool, recent: dict | None):
-    pool = MagicMock()
-    get_recent = AsyncMock(return_value=recent)
-    with (
-        patch(
-            "butlers.core.qa.triage.insert_finding",
-            new_callable=AsyncMock,
-            return_value=uuid.uuid4(),
-        ),
-        patch(
-            "butlers.core.qa.triage.get_active_attempt", new_callable=AsyncMock, return_value=None
-        ),
-        patch("butlers.core.qa.triage.is_dismissed", new_callable=AsyncMock, return_value=False),
-        patch(
-            "butlers.core.qa.triage.get_publication_hold",
-            new_callable=AsyncMock,
-            return_value=held,
-        ),
-        patch("butlers.core.qa.triage.get_recent_attempt", get_recent),
-    ):
-        result = await triage_findings(pool, uuid.uuid4(), [_make_finding_for_triage()])
-    return result, get_recent
-
-
-def _make_finding_for_triage():
-    return _make_finding(severity=1)
-
-
-async def test_triage_holds_a_held_lineage_even_with_no_recent_attempt():
-    result, get_recent = await _triage(held=True, recent=None)
-
-    assert result.all_findings[0].dedup_reason == "publication_held"
-    assert result.novel_findings == []
-    get_recent.assert_not_awaited()
-
-
-async def test_triage_reports_a_held_lineage_as_held_not_cooldown_with_a_real_attempt():
-    result, _ = await _triage(held=True, recent=_attempt_row())
-
-    assert result.all_findings[0].dedup_reason == "publication_held"
-
-
-async def test_triage_cooldown_is_still_a_cooldown_without_a_hold():
-    result, _ = await _triage(held=False, recent=_attempt_row())
-
-    assert result.all_findings[0].dedup_reason == "cooldown"
 
 
 # -- dispatch gates -------------------------------------------------------------------------

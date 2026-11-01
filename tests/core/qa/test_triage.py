@@ -270,8 +270,12 @@ async def test_triage_intra_patrol_dedup_and_sorting():
     assert sev1 == sorted(sev1, reverse=True)
 
 
-async def test_triage_holds_a_lineage_with_an_unresolved_publication():
-    """A held lineage is deduplicated as publication_held, never released as novel."""
+@pytest.mark.parametrize("recent", [None, {"id": uuid.uuid4(), "status": "failed"}])
+async def test_triage_holds_a_lineage_with_an_unresolved_publication(recent):
+    """A held lineage is deduplicated as publication_held, never released as novel.
+
+    A real recent attempt does not turn the hold into a plain cooldown.
+    """
     pool = MagicMock()
     with (
         patch(
@@ -286,7 +290,11 @@ async def test_triage_holds_a_lineage_with_an_unresolved_publication():
         patch(
             "butlers.core.qa.triage.get_publication_hold", new_callable=AsyncMock, return_value=True
         ),
-        patch("butlers.core.qa.triage.get_recent_attempt", new_callable=AsyncMock) as mock_rec,
+        patch(
+            "butlers.core.qa.triage.get_recent_attempt",
+            new_callable=AsyncMock,
+            return_value=recent,
+        ) as mock_rec,
     ):
         result = await triage_findings(pool, uuid.uuid4(), [_make_finding()])
 
