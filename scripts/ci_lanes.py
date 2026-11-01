@@ -118,7 +118,17 @@ def pytest_command(lane: str, group: int, *, output: Path, coverage: bool) -> li
     config = lane_config(lane)
     if group not in range(1, config.groups + 1):
         raise ValueError(f"{lane}: group must be between 1 and {config.groups}, got {group}")
-    command = [sys.executable, "-m", "pytest", "-q", f"--maxfail={config.maxfail}", "--tb=short"]
+    # -rs lists every skip reason in the log, so a real-PG node that skips (for
+    # example "Docker not available") is visible instead of silently green.
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-rs",
+        f"--maxfail={config.maxfail}",
+        "--tb=short",
+    ]
     if config.ignore_e2e:
         command.append("--ignore=tests/e2e")
     command += [
