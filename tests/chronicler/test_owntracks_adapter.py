@@ -280,7 +280,8 @@ async def test_nonfinite_lat_skips_row_and_advances_watermark() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_point_produces_one_movement_episode() -> None:
+async def test_single_point_emits_no_movement_episode_but_carries_over() -> None:
+    """One fix is a location, not a movement (bu-2tsgqb.6)."""
     row = _make_row()
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -298,27 +299,28 @@ async def test_single_point_produces_one_movement_episode() -> None:
             "butlers.chronicler.adapters.owntracks.upsert_episode",
             side_effect=_fake_upsert_ep,
         ),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover") as mock_save,
     ):
         mock_pe.return_value = MagicMock()
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    assert result.episodes_closed == 1
-    assert len(upserted_episodes) == 1
-    ep = upserted_episodes[0]
-    assert ep.episode_type == EPISODE_TYPE_MOVEMENT
-    assert ep.start_at == _NOW
-    assert ep.end_at == _NOW
-    assert ep.precision == Precision.EXACT
-    assert ep.privacy == Privacy.NORMAL
+    assert result.episodes_closed == 0
+    assert upserted_episodes == []
+    # The pending segment is still carried so the next batch can extend it.
+    saved = mock_save.call_args.args[2]
+    assert saved[_ENDPOINT]["point_count"] == 1
+    assert saved[_ENDPOINT]["start_at"] == _NOW.isoformat()
 
 
 @pytest.mark.asyncio
 async def test_gap_beyond_threshold_produces_two_episodes() -> None:
     t1 = _NOW
-    t2 = _NOW + timedelta(minutes=MOVEMENT_GAP_MINUTES + 1)
+    t2 = _NOW + timedelta(minutes=5 + MOVEMENT_GAP_MINUTES + 1)
     rows = [
         _make_row(ts=t1, idempotency_key="k1"),
+        _make_row(ts=t1 + timedelta(minutes=5), idempotency_key="k1b"),
         _make_row(ts=t2, idempotency_key="k2"),
+        _make_row(ts=t2 + timedelta(minutes=5), idempotency_key="k2b"),
     ]
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -350,7 +352,9 @@ async def test_endpoint_identity_change_splits_episode() -> None:
     t2 = _NOW + timedelta(minutes=5)
     rows = [
         _make_row(ts=t1, endpoint_identity="owntracks:alice", idempotency_key="k1"),
-        _make_row(ts=t2, endpoint_identity="owntracks:bob", idempotency_key="k2"),
+        _make_row(ts=t1, endpoint_identity="owntracks:bob", idempotency_key="k1b"),
+        _make_row(ts=t2, endpoint_identity="owntracks:alice", idempotency_key="k2"),
+        _make_row(ts=t2, endpoint_identity="owntracks:bob", idempotency_key="k2b"),
     ]
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -372,9 +376,12 @@ async def test_endpoint_identity_change_splits_episode() -> None:
         mock_pe.return_value = MagicMock()
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
+    # Interleaved endpoints neither merge nor fragment each other's movement.
     assert result.episodes_closed == 2
-    assert upserted_episodes[0].payload["endpoint_identity"] == "owntracks:alice"
-    assert upserted_episodes[1].payload["endpoint_identity"] == "owntracks:bob"
+    assert {ep.payload["endpoint_identity"] for ep in upserted_episodes} == {
+        "owntracks:alice",
+        "owntracks:bob",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -657,9 +664,114 @@ async def test_buffered_offline_points_keep_device_ts_and_split_by_ts() -> None:
         "nrt-a": narita,
     }
 
+    # The lone Taoyuan and Narita fixes are locations, not movements.
     spans = sorted((ep.start_at, ep.end_at) for ep in upserted_episodes)
-    assert spans == [
-        (taoyuan_late, taoyuan_late),
-        (taoyuan_b, taoyuan_c),
-        (narita, narita),
+    assert spans == [(taoyuan_b, taoyuan_c)]
+
+
+# ---------------------------------------------------------------------------
+# Trail quality (bu-2tsgqb.6): outliers, minimum evidence, duplicate chunks
+# ---------------------------------------------------------------------------
+
+
+async def _project_capturing(
+    rows: list[dict], *, carryover: dict | None = None, stored: dict | None = None
+) -> tuple[object, list[PointEvent], list[Episode], dict]:
+    """Run the adapter, capturing point events, episodes and saved carryover."""
+    events: list[PointEvent] = []
+    episodes: list[Episode] = []
+
+    async def _fake_pe(conn: object, event: PointEvent) -> PointEvent:
+        events.append(event)
+        return event
+
+    async def _fake_ep(conn: object, episode: Episode) -> Episode:
+        episodes.append(episode)
+        return episode
+
+    cp = _chronicler_pool()
+    if stored is not None:
+        conn = await cp.acquire().__aenter__()
+        conn.fetchrow = AsyncMock(return_value=stored)
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event", side_effect=_fake_pe),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_ep),
+        patch(
+            "butlers.chronicler.adapters.owntracks.get_carryover",
+            AsyncMock(return_value=carryover or {}),
+        ),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover") as mock_save,
+    ):
+        result = await OwnTracksPointAdapter().project(
+            _pool_returning(*rows), chronicler_pool=cp, since=None
+        )
+    return result, events, episodes, mock_save.call_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_impossible_jump_kept_as_flagged_evidence_and_excluded_from_movement() -> None:
+    """The Oct 16 landing-time eastern-Poland fix must not become a movement."""
+    beijing = (40.08, 116.58)
+    rows = [
+        _make_row(ts=_NOW, lat=beijing[0], lon=beijing[1], idempotency_key="b1"),
+        _make_row(ts=_NOW + timedelta(minutes=4), lat=52.12, lon=22.06, idempotency_key="poland"),
+        _make_row(
+            ts=_NOW + timedelta(minutes=10), lat=beijing[0], lon=beijing[1], idempotency_key="b2"
+        ),
     ]
+    result, events, episodes, saved = await _project_capturing(rows)
+
+    flagged = {e.payload["idempotency_key"] for e in events if "trail_outlier" in e.payload}
+    assert flagged == {"poland"}
+    assert len(events) == 3  # the evidence is kept, only flagged
+    assert any("impossible jump" in w for w in result.warnings)
+    assert [(ep.episode_type, ep.start_at, ep.payload["point_count"]) for ep in episodes] == [
+        (EPISODE_TYPE_MOVEMENT, _NOW, 2)
+    ]
+    assert saved["_trail_anchors"][_ENDPOINT]["ts"] == (_NOW + timedelta(minutes=10)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_carryover_extension_counts_the_whole_episode() -> None:
+    """One new fix extending an open episode is not a "1 points" movement."""
+    start = _NOW - timedelta(minutes=50)
+    carry = {
+        _ENDPOINT: {
+            "source_ref": "connectors.owntracks_points:movement:x:1",
+            "start_at": start.isoformat(),
+            "end_at": (_NOW - timedelta(minutes=5)).isoformat(),
+            "start_lat": 1.2345,
+            "start_lon": 103.8765,
+            "point_count": 6,
+        }
+    }
+    _, _, episodes, saved = await _project_capturing([_make_row(ts=_NOW)], carryover=carry)
+
+    assert len(episodes) == 1
+    assert episodes[0].start_at == start
+    assert episodes[0].title == "Movement (7 points)"
+    assert saved[_ENDPOINT]["point_count"] == 7
+
+
+@pytest.mark.asyncio
+async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates() -> None:
+    """Regression for the Oct 16 08:14-12:01 / 08:25-09:26 duplicate chunks."""
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:stored",
+        "start_at": _NOW - timedelta(minutes=11),
+        "end_at": _NOW + timedelta(hours=3),
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+    }
+    rows = [
+        _make_row(ts=_NOW, idempotency_key="a"),
+        _make_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+    ]
+    _, _, episodes, saved = await _project_capturing(rows, stored=stored)
+
+    assert len(episodes) == 1
+    ep = episodes[0]
+    assert ep.source_ref == stored["source_ref"]
+    assert (ep.start_at, ep.end_at) == (stored["start_at"], stored["end_at"])
+    assert ep.payload["point_count"] == 42
+    assert saved[_ENDPOINT]["source_ref"] == stored["source_ref"]

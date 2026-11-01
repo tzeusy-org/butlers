@@ -70,6 +70,7 @@ def _chronicler_pool(fetch_rows: list[object] | None = None) -> AsyncMock:
     conn = AsyncMock()
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetch = AsyncMock(return_value=list(fetch_rows or []))
+    conn.fetchrow = AsyncMock(return_value=None)  # no overlapping stored episode
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
