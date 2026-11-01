@@ -196,3 +196,23 @@ async def test_unsanitizable_pr_text_or_labels_block_before_any_egress(overrides
 
     assert result.status is PublicationStatus.ANONYMIZATION_FAILED
     assert provider.calls == [] and ledger.rows == {}
+
+
+async def test_failed_push_leaves_the_sealed_export_retained_outside_the_worktree() -> None:
+    provider = FakeProvider(refs={"qa/finance/abcdef123456-1": "e" * 40})
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+
+    result = await _publish(_publisher(provider, ledger), attempt_id)
+
+    assert result.status is PublicationStatus.FAILED
+    assert ledger.exports[attempt_id] == synthetic_export()
+
+
+@pytest.mark.parametrize("code", ["export_unretained", "export_changed"])
+async def test_unretainable_export_publishes_nothing(code: str) -> None:
+    provider, ledger = FakeProvider(), FakeLedger(retain_refusal=code)
+
+    result = await _publish(_publisher(provider, ledger), uuid.uuid4())
+
+    assert (result.status, result.category) == (PublicationStatus.REFUSED, code)
+    assert provider.calls == [] and ledger.rows == {}

@@ -1,4 +1,4 @@
-"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145/core_233/core_293).
+"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145 to core_295).
 
 Closes the gap identified in bu-6ui2o: the mocked-pool unit tests in
 ``test_gate.py`` and ``test_identity_resolution.py`` cover the Python layer
@@ -846,7 +846,7 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Endpoint custody holds (core_293, bu-s11n0s.1)
+# Endpoint custody holds (core_293, bu-s11n0s.1; core_295, bu-s11n0s.25)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _HOLD_INSERT = """
@@ -1012,6 +1012,156 @@ class TestEndpointCustodyHolds:
                 "UPDATE public.custody_holds SET released_at = NULL WHERE id = $1",
                 hold_id,
             )
+
+    async def test_hold_covers_every_equivalent_owner_phone_spelling(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """A held phone also demotes the owner's other spellings of that number (core_295).
+
+        '+65 8765 0123' and '87650123' digest differently, and the candidate
+        '0087650123' suffix-matches only the unheld local spelling. The hold must
+        still refuse owner, even after the held spelling stops being active.
+        """
+        owner_id = seeded_data["owner_id"]
+        fact_ids = [
+            await migration_pool.fetchval(
+                """
+                INSERT INTO relationship.entity_facts
+                    (subject, predicate, object, object_kind, src, "primary", validity)
+                VALUES ($1, 'has-phone', $2, 'literal', 'test', false, 'active')
+                RETURNING id
+                """,
+                owner_id,
+                spelling,
+            )
+            for spelling in ("+65 8765 0123", "87650123")
+        ]
+
+        async def resolves(digits: str) -> bool:
+            row = await isolated_role_pool.fetchrow(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                [f"phone-digits:{digits}"],
+            )
+            return row is not None and row["entity_id"] == owner_id
+
+        assert await resolves("0087650123")
+        hold_id = await migration_pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-phone", "+65 8765 0123", 1
+        )
+        try:
+            assert not await resolves("0087650123")
+            assert not await resolves("87650123")
+            await migration_pool.execute(
+                "UPDATE relationship.entity_facts SET validity = 'superseded' WHERE id = $1",
+                fact_ids[0],
+            )
+            assert not await resolves("0087650123")
+        finally:
+            await _release(migration_pool, hold_id)
+            await migration_pool.execute(
+                "DELETE FROM relationship.entity_facts WHERE id = ANY($1::uuid[])", fact_ids
+            )
+
+    async def test_legacy_predicate_mode_never_resolves_an_unholdable_fact(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Exact legacy predicates outside the custody universe cannot carry owner (core_295)."""
+        owner_id = seeded_data["owner_id"]
+        fact_id = await migration_pool.fetchval(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", validity)
+            VALUES ($1, 'has-legacy-owner-id', 'legacy-owner-1', 'literal', 'test', true,
+                    'active')
+            RETURNING id
+            """,
+            owner_id,
+        )
+        try:
+            assert (
+                await isolated_role_pool.fetchrow(
+                    "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                    "has-legacy-owner-id",
+                    ["legacy-owner-1"],
+                )
+                is None
+            )
+        finally:
+            await migration_pool.execute(
+                "DELETE FROM relationship.entity_facts WHERE id = $1", fact_id
+            )
+
+
+async def test_core_295_moves_custody_functions_to_the_maintenance_owner(
+    postgres_container,
+) -> None:
+    """Only the trusted database owner may replace a function a hold check calls.
+
+    The migration executor is deliberately not the database owner here, so the
+    assertion fails while any custody function stays with the executor.
+    """
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "relationship"],
+        {"relationship": "relationship"},
+        {"core": "core_293"},
+    )
+    executor = urlparse(db_url).username
+    db_name = urlparse(db_url).path.lstrip("/")
+    trusted_owner = f"custody_owner_{uuid.uuid4().hex[:12]}"
+    admin = await asyncpg.connect(
+        postgres_container.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+    )
+    try:
+        await admin.execute(f'CREATE ROLE "{trusted_owner}" NOLOGIN')
+        await admin.execute(f'GRANT "{trusted_owner}" TO "{executor}"')
+        await admin.execute(f'ALTER DATABASE "{db_name}" OWNER TO "{trusted_owner}"')
+        # The executor no longer owns the database; keep its ordinary access.
+        await admin.execute(f'GRANT CONNECT, TEMPORARY ON DATABASE "{db_name}" TO "{executor}"')
+    finally:
+        await admin.close()
+
+    config = _build_alembic_config(db_url, chains=["core"])
+    await asyncio.to_thread(command.upgrade, config, "core@head")
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        owners = dict(
+            await pool.fetch(
+                """
+                SELECT p.proname, pg_get_userbyid(p.proowner)
+                FROM pg_proc p
+                JOIN pg_namespace n ON n.oid = p.pronamespace
+                WHERE n.nspname = 'public'
+                  AND p.proname IN (
+                      'custody_target_digest', 'guard_custody_holds', 'custody_target_held'
+                  )
+                """
+            )
+        )
+        owners["custody_holds"] = await pool.fetchval(
+            "SELECT pg_get_userbyid(relowner) FROM pg_class "
+            "WHERE oid = 'public.custody_holds'::regclass"
+        )
+        assert owners == dict.fromkeys(
+            (
+                "custody_target_digest",
+                "guard_custody_holds",
+                "custody_target_held",
+                "custody_holds",
+            ),
+            trusted_owner,
+        )
+    finally:
+        await pool.close()
 
 
 async def test_core_293_downgrade_refuses_active_hold_and_reapplies(postgres_container) -> None:

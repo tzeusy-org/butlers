@@ -13,12 +13,19 @@ reachable artifact sanitization) and `-006` (durable ambiguous outcome recovery)
 The package `butlers.core.qa.publication` has four parts. The dispatcher calls
 `proposal.publish_investigation` only when `QaDispatchConfig.publisher` is set.
 
-1. Sealed export (`export.py`). The dispatcher reads the QA branch head once with hardened git and
-   binds it. `build_sealed_export` then reads raw objects with `git cat-file --batch`. It runs against
-   a fresh, empty, publisher-owned repository whose `GIT_OBJECT_DIRECTORY` is the agent's object
+1. Sealed export (`export.py`). The dispatcher reads the QA branch head once from the ref files
+   (no git process, no symlinks) and binds it. `build_sealed_export` then parses raw loose and
+   packed objects in-process (`object_store.py`); no git process runs against the agent's object
    store, so no agent hook, config, `core.hooksPath`, fsmonitor, filter, driver, include or
-   credential helper is ever consulted. Every object is re-hashed against its id, so a rewritten
-   loose object is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
+   credential helper is ever consulted. Every object-store file is opened relative to a directory
+   descriptor with `O_NOFOLLOW | O_NONBLOCK` and must be a bounded regular file. A planted
+   `objects/info/alternates` or `http-alternates`, or a symlinked object, fan-out directory, pack or
+   object directory, or a FIFO, refuses (`object_store_unsafe`) instead of widening which files the
+   reader opens or hanging it. Delta chains (including `REF_DELTA` cycles) resolve
+   iteratively under a depth cap and one per-read byte budget, and pack offsets and delta opcodes
+   are bounds-checked, so hostile pack bytes refuse (`malformed_object`) instead of exhausting
+   memory or escaping as an uncaught error. Every object is re-hashed against its id, so a rewritten loose object
+   is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
    accepts only single-parent commits with plain `tree`/`parent`/`author`/`committer` headers. Author
    and committer must equal the configured QA identity (`BUTLERS_QA_GIT_AUTHOR_*`). The message,
    every new path and every added line of every new blob must pass `validate_anonymized()`. Git
@@ -59,9 +66,23 @@ and kind, so pushing a follow-up to an existing PR needs its own operation ident
 No concrete credentialed provider ships yet. Activation needs bu-mc01y5.7 (isolation) and the
 operational gates bu-nh37dt/bu-vc90le.
 
-The sealed export lives in publisher memory for one run. The ledger keeps only its digest (inside
-the `branch_push` payload digest), next to the persisted diff snapshot. Durable retention of the
-export bytes before worktree teardown is a follow-up.
+Before its first egress the publisher retains the sealed export's exact bytes in
+`public.qa_publication_exports` (migration `core_294`, `butlers.core.qa.publication.retention`): one
+immutable row per attempt with base, head, commit list, framed objects and digest. The agent worktree,
+its branch and its objects are deleted at teardown, so a push or PR creation that fails or ends
+ambiguous still leaves the proposal recoverable for read-only reconciliation, next to the persisted
+diff snapshot, investigation notes and ledger stage. Retaining the same export again is a no-op; a
+different export for the same attempt refuses (`export_changed`), and a store failure refuses
+(`export_unretained`) with nothing sent. `load_retained_export` re-derives every object id and the
+digest, so altered stored bytes refuse with `export_tampered`.
+
+Only `butler_qa_rw` inserts (forced row security, as for the ledger); every runtime role reads, since
+the bytes already passed `validate_anonymized()` and are what a successful publication makes public.
+No role can update or delete a row: there is no UPDATE or DELETE policy, and a BEFORE UPDATE trigger
+(`qa_publication_exports_immutable`) refuses rewrites from a privileged login too. Only the last schema
+to leave `core_294` drops the table, and only while no export is retained. The table is excluded from
+`deploy/backup/pg_dump.sh` for the same reason as the ledger. Pruning old retained exports is not
+implemented.
 
 Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
 kept, and no remote branch or PR is deleted.

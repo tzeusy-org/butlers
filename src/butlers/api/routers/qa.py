@@ -530,12 +530,18 @@ class QaJournalEvent(BaseModel):
     data: dict[str, Any]
 
 
+#: ``unpublished`` requires a retained sealed export and ledger proof that no PR
+#: exists; ``ambiguous`` means a retained proposal whose publication outcome awaits
+#: exact read-only reconciliation.
+ProposalState = Literal["none", "unpublished", "ambiguous", "published"]
+
+
 class QaCaseDossier(BaseModel):
     """Full case payload for the QA dossier renderer."""
 
     case: QaCaseSummary
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
-    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_state: ProposalState = "none"
     proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
@@ -2232,7 +2238,25 @@ async def get_case(
             f.first_seen AS finding_first_seen,
             f.last_seen AS finding_last_seen,
             f.source_session_trigger_source AS finding_source_session_trigger_source,
-            f.structured_evidence AS finding_structured_evidence
+            f.structured_evidence AS finding_structured_evidence,
+            NOT EXISTS (
+                SELECT 1
+                FROM public.qa_publication_operations op
+                WHERE op.attempt_id = a.id
+                  AND (
+                      op.stage IN ('egress_started', 'ambiguous')
+                      OR (
+                          op.kind <> 'branch_push'
+                          AND op.stage NOT IN ('bound', 'failed')
+                          AND op.reconciliation IS DISTINCT FROM 'resource_absent'
+                      )
+                  )
+            ) AS pr_absence_proven,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_exports x
+                WHERE x.attempt_id = a.id
+            ) AS export_retained
         FROM public.healing_attempts a
         LEFT JOIN LATERAL (
             SELECT id, fingerprint, source_type, source_butler, severity,
@@ -2288,11 +2312,18 @@ async def get_case(
     proposal_diff_snapshot = _proposal_diff_from_case_row(row)
     gh_token = await _resolve_github_token(db)
     pr_summary = await _row_to_pr_summary_live(row, token=gh_token, client=get_pr_client())
-    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_state: ProposalState = "none"
     if pr_summary is not None:
         proposal_state = "published"
     elif proposal_diff_snapshot:
-        proposal_state = "unpublished"
+        # Absent PR metadata is not proof that no PR exists: a lost pr_create
+        # response leaves none while the PR may be live. Claim "unpublished"
+        # only when the publication ledger proves no PR egress can have landed.
+        # An empty ledger proves that only for an attempt the publisher handled:
+        # it retains the sealed export before its first egress, while an attempt
+        # from before the ledger cutover has no export and no ledger rows either.
+        absence_proven = row.get("pr_absence_proven") is True and row.get("export_retained") is True
+        proposal_state = "unpublished" if absence_proven else "ambiguous"
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,

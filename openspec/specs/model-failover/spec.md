@@ -191,6 +191,21 @@ config/MCP/empty-response buckets). No marker may appear in more than one bucket
   overrides Gate 1 (captured tool calls) and never widens eligibility beyond the marker
   vocabulary already defined for the exception-message path
 
+#### Scenario: Adapter-reported tool work closes the message-marker path
+- **WHEN** a `RuntimeError` message matches a usage-limit, rate-limit, provider-auth,
+  provider-availability, empty-response, or MCP-discovery marker
+- **AND** no tool call was captured
+- **AND** the runtime adapter's `process_info` reports `is_pre_tool_call=False`
+- **THEN** the classifier SHALL return `eligible=False` with a reason prefixed
+  `adapter_reported_tool_work`, because the message can embed the session transcript
+  (tool output included) and the tools that ran could repeat their side effects
+- **AND** when `is_pre_tool_call` is absent or `True`, the marker match SHALL keep its
+  normal eligibility, so a genuine pre-tool rate-limit or usage-limit still fails over
+- **AND** a runtime config marker in the message SHALL NOT reopen failover either:
+  adapters report `is_pre_tool_call=False` only after the runtime process ran, so a
+  genuine config error never carries it, while generic config wording can appear in
+  embedded tool output
+
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)
 - RFC 0001 (Daemon Lifecycle and Triggers; the spawner orchestrates ephemeral runtime invocations for a logical session)

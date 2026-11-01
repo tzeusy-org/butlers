@@ -9,5 +9,5 @@
 
 - [x] 2.1 Consumer liveness: one attention item per lapsed grant, derived on read and cleared by the next fetch.
 - [ ] 2.2 Settings > Projections UI with the last-fetch column and the revoke verb.
-- [ ] 2.3 Text and 1-bit PNG glance formats with `valid_until` printed, plus a per-grant response cache.
-- [ ] 2.4 Home Assistant package example under `docs/` with an edge staleness template.
+- [x] 2.3 Text and 1-bit PNG glance formats with `valid_until` printed, plus a per-grant response cache.
+- [x] 2.4 Home Assistant package example under `docs/` with an edge staleness template.

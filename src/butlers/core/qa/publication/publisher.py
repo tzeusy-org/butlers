@@ -1,8 +1,9 @@
 """Trusted deterministic QA publisher (REQ-qa-publication-authority-003/-004).
 
 Drives one attempt's publication: verify the sealed export, enforce the
-repository whitelist, sanitize the PR text and labels, then run the closed
-operation sequence ``branch_push`` -> ``pr_create`` -> ``pr_labels``.  Each
+repository whitelist, sanitize the PR text and labels, retain the sealed export
+outside agent control (``retention``), then run the closed operation sequence
+``branch_push`` -> ``pr_create`` -> ``pr_labels``.  Each
 operation is persisted at ``bound`` and moved to ``egress_started`` (under a
 lock on an active attempt) before its single provider call, then its outcome
 is recorded.  An ambiguous result is recorded and stops the sequence: it is
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
-from butlers.core.qa.publication import state
+from butlers.core.qa.publication import retention, state
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
 from butlers.core.qa.publication.export import ExportRefused, SealedExport
 from butlers.core.qa.publication.state import PublicationOperation, PublicationRefused
@@ -79,6 +80,10 @@ class PublicationLedger(Protocol):
         expected_object_id: str | None,
     ) -> PublicationOperation: ...
 
+    async def retain(self, attempt_id: uuid.UUID, export: SealedExport) -> None:
+        """Keep the sealed export outside agent control; raise :class:`PublicationRefused`."""
+        ...
+
     async def start_egress(self, operation_id: uuid.UUID) -> bool: ...
 
     async def record(
@@ -94,6 +99,9 @@ class PoolLedger:
 
     async def begin(self, **kwargs: Any) -> PublicationOperation:
         return await state.begin_operation(self._pool, **kwargs)
+
+    async def retain(self, attempt_id: uuid.UUID, export: SealedExport) -> None:
+        await retention.retain_export(self._pool, attempt_id, export)
 
     async def start_egress(self, operation_id: uuid.UUID) -> bool:
         return await state.mark_egress_started(self._pool, operation_id)
@@ -170,6 +178,12 @@ class QaPublisher:
         sanitized = _sanitize(title, body, labels, self._repo_root)
         if isinstance(sanitized, str):
             return PublicationResult(PublicationStatus.ANONYMIZATION_FAILED, sanitized)
+        try:
+            # Before any egress: a push or PR that then fails or ends ambiguous must still
+            # leave the sealed bytes recoverable after the agent worktree is torn down.
+            await self._ledger.retain(attempt_id, export)
+        except PublicationRefused as exc:
+            return PublicationResult(PublicationStatus.REFUSED, exc.code)
 
         transport = ClosedTransport(
             self._provider, binding=binding, labels=sanitized.labels, export=export
