@@ -320,7 +320,9 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
             "attempt_key",
         }
         assert before_shared["served_child"] is True
+        # pinned-revision: this schema explicitly enters own core_292 for the shared-lifetime control
         assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_292"
+        # pinned-revision: this schema explicitly enters own core_292 for the shared-lifetime control
         assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_292"
         await asyncio.to_thread(command.downgrade, bootstrap_config, "core_287")
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NOT NULL")
@@ -337,11 +339,14 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
             == 3
         )
         assert await shared_snapshot() == before_shared
+        # pinned-revision: this schema explicitly leaves public core_290 to its actual core_287 parent
         assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_287"
+        # pinned-revision: this schema explicitly enters own core_292 for the shared-lifetime control
         assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_292"
         await shared_recorder.tick_ok()
         assert not shared_store.unavailable_jobs
         await asyncio.to_thread(command.downgrade, peer_config, "core_287")
+        # pinned-revision: this schema explicitly leaves public core_290 to its actual core_287 parent
         assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_287"
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NULL")
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_transitions') IS NULL")
