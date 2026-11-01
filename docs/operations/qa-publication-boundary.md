@@ -44,7 +44,11 @@ The package `butlers.core.qa.publication` has four parts. The dispatcher calls
    That call locks the attempt row (`SELECT ... FOR UPDATE`) and refuses `attempt_not_active` unless
    the attempt is still active, so a timed-out or terminal attempt cannot start egress. The publisher
    then makes exactly one provider call and records the outcome. A lost response, or any unexpected
-   error after egress started, is recorded `ambiguous` and stops the sequence. A rerun for the same
+   error after egress started, is recorded `ambiguous` and stops the sequence. That unexpected error
+   is logged by exception type name only, never its message or traceback. A definite provider
+   refusal (`ProviderRejected`) reports `provider_rejected_<code>`, where `<code>` is one of
+   `forbidden`, `not_found`, `conflict`, `validation_failed` or `rate_limited`; any other provider
+   code becomes `unrecognized`, so provider text never reaches a category. A rerun for the same
    attempt reuses recorded successes, returns a held operation as ambiguous, and never re-egresses.
    Nothing is ever deleted.
 4. Dispatcher (`dispatch.py`). On `published`, the attempt moves to `pr_open` with the PR number, a
