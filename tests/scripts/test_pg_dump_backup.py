@@ -1004,7 +1004,8 @@ def test_orphan_fleet_artifact_cannot_be_certified(
             for name in sorted(excluded | {"public.fleet_cases", "public.fleet_case_links"})
         ]
         args += [
-            "--exclude-table-data=" + name for name in sorted(scoped | _read_confirm_backup_set())
+            "--exclude-table-data=" + name
+            for name in sorted(scoped | _read_confirm_backup_set() | _read_job_health_backup_set())
         ]
         dumped = subprocess.run(
             args,

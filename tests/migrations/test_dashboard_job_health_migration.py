@@ -177,7 +177,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     bootstrap_config = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, name), chains=["core"]
     )
-    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_288")
+    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_289")
     await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_286")
     conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
