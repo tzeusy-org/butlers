@@ -46,6 +46,13 @@ Key behaviours
 - Rate-limit handling: honours ``Retry-After`` on HTTP 429; falls back to
   exponential backoff with jitter. Cursors never advance on a failed
   request.
+- Bounded holds: a failed submission holds the resource's checkpoint, but an
+  envelope the Switchboard rejects on ``_POISON_REJECTION_LIMIT`` consecutive
+  attempts is quarantined (a ``poison_quarantine`` error row with the full
+  envelope in ``connectors.filtered_events``) so the window can commit.
+  Transport failures never quarantine. Persistent failures surface on the
+  ``connector_google_health_resource_consecutive_failures`` gauge and
+  page-cap overruns on ``connector_google_health_window_page_cap_exceeded_total``.
 - Heartbeat states: ``healthy`` | ``degraded`` | ``error`` (no ``broken``
   state, per base-spec v2).
 
@@ -88,6 +95,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from enum import Enum
 from threading import Thread
 from typing import TYPE_CHECKING, Any
 
@@ -208,8 +216,26 @@ _MAX_WINDOW_PAGES = 50
 _PAGED_CATEGORIES = frozenset({"sleep", "workout", "measurement"})
 
 
+# Consecutive ingest *rejections* of one envelope before it is quarantined. A rejection is a
+# reply from the Switchboard refusing the envelope, so it recurs on every re-poll; without a
+# bound one poison sample would hold its resource's checkpoint forever. Transport failures
+# never count: an unreachable Switchboard must hold the checkpoint, not drop samples.
+_POISON_REJECTION_LIMIT = 5
+
+
 class GoogleHealthPollIncompleteError(GoogleHealthError):
     """A poll could not consume its whole window; its checkpoint must not advance."""
+
+
+class SubmissionOutcome(Enum):
+    """How one envelope submission ended; truthy only when the envelope is handled."""
+
+    HANDLED = "handled"  # accepted, queued, duplicate, or a recorded policy drop
+    REJECTED = "rejected"  # the Switchboard replied and refused the envelope
+    FAILED = "failed"  # transport failure: the Switchboard gave no verdict
+
+    def __bool__(self) -> bool:
+        return self is SubmissionOutcome.HANDLED
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +293,28 @@ google_health_rate_limit_events_total = _metric(
     Counter,
     "connector_google_health_rate_limit_events_total",
     "Total HTTP 429 responses observed per resource",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_resource_consecutive_failures = _metric(
+    Gauge,
+    "connector_google_health_resource_consecutive_failures",
+    "Consecutive failed polls of one resource; alert when it stays at or above "
+    "the resource_degraded threshold",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_window_page_cap_exceeded_total = _metric(
+    Counter,
+    "connector_google_health_window_page_cap_exceeded_total",
+    "Poll windows abandoned because they needed more provider pages than the cap",
+    labelnames=["endpoint_identity", "resource"],
+)
+
+google_health_quarantined_envelopes_total = _metric(
+    Counter,
+    "connector_google_health_quarantined_envelopes_total",
+    "Envelopes quarantined after repeated ingest rejections",
     labelnames=["endpoint_identity", "resource"],
 )
 
@@ -732,6 +780,10 @@ class ResourceState:
     last_error: str | None = None
     last_error_at: datetime | None = None
     consecutive_failures: int = 0
+    # Consecutive ingest rejections of the envelope keyed ``rejected_key`` (in memory only:
+    # a restart grants a poison envelope at most one more ``_POISON_REJECTION_LIMIT`` run).
+    rejected_key: str | None = None
+    rejected_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -1778,9 +1830,7 @@ class GoogleHealthConnector:
                     else:
                         self._last_source_api_ok = False
                         self._source_api_error_message = "source_api_unreachable"
-                        state.consecutive_failures += 1
-                        state.last_error = str(exc)
-                        state.last_error_at = datetime.now(UTC)
+                        self._record_resource_failure(ctx, state, exc)
                     if token_revoked:
                         await self._mark_account_revoked(acct_id)
                     # Reschedule after one full recheck cycle so we don't tight-loop.
@@ -1879,9 +1929,7 @@ class GoogleHealthConnector:
                     # True below, so record the failure on the resource
                     # itself too — otherwise a persistently-erroring resource
                     # (e.g. a malformed dailyRollUp body) reads as healthy.
-                    state.consecutive_failures += 1
-                    state.last_error = str(exc)
-                    state.last_error_at = datetime.now(UTC)
+                    self._record_resource_failure(ctx, state, exc)
                     logger.warning(
                         "GoogleHealthConnector: poll error account=%s resource=%s "
                         "(non-fatal, consecutive_failures=%d): %s",
@@ -1906,6 +1954,10 @@ class GoogleHealthConnector:
                     state.consecutive_failures = 0
                     state.last_error = None
                     state.last_error_at = None
+                    google_health_resource_consecutive_failures.labels(
+                        endpoint_identity=ctx.endpoint_identity,
+                        resource=state.bundle.resource,
+                    ).set(0)
                     interval = self._config.poll_intervals.get(
                         state.bundle.resource, state.bundle.default_interval_s
                     )
@@ -1930,6 +1982,19 @@ class GoogleHealthConnector:
                 break
             except TimeoutError:
                 pass
+
+    @staticmethod
+    def _record_resource_failure(
+        ctx: OwnerContext, state: ResourceState, exc: BaseException
+    ) -> None:
+        """Extend this resource's failure streak and publish it as an alertable gauge."""
+        state.consecutive_failures += 1
+        state.last_error = str(exc)
+        state.last_error_at = datetime.now(UTC)
+        google_health_resource_consecutive_failures.labels(
+            endpoint_identity=ctx.endpoint_identity,
+            resource=state.bundle.resource,
+        ).set(state.consecutive_failures)
 
     def _shortest_interval(self) -> float:
         """Return the shortest cadence across all resources (seconds)."""
@@ -1975,7 +2040,9 @@ class GoogleHealthConnector:
             params = self._build_params(bundle, state, since, until)
             records = [
                 _normalize_google_health_record(bundle, record)
-                for record in await self._get_window_records(client, bundle, params)
+                for record in await self._get_window_records(
+                    client, bundle, params, endpoint_identity=endpoint_identity
+                )
             ]
 
         # Observe rate-limit headers per (account, resource) for metrics visibility.
@@ -2033,10 +2100,18 @@ class GoogleHealthConnector:
                     normalized_summary_template=bundle.normalized_summary,
                     observed_at=observed_at,
                 )
-            if not await self._submit_envelope(envelope, resource=bundle.resource):
+            outcome = await self._submit_envelope(envelope, resource=bundle.resource)
+            if outcome:
+                if state.rejected_key == record_id:
+                    state.rejected_key, state.rejected_count = None, 0
+                emitted += 1
+            elif outcome is SubmissionOutcome.REJECTED and self._quarantine_if_poison(
+                state, record_id, envelope, endpoint_identity=endpoint_identity
+            ):
+                pass  # receipted; consumed so the rest of the window can commit
+            else:
                 submission_failed = True
                 break
-            emitted += 1
             latest_cursor = record_id
 
         google_health_envelopes_total.labels(
@@ -2065,17 +2140,65 @@ class GoogleHealthConnector:
         self._last_source_api_ok = True
         self._source_api_error_message = None
 
+    def _quarantine_if_poison(
+        self,
+        state: ResourceState,
+        record_id: str,
+        envelope: dict[str, Any],
+        *,
+        endpoint_identity: str,
+    ) -> bool:
+        """Count one ingest rejection of ``record_id``; quarantine it once the limit is hit.
+
+        Returns ``True`` when the envelope is quarantined: an ``error`` row with reason
+        ``poison_quarantine`` and the full envelope lands in ``connectors.filtered_events`` (the
+        receipt an operator replays from), and the caller treats the sample as consumed.
+        """
+        if state.rejected_key == record_id:
+            state.rejected_count += 1
+        else:
+            state.rejected_key, state.rejected_count = record_id, 1
+        attempts = state.rejected_count
+        if attempts < _POISON_REJECTION_LIMIT:
+            return False
+        state.rejected_key, state.rejected_count = None, 0
+        event = envelope.get("event", {})
+        external_event_id = event.get("external_event_id", "")
+        logger.error(
+            "GoogleHealthConnector: quarantined %s after %d consecutive ingest rejections",
+            external_event_id,
+            attempts,
+        )
+        google_health_quarantined_envelopes_total.labels(
+            endpoint_identity=endpoint_identity, resource=state.bundle.resource
+        ).inc()
+        if self._filtered_event_buffer is not None:
+            self._filtered_event_buffer.record(
+                external_message_id=external_event_id,
+                source_channel=envelope.get("source", {}).get("channel", ""),
+                sender_identity=envelope.get("sender", {}).get("identity", ""),
+                subject_or_preview=envelope.get("payload", {}).get("normalized_text", "")[:100],
+                filter_reason=FilteredEventBuffer.reason_poison_quarantine(),
+                full_payload=envelope,
+                status="error",
+                error_detail=f"ingest rejected {attempts} consecutive attempts",
+            )
+        return True
+
     async def _get_window_records(
         self,
         client: GoogleHealthClient,
         bundle: ResourceBundle,
         params: dict[str, Any],
+        *,
+        endpoint_identity: str,
     ) -> list[dict[str, Any]]:
         """Fetch a GET resource's records for one poll window.
 
         Session and measurement bundles follow ``nextPageToken`` (sent back as
         ``pageToken`` with the same filter) until the window is exhausted; a window that
-        needs more than ``_MAX_WINDOW_PAGES`` pages raises instead of counting as consumed.
+        needs more than ``_MAX_WINDOW_PAGES`` pages raises instead of counting as consumed, and
+        counts the overrun so an always-oversized window alerts instead of failing silently.
         """
         data = await client.get_json(bundle.endpoint_path, params=params)
         records = _extract_records(data)
@@ -2084,6 +2207,14 @@ class GoogleHealthConnector:
         pages = 1
         while isinstance(data, dict) and (token := data.get("nextPageToken")):
             if pages >= _MAX_WINDOW_PAGES:
+                google_health_window_page_cap_exceeded_total.labels(
+                    endpoint_identity=endpoint_identity, resource=bundle.resource
+                ).inc()
+                logger.error(
+                    "GoogleHealthConnector: %s window exceeds %d pages; checkpoint held",
+                    bundle.resource,
+                    _MAX_WINDOW_PAGES,
+                )
                 raise GoogleHealthPollIncompleteError(
                     f"{bundle.resource}: window exceeds {_MAX_WINDOW_PAGES} pages"
                 )
@@ -2176,15 +2307,18 @@ class GoogleHealthConnector:
     # Submission
     # ------------------------------------------------------------------
 
-    async def _submit_envelope(self, envelope: dict[str, Any], *, resource: str) -> bool:
+    async def _submit_envelope(
+        self, envelope: dict[str, Any], *, resource: str
+    ) -> SubmissionOutcome:
         """Evaluate filter gate and submit to Switchboard.
 
         Filtered events land in :class:`FilteredEventBuffer` (status=filtered).
         Submission errors land in the same buffer (status=error).
 
-        Returns ``True`` when the envelope is handled (accepted, queued, duplicate, or a
-        recorded policy drop) and ``False`` when submission raised or was refused, so the
-        caller does not count the sample as consumed.
+        Returns ``HANDLED`` for an accepted, queued or duplicate envelope or a recorded policy
+        drop. A refusal the Switchboard replied with (an error status, or an MCP tool error
+        surfaced as ``RuntimeError``) is ``REJECTED``; any other exception is a transport
+        ``FAILED``. Neither counts the sample as consumed; only rejections can quarantine it.
         """
         source = envelope.get("source", {})
         event = envelope.get("event", {})
@@ -2234,9 +2368,22 @@ class GoogleHealthConnector:
                                 policy_tier=control.get("policy_tier", "default"),
                             ),
                         )
-                    return True
+                    return SubmissionOutcome.HANDLED
             except Exception as exc:  # noqa: BLE001
                 logger.debug("GoogleHealthConnector: policy evaluation error (fail-open): %s", exc)
+
+        def record_error(detail: str) -> None:
+            if self._filtered_event_buffer is not None:
+                self._filtered_event_buffer.record(
+                    external_message_id=event.get("external_event_id", ""),
+                    source_channel=source.get("channel", ""),
+                    sender_identity=sender.get("identity", ""),
+                    subject_or_preview=payload.get("normalized_text", "")[:100],
+                    filter_reason=FilteredEventBuffer.reason_submission_error(),
+                    full_payload=envelope,
+                    status="error",
+                    error_detail=detail,
+                )
 
         async with self._semaphore:
             start_t = time.perf_counter()
@@ -2244,36 +2391,30 @@ class GoogleHealthConnector:
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
                 status = "success"
-                handled = True
+                outcome = SubmissionOutcome.HANDLED
                 if isinstance(result, dict):
                     resp_status = result.get("status", "")
                     if resp_status == "duplicate":
                         status = "duplicate"
                     elif resp_status not in ("accepted", "queued", "duplicate"):
-                        handled = False
+                        outcome = SubmissionOutcome.REJECTED
                         logger.warning(
                             "GoogleHealthConnector: unexpected ingest response: %s", result
                         )
+                        record_error(f"ingest rejected: {result.get('error') or resp_status}")
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_source_api_ok = True
-                return handled
+                return outcome
             except Exception as exc:  # noqa: BLE001
                 latency = time.perf_counter() - start_t
                 self._metrics.record_ingest_submission("error", latency)
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
-                if self._filtered_event_buffer is not None:
-                    self._filtered_event_buffer.record(
-                        external_message_id=event.get("external_event_id", ""),
-                        source_channel=source.get("channel", ""),
-                        sender_identity=sender.get("identity", ""),
-                        subject_or_preview=payload.get("normalized_text", "")[:100],
-                        filter_reason=FilteredEventBuffer.reason_submission_error(),
-                        full_payload=envelope,
-                        status="error",
-                        error_detail=str(exc),
-                    )
-                return False
+                record_error(str(exc))
+                # CachedMCPClient raises RuntimeError only for a tool-level error reply.
+                if isinstance(exc, RuntimeError):
+                    return SubmissionOutcome.REJECTED
+                return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
         """Submit directly to Switchboard — bypasses filter gate (replay path)."""
