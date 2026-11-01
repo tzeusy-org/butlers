@@ -610,6 +610,24 @@ def test_core_299_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
         finally:
             privileged.dispose()
 
+        # Supported names beginning with "pg" are not PostgreSQL system schemas.
+        # Exercise the actual second schema, then restore the original two-schema path.
+        bound_id = next(row["id"] for row in before if row["stage"] == "bound")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("ALTER SCHEMA switchboard RENAME TO pgpeer")
+        try:
+            command.downgrade(general, "core_298")
+            _refused(
+                url,
+                bound_id,
+                "stage = 'ambiguous', stage_order = 3",
+                "ck_qa_publication_operations_stage_result",
+            )
+        finally:
+            with engine.begin() as conn:
+                conn.exec_driver_sql("ALTER SCHEMA pgpeer RENAME TO switchboard")
+            command.upgrade(general, "core@head")
+
         # A second schema still at core_299 must keep the strict CHECK in force.
         command.downgrade(general, "core_298")
         bound_id = next(row["id"] for row in before if row["stage"] == "bound")
