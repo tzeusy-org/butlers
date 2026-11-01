@@ -111,13 +111,9 @@ export function ConversationHeader({
     const target = conversation;
     closeEditor();
     void renameConversation(target, nextTitle, {
-      onFailed: (failedTitle) => {
+      onFailed: (failedTitle, error) => {
         if (currentIdRef.current !== target.id) return;
-        setRename({
-          conversationId: target.id,
-          initialTitle: failedTitle,
-          error: "Rename not confirmed. Edit and save to retry.",
-        });
+        setRename({ conversationId: target.id, initialTitle: failedTitle, error });
       },
     });
   }
