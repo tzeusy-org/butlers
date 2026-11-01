@@ -5,6 +5,10 @@ no PR can exist; a retained diff with no local PR metadata is not that proof
 (a lost ``pr_create`` response leaves none while the PR may be live).  The
 unit suite mocks the projected ``pr_absence_proven`` column, so this module
 drives the real ledger transitions and the real dossier SELECT together.
+
+An empty ledger is that proof only for an attempt whose sealed export the
+publisher retained before its first egress (bu-mc01y5.24): an attempt from
+before the ledger cutover has no ledger rows and no export either.
 """
 
 from __future__ import annotations
@@ -96,6 +100,22 @@ async def _attempt_with_retained_diff(pool: asyncpg.Pool) -> uuid.UUID:
     return attempt_id
 
 
+async def _retain_export(pool: asyncpg.Pool, attempt_id: uuid.UUID) -> None:
+    """Retain a sealed export row, as the publisher does before its first egress."""
+    head = "b" * 40
+    await pool.execute(
+        "INSERT INTO public.qa_publication_exports "
+        "(attempt_id, base_sha, head_sha, commits, objects, digest) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        attempt_id,
+        "a" * 40,
+        head,
+        [head],
+        b"",
+        "c" * 64,
+    )
+
+
 async def _record(
     pool: asyncpg.Pool,
     attempt_id: uuid.UUID,
@@ -121,6 +141,7 @@ async def _record(
 @pytest.mark.parametrize(
     ("ledger", "expected"),
     [
+        (None, "ambiguous"),  # Pre-ledger attempt: no export retained, no ledger rows.
         ([], "unpublished"),
         ([(OperationKind.BRANCH_PUSH, "succeeded", None)], "unpublished"),
         ([(OperationKind.PR_CREATE, "failed", None)], "unpublished"),
@@ -135,13 +156,15 @@ async def _record(
 )
 async def test_unpublished_requires_ledger_proof_of_no_pr(
     pools: tuple[asyncpg.Pool, asyncpg.Pool],
-    ledger: list[tuple[OperationKind, Outcome | None, Observation | None]],
+    ledger: list[tuple[OperationKind, Outcome | None, Observation | None]] | None,
     expected: str,
 ) -> None:
     admin, qa = pools
     attempt_id = await _attempt_with_retained_diff(admin)
-    for kind, outcome, reconciliation in ledger:
-        await _record(qa, attempt_id, kind, outcome, reconciliation)
+    if ledger is not None:
+        await _retain_export(qa, attempt_id)
+        for kind, outcome, reconciliation in ledger:
+            await _record(qa, attempt_id, kind, outcome, reconciliation)
 
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = admin
