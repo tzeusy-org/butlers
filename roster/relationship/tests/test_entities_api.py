@@ -40,6 +40,7 @@ from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -1512,12 +1513,47 @@ class TestEntityActivity:
         result.is_error = False
         return result
 
+    def _make_narrative_row(
+        self, *, row_id: UUID | None = None, ts: datetime = _NOW, content: str = "note"
+    ) -> MagicMock:
+        data = {
+            "id": row_id or uuid4(),
+            "predicate": "contact_note",
+            "content": content,
+            "valid_at": ts,
+            "created_at": ts,
+        }
+        row = MagicMock()
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
+        return row
+
+    def _make_identity_row(self, *, row_id: UUID, ts: datetime) -> MagicMock:
+        row = self._make_fact_row(last_seen=ts)
+        data = {
+            "id": row_id,
+            "predicate": "contact_note",
+            "object": "identity value",
+            "observed_at": ts,
+            "last_seen": ts,
+            "created_at": ts,
+        }
+        row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
+        row.get = data.get
+        return row
+
+    @staticmethod
+    def _episode(ep_id: UUID, ts: datetime, title: str | None = "Episode") -> dict:
+        return {"id": str(ep_id), "canonical_start_at": ts.isoformat(), "canonical_title": title}
+
     def _make_app(
         self,
         *,
         owner_exists: bool = True,
         entity_exists: bool = True,
         fact_rows: list | None = None,
+        narrative_rows: list | None = None,
+        relationship_fetch_error: Exception | None = None,
         chronicler_episodes: list[dict] | None = None,
         chronicler_unreachable: bool = False,
     ) -> tuple[FastAPI, AsyncMock]:
@@ -1528,7 +1564,15 @@ class TestEntityActivity:
         entity_val = 1 if entity_exists else None
         mock_pool.fetchrow = AsyncMock(return_value=owner_row)
         mock_pool.fetchval = AsyncMock(return_value=entity_val)
-        mock_pool.fetch = AsyncMock(side_effect=[[], fact_rows or []])
+
+        async def _fetch(sql: str, *args: object) -> list:
+            if relationship_fetch_error is not None:
+                raise relationship_fetch_error
+            if "relationship.entity_facts" in sql:
+                return fact_rows or []
+            return narrative_rows or []
+
+        mock_pool.fetch = AsyncMock(side_effect=_fetch)
 
         mock_mcp_manager = MagicMock()
         if chronicler_unreachable:
@@ -1541,6 +1585,7 @@ class TestEntityActivity:
 
         app = _wire_app(mock_pool)
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp_manager
+        self.mcp_manager = mock_mcp_manager
         return app, mock_pool
 
     async def test_happy_path_returns_200_with_items(self):
@@ -1556,17 +1601,166 @@ class TestEntityActivity:
         assert "offset" in body
         assert body["total"] == 1
 
-    async def test_owner_gate_returns_403(self):
+    @pytest.mark.parametrize("source", [None, "chronicler"])
+    async def test_owner_gate_returns_403(self, source: str | None):
         """GET /entities/{id}/activity returns 403 + owner_required without owner entity."""
-        app, _ = self._make_app(owner_exists=False)
-        resp = await _get(app, _ACTIVITY_PATH)
+        app, pool = self._make_app(owner_exists=False)
+        resp = await _get(app, _ACTIVITY_PATH, **({"source": source} if source else {}))
         _assert_owner_required(resp)
+        pool.fetch.assert_not_awaited()
+        self.mcp_manager.get_client.assert_not_awaited()
 
-    async def test_missing_entity_returns_404(self):
+    @pytest.mark.parametrize("source", [None, "chronicler"])
+    async def test_missing_entity_returns_404(self, source: str | None):
         """GET /entities/{id}/activity returns 404 for unknown entity."""
         app, _ = self._make_app(entity_exists=False)
-        resp = await _get(app, _ACTIVITY_PATH)
+        resp = await _get(app, _ACTIVITY_PATH, **({"source": source} if source else {}))
         assert resp.status_code == 404
+        assert resp.json()["detail"] == "Entity not found"
+        self.mcp_manager.get_client.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("source", "relationship_reads", "chronicler_called", "srcs"),
+        [
+            (None, 2, True, {"chronicler", "relationship"}),
+            ("all", 2, True, {"chronicler", "relationship"}),
+            ("relationship", 2, False, {"relationship"}),
+            ("chronicler", 0, True, {"chronicler"}),
+        ],
+    )
+    async def test_source_selects_which_contributions_execute(
+        self,
+        source: str | None,
+        relationship_reads: int,
+        chronicler_called: bool,
+        srcs: set[str],
+    ):
+        """source is an execution boundary: unselected contributions never run."""
+        app, pool = self._make_app(
+            narrative_rows=[self._make_narrative_row(ts=_OLDER)],
+            fact_rows=[self._make_identity_row(row_id=uuid4(), ts=_OLDER)],
+            chronicler_episodes=[self._episode(uuid4(), _NOW)],
+        )
+        resp = await _get(app, _ACTIVITY_PATH, **({"source": source} if source else {}))
+        assert resp.status_code == 200
+        body = resp.json()
+        assert {item["src"] for item in body["items"]} == srcs
+        assert body["total"] == len(body["items"])
+        assert body["degraded"] is False
+        assert pool.fetch.await_count == relationship_reads
+        assert self.mcp_manager.get_client.await_count == int(chronicler_called)
+
+    async def test_relationship_source_cannot_inherit_chronicler_outage(self):
+        """source=relationship stays healthy while Chronicler is unreachable."""
+        app, _ = self._make_app(
+            narrative_rows=[self._make_narrative_row()], chronicler_unreachable=True
+        )
+        resp = await _get(app, _ACTIVITY_PATH, source="relationship")
+        body = resp.json()
+        assert body["total"] == 1
+        assert body["degraded"] is False
+        assert body["degraded_reason"] is None
+        self.mcp_manager.get_client.assert_not_awaited()
+
+    @pytest.mark.parametrize("source", ["all", "relationship"])
+    async def test_relationship_fetch_failure_is_never_empty_success(self, source: str):
+        """A selected Relationship read failure stays a request failure, not items=[]."""
+        app, _ = self._make_app(relationship_fetch_error=RuntimeError("db down"))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url=BASE_URL,
+        ) as client:
+            resp = await client.get(_ACTIVITY_PATH, params={"source": source})
+        assert resp.status_code >= 500
+
+    async def test_chronicler_source_ignores_relationship_fetch_failure(self):
+        """source=chronicler never runs the Relationship fact query, so its failure is moot."""
+        ep_id = uuid4()
+        app, pool = self._make_app(
+            relationship_fetch_error=RuntimeError("db down"),
+            chronicler_episodes=[self._episode(ep_id, _NOW, title=None)],
+        )
+        resp = await _get(app, _ACTIVITY_PATH, source="chronicler")
+        assert resp.status_code == 200
+        (item,) = resp.json()["items"]
+        assert item == {
+            **item,
+            "id": str(ep_id),
+            "episode_id": str(ep_id),
+            "src": "chronicler",
+            "kind": "episode",
+            "store": None,
+            "summary": None,
+        }
+        pool.fetch.assert_not_awaited()
+
+    async def test_invalid_source_is_rejected_before_any_fetch(self):
+        """An unknown source is a 422 before either contribution executes."""
+        app, pool = self._make_app(chronicler_episodes=[self._episode(uuid4(), _NOW)])
+        resp = await _get(app, _ACTIVITY_PATH, source="unknown")
+        assert resp.status_code == 422
+        pool.fetch.assert_not_awaited()
+        pool.fetchrow.assert_not_awaited()
+        self.mcp_manager.get_client.assert_not_awaited()
+
+    async def test_source_selection_precedes_total_bins_and_pagination(self):
+        """source=chronicler&bins=daily&limit=2&offset=1 counts and bins only episodes."""
+        today = datetime.now(UTC).replace(microsecond=0)
+        ep_ids = [uuid4() for _ in range(4)]
+        episodes = [self._episode(ep, today - timedelta(days=i)) for i, ep in enumerate(ep_ids)]
+        app, _ = self._make_app(
+            narrative_rows=[self._make_narrative_row(ts=today) for _ in range(3)],
+            chronicler_episodes=episodes,
+        )
+        resp = await _get(
+            app, _ACTIVITY_PATH, source="chronicler", bins="daily", window="7d", limit=2, offset=1
+        )
+        body = resp.json()
+        assert body["total"] == 4
+        assert sum(b["count"] for b in body["bins"]) == 4
+        assert [item["id"] for item in body["items"]] == [str(ep_ids[1]), str(ep_ids[2])]
+        assert (body["limit"], body["offset"]) == (2, 1)
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (
+                "all",
+                [("chronicler", None), ("relationship", "identity"), ("relationship", "narrative")],
+            ),
+            ("relationship", [("relationship", "identity"), ("relationship", "narrative")]),
+        ],
+    )
+    async def test_equal_timestamp_cross_store_collisions_survive_in_tuple_order(
+        self, source: str, expected: list[tuple[str, str | None]]
+    ):
+        """One UUID in three stores at one instant: every row survives, ordered by tuple."""
+        shared = uuid4()
+        app, _ = self._make_app(
+            narrative_rows=[self._make_narrative_row(row_id=shared, ts=_NOW)],
+            fact_rows=[self._make_identity_row(row_id=shared, ts=_NOW)],
+            chronicler_episodes=[self._episode(shared, _NOW)],
+        )
+        first = (await _get(app, _ACTIVITY_PATH, source=source)).json()
+        again = (await _get(app, _ACTIVITY_PATH, source=source)).json()
+        assert [(i["src"], i["store"]) for i in first["items"]] == expected
+        assert {i["id"] for i in first["items"]} == {str(shared)}
+        assert first["items"] == again["items"]
+
+    async def test_chronicler_source_total_failure_is_degraded_empty(self):
+        """source=chronicler with Chronicler down is degraded, never an empty history."""
+        app, _ = self._make_app(chronicler_unreachable=True)
+        body = (await _get(app, _ACTIVITY_PATH, source="chronicler")).json()
+        assert body["items"] == []
+        assert body["total"] == 0
+        assert body["degraded"] is True
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
+
+    async def test_chronicler_source_valid_zero_is_healthy_empty(self):
+        """A successful zero-row Chronicler read is the only Chronicler empty result."""
+        app, _ = self._make_app(chronicler_episodes=[])
+        body = (await _get(app, _ACTIVITY_PATH, source="chronicler")).json()
+        assert (body["items"], body["total"], body["degraded"]) == ([], 0, False)
 
     async def test_sql_uses_entity_facts_not_facts(self):
         """Activity endpoint SQL must reference relationship.entity_facts, not relationship.facts."""
@@ -1677,29 +1871,135 @@ class TestEntityActivity:
         assert body["degraded"] is True
         assert body["degraded_reason"] == "chronicler_activity_unavailable"
 
-    async def test_malformed_chronicler_rows_ignored_when_mixed(self):
-        """Some malformed chronicler episode rows are skipped; valid ones are kept."""
-        fact_row = self._make_fact_row(last_seen=_OLDER)
+    @pytest.mark.parametrize("source", ["all", "chronicler"])
+    @pytest.mark.parametrize(
+        "malformed",
+        [
+            {"title": "No ID"},
+            "not-a-dict",
+            {"id": str(uuid4()), "canonical_title": "No timestamp"},
+            {"id": str(uuid4()), "canonical_start_at": "not-a-date"},
+        ],
+        ids=["missing-id", "non-object", "missing-ts", "bad-ts"],
+    )
+    async def test_mixed_malformed_chronicler_rows_keep_readable_rows_and_degrade(
+        self, source: str, malformed: object
+    ):
+        """A malformed row is excluded; readable rows stay; the result is degraded."""
         ep_id = uuid4()
-        # Mix of valid and malformed episodes
-        episodes = [
-            {"title": "No ID"},  # malformed: missing 'id'
-            {
-                "id": str(ep_id),
-                "canonical_start_at": _NOW.isoformat(),
-                "canonical_title": "Valid Episode",
-            },  # valid
-            "not-a-dict",  # malformed
-        ]
-        app, _ = self._make_app(fact_rows=[fact_row], chronicler_episodes=episodes)
-        resp = await _get(app, _ACTIVITY_PATH)
+        episodes = [malformed, self._episode(ep_id, _NOW, title="Valid Episode")]
+        app, _ = self._make_app(
+            fact_rows=[self._make_fact_row(last_seen=_OLDER)], chronicler_episodes=episodes
+        )
+        resp = await _get(app, _ACTIVITY_PATH, source=source)
         assert resp.status_code == 200
         body = resp.json()
-        # Should have both the fact and the one valid episode
-        assert body["total"] == 2
-        # Response is healthy because we got at least one valid episode
-        assert body["degraded"] is False
-        assert body["degraded_reason"] is None
+        chronicler_ids = [i["id"] for i in body["items"] if i["src"] == "chronicler"]
+        assert chronicler_ids == [str(ep_id)]
+        assert body["total"] == (2 if source == "all" else 1)
+        assert body["degraded"] is True
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
+
+
+# ===========================================================================
+# GET /entities/{id}/commitments — read-only entity commitment view
+# (entity-chronicles-and-commitment-doors). Real-SQL selection, ordering and
+# pagination live in test_entity_life_graph_reads_integration.py.
+# ===========================================================================
+
+_COMMITMENTS_PATH = f"/api/relationship/entities/{_ENT_ID}/commitments"
+
+
+class TestEntityCommitments:
+    def _make_app(
+        self,
+        *,
+        owner_exists: bool = True,
+        entity_exists: bool = True,
+        fetch: AsyncMock | None = None,
+    ) -> tuple[FastAPI, AsyncMock]:
+        mock_pool = AsyncMock()
+        mock_pool.fetchrow = AsyncMock(return_value=_make_owner_row() if owner_exists else None)
+        mock_pool.fetchval = AsyncMock(return_value=1 if entity_exists else None)
+        mock_pool.fetch = fetch or AsyncMock(return_value=[])
+        return _wire_app(mock_pool), mock_pool
+
+    async def test_owner_gate_refuses_before_any_read(self):
+        app, pool = self._make_app(owner_exists=False)
+        resp = await _get(app, _COMMITMENTS_PATH)
+        _assert_owner_required(resp)
+        assert resp.json() == {"code": "owner_required", "message": "Owner entity not found"}
+        pool.fetch.assert_not_awaited()
+
+    async def test_unknown_entity_is_404_not_empty(self):
+        app, pool = self._make_app(entity_exists=False)
+        resp = await _get(app, _COMMITMENTS_PATH)
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Entity not found"}
+        pool.fetch.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("path", "params"),
+        [
+            (_COMMITMENTS_PATH, {"limit": 0}),
+            (_COMMITMENTS_PATH, {"limit": 201}),
+            (_COMMITMENTS_PATH, {"offset": -1}),
+            ("/api/relationship/entities/not-a-uuid/commitments", {}),
+        ],
+    )
+    async def test_invalid_request_is_422_before_source_read(self, path: str, params: dict):
+        app, pool = self._make_app()
+        resp = await _get(app, path, **params)
+        assert resp.status_code == 422
+        pool.fetch.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            asyncpg.UndefinedTableError("relation public.owner_conditions secret-detail"),
+            asyncpg.InsufficientPrivilegeError("permission denied secret-detail"),
+            TimeoutError("secret-detail"),
+            ConnectionResetError("secret-detail"),
+        ],
+        ids=["missing-table", "permission", "timeout", "connection"],
+    )
+    async def test_source_failure_is_degraded_never_zero(self, error: Exception):
+        app, _ = self._make_app(fetch=AsyncMock(side_effect=error))
+        resp = await _get(app, _COMMITMENTS_PATH, limit=5, offset=0)
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "items": [],
+            "total": 0,
+            "limit": 5,
+            "offset": 0,
+            "degraded": True,
+            "degraded_reason": "commitment_source_unavailable",
+        }
+        assert "secret-detail" not in resp.text
+
+    async def test_known_entity_without_commitments_is_honest_empty(self):
+        """The one-statement page query returns its anchor row with total=0."""
+        anchor = {
+            "total": 0,
+            "kind": None,
+            "direction": None,
+            "summary": None,
+            "deadline": None,
+            "escalation_level": None,
+            "fingerprint": None,
+            "first_detected_at": None,
+        }
+        app, _ = self._make_app(fetch=AsyncMock(return_value=[anchor]))
+        resp = await _get(app, _COMMITMENTS_PATH)
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "items": [],
+            "total": 0,
+            "limit": 50,
+            "offset": 0,
+            "degraded": False,
+            "degraded_reason": None,
+        }
 
 
 # ===========================================================================

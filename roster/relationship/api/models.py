@@ -1620,6 +1620,42 @@ class ActivityBinsResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Entity commitments (entity-chronicles-and-commitment-doors)
+# ---------------------------------------------------------------------------
+
+
+class EntityCommitmentItem(BaseModel):
+    """One active commitment between the owner and an entity.
+
+    The deliberately minimal Meeting Prep projection: no source, condition ID,
+    episode, state, confidence, timestamps, evidence, or other metadata.
+    """
+
+    kind: Literal["promise", "waiting_for", "follow_up", "obligation", "decision"]
+    direction: Literal["owner_to_other", "other_to_owner"]
+    summary: str
+    deadline: str | None = None
+    escalation_level: Literal["L0", "L1", "L2", "L3"]
+    fingerprint: str
+
+
+class EntityCommitmentsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/commitments``.
+
+    ``degraded`` is true only when the commitment source could not be read;
+    ``degraded_reason`` is then the fixed content-blind discriminator and
+    ``items`` is empty, so a failure never reads as "no commitments".
+    """
+
+    items: list[EntityCommitmentItem]
+    total: int
+    limit: int
+    offset: int
+    degraded: bool = False
+    degraded_reason: Literal["commitment_source_unavailable"] | None = None
+
+
+# ---------------------------------------------------------------------------
 # View marks + delta-since-last-visit (entity v3 — "Delta-since-last-visit")
 # ---------------------------------------------------------------------------
 
