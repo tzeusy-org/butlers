@@ -227,6 +227,20 @@ name a different symbol. A component with both
 `export function Foo` and `export default Foo` where every consumer uses the named import reports
 twice; deleting the default clears both.
 
+A nonzero Vitest execution remains `complete=false`, `wrapper_exit=2` and nonpassing even
+when its private reporter file contains useful observations. The wrapper retains only closed
+error counters, outcome states and opaque module/item identities after validating the fresh
+file's closed schema, mandatory configuration predicates, tracked source paths and unchanged
+source/run/attempt identity. An observed successful independent reference additionally checks
+membership and matching runtime configuration. Without it, safe reported observations survive,
+but reference, membership and configuration match stay `UNKNOWN`. These partial diagnostics
+never prove complete population or readiness. Missing, stale, malformed or mismatched evidence
+is explicitly `UNKNOWN`; a cancelled reference cannot provide membership authority. Raw test
+names, parameters, provider
+strings, exception messages and subprocess stdout/stderr remain outside artifacts and wrapper
+output. Transport controls establish this information boundary, not an installed Vitest failure
+cause, performance result or hosted check success.
+
 Frontend tests run locally in a worktree: `scripts/setup_worktree.sh` falls back to a local
 `npm install` when the root `frontend/node_modules` is empty, after which every `frontend` CI step
 (including `vitest run -u` snapshot regeneration) runs for real. Playwright (`frontend-e2e`) needs a
