@@ -34,10 +34,13 @@ FROM python:3.12-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e
 # postgresql-client (psql, createdb, dropdb): the isolated restore-drill
 # executor shells out to psql to replay a plain-format pg_dump's COPY...FROM
 # stdin blocks -- asyncpg's protocol cannot do this, only the real client can.
+# ffmpeg: the Telegram bot connector transcodes owner voice notes to PCM for
+# speech-to-text (telegram-voice-transcription; off unless explicitly enabled).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     bubblewrap=0.12.0-1~deb13u1 \
     curl \
+    ffmpeg \
     gh \
     git \
     gnupg \

@@ -5,6 +5,10 @@
 ### Requirement: Tiered Text Extraction
 The connector SHALL extract human-readable text from Telegram messages using a four-tier fallback strategy.
 
+ID: REQ-connector-telegram-bot-005
+Source: bu-r0dsz; [Observed] `src/butlers/connectors/telegram_bot.py` `_extract_normalized_text`
+Scope: v1-mandatory
+
 #### Scenario: Tier 1 — text field
 - **WHEN** a Telegram message has a `text` field
 - **THEN** it is used as `payload.normalized_text`
@@ -28,7 +32,7 @@ The connector SHALL extract human-readable text from Telegram messages using a f
   succeed with acceptable confidence for that note
 - **THEN** the transcript text supersedes the `[Voice message]` descriptor as `payload.normalized_text`
   (per that capability's Successful Transcript requirement)
-- **AND** every other case — an ineligible sender, a disabled feature, an oversize or overlong note,
+- **AND** every other case — an ineligible or forwarded note, a disabled feature, an oversize or overlong note,
   a download/transcode/STT failure, or an empty/low-confidence result — leaves this Tier 3 scenario's
   `[Voice message]` descriptor exactly as specified above, unconditional and unchanged
 

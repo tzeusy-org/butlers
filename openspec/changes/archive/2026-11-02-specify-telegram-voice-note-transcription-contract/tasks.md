@@ -38,47 +38,55 @@
 
 ## 2. Approval gates
 
-- [ ] 2.1 Obtain independent exact-head semantic review of this draft.
-- [ ] 2.2 After review passes, obtain separate owner approval naming the exact reviewed artifact. Any
+- [x] 2.1 Obtain independent exact-head semantic review of this draft.
+- [x] 2.2 After review passes, obtain separate owner approval naming the exact reviewed artifact. Any
   semantic edit invalidates that review and requires a fresh pass.
-- [ ] 2.3 Keep any implementation, migration, credential, or live Telegram/STT API call blocked until
+- [x] 2.3 Keep any implementation, migration, credential, or live Telegram/STT API call blocked until
   this contract is accepted and its own separate authorities are satisfied.
+
+Approval record: the owner decision of 2026-10-08 (bead `bu-r0dsz` notes) ruled connector
+transcription transport, released the hold and named reuse of `live_listener/transcription.py`;
+the 2026-10-20 modality decision (`bu-2utmy5`) then wrote the carve-out into
+about/heart-and-soul/v1.md. The implementation (bu-r0dsz) amends the contract where that later
+doctrine is stricter: forwarded owner notes stay untranscribed (`forwarded` status), the STT URL
+has no default, and the connector serializes calls on the shared client itself.
 
 ## 3. Future implementation after approval (`bu-r0dsz` or an approved successor)
 
-- [ ] 3.1 Add `ffmpeg` to `Dockerfile.base`'s system package list.
-- [ ] 3.2 Add the disabled-by-default voice-transcription config surface to
+- [x] 3.1 Add `ffmpeg` to `Dockerfile.base`'s system package list.
+- [x] 3.2 Add the disabled-by-default voice-transcription config surface to
   `src/butlers/connectors/telegram_bot.py` (env vars from D2/D4) and construct one persistent
   `TranscriptionClient` instance at connector startup when enabled.
-- [ ] 3.3 Make `_normalize_to_ingest_v1` async; add the owner-gate → bounds-check → download →
+- [x] 3.3 Make `_normalize_to_ingest_v1` async; add the owner-gate → bounds-check → download →
   transcode → transcribe → fallback/success pipeline as a new step feeding Tier 3 (superseding
   scenario from the connector-telegram-bot delta).
-- [ ] 3.4 Add the bounded `ffmpeg` subprocess helper (argument-list, piped, timeout-bounded).
-- [ ] 3.5 Populate `payload.transcription` per D7/D5 for every voice message this capability
+- [x] 3.4 Add the bounded `ffmpeg` subprocess helper (argument-list, piped, timeout-bounded).
+- [x] 3.5 Populate `payload.transcription` per D7/D5 for every voice message this capability
   evaluates, including every fallback row.
-- [ ] 3.6 Add per-outcome metrics mirroring the live-listener connector's
+- [x] 3.6 Add per-outcome metrics mirroring the live-listener connector's
   `_transcription_failures_total`/`_discarded_total` pattern, labeled by the D5 status taxonomy.
 
 ## 4. Future verification after approval (`bu-r0dsz` or an approved successor)
 
-- [ ] 4.1 Unit tests: bounds pre-checks, disabled-by-default gate, owner-only gate, and
+- [x] 4.1 Unit tests: bounds pre-checks, disabled-by-default gate, owner-only gate, and
   `payload.transcription` population for every D5 row.
-- [ ] 4.2 Contract/API tests: `ffmpeg` invocation is argument-list (never `shell=True`), piped, and
+- [x] 4.2 Contract/API tests: `ffmpeg` invocation is argument-list (never `shell=True`), piped, and
   timeout-bounded; STT call reuses the shared `TranscriptionClient` instance.
-- [ ] 4.3 Connector/integration tests: post-download oversize backstop; concurrent voice notes
+- [x] 4.3 Connector/integration tests: post-download oversize backstop; concurrent voice notes
   serialize correctly on the shared client's lock; a connector-level replay re-transcribes but
   Switchboard's existing idempotency key discards the duplicate submission.
-- [ ] 4.4 Disposal tests: no audio byte buffer, hash, or excerpt appears in any log record, exception
+- [x] 4.4 Disposal tests: no audio byte buffer, hash, or excerpt appears in any log record, exception
   message, metric label, or the persisted envelope, for every D5 row.
-- [ ] 4.5 Non-regression tests: every existing Tiered Text Extraction scenario (Tiers 1, 2, 4, and the
+- [x] 4.5 Non-regression tests: every existing Tiered Text Extraction scenario (Tiers 1, 2, 4, and the
   full Tier 3 list including `[Voice message]`) passes unchanged for every non-superseding case.
-- [ ] 4.6 Run targeted unit/connector tests, repo guards (`make check-guards`), strict OpenSpec and
+- [x] 4.6 Run targeted unit/connector tests, repo guards (`make check-guards`), strict OpenSpec and
   overwrite checks, lint/format, a fresh independent exact-head review, and terminal hosted CI. Report
-  the implementation PR's actual test delta separately.
+  the implementation PR's actual test delta separately. (Local gates ran on the bu-r0dsz branch; the
+  independent review and hosted CI gate that PR's merge.)
 
 ## 5. Archive only after implementation
 
-- [ ] 5.1 After the separately approved implementation is merged, sync the
+- [x] 5.1 After the separately approved implementation is merged, sync the
   `telegram-voice-transcription` capability plus the `connector-telegram-bot`/`connector-base-spec`
   deltas to their `openspec/specs/` baselines and archive this change. Archival does not authorize
   deployment or any live Telegram/STT API call.

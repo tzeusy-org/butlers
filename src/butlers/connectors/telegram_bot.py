@@ -17,6 +17,10 @@ Environment Variables (from docs/connectors/telegram_bot.md):
     CONNECTOR_BUTLER_DB_NAME: Local butler DB for per-butler secret overrides (optional)
     BUTLER_SHARED_DB_NAME: Shared credential DB name (optional, default butlers)
     BUTLER_TELEGRAM_TOKEN: Telegram bot token (required; resolved from DB first, then env)
+    CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED: Transcribe owner voice notes (default false)
+    CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL: STT service URL (required when enabled)
+    CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_PROTOCOL: wyoming | websocket | http (default wyoming)
+    CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S: Longest voice note transcribed, seconds (default 120)
 """
 
 from __future__ import annotations
@@ -45,9 +49,21 @@ from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.live_listener.transcription import (
+    TranscriptionClient,
+    create_transcription_client,
+)
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
-from butlers.connectors.telegram_spans import bot_in_reply_to_ref, bot_message_spans
+from butlers.connectors.telegram_spans import bot_in_reply_to_ref, bot_message_spans, forward_origin
+from butlers.connectors.telegram_voice import (
+    DEFAULT_MAX_DURATION_S,
+    MAX_VOICE_BYTES,
+    VoiceTranscriptionStatus,
+    record_outcome,
+    transcode_to_pcm,
+    transcription_outcome,
+)
 from butlers.conversation_identity import (
     telegram_bot_message_identity,
     telegram_bot_update_identity,
@@ -268,6 +284,13 @@ class TelegramBotConnectorConfig:
     # It is intentionally never read from the environment.
     approval_callback_connector_token: str | None = None
 
+    # Owner voice-note transcription (bu-r0dsz; telegram-voice-transcription spec). Disabled by
+    # default: enabling sends owner audio to the configured STT service.
+    voice_transcription_enabled: bool = False
+    voice_transcription_url: str | None = None
+    voice_transcription_protocol: str = "wyoming"
+    voice_max_duration_s: int = DEFAULT_MAX_DURATION_S
+
     @classmethod
     def from_env(cls) -> TelegramBotConnectorConfig:
         """Load configuration from environment variables."""
@@ -290,6 +313,16 @@ class TelegramBotConnectorConfig:
 
         internal_api_url = os.environ.get("CONNECTOR_INTERNAL_API_URL", "").strip() or None
 
+        voice_enabled = os.environ.get(
+            "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        voice_url = os.environ.get("CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL", "").strip() or None
+        if voice_enabled and voice_url is None:
+            raise ValueError(
+                "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL is required when "
+                "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED is true"
+            )
+
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
             provider=provider,
@@ -300,6 +333,17 @@ class TelegramBotConnectorConfig:
             max_inflight=max_inflight,
             health_port=health_port,
             internal_api_url=internal_api_url,
+            voice_transcription_enabled=voice_enabled,
+            voice_transcription_url=voice_url,
+            voice_transcription_protocol=os.environ.get(
+                "CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_PROTOCOL", "wyoming"
+            ).strip()
+            or "wyoming",
+            voice_max_duration_s=int(
+                os.environ.get(
+                    "CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S", str(DEFAULT_MAX_DURATION_S)
+                )
+            ),
         )
 
 
@@ -335,6 +379,7 @@ class TelegramBotConnector:
         db_pool: asyncpg.Pool | None = None,
         cursor_pool: asyncpg.Pool | None = None,
         blob_store: BlobStore | None = None,
+        transcription_client: TranscriptionClient | None = None,
     ) -> None:
         self._config = config
         self._http_client = httpx.AsyncClient(timeout=30.0)
@@ -360,6 +405,18 @@ class TelegramBotConnector:
         # fetch_attachment pre-put existence check) so a replayed update never
         # re-puts a blob, even without a DB pool.
         self._media_ref_cache: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+        # One persistent STT client for owner voice notes, created only when the feature is
+        # enabled (telegram-voice-transcription: Single-Shot Reuse). The lock serializes calls on
+        # it for every backend; it is not a retry layer.
+        if transcription_client is None and config.voice_transcription_enabled:
+            transcription_client = create_transcription_client(
+                protocol=config.voice_transcription_protocol,
+                url=config.voice_transcription_url,
+                mic_name="telegram_voice",
+            )
+        self._transcription_client = transcription_client
+        self._transcription_lock = asyncio.Lock()
 
         # Metrics
         self._metrics = ConnectorMetrics(
@@ -566,6 +623,8 @@ class TelegramBotConnector:
         # Load checkpoint
         await self._load_checkpoint()
 
+        await self._connect_transcription_client()
+
         # Load ingestion policy rules before entering the ingestion loop.
         await self._ingestion_policy.ensure_loaded()
         await self._global_ingestion_policy.ensure_loaded()
@@ -657,6 +716,7 @@ class TelegramBotConnector:
         # Load ingestion policy rules before registering the webhook.
         await self._ingestion_policy.ensure_loaded()
         await self._global_ingestion_policy.ensure_loaded()
+        await self._connect_transcription_client()
 
         await self._set_webhook(self._config.webhook_url)
         logger.info(
@@ -684,6 +744,13 @@ class TelegramBotConnector:
 
         await self._mcp_client.aclose()
         await self._http_client.aclose()
+        if self._transcription_client is not None:
+            await self._transcription_client.disconnect()
+
+    async def _connect_transcription_client(self) -> None:
+        """Connect the shared STT client once; the client reconnects itself on later calls."""
+        if self._transcription_client is not None:
+            await self._transcription_client.connect()
 
     # -------------------------------------------------------------------------
     # Internal: Telegram API calls
@@ -1563,6 +1630,151 @@ class TelegramBotConnector:
         response.raise_for_status()
         return response.content
 
+    async def _download_voice_bytes(self, file_id: str) -> bytes:
+        """Fetch one voice note's bytes, reading at most one byte past ``MAX_VOICE_BYTES``.
+
+        The caller's post-download backstop rejects anything longer, so an understated
+        ``Voice.file_size`` can never pull an unbounded body into memory.
+        """
+        file_path = await self._get_telegram_file_path(file_id)
+        token = self._config.telegram_token
+        chunks: list[bytes] = []
+        received = 0
+        async with self._http_client.stream(
+            "GET", f"https://api.telegram.org/file/bot{token}/{file_path}"
+        ) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                chunks.append(chunk)
+                received += len(chunk)
+                if received > MAX_VOICE_BYTES:
+                    break
+        return b"".join(chunks)
+
+    async def _is_owner_sender(self, sender_id: str) -> bool:
+        """Fast definer-backed owner lookup; fails closed without a pool or on error."""
+        if self._db_pool is None or sender_id == "unknown":
+            return False
+        owner_channel = await resolve_owner_channel_via_definer(
+            self._db_pool, "telegram_bot", sender_id
+        )
+        return owner_channel is not None
+
+    async def _transcribe_voice(
+        self, msg: dict[str, Any], sender_id: str
+    ) -> tuple[str | None, dict[str, Any]]:
+        """Run the owner voice-note pipeline: gate, bounds, download, transcode, transcribe.
+
+        Returns ``(transcript, payload.transcription)``; ``transcript`` is ``None`` on every
+        fallback row, leaving the ``[Voice message]`` descriptor in place. Audio buffers live only
+        in this frame and are dropped on every exit path; nothing here logs audio or transcript
+        content (telegram-voice-transcription: Unconditional In-Memory-Only Audio Disposal).
+        """
+        status, transcript, result = await self._run_voice_pipeline(msg, sender_id)
+        record_outcome(status)
+        attempted = status in (
+            VoiceTranscriptionStatus.TRANSCRIBED,
+            VoiceTranscriptionStatus.STT_UNAVAILABLE,
+            VoiceTranscriptionStatus.EMPTY_OR_LOW_CONFIDENCE,
+        )
+        outcome = transcription_outcome(
+            status,
+            stt_backend=self._config.voice_transcription_protocol if attempted else None,
+            confidence=result.get("confidence"),
+            language=result.get("language"),
+        )
+        return transcript, outcome
+
+    async def _run_voice_pipeline(
+        self, msg: dict[str, Any], sender_id: str
+    ) -> tuple[VoiceTranscriptionStatus, str | None, dict[str, Any]]:
+        """Evaluate one voice note; any unexpected error falls back to a content-free status.
+
+        ``fallback`` tracks the stage reached, so an exception nobody anticipated still lands on
+        the taxonomy row naming where it happened and the update keeps its descriptor instead of
+        being dropped. Only the exception type is logged.
+        """
+        status = VoiceTranscriptionStatus
+        fallback = status.NOT_OWNER  # fail closed until ownership is proven
+        audio: bytes | None = None
+        pcm: bytes | None = None
+        try:
+            voice = msg["voice"]
+            client = self._transcription_client
+            if not self._config.voice_transcription_enabled or client is None:
+                return status.DISABLED, None, {}
+            if not await self._is_owner_sender(sender_id):
+                return status.NOT_OWNER, None, {}
+            # Only the owner's own speech keeps owner authorship (v1.md, RFC 0038 D5/D18); a
+            # forwarded note is someone else's audio and stays untranscribed.
+            if forward_origin(msg) is not None:
+                return status.FORWARDED, None, {}
+            fallback = status.DOWNLOAD_FAILED
+            file_size = voice.get("file_size")
+            if isinstance(file_size, int) and file_size > MAX_VOICE_BYTES:
+                return status.OVERSIZE, None, {}
+            duration = voice.get("duration")
+            max_duration_s = self._config.voice_max_duration_s
+            if isinstance(duration, (int, float)) and duration > max_duration_s:
+                return status.OVERLONG, None, {}
+            file_id = voice.get("file_id")
+            if not isinstance(file_id, str) or not file_id:
+                return status.DOWNLOAD_FAILED, None, {}
+
+            for attempt in (1, 2):  # one bounded retry
+                try:
+                    audio = await self._download_voice_bytes(file_id)
+                    break
+                except Exception as exc:
+                    # Exception text can carry the bot-token URL; log the type only.
+                    logger.warning(
+                        "Voice note download failed (attempt %d): %s", attempt, type(exc).__name__
+                    )
+            if audio is None:
+                return status.DOWNLOAD_FAILED, None, {}
+            if len(audio) > MAX_VOICE_BYTES:
+                return status.OVERSIZE, None, {}
+
+            fallback = status.TRANSCODE_FAILED
+            pcm = await transcode_to_pcm(
+                audio, timeout_s=float(max_duration_s), max_duration_s=max_duration_s
+            )
+            audio = None
+            if pcm is None:
+                return status.TRANSCODE_FAILED, None, {}
+
+            fallback = status.STT_UNAVAILABLE
+            try:
+                async with self._transcription_lock:
+                    result = await client.transcribe(pcm)
+            except Exception as exc:
+                logger.warning("Voice note STT call raised %s", type(exc).__name__)
+                return status.STT_UNAVAILABLE, None, {}
+            if result is None:
+                # The client returns None both when the service is down and when it discards an
+                # empty/low-confidence result; only the former marks it unhealthy.
+                if client.healthy:
+                    return status.EMPTY_OR_LOW_CONFIDENCE, None, {}
+                return status.STT_UNAVAILABLE, None, {}
+            text = result.text.strip()
+            if not text:
+                return status.EMPTY_OR_LOW_CONFIDENCE, None, {}
+            return (
+                status.TRANSCRIBED,
+                text,
+                {"confidence": result.confidence, "language": result.language},
+            )
+        except Exception as exc:
+            logger.warning(
+                "Voice note pipeline raised %s; falling back to %s",
+                type(exc).__name__,
+                fallback.value,
+            )
+            return fallback, None, {}
+        finally:
+            audio = None
+            pcm = None
+
     async def _materialize_media(
         self,
         *,
@@ -1725,6 +1937,8 @@ class TelegramBotConnector:
         - payload.normalized_text: extracted text (the caption for photo/document,
           possibly "" — see _extract_normalized_text)
         - payload.attachments: materialized photo/document blobs, if any
+        - payload.transcription: voice-note transcription outcome, for caption-less voice notes
+          (the owner's transcript replaces "[Voice message]" when transcription succeeds)
         - control.idempotency_key: tg:<chat_id>:<message_id> (canonical across connectors)
         """
         update_id = str(update.get("update_id", "unknown"))
@@ -1796,12 +2010,22 @@ class TelegramBotConnector:
                     error_detail=media_failure_reason,
                 )
 
+        # A caption-less voice note: the owner's transcript, when there is one, supersedes the
+        # [Voice message] descriptor (connector-telegram-bot Tiered Text Extraction).
+        transcription: dict[str, Any] | None = None
+        if isinstance(msg.get("voice"), dict) and not msg.get("text") and not msg.get("caption"):
+            transcript, transcription = await self._transcribe_voice(msg, sender_id)
+            if transcript:
+                normalized_text = transcript
+
         payload: dict[str, Any] = {
             "raw": update,
             "normalized_text": normalized_text,
         }
         if attachments:
             payload["attachments"] = attachments
+        if transcription is not None:
+            payload["transcription"] = transcription
         # Forwarded and quoted third-party text (RFC 0038 D5). The forwarding owner stays the
         # sender; the span is what starts the goal exposed at admission.
         untrusted_spans = bot_message_spans(msg, normalized_text)
