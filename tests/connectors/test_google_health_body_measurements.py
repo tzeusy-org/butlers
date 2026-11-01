@@ -1,12 +1,16 @@
-"""Google Health weight and body-fat bundles (bu-q7vx1q.35).
+"""Google Health weight and body-fat bundles (bu-q7vx1q.35, bu-u5euwb.10).
 
 One envelope per sample, keyed on the sample's physical time; weight is converted from grams to
-kilograms at the connector.
+kilograms at the connector. Polls use the ``:reconcile`` operation, consume every page, and only
+advance the checkpoint after every required submission succeeds.
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
+from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -118,3 +122,118 @@ def test_query_window_uses_timestamps_not_dates() -> None:
     params = connector._build_params(_bundle("weight"), None, since, until)
     assert since.isoformat() in params["filter"] and until.isoformat() in params["filter"]
     assert params["filter"].startswith('weight.sample_time.physical_time >= "')
+
+
+# ---------------------------------------------------------------------------
+# Poll: pages, empty responses, and checkpoint retention on failure
+# ---------------------------------------------------------------------------
+
+_EMAIL = "me@example.com"
+_LATER = "2026-10-18T13:30:00Z"
+
+
+def _poll_harness(responses: list[Any], resource: str = "weight"):
+    """A connector with one account whose API client returns ``responses`` in order."""
+    connector = gh.GoogleHealthConnector(
+        config=gh.GoogleHealthConnectorConfig(switchboard_mcp_url="http://localhost:41999/mcp"),
+        shared_pool=None,
+        cursor_pool=None,
+    )
+    acct = uuid.uuid4()
+    connector._accounts[acct] = gh.OwnerContext(
+        account_id=acct,
+        email=_EMAIL,
+        entity_id=uuid.uuid4(),
+        refresh_token_present=True,
+        endpoint_identity=gh._endpoint_identity_for_user(_EMAIL),
+    )
+    state = gh.ResourceState(bundle=_bundle(resource))
+    api: Any = type(
+        "FakeAPI",
+        (),
+        {"get_json": AsyncMock(side_effect=responses), "last_rate_limit_headers": {}},
+    )()
+    connector._make_account_api_client = lambda _acct: api  # type: ignore[method-assign]
+    connector._save_cursor = AsyncMock()  # type: ignore[method-assign]
+    return connector, acct, state, api
+
+
+def _keys(submit: AsyncMock) -> list[str]:
+    return [c.args[0]["control"]["idempotency_key"] for c in submit.await_args_list]
+
+
+async def test_poll_consumes_every_page_before_committing() -> None:
+    page1 = {"dataPoints": [_weight_point(sample=_SAMPLE)], "nextPageToken": "t1"}
+    page2 = {"dataPoints": [_weight_point(sample=_LATER)]}
+    connector, acct, state, api = _poll_harness([page1, page2])
+    connector._submit_envelope = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    await connector._poll_resource(acct, state)
+
+    first, second = (c.kwargs["params"] for c in api.get_json.await_args_list)
+    assert api.get_json.await_args_list[0].args[0].endswith("weight/dataPoints:reconcile")
+    assert "pageToken" not in first
+    assert second == {**first, "pageToken": "t1"}
+    assert _keys(connector._submit_envelope) == [
+        f"google_health:{_EMAIL}:weight:{_SAMPLE}",
+        f"google_health:{_EMAIL}:weight:{_LATER}",
+    ]
+    connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
+    assert state.backfill_done and state.last_poll_at is not None
+
+
+@pytest.mark.parametrize("resource", ["weight", "body_fat"])
+@pytest.mark.parametrize("response", [{}, {"dataPoints": []}])
+async def test_empty_response_emits_nothing_and_keeps_the_cursor(resource, response) -> None:
+    connector, acct, state, _api = _poll_harness([response], resource)
+    state.last_cursor = _SAMPLE
+    connector._submit_envelope = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    await connector._poll_resource(acct, state)
+
+    connector._submit_envelope.assert_not_awaited()
+    connector._save_cursor.assert_not_awaited()
+    assert state.last_cursor == _SAMPLE
+
+
+async def test_failed_submission_keeps_checkpoint_and_replays_same_keys() -> None:
+    body = {"dataPoints": [_weight_point(sample=_SAMPLE), _weight_point(sample=_LATER)]}
+    connector, acct, state, _api = _poll_harness([body, body])
+    connector._submit_envelope = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[True, False, True, True]
+    )
+
+    with pytest.raises(gh.GoogleHealthPollIncompleteError):
+        await connector._poll_resource(acct, state)
+    connector._save_cursor.assert_not_awaited()
+    assert state.last_poll_at is None and not state.backfill_done
+
+    await connector._poll_resource(acct, state)
+    keys = _keys(connector._submit_envelope)
+    assert keys[0] == keys[2] and keys[1] == keys[3]
+    connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
+
+
+@pytest.mark.parametrize(
+    "pages",
+    [
+        pytest.param(
+            [{"dataPoints": [_weight_point()], "nextPageToken": "t1"}, RuntimeError("503")],
+            id="page-fetch-fails",
+        ),
+        pytest.param(
+            [{"dataPoints": [_weight_point()], "nextPageToken": "t"}] * gh._MAX_MEASUREMENT_PAGES,
+            id="page-bound-exceeded",
+        ),
+    ],
+)
+async def test_incomplete_window_submits_nothing_and_keeps_checkpoint(pages) -> None:
+    connector, acct, state, _api = _poll_harness(pages)
+    connector._submit_envelope = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+    with pytest.raises((RuntimeError, gh.GoogleHealthPollIncompleteError)):
+        await connector._poll_resource(acct, state)
+
+    connector._submit_envelope.assert_not_awaited()
+    connector._save_cursor.assert_not_awaited()
+    assert state.last_poll_at is None
