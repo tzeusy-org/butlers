@@ -262,3 +262,54 @@ async def test_inactive_attempt_cannot_enter_egress(pool, attempt, terminal_stat
         == "bound"
     )
     assert not await get_publication_hold(pool, fingerprint)
+
+
+async def test_lost_pr_create_reconciles_by_adopting_the_only_pr(pool, attempt) -> None:
+    """A pr_create binds no PR number, so the reconciler adopts the head/base match."""
+    from butlers.core.qa.publication.reconcile import (
+        PoolReconciliationLedger,
+        reconcile_operation,
+    )
+
+    attempt_id, fingerprint = attempt
+    binding = _binding()
+    operation = await begin_operation(
+        pool,
+        attempt_id=attempt_id,
+        kind=OperationKind.PR_CREATE,
+        binding=binding,
+        request_digest=_PAYLOAD,
+    )
+    assert await mark_egress_started(pool, operation.id)
+    assert await record_outcome(pool, operation.id, "ambiguous")
+    # A non-number, or a second adoption, never releases the hold.
+    assert not await record_reconciliation(
+        pool, operation.id, "resource_found", observed_object_id="pr:17"
+    )
+
+    class Reader:
+        repository = binding.repository
+
+        async def read_ref(self, *, branch):  # pragma: no cover - pr_create never reads refs
+            raise AssertionError("pr_create reconciles by PR lookup")
+
+        async def find_pull_requests(self, *, head, base):
+            assert (head, base) == (binding.branch, binding.base_ref)
+            return (17,)
+
+    result = await reconcile_operation(
+        PoolReconciliationLedger(pool),
+        Reader(),
+        attempt_id=attempt_id,
+        kind=OperationKind.PR_CREATE,
+        binding=binding,
+    )
+
+    assert (result.status, result.object_id) == ("reconciled", "17")
+    assert not await get_publication_hold(pool, fingerprint)
+    row = await pool.fetchrow(
+        "SELECT stage, reconciliation, new_object_id FROM public.qa_publication_operations "
+        "WHERE id = $1",
+        operation.id,
+    )
+    assert tuple(row) == ("reconciled", "resource_found", "17")

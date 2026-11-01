@@ -163,6 +163,10 @@ The Gmail connector implements the optional backfill polling protocol for dashbo
 - Walks result pages in reverse chronological order.
 - Applies the same tiered ingestion rules as live mode.
 - Persists cursor via `backfill.progress(...)`.
+- Progress reports carry counters since the previous report and a fresh `progress_token`, so the
+  MCP client's one reconnect-retry cannot double-count a report Switchboard already applied.
+- `backfill.poll` is re-entrant: it returns the connector's already-active job before claiming a
+  pending one, so a lost poll response resumes the job from its cursor instead of orphaning it.
 
 ### Rate Limiting and Cost Controls
 

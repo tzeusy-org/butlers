@@ -685,6 +685,72 @@ duplicate panel.
   count (owner conditions have no QA-dispatch suppression concept), while
   infra-ledger rows retain the existing suppression-count behavior
 
+### Requirement: Supervised Dashboard Background Work Health
+
+ID: REQ-system-overview-page-008
+Source: Non-Negotiable Rule 4; owner decision bu-c6wjr Option D (2026-08-13)
+Scope: v1-mandatory
+
+The System page SHALL expose persisted work health for every dashboard-api
+`supervise_lifespan_loop` consumer, separately from process liveness, ordinary
+scheduled tasks, and fleet connector health. The supervisor SHALL retain its
+existing restart and cancellation behavior. Recording failure SHALL NOT stop work.
+
+Current state SHALL be fenced by immutable process-instance identity and boot
+ordering: after a newer process claims a job, an older process SHALL NOT update
+its state. A new instance SHALL start without credit for the previous instance's
+success. Periodic work SHALL be `ok` only after a successful tick within its
+configured interval plus grace (one quarter interval, at least five seconds),
+`error` after failed or partially failed work, and `stale` when successful work
+or initial work becomes overdue. Continuous work SHALL be `ok` only with a
+recent connection/progress observation, `degraded` while reconnecting, and
+`error` after three consecutive reconnect failures. Disabled work SHALL be
+`disabled`; absent/current-instance-mismatched evidence SHALL be `unknown`.
+Starting, unknown, stale and unavailable SHALL never imply successful work.
+
+The shared current-state and transition tables SHALL store fixed safe reason
+codes, timestamps and counters, never exception text, tracebacks, URLs or
+credential values. Retention SHALL keep at most 100 transitions per job within
+30 days; every successful recording transaction SHALL prune both bounds, even
+when the current state is unchanged. Dashboard-owned storage SHALL remain
+protected from runtime-role writes and reads after bootstrap public-table grants.
+
+`GET /api/system/background-jobs` SHALL return an owner-dashboard fact envelope
+with `jobs_available` and registered `jobs`, including bounded recent transitions.
+Storage read or outstanding recording failure SHALL return `jobs_available=false`,
+never an empty all-clear. The System page SHALL show loading, request error,
+unavailable, empty, and each job state distinctly, with last successful work or
+connection progress and recorded failure counts. This surface SHALL NOT page,
+notify, execute work, or change scheduling or feature enablement.
+
+#### Scenario: A living loop catches a tick failure
+
+- **WHEN** a supervised loop catches an exception or reports partial failure
+- **THEN** its current health reports failed work while the loop continues
+- **AND** a later successful tick records recovery without storing private error text
+
+#### Scenario: Restart and concurrent old writer
+
+- **WHEN** a newer dashboard process claims a job after an older process succeeded
+- **THEN** the job starts without the old success, and subsequent old writes are fenced
+
+#### Scenario: Continuous connection fails and recovers
+
+- **WHEN** the LISTEN bridge reconnects unsuccessfully three consecutive times
+- **THEN** health moves from degraded to error
+- **AND** a successful listener connection records recovery and fresh progress
+
+#### Scenario: Storage cannot provide work evidence
+
+- **WHEN** recording or reading background health fails
+- **THEN** work continues and the owner sees unavailable evidence, not healthy emptiness
+
+#### Scenario: Retention and privacy survive runtime bootstrap grants
+
+- **WHEN** transitions exceed either retention bound and another tick records
+- **THEN** only the newest 100 within 30 days remain per job, using safe reason codes
+- **AND** runtime roles cannot read or forge dashboard health after bootstrap replay
+
 ## Source References
 
 - Non-Negotiable Rule 1 (`about/heart-and-soul/vision.md`): user-federated, one user,

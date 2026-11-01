@@ -1616,11 +1616,12 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         connector_type: str,
         endpoint_identity: str,
     ) -> dict[str, Any] | None:
-        """Claim the next pending backfill job for a connector identity.
+        """Claim the next backfill job for a connector identity.
 
         Called by connector processes (e.g. Gmail connector) to atomically
-        claim the oldest pending backfill job. Returns None when no pending
-        job exists for this connector.
+        claim the oldest pending backfill job. Re-entrant: a job already active
+        for this connector is returned first, so a retried poll whose response
+        was lost does not orphan it. Returns None when there is neither.
 
         Connectors MUST call this no more frequently than once every 60 seconds.
 
@@ -1650,6 +1651,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         cursor: dict[str, Any] | None = None,
         status: str | None = None,
         error: str | None = None,
+        progress_token: str | None = None,
     ) -> dict[str, Any]:
         """Report batch progress for an active backfill job.
 
@@ -1669,6 +1671,8 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             cursor: Optional updated resume cursor (opaque JSONB).
             status: Optional terminal status (``completed`` or ``error``).
             error: Optional error detail (accompany ``status="error"``).
+            progress_token: Optional per-report idempotency token. A retried
+                report reusing the last applied token changes nothing.
 
         Returns:
             ``{status: str}`` — the authoritative job status after this update.
@@ -1684,4 +1688,5 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             cursor=cursor,
             status=status,
             error=error,
+            progress_token=progress_token,
         )

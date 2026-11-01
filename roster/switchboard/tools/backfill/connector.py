@@ -84,11 +84,15 @@ async def backfill_poll(
     connector_type: str,
     endpoint_identity: str,
 ) -> dict[str, Any] | None:
-    """Claim the oldest pending backfill job for the given connector identity.
+    """Claim the next backfill job for the given connector identity.
 
-    Atomically transitions the job from ``pending`` to ``active`` and sets
-    ``started_at`` if this is the first activation. Returns ``None`` when no
-    pending job exists for this connector.
+    Re-entrant: a job already ``active`` for this connector identity is handed
+    back first (with its resume cursor), so a poll whose response was lost to a
+    transport drop and retried does not orphan the job it claimed. A connector
+    polls only while it runs no job, so any active job it owns is one it lost.
+    Otherwise atomically transitions the oldest ``pending`` job to ``active``
+    and sets ``started_at`` on first activation. Returns ``None`` when the
+    connector has neither.
 
     Connectors MUST call this no more frequently than once every 60 seconds
     (see ``CONNECTOR_BACKFILL_POLL_INTERVAL_S`` in connector config).
@@ -126,9 +130,10 @@ async def backfill_poll(
         raise ValueError("endpoint_identity must be a non-empty string")
 
     try:
-        # Atomically claim the oldest pending job for this connector identity.
-        # CTE uses SELECT ... FOR UPDATE SKIP LOCKED to avoid races between
-        # concurrent poll calls (rare in practice but safe under load).
+        # Atomically (re)claim this connector identity's job: its active job
+        # first, else the oldest pending one. CTE uses SELECT ... FOR UPDATE
+        # SKIP LOCKED to avoid races between concurrent poll calls (rare in
+        # practice but safe under load).
         row = await pool.fetchrow(
             """
             WITH claimed AS (
@@ -136,8 +141,8 @@ async def backfill_poll(
                 FROM backfill_jobs
                 WHERE connector_type = $1
                   AND endpoint_identity = $2
-                  AND status = 'pending'
-                ORDER BY created_at ASC
+                  AND status IN ('active', 'pending')
+                ORDER BY (status = 'active') DESC, created_at ASC
                 LIMIT 1
                 FOR UPDATE SKIP LOCKED
             )
@@ -181,7 +186,7 @@ async def backfill_poll(
 
     if row is None:
         logger.debug(
-            "backfill.poll: no pending job for connector_type=%s endpoint_identity=%s",
+            "backfill.poll: no active or pending job for connector_type=%s endpoint_identity=%s",
             connector_type,
             endpoint_identity,
         )
@@ -231,11 +236,19 @@ async def backfill_progress(
     cursor: dict[str, Any] | None = None,
     status: str | None = None,
     error: str | None = None,
+    progress_token: str | None = None,
 ) -> dict[str, Any]:
     """Report batch progress for an active backfill job.
 
     Updates cumulative counters using per-batch deltas, advances the resume
     cursor, and applies optional connector-requested status transitions.
+
+    Replay-safe with ``progress_token``: connectors call through a client that
+    resends once after a transport drop, so a report the server already applied
+    may arrive again. A report whose token equals the last applied one changes
+    nothing and answers the job's current status. Connectors report
+    sequentially per job, so only the latest token can be replayed. Without a
+    token every call is applied (legacy additive behaviour).
 
     If the cumulative ``cost_spent_cents`` reaches or exceeds
     ``daily_cost_cap_cents``, Switchboard transitions the job to
@@ -256,6 +269,8 @@ async def backfill_progress(
         status: Optional terminal status reported by connector
             (``completed`` or ``error``).
         error: Optional error detail (should accompany ``status="error"``).
+        progress_token: Optional per-report idempotency token, reused verbatim
+            when the same report is retried.
 
     Returns:
         ``{status: str}`` — the authoritative job status after this update.
@@ -288,9 +303,7 @@ async def backfill_progress(
             id,
             connector_type,
             endpoint_identity,
-            status,
-            cost_spent_cents,
-            daily_cost_cap_cents
+            status
         FROM backfill_jobs
         WHERE id = $1
         """,
@@ -318,46 +331,41 @@ async def backfill_progress(
         )
         return {"status": current_status}
 
-    # Determine new authoritative status
-    new_cost = row["cost_spent_cents"] + cost_spent_cents_delta
-    cost_cap = row["daily_cost_cap_cents"]
-
-    if new_cost >= cost_cap:
-        new_status = "cost_capped"
-        logger.info(
-            "backfill.progress: job %s cost_capped (cumulative=%d >= cap=%d)",
-            job_id_val,
-            new_cost,
-            cost_cap,
-        )
-    elif status in _VALID_CONNECTOR_TERMINAL_STATUSES:
-        new_status = status
-    else:
-        new_status = "active"
-
-    # Compute completed_at for terminal states
-    is_terminal = new_status in {"completed", "cancelled", "error", "cost_capped"}
-
+    # The cost cap, the active-status guard and the replay check are evaluated
+    # on the locked row inside the UPDATE, so a concurrent pause/cancel or a
+    # replayed report cannot act on the unlocked row read above. cost_capped wins over a
+    # connector-reported terminal status.
     cursor_json = json.dumps(cursor) if cursor is not None else None
 
+    current = None
     try:
         result = await pool.fetchrow(
             """
             UPDATE backfill_jobs
             SET
-                rows_processed   = rows_processed + $2,
-                rows_skipped     = rows_skipped + $3,
-                cost_spent_cents = cost_spent_cents + $4,
-                cursor           = CASE WHEN $5::text IS NOT NULL
-                                        THEN $5::jsonb
-                                        ELSE cursor END,
-                status           = $6,
-                error            = CASE WHEN $7::text IS NOT NULL THEN $7 ELSE error END,
-                completed_at     = CASE WHEN $8
-                                       THEN COALESCE(completed_at, now())
-                                       ELSE completed_at END,
-                updated_at       = now()
+                rows_processed      = rows_processed + $2,
+                rows_skipped        = rows_skipped + $3,
+                cost_spent_cents    = cost_spent_cents + $4,
+                cursor              = CASE WHEN $5::text IS NOT NULL
+                                           THEN $5::jsonb
+                                           ELSE cursor END,
+                status              = CASE
+                                          WHEN cost_spent_cents + $4 >= daily_cost_cap_cents
+                                          THEN 'cost_capped'
+                                          ELSE COALESCE($6::text, 'active')
+                                      END,
+                error               = CASE WHEN $7::text IS NOT NULL THEN $7 ELSE error END,
+                completed_at        = CASE
+                                          WHEN cost_spent_cents + $4 >= daily_cost_cap_cents
+                                               OR $6::text IS NOT NULL
+                                          THEN COALESCE(completed_at, now())
+                                          ELSE completed_at
+                                      END,
+                last_progress_token = COALESCE($8::text, last_progress_token),
+                updated_at          = now()
             WHERE id = $1
+              AND status = 'active'
+              AND ($8::text IS NULL OR last_progress_token IS DISTINCT FROM $8::text)
             RETURNING status, rows_processed, rows_skipped, cost_spent_cents
             """,
             job_id_val,
@@ -365,10 +373,16 @@ async def backfill_progress(
             rows_skipped,
             cost_spent_cents_delta,
             cursor_json,
-            new_status,
+            status,
             error,
-            is_terminal,
+            progress_token,
         )
+        if result is None:
+            # Replayed token, or the job left ``active`` since the read above:
+            # nothing was applied; answer the authoritative status.
+            current = await pool.fetchrow(
+                "SELECT status FROM backfill_jobs WHERE id = $1", job_id_val
+            )
     except Exception as exc:
         safe_endpoint = _redact_endpoint_identity(endpoint_identity)
         if _is_transient_connectivity_error(exc):
@@ -389,6 +403,18 @@ async def backfill_progress(
                 exc_info=True,
             )
         raise RuntimeError(f"backfill.progress database error: {exc}") from exc
+
+    if result is None:
+        if current is None:
+            raise ValueError(f"Backfill job {job_id_val} not found")
+        current_status = current["status"]
+        logger.info(
+            "backfill.progress: job %s report not applied (replayed token or no longer "
+            "active); returning status=%s",
+            job_id_val,
+            current_status,
+        )
+        return {"status": current_status}
 
     authoritative_status = result["status"]
     logger.info(

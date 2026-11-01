@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ApiError,
   getBackupFacts,
+  getBackgroundJobFacts,
   getButlerHeartbeats,
   getDatabaseFacts,
   getDeploymentFacts,
@@ -181,6 +182,15 @@ export function useSystemConditions(params: SystemConditionsParams = {}) {
   return useQuery({
     queryKey: ["system-conditions", params],
     queryFn: () => getSystemConditions(params),
+    refetchInterval: SYSTEM_POLL_FAST_MS,
+  });
+}
+
+/** Persisted work state; availability is distinct from an empty job inventory. */
+export function useBackgroundJobs() {
+  return useQuery({
+    queryKey: ["system-background-jobs"],
+    queryFn: getBackgroundJobFacts,
     refetchInterval: SYSTEM_POLL_FAST_MS,
   });
 }

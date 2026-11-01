@@ -59,6 +59,14 @@ class FakeProvider:
         self.calls.append(("set_labels", {"number": number, "labels": labels}))
         self.prs[number]["labels"] = labels
 
+    # Read-only ``PublicationReader`` view; never appended to ``calls`` (the effect log).
+
+    async def read_ref(self, *, branch) -> str | None:
+        return self.refs.get(branch)
+
+    async def find_pull_requests(self, *, head, base) -> tuple[int, ...]:
+        return tuple(n for n, pr in self.prs.items() if (pr["head"], pr["base"]) == (head, base))
+
 
 @dataclass
 class FakeLedger:
@@ -123,6 +131,32 @@ class FakeLedger:
         if self._get(operation_id).stage != "egress_started":
             return False
         return self._replace(operation_id, stage=outcome, new_object_id=new_object_id)
+
+    async def get(self, attempt_id, kind) -> PublicationOperation | None:
+        return self.rows.get((attempt_id, kind.value))
+
+    async def reconcile(self, operation_id, observation, *, observed_object_id) -> bool:
+        """Mirror ``state.record_reconciliation`` and the core_298 adoption CHECK."""
+        row = self._get(operation_id)
+        if not row.holds_lineage:
+            return False
+        exact = observed_object_id is not None and observed_object_id == row.expected_object_id
+        adopted = (
+            row.kind == "pr_create"
+            and row.expected_object_id is None
+            and row.new_object_id is None
+            and str(observed_object_id or "").isdigit()
+        )
+        if observation == "resource_found" and not (exact or adopted):
+            return False
+        if observation == "resource_absent" and observed_object_id is not None:
+            return False
+        return self._replace(
+            operation_id,
+            stage="reconciled",
+            reconciliation=observation,
+            new_object_id=row.new_object_id or observed_object_id,
+        )
 
     def row(self, attempt_id: uuid.UUID, kind: OperationKind) -> PublicationOperation:
         return self.rows[(attempt_id, kind.value)]

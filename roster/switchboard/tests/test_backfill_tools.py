@@ -952,3 +952,29 @@ class TestBackfillProgress:
             status="completed",  # Connector thinks it's done
         )
         assert result["status"] == "cost_capped"
+
+    @pytest.mark.asyncio
+    async def test_replayed_progress_token_returns_status_without_reapplying(self):
+        """A retried call whose token already applied answers the current status (bu-f4iw1n).
+
+        The guarded UPDATE matches no row for a replay, so the tool re-reads the
+        authoritative status instead of reporting a fresh write.
+        """
+        select_row = self._make_select_row()
+        replay_status = {"status": "cost_capped"}
+
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(side_effect=[select_row, None, replay_status])
+
+        result = await backfill_progress(
+            pool,
+            job_id=_JOB_ID,
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=_ENDPOINT_IDENTITY,
+            rows_processed=10,
+            rows_skipped=0,
+            cost_spent_cents_delta=15,
+            progress_token="tok-1",
+        )
+        assert result == {"status": "cost_capped"}
+        assert "tok-1" in pool.fetchrow.call_args_list[1].args
