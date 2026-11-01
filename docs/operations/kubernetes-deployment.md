@@ -40,6 +40,30 @@ The "dev" naming matches compose and is just as counter-intuitive: see the namin
 Service names match the compose service names, so in-cluster URLs (`http://butlers-up:41100/sse`,
 `http://dashboard-api:41200`) are unchanged.
 
+### Google Health target startup gate
+
+Google Health's `waitForHealthRoutes: true` adds `wait-for-health-routes` after its
+existing `oauth-gate` and Switchboard `wait-for-butlers-up` init containers. It
+uses the application image's `scripts/wait_for_butler_routes.py` to poll
+`http://butlers-up:41103/internal/control-plane/identity`. Health stays on
+`butlers-up` when `butlersControl.enabled` splits Switchboard into
+`butlers-control`; the existing Switchboard gate follows that split as before.
+Other connectors retain their existing startup gates.
+
+HTTP 200 alone cannot release polling. The response must identify schema
+`butler.control.v1` and butler `health`, have an exact integer positive
+`boot_epoch`, and set boolean `accepting_routes` to `true`. The probe polls every
+five seconds for up to 300 seconds, bounds each whole request to five seconds
+and the remaining deadline, and retains at most 2 KiB. Redirects and environment
+proxies are disabled. It logs fixed readiness messages without response or
+exception content. A deadline exits nonzero, so Kubernetes retries the init
+container while the connector remains stopped.
+
+This prevents the observed startup race only. The observation cannot guarantee
+Health stays available for later deliveries and does not recover already
+accepted ingestion, rewind cursors, reset inboxes, or change runtime retries.
+Revert the chart and probe together to roll back this guard; it changes no data.
+
 Not ported (compose remains the only path for these):
 
 - the restore-drill executor (`docker-compose.restore-drill.yml`): it attests Docker cgroups and
