@@ -37,6 +37,7 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the `claude` subprocess exits with a non-zero exit code
 - **THEN** the adapter SHALL raise `RuntimeError` with the exit code and stderr content
 - **AND** `last_process_info` SHALL contain the full subprocess metadata
+- **AND** when stdout carries a failed terminal `result` (for example `error_max_turns`, which CLI 2.1.316 exits 1 on), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls, and `is_pre_tool_call` SHALL be false when the stream shows a tool ran (a `tool_use` block or more than one turn)
 
 #### Scenario: Claude Code MCP config isolation
 - **WHEN** the adapter builds the invocation command
