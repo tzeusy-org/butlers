@@ -119,13 +119,11 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
                 return {("<login>" if g == login else g, p, o) for g, p, o in acl}
 
             assert shape(first) == shape(fresh)
-            # Per-database role settings (core_001's butler search_path) are not
-            # copied by CREATE DATABASE either.
             settings = [
                 migration._database_role_settings(conn, urlparse(url).path.lstrip("/"))
                 for url in (first, second, fresh)
             ]
-            assert settings[0] and settings[0] == settings[1] == settings[2]
+            assert settings[0] == settings[1] == settings[2]
             template = conn.execute(
                 text(
                     "SELECT datallowconn FROM pg_database "
@@ -133,5 +131,38 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
                 )
             ).all()
             assert template and not any(allowed for (allowed,) in template)
+    finally:
+        admin.dispose()
+
+
+@pytest.mark.integration
+def test_per_database_role_settings_are_replayed_onto_a_clone(postgres_container) -> None:
+    """core_001's ``ALTER ROLE ... IN DATABASE ... SET search_path`` survives cloning."""
+    source = migration.migration_db_name()
+    clone = migration.migration_db_name()
+    login = f"settings_{source}"
+    admin = create_engine(postgres_container.get_connection_url(), isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(text(f'CREATE ROLE "{login}" LOGIN'))
+            conn.execute(text(f'CREATE DATABASE "{source}"'))
+            conn.execute(
+                text(
+                    f'ALTER ROLE "{login}" IN DATABASE "{source}" SET search_path = memory, public'
+                )
+            )
+            conn.execute(text(f"ALTER DATABASE \"{source}\" SET application_name = 'it''s'"))
+            conn.execute(text(f'CREATE DATABASE "{clone}" TEMPLATE "{source}"'))
+            assert migration._database_role_settings(conn, clone) == set()
+
+            migration._replay_role_settings(conn, template=source, clone=clone)
+
+            assert migration._database_role_settings(conn, clone) == {
+                (login, "search_path=memory, public"),
+                ("", "application_name=it's"),
+            }
+            conn.execute(text(f'DROP DATABASE "{clone}"'))
+            conn.execute(text(f'DROP DATABASE "{source}"'))
+            conn.execute(text(f'DROP ROLE "{login}"'))
     finally:
         admin.dispose()
