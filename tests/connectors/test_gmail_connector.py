@@ -2121,3 +2121,38 @@ def test_gmail_loader_preserves_error_order_and_path_only_inputs(
         else "GMAIL_ACCOUNT_RESCAN_INTERVAL_S",
     ):
         loader()
+
+
+async def test_backfill_progress_reports_scoped_deltas_with_a_replay_token(
+    gmail_config: GmailConnectorConfig,
+) -> None:
+    """Backfill progress is identity-scoped, per-batch, and replay-safe (bu-f4iw1n).
+
+    Switchboard adds each report's counters, and CachedMCPClient resends the same
+    args once after a transport drop, so every report carries its own token and
+    only the rows since the previous report.
+    """
+    from butlers.connectors.gmail import BackfillJob
+
+    config = gmail_config.model_copy(update={"connector_backfill_progress_interval": 2})
+    runtime = GmailConnectorRuntime(config, cursor_pool=MagicMock())
+    pages = [([{"id": "m1"}, {"id": "m2"}], "p2"), ([{"id": "m3"}, {"id": "m4"}], None)]
+    runtime._fetch_backfill_message_page = AsyncMock(side_effect=pages)  # type: ignore[method-assign]
+    runtime._fetch_message = AsyncMock(side_effect=RuntimeError("gone"))  # type: ignore[method-assign]
+    runtime._mcp_client = MagicMock()
+    runtime._mcp_client.call_tool = AsyncMock(return_value={"status": "active"})
+
+    await runtime._execute_backfill_job(
+        BackfillJob(job_id="job-1", date_from="2020-01-01", date_to="2020-12-31")
+    )
+
+    calls = [c.args for c in runtime._mcp_client.call_tool.await_args_list]
+    assert [name for name, _ in calls] == ["backfill.progress"] * 3
+    reports = [args for _, args in calls]
+    for args in reports:
+        assert args["connector_type"] == "gmail"
+        assert args["endpoint_identity"] == "gmail:user:test@example.com"
+    assert [a["rows_skipped"] for a in reports] == [2, 2, 0]
+    assert reports[-1]["status"] == "completed"
+    tokens = [a["progress_token"] for a in reports]
+    assert all(tokens) and len(set(tokens)) == 3
