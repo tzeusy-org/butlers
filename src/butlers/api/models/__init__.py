@@ -510,6 +510,9 @@ class SpendSummary(BaseModel):
     served_breakdown: list[dict] = Field(default_factory=list)
     reported_cost_comparisons: list[dict] = Field(default_factory=list)
     served_source_error: bool = False
+    # Serving evidence is aggregated per (model, authority, provenance) and
+    # capped; true when more groups existed than the cap returned.
+    served_evidence_truncated: bool = False
 
 
 class DailySpend(BaseModel):

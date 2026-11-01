@@ -784,11 +784,14 @@ async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pai
         ) as client:
             response = await client.get("/api/spend?period=today")
         assert response.status_code == 200
-        compared = [
-            item
-            for item in response.json()["data"]["reported_cost_comparisons"]
-            if item["attempt_id"] == compared_id
-        ]
+        # Groups aggregate per model: the cumulative attempt stays uncompared
+        # coverage, and only the invocation-scoped attempt is summed.
+        compared = response.json()["data"]["reported_cost_comparisons"]
+        assert response.json()["data"]["served_evidence_truncated"] is False
+        assert all(
+            item["execution_count"] == 2 and item["compared_execution_count"] == 1
+            for item in compared
+        )
         # Recorded Sonnet: 4 in, 135 out, 37914 cache read, 15083 cache creation; the CLI
         # reported $0.0654814 against $0.06997245 computed from list prices.
         sonnet = next(item for item in compared if item["model_id"] == "claude-sonnet-5-5")

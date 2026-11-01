@@ -14,11 +14,14 @@ class ServedAttempt(BaseModel):
 
 
 class ServedCostComparison(BaseModel):
-    attempt_id: int
-    execution_index: int
+    """One windowed (model, authority, provenance) group; only compared rows are summed."""
+
     model_id: str
     identity_authority: str
     provenance: str
+    attempt_count: int = 0
+    execution_count: int = 0
+    compared_execution_count: int = 0
     reported_cost_usd: float | None = None
     computed_served_cost_usd: float | None = None
     difference_usd: float | None = None

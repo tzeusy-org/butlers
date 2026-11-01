@@ -3162,10 +3162,13 @@ export default function SpendPage() {
               <p>Operational totals are computed requested-route estimates. CLI estimates are separate comparison evidence.</p>
               {(currentSummaryError || currentSummary?.data?.served_source_error) && <p role="status">Served cost evidence unavailable.</p>}
               {!currentSummaryError && currentSummary?.data?.reported_cost_comparisons?.map((row) => (
-                <p key={`${row.attempt_id}:${row.execution_index}:${row.model_id}`}>
-                  {row.model_id}: CLI estimate {row.reported_cost_usd == null ? "unknown" : `$${row.reported_cost_usd.toFixed(6)}`}; computed model estimate {row.computed_served_cost_usd == null ? "unknown" : `$${row.computed_served_cost_usd.toFixed(6)}`}; {row.comparison_state === "comparable" ? `difference $${row.difference_usd?.toFixed(6)}` : row.comparison_state}.
+                <p key={`${row.model_id}:${row.identity_authority}:${row.provenance}`}>
+                  {row.model_id}: CLI estimate {row.reported_cost_usd == null ? "unknown" : `$${row.reported_cost_usd.toFixed(6)}`}; computed model estimate {row.computed_served_cost_usd == null ? "unknown" : `$${row.computed_served_cost_usd.toFixed(6)}`}; {row.comparison_state === "comparable" ? `difference $${row.difference_usd?.toFixed(6)}` : row.comparison_state} ({row.compared_execution_count} of {row.execution_count} executions compared).
                 </p>
               ))}
+              {!currentSummaryError && currentSummary?.data?.served_evidence_truncated && (
+                <p role="status">Showing the most-used served models only; more exist in this window.</p>
+              )}
             </section>
             {dailyUnpricedModels.length > 0 && (
               <SourceDegradedNote

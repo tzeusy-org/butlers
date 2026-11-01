@@ -278,12 +278,14 @@ export interface ServedAttempt {
   } | null;
 }
 
+/** One windowed (model, authority, provenance) group; only compared executions are summed. */
 export interface ServedCostComparison {
-  attempt_id: number;
-  execution_index: number;
   model_id: string;
   identity_authority: string;
   provenance: string;
+  attempt_count: number;
+  execution_count: number;
+  compared_execution_count: number;
   reported_cost_usd: number | null;
   computed_served_cost_usd: number | null;
   difference_usd: number | null;
@@ -900,7 +902,16 @@ export interface SpendDivergence {
 export interface SpendSummary {
   served_source_error?: boolean;
   reported_cost_comparisons?: ServedCostComparison[];
-  served_breakdown?: { model_id: string; identity_authority: string; provenance: string }[];
+  served_breakdown?: {
+    model_id: string;
+    identity_authority: string;
+    provenance: string;
+    attempt_count: number;
+    execution_count: number;
+    complete_execution_count: number;
+  }[];
+  /** True when more serving-evidence groups existed than the server cap returned. */
+  served_evidence_truncated?: boolean;
   total_cost_usd: number;
   /** Priced subtotal from attempts with parseable provider usage. */
   measured_usd?: number;

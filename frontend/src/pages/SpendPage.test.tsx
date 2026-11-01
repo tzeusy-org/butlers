@@ -1135,8 +1135,10 @@ describe("SpendPage — what changed", () => {
     expect(screen.getByLabelText("Reported runtime cost").textContent).toContain("computed requested-route estimates");
     mockUseSpendSummary.mockImplementation(() => ({
       data: { data: { total_cost_usd: 0, by_butler: {}, source_error: true,
-        served_source_error: true, reported_cost_comparisons: [{
-          attempt_id: 41, execution_index: 0, model_id: "claude-opus-4-6",
+        served_source_error: true, served_evidence_truncated: true, reported_cost_comparisons: [{
+          model_id: "claude-opus-4-6", identity_authority: "cli_usage_breakdown",
+          provenance: "cli_reported_unproven", attempt_count: 3, execution_count: 4,
+          compared_execution_count: 0,
           reported_cost_usd: 0.05, computed_served_cost_usd: null,
           comparison_state: "unknown", difference_usd: null,
         }] }, meta: {} }, isLoading: false, isError: false,
@@ -1145,7 +1147,10 @@ describe("SpendPage — what changed", () => {
     const evidence = screen.getAllByLabelText("Reported runtime cost").at(-1);
     expect(evidence?.textContent).toContain("Served cost evidence unavailable.");
     expect(evidence?.textContent).toContain("CLI estimate $0.050000");
-    expect(evidence?.textContent).toContain("computed model estimate unknown; unknown");
+    expect(evidence?.textContent).toContain("computed model estimate unknown; unknown (0 of 4 executions compared)");
+    // One row per aggregated model group, plus an explicit cap notice.
+    expect(evidence?.querySelectorAll("p:not([role])")).toHaveLength(2);
+    expect(evidence?.textContent).toContain("Showing the most-used served models only");
   });
 
   it("suppresses movers and the calm spend verdict when either comparison window is unpriced", async () => {
