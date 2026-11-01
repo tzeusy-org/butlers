@@ -11,6 +11,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { useState, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 import { ApiError } from "@/api/client";
 import type { ConversationSummary, Message } from "@/api/types";
@@ -90,6 +92,12 @@ function mockTurn(visibleMessages: Message[] = []) {
   } as AnyMock);
 }
 
+// The shared header's rename/archive actions read the query client.
+function QueryWrapper({ children }: { children: ReactNode }) {
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
+  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+}
+
 function renderPage(initialEntry: string) {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -98,6 +106,7 @@ function renderPage(initialEntry: string) {
         <Route path="/chat/:conversationId" element={<ChatPage />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: QueryWrapper },
   );
 }
 

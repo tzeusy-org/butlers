@@ -1,6 +1,7 @@
 /**
  * Sidebar conversation list with search, new conversation button,
- * and collapsible mode.
+ * Active/Archived filter, per-row rename/archive actions
+ * (REQ-dashboard-chat-ui-017), and collapsible mode.
  *
  * Features:
  * - localStorage persistence for collapse state
@@ -10,8 +11,16 @@
  */
 
 import type { ReactNode } from "react";
-import { useState } from "react";
-import { PlusIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SearchIcon, XIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ArchiveIcon,
+  InboxIcon,
+  PlusIcon,
+  PanelLeftCloseIcon,
+  PanelLeftOpenIcon,
+  SearchIcon,
+  XIcon,
+} from "lucide-react";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -25,7 +34,12 @@ import { ButlerMark } from "@/components/ui/ButlerMark";
 import { useConversations, useConversationSearch, useMessageSearch } from "@/hooks/use-conversations.ts";
 import { useDebounce } from "@/hooks/use-debounce.ts";
 import type { ConversationSummary, MessageSearchResult } from "@/api/types.ts";
+import {
+  conversationTitle,
+  useConversationMetadata,
+} from "@/hooks/use-conversation-metadata.ts";
 import { ConversationReadError } from "./ConversationReadError.tsx";
+import { ConversationActionsMenu, ConversationTitleEditor } from "./ConversationActions.tsx";
 
 // ---------------------------------------------------------------------------
 // Storage key for sidebar collapse state
@@ -45,17 +59,35 @@ interface ConversationItemProps {
   conversation: ConversationSummary;
   isActive: boolean;
   collapsed: boolean;
+  /** Name the status on every row (search spans active and archived). */
+  showStatus: boolean;
   onClick: () => void;
+  /** An archive was issued from this row; it may leave the current listing. */
+  onArchive: () => void;
 }
 
 function ConversationItem({
   conversation,
   isActive,
   collapsed,
+  showStatus,
   onClick,
+  onArchive,
 }: ConversationItemProps) {
-  const title = conversation.title ?? "Untitled conversation";
+  const title = conversationTitle(conversation);
   const initial = title.charAt(0).toUpperCase();
+  const archived = conversation.status === "archived";
+  const { rename } = useConversationMetadata();
+  const [editor, setEditor] = useState<{ initialTitle: string; error: string | null } | null>(
+    null,
+  );
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const returnFocus = useRef(false);
+  useEffect(() => {
+    if (!returnFocus.current || editor) return;
+    returnFocus.current = false;
+    triggerRef.current?.focus();
+  });
 
   if (collapsed) {
     return (
@@ -63,7 +95,7 @@ function ConversationItem({
         <button
           type="button"
           onClick={onClick}
-          aria-label={title}
+          aria-label={archived ? `${title} (archived)` : title}
           className={cn(
             "flex items-center justify-center size-9 rounded-lg text-sm font-medium transition-colors",
             isActive
@@ -77,33 +109,82 @@ function ConversationItem({
     );
   }
 
+  if (editor) {
+    return (
+      <div className="px-2 py-2 rounded-lg bg-muted/40">
+        <ConversationTitleEditor
+          key={editor.error ?? ""}
+          initialTitle={editor.initialTitle}
+          initialError={editor.error}
+          label={`Title for ${title}`}
+          onCancel={() => {
+            returnFocus.current = true;
+            setEditor(null);
+          }}
+          onCommit={(nextTitle) => {
+            returnFocus.current = true;
+            setEditor(null);
+            void rename(conversation, nextTitle, {
+              onFailed: (failedTitle) =>
+                setEditor({
+                  initialTitle: failedTitle,
+                  error: "Rename not confirmed. Edit and save to retry.",
+                }),
+            });
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <div
       className={cn(
-        "w-full text-left px-2 py-2 rounded-lg transition-colors",
+        "flex items-start gap-0.5 rounded-lg transition-colors",
         isActive
           ? "bg-accent text-accent-foreground"
           : "hover:bg-muted text-muted-foreground hover:text-foreground",
       )}
     >
-      <p className="text-sm font-medium line-clamp-2 leading-tight">{title}</p>
-      <div className="flex items-center gap-1.5 mt-0.5">
-        <p className="text-xs text-muted-foreground">
-          <Time value={conversation.updated_at} mode="relative" />
-        </p>
-        {conversation.routed_butler && (
-          <Badge
-            variant="outline"
-            className="text-[10px] h-4 px-1 font-mono"
-            data-testid="conversation-routed-butler"
-          >
-            {conversation.routed_butler}
-          </Badge>
-        )}
-      </div>
-    </button>
+      <button
+        type="button"
+        onClick={onClick}
+        aria-current={isActive ? "true" : undefined}
+        className="flex-1 min-w-0 text-left px-2 py-2 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-focus"
+      >
+        <p className="text-sm font-medium line-clamp-2 leading-tight">{title}</p>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <p className="text-xs text-muted-foreground">
+            <Time value={conversation.updated_at} mode="relative" />
+          </p>
+          {(archived || showStatus) && (
+            <Badge
+              variant="outline"
+              className="text-[10px] h-4 px-1"
+              data-testid="conversation-status"
+            >
+              {archived ? "Archived" : "Active"}
+            </Badge>
+          )}
+          {conversation.routed_butler && (
+            <Badge
+              variant="outline"
+              className="text-[10px] h-4 px-1 font-mono"
+              data-testid="conversation-routed-butler"
+            >
+              {conversation.routed_butler}
+            </Badge>
+          )}
+        </div>
+      </button>
+      <ConversationActionsMenu
+        conversation={conversation}
+        triggerRef={triggerRef}
+        className="mt-1 mr-0.5"
+        onRename={() => setEditor({ initialTitle: conversation.title ?? "", error: null })}
+        onArchive={onArchive}
+      />
+    </div>
   );
 }
 
@@ -229,6 +310,10 @@ export function ConversationList({
 }: ConversationListProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDebounce(searchQuery, 300);
+  // Not persisted: history always opens on Active. Active uses the list
+  // API's default status so it shares the cache with chat discovery.
+  const [statusFilter, setStatusFilter] = useState<"active" | "archived">("active");
+  const listRef = useRef<HTMLDivElement>(null);
 
   const [collapsedState, setCollapsedState] = useState(() => {
     if (!collapsible) return false;
@@ -245,7 +330,10 @@ export function ConversationList({
     isLoading,
     isError: isConversationsError,
     refetch: refetchConversations,
-  } = useConversations(butlerName);
+  } = useConversations(
+    butlerName,
+    statusFilter === "archived" ? { status: "archived" } : undefined,
+  );
   const {
     data: searchData,
     isLoading: isSearching,
@@ -276,7 +364,11 @@ export function ConversationList({
   const loading = isSearchActive ? isSearching : isLoading;
   const readError = isSearchActive ? isSearchError : isConversationsError;
   const retryRead = isSearchActive ? refetchSearch : refetchConversations;
-  const errorLabel = isSearchActive ? "conversation search results" : "conversations";
+  const errorLabel = isSearchActive
+    ? "conversation search results"
+    : statusFilter === "archived"
+      ? "archived conversations"
+      : "conversations";
   const messageSearchResults: MessageSearchResult[] = messageSearchData?.items ?? [];
 
   // Collapse strategy: width switches INSTANTLY (no width transition) so no
@@ -318,6 +410,28 @@ export function ConversationList({
               aria-label="New conversation"
             >
               <PlusIcon className="size-4" />
+            </Button>
+          </Tip>
+        )}
+        {collapsed && (
+          <Tip
+            content={
+              statusFilter === "archived" ? "Showing archived conversations" : "Showing active conversations"
+            }
+          >
+            <Button
+              variant={statusFilter === "archived" ? "secondary" : "ghost"}
+              size="icon"
+              className="size-8"
+              aria-pressed={statusFilter === "archived"}
+              aria-label="Show archived conversations"
+              onClick={() => setStatusFilter(statusFilter === "archived" ? "active" : "archived")}
+            >
+              {statusFilter === "archived" ? (
+                <ArchiveIcon className="size-4" />
+              ) : (
+                <InboxIcon className="size-4" />
+              )}
             </Button>
           </Tip>
         )}
@@ -363,12 +477,43 @@ export function ConversationList({
               </button>
             )}
           </div>
+          <div
+            role="group"
+            aria-label="Conversation status"
+            className="mt-1.5 inline-flex w-full rounded-md border"
+          >
+            {(["active", "archived"] as const).map((status) => (
+              <Button
+                key={status}
+                type="button"
+                variant={statusFilter === status && !isSearchActive ? "secondary" : "ghost"}
+                size="xs"
+                className="flex-1 rounded-sm"
+                aria-pressed={statusFilter === status}
+                disabled={isSearchActive}
+                onClick={() => setStatusFilter(status)}
+              >
+                {status === "active" ? "Active" : "Archived"}
+              </Button>
+            ))}
+          </div>
+          {isSearchActive && (
+            <p className="px-1 pt-1 text-[10px] text-muted-foreground">
+              Searching active and archived conversations
+            </p>
+          )}
         </div>
       )}
 
       {/* List */}
       <div
-        className={cn("flex-1 overflow-y-auto py-1", collapsed ? "px-1.5" : "px-2 space-y-0.5")}
+        ref={listRef}
+        tabIndex={-1}
+        aria-label={statusFilter === "archived" && !isSearchActive ? "Archived conversations" : "Conversations"}
+        className={cn(
+          "flex-1 overflow-y-auto py-1 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus",
+          collapsed ? "px-1.5" : "px-2 space-y-0.5",
+        )}
       >
         {readError && (
           <ConversationReadError
@@ -386,7 +531,13 @@ export function ConversationList({
             </div>
           )
         ) : conversations.length === 0 ? (
-          readError || collapsed ? null : (
+          readError || collapsed ? null : !isSearchActive && statusFilter === "archived" ? (
+            <EmptyState
+              variant="page"
+              title="No archived conversations."
+              description="Conversations you archive appear here."
+            />
+          ) : (
             <EmptyState
               variant="page"
               title="No conversations yet."
@@ -411,7 +562,13 @@ export function ConversationList({
               conversation={conv}
               isActive={conv.id === activeConversationId}
               collapsed={collapsed}
+              showStatus={isSearchActive}
               onClick={() => onSelectConversation(conv.id)}
+              onArchive={() => {
+                // The row leaves the Active listing; keep keyboard focus in
+                // the list instead of dropping it to the document.
+                if (!isSearchActive && statusFilter === "active") listRef.current?.focus();
+              }}
             />
           ))
         )}

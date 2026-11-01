@@ -5821,6 +5821,16 @@ export interface PageContext {
 }
 
 /** Request body for POST /api/butlers/{name}/conversations. */
+/**
+ * Body for PATCH /api/butlers/{name}/conversations/{id} — owner-authenticated
+ * metadata change (REQ-dashboard-chat-ui-017). Send exactly the field being
+ * changed: a title-only rename or a status-only archive/unarchive.
+ */
+export interface ConversationUpdateRequest {
+  title?: string;
+  status?: "active" | "archived";
+}
+
 export interface CreateConversationRequest {
   message: string;
   /**

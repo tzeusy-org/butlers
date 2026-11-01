@@ -32,6 +32,7 @@ import {
 import type { ConversationSummary } from "@/api/types.ts";
 import { ConversationList } from "./ConversationList.tsx";
 import { ConversationHeader } from "./ConversationHeader.tsx";
+import { isTitleEditorEscape } from "./title-editor-escape.ts";
 import { ConversationReadError } from "./ConversationReadError.tsx";
 import { MessageThread, MessageThreadSkeleton } from "./MessageThread.tsx";
 import { MessageInput } from "./MessageInput.tsx";
@@ -45,6 +46,10 @@ import {
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useRegisterShortcut, type ShortcutBinding } from "@/hooks/use-register-shortcut";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
+import {
+  firstResumableConversation,
+  useSelectedConversation,
+} from "@/hooks/use-conversation-metadata.ts";
 
 // ---------------------------------------------------------------------------
 // ChatPanel inner content (mounted once Sheet is open)
@@ -192,10 +197,11 @@ export function ChatContent({ butlerName }: ChatContentProps) {
   // selections cannot be overridden by delayed discovery or refresh results.
   useEffect(() => {
     if (hasResumedRef.current) return;
-    if (conversations.length === 0) return;
+    const resumable = firstResumableConversation(conversations);
+    if (!resumable) return;
     hasResumedRef.current = true;
     if (activeConversationId == null) {
-      setActiveConversationId(conversations[0].id);
+      setActiveConversationId(resumable.id);
     }
   }, [conversations, activeConversationId]);
 
@@ -220,7 +226,7 @@ export function ChatContent({ butlerName }: ChatContentProps) {
     resetTurnState();
   }, [butlerName, abandonCurrentStream, resetTurnState]);
 
-  const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
+  const activeConversation = useSelectedConversation(activeConversationId, conversations);
 
   // Once the jumped-to conversation's messages have rendered, scroll/focus
   // the anchor message. A miss (bubble not in the DOM yet) just waits for
@@ -420,6 +426,10 @@ export function ChatPanel({
           side="right"
           showCloseButton={true}
           className="w-full sm:max-w-[480px] p-0 flex flex-col overflow-hidden"
+          onEscapeKeyDown={(event) => {
+            // A rename editor consumes its own Escape (cancel the edit).
+            if (isTitleEditorEscape(event)) event.preventDefault();
+          }}
         >
           <SheetHeader className="px-4 py-3 border-b shrink-0">
             <SheetTitle className="text-base">Chat with {butlerName}</SheetTitle>

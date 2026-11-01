@@ -51,12 +51,14 @@ const createConversationMock = vi.fn();
 const sendMessageMock = vi.fn();
 const cancelConversationMessageTurnMock = vi.fn();
 const getConversationMessagesMock = vi.fn();
+const updateConversationMock = vi.fn();
 vi.mock("@/api/index.ts", () => ({
   createConversation: (...args: unknown[]) => createConversationMock(...args),
   sendMessage: (...args: unknown[]) => sendMessageMock(...args),
   cancelConversationMessageTurn: (...args: unknown[]) =>
     cancelConversationMessageTurnMock(...args),
   getConversationMessages: (...args: unknown[]) => getConversationMessagesMock(...args),
+  updateConversation: (...args: unknown[]) => updateConversationMock(...args),
 }));
 
 // consumeSseStream is mocked to synchronously replay a scripted event queue,
@@ -183,6 +185,53 @@ describe("ChatContent — resume / New-conversation lifecycle (bu-5gp95)", () =>
     // activeConversationId has actually been auto-resumed to conv-1.
     expect(screen.getAllByText("Existing thread")).toHaveLength(2);
     expect(screen.queryByText("New conversation")).toBeNull();
+  });
+
+  it("never auto-resumes an archived conversation, even when a cached list holds one", () => {
+    const archivedFirst = [
+      { ...EXISTING_CONVERSATIONS[0], id: "conv-0", title: "Archived thread", status: "archived", updated_at: "2026-07-05T12:00:00.000Z" },
+      ...EXISTING_CONVERSATIONS,
+    ];
+    mockHooksWithConversations();
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: archivedFirst, meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversations>);
+    const view = renderChatContent();
+
+    // Resumed to the newest ACTIVE thread (sidebar + header), not the archived one.
+    expect(screen.getAllByText("Existing thread")).toHaveLength(2);
+    expect(screen.getAllByText("Archived thread")).toHaveLength(1);
+    view.unmount();
+
+    vi.mocked(useConversations).mockReturnValue({
+      data: { data: archivedFirst.slice(0, 1), meta: {} },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useConversations>);
+    renderChatContent();
+    expect(screen.getByText("New conversation")).toBeDefined();
+  });
+
+  it("archiving the selected conversation keeps it selected with its unsent text and sends nothing", async () => {
+    mockHooksWithConversations();
+    updateConversationMock.mockResolvedValue({ ...EXISTING_CONVERSATIONS[0], status: "archived" });
+    renderChatContent();
+    const input = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "half-written thought" } });
+
+    const header = screen.getAllByRole("button", { name: "Actions for Existing thread (switchboard)" }).at(-1)!;
+    fireEvent.keyDown(header, { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive conversation" }));
+
+    await waitFor(() =>
+      expect(updateConversationMock).toHaveBeenCalledWith("switchboard", "conv-1", { status: "archived" }),
+    );
+    expect(input.value).toBe("half-written thought");
+    expect(screen.getAllByText("Existing thread").length).toBeGreaterThan(0);
+    expect(screen.queryByText("New conversation")).toBeNull();
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(createConversationMock).not.toHaveBeenCalled();
+    expect(cancelConversationMessageTurnMock).not.toHaveBeenCalled();
   });
 
   it("clicking New conversation stays on the fresh-thread state instead of snapping back", () => {
