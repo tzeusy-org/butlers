@@ -121,8 +121,10 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         chronicler_compatibility=Compatibility.SUPPORTED,
         read_surface="connectors.owntracks_points",
         boundary_semantics=(
-            "one location point event per GPS fix; "
-            "contiguous fixes within 30 min → movement_episode rollup"
+            "one location point event per GPS fix (impossible jumps kept but "
+            "flagged trail_outlier); contiguous accepted fixes within 30 min → "
+            "movement_episode rollup of at least two fixes, never overlapping "
+            "another for the same endpoint"
         ),
         optional_schema=True,
     ),
@@ -137,7 +139,9 @@ INITIAL_SOURCES: tuple[SourceAdapterState, ...] = (
         boundary_semantics=(
             "contiguous stationary point runs (radius+dwell clustering) → "
             "place_episode; (start_at, end_at) span the dwell; labeled "
-            "against owner-declared reference points or 'place_unknown'"
+            "against owner-declared reference points, then owner OwnTracks "
+            "regions, else 'place_unknown'; fixes beyond 50 km of the owner's "
+            "home reference → evidence-layer away_episode"
         ),
         optional_schema=True,
     ),

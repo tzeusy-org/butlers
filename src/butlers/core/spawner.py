@@ -69,6 +69,7 @@ from butlers.core.dispatch_outcomes import (
     DispatchUsageEvidence,
     bound_resolution_receipt,
     record_dispatch_attempt,
+    usage_is_measured,
 )
 from butlers.core.dispatch_outcomes import (
     project_resolution_receipt as _attempt_resolution_receipt,
@@ -111,6 +112,7 @@ from butlers.core.route_inbox import RouteInboxLeaseLost
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter, validated_session_timeout_overhead_s
 from butlers.core.runtimes.codex import MCPToolDiscoveryError
+from butlers.core.runtimes.served_identity import TerminalResultError, snapshot, unknown
 from butlers.core.session_process_logs import write as session_process_log_write
 from butlers.core.sessions import session_complete, session_create
 from butlers.core.skills import read_system_prompt_with_sources
@@ -543,6 +545,8 @@ async def _write_dispatch_attempt(
     composed_prompt: ComposedPrompt | None = None,
     invoked: bool = False,
     resolution_receipt: dict[str, Any] | None = None,
+    served_identity: dict[str, Any] | None = None,
+    attempt_key: uuid.UUID | None = None,
 ) -> int | None:
     """Write one attempt row to public.model_dispatch_attempts (best-effort).
 
@@ -567,9 +571,14 @@ async def _write_dispatch_attempt(
     lightweight best-effort persistence. Never raises, so provenance
     degradation cannot disrupt the caller-visible runtime result.
     """
+    if not invoked and served_identity is None and resolution_receipt is not None:
+        runtime_type = (resolution_receipt.get("winner") or {}).get("runtime_type", "unknown")
+        served_identity = unknown(runtime_type, state="not_invoked")
+        attempt_key = attempt_key or uuid.uuid4()
     usage_evidence = None
     if invoked:
-        measured = usage is not None and usage.get("input_tokens") is not None
+        composed_kwargs: dict[str, Any] = _composed_prompt_ledger_kwargs(composed_prompt)
+        measured = usage_is_measured(usage)
         usage_evidence = DispatchUsageEvidence(
             input_tokens=usage.get("input_tokens") if measured else None,
             output_tokens=(usage.get("output_tokens") or 0) if measured else None,
@@ -580,7 +589,7 @@ async def _write_dispatch_attempt(
             purpose=usage_purpose,
             resume_outcome=resume_outcome,
             usage_source="measured" if measured else "unmeasurable",
-            **_composed_prompt_ledger_kwargs(composed_prompt),
+            **composed_kwargs,
         )
     return await record_dispatch_attempt(
         pool,
@@ -599,6 +608,8 @@ async def _write_dispatch_attempt(
         produce_fleet_halt=produce_fleet_halt,
         usage_evidence=usage_evidence,
         resolution_receipt=resolution_receipt,
+        served_identity=served_identity,
+        attempt_key=attempt_key,
     )
 
 
@@ -1556,6 +1567,9 @@ class Spawner:
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
+        # Set once the current attempt's invoked row is written, so the
+        # cancellation handler never double-records it.
+        _invoked_attempt_recorded = False
         dashboard_turn_session_registered = False
         # Direct cancellation of trigger() normally means daemon drain and
         # must propagate.  A route-inbox worker instead gives us this explicit
@@ -2597,6 +2611,9 @@ class Spawner:
 
             while True:
                 _attempt_count += 1
+                _invoked_attempt_recorded = False
+                _current_attempt_key = uuid.uuid4()
+                _current_served_identity = None
                 _current_attempt_index = _next_attempt_index
                 _next_attempt_index += 1
                 # Per-attempt clock (distinct from the outer `t0`, which spans the
@@ -2738,6 +2755,10 @@ class Spawner:
                                 await invoke_task
                             except (asyncio.CancelledError, Exception):
                                 pass
+                        # The adapter's finalizer owns the cancellation/error
+                        # record. Copy it after that task has finished, before
+                        # any persistence await or worker reuse.
+                        _current_served_identity = snapshot(runtime)
                         # Only this attempt's own entry -- a same-tier failover
                         # retry may have already overwritten the key with a new
                         # invoke_task by the time this finally runs.
@@ -2821,12 +2842,18 @@ class Spawner:
                     reported_usage = getattr(attempt_exc, "usage", None)
                     if isinstance(reported_usage, dict):
                         usage = reported_usage
+                    # Preserve adapter-observed terminal tool evidence before daemon merge.
+                    reported_tools = getattr(attempt_exc, "tool_calls", [])
                     # Collect tool calls captured before the failure.
                     if preconsumed_runtime_tool_calls is not None:
                         _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
                         preconsumed_runtime_tool_calls = None
                     elif runtime_session_id:
                         _attempt_tool_calls = consume_runtime_session_tool_calls(runtime_session_id)
+
+                    _attempt_tool_calls = _merge_tool_call_records(
+                        reported_tools, _attempt_tool_calls, butler_name=self._config.name
+                    )
 
                 # An adapter returning normally is not sufficient evidence of a
                 # successful session.  Some CLIs can exit zero after reporting
@@ -2902,7 +2929,9 @@ class Spawner:
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
-                            outcome="suppressed",
+                            outcome="runtime_failure"
+                            if isinstance(_attempt_exc, TerminalResultError)
+                            else "suppressed",
                             attempt_index=_current_attempt_index,
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
@@ -2921,8 +2950,11 @@ class Spawner:
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
                             invoked=True,
+                            served_identity=_current_served_identity,
+                            attempt_key=_current_attempt_key,
                             resolution_receipt=_current_resolution_receipt,
                         )
+                        _invoked_attempt_recorded = True
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
                     _failover_already_classified = True
@@ -2986,8 +3018,11 @@ class Spawner:
                             resume_outcome=_resume_outcome,
                             composed_prompt=_composed_prompt_digest,
                             invoked=True,
+                            served_identity=_current_served_identity,
+                            attempt_key=_current_attempt_key,
                             resolution_receipt=_current_resolution_receipt,
                         )
+                        _invoked_attempt_recorded = True
                     _current_resolution_receipt = _attempt_resolution_receipt(
                         _base_resolution_receipt,
                         catalog_entry_id=catalog_entry_id,
@@ -3033,8 +3068,11 @@ class Spawner:
                         resume_outcome=_resume_outcome,
                         composed_prompt=_composed_prompt_digest,
                         invoked=True,
+                        served_identity=_current_served_identity,
+                        attempt_key=_current_attempt_key,
                         resolution_receipt=_current_resolution_receipt,
                     )
+                    _invoked_attempt_recorded = True
                     if _is_usage_limit:
                         await mark_allowance_exhausted(
                             self._pool,
@@ -3199,8 +3237,11 @@ class Spawner:
                     resume_outcome=_resume_outcome,
                     composed_prompt=_composed_prompt_digest,
                     invoked=True,
+                    served_identity=_current_served_identity,
+                    attempt_key=_current_attempt_key,
                     resolution_receipt=_current_resolution_receipt,
                 )
+                _invoked_attempt_recorded = True
                 await clear_allowance_exhaustion(self._pool, catalog_entry_id)
 
             # ------------------------------------------------------------------
@@ -3389,13 +3430,23 @@ class Spawner:
                 and spawner_result.output
                 and trigger_source != "schedule:consolidation"
             ):
-                await store_session_episode(
-                    self._pool,
-                    self._config.name,
-                    spawner_result.output,
-                    session_id=session_id,
-                    routing_context=routing_context,
-                )
+                # Delivery bookkeeping from this exact scheduled recap is not lived history.
+                day_close_delivery_status = False
+                if (
+                    self._config.name == "chronicler"
+                    and trigger_source == "schedule:chronicler_day_close"
+                ):
+                    from butlers.chronicler.prose_admission import is_delivery_status_scaffold
+
+                    day_close_delivery_status = is_delivery_status_scaffold(spawner_result.output)
+                if not day_close_delivery_status:
+                    await store_session_episode(
+                        self._pool,
+                        self._config.name,
+                        spawner_result.output,
+                        session_id=session_id,
+                        routing_context=routing_context,
+                    )
 
             return spawner_result
 
@@ -3438,6 +3489,35 @@ class Spawner:
             is_owner_cancel = bool(runtime_session_id) and (
                 runtime_session_id in self._owner_cancelled_sessions
             )
+            # A direct cancel of this task (drain/shutdown) wins over a
+            # concurrent owner Stop: it is what actually ends the attempt.
+            if outer_task_cancelled_directly:
+                cancel_outcome, cancel_reason = "suppressed", "drain_cancelled"
+            elif is_owner_cancel:
+                cancel_outcome, cancel_reason = "owner_cancelled", "owner_cancelled"
+            else:
+                cancel_outcome, cancel_reason = "suppressed", "runtime_cancelled"
+            if (
+                runtime_invoked
+                and self._pool is not None
+                and catalog_entry_id is not None
+                and not _invoked_attempt_recorded
+            ):
+                await _write_dispatch_attempt(
+                    self._pool,
+                    catalog_entry_id=catalog_entry_id,
+                    butler=self._config.name,
+                    outcome=cancel_outcome,
+                    attempt_index=_current_attempt_index,
+                    session_id=session_id,
+                    failure_reason=cancel_reason,
+                    logical_session_id=effective_request_id,
+                    purpose_lane=purpose_lane,
+                    invoked=True,
+                    usage=usage,
+                    served_identity=snapshot(runtime),
+                    attempt_key=_current_attempt_key,
+                )
             if route_lease_lost is not None and route_lease_lost.is_set():
                 if dashboard_turn_id is not None:
                     dashboard_route_lease_lost = True

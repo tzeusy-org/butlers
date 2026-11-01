@@ -7,6 +7,7 @@ each rule is pinned at the kernel seam rather than through a particular caller.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from contextlib import ExitStack
 from types import SimpleNamespace
@@ -60,9 +61,6 @@ class _Sink(AttemptSink):
 
     async def attempt(self, **fields: Any) -> None:
         self.events.append(("attempt", fields))
-
-    async def usage(self, **fields: Any) -> None:
-        self.events.append(("usage", fields))
 
     def on_attempt_start(self, candidate: Candidate) -> None:
         self.starts.append(candidate)
@@ -165,7 +163,7 @@ class _ToolCallFailure(RuntimeError):
 # --- resolution -------------------------------------------------------------------------
 
 
-async def test_success_returns_the_text_and_records_usage_before_the_success_row() -> None:
+async def test_success_returns_the_text_and_records_usage_with_the_success_row() -> None:
     sink = _Sink()
     attempt = _attempts(AttemptOutcome("ok", {"input_tokens": 7, "output_tokens": 3}))
     with _Catalog():
@@ -174,24 +172,46 @@ async def test_success_returns_the_text_and_records_usage_before_the_success_row
         )
 
     assert (result.text, result.candidate.model_id, result.attempts) == ("ok", "model-a", 1)
-    assert [kind for kind, _ in sink.events] == ["usage", "attempt"]
-    usage = sink.events[0][1]
-    assert (usage["butler_name"], usage["purpose"], usage["input_tokens"]) == (
+    assert [kind for kind, _ in sink.events] == ["attempt"]
+    row = sink.events[0][1]
+    usage = row["usage_evidence"]
+    assert (usage.butler_name, usage.purpose, usage.input_tokens, usage.usage_source) == (
         "tg:1",
         "discretion",
         7,
+        "measured",
     )
-    assert usage["session_id"] is None
+    assert "session_id" not in row
+    assert isinstance(row["attempt_key"], uuid.UUID)
+    assert row["served_identity"]["schema_version"] == 1
     assert sink.outcomes == ["success"]
 
 
 @pytest.mark.parametrize("usage", [None, {}, {"output_tokens": 3}])
-async def test_success_without_measurable_usage_writes_no_usage_row(usage) -> None:
+async def test_success_without_measurable_usage_records_unmeasurable_evidence(usage) -> None:
     sink = _Sink()
     with _Catalog():
         await _call(_spec(), _attempts(AttemptOutcome("ok", usage)), sink)
 
     assert [kind for kind, _ in sink.events] == ["attempt"]
+    evidence = sink.events[0][1]["usage_evidence"]
+    assert evidence.usage_source == "unmeasurable"
+    assert evidence.input_tokens is None
+
+
+async def test_cancelled_attempt_records_owner_cancelled_with_its_own_evidence() -> None:
+    sink = _Sink()
+
+    async def cancelled(_adapter, _candidate):
+        raise asyncio.CancelledError
+
+    with _Catalog(), pytest.raises(asyncio.CancelledError):
+        await _call(_spec(), cancelled, sink)
+
+    assert sink.outcomes == ["owner_cancelled"]
+    row = sink.events[0][1]
+    assert isinstance(row["attempt_key"], uuid.UUID)
+    assert row["usage_evidence"].usage_source == "unmeasurable"
 
 
 async def test_empty_tier_raises_no_model_configured_without_attempting() -> None:
@@ -429,14 +449,11 @@ async def test_default_sink_writes_through_the_ledger_functions() -> None:
     pool = MagicMock()
     with (
         patch(f"{_K}.record_dispatch_attempt", AsyncMock()) as attempt_row,
-        patch(f"{_K}.record_token_usage", AsyncMock()) as usage_row,
     ):
         sink = AttemptSink(pool)
         await sink.attempt(outcome="success")
-        await sink.usage(input_tokens=1)
 
     attempt_row.assert_awaited_once_with(pool, outcome="success")
-    usage_row.assert_awaited_once_with(pool, input_tokens=1)
 
 
 async def test_registry_adapters_configure_each_candidate_provider() -> None:
@@ -447,4 +464,4 @@ async def test_registry_adapters_configure_each_candidate_provider() -> None:
 
     resolve.assert_awaited_once_with(pool, "model-a")
     registry.for_runtime.assert_called_once_with("opencode", {"p": {}})
-    assert adapter is registry.for_runtime.return_value
+    assert adapter is registry.for_runtime.return_value.create_worker.return_value

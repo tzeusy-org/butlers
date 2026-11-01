@@ -254,6 +254,46 @@ export interface SessionSummary {
   cost_usd?: number | null;
 }
 
+export interface ServedAttempt {
+  attempt_id: number;
+  attempt_index: number;
+  outcome: string;
+  requested_model_id: string | null;
+  served_identity: {
+    schema_version: number;
+    runtime_type: string;
+    observation_state: string;
+    finding_codes: string[];
+    expected_toolchain: { state: string; versions?: Record<string, string> };
+    executions: {
+      execution_index: number;
+      configured_model_id?: string | null;
+      completion_state: string;
+      served_models: string[];
+      reported_models: { model_id: string; provenance: string; source: string }[];
+      identity_authority: string;
+      cli_version_reported: string | null;
+      models_truncated?: boolean;
+    }[];
+  } | null;
+}
+
+/** One windowed (model, authority, provenance) group; only compared executions are summed. */
+export interface ServedCostComparison {
+  model_id: string;
+  identity_authority: string;
+  provenance: string;
+  attempt_count: number;
+  execution_count: number;
+  compared_execution_count: number;
+  reported_cost_usd: number | null;
+  computed_served_cost_usd: number | null;
+  difference_usd: number | null;
+  comparison_state: "comparable" | "unpriced" | "unknown";
+  cost_source: "cli_estimate";
+  finding: "provider_vs_computed_cost" | null;
+}
+
 /** Full session detail returned by the single-session endpoint. */
 export interface SessionDetail {
   id: string;
@@ -279,6 +319,8 @@ export interface SessionDetail {
   purpose_lane?: "standard" | "private_content" | null;
   /** Durable, prompt-free explanation of the model selected for this attempt. */
   resolution_receipt?: ModelResolutionReceipt | null;
+  served_source_state?: "observed" | "historical" | "unavailable";
+  served_attempts?: ServedAttempt[];
   /** The dashboard chat message this session was invoked from, if any. */
   linked_message?: {
     conversation_id: string;
@@ -858,6 +900,18 @@ export interface SpendDivergence {
 
 /** Aggregate spend summary across all butlers. */
 export interface SpendSummary {
+  served_source_error?: boolean;
+  reported_cost_comparisons?: ServedCostComparison[];
+  served_breakdown?: {
+    model_id: string;
+    identity_authority: string;
+    provenance: string;
+    attempt_count: number;
+    execution_count: number;
+    complete_execution_count: number;
+  }[];
+  /** True when more serving-evidence groups existed than the server cap returned. */
+  served_evidence_truncated?: boolean;
   total_cost_usd: number;
   /** Priced subtotal from attempts with parseable provider usage. */
   measured_usd?: number;
@@ -5820,6 +5874,16 @@ export interface PageContext {
   truncated?: boolean;
 }
 
+/**
+ * Body for PATCH /api/butlers/{name}/conversations/{id} — owner-authenticated
+ * metadata change (REQ-dashboard-chat-ui-017). Send exactly the field being
+ * changed: a title-only rename or a status-only archive/unarchive.
+ */
+export interface ConversationUpdateRequest {
+  title?: string;
+  status?: "active" | "archived";
+}
+
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
@@ -9215,6 +9279,30 @@ export interface EntityActivityResponse {
   offset: number;
   degraded: boolean;
   degraded_reason: "chronicler_activity_unavailable" | null;
+}
+
+/** Contribution selector for GET /api/relationship/entities/{id}/activity. */
+export type EntityActivitySource = "all" | "relationship" | "chronicler";
+
+/** One active commitment between the owner and an entity (safe projection). */
+export interface EntityCommitment {
+  kind: "promise" | "waiting_for" | "follow_up" | "obligation" | "decision";
+  direction: "owner_to_other" | "other_to_owner";
+  summary: string;
+  deadline: string | null;
+  escalation_level: "L0" | "L1" | "L2" | "L3";
+  fingerprint: string;
+}
+
+/** Response for GET /api/relationship/entities/{id}/commitments. */
+export interface EntityCommitmentsResponse {
+  items: EntityCommitment[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** True only when the commitment source could not be read; items are then empty. */
+  degraded: boolean;
+  degraded_reason: "commitment_source_unavailable" | null;
 }
 
 /**

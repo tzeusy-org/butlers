@@ -80,6 +80,10 @@ import { useRegisterCommands, type PaletteCommand } from "@/lib/command-registry
 import { OPEN_CHAT_WIDGET_EVENT } from "@/lib/shortcut-help";
 import { announce } from "@/lib/shell-announcer";
 import { WIDGET_BUTLER } from "./chat-constants.ts";
+import {
+  firstResumableConversation,
+  useSelectedConversation,
+} from "@/hooks/use-conversation-metadata.ts";
 
 // ---------------------------------------------------------------------------
 // WidgetPanel — mounted only while the widget is open
@@ -194,15 +198,16 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
       hasResumedRef.current = true;
       return;
     }
-    if (conversations.length === 0) return;
+    const resumable = firstResumableConversation(conversations);
+    if (!resumable) return;
     hasResumedRef.current = true;
     if (activeConversationId == null) {
-      setActiveConversationId(conversations[0].id);
+      setActiveConversationId(resumable.id);
     }
   }, [conversations, activeConversationId, inputValue]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
-  const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
+  const activeConversation = useSelectedConversation(activeConversationId, conversations);
 
   async function handleSendClick() {
     const text = inputValue.trim();

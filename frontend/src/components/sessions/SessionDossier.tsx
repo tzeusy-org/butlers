@@ -348,6 +348,33 @@ export function SessionDossier({ session, className }: SessionDossierProps) {
         </details>
       </section>
 
+      <section aria-label="Served identity" className="space-y-2 text-xs">
+        <h3 className="font-semibold uppercase tracking-wide text-muted-foreground">Serving evidence</h3>
+        {session.served_source_state === "unavailable" ? (
+          <p role="status">Served evidence unavailable.</p>
+        ) : (session.served_attempts ?? []).some((attempt) => attempt.served_identity) ? (
+          (session.served_attempts ?? []).map((attempt) => (
+            <div key={attempt.attempt_id} className="rounded-md border p-3 space-y-1">
+              <p>Attempt {attempt.attempt_index + 1}: {attempt.outcome.replaceAll("_", " ")}</p>
+              <p>Requested: {attempt.requested_model_id ?? "Unknown"}</p>
+              {(attempt.served_identity?.executions ?? []).map((execution) => (
+                <div key={execution.execution_index}>
+                  <p>Served: {execution.identity_authority === "provider_response" && execution.served_models.length > 0
+                    ? execution.served_models.join(", ") : "Unknown"}</p>
+                  {execution.reported_models.length > 0 && <p>CLI-reported usage models: {execution.reported_models.map((model) => model.model_id).join(", ")}. Actual serving is unproven.</p>}
+                  <p>CLI reported version: {execution.cli_version_reported ?? "Unknown"}</p>
+                  <p>Execution: {execution.completion_state}</p>
+                  {execution.models_truncated && <p>Model evidence truncated.</p>}
+                </div>
+              ))}
+              <p>Image versions: {Object.entries(attempt.served_identity?.expected_toolchain.versions ?? {}).map(([name, value]) => `${name}: ${value}`).join(", ") || "Unknown"}</p>
+              {(attempt.served_identity?.finding_codes ?? []).map((finding) => <p key={finding} role="status">{finding.replaceAll("_", " ")}</p>)}
+              {attempt.served_identity?.observation_state !== "observed" && <p>Serving evidence is {attempt.served_identity?.observation_state ?? "unknown"}.</p>}
+            </div>
+          ))
+        ) : <p>No served identity recorded.</p>}
+      </section>
+
       {/* Prompt */}
       <section>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">

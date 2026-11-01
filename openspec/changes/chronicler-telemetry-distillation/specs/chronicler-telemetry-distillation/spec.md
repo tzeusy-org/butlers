@@ -150,6 +150,10 @@ The system SHALL evaluate a fixed set of deterministic anomaly rules against
 each day's rollup, distinguishing a known feeder outage from a genuine
 behavioral anomaly before emitting any flag.
 
+ID: REQ-chronicler-telemetry-distillation-004
+Source: chronicler-telemetry-distillation design.md decision 4 (classify before flagging)
+Scope: v1-mandatory
+
 #### Scenario: Feeder outage flags as an outage, not a behavior
 
 - **WHEN** a source's `source_adapter_state.active = false` or its checkpoint
@@ -158,6 +162,17 @@ behavioral anomaly before emitting any flag.
   source
 - **AND** no behavioral flag (e.g. `sleep_missing`) that depends on the same
   source's data SHALL be emitted for that day
+
+#### Scenario: Configured-absent optional source is not an outage
+
+- **WHEN** a source declared `optional_schema` is inactive because its
+  adapter found its evidence surface absent, **AND** it has never completed a
+  successful projection
+- **THEN** it SHALL NOT produce a `feeder_dark` flag
+- **AND** it SHALL still count as unavailable, so no behavioral flag that
+  depends on its data SHALL be emitted
+- **AND** a source that projected successfully before going inactive, or an
+  inactive non-optional source, SHALL still produce `feeder_dark`
 
 #### Scenario: Genuine behavioral anomaly flags when the feeder is healthy
 

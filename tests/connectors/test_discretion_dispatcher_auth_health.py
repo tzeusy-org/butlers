@@ -46,6 +46,8 @@ def _allowed_quota() -> QuotaStatus:
 
 def _make_adapter(side_effect: list[object]) -> MagicMock:
     adapter = MagicMock()
+    adapter.create_worker.return_value = adapter
+    adapter.last_process_info = None
     adapter.invoke = AsyncMock(side_effect=side_effect)
     adapter.last_process_info = None
     return adapter
@@ -93,7 +95,6 @@ async def test_get_auth_health_ok_after_successful_call_with_no_registered_provi
         patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         result = await dispatcher.call("hi")
 
@@ -136,7 +137,6 @@ async def test_call_records_auth_failure_and_increments_metric() -> None:
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_KERNEL}.next_same_tier_candidate", AsyncMock(return_value=None)),
-        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -174,7 +174,6 @@ async def test_call_does_not_record_auth_failure_for_availability_error() -> Non
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
         patch(f"{_KERNEL}.next_same_tier_candidate", AsyncMock(return_value=None)),
-        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -201,7 +200,6 @@ async def test_call_does_not_record_auth_failure_for_unrelated_error() -> None:
         patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(ValueError, match="Unrecognisable"):
             await dispatcher.call("hi")

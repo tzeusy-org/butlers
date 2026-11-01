@@ -203,16 +203,40 @@ run — your job is to narrate over that result, not to re-derive it.
      other machine identifiers. The system records provenance from the tool
      call; the human-facing message should cite only readable names such as
      "Spotify", "Steam", or a conversation channel when useful.
-   - Notes any roll-up entries (sources with rollup=true) by count.
+   - Builds the story from `owner_day.observations`: supported place, movement,
+     sleep and owner actions, keeping their uncertainty and readable times.
+     `owner_day.unknowns` describes limits; missing evidence is not inactivity.
+     Raw episodes, events, roll-up counts and diagnostics are source inventories,
+     not the day's story. Do not make them the headline or list counts by default.
+     If no supported observations or lawful envelopes remain, briefly say the
+     day's activity is unknown; do not fill a bullet quota with source counts.
+   - Never treats automated core.sessions processing as an owner conversation
+     or activity, even when its title says "Conversation". Inbound email alone
+     is not social interaction. Incoming messages do not establish a two-way
+     exchange; an owner outbound message establishes only the supported action.
+   - Describes Spotify overlapping recorded sleep as background or uncertain
+     playback, never confirmed listening. Other playback alone also does not
+     establish attentive listening. Do not replace unknown places, destinations,
+     travel modes, recipients or attendance with invented details.
    - Labels ambiguous or low-confidence blocks (`confidence="low"`) as
      tentative (e.g. "possibly", "a short, uncorroborated block") rather than
      stating them as fact — they are still counted, just flagged for the
      owner to correct if wrong.
    - If the bundle's `dropped_intents` list is non-empty, mention each briefly
-     and honestly: it was scheduled but activity evidence contradicted it
-     (e.g. "Gym was on the calendar for 9-10am, but you were home") — never
-     assert either attendance or non-attendance beyond what the contradiction
-     itself shows.
+     and honestly: it was scheduled but evidence contradicted it (e.g. "Gym
+     was on the calendar for 9-10am, but you were home"; for
+     `evidence="location"`, "the SIN -> Aomori plan didn't happen: your
+     location was the same place before and after it") — never assert either
+     attendance or non-attendance beyond what the contradiction itself shows.
+   - Travel blocks may carry `reconciliation.location`. `verdict="consistent"`
+     means your location moved about `displacement_km` across the window: say
+     the trail is consistent with the trip (e.g. "Calendar had SQ 800 to
+     Beijing; your location moved ~4,500 km across that window") but never
+     that you took the flight. `verdict="unknown"` adds nothing; do not call it
+     confirmed or contradicted.
+   - `reconciliation.plan_producer="butler"` (or `plan_producer` on a dropped
+     intent) marks a plan a butler wrote, not your own calendar entry. Phrase
+     it as "a butler-made plan had X", never as your schedule or as attended.
    - Does not mention bundle internals such as episodes_truncated,
      events_truncated, "token-bounded", or "capped inventory". If the user
      explicitly asks about completeness, explain plainly that a very busy day
@@ -232,6 +256,12 @@ run — your job is to narrate over that result, not to re-derive it.
    send it even on an ordinary day. Do NOT add any other proactive message,
    coaching nudge, or correction prompt from this task; those are separate,
    explicitly-opted-in surfaces, not part of day-close.
+6. Do NOT write memory from this task: no memory_store_fact, memory_store_rule,
+   or other memory write tool. Day-close memory is written by the deterministic
+   write-back after you finish. In particular, never record the notify outcome
+   (sent, deferred until a time, queued, failed, not configured) or any other
+   delivery or scheduling status as a fact; it describes the system, not the
+   owner's day.
 """
 
 # Day-close GAP INTERVIEW (bu-whhll.12) — one of the "separate, explicitly-

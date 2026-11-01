@@ -214,6 +214,8 @@ class SessionDetail(BaseModel):
     correction_count: int = 0
     linked_message: LinkedChatMessage | None = None
     resolution_receipt: dict[str, Any] | None = None
+    served_attempts: list[dict[str, Any]] = Field(default_factory=list)
+    served_source_state: Literal["observed", "historical", "unavailable"] = "historical"
 
 
 class PromptProvenance(BaseModel):

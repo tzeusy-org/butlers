@@ -14,8 +14,10 @@
   makes a failure ineligible, which is RFC 0038 D14's "no capability call" condition for a
   relaunch. ``CallSpec.max_relaunches`` bounds relaunches (D14 goal invocations pass 1), and
   ``MAX_ATTEMPTS`` bounds every call.
-- **Accounting**: one ``dispatch_attempts`` row per attempt or skip, token usage per successful
-  invocation, and the failover metrics.
+- **Accounting**: one ``dispatch_attempts`` row per attempt or skip, committed atomically with
+  that invocation's token usage and served-identity evidence, and the failover metrics. Each
+  attempt runs on an invocation-owned adapter worker whose evidence is snapshotted before any
+  persistence await, so concurrent calls never borrow each other's serving evidence.
 
 The caller supplies only the attempt itself (``attempt_fn``): how a resolved adapter is invoked
 for this kind of call. Adapters come from the shared
@@ -24,17 +26,24 @@ for this kind of call. Adapters come from the shared
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from copy import deepcopy
 from typing import Any
 
 import asyncpg
 
 from butlers.core.dispatch_intent import DispatchIntent
-from butlers.core.dispatch_outcomes import project_resolution_receipt, record_dispatch_attempt
+from butlers.core.dispatch_outcomes import (
+    DispatchUsageEvidence,
+    project_resolution_receipt,
+    record_dispatch_attempt,
+    usage_is_measured,
+)
 from butlers.core.failover_classifier import (
     FailoverContext,
     FailoverDecision,
@@ -48,12 +57,12 @@ from butlers.core.model_routing import (
     check_monthly_ceiling,
     check_token_quota,
     next_same_tier_candidate,
-    record_token_usage,
     resolve_model_with_effective_tier,
 )
 from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
 from butlers.core.runtimes.base import RuntimeAdapter
 from butlers.core.runtimes.registry import AdapterRegistry
+from butlers.core.runtimes.served_identity import TerminalResultError, snapshot, unknown
 from butlers.core.spawner_provider import resolve_provider_config
 
 logger = logging.getLogger(__name__)
@@ -114,11 +123,15 @@ AdapterFor = Callable[[Candidate], Awaitable[RuntimeAdapter]]
 
 
 def registry_adapters(pool: asyncpg.Pool, registry: AdapterRegistry) -> AdapterFor:
-    """Adapters from ``registry``, configured with each candidate's provider configuration."""
+    """Invocation-owned workers of ``registry``'s adapters, configured per candidate.
+
+    The registry caches one adapter per runtime; each attempt gets its own worker so its
+    ``last_process_info`` and serving evidence cannot be overwritten by a concurrent call.
+    """
 
     async def adapter_for(candidate: Candidate) -> RuntimeAdapter:
         provider_config = await resolve_provider_config(pool, candidate.model_id)
-        return registry.for_runtime(candidate.runtime_type, provider_config)
+        return registry.for_runtime(candidate.runtime_type, provider_config).create_worker()
 
     return adapter_for
 
@@ -154,7 +167,7 @@ class CallResult:
 
 
 class AttemptSink:
-    """Where the kernel writes attempt rows, usage and failover metrics.
+    """Where the kernel writes attempt rows (with their usage evidence) and failover metrics.
 
     Callers subclass it to observe attempts (for example connector auth health); the hooks run
     for every attempt whatever the caller's privacy lane.
@@ -166,9 +179,6 @@ class AttemptSink:
 
     async def attempt(self, **fields: Any) -> None:
         await record_dispatch_attempt(self.pool, **fields)
-
-    async def usage(self, **fields: Any) -> None:
-        await record_token_usage(self.pool, **fields)
 
     def on_attempt_start(self, candidate: Candidate) -> None:
         """Called before each candidate's quota check."""
@@ -287,25 +297,32 @@ def _quota_message(candidate: Candidate, quota: Any) -> tuple[str, str]:
     )
 
 
-async def _record_usage(
-    spec: CallSpec, sink: AttemptSink, candidate: Candidate, usage: Mapping[str, Any] | None
-) -> None:
-    """Record a successful invocation's tokens; the provider consumed them either way."""
-    if not usage:
-        logger.debug("%s: adapter returned no usage for model=%s", spec.caller, candidate.model_id)
-        return
-    input_tokens = usage.get("input_tokens")
-    if input_tokens is None:
-        logger.debug("%s: adapter usage without input_tokens: %s", spec.caller, usage)
-        return
-    await sink.usage(
-        catalog_entry_id=candidate.catalog_entry_id,
-        butler_name=spec.usage_butler_name or spec.butler_name,
-        session_id=None,
-        input_tokens=input_tokens,
-        output_tokens=usage.get("output_tokens") or 0,
+def _usage_evidence(spec: CallSpec, usage: Mapping[str, Any] | None) -> DispatchUsageEvidence:
+    """The invocation's token evidence; unmeasurable when the adapter reported no full counts.
+
+    The provider consumes tokens whether the attempt succeeds or fails, so failed and cancelled
+    attempts carry their evidence too.
+    """
+    raw = dict(usage) if isinstance(usage, Mapping) else None
+    measured = usage_is_measured(raw)
+    if raw is None or not measured:
+        return DispatchUsageEvidence(
+            input_tokens=None,
+            output_tokens=None,
+            cached_input_tokens=None,
+            cache_creation_tokens=None,
+            purpose=spec.usage_purpose,
+            usage_source="unmeasurable",
+            butler_name=spec.usage_butler_name or spec.butler_name,
+        )
+    return DispatchUsageEvidence(
+        input_tokens=raw["input_tokens"],
+        output_tokens=raw.get("output_tokens") or 0,
+        cached_input_tokens=raw.get("cache_read_input_tokens") or 0,
+        cache_creation_tokens=raw.get("cache_creation_input_tokens") or 0,
         purpose=spec.usage_purpose,
-        purpose_lane=spec.purpose_lane,
+        usage_source="measured",
+        butler_name=spec.usage_butler_name or spec.butler_name,
     )
 
 
@@ -403,6 +420,8 @@ async def call_model(
                 failure_reason=quota_msg,
                 purpose_lane=spec.purpose_lane,
                 resolution_receipt=receipt,
+                served_identity=unknown(candidate.runtime_type, state="not_invoked"),
+                attempt_key=uuid.uuid4(),
             )
             logger.info(
                 "%s quota skip: model=%s tier=%s attempt=%d reason=quota_exhausted windows=%s",
@@ -427,13 +446,43 @@ async def call_model(
             )
 
         adapter = await adapter_for(candidate)
+        attempt_key = uuid.uuid4()
         started = time.monotonic()
+        failure: Exception | None = None
+        outcome: AttemptOutcome | None = None
         try:
             outcome = await attempt_fn(adapter, candidate)
+        except asyncio.CancelledError:
+            # Snapshot before the persistence await: the worker is ours alone, but the
+            # recorder must see exactly what this invocation observed.
+            await sink.attempt(
+                catalog_entry_id=candidate.catalog_entry_id,
+                butler=spec.butler_name,
+                outcome="owner_cancelled",
+                attempt_index=attempt_count - 1,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                purpose_lane=spec.purpose_lane,
+                resolution_receipt=receipt,
+                usage_evidence=_usage_evidence(spec, None),
+                served_identity=snapshot(adapter),
+                attempt_key=attempt_key,
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 -- classified below
-            failure: Exception = exc
+            failure = exc
+
+        served_identity = snapshot(adapter)
+        process_info = deepcopy(adapter.last_process_info)
+        if outcome is not None:
+            usage: Mapping[str, Any] | None = outcome.usage
+        elif isinstance(failure, TerminalResultError):
+            usage = failure.usage
         else:
-            await _record_usage(spec, sink, candidate, outcome.usage)
+            usage = None
+        usage_evidence = _usage_evidence(spec, usage)
+
+        if failure is None:
+            assert outcome is not None
             await sink.attempt(
                 catalog_entry_id=candidate.catalog_entry_id,
                 butler=spec.butler_name,
@@ -442,6 +491,9 @@ async def call_model(
                 duration_ms=int((time.monotonic() - started) * 1000),
                 purpose_lane=spec.purpose_lane,
                 resolution_receipt=receipt,
+                usage_evidence=usage_evidence,
+                served_identity=served_identity,
+                attempt_key=attempt_key,
             )
             return CallResult(text=outcome.text, candidate=candidate, attempts=attempt_count)
 
@@ -449,7 +501,7 @@ async def call_model(
             FailoverContext(
                 exception=failure,
                 tool_calls=list(getattr(failure, "tool_calls", None) or []),
-                process_info=adapter.last_process_info,
+                process_info=process_info,
             )
         )
         await sink.attempt(
@@ -463,6 +515,9 @@ async def call_model(
             duration_ms=int((time.monotonic() - started) * 1000),
             purpose_lane=spec.purpose_lane,
             resolution_receipt=receipt,
+            usage_evidence=usage_evidence,
+            served_identity=served_identity,
+            attempt_key=attempt_key,
         )
         sink.on_runtime_failure(candidate, decision)
 
