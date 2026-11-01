@@ -21,6 +21,7 @@ from butlers.core.qa.publication.transport import (
     BranchUpdate,
     ClosedTransport,
     GenericOperation,
+    ProviderRejected,
     PullRequestCreate,
     PullRequestLabels,
     PullRequestUpdate,
@@ -143,6 +144,50 @@ async def test_stale_expected_head_refuses_without_force() -> None:
     assert provider.refs == {"qa/finance/abcdef123456-1": "e" * 40}
     assert [name for name, _ in provider.calls] == ["update_ref"]
     assert ledger.row(attempt_id, OperationKind.BRANCH_PUSH).stage == "failed"
+
+
+def _rejection(code: str, *, replaced_code: str | None = None) -> ProviderRejected:
+    exc = ProviderRejected(code)
+    if replaced_code is not None:
+        exc.code = replaced_code  # a provider rewriting the code after construction
+    return exc
+
+
+@pytest.mark.parametrize(
+    ("rejection", "category"),
+    [
+        (_rejection("conflict"), "provider_rejected_conflict"),
+        (_rejection("blocked: secret-token-123 in fix.py"), "provider_rejected_unrecognized"),
+        (
+            _rejection("conflict", replaced_code="secret-token-123"),
+            "provider_rejected_unrecognized",
+        ),
+    ],
+)
+async def test_provider_rejection_reports_only_an_approved_code(rejection, category) -> None:
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+    provider = FakeProvider(raise_on_push=rejection)
+
+    result = await _publish(_publisher(provider, ledger), attempt_id)
+
+    assert (result.status, result.category) == (PublicationStatus.FAILED, category)
+    assert "secret-token-123" not in str(rejection)
+    assert ledger.row(attempt_id, OperationKind.BRANCH_PUSH).stage == "failed"
+
+
+async def test_unknown_error_after_egress_logs_no_content(caplog) -> None:
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+    provider = FakeProvider(raise_on_push=ValueError("body leaked: secret-token-123"))
+
+    with caplog.at_level("WARNING", logger="butlers.core.qa.publication.publisher"):
+        result = await _publish(_publisher(provider, ledger), attempt_id)
+
+    assert (result.status, result.category) == (
+        PublicationStatus.AMBIGUOUS,
+        "branch_push_ambiguous",
+    )
+    assert caplog.records and all(r.exc_info is None for r in caplog.records)
+    assert "secret-token-123" not in caplog.text
 
 
 async def test_unwhitelisted_or_inactive_attempt_publishes_nothing() -> None:
