@@ -183,13 +183,14 @@ async def test_provider_rejection_reports_only_an_approved_code(rejection, categ
         ("validation_failed", PublicationStatus.AMBIGUOUS, "ambiguous"),
         ("conflict", PublicationStatus.AMBIGUOUS, "ambiguous"),
         ("raw provider text", PublicationStatus.AMBIGUOUS, "ambiguous"),
-        # Refusals that happen before any PR could be created stay definite.
+        # A retrying client can be throttled after an earlier try created the PR.
+        ("rate_limited", PublicationStatus.AMBIGUOUS, "ambiguous"),
+        # Access refusals precede any existence check, so they stay definite.
         ("forbidden", PublicationStatus.FAILED, "failed"),
         ("not_found", PublicationStatus.FAILED, "failed"),
-        ("rate_limited", PublicationStatus.FAILED, "failed"),
     ],
 )
-async def test_pr_create_rejection_proves_absence_only_for_pre_creation_refusals(
+async def test_pr_create_rejection_proves_absence_only_for_access_refusals(
     code, status, stage
 ) -> None:
     ledger, attempt_id = FakeLedger(), uuid.uuid4()

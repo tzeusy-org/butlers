@@ -46,11 +46,14 @@ APPROVED_REJECTION_CODES = frozenset(
 )
 #: Stands in for any code outside :data:`APPROVED_REJECTION_CODES`.
 UNRECOGNIZED_REJECTION = "unrecognized"
-#: The only PR-create refusals that prove no PR exists for the bound head.  Every
-#: other code (notably GitHub's 422 ``validation_failed`` "a pull request already
-#: exists for <head>") may front a live PR, so the transport reports it ambiguous:
-#: a ``failed`` ``pr_create`` row is the ledger's proof of PR absence.
-PR_CREATE_ABSENCE_CODES = frozenset({"forbidden", "not_found", "rate_limited"})
+#: The only PR-create refusals that prove no PR exists for the bound head: an
+#: access refusal precedes any existence check.  Every other code may front a live
+#: PR, so the transport reports it ambiguous: a ``failed`` ``pr_create`` row is the
+#: ledger's proof of PR absence.  GitHub answers "a pull request already exists for
+#: <head>" with 422 ``validation_failed``, and ``rate_limited`` is excluded because a
+#: retrying or throttled client can be refused after an earlier try already created
+#: the PR behind a lost response.
+PR_CREATE_ABSENCE_CODES = frozenset({"forbidden", "not_found"})
 
 
 def approved_rejection_code(code: object) -> str:
