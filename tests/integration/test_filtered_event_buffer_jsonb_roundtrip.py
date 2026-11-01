@@ -1243,6 +1243,11 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         await runtime._filtered_event_buffer.flush(pool)
         invalid_history = await api_summary()
         assert invalid_history["uncertain_drops"] == 4 and invalid_history["dropped"] == 3
+        # In a month's first 25 hours the backdated rows land in the previous
+        # month, whose partition nothing else in this test creates.
+        await pool.fetchval(
+            "SELECT connectors.connectors_filtered_events_ensure_partition(now()-interval '25 hours')"
+        )
         await pool.execute(
             "UPDATE connectors.filtered_events SET received_at=now()-interval '25 hours' "
             "WHERE external_message_id LIKE 'm-uncertain-%'"
