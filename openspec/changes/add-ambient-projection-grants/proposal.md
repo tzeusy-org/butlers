@@ -26,10 +26,12 @@ decision bu-kf3n4i (option A) and stays removed.
 - `GET /api/projections/{id}/glance` returns a deterministic, audience-redacted payload classified
   by the briefing's own `classify`, with no model call: `state_class`, a line of at most 48
   characters, a needs-you count, a top item, `as_of`, `valid_until` and source coverage.
+- Consumer liveness (grants slice S2): an active grant whose surface has not fetched for twice
+  its expected interval adds one low-severity `projection` item to the briefing's attention
+  model, derived on read from the table, so no write, schedule or UPDATE policy is needed.
 
 ## Deferred
 
-- Consumer-liveness sweep and its attention clause (grants slice S2).
 - Settings > Projections UI with the last-fetch column and revoke verb (grants slice S3).
 - Text and 1-bit PNG formats, the per-grant response cache, and the Home Assistant package
   example under `docs/` (glance slices S2 and S3).
@@ -41,4 +43,6 @@ decision bu-kf3n4i (option A) and stays removed.
   `src/butlers/api/projection_grants.py`, `src/butlers/api/briefing/glance.py`,
   `src/butlers/api/routers/projections.py`.
 - Changed: `src/butlers/api/owner_auth/http.py` (one branch), `src/butlers/api/app.py`
-  (store slot, tracing exclusion), `src/butlers/api/router_registry.py`.
+  (store slot, tracing exclusion), `src/butlers/api/router_registry.py`,
+  `src/butlers/api/routers/dashboard_briefing.py` (sixth attention source); spec
+  `dashboard-briefing` (Attention Item Sources).

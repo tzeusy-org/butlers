@@ -182,6 +182,58 @@ def projection_grant_store(app_state: Any) -> ProjectionGrantStore:
     return PostgresProjectionGrantStore(get_db_manager().credential_shared_pool())
 
 
+# Consumer liveness (REQ-ambient-projections-004). Read by any pool that can SELECT
+# the table (the briefing reads it through the Switchboard pool); nothing is written,
+# so the "clause" is derived at read time and clears as soon as the surface fetches.
+ACTIVE_GRANTS_LIVENESS_SQL = """
+    SELECT id, label, expected_fetch_interval, created_at, last_fetch_at
+    FROM public.ambient_projections
+    WHERE revoked_at IS NULL
+    ORDER BY created_at, id
+"""
+
+
+def _ago(age: timedelta) -> str:
+    minutes = max(int(age.total_seconds() // 60), 1)
+    if minutes < 120:
+        return f"{minutes}m"
+    hours = minutes // 60
+    return f"{hours}h" if hours < 48 else f"{hours // 24}d"
+
+
+def liveness_attention_items(rows: list[Any], now: datetime) -> list[dict]:
+    """Return one low-severity attention item per active grant whose surface lapsed.
+
+    A grant lapses when its last fetch (or, if it never fetched, its mint) is older
+    than twice its expected fetch interval: the moment the surface's own glance
+    would have expired (``valid_until``). One item per grant, so there is nothing
+    to deduplicate, and the item disappears on the surface's next fetch.
+    """
+    items = []
+    for row in rows:
+        seen = row["last_fetch_at"] or row["created_at"]
+        age = now - seen
+        if age <= 2 * row["expected_fetch_interval"]:
+            continue
+        label = str(row["label"])
+        if row["last_fetch_at"] is None:
+            description = f"{label} has not fetched since it was added {_ago(age)} ago"
+        else:
+            description = f"{label} last fetched {_ago(age)} ago"
+        items.append(
+            {
+                "severity": "low",
+                "type": "projection",
+                "butler": None,
+                "description": description,
+                "link": "/settings",
+                "source": "projection",
+                "projection_id": str(row["id"]),
+            }
+        )
+    return items
+
+
 async def resolve_grant(
     store: ProjectionGrantStore, projection_id: uuid.UUID, route_scope: str, token: str
 ) -> ProjectionGrant | None:

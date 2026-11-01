@@ -84,3 +84,27 @@ Scope: v1-mandatory
 - **WHEN** the glance and `GET /api/dashboard/briefing` are computed for the same state
 - **THEN** both SHALL return the same `state_class`
 - **AND** the glance SHALL make no model call
+
+### Requirement: Consumer liveness
+
+A projection surface that stops fetching SHALL become visible to the owner. Each active grant whose last fetch time, or its creation time if it has never fetched, is older than twice its expected fetch interval (the moment that surface's last glance passed its `valid_until`) SHALL contribute exactly one low-severity attention item with `source = "projection"` to the dashboard attention model that `GET /api/dashboard/briefing` and the glance share. The item SHALL name the grant's label and how long ago the surface last fetched. The condition SHALL be derived when the attention model is read, from `public.ambient_projections` through a role that may only SELECT it: it SHALL write nothing, schedule nothing and call no model, and the item SHALL disappear on the surface's next successful grant fetch. A revoked grant SHALL contribute no item. The glance served to a surface under its own grant SHALL omit that surface's own item, because the surface is fetching. A household glance SHALL show the item only as its fixed kind label. A failure to read the grants SHALL record `projections` as a failed source rather than read as no lapsed surface.
+
+ID: REQ-ambient-projections-004
+Source: bu-q7vx1q.11 acceptance criteria (grants 5); bu-q7vx1q.95
+Scope: v1-mandatory
+
+#### Scenario: A lapsed surface opens one item until it fetches
+
+- **WHEN** a grant with a five-minute interval has not fetched for eleven minutes
+- **THEN** the attention model SHALL carry exactly one `projection` item for it, however often it is read
+- **AND** after that surface fetches its glance under its grant, the item SHALL be gone
+
+#### Scenario: A fresh or revoked grant raises nothing
+
+- **WHEN** a grant fetched within twice its interval, or a grant is revoked
+- **THEN** it SHALL contribute no attention item
+
+#### Scenario: An unreadable grant table is not calm
+
+- **WHEN** the grant table cannot be read
+- **THEN** `projections` SHALL be listed as a failed source and the state SHALL NOT compose `quiet`

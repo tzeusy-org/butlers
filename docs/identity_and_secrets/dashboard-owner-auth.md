@@ -295,8 +295,11 @@ unlocks exactly `GET /api/projections/{id}/glance` for that projection, sent as
 `X-Projection-Token` (preferred) or `?token=`, which can reach proxy access
 logs. Every other route treats it as no credential; a non-GET request is 405 and
 an unknown or revoked grant is 404. Revoke with `DELETE /api/projections/{id}`;
-revoking every grant is the rollback. Contract: `ambient-projections`
-(REQ-ambient-projections-001 to -003).
+revoking every grant is the rollback. A surface that misses two expected fetch
+intervals shows up as one low-severity "last fetched ... ago" item in the
+briefing's attention model until it fetches again; the item is derived on read,
+so nothing is written or scheduled. Contract: `ambient-projections`
+(REQ-ambient-projections-001 to -004).
 
 ## Failure, restore and rollback
 
