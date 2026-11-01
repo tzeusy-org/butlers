@@ -28,6 +28,7 @@ from butlers.modules.memory import storage
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact, NewRule
 from butlers.modules.memory.content_authority import (
+    catalog_attribution,
     classify_routing_context,
     combine_authorities,
 )
@@ -92,6 +93,32 @@ def test_classify_routing_context(routing_context, owner_id, expected) -> None:
 )
 def test_combine_authorities(evidence, expected) -> None:
     assert combine_authorities(evidence) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "label"),
+    [
+        ("owner", None),
+        ("owner_device", None),
+        ("system", None),
+        (None, "source unverified"),
+        ("third_party", "from a third party"),
+        ("mixed", "partly from a third party"),
+    ],
+)
+def test_catalog_attribution_label(authority, label) -> None:
+    assert catalog_attribution(authority) == label
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "suffix"),
+    [("mixed", " (partly from a third party)"), ("owner", "")],
+)
+def test_fleet_knowledge_line_attribution_suffix(authority, suffix) -> None:
+    row = {"source_butler": "health", "title": "Sleep", "content_authority": authority}
+    assert _context._format_fleet_knowledge_line(row) == f"- [health] Sleep{suffix}\n"
 
 
 @pytest.mark.unit
