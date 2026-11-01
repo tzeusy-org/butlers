@@ -72,7 +72,8 @@ Scope: v1-mandatory
 
 #### Scenario: Retry identity and privacy remain exact
 - **WHEN** a group uploads its count evidence
-- **THEN** the evidence carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **THEN** the count record carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **AND** the group's separate `durations.json` carries test node ids exactly as the committed `.test_durations` already publishes them, and no other payload
 
 ### Requirement: Fail-closed matrix routing and event policy
 Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate all current needed results under explicit event/plan rules. Lane groups SHALL depend on route only and start independently of static guards. Static guards SHALL remain mandatory in every required final verdict. Existing required contexts SHALL survive; merge_group MUST retain all eleven backend groups, check-preflight, guards, frontend and browser evidence.

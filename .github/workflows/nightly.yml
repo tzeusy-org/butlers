@@ -782,7 +782,8 @@ jobs:
     # merge-group CI run into the committed .test_durations that pytest-split
     # balances the CI lane groups with. Those groups run untraced, exactly as the
     # groups being balanced do; the covered groups here pay coverage tracing,
-    # which skewed group balance by up to 1.8x (bu-q1hzqn.13). The
+    # which skewed group balance by up to 1.8x (bu-q1hzqn.13) Merge-group
+    # artifacts live 14 days, so a fortnight without merges fails this job closed. The
     # merged file is always uploaded; Monday's scheduled run on main, or a manual
     # dispatch on main, also opens a PR with it. It never pushes to main. A stale
     # file only skews group balance: which tests run stays exact, because
