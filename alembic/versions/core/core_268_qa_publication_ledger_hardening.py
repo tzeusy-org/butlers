@@ -20,7 +20,7 @@ core_267 fenced stage order, the binding and reconciliation.  Three gaps remaine
   a ``reconciled`` row carries none (reached from ``egress_started``) or ``ambiguous``
   (reached from ``ambiguous``).  A ``succeeded`` or ``failed`` row without its result is
   refused. Historically this revision permits an ``ambiguous`` row with a NULL result.
-  core_290 canonicalizes that result to ``ambiguous`` and tightens the CHECK without
+  core_299 canonicalizes that result to ``ambiguous`` and tightens the CHECK without
   changing its stage or releasing its lineage hold.
 * ``qa_publication_operations_no_held_delete`` (BEFORE DELETE) refuses deleting a row
   that holds the lineage (``egress_started`` or ``ambiguous``), including from a privileged

@@ -75,13 +75,13 @@ any other stage can still be deleted by a role that can reach them. Only the las
 `core_268` removes the delete trigger, its function and the CHECK, and restores the `core_267` guard
 body.
 
-Migration `core_290` closes the historical ambiguous-NULL gap: both INSERT and UPDATE must
+Migration `core_299` closes the historical ambiguous-NULL gap: both INSERT and UPDATE must
 carry result `ambiguous` when stage is `ambiguous`. Upgrade canonicalizes only that result on
 historical ambiguous-NULL rows through the existing QA write role under forced row security.
 The transaction locks the table across backfill and CHECK replacement; bindings, stages,
 reconciliation, effects and lineage holds remain unchanged. Every other stage/result pair and
 the set-once, reconciliation and held-delete guards remain unchanged. Only the last schema to
-leave `core_290` restores the historical `core_268` CHECK. Downgrade retains canonicalized
+leave `core_299` restores the historical `core_268` CHECK. Downgrade retains canonicalized
 results, preserving set-once semantics and every unresolved hold.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A

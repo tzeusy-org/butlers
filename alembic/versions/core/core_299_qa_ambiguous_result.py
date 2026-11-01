@@ -1,7 +1,7 @@
 """Require an explicit result for ambiguous QA publication operations (bu-mc01y5.15).
 
-Revision ID: core_290
-Revises: core_289
+Revision ID: core_299
+Revises: core_297
 Create Date: 2026-11-01 00:00:00.000000
 
 REQ-qa-publication-authority-002 / -006. Historical core_268 allowed an ambiguous
@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from alembic import context, op
 
-revision = "core_290"
-down_revision = "core_289"
+revision = "core_299"
+down_revision = "core_297"
 branch_labels = None
 depends_on = None
 
