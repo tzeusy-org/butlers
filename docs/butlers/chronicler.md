@@ -13,6 +13,41 @@ Moved verbatim from `AGENTS.md` (Butler-specific rules without a docs page). Ide
 - Chronicler editorial endpoints (`/api/chronicler/briefing|attention|kpi`) already accept any
   `?date=&tz=` deterministically via `editorial.compose_briefing_payload`; date navigation is a
   frontend concern.
+- The Chronicles page (`/chronicles`) also accepts `?episode=<episode-id>`, which opens the
+  existing `EpisodeDrawer` for that exact episode over the selected day. Closing the drawer
+  removes only `episode`; an unknown episode fails inside the drawer, and a date-only link is
+  unchanged. In-page episode clicks use the same parameter. The entity page's Shared Chronicles
+  rows link here.
+
+### Owner-day composition
+
+The bounded day-close bundle separates `owner_day.observations` from source
+inventories and diagnostic counts. Its deterministic narration seeds use only
+normal-privacy evidence in the exact owner-local day, retain readable timestamps,
+confidence and machine source references, and select representative kinds before
+the single interpretation call. Automated Butler sessions are processing records,
+not owner conversations. Inbound email does not establish a human exchange;
+actual owner outbound evidence supports sending a message, without inventing a
+recipient or reply. Playback overlapping recorded sleep is background or
+uncertain playback; playback alone never proves attentive listening. Unknown
+places, movement destinations, travel modes and gaps remain explicit.
+
+Raw episodes/events, per-source roll-ups and counts remain diagnostics. Their
+producer classifications, time aggregates and editorial corrections are unchanged.
+Derived observations share the existing character/byte budget and retain a raw
+evidence anchor while present, so they cannot authorize an empty-day coverage
+witness. Privacy masking precedes all derivation; sensitive sleep cannot qualify
+normal playback by leaking its timing through this view. The existing masked
+envelopes retain their separate limited narration rules.
+
+The automatic session-episode caller excludes recognized delivery/tool-summary
+bookkeeping only for the configured Chronicler's exact scheduled
+`chronicler_day_close` trigger. It uses the cache classifier's existing scaffold
+family without applying the cache's broader JSON/prose rules to memory. Session
+results and audit records remain intact; routed corrections, other tasks,
+other Butlers and genuine retrospective prose retain their existing memory path.
+This hook is distinct from model-invoked memory write tools and deterministic
+daily fact writeback; those keep their own admission and ownership rules.
 
 ### Late material and missingness
 
@@ -25,6 +60,22 @@ availability cannot certify historical baseline days. Missing sleep cannot produ
 samples. Cumulative debt also requires the complete supported requested calendar
 window, so missing dates are never compressed into a shorter claimed interval.
 The generic balance API retains its zero-filled response shape.
+
+### Write-back integrity
+
+- **Configured-absent sources are not outages.** An `optional_schema` source whose adapter skipped
+  because its evidence surface is absent, and which has never projected successfully, does not
+  raise `feeder_dark` (`flags.is_source_configured_absent`). It still gates the behavioral flags
+  that depend on it, so a missing sleep feeder never produces `sleep_missing`. A source that fed
+  the chronicler before and then went inactive, or any inactive required source, is still dark.
+- **Sleep debt is only "building" on a short night.** The closed day must itself fall short of the
+  usual, so a long night never yields both "slept more than usual" and "debt building".
+- **Confidence is evidence-derived.** `writeback.evidence_confidence` scales linearly from 0.4 to
+  0.9 with baseline coverage (supported sample days over the lookback window). Self-reminders carry
+  the 0.4 floor. The value is written to the facts `confidence` column through `store_fact`, not
+  the blanket 1.0 default.
+- **The day-close session writes no memory.** Its prompt forbids memory write tools; delivery and
+  scheduling receipts (sent, deferred, not configured) are operational status, never facts.
 
 The daemon owns one canonical historical-refresh service shared with the
 existing dashboard control. The dashboard still refuses runtime-origin calls.
@@ -61,3 +112,16 @@ cleanup closes them once settlement completes. It never reports success while a
 release is incomplete or closes the shared pool underneath retained work.
 Local software controls do not establish real PostgreSQL, model/provider or
 owner-delivery outcomes; those require their source-bound hosted evidence.
+
+### Travel intents and location (bu-2tsgqb.7)
+
+`reconcile_day` checks one-way travel intents (a flight, or a route block `A -> B`, 30 min to 24 h)
+against accepted OwnTracks fixes (`src/butlers/chronicler/travel_location.py`). Same place before
+and after the window drops the intent with `evidence="location"`, but only for an intent that
+expects a long trip (explicit flight wording in the title); a
+route without flight wording, like `Home -> Office` or `SIN -> Aomori`, stays `unknown`. 300 km or more at a plausible
+speed keeps it with a `consistent` note that states only the displacement, never that the trip was
+taken; anything else is `unknown`. Each anchor needs two fixes; `trail_outlier`, coarse (>1 km) and
+naive-timestamp fixes are ignored. There is no geocoding, so an event's stated place is never
+checked. Every intent also carries `reconciliation.plan_producer`: `butler` for events the calendar
+module marked `butler_generated` (or titled `BUTLER:`), else `calendar`.

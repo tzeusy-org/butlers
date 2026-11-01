@@ -88,6 +88,7 @@ export {
   createEntityGift,
   getEntityTimeline,
   getEntityActivity,
+  getEntityCommitments,
   getEntityCadence,
   getEntityMessageThreads,
   getEntityActivityBins,
@@ -851,6 +852,7 @@ export {
   createConversation,
   sendMessage,
   cancelConversationMessageTurn,
+  updateConversation,
 } from "./client.ts";
 
 export type {
@@ -888,6 +890,7 @@ export type {
   MessageSearchResult,
   MessageSearchParams,
   CreateConversationRequest,
+  ConversationUpdateRequest,
   SendMessageRequest,
   ConversationSseEventType,
   ConversationSseEvent,

@@ -63,6 +63,7 @@ import {
   useAddEntityContact,
   useEntityActivity,
   useEntityCadence,
+  useEntitySharedChronicles,
   useUpdateEntityDunbarTier,
   useMergeRelationshipEntities,
   useForgetRelationshipEntity,
@@ -90,6 +91,28 @@ describe("useEntityCadence", () => {
     expect(options.refetchOnWindowFocus).toBe("always");
     await options.queryFn();
     expect(getEntityCadence).toHaveBeenCalledWith("entity-001", 30);
+  });
+});
+
+describe("useEntitySharedChronicles", () => {
+  it("requests the first five Chronicler rows inside the activity cache family", async () => {
+    const { getEntityActivity } = await import("@/api/index.ts");
+    mockUseQuery.mockClear();
+    useEntitySharedChronicles("entity-001");
+
+    const options = mockUseQuery.mock.calls.at(-1)?.[0] as {
+      queryKey: unknown[];
+      queryFn: (context: { signal: AbortSignal }) => Promise<unknown>;
+    };
+    const signal = new AbortController().signal;
+    expect(options.queryKey.slice(0, 2)).toEqual(["entity-activity", "entity-001"]);
+    await options.queryFn({ signal });
+    expect(getEntityActivity).toHaveBeenLastCalledWith("entity-001", {
+      source: "chronicler",
+      limit: 5,
+      offset: 0,
+      signal,
+    });
   });
 });
 

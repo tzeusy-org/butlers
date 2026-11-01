@@ -5820,6 +5820,16 @@ export interface PageContext {
   truncated?: boolean;
 }
 
+/**
+ * Body for PATCH /api/butlers/{name}/conversations/{id} — owner-authenticated
+ * metadata change (REQ-dashboard-chat-ui-017). Send exactly the field being
+ * changed: a title-only rename or a status-only archive/unarchive.
+ */
+export interface ConversationUpdateRequest {
+  title?: string;
+  status?: "active" | "archived";
+}
+
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
@@ -9215,6 +9225,30 @@ export interface EntityActivityResponse {
   offset: number;
   degraded: boolean;
   degraded_reason: "chronicler_activity_unavailable" | null;
+}
+
+/** Contribution selector for GET /api/relationship/entities/{id}/activity. */
+export type EntityActivitySource = "all" | "relationship" | "chronicler";
+
+/** One active commitment between the owner and an entity (safe projection). */
+export interface EntityCommitment {
+  kind: "promise" | "waiting_for" | "follow_up" | "obligation" | "decision";
+  direction: "owner_to_other" | "other_to_owner";
+  summary: string;
+  deadline: string | null;
+  escalation_level: "L0" | "L1" | "L2" | "L3";
+  fingerprint: string;
+}
+
+/** Response for GET /api/relationship/entities/{id}/commitments. */
+export interface EntityCommitmentsResponse {
+  items: EntityCommitment[];
+  total: number;
+  limit: number;
+  offset: number;
+  /** True only when the commitment source could not be read; items are then empty. */
+  degraded: boolean;
+  degraded_reason: "commitment_source_unavailable" | null;
 }
 
 /**

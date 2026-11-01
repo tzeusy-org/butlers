@@ -64,8 +64,8 @@ Scope: v1-mandatory
 - **AND** `failed` (a routing failure recorded after the event was already
   ingested — see `ingestion_event_mark_failed`) renders with the same
   destructive-red treatment as `error`; its recovery action SHALL remain
-  disabled when no durable eligible target-delivery work can be queued and
-  SHALL never relabel the row `ingested` merely because it was invoked
+  disabled when the server reports no eligible recovery and SHALL never
+  relabel the row `ingested` merely because it was invoked
 
 #### Scenario: Ledger row shows a dispatch-ticks summary without opening the drawer
 
@@ -136,39 +136,39 @@ Scope: v1-mandatory
 
 ## ADDED Requirements
 
-### Requirement: Target delivery recovery is legible and actionable
+### Requirement: Recovery and admission evidence is legible and actionable
 
-The Timeline SHALL expose the server-derived state of each non-dashboard ingestion-to-domain target delivery and offer recovery only when a durable eligible intent can be queued. It SHALL show waiting, accepted, ambiguous, and terminal failure distinctly, with an accessible explanation and a stable response to repeated actions.
+Until the D19 owner surface replaces the Timeline, it SHALL show each event's server-derived recovery evidence: legacy target receipts for events routed before the switch, and admission state for events admitted after it. It SHALL offer recovery only when the server reports an eligible recovery, with an accessible explanation and a stable response to repeated actions, and SHALL never present a coarse source status as completion.
 
 ID: REQ-dashboard-ingestion-dispatch-console-002
-Source: heart-and-soul/vision.md Rule 3; design.md Decision 5
+Source: heart-and-soul/vision.md Rule 3; RFC 0038 D5 and D19; design.md Decisions 4 and 5
 Scope: v1-mandatory
 
-#### Scenario: Partial fan-out has no false all-clear
+#### Scenario: Partial legacy fan-out has no false all-clear
 
-- **WHEN** an event has one accepted target and another waiting, ambiguous, or terminally failed target
-- **THEN** the row and drawer SHALL show the non-complete aggregate and per-target states
+- **WHEN** a pre-switch event has one accepted legacy target and another unresolved
+- **THEN** the row and drawer SHALL show the non-complete summary and per-target evidence
 - **AND** the accepted target SHALL not display a retry action
 
-#### Scenario: Ingested source may still have pending target work
+#### Scenario: Ingested source is not shown as complete
 
-- **WHEN** an `ingested` source row has one unresolved classified target
-- **THEN** the Timeline SHALL show its non-complete delivery summary alongside the coarse source status
-- **AND** the owner SHALL not have to infer delivery from the `ingested` word alone
+- **WHEN** an `ingested` source row has no admission receipt or legacy target receipt
+- **THEN** the Timeline SHALL show its non-complete evidence alongside the coarse source status
+- **AND** the owner SHALL not have to infer completion from the `ingested` word alone
 
 #### Scenario: Recovery control follows server authority
 
-- **WHEN** the owner activates recovery for an eligible failed target
-- **THEN** the control SHALL promptly show pending feedback and SHALL resolve to the server's queued identity or an actionable refusal
-- **AND** a repeat activation SHALL not queue a second intent or hide the first result
+- **WHEN** the owner activates recovery for an eligible event
+- **THEN** the control SHALL promptly show pending feedback and SHALL resolve to the server's receipt or an actionable refusal
+- **AND** a repeat activation SHALL not queue a second admission or hide the first result
 
-#### Scenario: Ambiguous and legacy failures explain their limits
+#### Scenario: Refused and legacy failures explain their limits
 
-- **WHEN** a target is ambiguous or a legacy failed event lacks durable recovery evidence
+- **WHEN** recovery is refused before the switch, or a legacy failed event lacks durable recovery evidence
 - **THEN** the control SHALL be disabled or absent with a concise, keyboard and screen-reader accessible reason
 - **AND** the row SHALL remain visibly unresolved rather than presenting a successful replay
 
 #### Scenario: Evidence read fails
 
-- **WHEN** delivery state cannot be loaded while the ledger row remains cached
+- **WHEN** recovery evidence cannot be loaded while the ledger row remains cached
 - **THEN** the drawer SHALL show unavailable recovery evidence and preserve the prior row without a false all-clear
