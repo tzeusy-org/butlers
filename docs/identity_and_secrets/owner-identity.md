@@ -75,7 +75,7 @@ owner's other unheld endpoints keep resolving.
 Phone spellings do not share one normalized form (`+65 8765 0123` and `87650123` digest
 differently), so a hold on one owner phone fact also demotes every phone fact of the same entity
 that is suffix-equivalent to it under the rule the definer uses to match candidates, whatever that
-sibling's validity (core_294). A writer therefore does not have to find every spelling, and a
+sibling's validity (core_295). A writer therefore does not have to find every spelling, and a
 spelling added or retired after the hold stays covered. The core_145 exact-predicate mode
 (`p_predicate` other than `owner-channel`) only matches `has-email`, `has-handle` and `has-phone`,
 the predicates a hold can name; any other predicate resolves no owner.
@@ -84,7 +84,7 @@ Hold history is append-only: generations are monotonic per target and never rese
 deleted or truncated, and the only permitted change is a single `released_at` stamp. Row level
 security with no policy keeps every runtime role from reading or writing holds. The table, the
 content-blind `public.custody_target_held(predicate, object)` read, the digest function it calls
-and the history guard all belong to the database owner (core_294 moved the last two off the
+and the history guard all belong to the database owner (core_295 moved the last two off the
 migration executor), so no runtime-assumable role can replace code a hold check runs. The core_293
 downgrade refuses while any hold is active.
 

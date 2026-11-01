@@ -1,4 +1,4 @@
-"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145 to core_294).
+"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145 to core_295).
 
 Closes the gap identified in bu-6ui2o: the mocked-pool unit tests in
 ``test_gate.py`` and ``test_identity_resolution.py`` cover the Python layer
@@ -846,7 +846,7 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Endpoint custody holds (core_293, bu-s11n0s.1; core_294, bu-s11n0s.25)
+# Endpoint custody holds (core_293, bu-s11n0s.1; core_295, bu-s11n0s.25)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _HOLD_INSERT = """
@@ -1019,7 +1019,7 @@ class TestEndpointCustodyHolds:
         isolated_role_pool: asyncpg.Pool,
         seeded_data: dict,
     ) -> None:
-        """A held phone also demotes the owner's other spellings of that number (core_294).
+        """A held phone also demotes the owner's other spellings of that number (core_295).
 
         '+65 8765 0123' and '87650123' digest differently, and the candidate
         '0087650123' suffix-matches only the unheld local spelling. The hold must
@@ -1072,7 +1072,7 @@ class TestEndpointCustodyHolds:
         isolated_role_pool: asyncpg.Pool,
         seeded_data: dict,
     ) -> None:
-        """Exact legacy predicates outside the custody universe cannot carry owner (core_294)."""
+        """Exact legacy predicates outside the custody universe cannot carry owner (core_295)."""
         owner_id = seeded_data["owner_id"]
         fact_id = await migration_pool.fetchval(
             """
@@ -1099,7 +1099,7 @@ class TestEndpointCustodyHolds:
             )
 
 
-async def test_core_294_moves_custody_functions_to_the_maintenance_owner(
+async def test_core_295_moves_custody_functions_to_the_maintenance_owner(
     postgres_container,
 ) -> None:
     """Only the trusted database owner may replace a function a hold check calls.

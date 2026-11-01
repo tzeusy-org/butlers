@@ -1,7 +1,7 @@
 """Harden endpoint custody holds: trusted function ownership and equivalent facts.
 
-Revision ID: core_294
-Revises: core_293
+Revision ID: core_295
+Revises: core_294
 Create Date: 2026-11-02 00:00:00.000000
 
 Review follow-up to core_293 (bu-s11n0s.25, openspec change
@@ -38,8 +38,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_294"
-down_revision = "core_293"
+revision = "core_295"
+down_revision = "core_294"
 branch_labels = None
 depends_on = None
 
