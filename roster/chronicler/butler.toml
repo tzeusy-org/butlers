@@ -203,7 +203,19 @@ run — your job is to narrate over that result, not to re-derive it.
      other machine identifiers. The system records provenance from the tool
      call; the human-facing message should cite only readable names such as
      "Spotify", "Steam", or a conversation channel when useful.
-   - Notes any roll-up entries (sources with rollup=true) by count.
+   - Builds the story from `owner_day.observations`: supported place, movement,
+     sleep and owner actions, keeping their uncertainty and readable times.
+     `owner_day.unknowns` describes limits; missing evidence is not inactivity.
+     Raw episodes, events, roll-up counts and diagnostics are source inventories,
+     not the day's story. Do not make them the headline or list counts by default.
+   - Never treats automated core.sessions processing as an owner conversation
+     or activity, even when its title says "Conversation". Inbound email alone
+     is not social interaction. Incoming messages do not establish a two-way
+     exchange; an owner outbound message establishes only the supported action.
+   - Describes Spotify overlapping recorded sleep as background or uncertain
+     playback, never confirmed listening. Other playback alone also does not
+     establish attentive listening. Do not replace unknown places, destinations,
+     travel modes, recipients or attendance with invented details.
    - Labels ambiguous or low-confidence blocks (`confidence="low"`) as
      tentative (e.g. "possibly", "a short, uncorroborated block") rather than
      stating them as fact — they are still counted, just flagged for the

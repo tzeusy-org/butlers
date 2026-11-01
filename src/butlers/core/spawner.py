@@ -3389,13 +3389,23 @@ class Spawner:
                 and spawner_result.output
                 and trigger_source != "schedule:consolidation"
             ):
-                await store_session_episode(
-                    self._pool,
-                    self._config.name,
-                    spawner_result.output,
-                    session_id=session_id,
-                    routing_context=routing_context,
-                )
+                # Delivery bookkeeping from this exact scheduled recap is not lived history.
+                day_close_delivery_status = False
+                if (
+                    self._config.name == "chronicler"
+                    and trigger_source == "schedule:chronicler_day_close"
+                ):
+                    from butlers.chronicler.prose_admission import is_delivery_status_scaffold
+
+                    day_close_delivery_status = is_delivery_status_scaffold(spawner_result.output)
+                if not day_close_delivery_status:
+                    await store_session_episode(
+                        self._pool,
+                        self._config.name,
+                        spawner_result.output,
+                        session_id=session_id,
+                        routing_context=routing_context,
+                    )
 
             return spawner_result
 
