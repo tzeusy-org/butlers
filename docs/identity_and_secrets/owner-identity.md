@@ -58,6 +58,30 @@ Owner recognition uses the shared resolution path in
 entity gets the `[Source: Owner (entity_id: ...), via <channel>]` preamble, and contact sync matches
 the owner's email and handle instead of creating a duplicate person.
 
+### Endpoint Custody Holds
+
+A lost, stolen or replaced owner channel can be held in `public.custody_holds` (core_293,
+openspec change `endpoint-custody-holds`). A hold names one canonical owner endpoint target by
+`public.custody_target_digest(predicate, object)`, a SHA-256 over the typed fact form
+`public.resolve_owner_triple` matches: `has-email` and `has-handle` values are trimmed and
+lower-cased, `has-phone` values are digits only. The table stores the digest, never the raw
+identifier. While a hold is active, that definer
+returns no owner row for any candidate that matches the held fact. Its owner-only consumers
+therefore treat the endpoint as not owner: Telegram approval callbacks are acknowledged without a
+decision, Switchboard accepted-source ingress gets no owner stamp, and owner-recipient handoff and
+approval corroboration refuse the owner bypass. A held fact still counts toward ambiguity, and the
+owner's other unheld endpoints keep resolving.
+
+Hold history is append-only: generations are monotonic per target and never reset, rows cannot be
+deleted or truncated, and the only permitted change is a single `released_at` stamp. Row level
+security with no policy keeps every runtime role from reading or writing holds; the table and the
+content-blind `public.custody_target_held(predicate, object)` read belong to the database
+owner. The core_293 downgrade refuses while any hold is active.
+
+There is no runtime writer yet. The admitted Switchboard hold engine, protected dashboard/host
+release, the direct `resolve_contact_by_channel` routing path, Messenger egress fallback and the
+security-question flow are later slices of bu-s11n0s.1.
+
 ### Credential Resolution
 
 Module startup code resolves credentials from the owner entity's `entity_info`:
