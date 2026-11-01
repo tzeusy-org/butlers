@@ -5,13 +5,13 @@ restart/backoff/cancellation semantics in isolation) by driving the *real*
 ``butlers.api.app.lifespan`` context manager end-to-end -- with only DB/MCP/
 pricing dependencies mocked out -- to prove:
 
-1. All eight dashboard lifespan background loops are wired through
+1. All nine dashboard lifespan background loops are wired through
    ``supervise_lifespan_loop`` exactly once (the lifespan-inventory test).
-2. Shutdown cancels every one of the eight tasks, including the calendar-sync
+2. Shutdown cancels every one of the nine tasks, including the calendar-sync
    deadman -- which was previously *omitted* from the shutdown cancellation
    block even though it was created at startup (a real bug this bead fixes;
    see the regression assertion below).
-3. None of the eight loops restart as a result of shutdown cancellation.
+3. None of the nine loops restart as a result of shutdown cancellation.
 4. The external-deadman loop is present only when EXTERNAL_DEADMAN_URL is
    configured (existing conditional-start behavior, preserved).
 """
@@ -29,7 +29,7 @@ from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.asyncio
 
-# The eight dashboard lifespan loops, independent of
+# The nine dashboard lifespan loops, independent of
 # EXTERNAL_DEADMAN_URL configuration.
 _ALWAYS_ON_LOOP_NAMES = {
     "secrets_lifecycle",
@@ -40,6 +40,7 @@ _ALWAYS_ON_LOOP_NAMES = {
     "migration_drift",
     "calendar_sync_deadman",
     "fleet_shadow_observer",
+    "fleet_readiness",
 }
 _EXTERNAL_DEADMAN_LOOP_NAME = "external_deadman"
 
@@ -55,6 +56,7 @@ _MODULE_LEVEL_LOOP_FUNCS = [
     "run_migration_drift_loop",
     "run_calendar_sync_deadman_loop",
     "run_external_deadman_loop",
+    "run_readiness_sampler_loop",
 ]
 
 

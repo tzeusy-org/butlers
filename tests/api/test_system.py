@@ -1878,6 +1878,65 @@ async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_
     assert general["error"] is None
 
 
+@pytest.mark.parametrize(
+    ("overrides", "observation", "policy", "eligibility"),
+    [
+        # Fresh failed probe after an earlier healthy observation.
+        ({"observed_state": "unavailable"}, "unavailable", "active", "ineligible"),
+        # A recorded healthy observation past its TTL cannot look green.
+        (
+            {"healthy_observed_at": datetime.now(UTC) - timedelta(seconds=400)},
+            "stale",
+            "active",
+            "ineligible",
+        ),
+        ({"policy_state": "paused"}, "healthy", "paused", "paused"),
+        ({"policy_state": "quarantined"}, "healthy", "quarantined", "ineligible"),
+        ({}, "healthy", "active", "eligible"),
+    ],
+)
+async def test_heartbeat_reports_probe_observation_and_policy_separately(
+    monkeypatch, overrides, observation, policy, eligibility
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    now = datetime.now(UTC)
+    healthy_at = now - timedelta(seconds=60)
+    probe_at = now - timedelta(seconds=2)
+    row = {
+        "name": "general",
+        "last_seen_at": healthy_at,
+        "last_probe_at": probe_at,
+        "policy_state": "active",
+        "observed_state": "healthy",
+        "boot_epoch": 4,
+        "observed_boot_epoch": 4,
+        "route_compatible": True,
+        "accepting_routes": True,
+        "healthy_observed_at": healthy_at,
+        "liveness_ttl_seconds": 300,
+        "server_now": now,
+    } | overrides
+    mock_db = _make_heartbeat_db(registry_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+
+    assert resp.status_code == 200
+    general = resp.json()["data"]["butlers"][0]
+    # The failed attempt advances only last_probe_at; the legacy time stays
+    # on the earlier verified success and is not the health verdict.
+    assert general["last_probe_at"] == probe_at.isoformat()
+    assert general["last_heartbeat_at"] == healthy_at.isoformat()
+    assert general["heartbeat_age_seconds"] >= 60
+    assert general["observation_state"] == observation
+    assert general["administrative_policy"] == policy
+    assert general["route_compatibility"] == "compatible"
+    assert general["effective_eligibility"] == eligibility
+    assert general["active_session_count"] == 0 and general["error"] is None
+
+
 async def test_heartbeat_schema_unreachable_sets_error():
     mock_db = _make_heartbeat_db(session_fails=True)
     async with httpx.AsyncClient(
@@ -1924,6 +1983,9 @@ async def test_heartbeat_null_last_heartbeat_when_not_in_registry():
     general = next(b for b in butlers if b["name"] == "general")
     assert general["last_heartbeat_at"] is None
     assert general["heartbeat_age_seconds"] is None
+    assert general["last_probe_at"] is None
+    assert general["observation_state"] == "observer_unknown"
+    assert general["effective_eligibility"] == "unknown"
     assert general["active_session_count"] == 2
     assert general["error"] is None
 

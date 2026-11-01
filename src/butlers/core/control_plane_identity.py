@@ -31,6 +31,19 @@ PROBE_DEADLINE_S = 3.0
 MAX_PROBE_FANOUT = 4
 SUPPORTED_ROUTE_CONTRACT = 1
 
+#: Per-daemon separated control-plane facts for the expected names (``$1``).
+#: The one reader shared by the shadow observer and Dashboard ``/ready`` sampling;
+#: ``server_now`` lets callers judge TTL freshness on the database clock.
+FLEET_FACTS_SQL = """
+    SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
+           c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
+           c.healthy_observed_at, r.eligibility_state,
+           r.liveness_ttl_seconds, clock_timestamp() AS server_now
+    FROM switchboard.butler_registry_control_plane AS c
+    JOIN switchboard.butler_registry AS r USING (name)
+    WHERE c.name = ANY($1::text[])
+"""
+
 logger = logging.getLogger(__name__)
 
 
@@ -358,18 +371,7 @@ async def run_shadow_cycle(
     healthy_count = 0
     unready: list[UnreadyDaemon] = []
     try:
-        rows = await pool.fetch(
-            """
-            SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
-                   c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
-                   c.healthy_observed_at, r.eligibility_state,
-                   r.liveness_ttl_seconds
-            FROM switchboard.butler_registry_control_plane AS c
-            JOIN switchboard.butler_registry AS r USING (name)
-            WHERE c.name = ANY($1::text[])
-            """,
-            [target.name for target in expected],
-        )
+        rows = await pool.fetch(FLEET_FACTS_SQL, [target.name for target in expected])
         by_name = {row["name"]: row for row in rows}
         now = await pool.fetchval("SELECT clock_timestamp()")
         mismatches = 0

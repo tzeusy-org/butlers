@@ -74,7 +74,7 @@ import os
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -85,6 +85,7 @@ from butlers.api.db import DatabaseManager
 from butlers.api.deps import ButlerConnectionInfo, Db, get_butler_configs
 from butlers.api.models import ApiResponse
 from butlers.api.read_models.insights import query_insight_delivery_state
+from butlers.api.readiness import receiver_ready
 from butlers.api.runtime_attention_status import (
     CONDITION_ATTENTION_GRACE,
     CONDITION_ATTENTION_PASS_ALLOWANCE,
@@ -287,13 +288,28 @@ class EgressCatalog(BaseModel):
 
 
 class ButlerHeartbeat(BaseModel):
-    """Per-butler liveness and session snapshot."""
+    """Per-butler liveness and session snapshot (REQ-system-overview-page-007).
+
+    ``last_heartbeat_at``/``heartbeat_age_seconds`` are the last successfully
+    verified healthy receiver observation; ``last_probe_at`` is the latest
+    attempt and implies nothing about health. Clients classify availability
+    from ``observation_state`` and ``effective_eligibility``, never from age.
+    """
 
     name: str
     last_heartbeat_at: str | None
+    last_probe_at: str | None = None
     last_session_at: str | None
     active_session_count: int
     heartbeat_age_seconds: float | None
+    observation_state: Literal["healthy", "stale", "unavailable", "observer_unknown"] = (
+        "observer_unknown"
+    )
+    administrative_policy: Literal[
+        "active", "paused", "quarantined", "review_required", "unknown"
+    ] = "unknown"
+    route_compatibility: Literal["compatible", "incompatible", "unknown"] = "unknown"
+    effective_eligibility: Literal["eligible", "paused", "ineligible", "unknown"] = "unknown"
     error: str | None = None
 
 
@@ -1131,6 +1147,71 @@ async def get_egress_catalog(
 # ---------------------------------------------------------------------------
 
 
+_CONTROL_PLANE_FACT_COLUMNS = (
+    "c.last_probe_at, c.policy_state, c.observed_state, c.boot_epoch,"
+    " c.observed_boot_epoch, c.route_compatible, c.accepting_routes,"
+    " c.healthy_observed_at, r.liveness_ttl_seconds, clock_timestamp() AS server_now"
+)
+_POLICY_STATES = frozenset({"active", "paused", "quarantined", "review_required"})
+_OBSERVED_STATES = frozenset({"healthy", "stale", "unavailable", "observer_unknown"})
+
+
+def _utc_iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if getattr(value, "tzinfo", None) is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
+def _control_plane_facts(row: Any) -> dict[str, Any]:
+    """Separate content-blind observation, policy, compatibility and eligibility.
+
+    A recorded ``healthy`` observation that is past its TTL or belongs to an
+    older boot epoch is ``stale``: neither a recent probe attempt nor the
+    legacy age can make a row look green.
+    """
+    policy = row.get("policy_state")
+    observed = row.get("observed_state")
+    if policy not in _POLICY_STATES or observed not in _OBSERVED_STATES:
+        # No control-plane record yet: every fact stays unknown.
+        return {"last_probe_at": _utc_iso(row.get("last_probe_at"))}
+    observation = observed
+    if observed == "healthy" and not receiver_ready(
+        {
+            "observed_state": observed,
+            "observed_boot_epoch": row.get("observed_boot_epoch"),
+            "boot_epoch": row.get("boot_epoch"),
+            "route_compatible": True,
+            "accepting_routes": True,
+            "healthy_observed_at": row.get("healthy_observed_at"),
+            "liveness_ttl_seconds": row.get("liveness_ttl_seconds"),
+        },
+        row.get("server_now"),
+    ):
+        observation = "stale"
+    compatible = row.get("route_compatible")
+    compatibility = {True: "compatible", False: "incompatible"}.get(compatible, "unknown")
+    if policy == "paused":
+        eligibility = "paused"
+    elif (
+        policy == "active"
+        and observation == "healthy"
+        and compatible is True
+        and row.get("accepting_routes") is True
+    ):
+        eligibility = "eligible"
+    else:
+        eligibility = "ineligible"
+    return {
+        "last_probe_at": _utc_iso(row.get("last_probe_at")),
+        "observation_state": observation,
+        "administrative_policy": policy,
+        "route_compatibility": compatibility,
+        "effective_eligibility": eligibility,
+    }
+
+
 @router.get("/butlers/heartbeat", response_model=ApiResponse[HeartbeatFacts])
 async def get_butlers_heartbeat(
     *,
@@ -1162,15 +1243,15 @@ async def get_butlers_heartbeat(
     try:
         from butlers.tools.switchboard.registry.registry import receiver_route_cutover_enabled
 
-        registry_query = (
-            "SELECT r.name, c.healthy_observed_at AS last_seen_at"
+        legacy_time = (
+            "c.healthy_observed_at" if receiver_route_cutover_enabled() else "r.last_seen_at"
+        )
+        registry_rows = await sw_pool.fetch(
+            f"SELECT r.name, {legacy_time} AS last_seen_at, {_CONTROL_PLANE_FACT_COLUMNS}"
             " FROM butler_registry AS r"
             " LEFT JOIN butler_registry_control_plane AS c USING (name)"
             " ORDER BY r.name ASC"
-            if receiver_route_cutover_enabled()
-            else "SELECT name, last_seen_at FROM butler_registry ORDER BY name ASC"
         )
-        registry_rows = await sw_pool.fetch(registry_query)
     except Exception as exc:
         logger.warning("Failed to query butler_registry: %s", exc)
         raise HTTPException(status_code=503, detail="Butler registry query failed") from exc
@@ -1179,6 +1260,7 @@ async def get_butlers_heartbeat(
     registry: dict[str, datetime | None] = {
         row["name"]: row["last_seen_at"] for row in registry_rows
     }
+    facts_by_name = {row["name"]: _control_plane_facts(row) for row in registry_rows}
 
     # Canonical butler set: roster scan via get_butler_configs().
     # This ensures butlers whose DB pool failed at startup (absent from
@@ -1244,6 +1326,7 @@ async def get_butlers_heartbeat(
             ButlerHeartbeat(
                 name=name,
                 last_heartbeat_at=last_heartbeat_at,
+                **facts_by_name.get(name, {}),
                 last_session_at=last_session_at,
                 active_session_count=active_session_count,
                 heartbeat_age_seconds=heartbeat_age,
