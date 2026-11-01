@@ -514,10 +514,10 @@ def test_flight_with_origin_then_destination_fixes_is_location_consistent_only()
 
 
 def test_butler_route_plan_contradicted_by_same_place_before_and_after() -> None:
-    """Oct 21: a butler-written 'SIN -> Aomori' block while the owner stayed in Beijing."""
+    """Oct 21: a butler-written flight block while the owner stayed in Beijing."""
     start = datetime(2026, 10, 21, 0, 30, tzinfo=_SGT)
     end = datetime(2026, 10, 21, 17, 0, tzinfo=_SGT)
-    intent = _travel_intent("BUTLER: Japan Trip: SIN -> Aomori", start, end)
+    intent = _travel_intent("BUTLER: Japan Trip: Flight SIN -> Aomori", start, end)
     fixes = [
         _fix(datetime(2026, 10, 20, 22, 0, tzinfo=_SGT), _CENTRAL_BEIJING),
         _fix(datetime(2026, 10, 20, 23, 30, tzinfo=_SGT), _CENTRAL_BEIJING),
@@ -534,9 +534,20 @@ def test_butler_route_plan_contradicted_by_same_place_before_and_after() -> None
     assert dropped.intent["reconciliation"]["plan_producer"] == "butler"
 
 
-def test_local_route_at_nearby_places_stays_unknown() -> None:
-    """A 12 km 'Home -> Office' block expects no long displacement, so nearby
-    anchors cannot contradict it."""
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Home -> Office",
+        "Home -> GYM",
+        "Home -> MRT",
+        "Office -> SGH",
+        "Home -> NYC office",
+        "BUTLER: Japan Trip: SIN -> Aomori",
+    ],
+)
+def test_route_without_flight_wording_at_nearby_places_stays_unknown(title: str) -> None:
+    """A route block without flight wording expects no known displacement, so
+    nearby anchors cannot contradict it (no capital-letter airport guessing)."""
     start = datetime(2026, 10, 22, 8, 0, tzinfo=_SGT)
     end = datetime(2026, 10, 22, 9, 0, tzinfo=_SGT)
     home, office = (1.3521, 103.8198), (1.2840, 103.8510)
@@ -547,7 +558,7 @@ def test_local_route_at_nearby_places_stays_unknown() -> None:
         _fix(datetime(2026, 10, 22, 9, 40, tzinfo=_SGT), office),
     ]
 
-    result = reconcile_day([_travel_intent("Home -> Office", start, end)], location_fixes=fixes)
+    result = reconcile_day([_travel_intent(title, start, end)], location_fixes=fixes)
 
     assert result.dropped_intents == []
     [kept] = result.kept_intents

@@ -19,12 +19,12 @@ Scope: v1-mandatory
 #### Scenario: Same place before and after contradicts a long trip
 
 - **WHEN** both anchors exist and lie within 50 km of each other
-- **AND** the intent expects a long displacement: its title names a flight, or its route has an IATA-style airport-code endpoint (three capital letters next to the arrow)
+- **AND** the intent expects a long displacement: its title contains explicit flight wording
 - **THEN** the intent SHALL be dropped as contradicted with `evidence` set to `location`
 
 #### Scenario: A local route is never contradicted by nearby anchors
 
-- **WHEN** a route intent names no flight and no airport-code endpoint (for example `Home -> Office`)
+- **WHEN** a route intent contains no flight wording (for example `Home -> Office`, `Home -> GYM`, or `SIN -> Aomori`)
 - **AND** both anchors exist and lie within 50 km of each other
 - **THEN** the intent SHALL be kept with an `unknown` location verdict
 

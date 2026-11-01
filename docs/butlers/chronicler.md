@@ -67,8 +67,8 @@ owner-delivery outcomes; those require their source-bound hosted evidence.
 `reconcile_day` checks one-way travel intents (a flight, or a route block `A -> B`, 30 min to 24 h)
 against accepted OwnTracks fixes (`src/butlers/chronicler/travel_location.py`). Same place before
 and after the window drops the intent with `evidence="location"`, but only for an intent that
-expects a long trip (a flight, or a route with an airport-code endpoint such as `SIN -> Aomori`); a
-local route like `Home -> Office` stays `unknown`. 300 km or more at a plausible
+expects a long trip (explicit flight wording in the title); a
+route without flight wording, like `Home -> Office` or `SIN -> Aomori`, stays `unknown`. 300 km or more at a plausible
 speed keeps it with a `consistent` note that states only the displacement, never that the trip was
 taken; anything else is `unknown`. Each anchor needs two fixes; `trail_outlier`, coarse (>1 km) and
 naive-timestamp fixes are ignored. There is no geocoding, so an event's stated place is never

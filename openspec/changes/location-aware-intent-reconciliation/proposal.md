@@ -10,7 +10,7 @@ Day-close reconciliation ignored location (bu-2tsgqb.7, Chronicler review 2026-1
 ## What changes
 
 - A pure travel location check (`travel_location.py`) weighs one-way travel intents (a flight, or a route block `A -> B`, 30 min to 24 h long) against accepted OwnTracks fixes. It compares an origin anchor around the departure with a destination anchor around the arrival:
-  - same place (within 50 km), for an intent that expects a long trip (a flight, or a route with an airport-code endpoint such as `SIN`): the intent is dropped as contradicted, with `evidence="location"`; a local route such as `Home -> Office` stays `unknown`;
+  - same place (within 50 km), for an intent that expects a long trip (explicit flight wording): the intent is dropped as contradicted, with `evidence="location"`; a route without flight wording such as `Home -> Office` stays `unknown`;
   - at least 300 km apart at a plausible speed: the intent is kept with a `consistent` location note, which states only the displacement and never that the trip was taken;
   - anything else: `unknown`.
 - Anchors need two fixes at one place. Fixes flagged `trail_outlier` by the shared trail policy (bu-2tsgqb.6), fixes with accuracy worse than 1 km, naive timestamps and non-normal privacy rows are ignored.

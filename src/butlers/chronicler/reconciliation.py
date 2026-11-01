@@ -33,7 +33,7 @@ Two rules, matching design.md's worked examples exactly:
    OwnTracks fixes passed as ``location_fixes``
    (:mod:`butlers.chronicler.travel_location`). Same place before and after
    the window drops it as contradicted, but only when the intent expects a
-   long trip (a flight, or a route with an airport-code endpoint); a long,
+   long trip (explicit flight wording); a long,
    plausible displacement keeps it with a ``consistent`` location note, which
    never asserts the trip itself;
    anything else stays ``unknown``.
