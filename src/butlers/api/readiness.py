@@ -48,6 +48,7 @@ from typing import Any, Final
 import httpx
 
 from butlers.core.control_plane_identity import (
+    FLEET_FACTS_SQL,
     PROBE_DEADLINE_S,
     DashboardProbeRoleView,
     ExpectedDaemon,
@@ -82,16 +83,6 @@ MAX_PREFLIGHT_BYTES: Final[int] = 512
 _POLICY_STATES: Final[frozenset[str]] = frozenset(
     {"active", "paused", "quarantined", "review_required"}
 )
-
-_FLEET_SQL: Final[str] = """
-    SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
-           c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
-           c.healthy_observed_at, r.liveness_ttl_seconds,
-           clock_timestamp() AS server_now
-    FROM switchboard.butler_registry_control_plane AS c
-    JOIN switchboard.butler_registry AS r USING (name)
-    WHERE c.name = ANY($1::text[])
-"""
 
 
 @dataclass(frozen=True)
@@ -214,7 +205,7 @@ class FleetReadiness:
         if not self._expected:
             return False, False, None
         rows = await DashboardProbeRoleView(self._pool()).fetch(
-            _FLEET_SQL, [target.name for target in self._expected]
+            FLEET_FACTS_SQL, [target.name for target in self._expected]
         )
         by_name = {row["name"]: row for row in rows}
         roster = all(

@@ -111,6 +111,15 @@ Thus the full inventory has nine unresolved sites: the original seven direct can
 the additional CLI priority candidate and this new public direct candidate. No candidate
 silently disappears through a constant.
 
+#5185 (`bu-fvw4ap.4`, semantic `GET /ready`) adds two direct sites in
+`src/butlers/api/readiness.py` (`FleetReadiness.__init__`), raising the counts above the
+`773d1d81b8` snapshot tables to 78 direct / 35 files / 87 recursive. Selecting the Switchboard
+target for the effect-free route preflight is a protected host contract. Selecting the QA
+patrol contract deliberately matches `controller_after_cycle`, so readiness and the fleet
+controller judge the same contract. It inherits that candidate's unresolved status, which
+brings the total to ten unresolved sites. Neither is a conversion or safe-configurability
+claim.
+
 ## Enforcement and static limits
 
 Run `make check-host-policy-selectors` or `python3 scripts/check_host_policy_selectors.py`.
