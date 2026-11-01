@@ -1,6 +1,7 @@
 /**
- * Route-level errorElement (bu-h40h2b.17): a throwing route render or loader shows the shell's
- * existing "Something went wrong" fallback instead of React Router's default error screen.
+ * Root layout errorElement (bu-h40h2b.17): handles RootLayout render failures and route
+ * loader/action errors with the shared fallback instead of React Router's default error screen.
+ * Page render failures are caught by the in-shell ErrorBoundary.
  */
 
 import { useRouteError } from 'react-router'
