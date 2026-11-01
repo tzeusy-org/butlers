@@ -531,6 +531,22 @@ async def persist_token(
     return True
 
 
+async def persist_store_only_api_key(
+    provider: CLIAuthProviderDef,
+    store: CredentialStore,
+    api_key: str,
+) -> None:
+    """Store an API key for a provider whose credential lives only in the DB.
+
+    ``persist_token`` copies a CLI's on-disk auth file, so it cannot serve an
+    ``api_key`` provider without a ``token_path`` (e.g. Claude, whose adapter
+    loads ``cli-auth/claude`` and injects it as ``ANTHROPIC_API_KEY``).
+    """
+    if provider.auth_mode != "api_key" or provider.token_path is not None:
+        raise ValueError(f"provider {provider.name!r} is not a store-only api_key provider")
+    await _store_persisted_token(provider, store, api_key)
+
+
 async def restore_tokens(
     store: CredentialStore,
     *,

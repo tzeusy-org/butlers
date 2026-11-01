@@ -42,6 +42,7 @@ import {
 } from "@/components/workspace/playhead-interp";
 import { GanttSwimlane } from "@/components/chronicles/GanttSwimlane";
 import { FloatingMapMinimap } from "@/components/chronicles/FloatingMapMinimap";
+import { isTrailOutlier } from "@/components/chronicles/trail-geojson";
 import { EpisodeDrawer } from "@/components/chronicles/EpisodeDrawer";
 import { SourceStateBadgeStrip } from "@/components/chronicles/SourceStateBadgeStrip";
 import { StreakCallouts } from "@/components/chronicles/StreakCallouts";
@@ -125,6 +126,8 @@ function DrilldownBody({ date, tz }: ChroniclesDrilldownPanelProps) {
   const timedTrail = useMemo<TimedTrailPoint[]>(() => {
     return pointEvents
       .filter((ev) => ev.canonical_privacy !== "sensitive")
+      // Impossible-jump fixes stay as evidence but never draw on the trail.
+      .filter((ev) => !isTrailOutlier(ev.payload))
       .filter((ev) => {
         const lat = ev.payload.lat;
         const lon = ev.payload.lon ?? ev.payload.lng;

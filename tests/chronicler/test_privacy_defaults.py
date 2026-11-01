@@ -64,11 +64,11 @@ def _spotify_pool(row: dict) -> AsyncMock:
     return pool
 
 
-def _owntracks_pool(row: dict) -> AsyncMock:
+def _owntracks_pool(*rows: dict) -> AsyncMock:
     conn = AsyncMock()
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(
-        return_value=[MagicMock(**row, **{"__getitem__": lambda s, k, _r=row: _r[k]})]
+        return_value=[MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]}) for r in rows]
     )
     pool = AsyncMock()
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
@@ -217,7 +217,8 @@ async def test_owntracks_movement_episode_privacy_is_normal() -> None:
     Same rationale as the point-event invariant: the dashboard is the
     owner's view of their own travel trajectory.
     """
-    row = _make_owntracks_row()
+    # A movement needs two fixes (bu-2tsgqb.6).
+    rows = (_make_owntracks_row(), _make_owntracks_row(_NOW + timedelta(minutes=5)))
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
 
@@ -225,7 +226,7 @@ async def test_owntracks_movement_episode_privacy_is_normal() -> None:
         upserted_episodes.append(episode)
         return episode
 
-    pool = _owntracks_pool(row)
+    pool = _owntracks_pool(*rows)
     cp = _chronicler_pool()
 
     with (
