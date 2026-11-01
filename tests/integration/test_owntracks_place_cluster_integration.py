@@ -210,13 +210,21 @@ async def test_missing_evidence_table_degrades_gracefully_against_real_db(
     """When connectors.owntracks_points genuinely does not exist (module not
     enabled on this deployment), the adapter degrades gracefully rather than
     raising — verified against a real DB by dropping the table."""
-    await pool.execute("DROP TABLE connectors.owntracks_points")
+    async with pool.acquire() as conn:
+        outer = conn.transaction()
+        await outer.start()
+        try:
+            await conn.execute("DROP TABLE connectors.owntracks_points")
+            adapter = OwnTracksPlaceClusterAdapter()
+            result = await adapter.project(conn, chronicler_pool=conn, since=None)
 
-    adapter = OwnTracksPlaceClusterAdapter()
-    result = await adapter.project(pool, chronicler_pool=pool, since=None)
-
-    assert result.skipped is True
-    assert "owntracks_points" in (result.skipped_reason or "")
+            assert result.skipped is True
+            assert "owntracks_points" in (result.skipped_reason or "")
+        finally:
+            # DROP is transactional: restore the exact migrated table before
+            # another case's pool fixture starts, even when projection fails.
+            await outer.rollback()
+    assert await pool.fetchval("SELECT to_regclass('connectors.owntracks_points')") is not None
 
 
 async def test_movement_gap_boundary_matches_max_gap_constant() -> None:
