@@ -10,13 +10,13 @@ publisher anonymizes and validates it before any egress.
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import os
 import re
+import stat
 import uuid
 from pathlib import Path
 
-from butlers.core.git_env import isolated_git_env
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.publication.binding import InvalidBinding, PublicationBinding
 from butlers.core.qa.publication.export import (
@@ -103,30 +103,76 @@ def compose_pr_text(
     return title, body
 
 
-async def _git_output(repo_root: Path, *args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        "git",
-        *args,
-        cwd=str(repo_root),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        env=isolated_git_env(),
-    )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
-    if proc.returncode != 0:
-        raise ExportRefused("branch_unreadable")
-    return stdout.decode("utf-8", errors="replace").strip()
+_SHA_RE = re.compile(rb"[0-9a-f]{40}")
+_REF_COMPONENT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+_MAX_REF_FILE_BYTES = 64 * 1024 * 1024
 
 
-async def resolve_branch_head(repo_root: Path, branch_name: str) -> tuple[Path, str]:
-    """Return the shared object directory and the branch head, read once with hardened git."""
-    common = await _git_output(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir")
-    head = await _git_output(
-        repo_root, "rev-parse", "--verify", f"refs/heads/{branch_name}^{{commit}}"
-    )
-    if not re.fullmatch(r"[0-9a-f]{40}", head):
+def _branch_components(branch_name: str) -> list[str]:
+    parts = branch_name.split("/")
+    for part in parts:
+        if not _REF_COMPONENT_RE.fullmatch(part) or part.endswith((".lock", ".")) or ".." in part:
+            raise ExportRefused("branch_unreadable")
+    return parts
+
+
+def _read_no_follow(root: Path, parts: list[str]) -> bytes | None:
+    """Read ``root/parts...`` refusing a symlink at any component; ``None`` when absent."""
+    fds: list[int] = []
+    try:
+        fds.append(os.open(root, _OPEN_FLAGS | os.O_DIRECTORY))
+        for part in parts[:-1]:
+            fds.append(os.open(part, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=fds[-1]))
+        fd = os.open(parts[-1], _OPEN_FLAGS, dir_fd=fds[-1])
+        fds.append(fd)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ExportRefused("branch_unreadable")
+        with os.fdopen(os.dup(fd), "rb") as handle:
+            data = handle.read(_MAX_REF_FILE_BYTES + 1)
+        if len(data) > _MAX_REF_FILE_BYTES:
+            raise ExportRefused("branch_unreadable")
+        return data
+    except FileNotFoundError:
+        return None
+    except OSError as exc:  # ELOOP (symlink), ENOTDIR, EACCES, ...
+        raise ExportRefused("branch_unreadable") from exc
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _packed_head(packed: bytes, refname: bytes) -> bytes | None:
+    for line in packed.splitlines():
+        if line.startswith((b"#", b"^")):
+            continue
+        sha, _, name = line.partition(b" ")
+        if name == refname:
+            return sha
+    return None
+
+
+def resolve_branch_head(repo_root: Path, branch_name: str) -> tuple[Path, str]:
+    """Return the clone's object directory and the branch head, read once from ref files.
+
+    No git process runs here: ``repo_root``'s ``.git`` is shared with the agent's linked
+    worktree, so its config, hooks and includes are agent-writable.  The loose ref, then
+    ``packed-refs``, is parsed directly; symlinks anywhere on the path, symbolic refs and
+    anything but a 40-hex object id refuse.  The head is not trusted to be a commit here:
+    :func:`build_sealed_export` re-hashes and type-checks every object it walks.
+    """
+    parts = _branch_components(branch_name)
+    git_dir = repo_root / ".git"
+    raw = _read_no_follow(git_dir, ["refs", "heads", *parts])
+    if raw is not None:
+        head = raw.strip()
+    else:
+        packed = _read_no_follow(git_dir, ["packed-refs"])
+        refname = "/".join(["refs", "heads", *parts]).encode()
+        head = _packed_head(packed, refname) if packed is not None else None
+    if head is None or not _SHA_RE.fullmatch(head):
         raise ExportRefused("branch_unreadable")
-    return Path(common) / "objects", head
+    return git_dir / "objects", head.decode()
 
 
 async def publish_investigation(
@@ -148,7 +194,7 @@ async def publish_investigation(
         # Without a trusted base or a bound author identity the export cannot be proven.
         return PublicationResult(PublicationStatus.REFUSED, "unbound_export")
     try:
-        objects_dir, head_sha = await resolve_branch_head(repo_root, branch_name)
+        objects_dir, head_sha = resolve_branch_head(repo_root, branch_name)
         export = await build_sealed_export(
             objects_dir, base_sha=base_sha, head_sha=head_sha, identity=identity
         )
