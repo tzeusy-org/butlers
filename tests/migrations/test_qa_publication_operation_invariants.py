@@ -601,12 +601,12 @@ def test_core_298_downgrade_restores_the_exact_check_around_adopted_rows(
             assert _exact_check(conn) == (True, True)
 
         # The other schema still runs core_298 code, so the adoption arm stays.
-        command.downgrade(general, "core_296")
+        command.downgrade(general, "core_297")
         with engine.connect() as conn:
             assert _exact_check(conn) == (True, True)
 
         # The last schema restores the core_267 rule; the adopted row keeps it NOT VALID.
-        command.downgrade(switchboard, "core_296")
+        command.downgrade(switchboard, "core_297")
         with engine.connect() as conn:
             assert _exact_check(conn) == (False, False)
             assert _stage_of(url, operation) == "reconciled"

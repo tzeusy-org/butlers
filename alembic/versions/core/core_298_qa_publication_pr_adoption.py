@@ -19,8 +19,7 @@ adopted PR.  The database checks the shape; the read-only reconciler
 (``butlers.core.qa.publication.reconcile``) supplies the proof that the number is the
 only PR from the bound head branch onto the bound base.
 
-Revision note: core_297 is reserved by another open change; this revises core_296, so
-whichever lands second rebases its ``down_revision`` onto the other.
+Revises core_297 (dashboard job health), which landed first.
 
 The core chain runs once per butler schema over the shared table, so only the last
 schema to leave core_298 restores the core_267 CHECK (core_246 pattern).  An adopted row
@@ -33,7 +32,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_298"
-down_revision = "core_296"
+down_revision = "core_297"
 branch_labels = None
 depends_on = None
 
