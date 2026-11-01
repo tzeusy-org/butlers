@@ -55,7 +55,10 @@ The package `butlers.core.qa.publication` has four parts. The dispatcher calls
    is logged by exception type name only, never its message or traceback. A definite provider
    refusal (`ProviderRejected`) reports `provider_rejected_<code>`, where `<code>` is one of
    `forbidden`, `not_found`, `conflict`, `validation_failed` or `rate_limited`; any other provider
-   code becomes `unrecognized`, so provider text never reaches a category. A rerun for the same
+   code becomes `unrecognized`, so provider text never reaches a category. On `pr_create` only
+   `forbidden`, `not_found` and `rate_limited` stay definite: a `failed` `pr_create` row is the
+   case API's proof that no PR exists, and any other refusal (notably GitHub's 422 "a pull request
+   already exists for <head>") may front a live PR, so the transport records it `ambiguous`. A rerun for the same
    attempt reuses recorded successes, returns a held operation as ambiguous, and never re-egresses.
    Nothing is ever deleted.
 4. Dispatcher (`dispatch.py`). On `published`, the attempt moves to `pr_open` with the PR number, a

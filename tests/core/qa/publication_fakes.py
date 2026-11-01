@@ -28,6 +28,7 @@ class FakeProvider:
     calls: list[tuple[str, dict]] = field(default_factory=list)
     lose_response_on: str | None = None
     raise_on_push: Exception | None = None
+    raise_on_create: Exception | None = None
 
     def _maybe_lose(self, name: str) -> None:
         if self.lose_response_on == name:
@@ -44,6 +45,8 @@ class FakeProvider:
 
     async def create_pull_request(self, *, head, base, title, body) -> int:
         self.calls.append(("create_pull_request", {"head": head, "base": base, "title": title}))
+        if self.raise_on_create is not None:
+            raise self.raise_on_create
         number = 100 + len(self.prs)
         self.prs[number] = {"head": head, "base": base, "title": title, "body": body}
         self._maybe_lose("create_pull_request")
