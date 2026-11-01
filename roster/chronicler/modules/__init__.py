@@ -523,6 +523,9 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         4. **Hard cap** — episode and event counts are capped at
            *max_episodes* / *max_events*; the total bundle characters are
            capped at *max_total_chars*.
+        5. **Owner-day composition** — representative supported observations
+           carry local timestamps, uncertainty and provenance separately from
+           raw source inventories and diagnostic counts. Producers are unchanged.
 
         The result is structured JSON suitable as-is for the
         ``chronicler_day_close`` interpretation prompt.

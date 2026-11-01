@@ -436,10 +436,22 @@ def assemble_day_close_bundle(
         display_timezone=timezone,
     )
 
-    # Deduplicate citations across both groups.
+    from butlers.chronicler.day_close_composition import compose_owner_day
+
+    owner_day = compose_owner_day(
+        date_label=date_label,
+        timezone=timezone,
+        episodes=normal_episodes,
+        events=normal_events,
+        max_episodes=config.max_episodes,
+        max_events=config.max_events,
+    )
+    narrative_refs = [ref for row in owner_day["observations"] for ref in row["source_refs"]]
+
+    # Deduplicate citations across both groups and the bounded narrative projection.
     all_citations: list[str] = []
     seen: set[str] = set()
-    for ref in ep_citations + ev_citations:
+    for ref in ep_citations + ev_citations + narrative_refs:
         if ref not in seen:
             all_citations.append(ref)
             seen.add(ref)
@@ -454,6 +466,18 @@ def assemble_day_close_bundle(
     bundle_payload: dict[str, Any] = {
         "date": date_label,
         "timezone": timezone,
+        "owner_day": owner_day,
+        "diagnostics": {
+            "automated_session_records": sum(
+                row.get("source_name") == "core.sessions" for row in normal_episodes + normal_events
+            ),
+            "inbound_email_records": sum(
+                row.get("source_name") == "comms.message_bursts"
+                and isinstance(row.get("payload"), dict)
+                and row["payload"].get("channel") == "email"
+                for row in normal_episodes + normal_events
+            ),
+        },
         "episodes": episode_items,
         "events": event_items,
         "sensitive_envelopes": episode_envelopes[:episode_slots] + event_envelopes[:event_slots],
@@ -481,18 +505,33 @@ def assemble_day_close_bundle(
             )
             > MAX_TIER_2_INPUT_BYTES
         ):
-            for key in ("sensitive_envelopes", "dropped_intents", "events", "episodes"):
-                if bundle_payload.get(key):
-                    bundle_payload[key].pop()
-                    bundle_payload[f"{key}_truncated"] = True
-                    break
+            # Keep a raw evidence anchor while the derived view survives. The
+            # canonical writer/continuation still determine empty-day admission
+            # from the existing evidence arrays, never from derived prose.
+            evidence_count = len(bundle_payload["episodes"]) + len(bundle_payload["events"])
+            if evidence_count == 1 and owner_day["observations"]:
+                owner_day["observations"].pop()
+                bundle_payload["owner_day_truncated"] = True
             else:
-                raise ValueError("Day-close metadata exceeds the configured input budget")
+                for key in ("sensitive_envelopes", "dropped_intents", "events", "episodes"):
+                    if bundle_payload.get(key):
+                        bundle_payload[key].pop()
+                        bundle_payload[f"{key}_truncated"] = True
+                        break
+                else:
+                    if owner_day["observations"]:
+                        owner_day["observations"].pop()
+                        bundle_payload["owner_day_truncated"] = True
+                    else:
+                        raise ValueError("Day-close metadata exceeds the configured input budget")
             all_citations = list(
                 dict.fromkeys(
-                    row["source_ref"]
-                    for row in bundle_payload["episodes"] + bundle_payload["events"]
-                    if isinstance(row.get("source_ref"), str) and row["source_ref"]
+                    [
+                        row["source_ref"]
+                        for row in bundle_payload["episodes"] + bundle_payload["events"]
+                        if isinstance(row.get("source_ref"), str) and row["source_ref"]
+                    ]
+                    + [ref for row in owner_day["observations"] for ref in row["source_refs"]]
                 )
             )
 
