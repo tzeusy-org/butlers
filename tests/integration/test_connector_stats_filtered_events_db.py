@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -296,8 +296,21 @@ async def test_stats_surfaces_filtered_volume_for_fully_skip_routed_connector(
 async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     pool: asyncpg.Pool,
 ) -> None:
-    """Ingested and filtered counts in the SAME hour never bleed into each other."""
+    """Ingested and filtered counts in the SAME hour never bleed into each other,
+    and every bucket is keyed to its real hour in a dense 24-slot window.
+
+    Events planted 21h and 3h before the current hour land at slots 2 and 20 by
+    ``hour``; the sparse response this replaces returned only occupied hours,
+    which the detail histogram then right-justified into the wrong slots.
+    """
     now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    for offset_h in (21, 3):
+        await _seed_ingestion_event(
+            pool,
+            received_at=now - timedelta(hours=offset_h),
+            connector_type="gmail",
+            endpoint_identity="user@example.com",
+        )
 
     await _seed_ingestion_event(
         pool, received_at=now, connector_type="gmail", endpoint_identity="user@example.com"
@@ -317,11 +330,14 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
         db=_RealPoolDB(pool),
     )
 
-    # Exactly one hour bucket, with the two series kept DISTINCT.
-    assert len(result.data) == 1
-    bucket = result.data[0]
-    assert bucket.messages_ingested == 2
-    assert bucket.messages_filtered == 3
+    # 24 dense buckets, oldest first, each keyed to its real UTC hour.
+    expected_hours = [(now - timedelta(hours=23 - i)).isoformat() for i in range(24)]
+    assert [r.hour for r in result.data] == expected_hours
+    ingested = [r.messages_ingested for r in result.data]
+    assert ingested == [0, 0, 1] + [0] * 17 + [1, 0, 0, 2]
+    # The current hour keeps the two series DISTINCT.
+    assert result.data[23].messages_filtered == 3
+    assert sum(r.messages_filtered for r in result.data) == 3
 
 
 async def test_stats_matches_websocket_connector_stored_under_source_provider(
