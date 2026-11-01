@@ -25,7 +25,11 @@ shares its trailing eight digits with a held one is demoted too. Candidate
 matching, ambiguity and the legacy predicate mode are unchanged.
 
 Ownership of the custody objects is re-asserted for the trusted database owner
-exactly as core_295 does. Downgrade restores the core_295 resolver.
+with core_295's refusal checks, re-owning only an object someone else owns: a
+NOINHERIT executor that is merely a member of that owner cannot pass ALTER
+TABLE's ownership check on a table the owner already holds. The resolver is
+replaced as its owner (``SET LOCAL ROLE`` when the executor is not it, then
+``RESET ROLE``). Downgrade restores the core_295 resolver the same way.
 """
 
 from __future__ import annotations
@@ -208,7 +212,10 @@ _TRANSITIVE_RESOLVE = _RESOLVE_TEMPLATE.format(
 
 def _maintenance_owner() -> None:
     # Same posture as core_275/core_293: the database's trusted owner keeps
-    # every custody object, and no runtime may bypass or assume it.
+    # every custody object, and no runtime may bypass or assume it. After
+    # core_295 the objects already belong to that owner, and a NOINHERIT
+    # executor that is only a member of it cannot pass ALTER TABLE's ownership
+    # check, so only an object owned by someone else is re-owned.
     roles = ",".join(f"'butler_{name}_rw'" for name in _RUNTIME_ROLES)
     op.execute(f"""DO $$ DECLARE trusted_owner oid; owner_name text; BEGIN
         SELECT datdba INTO STRICT trusted_owner FROM pg_database
@@ -218,21 +225,56 @@ def _maintenance_owner() -> None:
             AND (rolsuper OR rolbypassrls OR pg_has_role(oid, trusted_owner, 'MEMBER'))) THEN
             RAISE EXCEPTION 'Runtime may not bypass or assume custody maintenance owner';
         END IF;
-        EXECUTE format('ALTER TABLE public.custody_holds OWNER TO %I', owner_name);
-        EXECUTE format(
-            'ALTER FUNCTION public.custody_target_held(text, text) OWNER TO %I', owner_name);
-        EXECUTE format(
-            'ALTER FUNCTION public.custody_target_digest(text, text) OWNER TO %I', owner_name);
-        EXECUTE format('ALTER FUNCTION public.guard_custody_holds() OWNER TO %I', owner_name);
+        IF (SELECT relowner FROM pg_class
+            WHERE oid = 'public.custody_holds'::regclass) <> trusted_owner THEN
+            EXECUTE format('ALTER TABLE public.custody_holds OWNER TO %I', owner_name);
+        END IF;
+        IF (SELECT proowner FROM pg_proc
+            WHERE oid = 'public.custody_target_held(text, text)'::regprocedure)
+            <> trusted_owner THEN
+            EXECUTE format(
+                'ALTER FUNCTION public.custody_target_held(text, text) OWNER TO %I',
+                owner_name);
+        END IF;
+        IF (SELECT proowner FROM pg_proc
+            WHERE oid = 'public.custody_target_digest(text, text)'::regprocedure)
+            <> trusted_owner THEN
+            EXECUTE format(
+                'ALTER FUNCTION public.custody_target_digest(text, text) OWNER TO %I',
+                owner_name);
+        END IF;
+        IF (SELECT proowner FROM pg_proc
+            WHERE oid = 'public.guard_custody_holds()'::regprocedure) <> trusted_owner THEN
+            EXECUTE format('ALTER FUNCTION public.guard_custody_holds() OWNER TO %I',
+                owner_name);
+        END IF;
     END $$""")
+
+
+# CREATE OR REPLACE needs the privileges of the resolver's owner, which a
+# NOINHERIT executor holds only after SET ROLE. Assume the owner for the one
+# replacement when the executor is not it; RESET ROLE right after.
+_ASSUME_RESOLVER_OWNER = """DO $$ DECLARE resolver_owner oid; BEGIN
+    SELECT proowner INTO STRICT resolver_owner FROM pg_proc
+        WHERE oid = 'public.resolve_owner_triple(text, text[])'::regprocedure;
+    IF resolver_owner <> (SELECT oid FROM pg_roles WHERE rolname = current_user) THEN
+        EXECUTE format('SET LOCAL ROLE %I', pg_get_userbyid(resolver_owner));
+    END IF;
+END $$"""
+
+
+def _replace_resolver(definition: str) -> None:
+    op.execute(_ASSUME_RESOLVER_OWNER)
+    op.execute(definition)
+    op.execute("RESET ROLE")
 
 
 def upgrade() -> None:
     op.execute(_LOCK)
     _maintenance_owner()
-    op.execute(_TRANSITIVE_RESOLVE)
+    _replace_resolver(_TRANSITIVE_RESOLVE)
 
 
 def downgrade() -> None:
     op.execute(_LOCK)
-    op.execute(_CORE_295_RESOLVE)
+    _replace_resolver(_CORE_295_RESOLVE)
