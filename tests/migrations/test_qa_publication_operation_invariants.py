@@ -252,8 +252,9 @@ def test_found_cannot_reconcile_a_row_that_bound_no_object(db_url: str) -> None:
             conn.exec_driver_sql(
                 f"""
                 INSERT INTO {_TABLE}
-                    (attempt_id, kind, stage, stage_order, binding_digest, request_digest)
-                VALUES ('{attempt}', 'branch_push', 'ambiguous', 3, '{_DIGEST}', '{_DIGEST}')
+                    (attempt_id, kind, stage, stage_order, binding_digest, request_digest, result)
+                VALUES ('{attempt}', 'branch_push', 'ambiguous', 3,
+                        '{_DIGEST}', '{_DIGEST}', 'ambiguous')
                 """
             )
         with pytest.raises(DBAPIError, match="ck_qa_publication_operations_exact_reconciliation"):
@@ -350,6 +351,7 @@ def test_new_object_id_is_set_once(db_url: str, operation: uuid.UUID) -> None:
             "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_absent', "
             "reconciled_at = now(), result = 'success'",
         ),
+        ((_EGRESS,), "stage = 'ambiguous', stage_order = 3"),
     ],
     ids=[
         "bound-with-result",
@@ -359,6 +361,7 @@ def test_new_object_id_is_set_once(db_url: str, operation: uuid.UUID) -> None:
         "ambiguous-with-success",
         "succeeded-without-result",
         "reconciled-from-egress-with-success",
+        "ambiguous-without-result",
     ],
 )
 def test_result_must_match_stage(
@@ -503,5 +506,142 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
         command.upgrade(switchboard, "core@head")
         with engine.connect() as conn:
             assert _hardening_objects(conn) == (1, 1, True, 1)
+    finally:
+        engine.dispose()
+
+
+# --- core_290: ambiguous outcomes cannot omit their result ---
+
+
+def test_ambiguous_null_result_insert_is_refused(db_url: str) -> None:
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            attempt = _insert_attempt(conn)
+        with pytest.raises(DBAPIError, match="ck_qa_publication_operations_stage_result"):
+            with engine.begin() as conn:
+                conn.exec_driver_sql("SET LOCAL ROLE butler_qa_rw")
+                conn.exec_driver_sql(
+                    f"INSERT INTO {_TABLE} "
+                    "(attempt_id, kind, stage, stage_order, binding_digest, request_digest) "
+                    f"VALUES ('{attempt}', 'branch_push', 'ambiguous', 3, "
+                    f"'{_DIGEST}', '{_DIGEST}')"
+                )
+    finally:
+        engine.dispose()
+
+
+def test_core_290_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
+    postgres_container,
+) -> None:
+    """Only the last schema may restore the old CHECK; neither direction releases holds."""
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
+    command.downgrade(general, "core_289")
+    command.downgrade(switchboard, "core_289")
+    engine = create_engine(url)
+    # Every previously allowed pair survives; only the ambiguous NULL is canonicalized.
+    pairs = [
+        ("bound", 1, None),
+        ("egress_started", 2, None),
+        ("succeeded", 3, "success"),
+        ("failed", 3, "failed"),
+        ("ambiguous", 3, None),
+        ("ambiguous", 3, "ambiguous"),
+        ("reconciled", 4, None),
+        ("reconciled", 4, "ambiguous"),
+    ]
+    try:
+        legacy_id = None
+        for stage, order, outcome in pairs:
+            with engine.begin() as conn:
+                attempt = _insert_attempt(conn)
+                conn.exec_driver_sql("SET LOCAL ROLE butler_qa_rw")
+                inserted = conn.execute(
+                    text(
+                        f"INSERT INTO {_TABLE} "
+                        "(attempt_id, kind, stage, stage_order, binding_digest, request_digest, "
+                        "result, reconciliation, reconciled_at) VALUES "
+                        "(:attempt, 'branch_push', :stage, :order, :digest, :digest, :result, "
+                        "CASE WHEN :stage = 'reconciled' THEN 'resource_absent' END, "
+                        "CASE WHEN :stage = 'reconciled' THEN now() END) RETURNING id"
+                    ),
+                    {
+                        "attempt": attempt,
+                        "stage": stage,
+                        "order": order,
+                        "digest": _DIGEST,
+                        "result": outcome,
+                    },
+                ).scalar_one()
+                if stage == "ambiguous" and outcome is None:
+                    legacy_id = inserted
+        assert legacy_id is not None
+        with engine.connect() as conn:
+            before = [
+                dict(row)
+                for row in conn.exec_driver_sql(f"SELECT * FROM {_TABLE} ORDER BY id").mappings()
+            ]
+            objects = _hardening_objects(conn)
+            assert objects == (1, 1, True, 1)
+        expected = [
+            {**row, "result": "ambiguous"} if row["id"] == legacy_id else row for row in before
+        ]
+
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert [
+                dict(row)
+                for row in conn.exec_driver_sql(f"SELECT * FROM {_TABLE} ORDER BY id").mappings()
+            ] == expected
+            assert _hardening_objects(conn) == objects
+        _refused(url, legacy_id, "result = NULL", "result is set-once")
+        _refused(url, legacy_id, _SUCCEEDED, "can only move forward")
+        _refused(url, legacy_id, _FOUND, "ck_qa_publication_operations_exact_reconciliation")
+        privileged = create_engine(_superuser_url(postgres_container, url))
+        try:
+            with pytest.raises(DBAPIError, match="a held row cannot be deleted"):
+                with privileged.begin() as conn:
+                    conn.exec_driver_sql(f"DELETE FROM {_TABLE} WHERE id = '{legacy_id}'")
+        finally:
+            privileged.dispose()
+
+        # A second schema still at core_290 must keep the strict CHECK in force.
+        command.downgrade(general, "core_289")
+        bound_id = next(row["id"] for row in before if row["stage"] == "bound")
+        _refused(
+            url,
+            bound_id,
+            "stage = 'ambiguous', stage_order = 3",
+            "ck_qa_publication_operations_stage_result",
+        )
+        command.downgrade(switchboard, "core_289")
+        # Historical compatibility returns, without erasing any canonicalized result or hold.
+        _update_as_qa(url, bound_id, "stage = 'ambiguous', stage_order = 3")
+        with engine.connect() as conn:
+            assert (
+                conn.exec_driver_sql(
+                    f"SELECT result FROM {_TABLE} WHERE id = '{legacy_id}'"
+                ).scalar_one()
+                == "ambiguous"
+            )
+            assert _hardening_objects(conn) == objects
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert (
+                conn.exec_driver_sql(
+                    f"SELECT count(*) FROM {_TABLE} WHERE stage = 'ambiguous' AND result IS NULL"
+                ).scalar_one()
+                == 0
+            )
+            assert _hardening_objects(conn) == objects
+        # An exact read-only reconciliation remains the only way to release this hold.
+        _update_as_qa(url, legacy_id, _ABSENT)
+        assert _stage_of(url, legacy_id) == "reconciled"
     finally:
         engine.dispose()
