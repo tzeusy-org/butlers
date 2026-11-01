@@ -5820,7 +5820,6 @@ export interface PageContext {
   truncated?: boolean;
 }
 
-/** Request body for POST /api/butlers/{name}/conversations. */
 /**
  * Body for PATCH /api/butlers/{name}/conversations/{id} — owner-authenticated
  * metadata change (REQ-dashboard-chat-ui-017). Send exactly the field being
@@ -5831,6 +5830,7 @@ export interface ConversationUpdateRequest {
   status?: "active" | "archived";
 }
 
+/** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
   /**
