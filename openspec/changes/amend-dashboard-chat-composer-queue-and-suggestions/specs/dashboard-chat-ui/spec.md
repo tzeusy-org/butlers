@@ -196,7 +196,7 @@ Scope: v1-mandatory
 
 ### Requirement: Route-Aware Starting Prompts
 
-The chat surfaces SHALL offer reviewed, static starting prompts only on the `/spend`, `/qa`, and `/entities/:entityId` route families, computed solely from a closed projection containing the route pattern, the registered visible-resource kind, and a coarse window class. Activating a prompt SHALL fill and focus the composer and SHALL NOT send, change lane, attach hidden context, or overwrite text.
+The chat surfaces SHALL offer reviewed, static starting prompts only on the `/spend`, `/qa`, and `/entities/:entityId` route families, computed solely from a closed projection containing the route pattern, the registered visible-resource kind, and a coarse window class. Activating a prompt SHALL fill and focus the composer and SHALL NOT send, attach hidden context, or overwrite text.
 
 ID: REQ-dashboard-chat-ui-011
 Source: heart-and-soul/security.md (page context is the one path into prompts); dashboard-design-language § Button Forms and Interface Copy; design.md Decision 5
@@ -217,7 +217,7 @@ Scope: v1-mandatory
 
 - **WHEN** the owner activates a prompt by pointer, `Enter`, or `Space`
 - **THEN** the composer receives exactly that prompt text and focus moves to the end of it
-- **AND** no request is sent, the context chip and its inclusion choice are unchanged, and no lane is selected
+- **AND** no request is sent and the context chip and its inclusion choice are unchanged
 
 #### Scenario: Prompt inputs exclude private and page data
 
@@ -229,21 +229,21 @@ Scope: v1-mandatory
 #### Scenario: Prompts claim no unavailable capability
 
 - **WHEN** a prompt is displayed
-- **THEN** it is a question answerable by the question lane on main
+- **THEN** it is a read-only question the current chat can answer
 - **AND** it does not offer to perform an action until action proposals in chat are governed by an adopted contract
 
-### Requirement: Lane-Teaching Empty Thread
+### Requirement: Empty Thread
 
-An empty chat thread SHALL render a page-level empty state that names the four dashboard lanes truthfully in one sentence, without an action button, and SHALL NOT render when conversation history is unavailable.
+An empty chat thread SHALL render a page-level empty state in one plain sentence, without an action button, and SHALL NOT render when conversation history is unavailable.
 
 ID: REQ-dashboard-chat-ui-012
 Source: dashboard-design-language § Interface Copy (page-level empty state); design-language.md § Empty states; design.md Decision 6
 Scope: v1-mandatory
 
-#### Scenario: Empty thread names the lanes
+#### Scenario: Empty thread shows one plain sentence
 
 - **WHEN** the active conversation has no messages and history loaded successfully
-- **THEN** the thread shows the title "No messages yet." and the sentence "Ask a question, correct a record, request a change for approval, or report a bug."
+- **THEN** the thread shows the title "No messages yet." and the sentence "Ask a question or describe what you need."
 - **AND** no action button, illustration, or tour overlay renders
 - **AND** the copy uses no exclamation mark, em-dash, first person, or future tense
 

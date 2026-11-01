@@ -79,3 +79,5 @@ Also out of scope:
 - any LLM-generated suggestion;
 - changes to `durable-dashboard-terminal-action-recovery`, `persist-safe-dashboard-unsent-drafts`, `bu-0ynlk.13` accessibility behavior, or `bu-p5umi2.1` ownership gating;
 - implementation, activation, baseline-spec sync, archive, or merge.
+
+Adoption note: the adopted empty thread names no lanes, because RFC 0038 removes them; its sentence is 'Ask a question or describe what you need.' Lane wording elsewhere in this file is historical rationale, not normative.

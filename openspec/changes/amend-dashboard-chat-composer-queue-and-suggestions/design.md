@@ -185,3 +185,5 @@ Each clause maps to a classifier lane on main (`pipeline.py` lanes D, A, C, B). 
 ## Migration Plan
 
 Frontend-only. Rollback means reverting the components. No server state, migration, or browser storage key is introduced by this change.
+
+Adoption note: the adopted empty thread names no lanes, because RFC 0038 removes them; its sentence is 'Ask a question or describe what you need.' Lane wording elsewhere in this file is historical rationale, not normative.
