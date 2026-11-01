@@ -1,13 +1,14 @@
 """Persist value-free dashboard supervised-job health.
 
 Revision ID: core_286
-Revises: core_289 (actual published Home migration; reserved 283/284/285 are not adopted).
+Revises: core_287 (actual published Capture migration after Home core_289;
+reserved 283/284/285 are not adopted).
 """
 
 from alembic import op
 
 revision = "core_286"
-down_revision = "core_289"
+down_revision = "core_287"
 branch_labels = None
 depends_on = None
 
