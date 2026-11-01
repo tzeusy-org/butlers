@@ -232,6 +232,12 @@ run — your job is to narrate over that result, not to re-derive it.
    send it even on an ordinary day. Do NOT add any other proactive message,
    coaching nudge, or correction prompt from this task; those are separate,
    explicitly-opted-in surfaces, not part of day-close.
+6. Do NOT write memory from this task: no memory_store_fact, memory_store_rule,
+   or other memory write tool. Day-close memory is written by the deterministic
+   write-back after you finish. In particular, never record the notify outcome
+   (sent, deferred until a time, queued, failed, not configured) or any other
+   delivery or scheduling status as a fact; it describes the system, not the
+   owner's day.
 """
 
 # Day-close GAP INTERVIEW (bu-whhll.12) — one of the "separate, explicitly-

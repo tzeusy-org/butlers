@@ -26,6 +26,22 @@ samples. Cumulative debt also requires the complete supported requested calendar
 window, so missing dates are never compressed into a shorter claimed interval.
 The generic balance API retains its zero-filled response shape.
 
+### Write-back integrity
+
+- **Configured-absent sources are not outages.** An `optional_schema` source whose adapter skipped
+  because its evidence surface is absent, and which has never projected successfully, does not
+  raise `feeder_dark` (`flags.is_source_configured_absent`). It still gates the behavioral flags
+  that depend on it, so a missing sleep feeder never produces `sleep_missing`. A source that fed
+  the chronicler before and then went inactive, or any inactive required source, is still dark.
+- **Sleep debt is only "building" on a short night.** The closed day must itself fall short of the
+  usual, so a long night never yields both "slept more than usual" and "debt building".
+- **Confidence is evidence-derived.** `writeback.evidence_confidence` scales linearly from 0.4 to
+  0.9 with baseline coverage (supported sample days over the lookback window). Self-reminders carry
+  the 0.4 floor. The value is written to the facts `confidence` column through `store_fact`, not
+  the blanket 1.0 default.
+- **The day-close session writes no memory.** Its prompt forbids memory write tools; delivery and
+  scheduling receipts (sent, deferred, not configured) are operational status, never facts.
+
 The daemon owns one canonical historical-refresh service shared with the
 existing dashboard control. The dashboard still refuses runtime-origin calls.
 Only the daemon passes its private continuation object to scheduler dispatch;

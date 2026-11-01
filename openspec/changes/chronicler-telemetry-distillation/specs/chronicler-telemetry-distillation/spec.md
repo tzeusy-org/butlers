@@ -159,6 +159,17 @@ behavioral anomaly before emitting any flag.
 - **AND** no behavioral flag (e.g. `sleep_missing`) that depends on the same
   source's data SHALL be emitted for that day
 
+#### Scenario: Configured-absent optional source is not an outage
+
+- **WHEN** a source declared `optional_schema` is inactive because its
+  adapter found its evidence surface absent, **AND** it has never completed a
+  successful projection
+- **THEN** it SHALL NOT produce a `feeder_dark` flag
+- **AND** it SHALL still count as unavailable, so no behavioral flag that
+  depends on its data SHALL be emitted
+- **AND** a source that projected successfully before going inactive, or an
+  inactive non-optional source, SHALL still produce `feeder_dark`
+
 #### Scenario: Genuine behavioral anomaly flags when the feeder is healthy
 
 - **WHEN** a lane's tracked time is zero or its share deviates sharply from

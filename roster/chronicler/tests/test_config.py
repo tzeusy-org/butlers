@@ -145,3 +145,14 @@ def test_rfc_0014_exists() -> None:
 def test_v1_heart_and_soul_mentions_chronicler() -> None:
     v1 = (PROJECT_ROOT / "about" / "heart-and-soul" / "v1.md").read_text()
     assert "Chronicler" in v1
+
+
+def test_day_close_prompt_forbids_memory_writes(butler_toml: dict) -> None:
+    """Delivery receipts must not become memories: only the deterministic
+    write-back stores chronicler facts, so the narrating session may not."""
+    (day_close,) = [
+        s for s in butler_toml["butler"]["schedule"] if s["name"] == "chronicler_day_close"
+    ]
+    prompt = " ".join(day_close["prompt"].split())
+    assert "Do NOT write memory from this task: no memory_store_fact" in prompt
+    assert "never record the notify outcome" in prompt

@@ -11,7 +11,11 @@ Four flags, one row per ``(local_date, flag_type)``, written to
   (:data:`SOURCE_CRON_MINUTES`). Evaluated *first* and gates every behavioral
   flag below — design doc §2.5 "classify before flagging": a feeder outage is
   a data problem, never a fabricated all-clear zero, and never allowed to
-  masquerade as a genuine behavioral anomaly.
+  masquerade as a genuine behavioral anomaly. A *configured-absent* source
+  (see :func:`is_source_configured_absent`: an optional-schema source whose
+  evidence surface was never present) is not an outage, so it never raises
+  ``feeder_dark``; it still counts as unavailable for gating the behavioral
+  flags that depend on it.
 - ``sleep_missing`` — the day's ``sleep`` lane rolled up to zero seconds,
   *and* the source that writes sleep episodes
   (``google_health.measurements``) is healthy.
@@ -225,6 +229,34 @@ def is_source_dark(
     return (now - watermark) > stale_after
 
 
+def is_source_configured_absent(
+    state: SourceAdapterState | None,
+    checkpoint: ProjectionCheckpoint | None,
+) -> bool:
+    """Whether an inactive source is absent by configuration, not an outage.
+
+    True only for a source declared ``optional_schema`` (RFC 0014 optional
+    evidence surface) whose adapter skipped because that surface is absent
+    (``active=False`` with an ``inactive_reason``) and which has never
+    completed a successful projection. Such a source was never expected to
+    feed the chronicler in this deployment, so its absence is configuration
+    rather than a feeder outage.
+
+    A source that projected successfully at least once and then went inactive
+    is an outage, as is any inactive non-optional source, an unregistered
+    source, or a registered source that has not run yet (no reason recorded).
+
+    Pure deterministic function: no I/O, no LLM, no side effects.
+    """
+    return (
+        state is not None
+        and state.optional_schema
+        and not state.active
+        and bool(state.inactive_reason)
+        and (checkpoint is None or checkpoint.last_success_at is None)
+    )
+
+
 def compute_sleep_missing(sleep_seconds: int, *, sleep_source_dark: bool) -> bool:
     """Whether ``sleep_missing`` should fire for the day.
 
@@ -360,18 +392,28 @@ async def _occupation_block_covers_window(
     return bool(rows)
 
 
-async def _dark_sources(
+async def _unavailable_sources(
     pool: asyncpg.Pool,
     *,
     now: datetime,
-) -> set[str]:
+) -> tuple[set[str], set[str]]:
+    """Return ``(dark, configured_absent)`` source names.
+
+    Both sets are unavailable for gating behavioral flags; only ``dark`` is a
+    feeder outage worth a ``feeder_dark`` flag.
+    """
     dark: set[str] = set()
+    configured_absent: set[str] = set()
     for source_name, cron_minutes in SOURCE_CRON_MINUTES.items():
         state = await get_source_state(pool, source_name)
         checkpoint = await get_checkpoint(pool, source_name)
-        if is_source_dark(state, checkpoint, cron_minutes=cron_minutes, now=now):
+        if not is_source_dark(state, checkpoint, cron_minutes=cron_minutes, now=now):
+            continue
+        if is_source_configured_absent(state, checkpoint):
+            configured_absent.add(source_name)
+        else:
             dark.add(source_name)
-    return dark
+    return dark, configured_absent
 
 
 async def _routine_break_candidates(
@@ -451,9 +493,10 @@ async def evaluate_and_write_daily_flags(
     rollup_rows = await list_daily_rollups(pool, local_date=local_date)
     seconds_by_lane: dict[str, float] = {r.lane: r.seconds for r in rollup_rows}
 
-    dark_sources = await _dark_sources(pool, now=now)
+    dark_sources, configured_absent_sources = await _unavailable_sources(pool, now=now)
+    unavailable_sources = dark_sources | configured_absent_sources
 
-    # feeder_dark
+    # feeder_dark: outages only. A configured-absent source is not an outage.
     feeder_dark_holds = bool(dark_sources)
     await _reconcile_flag(
         pool,
@@ -465,7 +508,7 @@ async def evaluate_and_write_daily_flags(
     )
 
     # sleep_missing
-    sleep_source_dark = _SLEEP_SOURCE in dark_sources
+    sleep_source_dark = _SLEEP_SOURCE in unavailable_sources
     sleep_missing_holds = compute_sleep_missing(
         seconds_by_lane.get("sleep", 0), sleep_source_dark=sleep_source_dark
     )
@@ -479,7 +522,7 @@ async def evaluate_and_write_daily_flags(
     )
 
     # routine_break
-    routine_source_dark = bool(_ROUTINE_BREAK_SOURCES & dark_sources)
+    routine_source_dark = bool(_ROUTINE_BREAK_SOURCES & unavailable_sources)
     candidates = (
         []
         if routine_source_dark
@@ -503,7 +546,7 @@ async def evaluate_and_write_daily_flags(
         if trailing_rows:
             trailing_by_date[trailing_date] = {r.lane: r.seconds for r in trailing_rows}
 
-    dark_lanes = [lane for lane in LANES if sources_for_lane(lane) & dark_sources]
+    dark_lanes = [lane for lane in LANES if sources_for_lane(lane) & unavailable_sources]
     outliers = compute_lane_share_outliers(seconds_by_lane, trailing_by_date, dark_lanes=dark_lanes)
     await _reconcile_flag(
         pool,
@@ -517,6 +560,7 @@ async def evaluate_and_write_daily_flags(
     return {
         "local_date": local_date.isoformat(),
         "dark_sources": sorted(dark_sources),
+        "configured_absent_sources": sorted(configured_absent_sources),
         "flags": {
             FLAG_FEEDER_DARK: feeder_dark_holds,
             FLAG_SLEEP_MISSING: sleep_missing_holds,
@@ -542,5 +586,6 @@ __all__ = [
     "compute_routine_breaks",
     "compute_sleep_missing",
     "evaluate_and_write_daily_flags",
+    "is_source_configured_absent",
     "is_source_dark",
 ]
