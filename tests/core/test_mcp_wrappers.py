@@ -217,3 +217,47 @@ async def test_failed_tool_call_routes_to_scanned_log_and_parses_as_finding(tmp_
     finding = finance_findings[0]
     assert finding.source_type == "log_scanner"
     assert finding.exception_type == "RuntimeError"
+
+
+@pytest.mark.parametrize("proxy_cls", [_SpanWrappingMCP, _ToolCallLoggingMCP])
+async def test_consolidation_session_suppresses_every_tool(proxy_cls) -> None:
+    """Consolidation is output-only: no read or write tool may run (bu-dhloi1.1).
+
+    A read would show an owner-partition session other partitions' content; a
+    write would land outside the partition-revalidated executor.
+    """
+    mock_mcp = MagicMock()
+    mock_mcp.tool = _passthrough_tool_decorator
+    proxy = proxy_cls(mock_mcp, "relationship", module_name="memory")
+    called: list[str] = []
+
+    @proxy.tool()
+    async def memory_recall(topic: str) -> dict[str, str]:
+        called.append("memory_recall")
+        return {"facts": "third-party"}
+
+    @proxy.tool()
+    async def memory_store_fact(content: str) -> dict[str, str]:
+        called.append("memory_store_fact")
+        return {"status": "stored"}
+
+    with patch("butlers.mcp_wrappers.capture_tool_call") as capture:
+        token = set_current_runtime_trigger_source("schedule:consolidation")
+        try:
+            read_result = await memory_recall(topic="anything")
+            write_result = await memory_store_fact(content="restated")
+        finally:
+            reset_current_runtime_trigger_source(token)
+        allowed = await memory_recall(topic="anything")
+
+    suppressed = {
+        "status": "suppressed",
+        "reason": "consolidation_session_tool_policy",
+        "retryable": False,
+    }
+    assert read_result == suppressed
+    assert write_result == suppressed
+    assert allowed == {"facts": "third-party"}
+    assert called == ["memory_recall"]
+    outcomes = [c.kwargs["outcome"] for c in capture.call_args_list]
+    assert outcomes == ["suppressed", "suppressed", "success"]

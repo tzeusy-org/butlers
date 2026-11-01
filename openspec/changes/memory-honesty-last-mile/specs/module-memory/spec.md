@@ -112,7 +112,8 @@ Scope: v1-mandatory
 - **WHEN** a claimed `(tenant_id, butler)` group holds episodes whose persisted `content_authority` is owner-class (`owner`, `owner_device`) and episodes of any other authority (`third_party`, `system`, `mixed` or NULL)
 - **THEN** the group MUST be split into an owner-class partition and a non-owner partition, preserving claim order within each
 - **AND** each nonempty partition MUST get its own runtime session, its own allowed episode set and its own request ID
-- **AND** each partition's dedup context MUST list only facts and rules of the same partition, filtered in SQL before the fact (100) and rule (50) limits, so the owner session is never shown non-owner content
+- **AND** each partition's dedup context MUST list only facts and rules of the same partition, filtered in SQL before the fact (100) and rule (50) limits
+- **AND** a consolidation session MUST NOT receive recall-based memory-context injection, and every MCP tool call it makes (memory reads such as `memory_recall` and `memory_search`, other modules' reads, and writes) MUST be suppressed with a `consolidation_session_tool_policy` result, so the partition-filtered dedup context is the only stored memory the owner session sees
 - **AND** a failure of one partition MUST NOT prevent the other partition of the same group from finishing, and each successful partition MUST record its own consolidation run
 
 #### Scenario: Out-of-partition evidence fails the emitting partition before persistence

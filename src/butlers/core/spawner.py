@@ -2376,7 +2376,11 @@ class Spawner:
 
             memory_ctx: str | None = None
             memory_enabled = _memory_module_enabled(self._config)
-            if memory_enabled:
+            # A consolidation session's dedup context is already partition-filtered
+            # in its prompt. Recall-based injection would show an owner-partition
+            # session facts of every authority, which it could restate as
+            # owner-evidenced new facts.
+            if memory_enabled and trigger_source != "schedule:consolidation":
                 memory_ctx = await fetch_memory_context(
                     self._pool,
                     self._config.name,

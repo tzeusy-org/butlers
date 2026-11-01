@@ -337,7 +337,7 @@ rotation persistence SHALL be fenced by that attempt's captured snapshot.
   unchanged model-failover contract
 
 ### Requirement: Memory Context Injection
-When the memory module is enabled, the Spawner SHALL fetch memory context via `fetch_memory_context()` before invocation and append it to the system prompt. On successful completion, it SHALL store non-empty session output as an episode via `store_session_episode()` unless the trigger source is exactly `schedule:consolidation`. This automatic episode-write exclusion SHALL NOT suppress the normal session record or change memory-context retrieval. Both memory operations SHALL be fail-open (log and continue).
+When the memory module is enabled, the Spawner SHALL fetch memory context via `fetch_memory_context()` before invocation and append it to the system prompt. On successful completion, it SHALL store non-empty session output as an episode via `store_session_episode()` unless the trigger source is exactly `schedule:consolidation`. This automatic episode-write exclusion SHALL NOT suppress the normal session record or change memory-context retrieval. Separately, the Spawner SHALL NOT fetch or inject memory context for a session whose trigger source is exactly `schedule:consolidation`: that session's only stored-memory context is the partition-filtered dedup context in its prompt (module-memory authority partitions), and recall-based injection would show an owner-partition session facts of every authority. Both memory operations SHALL be fail-open (log and continue).
 
 #### Scenario: Memory context injected into system prompt
 - **WHEN** the memory module is enabled and context is available
@@ -346,6 +346,12 @@ When the memory module is enabled, the Spawner SHALL fetch memory context via `f
 #### Scenario: Memory failure does not block invocation
 - **WHEN** memory context retrieval fails
 - **THEN** the failure is logged and the invocation proceeds with the base system prompt only
+
+#### Scenario: Consolidation session skips memory-context injection
+- **WHEN** memory is enabled and a runtime invocation has
+  `trigger_source="schedule:consolidation"`
+- **THEN** the spawner SHALL NOT call `fetch_memory_context()`
+- **AND** the system prompt SHALL carry no memory context block
 
 #### Scenario: Consolidation session skips automatic episode persistence
 - **WHEN** memory is enabled and a runtime invocation with

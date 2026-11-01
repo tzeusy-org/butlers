@@ -234,8 +234,14 @@ schema-validated before persistence.
 `content_authority` into an owner-class partition and a non-owner partition
 (everything else, including NULL). Each nonempty partition gets its own runtime
 session, request ID and allowed episode set, and its dedup context lists only
-facts and rules of the same partition (filtered in SQL before the `LIMIT`), so the
-owner session is never shown third-party content it could restate as the owner's.
+facts and rules of the same partition (filtered in SQL before the `LIMIT`). That
+dedup context is the only stored memory the session sees: the spawner skips
+recall-based memory-context injection for `schedule:consolidation` sessions, and
+the MCP wrappers suppress every tool call such a session makes
+(`consolidation_session_tool_policy`), reads and writes alike, since consolidation
+is output-only. The owner session therefore has no path to third-party content it
+could restate as the owner's. The suppression keys on the session's
+`trigger_source` parameter the spawner writes into the session's MCP server URL.
 Inside the persistence fence the executor revalidates every source episode's stamp
 against its partition and admits `updated_facts` targets and confirmations only
 within the same tenant, source butler and partition. Evidence citing an episode
