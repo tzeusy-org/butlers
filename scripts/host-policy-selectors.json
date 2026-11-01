@@ -1044,18 +1044,18 @@
       }
     ]
   },
-  "current_public": "0f5586470df5342a85dcc10280c28f7548b69403",
+  "current_public": "773d1d81b8112a951776db56241eaf6988717263",
   "counts": {
-    "direct": 75,
+    "direct": 76,
     "direct_files": 34,
-    "container": 84,
+    "container": 85,
     "supplementary": 30,
     "all_categories": {
       "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
       "NON_NAME_ENUM_OR_MODULE": 20,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 24,
-      "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
+      "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 9,
       "SCHEMA_OWNERSHIP": 8
     },
     "direct_categories": {
@@ -1063,7 +1063,7 @@
       "NON_NAME_ENUM_OR_MODULE": 5,
       "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
       "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 19,
-      "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 7,
+      "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
       "SCHEMA_OWNERSHIP": 7
     }
   },
@@ -3959,6 +3959,28 @@
       ],
       "reason": "Retained selector and category; line offsets are informational and do not change identity.",
       "public_source_commit": "21d1bd6949ee01576657123236185c71277884eb"
+    },
+    {
+      "id": "1ea66cce3395d552961e8357d0b4ded7e0569304ce2ae8ef29712b528c296e6e",
+      "path": "src/butlers/core/spawner.py",
+      "symbol": "Spawner._run",
+      "kind": "compare",
+      "expression": "self._config.name == 'chronicler'",
+      "occurrence": 1,
+      "line": 3395,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "For the exact scheduled Chronicler day-close, suppress recognized delivery-status/tool-summary bookkeeping from automatic session-episode memory while retaining session audit and legitimate retrospective interactions.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Owner-Day Narrative Composition"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Public #5119 adds a canonical Chronicler identity and exact scheduled-trigger gate before memory-sink filtering. Additional unresolved policy candidate: caller/effect/privacy preservation under typed configuration is unproven; no runtime conversion or safe-configurability claim.",
+      "public_source_commit": "f33fd63bc4ae0341025df5a7220045aa24bdf078"
     }
   ],
   "retired": [

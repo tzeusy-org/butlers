@@ -254,6 +254,7 @@ import type {
   ConversationListParams,
   Message,
   CreateConversationRequest,
+  ConversationUpdateRequest,
   SendMessageRequest,
   ConversationCancelResponse,
   MessageSearchResult,
@@ -5389,6 +5390,21 @@ export function sendMessage(
       body: JSON.stringify(body),
       signal,
     },
+  );
+}
+
+/**
+ * PATCH /api/butlers/{name}/conversations/{id} — rename, archive, or unarchive
+ * one conversation of its owning butler. Returns the confirmed summary.
+ */
+export function updateConversation(
+  butlerName: string,
+  conversationId: string,
+  body: ConversationUpdateRequest,
+): Promise<ConversationSummary> {
+  return apiFetch<ConversationSummary>(
+    `/butlers/${encodeURIComponent(butlerName)}/conversations/${encodeURIComponent(conversationId)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
   );
 }
 

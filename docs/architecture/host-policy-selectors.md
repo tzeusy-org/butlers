@@ -10,7 +10,7 @@ The reviewed data is [scripts/host-policy-selectors.json](../../scripts/host-pol
 Each current row records its enclosing symbol, normalized expression, occurrence, semantic
 category, purpose, governing requirement, actual public line-introducing commit and historical
 lineage. Source line numbers are informational. The source is public
-`0f5586470df5342a85dcc10280c28f7548b69403`; this inventory introduces no source change.
+`773d1d81b8112a951776db56241eaf6988717263`; this inventory introduces no source change.
 
 ## Consistent counts
 
@@ -26,24 +26,24 @@ are retained from the reviewed historical TSV (SHA256
 
 | Definition | Historical d223 | Current public |
 | --- | ---: | ---: |
-| Direct Compare nodes | 59 | 75 |
+| Direct Compare nodes | 59 | 76 |
 | Files containing direct nodes | 30 | 34 |
-| Recursive Compare nodes | 63 | 84 |
+| Recursive Compare nodes | 63 | 85 |
 | Supplementary sites, counted separately | 28 | 30 |
-| Total explicitly inventoried sites | 91 | 114 |
+| Total explicitly inventoried sites | 91 | 115 |
 
 The following category counts use the **same direct definition** on both trees. In particular,
 unrelated spellings and protected identity checks remain in the total; they are not described
 as eliminated host branches.
 
-| Semantic category | Historical direct | Current direct | Historical all 91 | Current all 114 |
+| Semantic category | Historical direct | Current direct | Historical all 91 | Current all 115 |
 | --- | ---: | ---: | ---: | ---: |
 | Canonical identity, authority or provenance | 21 | 34 | 31 | 48 |
 | Protected host/domain contract | 16 | 19 | 20 | 24 |
 | Schema ownership | 7 | 7 | 7 | 8 |
 | Historical/availability | 3 | 3 | 6 | 6 |
 | Unrelated enum, module, field or state spelling | 5 | 5 | 19 | 20 |
-| Unresolved policy candidates | 7 | 7 | 8 | 8 |
+| Unresolved policy candidates | 7 | 8 | 8 | 9 |
 | Evidenced independent host policy | 0 | 0 | 0 | 0 |
 
 `EVIDENCED_HOST_POLICY` means a positive case for host behavior independent of a protected
@@ -61,7 +61,7 @@ checks from retired self-healing into `core.qa.relay`. Those moved guards remain
 they were not eliminated by this slice. Other unchanged expressions retain identities across
 line shifts, including both separate spawner occurrences.
 
-The 22 recursive matches without historical lineage are existing public contributions:
+The 23 recursive matches without historical lineage are existing public contributions:
 
 - #5011 (`3f32ef0172`): one fixed Chronicler continuation identity.
 - #4986 (`74896a6afe`): three General calendar-producer provenance checks.
@@ -71,8 +71,11 @@ The 22 recursive matches without historical lineage are existing public contribu
 - #5071 (`7156078027`): one Switchboard-local scheduler policy reader.
 - #5044 (`497b58aaa1`): one recursive-only primary/owned-memory schema delegation pair.
 - #5007 (`b65d6c5ba5`): one canonical Relationship model import identity.
+- #5119 (`f33fd63bc4`): one Chronicler scheduled day-close memory-sink privacy gate,
+  retained as an additional unresolved policy candidate. The subsequent public location
+  reconciliation at `773d1d81b8` introduces no additional selector.
 
-Together with one legitimate retirement, these explain recursive 63 -> 84. Direct 59 -> 75
+Together with one legitimate retirement, these explain recursive 63 -> 85. Direct 59 -> 76
 uses the same rows and definition. Supplementary growth is +2: the Chronicler continuation
 registry lookup (#5011) and the owner home-place label comparison in the OwnTracks adapter
 (`0f5586470d`). The latter is an unrelated place-label spelling, not a Home daemon selector.
@@ -98,8 +101,15 @@ a conversion.
 
 The expanded alias coverage also retains `_ordered_configs`' Switchboard-first priority as an
 **additional unresolved** candidate on both trees. Its deployment-boot pool dependency is not a
-proven safely configurable policy. Thus the full inventory has eight unresolved sites, while
-the original direct cohort remains seven. No candidate silently disappears through a constant.
+proven safely configurable policy. Public #5119 adds another unresolved candidate at
+`src/butlers/core/spawner.py:3395`, in `Spawner._run`: the canonical Chronicler identity
+and exact scheduled day-close trigger select delivery-status filtering before automatic episode
+storage. [Owner-Day Narrative Composition](../../openspec/specs/butler-chronicler/spec.md)
+requires this memory-sink exclusion while preserving audit and legitimate retrospective
+interactions. Its caller/effect/privacy preservation under configuration remains unproven.
+Thus the full inventory has nine unresolved sites: the original seven direct candidates,
+the additional CLI priority candidate and this new public direct candidate. No candidate
+silently disappears through a constant.
 
 ## Enforcement and static limits
 

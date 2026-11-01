@@ -699,6 +699,21 @@ STARTUP_PHASES: list[Phase] = [
 ]
 
 
+# Snapshot labels from the declared functions once, never from a failing
+# callable's attributes. Replacement/unknown callables receive "unknown".
+_STARTUP_PHASE_LABELS = tuple(
+    (phase, phase.__name__.removeprefix("_startup_")) for phase in STARTUP_PHASES
+)
+_STARTUP_ERROR_CATEGORIES = (
+    (TimeoutError, "timeout"),
+    (ConnectionError, "connection"),
+    (OSError, "os"),
+    (ValueError, "validation"),
+    (TypeError, "type"),
+    (RuntimeError, "runtime"),
+)
+
+
 async def run_startup(daemon: Any) -> None:
     """Execute the ordered startup phases with fresh per-run state.
 
@@ -707,7 +722,25 @@ async def run_startup(daemon: Any) -> None:
     """
     state = StartupState()
     for phase in STARTUP_PHASES:
-        await phase(daemon, state)
+        try:
+            await phase(daemon, state)
+        except Exception as exc:
+            try:
+                phase_label = next(
+                    (label for known, label in _STARTUP_PHASE_LABELS if phase is known), "unknown"
+                )
+                category = next(
+                    (label for known, label in _STARTUP_ERROR_CATEGORIES if type(exc) is known),
+                    "unknown",
+                )
+                logger.error(
+                    "Startup phase failed",
+                    extra={"startup_phase": phase_label, "error_category": category},
+                )
+            except Exception:
+                # Diagnostic transport failure must not mask the startup error.
+                pass
+            raise
 
 
 async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:
