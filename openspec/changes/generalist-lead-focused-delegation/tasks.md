@@ -36,6 +36,8 @@
 
 ## 4. Switch
 
+The [deletion inventory](deletion-inventory.md) lists every path, symbol, route, frontend surface, test and config entry 4.1 deletes, and the invariants that must survive. Refresh it on the release branch; the release deletes that list and nothing else.
+
 - [ ] 4.1 One release routes all ingress and obligations through admission, deletes classification, route dispatch, per-butler spawning and cross-butler delegation, enables domain verification, and switches the dashboard to the D19 owner surface, removing the butler-unit views it replaces.
 - [ ] 4.2 Apply baseline deltas, archive this change, update RFC statuses, topology, operational docs, `CLAUDE.md` and the Switchboard manifesto. Every active change that modifies or adds requirements in a capability this change modifies or removes (listed in design.md, "Cross-change collisions") archives first, is re-scoped against the goal runtime, or has its overlapping deltas folded into this change before it archives. Capabilities this change empties (`cross-butler-delegation`, `conversation-decomposition`, `routing-scorecard`) are removed by hand, because archive refuses an empty spec.
 
