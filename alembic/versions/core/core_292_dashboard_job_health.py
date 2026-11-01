@@ -1,19 +1,21 @@
 """Persist value-free dashboard supervised-job health.
 
-Revision ID: core_286
+Revision ID: core_292
 Revises: core_290 (actual published served-identity migration after Capture core_287;
-reserved 283/284/285 are not adopted).
+reserved or already allocated revisions are not adopted).
 """
 
 from alembic import op
 
-revision = "core_286"
+revision = "core_292"
 down_revision = "core_290"
 branch_labels = None
 depends_on = None
+_LOCK = "butlers:core_292:dashboard-job-health"
 
 
 def upgrade():
+    op.execute(f"SELECT pg_advisory_xact_lock(hashtextextended('{_LOCK}', 0))")
     op.execute("""
         DO $job_health_owner$
         DECLARE owner_name NAME; bootstrap_name NAME; table_name TEXT;
@@ -101,6 +103,29 @@ def upgrade():
 
 
 def downgrade():
+    op.execute(f"SELECT pg_advisory_xact_lock(hashtextextended('{_LOCK}', 0))")
+    bind = op.get_bind()
+    schemas = bind.exec_driver_sql("""
+        SELECT namespace.nspname FROM pg_class version_table
+        JOIN pg_namespace namespace ON namespace.oid=version_table.relnamespace
+        WHERE version_table.relname='alembic_version'
+          AND version_table.relkind IN ('r','p') AND namespace.nspname NOT LIKE 'pg_%%'
+    """).scalars()
+    quote = bind.dialect.identifier_preparer.quote
+    count = sum(
+        int(
+            bool(
+                bind.exec_driver_sql(
+                    f"SELECT EXISTS(SELECT 1 FROM {quote(schema)}.alembic_version "
+                    "WHERE CASE WHEN version_num ~ '^core_[0-9]+$' "
+                    "THEN substring(version_num FROM 6)::integer >= 292 ELSE false END)"
+                ).scalar()
+            )
+        )
+        for schema in schemas
+    )
+    if count > 1:
+        return
     op.execute("""
         DROP TABLE IF EXISTS public.dashboard_job_transitions;
         DROP TABLE IF EXISTS public.dashboard_job_health;

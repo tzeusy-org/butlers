@@ -42,7 +42,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
         postgres_container,
         name,
         chains=["core"],
-        revisions={"core": "core_286"},
+        revisions={"core": "core_292"},
     )
     owner = make_url(url).username
     assert owner is not None
@@ -178,7 +178,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
         migration_bootstrap_db_url(postgres_container, name), chains=["core"]
     )
     await asyncio.to_thread(command.downgrade, bootstrap_config, "core_290")
-    await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_286")
+    await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_292")
     conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
         posture = await conn.fetch(
@@ -240,7 +240,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     config = _build_alembic_config(url, chains=["core"])
     for direction, target, revision in (
         ("downgrade", "core_282", "core_282"),
-        ("upgrade", "core@core_286", "core_286"),
+        ("upgrade", "core@core_292", "core_292"),
     ):
         await asyncio.to_thread(getattr(command, direction), config, target)
         conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
@@ -260,6 +260,117 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
         finally:
             await conn.close()
 
+    # Two genuine schema-local chains share public health and serving DDL.
+    # Leaving one schema must retain data/policies while its peer remains head;
+    # only the final schema removes either shared surface.
+    peer_config = _build_alembic_config(
+        migration_bootstrap_db_url(postgres_container, name),
+        chains=["core"],
+        target_schema="general",
+    )
+    await asyncio.to_thread(command.upgrade, peer_config, "core@core_292")
+    pool = await asyncpg.create_pool(url.replace("postgresql+psycopg2://", "postgresql://"))
+    try:
+        shared_store = JobHealthStore(lambda: pool)
+        shared_recorder = shared_store.recorder("model_verify", "periodic", 10)
+        await shared_recorder.starting()
+        await shared_recorder.tick_ok()
+        assert not shared_store.unavailable_jobs
+
+        async def shared_snapshot():
+            async with pool.acquire() as conn:
+                return {
+                    "health": await conn.fetch(
+                        "SELECT to_jsonb(t)::text AS value FROM public.dashboard_job_health t "
+                        "ORDER BY job_name"
+                    ),
+                    "history": await conn.fetch(
+                        "SELECT to_jsonb(t)::text AS value FROM public.dashboard_job_transitions t "
+                        "ORDER BY id"
+                    ),
+                    "policies": await conn.fetch(
+                        """SELECT c.relname,pg_get_userbyid(c.relowner) AS owner,
+                            c.relrowsecurity,c.relforcerowsecurity,p.polroles,
+                            pg_get_expr(p.polqual,c.oid) AS using_expression,
+                            pg_get_expr(p.polwithcheck,c.oid) AS check_expression
+                        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+                        JOIN pg_policy p ON p.polrelid=c.oid
+                        WHERE n.nspname='public'
+                        AND c.relname IN ('dashboard_job_health','dashboard_job_transitions')
+                        ORDER BY c.relname,p.polname"""
+                    ),
+                    "served_columns": await conn.fetch(
+                        """SELECT attname,atttypid::regtype::text AS kind FROM pg_attribute
+                        WHERE attrelid='public.model_dispatch_attempts'::regclass
+                        AND NOT attisdropped
+                        AND attname IN ('served_identity','receipt_sha256','attempt_key')
+                        ORDER BY attname"""
+                    ),
+                    "served_child": await conn.fetchval(
+                        "SELECT to_regclass('public.model_served_usage') IS NOT NULL"
+                    ),
+                }
+
+        before_shared = await shared_snapshot()
+        assert before_shared["health"] and before_shared["history"]
+        assert len(before_shared["policies"]) == 2
+        assert {row["attname"] for row in before_shared["served_columns"]} == {
+            "served_identity",
+            "receipt_sha256",
+            "attempt_key",
+        }
+        assert before_shared["served_child"] is True
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_292"
+        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_292"
+        await asyncio.to_thread(command.downgrade, bootstrap_config, "core_287")
+        assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NOT NULL")
+        assert await pool.fetchval(
+            "SELECT to_regclass('public.dashboard_job_transitions') IS NOT NULL"
+        )
+        assert await pool.fetchval("SELECT to_regclass('public.model_served_usage') IS NOT NULL")
+        assert (
+            await pool.fetchval(
+                """SELECT count(*) FROM pg_attribute
+            WHERE attrelid='public.model_dispatch_attempts'::regclass AND NOT attisdropped
+            AND attname IN ('served_identity','receipt_sha256','attempt_key')"""
+            )
+            == 3
+        )
+        assert await shared_snapshot() == before_shared
+        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_287"
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_292"
+        await shared_recorder.tick_ok()
+        assert not shared_store.unavailable_jobs
+        await asyncio.to_thread(command.downgrade, peer_config, "core_287")
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_287"
+        assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NULL")
+        assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_transitions') IS NULL")
+        assert await pool.fetchval("SELECT to_regclass('public.model_served_usage') IS NULL")
+        assert (
+            await pool.fetchval(
+                """SELECT count(*) FROM pg_attribute
+            WHERE attrelid='public.model_dispatch_attempts'::regclass AND NOT attisdropped
+            AND attname IN ('served_identity','receipt_sha256','attempt_key')"""
+            )
+            == 0
+        )
+        await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_292")
+        await asyncio.to_thread(command.upgrade, peer_config, "core@core_292")
+        restored_shared = await shared_snapshot()
+        assert restored_shared["served_columns"] == before_shared["served_columns"]
+        assert restored_shared["served_child"] is True
+        assert restored_shared["policies"] == before_shared["policies"]
+        assert restored_shared["health"] == [] and restored_shared["history"] == []
+        restored_store = JobHealthStore(lambda: pool)
+        restored_recorder = restored_store.recorder("model_verify", "periodic", 10)
+        await restored_recorder.starting()
+        await restored_recorder.tick_ok()
+        assert not restored_store.unavailable_jobs
+        assert await pool.fetchval("SELECT count(*) FROM public.dashboard_job_health") == 1
+        assert await pool.fetchval("SELECT count(*) FROM public.dashboard_job_transitions") >= 2
+    finally:
+        await pool.close()
+
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_job_health_ordinary_backup_preserves_typed_history_and_fresh_process(
@@ -272,7 +383,7 @@ async def test_job_health_ordinary_backup_preserves_typed_history_and_fresh_proc
         postgres_container,
         name,
         chains=["core"],
-        revisions={"core": "core_286"},
+        revisions={"core": "core_292"},
     )
     source = make_url(url)
     root = _REPO_ROOT

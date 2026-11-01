@@ -88,6 +88,14 @@ in the same exported snapshot. The snapshot holder locks both relations through
 export and verifies the exact sole owner-conditional policy, refusing an extra,
 restrictive, PUBLIC or drifted policy rather than silently filtering rows.
 
+The job-health migration is `core_292`, directly after applied
+`core_290`. Its number stays above the applied predecessor because shared core
+downgrades use numeric revision thresholds to retain public objects for other
+schema-local chains. The health tables and their rows/policies remain while
+another schema is at `core_292` or later; only the last schema leaving that
+revision removes them. Upgrade and downgrade serialize on the same migration
+advisory lock. No genuine older migration target is advanced.
+
 Genuine pre-health schemas (including `core_282` and `core_287`) may contain
 neither relation. Only a successful catalogue query in the exported snapshot
 that positively proves both names absent may omit the health-only projection
