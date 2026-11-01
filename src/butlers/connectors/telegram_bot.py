@@ -1688,30 +1688,39 @@ class TelegramBotConnector:
     async def _run_voice_pipeline(
         self, msg: dict[str, Any], sender_id: str
     ) -> tuple[VoiceTranscriptionStatus, str | None, dict[str, Any]]:
-        status = VoiceTranscriptionStatus
-        voice = msg["voice"]
-        client = self._transcription_client
-        if not self._config.voice_transcription_enabled or client is None:
-            return status.DISABLED, None, {}
-        if not await self._is_owner_sender(sender_id):
-            return status.NOT_OWNER, None, {}
-        # Only the owner's own speech keeps owner authorship (v1.md, RFC 0038 D5/D18); a
-        # forwarded note is someone else's audio and stays untranscribed.
-        if forward_origin(msg) is not None:
-            return status.FORWARDED, None, {}
-        file_size = voice.get("file_size")
-        if isinstance(file_size, int) and file_size > MAX_VOICE_BYTES:
-            return status.OVERSIZE, None, {}
-        duration = voice.get("duration")
-        if isinstance(duration, (int, float)) and duration > self._config.voice_max_duration_s:
-            return status.OVERLONG, None, {}
-        file_id = voice.get("file_id")
-        if not isinstance(file_id, str) or not file_id:
-            return status.DOWNLOAD_FAILED, None, {}
+        """Evaluate one voice note; any unexpected error falls back to a content-free status.
 
+        ``fallback`` tracks the stage reached, so an exception nobody anticipated still lands on
+        the taxonomy row naming where it happened and the update keeps its descriptor instead of
+        being dropped. Only the exception type is logged.
+        """
+        status = VoiceTranscriptionStatus
+        fallback = status.NOT_OWNER  # fail closed until ownership is proven
         audio: bytes | None = None
         pcm: bytes | None = None
         try:
+            voice = msg["voice"]
+            client = self._transcription_client
+            if not self._config.voice_transcription_enabled or client is None:
+                return status.DISABLED, None, {}
+            if not await self._is_owner_sender(sender_id):
+                return status.NOT_OWNER, None, {}
+            # Only the owner's own speech keeps owner authorship (v1.md, RFC 0038 D5/D18); a
+            # forwarded note is someone else's audio and stays untranscribed.
+            if forward_origin(msg) is not None:
+                return status.FORWARDED, None, {}
+            fallback = status.DOWNLOAD_FAILED
+            file_size = voice.get("file_size")
+            if isinstance(file_size, int) and file_size > MAX_VOICE_BYTES:
+                return status.OVERSIZE, None, {}
+            duration = voice.get("duration")
+            max_duration_s = self._config.voice_max_duration_s
+            if isinstance(duration, (int, float)) and duration > max_duration_s:
+                return status.OVERLONG, None, {}
+            file_id = voice.get("file_id")
+            if not isinstance(file_id, str) or not file_id:
+                return status.DOWNLOAD_FAILED, None, {}
+
             for attempt in (1, 2):  # one bounded retry
                 try:
                     audio = await self._download_voice_bytes(file_id)
@@ -1726,11 +1735,15 @@ class TelegramBotConnector:
             if len(audio) > MAX_VOICE_BYTES:
                 return status.OVERSIZE, None, {}
 
-            pcm = await transcode_to_pcm(audio, timeout_s=float(self._config.voice_max_duration_s))
+            fallback = status.TRANSCODE_FAILED
+            pcm = await transcode_to_pcm(
+                audio, timeout_s=float(max_duration_s), max_duration_s=max_duration_s
+            )
             audio = None
             if pcm is None:
                 return status.TRANSCODE_FAILED, None, {}
 
+            fallback = status.STT_UNAVAILABLE
             try:
                 async with self._transcription_lock:
                     result = await client.transcribe(pcm)
@@ -1751,6 +1764,13 @@ class TelegramBotConnector:
                 text,
                 {"confidence": result.confidence, "language": result.language},
             )
+        except Exception as exc:
+            logger.warning(
+                "Voice note pipeline raised %s; falling back to %s",
+                type(exc).__name__,
+                fallback.value,
+            )
+            return fallback, None, {}
         finally:
             audio = None
             pcm = None

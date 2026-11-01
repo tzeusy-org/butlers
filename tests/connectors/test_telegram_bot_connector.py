@@ -779,50 +779,67 @@ async def test_voice_audio_and_transcript_never_reach_logs_or_envelope_extras(
         assert "attachments" not in env["payload"]
 
 
-async def test_ffmpeg_transcode_uses_argument_list_pipes_and_timeout(
+async def test_ffmpeg_transcode_is_bounded_sandboxed_and_killed_on_overrun(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Real pipes, with a Python stand-in for ffmpeg (CI images need not ship ffmpeg)."""
     import asyncio
+    import sys
 
+    real_exec = asyncio.create_subprocess_exec
+    ceiling = telegram_voice.pcm_byte_ceiling(1)
+    behaviours = {
+        # Echo stdin back as the "PCM" so the round trip proves stdin was fed.
+        "ok": "import sys; sys.stdout.buffer.write(sys.stdin.buffer.read())",
+        "hang": "import time; time.sleep(30)",
+        "flood": f"import sys; sys.stdout.buffer.write(b'x' * {ceiling * 4})",
+    }
     seen: dict[str, Any] = {}
 
-    class _Proc:
-        def __init__(self, hang: bool) -> None:
-            self.hang = hang
-            self.returncode: int | None = 0
-            self.killed = False
-
-        async def communicate(self, data: bytes) -> tuple[bytes, bytes]:
-            seen["stdin"] = data
-            if self.hang:
-                await asyncio.sleep(10)
-            return _PCM, b"stderr"
-
-        def kill(self) -> None:
-            self.killed = True
-            self.returncode = -9
-
-        async def wait(self) -> int:
-            return -9
-
-    procs: list[_Proc] = []
-
-    async def fake_exec(*args: str, **kwargs: Any) -> _Proc:
+    async def fake_exec(*args: str, **kwargs: Any) -> asyncio.subprocess.Process:
         seen["args"], seen["kwargs"] = args, kwargs
-        procs.append(_Proc(hang=len(procs) == 1))
-        return procs[-1]
+        proc = await real_exec(sys.executable, "-c", behaviours[seen["mode"]], **kwargs)
+        seen["proc"] = proc
+        return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
 
-    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=5) == _PCM
-    assert seen["args"] == telegram_voice.FFMPEG_PCM_ARGS
-    assert seen["args"][0] == "ffmpeg" and "pipe:0" in seen["args"] and "pipe:1" in seen["args"]
+    seen["mode"] = "ok"
+    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=10, max_duration_s=1) == _AUDIO
+    args = seen["args"]
+    assert args == telegram_voice.ffmpeg_pcm_args(1)
+    assert args[0] == "ffmpeg" and args[-1] == "pipe:1"
+    # Input sandbox: only the pipe protocol, declared before the stdin input.
+    whitelist = args.index("-protocol_whitelist")
+    assert args[whitelist + 1] == "pipe" and whitelist < args.index("-i")
+    assert args[args.index("-i") + 1] == "pipe:0"
+    # Decoded length bounded by the configured duration ceiling.
+    assert args[args.index("-t") + 1] == "1"
     assert "shell" not in seen["kwargs"]
-    assert seen["kwargs"]["stdin"] == seen["kwargs"]["stdout"] == asyncio.subprocess.PIPE
-    assert seen["stdin"] == _AUDIO
+    assert seen["kwargs"]["stderr"] == asyncio.subprocess.DEVNULL
 
-    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=0.01) is None
-    assert procs[1].killed
+    seen["mode"] = "hang"
+    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=0.5, max_duration_s=1) is None
+    assert seen["proc"].returncode is not None  # killed and reaped
+
+    seen["mode"] = "flood"
+    assert await telegram_voice.transcode_to_pcm(_AUDIO, timeout_s=10, max_duration_s=1) is None
+    assert seen["proc"].returncode is not None
+
+
+async def test_unexpected_pipeline_error_keeps_descriptor_with_stage_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeTranscriptionClient(_ok_result())
+    runtime, _files, transcode = _voice_connector(monkeypatch, client)
+    transcode.side_effect = RuntimeError("SECRET-TRANSCRIPT-MARKER")
+
+    env = await runtime._normalize_to_ingest_v1(_voice_update())
+
+    assert env is not None
+    assert env["payload"]["normalized_text"] == "[Voice message]"
+    assert env["payload"]["transcription"]["status"] == "transcode_failed"
+    assert client.calls == []
 
 
 async def test_concurrent_voice_notes_serialize_on_shared_client(
