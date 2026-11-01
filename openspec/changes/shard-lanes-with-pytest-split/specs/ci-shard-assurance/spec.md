@@ -24,7 +24,7 @@ Scope: v1-mandatory
 - **THEN** the fresh collect-only count governs the comparison and historical counts remain provenance only
 
 ### Requirement: Deterministic whole-file weighted assignment
-Each lane SHALL split its fresh selection into five unit or six integration groups with pytest-split's `duration_based_chunks` algorithm over the committed `.test_durations`. Contiguous chunks in collection order SHALL keep files whole except at group boundaries, under `--dist loadfile` within each group. Durations SHALL influence balancing only: a test missing from the file SHALL receive pytest-split's average duration and still run. The nightly covered groups SHALL measure every test's duration, and a `durations-refresh` job SHALL merge them, refuse a merge with any group missing, upload the merged file, and open a pull request with it on Monday's scheduled run or a manual dispatch on main. It MUST NOT push to main.
+Each lane SHALL split its fresh selection into five unit or six integration groups with pytest-split's `duration_based_chunks` algorithm over the committed `.test_durations`. Contiguous chunks in collection order SHALL keep files whole except at group boundaries, under `--dist loadfile` within each group. Durations SHALL influence balancing only: a test missing from the file SHALL receive pytest-split's average duration and still run. Every required lane group SHALL measure and publish each test's duration untraced, and a nightly `durations-refresh` job SHALL merge those of the latest successful merge-group run, refuse a merge with any group missing, upload the merged file, and open a pull request with it on Monday's scheduled run or a manual dispatch on main. It MUST NOT push to main.
 
 ID: REQ-ci-shard-assurance-002
 Source: bu-ly3lv5.6 P4/P12; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
@@ -72,7 +72,8 @@ Scope: v1-mandatory
 
 #### Scenario: Retry identity and privacy remain exact
 - **WHEN** a group uploads its count evidence
-- **THEN** the evidence carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **THEN** the count record carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **AND** the group's separate `durations.json` carries test node ids exactly as the committed `.test_durations` already publishes them, and no other payload
 
 ### Requirement: Fail-closed matrix routing and event policy
 Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate all current needed results under explicit event/plan rules. Lane groups SHALL depend on route only and start independently of static guards. Static guards SHALL remain mandatory in every required final verdict. Existing required contexts SHALL survive; merge_group MUST retain all eleven backend groups, check-preflight, guards, frontend and browser evidence.
