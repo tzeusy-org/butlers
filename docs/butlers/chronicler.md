@@ -14,6 +14,36 @@ Moved verbatim from `AGENTS.md` (Butler-specific rules without a docs page). Ide
   `?date=&tz=` deterministically via `editorial.compose_briefing_payload`; date navigation is a
   frontend concern.
 
+### Owner-day composition
+
+The bounded day-close bundle separates `owner_day.observations` from source
+inventories and diagnostic counts. Its deterministic narration seeds use only
+normal-privacy evidence in the exact owner-local day, retain readable timestamps,
+confidence and machine source references, and select representative kinds before
+the single interpretation call. Automated Butler sessions are processing records,
+not owner conversations. Inbound email does not establish a human exchange;
+actual owner outbound evidence supports sending a message, without inventing a
+recipient or reply. Playback overlapping recorded sleep is background or
+uncertain playback; playback alone never proves attentive listening. Unknown
+places, movement destinations, travel modes and gaps remain explicit.
+
+Raw episodes/events, per-source roll-ups and counts remain diagnostics. Their
+producer classifications, time aggregates and editorial corrections are unchanged.
+Derived observations share the existing character/byte budget and retain a raw
+evidence anchor while present, so they cannot authorize an empty-day coverage
+witness. Privacy masking precedes all derivation; sensitive sleep cannot qualify
+normal playback by leaking its timing through this view. The existing masked
+envelopes retain their separate limited narration rules.
+
+The automatic session-episode caller excludes recognized delivery/tool-summary
+bookkeeping only for the configured Chronicler's exact scheduled
+`chronicler_day_close` trigger. It uses the cache classifier's existing scaffold
+family without applying the cache's broader JSON/prose rules to memory. Session
+results and audit records remain intact; routed corrections, other tasks,
+other Butlers and genuine retrospective prose retain their existing memory path.
+This hook is distinct from model-invoked memory write tools and deterministic
+daily fact writeback; those keep their own admission and ownership rules.
+
 ### Late material and missingness
 
 Day-close writeback distinguishes a supported numeric zero from an absent or

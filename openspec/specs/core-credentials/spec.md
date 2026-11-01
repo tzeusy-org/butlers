@@ -587,6 +587,39 @@ rotation baseline after a DB-originated write.
   message, and verification timestamp in the same database statement
 - **AND** B SHALL not inherit A's healthy or failing state
 
+### Requirement: Codex OpenAI API Key Preference
+An OpenAI API key stored as the store-only `cli-auth/openai` credential SHALL
+take precedence over the `cli-auth/codex` device-auth authority for Codex
+invocations. The device-auth authority SHALL remain the fallback, and the
+API-key path SHALL never read, write, rotate, or record health against it. A
+subprocess launched on the API key does not consume the device-auth
+credential, so the Live Codex Device-Auth Reconciliation that precedes a Codex
+launch SHALL apply only to launches that use the device-auth authority.
+
+#### Scenario: Stored key is used first
+- **WHEN** `cli-auth/openai` holds a non-empty key at invocation time
+- **THEN** Codex SHALL run with that key as `CODEX_API_KEY`, with no device-auth
+  `auth.json` in its isolated home and no other Codex auth env var
+- **AND** no device-auth reconciliation, pre-warm, refresh lock, or
+  finalization SHALL run for that attempt
+
+#### Scenario: Rejected key falls back to device auth
+- **WHEN** the API-key attempt exits non-zero before any tool call with an auth
+  or quota rejection
+- **THEN** the invocation SHALL re-run on the device-auth authority
+- **AND** the fallback SHALL be logged without the key value and recorded as a
+  failed test of `cli-auth/openai`
+
+#### Scenario: Other failures do not fall back
+- **WHEN** the API-key attempt times out, is cancelled, fails MCP discovery, or
+  fails for a reason other than an auth or quota rejection
+- **THEN** that failure SHALL propagate without a device-auth attempt
+
+#### Scenario: Missing or unreadable key uses device auth
+- **WHEN** no key is stored or the key lookup fails
+- **THEN** the invocation SHALL use the device-auth authority unchanged, logging
+  only value-free context
+
 #### Scenario: Dashboard Codex probe binds to the canonical authority it tests
 - **WHEN** a dashboard Codex test begins with a shared credential B while the
   canonical local auth file still contains A
