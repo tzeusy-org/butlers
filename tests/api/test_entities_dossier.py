@@ -7,6 +7,7 @@ read asks the edges table for live receipts, per-source live counts and the with
 from __future__ import annotations
 
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
@@ -55,6 +56,14 @@ class _Pool:
         self.withheld = withheld
         self.fail = fail
         self.queries: list[str] = []
+
+    @asynccontextmanager
+    async def acquire(self):
+        yield self
+
+    @asynccontextmanager
+    async def transaction(self, *, isolation: str, readonly: bool):
+        yield
 
     def _check(self, query: str) -> None:
         self.queries.append(query)
