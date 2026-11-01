@@ -540,8 +540,8 @@ def test_core_299_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
     asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
-    command.downgrade(general, "core_297")
-    command.downgrade(switchboard, "core_297")
+    command.downgrade(general, "core_298")
+    command.downgrade(switchboard, "core_298")
     engine = create_engine(url)
     # Every previously allowed pair survives; only the ambiguous NULL is canonicalized.
     pairs = [
@@ -611,7 +611,7 @@ def test_core_299_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
             privileged.dispose()
 
         # A second schema still at core_299 must keep the strict CHECK in force.
-        command.downgrade(general, "core_297")
+        command.downgrade(general, "core_298")
         bound_id = next(row["id"] for row in before if row["stage"] == "bound")
         _refused(
             url,
@@ -619,7 +619,7 @@ def test_core_299_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
             "stage = 'ambiguous', stage_order = 3",
             "ck_qa_publication_operations_stage_result",
         )
-        command.downgrade(switchboard, "core_297")
+        command.downgrade(switchboard, "core_298")
         # Historical compatibility returns, without erasing any canonicalized result or hold.
         _update_as_qa(url, bound_id, "stage = 'ambiguous', stage_order = 3")
         with engine.connect() as conn:
@@ -643,5 +643,117 @@ def test_core_299_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
         # An exact read-only reconciliation remains the only way to release this hold.
         _update_as_qa(url, legacy_id, _ABSENT)
         assert _stage_of(url, legacy_id) == "reconciled"
+    finally:
+        engine.dispose()
+
+
+# --- core_298: a held pr_create may reconcile by adopting the PR it created ---
+
+
+def _adopt(object_id: str, new_object_id: str | None) -> str:
+    new = "NULL" if new_object_id is None else f"'{new_object_id}'"
+    return (
+        "stage = 'reconciled', stage_order = 4, reconciliation = 'resource_found', "
+        f"reconciled_object_id = '{object_id}', new_object_id = {new}, reconciled_at = now()"
+    )
+
+
+def _held_unbound_row(conn, kind: str) -> uuid.UUID:
+    """An ambiguous row of ``kind`` that bound no expected object (as pr_create does)."""
+    attempt = _insert_attempt(conn)
+    conn.exec_driver_sql("SET ROLE butler_qa_rw")
+    operation_id = uuid.uuid4()
+    conn.exec_driver_sql(
+        f"""
+        INSERT INTO {_TABLE}
+            (id, attempt_id, kind, stage, stage_order, binding_digest, request_digest, result)
+        VALUES ('{operation_id}', '{attempt}', '{kind}', 'ambiguous', 3,
+                '{_DIGEST}', '{_DIGEST}', 'ambiguous')
+        """
+    )
+    conn.exec_driver_sql("RESET ROLE")
+    return operation_id
+
+
+@pytest.mark.parametrize(
+    ("kind", "assignment", "allowed"),
+    [
+        ("pr_create", _adopt("123", "123"), True),
+        ("pr_create", _adopt("123", None), False),
+        ("pr_create", _adopt("123", "124"), False),
+        ("pr_create", _adopt("0123", "0123"), False),
+        ("pr_create", _adopt("pr-7", "pr-7"), False),
+        ("branch_push", _adopt("123", "123"), False),
+    ],
+    ids=[
+        "adopts-pr-number",
+        "adoption-without-bound-new-object",
+        "adoption-binds-another-pr",
+        "not-a-pr-number",
+        "pr-label-not-number",
+        "only-pr-create-adopts",
+    ],
+)
+def test_unbound_pr_create_reconciles_only_by_adopting_a_pr_number(
+    db_url: str, kind: str, assignment: str, allowed: bool
+) -> None:
+    engine = create_engine(db_url)
+    try:
+        with engine.begin() as conn:
+            operation = _held_unbound_row(conn, kind)
+    finally:
+        engine.dispose()
+
+    if allowed:
+        _update_as_qa(db_url, operation, assignment)
+        assert _stage_of(db_url, operation) == "reconciled"
+    else:
+        _refused(db_url, operation, assignment, _CONSTRAINT_EXACT)
+        assert _stage_of(db_url, operation) == "ambiguous"
+
+
+_CONSTRAINT_EXACT = "ck_qa_publication_operations_exact_reconciliation"
+
+
+def _exact_check(conn) -> tuple[bool, bool]:
+    """(adoption arm present, constraint validated)."""
+    adoption, validated = conn.exec_driver_sql(
+        "SELECT position('pr_create' in pg_get_constraintdef(oid)) > 0, convalidated "
+        f"FROM pg_constraint WHERE conname = '{_CONSTRAINT_EXACT}'"
+    ).one()
+    return adoption, validated
+
+
+def test_core_298_downgrade_restores_the_exact_check_around_adopted_rows(
+    postgres_container,
+) -> None:
+    url = create_migration_db(postgres_container, migration_db_name())
+    asyncio.run(run_migrations(url, chain="core", schema="general"))
+    asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
+    general = _build_alembic_config(url, chains=["core"], target_schema="general")
+    switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            operation = _held_unbound_row(conn, "pr_create")
+        _update_as_qa(url, operation, _adopt("123", "123"))
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (True, True)
+
+        # The other schema still runs core_298 code, so the adoption arm stays.
+        command.downgrade(general, "core_297")
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (True, True)
+
+        # The last schema restores the core_267 rule; the adopted row keeps it NOT VALID.
+        command.downgrade(switchboard, "core_297")
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (False, False)
+            assert _stage_of(url, operation) == "reconciled"
+
+        command.upgrade(general, "core@head")
+        command.upgrade(switchboard, "core@head")
+        with engine.connect() as conn:
+            assert _exact_check(conn) == (True, True)
     finally:
         engine.dispose()
