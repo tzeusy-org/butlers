@@ -218,6 +218,37 @@ def _parse_claude_output(
     return result_text, tool_calls, usage
 
 
+def _claude_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the stream proves a tool ran, for ``is_pre_tool_call``.
+
+    Evidence is any parsed tool call, a ``tool_use`` block in the CLI's native
+    assistant shape (``{"type": "assistant", "message": {"content": [...]}}``),
+    or a terminal result with ``num_turns > 1``: in ``claude -p`` a further
+    turn only follows a tool result.
+    """
+    if tool_calls:
+        return True
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "result":
+            turns = obj.get("num_turns")
+            if type(turns) is int and turns > 1:
+                return True
+        message = obj.get("message")
+        if obj.get("type") == "assistant" and isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_use" for block in content
+            ):
+                return True
+    return False
+
+
 def _extract_claude_session_id(stdout: str) -> str | None:
     """Extract the provider-native session id from stream-json output.
 
@@ -399,6 +430,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             If the Claude process exits with a non-zero exit code (including
             a rejected/expired ``resume_session_id`` -- the caller is
             responsible for clearing the stale handle and retrying cold).
+        TerminalResultError
+            If the stream carries a failed terminal result (``is_error``), at
+            any exit code; it keeps the attempt's usage and tool calls.
         """
         import tempfile
 
@@ -551,20 +585,32 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "runtime_type": "claude",
             }
 
+            terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
-                # On non-zero exit the adapter raises immediately — no tool calls
-                # were captured by the adapter itself, so this is pre-tool-call.
-                # The spawner will layer in daemon-side tool-call capture.
-                self._last_process_info["is_pre_tool_call"] = True
-                raise RuntimeError(f"Claude CLI exited with code {returncode}: {error_detail}")
+                message = f"Claude CLI exited with code {returncode}: {error_detail}"
+                if not terminal_error:
+                    # No result envelope: nothing proves work started, so this is
+                    # pre-tool-call. The spawner layers in daemon-side capture.
+                    self._last_process_info["is_pre_tool_call"] = True
+                    raise RuntimeError(message)
+                # CLI 2.1.316+ exits 1 on a failed terminal result such as
+                # error_max_turns; keep its usage and tool evidence.
+                _, tool_calls, usage = _parse_claude_output(stdout, stderr, 0)
+                self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
+                self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(
+                    stdout, tool_calls
+                )
+                raise TerminalResultError(served, usage, tool_calls, message)
 
             result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
             self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
-            if any(item["error"]["is_error"] is True for item in served["executions"]):
-                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+            if terminal_error:
+                self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(
+                    stdout, tool_calls
+                )
                 raise TerminalResultError(served, usage, tool_calls)
             return result_text, tool_calls, usage
 

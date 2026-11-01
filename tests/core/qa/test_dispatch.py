@@ -1596,6 +1596,10 @@ async def test_lost_pr_response_is_held_ambiguous_without_retry(tmp_path: Path) 
     assert len(provider.prs) == 1
     assert [name for name, _ in provider.calls] == ["update_ref", "create_pull_request"]
     assert ledger.row(attempt_id, OperationKind.PR_CREATE).stage == "ambiguous"
+    # The sealed export outlives worktree teardown (spec: committed proposal not published).
+    retained = ledger.exports[attempt_id]
+    retained.verify()
+    assert (retained.base_sha, retained.head_sha) == (base, git(repo, "rev-parse", _QA_BRANCH))
     for mocks in (first, again):
         assert mocks["update"].await_args.args[2] == "failed"
         assert (
