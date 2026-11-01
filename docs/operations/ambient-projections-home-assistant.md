@@ -2,7 +2,7 @@
 
 > **Scope:** Wiring a wall display, e-ink panel or Home Assistant instance to one
 > projection grant's glance.
-> **Contract:** `ambient-projections` (REQ-ambient-projections-001 to -004). Grant
+> **Contract:** `ambient-projections` (REQ-ambient-projections-001 to -005). Grant
 > custody and the auth boundary: [Dashboard owner auth](../identity_and_secrets/dashboard-owner-auth.md#ambient-projection-grants).
 
 ## Mint one grant per surface

@@ -9,7 +9,7 @@ Owner session or a grant scoped to this exact route (``OwnerAuthMiddleware``):
     GET    /api/projections/{id}/glance  deterministic glance payload, no LLM call;
                                          ?format=text|png renders it for dumb surfaces
 
-Spec: openspec/changes/add-ambient-projection-grants (REQ-ambient-projections-001..003).
+Spec: openspec/changes/add-ambient-projection-grants (REQ-ambient-projections-001..005).
 """
 
 from __future__ import annotations

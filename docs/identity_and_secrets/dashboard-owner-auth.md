@@ -301,7 +301,7 @@ briefing's attention model until it fetches again; the item is derived on read,
 so nothing is written or scheduled. `?format=text` and `?format=png` render the
 same glance for dumb panels; wiring and a Home Assistant package live in
 [Ambient Projections](../operations/ambient-projections-home-assistant.md).
-Contract: `ambient-projections` (REQ-ambient-projections-001 to -004).
+Contract: `ambient-projections` (REQ-ambient-projections-001 to -005).
 
 ## Failure, restore and rollback
 

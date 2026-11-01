@@ -8,7 +8,7 @@ glance_text / glance_png
 GlanceCache
     Per-grant cache of the composed payload, so format fetches share one composition.
 
-Spec: openspec/changes/add-ambient-projection-grants (REQ-ambient-projections-003).
+Spec: openspec/changes/add-ambient-projection-grants (REQ-ambient-projections-003, -005).
 """
 
 from __future__ import annotations
