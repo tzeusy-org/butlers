@@ -50,6 +50,7 @@ from butlers.api.deps import (
 )
 from butlers.api.models import ApiResponse
 from butlers.api.routers.events import emit_event
+from butlers.core.job_health import record_tick
 from butlers.core.model_routing import price_mtd_from_ledger
 from butlers.core.pricing import PricingConfig
 
@@ -662,9 +663,11 @@ async def run_settings_console_delta_loop(
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("settings_console_delta_loop: aggregation tick failed")
             continue
 
+        emit_failed = False
         if prev_payload is not None:
             try:
                 header_delta, added, removed = _compute_console_deltas(prev_payload, new_payload)
@@ -675,6 +678,7 @@ async def run_settings_console_delta_loop(
                 for item_id in removed:
                     emit_event("attention_remove", {"id": item_id})
             except Exception:
+                emit_failed = True
                 logger.debug(
                     "settings_console_delta_loop: emit_event failed (non-fatal)", exc_info=True
                 )
@@ -683,6 +687,7 @@ async def run_settings_console_delta_loop(
         async with _cache_lock:
             _cache_payload = new_payload
             _cache_ts = time.monotonic()
+        await record_tick(failed=emit_failed)
 
 
 # ---------------------------------------------------------------------------

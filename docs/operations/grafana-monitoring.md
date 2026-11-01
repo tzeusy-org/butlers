@@ -248,6 +248,29 @@ Its JSON definition lives in `observability/grafana-alerting/`, mounted only
 at Grafana's alerting-provisioning path. It must remain outside the recursive
 dashboard source so Grafana never mistakes the alert rule for a dashboard.
 
+## Google Health Connector Alerts
+
+`observability/grafana-alerting/connector-google-health.json` provisions one
+rule group, `butlers-connector-google-health`, over the connector's own
+`prometheus_client` metrics (scraped by the `connector-google-health` job in
+`observability/prometheus/prometheus.yml`). Each rule keeps the
+`endpoint_identity` and `resource` labels, so Grafana raises one instance per
+account and resource:
+
+| Rule | Query | Fires when |
+| --- | --- | --- |
+| Resource failing persistently | `connector_google_health_resource_consecutive_failures` | streak at or above 3 (the `resource_degraded` threshold) for 1h |
+| Window page cap | `increase(connector_google_health_window_page_cap_exceeded_total[15m])` | any increase |
+| Envelope quarantined | `increase(connector_google_health_quarantined_envelopes_total[15m])` | any increase |
+
+They follow the same posture as the domain-event rule above: `isPaused=true`,
+`severity=warning`, and no contact point or notification policy. `NoData`
+resolves to OK, because a missing series means the connector is down or has not
+seen the condition; connector liveness belongs to its heartbeat. Enabling
+evaluation or routing notifications is a separate owner-approved operational
+change. A quarantined envelope is replayed from its `poison_quarantine` row in
+`connectors.filtered_events`.
+
 ## Related Pages
 
 - [Deployment Posture](deployment-posture.md) -- Dev vs hardened posture, Grafana anon-viewer gating

@@ -137,6 +137,14 @@
 # fences all survive. A populated staging block refuses restore without source
 # owner membership; an empty block has no answer history requiring replay.
 
+# Dashboard supervised-job health is durable diagnostic history, not an
+# exclusion. Both tables retain schema/ownership/FORCE RLS in the ordinary
+# dump. Their complete rows use a separate owner-only, same-snapshot staging
+# block, parent before transitions. Exact owner/policy proof refuses drift;
+# restore requires that source owner's membership and never widens PUBLIC.
+# Restored timestamps/history are retained facts, not current-process success:
+# a new API instance remains starting/unknown until its own work succeeds.
+
 # Capture rows use a DIFFERENT fixed projection: SET LOCAL ROLE butler_general_rw
 # in this same snapshot, after an exact three-table FORCE-RLS policy proof. No
 # PUBLIC SELECT exception is added. The invoker importer preserves row bindings
@@ -170,6 +178,8 @@ BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions publ
 BACKUP_FLEET_EVIDENCE_DATA_TABLES="public.fleet_case_evidence"
 # Confidential durable answers: owner-conditional SELECT, separately proven below.
 BACKUP_CONFIRM_DATA_TABLES="public.pending_confirms"
+# Durable owner-only diagnostic rows; no relation/schema is omitted.
+BACKUP_JOB_HEALTH_DATA_TABLES="public.dashboard_job_health public.dashboard_job_transitions"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -247,7 +257,9 @@ write_run_sentinel() {
 cleanup() {
   status=$?
   if [ -n "${SNAPSHOT_HOLDER_PID}" ]; then
-    printf 'ROLLBACK;\n\\q\n' >&9 2>/dev/null || true
+    # A dead holder has no FIFO reader. Keep EPIPE inside this best-effort
+    # writer so cleanup still records the failed run instead of dying on SIGPIPE.
+    (trap '' PIPE; printf 'ROLLBACK;\n\\q\n' >&9) 2>/dev/null || true
     exec 9>&- 2>/dev/null || true
     wait "${SNAPSHOT_HOLDER_PID}" 2>/dev/null || true
   fi
@@ -286,6 +298,9 @@ done
 for table in ${BACKUP_CONFIRM_DATA_TABLES}; do
   set -- "$@" "--exclude-table-data=${table}"
 done
+for table in ${BACKUP_JOB_HEALTH_DATA_TABLES}; do
+  set -- "$@" "--exclude-table-data=${table}"
+done
 
 # pg_dump and the scoped ledger query must see one database instant. Keep a
 # read-only repeatable-read transaction open, export its snapshot, and bind
@@ -299,6 +314,7 @@ SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
 SNAPSHOT_CAPTURE_COUNT_FILE="${SNAPSHOT_DIR}/capture-count"
 SNAPSHOT_CONFIRM_POLICY_FILE="${SNAPSHOT_DIR}/confirm-policy-count"
 SNAPSHOT_FLEET_EVIDENCE_FILE="${SNAPSHOT_DIR}/fleet-evidence-proof"
+SNAPSHOT_JOB_HEALTH_POLICY_FILE="${SNAPSHOT_DIR}/job-health-policy-count"
 SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
 mkfifo "${SNAPSHOT_CONTROL}"
 PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
@@ -313,7 +329,18 @@ PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
   < "${SNAPSHOT_CONTROL}" > "${SNAPSHOT_LOG}" 2>&1 &
 SNAPSHOT_HOLDER_PID=$!
 exec 9>"${SNAPSHOT_CONTROL}"
+# This autocommit catalogue read selects whether a lock is needed, not whether
+# absence is safe. It must precede BEGIN: when installed, acquire the locks
+# before establishing the repeatable-read snapshot, so policy DDL cannot slip
+# between an earlier catalogue snapshot and the locks. Errors stop the holder.
+printf 'SELECT NOT EXISTS (SELECT FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='\''public'\''
+      AND c.relname IN ('\''dashboard_job_health'\'','\''dashboard_job_transitions'\'')) AS butlers_job_health_absent
+\\gset
+' >&9
 printf 'BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;\n' >&9
+printf '\\if :butlers_job_health_absent\n\\else\nLOCK TABLE public.dashboard_job_health, public.dashboard_job_transitions IN ACCESS SHARE MODE;\n\\endif\n' >&9
 printf '\\o %s\nSELECT pg_export_snapshot();\n\\o\n' "${SNAPSHOT_ID_FILE}" >&9
 # A FOR ALL policy also applies to SELECT. Count every SELECT-applying policy,
 # then require the one admitted policy to be the exact explicit PUBLIC SELECT
@@ -415,9 +442,36 @@ printf '\\o %s\nSELECT count(*) FROM pg_class e
    AND NOT EXISTS(SELECT FROM pg_trigger t WHERE t.tgconstraint=f.oid AND t.tgenabled NOT IN ('\''O'\'','\''A'\'')));
 \\o\n' "${SNAPSHOT_FLEET_EVIDENCE_FILE}" >&9
 
+# Only this exported-snapshot proof authorizes absence. If the preflight saw
+# no relations but either appeared before this snapshot, refuse rather than
+# exporting installed health without locks. A present installation must retain
+# the exact two-table owner/FORCE-RLS/sole-policy proof under those locks.
+printf '\\o %s\n\\if :butlers_job_health_absent
+SELECT CASE WHEN NOT EXISTS (SELECT FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='\''public'\''
+      AND c.relname IN ('\''dashboard_job_health'\'','\''dashboard_job_transitions'\'')) THEN 0 ELSE -1 END;
+\\else
+SELECT CASE WHEN (SELECT count(*) FROM pg_class c
+    JOIN pg_namespace n ON n.oid=c.relnamespace
+    WHERE n.nspname='\''public'\''
+      AND c.relname IN ('\''dashboard_job_health'\'','\''dashboard_job_transitions'\'')
+      AND c.relkind='\''r'\'' AND c.relpersistence='\''p'\''
+      AND c.relowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)
+      AND c.relrowsecurity AND c.relforcerowsecurity
+      AND (SELECT count(*)=1 FROM pg_policy p WHERE p.polrelid=c.oid)
+      AND EXISTS (SELECT FROM pg_policy p WHERE p.polrelid=c.oid
+          AND p.polname='\''dashboard_job_owner'\'' AND p.polcmd='\''*'\''
+          AND p.polpermissive AND p.polroles=ARRAY[c.relowner]
+          AND pg_get_expr(p.polqual,p.polrelid)=format('\''(CURRENT_USER = %%L::name)'\'',current_user)
+          AND pg_get_expr(p.polwithcheck,p.polrelid)=format('\''(CURRENT_USER = %%L::name)'\'',current_user)))=2 THEN 2 ELSE -1 END;
+\\endif
+\\o\n' "${SNAPSHOT_JOB_HEALTH_POLICY_FILE}" >&9
+
 SNAPSHOT_WAIT=0
 while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] \
-  || [ ! -s "${SNAPSHOT_CAPTURE_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_CONFIRM_POLICY_FILE}" ] || [ ! -s "${SNAPSHOT_FLEET_EVIDENCE_FILE}" ]; } \
+  || [ ! -s "${SNAPSHOT_CAPTURE_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_CONFIRM_POLICY_FILE}" ] || [ ! -s "${SNAPSHOT_FLEET_EVIDENCE_FILE}" ] \
+  || [ ! -s "${SNAPSHOT_JOB_HEALTH_POLICY_FILE}" ]; } \
   && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
   SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
   if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
@@ -426,7 +480,8 @@ while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}"
   sleep 0.05
 done
 if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] \
-  || [ ! -s "${SNAPSHOT_CAPTURE_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_CONFIRM_POLICY_FILE}" ] || [ ! -s "${SNAPSHOT_FLEET_EVIDENCE_FILE}" ]; then
+  || [ ! -s "${SNAPSHOT_CAPTURE_COUNT_FILE}" ] || [ ! -s "${SNAPSHOT_CONFIRM_POLICY_FILE}" ] || [ ! -s "${SNAPSHOT_FLEET_EVIDENCE_FILE}" ] \
+  || [ ! -s "${SNAPSHOT_JOB_HEALTH_POLICY_FILE}" ]; then
   FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
   exit 1
@@ -463,6 +518,13 @@ if [ "$(tr -d '\r\n' < "${SNAPSHOT_FLEET_EVIDENCE_FILE}")" != "1" ]; then
   echo "[backup] FAILED: Fleet evidence shape/owner/FK proof differs; not publishing" >&2
   exit 1
 fi
+JOB_HEALTH_BACKUP_POLICY_COUNT="$(tr -d '\r\n' < "${SNAPSHOT_JOB_HEALTH_POLICY_FILE}")"
+case "${JOB_HEALTH_BACKUP_POLICY_COUNT}" in
+  0|2) ;;
+  *) FAILURE_REASON="pg_dump_failed"
+     echo "[backup] FAILED: job-health snapshot is neither absent nor the exact owner-only contract; not publishing" >&2
+     exit 1 ;;
+esac
 
 # pg_dump writes to stdout; we pipe through gzip into a .tmp file so the
 # directory scanner in get_backup_facts() never sees a partial dump.  gzip's
@@ -642,6 +704,46 @@ SET ROLE %I;',
   printf '%s\n' "INSERT INTO public.fleet_case_evidence SELECT (jsonb_populate_record(NULL::public.fleet_case_evidence,convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)).* FROM butlers_fleet_restore_rows WHERE ordinal=2 ORDER BY payload_hex;"
   printf '%s\n' "SELECT public.fleet_case_restore_row(relation_name, convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb) FROM butlers_fleet_restore_rows WHERE ordinal=3 ORDER BY payload_hex;"
   printf '%s\n' '\else' "DO \$\$ BEGIN RAISE EXCEPTION 'Fleet restore requires source table-owner membership'; END \$\$;" '\endif' '\endif' 'RESET ROLE;' 'COMMIT;' 'DROP TABLE butlers_fleet_restore_rows;'
+
+  if [ "${JOB_HEALTH_BACKUP_POLICY_COUNT}" = "2" ]; then
+  printf '\n-- Butlers owner-only supervised-job health data\n'
+  printf 'CREATE TEMP TABLE butlers_job_health_restore_rows (ordinal integer NOT NULL CHECK (ordinal IN (1,2)), payload_hex text NOT NULL);\n'
+  printf 'COPY butlers_job_health_restore_rows (ordinal, payload_hex) FROM stdin;\n'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+        SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+        SET LOCAL row_security=on;
+        COPY (SELECT 1,encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM public.dashboard_job_health t
+              UNION ALL
+              SELECT 2,encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM public.dashboard_job_transitions t ORDER BY 1,2) TO STDOUT;
+        COMMIT" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf '%s\n' '\.'
+  printf '%s\n' 'SELECT EXISTS(SELECT 1 FROM butlers_job_health_restore_rows) AS butlers_job_health_restore_needed \gset' '\if :butlers_job_health_restore_needed'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "SELECT format(
+      'SELECT coalesce(pg_has_role(current_user,to_regrole(%L),''MEMBER''),false) AS butlers_job_health_restore_authorized \gset
+\if :butlers_job_health_restore_authorized
+\set ON_ERROR_STOP on
+GRANT SELECT ON butlers_job_health_restore_rows TO %I;
+SET ROLE %I;
+BEGIN;
+SET LOCAL row_security=on;',
+      pg_get_userbyid(relowner),pg_get_userbyid(relowner),pg_get_userbyid(relowner))
+      FROM pg_class WHERE oid='public.dashboard_job_health'::regclass" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf "INSERT INTO public.dashboard_job_health SELECT (jsonb_populate_record(NULL::public.dashboard_job_health,convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)).* FROM butlers_job_health_restore_rows WHERE ordinal=1 ORDER BY payload_hex;\n"
+  printf "INSERT INTO public.dashboard_job_transitions SELECT (jsonb_populate_record(NULL::public.dashboard_job_transitions,convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)).* FROM butlers_job_health_restore_rows WHERE ordinal=2 ORDER BY payload_hex;\n"
+  printf '%s\n' 'COMMIT;' 'RESET ROLE;' '\else' '\set ON_ERROR_STOP on' 'DO $$ BEGIN RAISE EXCEPTION '"'"'job health restore requires source table-owner membership'"'"'; END $$;' '\endif' '\endif' 'DROP TABLE butlers_job_health_restore_rows;'
+  fi
 } | gzip > "${TMPFILE}"
 
 printf 'COMMIT;\n\\q\n' >&9

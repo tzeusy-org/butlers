@@ -138,6 +138,7 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
     cancel_pending_notifications_matching_line,
@@ -243,6 +244,7 @@ async def _collect_snapshots(
         try:
             pool = db.pool(butler_name)
         except KeyError:
+            mark_tick_incomplete()
             continue
         try:
             rows = await _fetch_system_secrets(
@@ -280,6 +282,7 @@ async def _collect_snapshots(
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         return snapshots
 
     # Shared application config (public.butler_secrets), excluding cli/cli-auth
@@ -678,6 +681,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     try:
         shared_pool = db.credential_shared_pool()
     except KeyError:
+        mark_tick_incomplete()
         logger.warning("secrets_lifecycle_check: no shared credential pool configured; skipping")
         return {
             "scanned": 0,
@@ -1116,8 +1120,10 @@ async def run_secrets_lifecycle_loop(
         await asyncio.sleep(interval_s)
         try:
             summary = await run_secrets_lifecycle_check(db)
+            await record_tick(failed=bool(summary.get("errors") or summary.get("sources_degraded")))
             logger.info("secrets_lifecycle_check: %s", summary)
         except asyncio.CancelledError:
             raise
         except Exception:
+            await record_tick(failed=True)
             logger.exception("secrets_lifecycle_check: scan failed")

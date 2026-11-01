@@ -181,6 +181,12 @@ Scope: v1-mandatory
 - **WHEN** the supported Vitest dependency optimizer reuses bundled library transforms in node or jsdom workers
 - **THEN** every child still performs its own fresh complete unsharded collection and actual isolated-fork shard execution, with unchanged full-reference, declaration, ready and terminal-result reconciliation
 
+#### Scenario: Failed execution retains informational opaque diagnostics only
+- **WHEN** an actual nonzero Vitest child leaves a fresh closed reporter file bound to its unchanged tracked source/run/attempt/shard identity and mandatory configuration predicates
+- **THEN** validated available opaque module/item observations and error/outcome counters survive cleanup while the original child exit, incomplete receipt and nonpassing wrapper verdict remain explicit
+- **AND** absent independent-reference membership and configuration-match authority remain `UNKNOWN` without discarding otherwise safe reported observations; missing, stale, malformed or mismatched evidence stays `UNKNOWN`, raw names/parameters/provider/exception/output text never escape, and diagnostics cannot authorize complete population, frontend or required-check success
+
+
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the lane target: the slowest group of each lane SHALL take 300 s or less, or the gap SHALL be reported with its measured cause. The 420 s lane p95 objective remains the tracked metric. Shard counts SHALL stay at least five unit and six integration groups and change only from measured durations. Every Python job in ci.yml SHALL set up through the one composite action. Matrix conversion and frontend expansion SHALL account for actual expanded rows and their concurrent peak. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.
 
