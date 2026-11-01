@@ -366,7 +366,7 @@ async def test_job_health_freshness_never_uses_an_old_process_success(
     assert "process_id" not in result
 
 
-async def test_caught_tick_and_partial_failure_are_recorded_without_private_text(monkeypatch):
+async def _exercise_caught_tick_and_partial_failure(monkeypatch):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -419,7 +419,7 @@ async def test_caught_tick_and_partial_failure_are_recorded_without_private_text
     assert events[-1][1:] == ("unknown", "stopped", {})
 
 
-async def test_continuous_connection_evidence_counts_reconnect_failures_and_recovers(monkeypatch):
+async def _exercise_continuous_connection_recovery(monkeypatch):
     from unittest.mock import AsyncMock, MagicMock
 
     from butlers.api import fleet_events_bridge
@@ -477,9 +477,8 @@ async def test_health_storage_failure_is_unavailable_and_does_not_stop_work():
     assert store.unavailable_jobs == {"model_verify"}
 
 
-@pytest.mark.parametrize(
-    ("faults", "expected"),
-    [
+async def test_hidden_tick_failures_reach_actual_supervised_work(monkeypatch):
+    groups = [
         (
             ("calendar_partial", "calendar_no_pool", "calendar_escalation", "drift_escalation"),
             "error",
@@ -498,12 +497,13 @@ async def test_health_storage_failure_is_unavailable_and_does_not_stop_work():
             "error",
         ),
         (("staleness_rate_limited", "staleness_missing_credential"), "ok"),
-    ],
-)
-async def test_hidden_tick_failures_reach_actual_supervised_work(monkeypatch, faults, expected):
-    for fault in faults:
-        with monkeypatch.context() as isolated:
-            await _exercise_hidden_tick_failure(isolated, fault, expected)
+    ]
+    for faults, expected in groups:
+        for fault in faults:
+            with monkeypatch.context() as isolated:
+                await _exercise_hidden_tick_failure(isolated, fault, expected)
+    with monkeypatch.context() as isolated:
+        await _exercise_caught_tick_and_partial_failure(isolated)
 
 
 async def _exercise_hidden_tick_failure(monkeypatch, fault, expected):
@@ -706,19 +706,17 @@ async def _exercise_hidden_tick_failure(monkeypatch, fault, expected):
         await _cancel_and_await(task)
 
 
-@pytest.mark.parametrize(
-    ("faults", "expected"),
-    [
+async def test_actual_shadow_callback_incomplete_work_is_not_a_healthy_probe(monkeypatch):
+    groups = [
         (("fleet", "qa", "attention_query", "attention_episode", "handoff", "policy"), "error"),
         (("paused", "legacy"), "ok"),
-    ],
-)
-async def test_actual_shadow_callback_incomplete_work_is_not_a_healthy_probe(
-    monkeypatch, faults, expected
-):
-    for fault in faults:
-        with monkeypatch.context() as isolated:
-            await _exercise_shadow_callback_incomplete_work(isolated, fault, expected)
+    ]
+    for faults, expected in groups:
+        for fault in faults:
+            with monkeypatch.context() as isolated:
+                await _exercise_shadow_callback_incomplete_work(isolated, fault, expected)
+    with monkeypatch.context() as isolated:
+        await _exercise_continuous_connection_recovery(isolated)
 
 
 async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected):
