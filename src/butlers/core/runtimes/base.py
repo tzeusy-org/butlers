@@ -197,6 +197,10 @@ class RuntimeAdapter(abc.ABC):
           is a best-effort signal from the adapter's parser; the spawner should
           combine it with daemon-side tool-call capture for the authoritative
           side-effect gate. Set on all failure paths (non-zero exit, timeout).
+        - ``terminal_error_text`` (str): The provider's structured terminal
+          error (Claude failed result envelope ``result``, Codex ``turn.failed``
+          message), never tool output. With ``stderr`` it is the only text
+          usage-limit detection trusts on suppressed failures.
 
         Codex-specific:
         - ``retry_attempted`` (bool): Whether adapter-internal retries were made.

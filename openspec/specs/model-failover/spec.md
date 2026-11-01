@@ -206,6 +206,16 @@ config/MCP/empty-response buckets). No marker may appear in more than one bucket
   genuine config error never carries it, while generic config wording can appear in
   embedded tool output
 
+#### Scenario: Suppressed usage limit still exhausts the provider account
+- **WHEN** a failed attempt is classified `eligible=False` (captured tool calls, adapter-reported
+  tool work, or any other suppression)
+- **AND** the adapter's `process_info["terminal_error_text"]` (the provider's structured terminal
+  error, never tool output) or `process_info["stderr"]` matches a usage-limit marker
+- **THEN** the spawner SHALL record the attempt with outcome `allowance_exhausted` and mark the
+  provider account exhausted until the stated reset, or the default window, without retrying
+- **AND** a usage-limit marker found only in the exception message or `error_detail` SHALL NOT
+  mark the account, because both can carry the stdout transcript
+
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)
 - RFC 0001 (Daemon Lifecycle and Triggers; the spawner orchestrates ephemeral runtime invocations for a logical session)

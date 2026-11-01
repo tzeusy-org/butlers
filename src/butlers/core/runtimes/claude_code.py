@@ -249,6 +249,25 @@ def _claude_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _claude_terminal_error_text(stdout: str) -> str | None:
+    """Return the ``result`` text of the last failed result envelope, else ``None``.
+
+    The CLI writes provider rejections such as "Claude AI usage limit
+    reached|<epoch>" there. Unlike ``error_detail`` (raw stdout when stderr is
+    empty) it never includes tool output, so usage-limit detection can trust it.
+    """
+    text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result" and obj.get("is_error") is True:
+            result = obj.get("result")
+            text = result.strip() if isinstance(result, str) and result.strip() else None
+    return text
+
+
 def _extract_claude_session_id(stdout: str) -> str | None:
     """Extract the provider-native session id from stream-json output.
 
@@ -586,6 +605,8 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             }
 
             terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
+            if terminal_error and (terminal_text := _claude_terminal_error_text(stdout)):
+                self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
