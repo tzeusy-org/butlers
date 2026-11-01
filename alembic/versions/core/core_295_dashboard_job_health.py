@@ -1,16 +1,16 @@
 """Persist value-free dashboard supervised-job health.
 
-Revision ID: core_292
-Revises: core_291 (published ambient projections, following core_290).
+Revision ID: core_295
+Revises: core_293 (published endpoint custody, following core_291).
 """
 
 from alembic import op
 
-revision = "core_292"
-down_revision = "core_291"
+revision = "core_295"
+down_revision = "core_293"
 branch_labels = None
 depends_on = None
-_LOCK = "butlers:core_292:dashboard-job-health"
+_LOCK = "butlers:core_295:dashboard-job-health"
 
 
 def upgrade():
@@ -117,7 +117,7 @@ def downgrade():
                 bind.exec_driver_sql(
                     f"SELECT EXISTS(SELECT 1 FROM {quote(schema)}.alembic_version "
                     "WHERE CASE WHEN version_num ~ '^core_[0-9]+$' "
-                    "THEN substring(version_num FROM 6)::integer >= 292 ELSE false END)"
+                    "THEN substring(version_num FROM 6)::integer >= 295 ELSE false END)"
                 ).scalar()
             )
         )
