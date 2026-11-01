@@ -29,7 +29,11 @@ from uuid import UUID
 import pytest
 
 from butlers.testing.fake_pool import AsyncCtx
-from butlers.tools.switchboard.ingestion.ingest import IngestAcceptedResponse, ingest_v1
+from butlers.tools.switchboard.ingestion.ingest import (
+    IngestAcceptedResponse,
+    IngestPersistenceError,
+    ingest_v1,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -598,14 +602,15 @@ class TestEnsurePartitionOutsideTransaction:
             "(no insert needed, no partition required)"
         )
 
-    async def test_ensure_partition_failure_raises_runtime_error(self) -> None:
-        """A failure during ensure_partition is caught and re-raised as RuntimeError."""
+    async def test_ensure_partition_failure_raises_persistence_error(self) -> None:
+        """A failure during ensure_partition is re-raised as the typed transient error."""
         pool = _FakePool()
         pool.set_pool_execute_to_raise(ValueError("DB connection failed"))
         envelope = _telegram_envelope(update_id="90003")
 
         with pytest.raises(
-            RuntimeError, match="Failed to ensure message_inbox partition: DB connection failed"
+            IngestPersistenceError,
+            match="Failed to ensure message_inbox partition: DB connection failed",
         ):
             await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 

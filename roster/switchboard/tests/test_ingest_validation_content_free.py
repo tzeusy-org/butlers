@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from butlers.core_tools._base import ToolContext
-from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+from butlers.tools.switchboard.ingestion.ingest import IngestPersistenceError, ingest_v1
 
 pytestmark = pytest.mark.unit
 
@@ -195,6 +195,23 @@ async def test_ingest_tool_error_result_carries_no_envelope_content(
         )
 
     assert result["status"] == "error"
+    assert result["retryable"] is False
     assert result["error"].startswith("Invalid ingest.v1 envelope")
     assert MARKER not in str(result)
     _no_marker_in_logs(caplog)
+
+
+async def test_ingest_tool_reports_persistence_failure_as_transient(monkeypatch) -> None:
+    """A transient DB failure is a typed reply, not a raised (string-only) tool error."""
+
+    async def _failing_ingest_v1(*_a, **_k):
+        raise IngestPersistenceError(f"Failed to persist ingest envelope: {MARKER}")
+
+    monkeypatch.setattr("butlers.tools.switchboard.ingestion.ingest.ingest_v1", _failing_ingest_v1)
+    ingest = _grab_ingest_tool(monkeypatch)
+
+    result = await ingest(**_envelope())
+
+    assert result["status"] == "transient_error"
+    assert result["retryable"] is True
+    assert MARKER not in str(result)

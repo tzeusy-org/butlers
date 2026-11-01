@@ -289,7 +289,8 @@ async def _submit_to_switchboard(
 
     Returns the accepted response dict (``request_id``, ``status``,
     ``duplicate``, ``triage_decision``, ``triage_target``), or ``None`` if the
-    Switchboard MCP server is unreachable — a non-fatal, retryable condition
+    Switchboard MCP server is unreachable or replies ``status="transient_error"``
+    (a persistence failure) — a non-fatal, retryable condition
     the caller surfaces as an SSE error.
 
     Raises
@@ -349,6 +350,16 @@ async def _submit_to_switchboard(
         return None
 
     result = _first_json_block(mcp_result)
+    if (
+        not mcp_result.is_error
+        and isinstance(result, dict)
+        and result.get("status") == "transient_error"
+    ):
+        # The Switchboard could not persist a valid envelope: retryable, like unreachable.
+        logger.warning(
+            "Switchboard transient ingest failure for dashboard envelope to %s", butler_name
+        )
+        return None
     if mcp_result.is_error or (isinstance(result, dict) and result.get("status") == "error"):
         error_msg = (
             result.get("error") if isinstance(result, dict) else None

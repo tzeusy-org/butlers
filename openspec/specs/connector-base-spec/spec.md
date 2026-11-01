@@ -209,6 +209,12 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
+#### Scenario: Ingest refusals distinguish validation from transient failure
+- **WHEN** the Switchboard `ingest` tool cannot accept a submission
+- **THEN** an envelope validation refusal SHALL return `status` `"error"` with `retryable` `false` and a content-free `error`; resubmitting the same envelope cannot succeed
+- **AND** a transient persistence failure for a valid envelope SHALL return `status` `"transient_error"` with `retryable` `true` and fixed error text that quotes no driver message or envelope value, instead of raising a string-only tool error (bu-u5euwb.33)
+- **AND** any other raised tool error is unexpected and SHALL NOT be read as either refusal kind
+
 ### Requirement: Request Context Construction
 The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
 
@@ -283,6 +289,7 @@ All connector-to-Switchboard communication SHALL use a lazy, reconnecting MCP cl
 - **WHEN** an MCP tool returns a result
 - **THEN** the client extracts structured data: FastMCP 2.x `.data` attribute first, then falls back to parsing JSON from text content blocks
 - **AND** error results raise `RuntimeError` with the tool name and error content
+- **AND** a tool reply with `status` `"transient_error"` raises `TransientToolError`, a `ConnectionError` subclass that is not retried by the client, so callers that ignore results stay fail-closed and callers that bound poison retries can tell it from a `RuntimeError` tool error without string matching
 
 #### Scenario: MCP tool surface for connectors
 - **WHEN** a connector interacts with Switchboard

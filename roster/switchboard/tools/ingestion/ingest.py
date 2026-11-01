@@ -203,6 +203,14 @@ def _get_policy_telemetry() -> _IngestionPolicyTelemetry:
     return _POLICY_TELEMETRY
 
 
+class IngestPersistenceError(RuntimeError):
+    """The envelope was valid but could not be persisted; the submission may be retried.
+
+    Distinct from the ``ValueError`` validation refusal so the ``ingest`` tool can report
+    a typed transient status instead of a string-only tool error (bu-u5euwb.33).
+    """
+
+
 class IngestAcceptedResponse(BaseModel):
     """Response payload for accepted ingest submissions."""
 
@@ -766,8 +774,8 @@ async def ingest_v1(
     ------
     ValueError
         If the payload fails `ingest.v1` validation.
-    RuntimeError
-        If database persistence fails unexpectedly.
+    IngestPersistenceError
+        If database persistence fails (transient; the submission may be retried).
     """
     # Best-effort source extraction for metrics before full validation
     _source_for_metrics = "unknown"
@@ -1067,7 +1075,7 @@ async def ingest_v1(
             exc_info=True,
         )
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
-        raise RuntimeError(f"Failed to ensure message_inbox partition: {exc}") from exc
+        raise IngestPersistenceError(f"Failed to ensure message_inbox partition: {exc}") from exc
 
     # 8. Dedup-safe insert: acquire a dedicated connection and serialise on
     # the dedupe_key via pg_advisory_xact_lock so that concurrent submissions
@@ -1228,7 +1236,7 @@ async def ingest_v1(
     except Exception as exc:
         logger.error("Failed to persist ingest envelope: %s", exc, exc_info=True)
         _ingest_metrics.record_ingest_result(source=source_channel, outcome="db_error")
-        raise RuntimeError(f"Failed to persist ingest envelope: {exc}") from exc
+        raise IngestPersistenceError(f"Failed to persist ingest envelope: {exc}") from exc
 
     logger.info(
         "Accepted ingest submission: request_id=%s, dedupe_key=%s, source=%s/%s, "

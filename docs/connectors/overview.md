@@ -50,6 +50,8 @@ Connectors submit envelopes via **MCP tool call** (`ingest`) to the Switchboard 
 
 The Switchboard responds with `202 Accepted` semantics: ingest is accepted for async processing, and the response includes a canonical request reference. Duplicate submissions for the same dedupe identity return the same canonical request reference and are treated as success, not error.
 
+Refusals are typed replies. An invalid envelope returns `status: "error"` with `retryable: false`; resubmitting it cannot succeed. A valid envelope the Switchboard could not persist returns `status: "transient_error"` with `retryable: true`, which `CachedMCPClient` raises as `TransientToolError` (a `ConnectionError`), so a connector holds its checkpoint and retries. A `RuntimeError` from the client is an unexpected tool error, not either refusal kind.
+
 ### Submission Flow
 
 ```

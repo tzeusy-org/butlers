@@ -23,6 +23,20 @@ from fastmcp.exceptions import ToolError
 
 logger = logging.getLogger(__name__)
 
+# Tool reply status for a transient server-side failure (e.g. the Switchboard ingest
+# tool could not persist a valid envelope). See ``TransientToolError``.
+TRANSIENT_ERROR_STATUS = "transient_error"
+
+
+class TransientToolError(ConnectionError):
+    """The tool ran but hit a transient failure; the same call may succeed later.
+
+    A ``ConnectionError`` subclass so callers that already hold their checkpoint on
+    transport failures stay fail-closed, while callers that bound poison retries can
+    tell it apart from a ``RuntimeError`` tool error without string matching.
+    """
+
+
 # Readiness probe defaults
 _PROBE_INITIAL_DELAY_S: float = 0.5
 _PROBE_MAX_DELAY_S: float = 30.0
@@ -205,6 +219,9 @@ class CachedMCPClient:
         ConnectionError
             If both the initial call and the reconnect attempt fail at the
             transport layer (including fastmcp session-drop RuntimeErrors).
+        TransientToolError
+            If the tool replies ``status="transient_error"``; never retried here,
+            the caller's own loop retries.
         RuntimeError
             If the tool returns an MCP error result (fastmcp ``ToolError``);
             never retried.
@@ -251,7 +268,12 @@ class CachedMCPClient:
                     tool_name,
                 )
                 continue
-            return self._parse_result(result, tool_name)
+            parsed = self._parse_result(result, tool_name)
+            if isinstance(parsed, dict) and parsed.get("status") == TRANSIENT_ERROR_STATUS:
+                raise TransientToolError(
+                    str(parsed.get("error") or f"Tool '{tool_name}' reported a transient error.")
+                )
+            return parsed
 
     @staticmethod
     def _parse_result(result: Any, tool_name: str) -> Any:
