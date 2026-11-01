@@ -204,7 +204,7 @@ Scope: v1-mandatory
 - **THEN** no healing dispatch occurs for that exception
 
 ### Requirement: Trigger Source Tracking
-The Spawner's valid trigger sources SHALL be the engineering-executor sources `qa` and `healing`, and the trigger source SHALL be passed through to session creation for audit. The sources `tick`, `external`, `trigger`, `route` and `schedule:<task-name>` SHALL NOT start a Spawner session: the work they named is admitted as a goal, whose origin, cause and invocation lineage (`goal_id`, `invocation_id`, `depth`, `epoch`) take the place of a trigger source.
+The Spawner's valid trigger source SHALL be the engineering-executor source `qa`, and the trigger source SHALL be passed through to session creation for audit. The retired `healing` source SHALL NOT start a Spawner session; historical `healing` provenance remains readable. The sources `tick`, `external`, `trigger`, `route` and `schedule:<task-name>` SHALL NOT start a Spawner session: the work they named is admitted as a goal, whose origin, cause and invocation lineage (`goal_id`, `invocation_id`, `depth`, `epoch`) take the place of a trigger source.
 
 Until the RFC 0038 goal-runtime cutover, the existing ordinary dispatch paths retain the following source-audit contract; it does not authorize a goal invocation or re-enable the retired local healing dispatcher:
 
@@ -406,7 +406,7 @@ Scope: v1-mandatory
 - **THEN** it receives the domain's complete registered MCP list under its existing endpoint contract
 
 #### Scenario: Engineering executors get no MCP servers
-- **WHEN** the Spawner prepares a `qa` or `healing` session
+- **WHEN** the Spawner prepares a `qa` session
 - **THEN** the `mcp_servers` dict is empty
 
 ## ADDED Requirements

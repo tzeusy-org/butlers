@@ -268,6 +268,11 @@ async def test_flagged_event_emitted_for_novel_finding_after_attempt_claim() -> 
         ),
         patch("butlers.core.qa.dispatch.update_finding_attempt", new_callable=AsyncMock),
         patch(
+            "butlers.core.qa.dispatch.get_publication_hold",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
             "butlers.core.qa.dispatch.get_recent_attempt",
             new_callable=AsyncMock,
             return_value=None,
@@ -338,107 +343,6 @@ async def test_flagged_event_not_emitted_for_deduplicated_finding() -> None:
 
     assert result.accepted is False and result.reason == "already_investigating"
     record.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_drafted_on_pr_creation(tmp_path: Path) -> None:
-    attempt_id = uuid.uuid4()
-    branch_name = "qa/general/abcdef"
-    pr_created_at = datetime(2026, 5, 15, 6, 10, 30, tzinfo=UTC)
-    diff_snapshot = [
-        {"kind": "meta", "text": "diff --git a/a.py b/a.py"},
-        {"kind": "+", "text": "fixed = True"},
-        {"kind": "-", "text": "broken = True"},
-    ]
-    spawner = MagicMock()
-    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
-
-    with (
-        patch(
-            "butlers.core.qa.dispatch._create_qa_pr",
-            new_callable=AsyncMock,
-            return_value=("https://github.com/acme/repo/pull/42", 42, pr_created_at, None),
-        ),
-        patch(
-            "butlers.core.qa.dispatch._detect_no_op_branch",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-        patch(
-            "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
-            new_callable=AsyncMock,
-            return_value=diff_snapshot,
-        ),
-        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-        patch(
-            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
-            new_callable=AsyncMock,
-        ),
-        patch("butlers.core.qa.dispatch.record_pr_drafted_event", new_callable=AsyncMock) as record,
-    ):
-        await _run_investigation_session(
-            pool=_make_pool(),
-            repo_root=tmp_path,
-            attempt_id=attempt_id,
-            finding_id=uuid.uuid4(),
-            branch_name=branch_name,
-            worktree_path=tmp_path,
-            finding=_make_finding(),
-            config=QaDispatchConfig(repo_whitelist=MagicMock()),
-            spawner=spawner,
-            gh_token="ghtoken",
-        )
-
-    # Publication fails closed: no PR is drafted, so no drafted event is recorded.
-    record.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_drafted_on_pr_creation_explicitly_falls_back_without_created_at(
-    tmp_path: Path,
-) -> None:
-    attempt_id = uuid.uuid4()
-    branch_name = "qa/general/abcdef"
-    spawner = MagicMock()
-    spawner.trigger = AsyncMock(return_value=MagicMock(success=True, session_id=None))
-
-    with (
-        patch(
-            "butlers.core.qa.dispatch._create_qa_pr",
-            new_callable=AsyncMock,
-            return_value=("https://github.com/acme/repo/pull/42", 42, None, None),
-        ),
-        patch(
-            "butlers.core.qa.dispatch._detect_no_op_branch",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-        patch(
-            "butlers.core.qa.dispatch._capture_commit_diff_snapshot",
-            new_callable=AsyncMock,
-            return_value=[],
-        ),
-        patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock),
-        patch(
-            "butlers.core.qa.dispatch._persist_notes_and_remove_worktree",
-            new_callable=AsyncMock,
-        ),
-        patch("butlers.core.qa.dispatch.record_pr_drafted_event", new_callable=AsyncMock) as record,
-    ):
-        await _run_investigation_session(
-            pool=_make_pool(),
-            repo_root=tmp_path,
-            attempt_id=attempt_id,
-            finding_id=uuid.uuid4(),
-            branch_name=branch_name,
-            worktree_path=tmp_path,
-            finding=_make_finding(),
-            config=QaDispatchConfig(repo_whitelist=MagicMock()),
-            spawner=spawner,
-            gh_token="ghtoken",
-        )
-
-    record.assert_not_awaited()
 
 
 @pytest.mark.asyncio

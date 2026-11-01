@@ -310,6 +310,34 @@ async def probe_provider(
                 detail="No Anthropic API key configured. Provide one via the dashboard.",
             )
 
+        # OpenAI key for Codex: store-only. CodexAdapter reads no env fallback,
+        # so the probe must not report one as configured either.
+        if provider.name == "openai":
+            openai_key: str | None = None
+            if credential_store is not None:
+                try:
+                    openai_key = await credential_store.load("cli-auth/openai")
+                except Exception:
+                    logger.debug(
+                        "Failed to load API key for provider '%s' from credential store.",
+                        provider.name,
+                    )
+            if openai_key and openai_key.strip():
+                return AuthHealthResult(
+                    provider=provider.name,
+                    state=AuthHealthState.authenticated,
+                    detail=(
+                        "OpenAI API key configured."
+                        if openai_key.strip().startswith("sk-")
+                        else "API key configured (non-standard format)."
+                    ),
+                )
+            return AuthHealthResult(
+                provider=provider.name,
+                state=AuthHealthState.not_authenticated,
+                detail="No OpenAI API key configured; Codex uses ChatGPT device-code auth.",
+            )
+
         # Other api_key providers: check if the key exists in the auth file
         if provider.token_path is not None and provider.token_path.exists():
             try:

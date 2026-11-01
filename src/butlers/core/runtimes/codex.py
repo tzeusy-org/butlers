@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, override
 from urllib.parse import urlparse
 
 from butlers.core.child_env import without_owner_auth
+from butlers.core.failover_classifier import is_provider_auth_marker
 from butlers.core.mcp_urls import prefer_ipv4_loopback_url
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
 
@@ -323,6 +324,36 @@ def _looks_like_auth_refresh_failure(error_detail: str) -> bool:
     it.  An unrelated exit-1 (e.g. model capacity, MCP failure) must NOT match.
     """
     return _CODEX_REFRESH_TOKEN_REUSED_MARKER in error_detail.lower()
+
+
+# Store-only OpenAI API key (registry provider "openai"), preferred over the
+# cli-auth/codex device-code authority when present.
+_OPENAI_API_KEY_CREDENTIAL = "cli-auth/openai"
+_OPENAI_API_KEY_REJECTED_MESSAGE = (
+    "OpenAI API key rejected by the provider; Codex fell back to ChatGPT device-code auth."
+)
+# Every env var Codex accepts as auth; API-key sessions keep only CODEX_API_KEY.
+_CODEX_AUTH_ENV_VARS = ("CODEX_API_KEY", "OPENAI_API_KEY", "CODEX_ACCESS_TOKEN")
+# OpenAI quota exhaustion is account-level, so the ChatGPT plan may still serve.
+_OPENAI_QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota")
+
+
+def _openai_api_key_rejected(process_info: dict[str, Any] | None) -> bool:
+    """Return whether a failed API-key attempt warrants device-code fallback.
+
+    Only a completed, non-zero, pre-tool-call exit whose (already redacted)
+    diagnostic names an auth or quota rejection qualifies. Timeouts,
+    cancellations, and MCP failures say nothing about the key, so they never
+    trigger a second run on another credential.
+    """
+    if not process_info or not process_info.get("is_pre_tool_call"):
+        return False
+    if process_info.get("exit_code") in (None, -1, 0):
+        return False
+    detail = str(process_info.get("error_detail") or process_info.get("stderr") or "")
+    return is_provider_auth_marker(detail) or any(
+        marker in detail.lower() for marker in _OPENAI_QUOTA_MARKERS
+    )
 
 
 def _resolve_transport_details(
@@ -1592,8 +1623,11 @@ class CodexAdapter(RuntimeAdapter):
 
     @property
     def session_timeout_overhead_s(self) -> float:
-        """Reserve bounded auth synchronization outside Codex execution time."""
-        return _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS
+        """Reserve bounded auth synchronization outside Codex execution time.
+
+        Covers the OpenAI API key lookup plus the device-code allowance.
+        """
+        return 2 * _CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS
 
     def _get_binary(self) -> str:
         """Get the codex binary path, auto-detecting if needed."""
@@ -1900,6 +1934,30 @@ class CodexAdapter(RuntimeAdapter):
             "</user_prompt>"
         )
 
+    async def _load_openai_api_key(self) -> str | None:
+        """Return the stored OpenAI API key, or None to use device-code auth.
+
+        A lookup failure is treated as "no key": the device-code authority
+        still applies its own fail-closed checks. Exception detail is never
+        logged because credential-store errors can embed the value.
+        """
+        if self._credential_store is None:
+            return None
+        try:
+            value = await asyncio.wait_for(
+                self._credential_store.load(_OPENAI_API_KEY_CREDENTIAL),
+                timeout=_CODEX_AUTH_SYNC_RUNTIME_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.warning(
+                "codex: OpenAI API key lookup failed; using ChatGPT device-code auth (butler=%s)",
+                self._butler_name,
+            )
+            return None
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
     @override
     async def invoke(
         self,
@@ -1913,11 +1971,84 @@ class CodexAdapter(RuntimeAdapter):
         cwd: Path | None = None,
         timeout: int | None = None,
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """Invoke Codex, preferring a stored OpenAI API key over device-code auth.
+
+        When ``cli-auth/openai`` holds a key, the session first runs with it
+        (``CODEX_API_KEY``, no ChatGPT ``auth.json``). If no key is stored, or
+        the provider rejects the key before any tool call, the session runs on
+        the ``cli-auth/codex`` device-code authority exactly as before. A
+        rejection is logged value-free and recorded as a failed test of
+        ``cli-auth/openai``; the device-code authority is never touched by the
+        API-key attempt.
+        """
+        call_kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "system_prompt": system_prompt,
+            "mcp_servers": mcp_servers,
+            "env": env,
+            "max_turns": max_turns,
+            "model": model,
+            "runtime_args": runtime_args,
+            "cwd": cwd,
+            "timeout": timeout,
+        }
+        openai_api_key = await self._load_openai_api_key()
+        if openai_api_key is None:
+            return await self._invoke_with_auth(**call_kwargs, openai_api_key=None)
+
+        try:
+            result = await self._invoke_with_auth(**call_kwargs, openai_api_key=openai_api_key)
+        except MCPToolDiscoveryError:
+            raise
+        except RuntimeError:
+            if not _openai_api_key_rejected(self._last_process_info):
+                raise
+            logger.warning(
+                "codex: OpenAI API key rejected; falling back to ChatGPT device-code auth "
+                "(butler=%s)",
+                self._butler_name,
+            )
+            self._schedule_record_test_result(
+                _OPENAI_API_KEY_CREDENTIAL,
+                ok=False,
+                message=_OPENAI_API_KEY_REJECTED_MESSAGE,
+            )
+        else:
+            if self._last_process_info is not None:
+                self._last_process_info["auth_mode"] = "openai_api_key"
+            return result
+
+        try:
+            return await self._invoke_with_auth(**call_kwargs, openai_api_key=None)
+        finally:
+            if self._last_process_info is not None:
+                self._last_process_info["auth_mode"] = "device_code"
+                self._last_process_info["auth_fallback"] = "openai_api_key_rejected"
+
+    async def _invoke_with_auth(
+        self,
+        prompt: str,
+        system_prompt: str,
+        mcp_servers: dict[str, Any],
+        env: dict[str, str],
+        max_turns: int = 20,
+        model: str | None = None,
+        runtime_args: list[str] | None = None,
+        cwd: Path | None = None,
+        timeout: int | None = None,  # noqa: ASYNC109 - mirrors invoke(); the CLI budget
+        *,
+        openai_api_key: str | None,
+    ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the Codex CLI with the given prompt and configuration.
 
         Builds the command line for ``codex exec --json --full-auto``,
         injects system instructions into the initial prompt payload, and
         parses JSON-line output events.
+
+        With ``openai_api_key`` set, the CLI authenticates from
+        ``CODEX_API_KEY`` and every device-code step (authority
+        reconciliation, pre-warm, refresh lock, ``auth.json`` symlink, and
+        finalization) is skipped.
 
         Parameters
         ----------
@@ -1973,14 +2104,18 @@ class CodexAdapter(RuntimeAdapter):
         # Resolve the canonical home directory early so we can check token
         # expiry and run the pre-warm before creating the isolated tempdir.
         real_home = _resolve_canonical_home(os.environ.get("HOME", ""))
-        auth_token_path: Path | None = (real_home / ".codex" / "auth.json") if real_home else None
-        auth_sync_budget = _CodexAuthSyncBudget()
-        auth_authority_snapshot = await self._reconcile_canonical_auth(
-            auth_token_path,
-            auth_sync_budget=auth_sync_budget,
+        use_device_auth = openai_api_key is None
+        auth_token_path: Path | None = (
+            (real_home / ".codex" / "auth.json") if real_home and use_device_auth else None
         )
-        if not self._authority_snapshot_can_launch(auth_authority_snapshot):
-            self._refuse_new_codex_subprocess()
+        auth_sync_budget = _CodexAuthSyncBudget()
+        if use_device_auth:
+            auth_authority_snapshot = await self._reconcile_canonical_auth(
+                auth_token_path,
+                auth_sync_budget=auth_sync_budget,
+            )
+            if not self._authority_snapshot_can_launch(auth_authority_snapshot):
+                self._refuse_new_codex_subprocess()
 
         # --- Cross-process refresh-token serialisation -----------------------
         # When the on-disk auth.json exists but the access_token is near expiry
@@ -1996,7 +2131,9 @@ class CodexAdapter(RuntimeAdapter):
         #      only one process triggers the server-side refresh at a time.
         #   3. If auth.json does not exist yet (user not authenticated), skip
         #      the slow path entirely — there is nothing to refresh.
-        real_codex_dir = real_home / ".codex" if real_home else None
+        # API-key sessions never read or refresh the device-code token, so
+        # they take neither the pre-warm nor the refresh-lock slow path.
+        real_codex_dir = real_home / ".codex" if real_home and use_device_auth else None
         # _auth_json_present: True only when the file exists; missing file →
         # unauthenticated state, not a stale-token state.
         _auth_json_present = real_codex_dir is not None and (real_codex_dir / "auth.json").exists()
@@ -2059,7 +2196,7 @@ class CodexAdapter(RuntimeAdapter):
         # CLI are written back to the canonical location and survive temp-dir
         # cleanup.  This also prevents the "refresh_token_reused" error that
         # occurred when concurrent invocations each copied a stale token.
-        if real_home:
+        if real_home and use_device_auth:
             real_auth = real_home / ".codex" / "auth.json"
             tmp_auth = codex_config_dir / "auth.json"
             if real_auth.is_file():
@@ -2076,6 +2213,11 @@ class CodexAdapter(RuntimeAdapter):
         # so this invocation-local override must not leak back into that mapping.
         subprocess_env = dict(env)
         subprocess_env["HOME"] = str(tmp_dir)
+        if openai_api_key is not None:
+            # Codex refuses to choose when several auth env vars are present.
+            for auth_var in _CODEX_AUTH_ENV_VARS:
+                subprocess_env.pop(auth_var, None)
+            subprocess_env["CODEX_API_KEY"] = openai_api_key
 
         # Pass the composed prompt via stdin with the explicit "-" sentinel.
         # Recent Codex CLI builds treat any positional prompt plus non-tty stdin
@@ -2105,7 +2247,9 @@ class CodexAdapter(RuntimeAdapter):
                 mcp_servers,
                 prompt_input,
                 token_path=auth_token_path,
-                auth_invocation=auth_invocation,
+                # No auth_invocation in API-key mode: it drives the device-code
+                # spawn snapshot and finalization, which must not run.
+                auth_invocation=auth_invocation if use_device_auth else None,
             )
 
         # Slow-path serialisation: when the token is near expiry (or unknown),

@@ -2470,6 +2470,41 @@ async def _fetch_cli_secrets(
     return results
 
 
+def _store_only_cli_placeholders() -> dict[str, str]:
+    """Return ``{credential key: display name}`` for store-only CLI providers.
+
+    An ``api_key`` provider without a ``token_path`` keeps its credential only
+    in ``butler_secrets`` (e.g. ``cli-auth/claude``), so a missing row is the
+    whole story: without a ``never_set`` placeholder the owner has no row on
+    the Passport to paste the first key into. File-backed providers are
+    excluded because their login flows create the row.
+    """
+    return {
+        f"cli-auth/{provider.name}": provider.display_name
+        for provider in PROVIDERS.values()
+        if provider.auth_mode == "api_key" and provider.token_path is None
+    }
+
+
+def _missing_store_only_cli_placeholders(
+    *,
+    cli_secrets: list[CliRuntime],
+    system_secrets: list[SystemSecret],
+) -> list[CliRuntime]:
+    """Return ``never_set`` rows for store-only providers with no row anywhere.
+
+    A key present in any family — including a legacy per-butler ``cli-auth``
+    row the Passport relocates to CLI — is real state, and a placeholder
+    beside it would shadow it in the CLI dedupe.
+    """
+    present = {secret.key for secret in cli_secrets} | {secret.key for secret in system_secrets}
+    return [
+        CliRuntime(key=key, category="cli-auth", description=label, state="never_set")
+        for key, label in _store_only_cli_placeholders().items()
+        if key not in present
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Identity enrichment helper
 # ---------------------------------------------------------------------------
@@ -2925,6 +2960,17 @@ async def get_inventory(
         user_secrets = shared_result.user_secrets
         cli_secrets = shared_result.cli_secrets
         identities = shared_result.identities
+        # Only a readable shared source can prove a store-only key is unset.
+        cli_secrets = sorted(
+            [
+                *cli_secrets,
+                *_missing_store_only_cli_placeholders(
+                    cli_secrets=cli_secrets,
+                    system_secrets=system_secrets,
+                ),
+            ],
+            key=lambda secret: secret.key,
+        )
 
     # --- Build response ---
     # State counts (aggregate and family-specific) must be computed over a
@@ -3566,7 +3612,11 @@ async def get_cli_credential(
             detail="CLI credential source unavailable for shared-public",
         ) from exc
     if detail is None:
-        raise HTTPException(status_code=404, detail="Credential not found")
+        placeholder_label = _store_only_cli_placeholders().get(credential_id)
+        if placeholder_label is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        # Mirror the inventory's never_set placeholder so the page can open it.
+        detail = CliRuntimeDetail(id=credential_id, label=placeholder_label, state="never_set")
 
     return ApiResponse[CliCredentialDetail](data=_content_blind_cli_detail(detail), meta=ApiMeta())
 
