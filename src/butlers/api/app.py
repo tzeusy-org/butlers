@@ -571,6 +571,7 @@ def create_app(
         try:
             from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
+            from butlers.api.trace_redaction import redact_span_query
             from butlers.core.metrics import init_metrics
             from butlers.core.telemetry import init_telemetry
 
@@ -580,13 +581,16 @@ def create_app(
                 app,
                 # Instrumentor wraps outside user middleware. Exclusion therefore
                 # belongs here as well as at the auth boundary, before URL capture.
+                # Exclusions match the path only (never the query), so credentials
+                # in a query are scrubbed by the request hook on every path instead.
+                server_request_hook=redact_span_query,
                 excluded_urls=",".join(
                     filter(
                         None,
                         [
                             r".*/api/auth/owner(?:[/?]|$)",
-                            # A projection grant token may ride in the URL query.
-                            r".*/api/projections/[^/?]+/glance(?:[?]|$)",
+                            # Ambient glance polls: any spelling of the grant route.
+                            r".*/api/projections/.*glance",
                             os.environ.get(
                                 "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
                                 os.environ.get("OTEL_PYTHON_EXCLUDED_URLS", ""),

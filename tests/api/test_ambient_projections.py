@@ -95,8 +95,7 @@ def _seed(*, items=(), failed=(), statuses=()):
     return stack, llm
 
 
-@pytest.fixture
-def harness(monkeypatch):
+def _harness(monkeypatch):
     monkeypatch.setenv("DASHBOARD_AUTH_ORIGIN", ORIGIN)
     monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
     app = create_app(api_key=KEY)
@@ -114,7 +113,40 @@ def harness(monkeypatch):
     app.dependency_overrides[get_pricing] = lambda: MagicMock()
     app.dependency_overrides[get_cache] = lambda: BriefingCache(ttl_seconds=0.001)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=ORIGIN)
-    return client, store
+    return client, store, app
+
+
+@pytest.fixture
+def harness(monkeypatch):
+    return _harness(monkeypatch)[:2]
+
+
+async def _raw_status(app, method, path, query=b"", headers=()):
+    """Drive the ASGI app directly so the path reaches it unnormalised."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "https",
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": query,
+        "headers": [(b"host", b"owner.test.invalid"), *headers],
+        "client": ("127.0.0.1", 50000),
+        "server": ("owner.test.invalid", 443),
+    }
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    return next(m["status"] for m in sent if m["type"] == "http.response.start")
 
 
 async def _mint(client, audience="owner_private"):
@@ -231,3 +263,102 @@ def test_classifier_failure_composes_degraded_not_quiet():
             {}, audience_class="household", as_of=datetime.now(UTC), refresh=timedelta(minutes=5)
         )
     assert glance["state_class"] == "degraded"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "query", "header", "expected"),
+    [
+        pytest.param("GET", "{path}", b"", b"wrong-token", 404, id="wrong-token-own-projection"),
+        pytest.param("GET", "{path}/", b"token={token}", None, 401, id="trailing-slash"),
+        pytest.param("GET", "{upper}", b"", b"{token}", 401, id="uppercase-uuid"),
+        pytest.param(
+            "GET",
+            "/api/projections/../projections/{id}/glance",
+            b"token={token}",
+            None,
+            401,
+            id="dot-segment",
+        ),
+        pytest.param("HEAD", "{path}", b"", b"{token}", 405, id="head"),
+        pytest.param("OPTIONS", "{path}", b"", b"{token}", 405, id="options"),
+        pytest.param("GET", "{path}", b"token={token}&token={token}", None, 400, id="dup-query"),
+        pytest.param("GET", "{path}", b"token={token}", b"{token}", 400, id="header-and-query"),
+        pytest.param("GET", "{path}", b"token=", None, 400, id="empty-token"),
+    ],
+)
+async def test_grant_boundary_at_the_raw_asgi_seam(
+    monkeypatch, method, path, query, header, expected
+):
+    client, store, app = _harness(monkeypatch)
+    minted = await _mint(client)
+    fill = {
+        "path": minted["path"],
+        "upper": minted["path"]
+        .upper()
+        .replace("/API/PROJECTIONS/", "/api/projections/")
+        .replace("/GLANCE", "/glance"),
+        "id": minted["id"],
+        "token": minted["token"],
+    }
+    headers = (
+        ()
+        if header is None
+        else ((b"x-projection-token", header.decode().format(**fill).encode()),)
+    )
+    with _seed()[0]:
+        status = await _raw_status(
+            app, method, path.format(**fill), query.decode().format(**fill).encode(), headers
+        )
+    assert status == expected
+    # Only an exact, well-formed GET under a matching grant ever reaches the glance.
+    assert store.fetches == []
+
+
+async def test_projection_tokens_never_reach_traces_on_any_path(monkeypatch):
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+    from opentelemetry.metrics import NoOpMeterProvider
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    instrument = FastAPIInstrumentor.instrument_app
+    monkeypatch.setattr(
+        FastAPIInstrumentor,
+        "instrument_app",
+        staticmethod(
+            lambda app, **kw: instrument(
+                app, tracer_provider=provider, meter_provider=NoOpMeterProvider(), **kw
+            )
+        ),
+    )
+    monkeypatch.setattr("butlers.core.telemetry.init_telemetry", lambda *args: None)
+    monkeypatch.setattr("butlers.core.metrics.init_metrics", lambda *args: None)
+    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
+    monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "http/dup")
+    client, _store, app = _harness(monkeypatch)
+    try:
+        minted = await _mint(client)
+        token, path = minted["token"], minted["path"]
+        with _seed()[0]:
+            typo = path.replace("/projections/", "/projection/")
+            for url in (path, f"{path}/", f"{path}//", typo, "/api/approvals"):
+                await client.get(url, params={"token": token, "view": "kept"})
+        spans = exporter.get_finished_spans()
+        retained = repr([(span.name, dict(span.attributes or {})) for span in spans])
+        assert token not in retained
+        # Glance-family spellings are not traced at all; any other path is traced
+        # with the credential scrubbed from both URL attributes (positive control).
+        urls = [(span.attributes or {}).get("http.url") for span in spans]
+        assert not [url for url in urls if url and "/projections/" in url]
+        scrubbed = "token=REDACTED&view=kept"
+        assert sorted(url.split("/api/")[1] for url in urls if url and url.endswith(scrubbed)) == [
+            f"approvals?{scrubbed}",
+            f"projection/{minted['id']}/glance?{scrubbed}",
+        ]
+        assert sum((span.attributes or {}).get("url.query") == scrubbed for span in spans) == 2
+    finally:
+        FastAPIInstrumentor.uninstrument_app(app)
+        provider.shutdown()
