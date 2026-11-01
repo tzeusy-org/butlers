@@ -143,11 +143,12 @@ async def test_ordinary_dump_privileged_restore_and_catalogue_loss_refuse(
         restored = await asyncio.to_thread(
             client,
             postgres_container,
-            f'export POSTGRES_PASSWORD="$SYNTHETIC_PASSWORD"; bash /restore.sh /backup.sql.gz --host host.docker.internal --port {postgres_container.get_exposed_port(5432)} --user {admin.username} --target-db {target} --drop-existing',
+            f'export POSTGRES_PASSWORD="$SYNTHETIC_PASSWORD"; bash /restore.sh /backup.sql.gz --host host.docker.internal --port {postgres_container.get_exposed_port(5432)} --user {admin.username} --target-db {target} --drop-existing --capture-epoch-file /capture-host/{target}.json',
             admin.password,
             mounts=(
                 f"{ROOT / 'scripts/pg_restore.sh'}:/restore.sh:ro",
                 f"{artifacts[0]}:/backup.sql.gz:ro",
+                f"{tmp_path}:/capture-host",
             ),
         )
         assert restored.returncode == 0, (
