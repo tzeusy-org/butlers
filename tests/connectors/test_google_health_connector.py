@@ -2027,6 +2027,16 @@ async def test_main_loop_token_revoked_error_marks_account_revoked(
     revoke_mock.assert_awaited_with(_UUID_A)
 
 
+def _failure_streak_gauge(ctx: Any, resource: str) -> float | None:
+    """The alertable per-resource failure-streak gauge (bu-u5euwb.30)."""
+    from prometheus_client import REGISTRY
+
+    return REGISTRY.get_sample_value(
+        "connector_google_health_resource_consecutive_failures",
+        {"endpoint_identity": ctx.endpoint_identity, "resource": resource},
+    )
+
+
 @pytest.mark.asyncio
 async def test_main_loop_tracks_per_resource_consecutive_failures(
     monkeypatch: pytest.MonkeyPatch,
@@ -2069,6 +2079,7 @@ async def test_main_loop_tracks_per_resource_consecutive_failures(
 
     activity_state = connector._resources[(ctx.account_id, "activity")]
     assert activity_state.consecutive_failures == 1
+    assert _failure_streak_gauge(ctx, "activity") == 1
     assert activity_state.last_error is not None
     assert activity_state.last_error_at is not None
 
@@ -2113,6 +2124,7 @@ async def test_main_loop_resource_failure_streak_resets_on_next_success(
     await connector._main_loop()
 
     assert state.consecutive_failures == 0
+    assert _failure_streak_gauge(ctx, "activity") == 0
     assert state.last_error is None
     assert state.last_error_at is None
 
@@ -2347,7 +2359,7 @@ async def test_policy_block_persists_no_raw_payload() -> None:
     )
 
     # A recorded policy drop is handled, so it does not hold the poll checkpoint.
-    assert await connector._submit_envelope(_privacy_envelope(), resource="steps") is True
+    assert await connector._submit_envelope(_privacy_envelope(), resource="steps")
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
@@ -2368,7 +2380,7 @@ async def test_submission_error_retains_raw_payload() -> None:
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
     envelope = _privacy_envelope()
-    assert await connector._submit_envelope(envelope, resource="steps") is False
+    assert not await connector._submit_envelope(envelope, resource="steps")
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
@@ -2378,20 +2390,33 @@ async def test_submission_error_retains_raw_payload() -> None:
 
 
 @pytest.mark.parametrize(
-    ("response", "handled"),
+    ("reply", "outcome", "error_rows"),
     [
-        ({"status": "accepted"}, True),
-        ({"status": "duplicate"}, True),
-        ({"status": "error", "error": "refused"}, False),
+        ({"status": "accepted"}, "HANDLED", 0),
+        ({"status": "duplicate"}, "HANDLED", 0),
+        ({"status": "error", "error": "refused"}, "REJECTED", 1),
+        (RuntimeError("Server session was closed unexpectedly"), "FAILED", 1),
+        (ConnectionError("switchboard down"), "FAILED", 1),
     ],
 )
-async def test_submission_reports_whether_ingest_handled_it(response, handled) -> None:
-    """A refused ingest response is not reported as consumed (bu-u5euwb.10)."""
+async def test_submission_classifies_the_ingest_reply(reply, outcome, error_rows) -> None:
+    """Only an ingest error-status reply is a rejection; every exception stays transient."""
+    from butlers.connectors import google_health as gh
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
     connector = _make_connector()
     connector._ingestion_policy = None
-    connector._mcp_client.call_tool = AsyncMock(return_value=response)  # type: ignore[method-assign]
+    connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    if isinstance(reply, Exception):
+        connector._mcp_client.call_tool = AsyncMock(side_effect=reply)  # type: ignore[method-assign]
+    else:
+        connector._mcp_client.call_tool = AsyncMock(return_value=reply)  # type: ignore[method-assign]
 
-    assert await connector._submit_envelope(_privacy_envelope(), resource="steps") is handled
+    result = await connector._submit_envelope(_privacy_envelope(), resource="steps")
+
+    assert result is getattr(gh.SubmissionOutcome, outcome)
+    assert bool(result) is (outcome == "HANDLED")
+    assert len(connector._filtered_event_buffer) == error_rows
 
 
 # ---------------------------------------------------------------------------

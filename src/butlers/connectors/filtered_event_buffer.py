@@ -636,6 +636,15 @@ class FilteredEventBuffer:
         return "submission_error"
 
     @staticmethod
+    def reason_poison_quarantine() -> str:
+        """Return filter reason for an envelope quarantined after repeated ingest rejections.
+
+        The row is the quarantine receipt: it keeps the full envelope so an operator can
+        replay it once the rejection's cause is fixed. Status should be ``"error"``.
+        """
+        return "poison_quarantine"
+
+    @staticmethod
     def reason_discretion_ignore(kind: str) -> str:
         """Return filter reason for a discretion-layer IGNORE outcome.
 

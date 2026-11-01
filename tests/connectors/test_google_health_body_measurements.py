@@ -250,3 +250,94 @@ async def test_incomplete_window_submits_nothing_and_keeps_checkpoint(
     connector._submit_envelope.assert_not_awaited()
     connector._save_cursor.assert_not_awaited()
     assert state.last_poll_at is None
+
+
+def _page_cap_hits(resource: str) -> float:
+    from prometheus_client import REGISTRY
+
+    value = REGISTRY.get_sample_value(
+        "connector_google_health_window_page_cap_exceeded_total",
+        {"endpoint_identity": gh._endpoint_identity_for_user(_EMAIL), "resource": resource},
+    )
+    return value or 0.0
+
+
+async def test_page_cap_overrun_is_counted_for_alerting() -> None:
+    pages = [{"dataPoints": [_weight_point()], "nextPageToken": "t"}] * gh._MAX_WINDOW_PAGES
+    connector, acct, state, _api = _poll_harness(pages)
+    before = _page_cap_hits("weight")
+
+    with pytest.raises(gh.GoogleHealthPollIncompleteError):
+        await connector._poll_resource(acct, state)
+
+    assert _page_cap_hits("weight") == before + 1
+
+
+# ---------------------------------------------------------------------------
+# Poison envelopes: bounded holds, quarantine with a receipt
+# ---------------------------------------------------------------------------
+
+
+def _outcomes(*names: str) -> list[Any]:
+    # Resolved at run time: another test reloads ``google_health`` (see above).
+    return [getattr(gh.SubmissionOutcome, name) for name in names]
+
+
+def _harness_with_buffer(polls: int):
+    from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+
+    body = {"dataPoints": [_weight_point(sample=_SAMPLE), _weight_point(sample=_LATER)]}
+    connector, acct, state, _api = _poll_harness([body] * polls)
+    connector._filtered_event_buffer = FilteredEventBuffer("google_health", "ep")
+    return connector, acct, state
+
+
+async def test_repeated_rejection_quarantines_the_envelope_with_a_receipt() -> None:
+    limit = gh._POISON_REJECTION_LIMIT
+    connector, acct, state = _harness_with_buffer(limit)
+    # The first sample is rejected on every attempt; the later one is accepted.
+    connector._submit_envelope = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_outcomes(*["REJECTED"] * limit, "HANDLED")
+    )
+
+    for _ in range(limit - 1):
+        with pytest.raises(gh.GoogleHealthPollIncompleteError):
+            await connector._poll_resource(acct, state)
+    connector._save_cursor.assert_not_awaited()
+    assert len(connector._filtered_event_buffer) == 0
+
+    await connector._poll_resource(acct, state)
+
+    keys = _keys(connector._submit_envelope)
+    assert len(set(keys[:limit])) == 1 and keys[limit].endswith(f":{_LATER}")
+    connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
+    (receipt,) = connector._filtered_event_buffer._rows
+    assert receipt[3] == keys[0]  # external_message_id
+    assert receipt[7] == "poison_quarantine" and receipt[8] == "error"
+    assert receipt[9]["control"]["idempotency_key"] == keys[0]  # replayable envelope
+    assert state.rejected_key is None and state.rejected_count == 0
+
+
+@pytest.mark.parametrize("case", ["transport-failures-never-count", "handled-attempt-resets"])
+async def test_only_consecutive_rejections_reach_quarantine(case) -> None:
+    """Transport failures never count toward quarantine; a handled attempt resets the streak."""
+    below = ["REJECTED"] * (gh._POISON_REJECTION_LIMIT - 1)
+    if case == "transport-failures-never-count":
+        sequence = [*below[:-1], "FAILED", "FAILED", below[-1], "FAILED"]
+    else:
+        sequence = [*below, "HANDLED", *below]
+    connector, acct, state = _harness_with_buffer(len(sequence))
+    # A HANDLED first sample lets the poll move on to the second, which is then accepted.
+    outcomes: list[Any] = []
+    for name in sequence:
+        outcomes += _outcomes(name, "HANDLED") if name == "HANDLED" else _outcomes(name)
+    connector._submit_envelope = AsyncMock(side_effect=outcomes)  # type: ignore[method-assign]
+
+    for name in sequence:
+        if name == "HANDLED":
+            await connector._poll_resource(acct, state)
+        else:
+            with pytest.raises(gh.GoogleHealthPollIncompleteError):
+                await connector._poll_resource(acct, state)
+
+    assert len(connector._filtered_event_buffer) == 0
