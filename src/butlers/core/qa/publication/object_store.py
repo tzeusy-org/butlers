@@ -17,7 +17,12 @@ Callers re-hash every returned object against its id.
 Work is bounded at three levels: one object (``MAX_OBJECT_BYTES``, or a caller's
 ``max_size``, checked against the declared size before anything is inflated or a
 delta chain resolved), one read (``MAX_CHAIN_BYTES`` across its delta chain) and the
-store's whole life (an optional ``work_budget`` charged by every read).
+store's whole life (an optional ``work_budget`` charged by every read with the
+compressed bytes it consumed as well as the bytes it inflated or materialised).  No
+zlib stream may consume more input than a deflate bound of what it declares, so a
+stream of empty stored blocks (which inflate to nothing) cannot scan a whole pack.
+A well-formed declared size over the cap refuses ``object_too_large``, never
+``malformed_object``: an honest big object is a size refusal, not tampering.
 """
 
 from __future__ import annotations
@@ -41,6 +46,15 @@ _PACK_KINDS = {1: "commit", 2: "tree", 3: "blob", 4: "tag"}
 _OFS_DELTA, _REF_DELTA = 6, 7
 _IDX_MAGIC = b"\377tOc"
 _CHUNK = 64 * 1024
+#: Compressed bytes a header-only inflate may consume: generous for one dynamic-Huffman
+#: block header plus a few output bytes (git never writes empty deflate blocks).
+_PREFIX_INPUT = 4096
+
+
+def _deflate_bound(size: int) -> int:
+    """Most compressed bytes an honest zlib stream of ``size`` bytes (plus header) needs."""
+    return size + (size >> 8) + 4096
+
 
 #: Longest delta chain followed; git itself never writes one deeper than 4095.
 MAX_DELTA_DEPTH = 4096
@@ -54,7 +68,7 @@ MAX_CHAIN_BYTES = 256 << 20
 MAX_FILE_BYTES = 4 << 30
 #: Largest loose object file read into memory: zlib's worst-case expansion of the
 #: largest allowed object plus its header, so no in-bound object is refused.
-MAX_LOOSE_FILE_BYTES = MAX_OBJECT_BYTES + (MAX_OBJECT_BYTES >> 8) + 4096
+MAX_LOOSE_FILE_BYTES = _deflate_bound(MAX_OBJECT_BYTES)
 
 
 class ObjectStoreError(RuntimeError):
@@ -108,38 +122,67 @@ def _pread_exact(fd: int, size: int, offset: int) -> bytes:
     return data
 
 
-def _inflate(read: Callable[[int], bytes], expected: int) -> bytes:
-    """Inflate one zlib stream fed by ``read(n)``; it must yield exactly ``expected`` bytes."""
-    decompressor = zlib.decompressobj()
-    out = bytearray()
-    try:
-        while not decompressor.eof:
-            chunk = decompressor.unconsumed_tail or read(_CHUNK)
+class _Stream:
+    """One zlib stream fed by ``read(n)``, refusing to consume past ``max_input`` bytes."""
+
+    def __init__(self, read: Callable[[int], bytes], max_input: int) -> None:
+        self._read = read
+        self._left = max_input
+        self._fed = 0
+        self._zlib = zlib.decompressobj()
+
+    @property
+    def eof(self) -> bool:
+        return self._zlib.eof
+
+    def inflate(self, chunk_size: int, max_length: int) -> bytes:
+        """Inflate up to ``max_length`` bytes, reading at most ``chunk_size`` more input."""
+        chunk = self._zlib.unconsumed_tail
+        if not chunk:
+            if self._left <= 0:
+                raise _malformed()
+            chunk = self._read(min(chunk_size, self._left))
             if not chunk:
                 raise _malformed()
-            out += decompressor.decompress(chunk, expected + 1 - len(out))
-            if len(out) > expected:
-                raise _malformed()
-    except zlib.error as exc:
-        raise _malformed() from exc
+            self._left -= len(chunk)
+            self._fed += len(chunk)
+        try:
+            return self._zlib.decompress(chunk, max_length)
+        except zlib.error as exc:
+            raise _malformed() from exc
+
+    def consumed(self) -> int:
+        """Compressed bytes the stream has used (read-ahead past its end excluded)."""
+        return self._fed - len(self._zlib.unconsumed_tail) - len(self._zlib.unused_data)
+
+
+def _inflate(read: Callable[[int], bytes], expected: int) -> tuple[bytes, int]:
+    """Inflate one zlib stream fed by ``read(n)``; it must yield exactly ``expected`` bytes.
+
+    Returns the data and the compressed bytes consumed, which may not exceed a deflate
+    bound of ``expected``.
+    """
+    stream = _Stream(read, _deflate_bound(expected))
+    out = bytearray()
+    while not stream.eof:
+        out += stream.inflate(_CHUNK, expected + 1 - len(out))
+        if len(out) > expected:
+            raise _malformed()
     if len(out) != expected:
         raise _malformed()
-    return bytes(out)
+    return bytes(out), stream.consumed()
 
 
-def _inflate_prefix(read: Callable[[int], bytes], limit: int) -> bytes:
-    """Inflate at most ``limit`` leading bytes of one zlib stream fed by ``read(n)``."""
-    decompressor = zlib.decompressobj()
+def _inflate_prefix(read: Callable[[int], bytes], limit: int) -> tuple[bytes, int]:
+    """Inflate at most ``limit`` leading bytes of one zlib stream fed by ``read(n)``.
+
+    Returns the prefix and the compressed bytes consumed (at most ``_PREFIX_INPUT``).
+    """
+    stream = _Stream(read, _PREFIX_INPUT)
     out = b""
-    try:
-        while len(out) < limit and not decompressor.eof:
-            chunk = decompressor.unconsumed_tail or read(64)
-            if not chunk:
-                raise _malformed()
-            out += decompressor.decompress(chunk, limit - len(out))
-    except zlib.error as exc:
-        raise _malformed() from exc
-    return out
+    while len(out) < limit and not stream.eof:
+        out += stream.inflate(64, limit - len(out))
+    return out, stream.consumed()
 
 
 def _varint(data: bytes, position: int) -> tuple[int, int]:
@@ -159,8 +202,10 @@ def _varint(data: bytes, position: int) -> tuple[int, int]:
 def _apply_delta(base: bytes, delta: bytes) -> bytes:
     source_size, position = _varint(delta, 0)
     target_size, position = _varint(delta, position)
-    if source_size != len(base) or target_size > MAX_OBJECT_BYTES:
+    if source_size != len(base):
         raise _malformed()
+    if target_size > MAX_OBJECT_BYTES:
+        raise _too_large()
     out = bytearray()
     try:
         _apply_ops(base, delta, position, out, target_size)
@@ -351,33 +396,39 @@ class ObjectStore:
                 raw = handle.read(MAX_LOOSE_FILE_BYTES + 1)
         except OSError as exc:
             raise _unsafe(exc) from exc
-        if len(raw) > MAX_LOOSE_FILE_BYTES:
-            raise _malformed()
         return self._inflate_loose(raw, limit)
 
     def _inflate_loose(self, raw: bytes, limit: int) -> tuple[str, bytes]:
+        """Inflate a loose object, checking its declared size before the file's size.
+
+        The header comes from at most ``_PREFIX_INPUT`` compressed bytes, so an honest
+        object over ``limit`` refuses ``object_too_large`` even when its file is past
+        ``MAX_LOOSE_FILE_BYTES`` (which only an over-cap or padded object can be).
+        """
         decompressor = zlib.decompressobj()
         try:
-            head = decompressor.decompress(raw, 64)
+            head = decompressor.decompress(raw[:_PREFIX_INPUT], 64)
         except zlib.error as exc:
             raise _malformed() from exc
         header, nul, rest = head.partition(b"\0")
         kind, _, size_text = header.partition(b" ")
         if not nul or kind.decode(errors="replace") not in _PACK_KINDS.values():
             raise _malformed()
-        if not size_text.isdigit() or int(size_text) > MAX_OBJECT_BYTES:
+        if not size_text.isdigit():
             raise _malformed()
         size = int(size_text)
         if size > limit:
             raise _too_large()
-        self._charge(size)
+        if len(raw) > MAX_LOOSE_FILE_BYTES:
+            raise _malformed()
+        self._charge(size + len(raw))
         if len(rest) > size:
             raise _malformed()
         remainder = b""
         if not decompressor.eof:
             try:
                 remainder = decompressor.decompress(
-                    decompressor.unconsumed_tail, size + 1 - len(rest)
+                    decompressor.unconsumed_tail + raw[_PREFIX_INPUT:], size + 1 - len(rest)
                 )
             except zlib.error as exc:
                 raise _malformed() from exc
@@ -413,13 +464,13 @@ class ObjectStore:
                 raise _malformed()
             pack.check_offset(offset)
             kind_code, size, position = self._entry_header(pack, offset)
+            if size > MAX_OBJECT_BYTES or (not links and kind_code in _PACK_KINDS and size > limit):
+                raise _too_large()
             budget -= size
             if budget < 0:
                 raise _malformed()
             self._charge(size)
             if kind_code in _PACK_KINDS:
-                if not links and size > limit:
-                    raise _too_large()
                 base = self._inflate_at(pack, position, size)
                 kind = _PACK_KINDS[kind_code]
                 break
@@ -448,18 +499,11 @@ class ObjectStore:
             self._charge(len(base))
         return kind, base
 
-    @staticmethod
-    def _check_delta_target(pack: _Pack, position: int, limit: int) -> None:
+    def _check_delta_target(self, pack: _Pack, position: int, limit: int) -> None:
         """Refuse a delta declaring a target over ``limit``, inflating only its header."""
-        cursor = [position]
-
-        def _read(count: int) -> bytes:
-            chunk = os.pread(pack.pack_fd, count, cursor[0])
-            cursor[0] += len(chunk)
-            return chunk
-
         # Two base-128 sizes of at most 64 bits each fit in 20 bytes.
-        head = _inflate_prefix(_read, 20)
+        head, consumed = _inflate_prefix(_pack_reader(pack, position), 20)
+        self._charge(consumed)
         _source_size, after = _varint(head, 0)
         target_size, _ = _varint(head, after)
         if target_size > limit:
@@ -479,8 +523,6 @@ class ObjectStore:
             size |= (byte & 0x7F) << shift
             shift += 7
             index += 1
-        if size > MAX_OBJECT_BYTES:
-            raise _malformed()
         return kind_code, size, offset + index
 
     @staticmethod
@@ -498,13 +540,19 @@ class ObjectStore:
             distance = ((distance + 1) << 7) | (byte & 0x7F)
         return distance, position + index
 
-    @staticmethod
-    def _inflate_at(pack: _Pack, position: int, size: int) -> bytes:
-        cursor = [position]
+    def _inflate_at(self, pack: _Pack, position: int, size: int) -> bytes:
+        data, consumed = _inflate(_pack_reader(pack, position), size)
+        self._charge(consumed)
+        return data
 
-        def _read(count: int) -> bytes:
-            chunk = os.pread(pack.pack_fd, count, cursor[0])
-            cursor[0] += len(chunk)
-            return chunk
 
-        return _inflate(_read, size)
+def _pack_reader(pack: _Pack, position: int) -> Callable[[int], bytes]:
+    """``read(n)`` over ``pack`` from ``position``, advancing past what it returns."""
+    cursor = [position]
+
+    def _read(count: int) -> bytes:
+        chunk = os.pread(pack.pack_fd, count, cursor[0])
+        cursor[0] += len(chunk)
+        return chunk
+
+    return _read
