@@ -340,6 +340,60 @@ async def test_stats_ingested_and_filtered_stay_distinct_same_hour(
     assert sum(r.messages_filtered for r in result.data) == 3
 
 
+async def test_stats_daily_buckets_are_exact_utc_days_across_session_dst_change(
+    pool: asyncpg.Pool,
+) -> None:
+    """The 7d window yields seven exact UTC-day buckets whatever the session zone.
+
+    Generating the series over ``timestamptz`` steps ``INTERVAL '1 day'`` in the
+    session ``TimeZone``, so a DST change inside the window shifts every earlier
+    bucket off UTC midnight and events no longer join their day. The session
+    zone here is a POSIX rule whose DST starts three days ago (derived from the
+    server clock so the faketime legs agree), so the boundary is always inside
+    the window.
+    """
+    today = await pool.fetchval("SELECT (NOW() AT TIME ZONE 'UTC')::date")
+    # POSIX ``Jn`` counts 1..365 ignoring Feb 29; a one-day drift stays in-window.
+    dst_start = (today - timedelta(days=3)).timetuple().tm_yday
+    dst_start = min(dst_start, 365)
+    dst_end = (dst_start + 180 - 1) % 365 + 1
+    session_zone = f"XST5XDT,J{dst_start}/2,J{dst_end}/2"
+
+    days = [today - timedelta(days=6 - i) for i in range(7)]
+    for day in days:
+        await _seed_ingestion_event(
+            pool,
+            received_at=datetime(day.year, day.month, day.day, 12, tzinfo=UTC),
+            connector_type="gmail",
+            endpoint_identity="dst@example.com",
+        )
+
+    async with pool.acquire() as connection:
+        await connection.execute(f"SET TIME ZONE '{session_zone}'")
+        try:
+            # The rule really changes the offset inside the window.
+            offsets = await connection.fetch(
+                "SELECT DISTINCT EXTRACT(TIMEZONE FROM d::timestamptz) AS off "
+                "FROM generate_series($1::date, $2::date, INTERVAL '1 day') AS d",
+                days[0],
+                days[-1],
+            )
+            assert len(offsets) == 2
+            result = await ingestion_connectors._connector_stats_from_db(
+                connector_type="gmail",
+                endpoint_identity="dst@example.com",
+                period="7d",
+                db=_RealPoolDB(pool),
+                connection=connection,
+            )
+        finally:
+            await connection.execute("RESET TIME ZONE")
+
+    assert result.meta.hourly_events_available is True
+    assert [r.day for r in result.data] == [d.isoformat() for d in days]
+    assert [r.messages_ingested for r in result.data] == [1] * 7
+
+
 async def test_stats_matches_websocket_connector_stored_under_source_provider(
     pool: asyncpg.Pool,
 ) -> None:

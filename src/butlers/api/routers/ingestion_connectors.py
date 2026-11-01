@@ -617,15 +617,18 @@ async def _connector_stats_from_db(
         rows = await executor.fetch(
             f"""
             WITH buckets AS (
-                SELECT generate_series(
-                           last_bucket - ($3::int - 1) * INTERVAL '1 {trunc}',
-                           last_bucket,
-                           INTERVAL '1 {trunc}'
-                       ) AS bucket
+                -- Step over UTC-naive ``timestamp`` and convert afterwards:
+                -- stepping a ``timestamptz`` by a day follows the session
+                -- TimeZone, so a DST change would shift buckets off UTC days.
+                SELECT bucket_utc AT TIME ZONE 'UTC' AS bucket
                 FROM (
-                    SELECT date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC')
-                               AT TIME ZONE 'UTC' AS last_bucket
-                ) bounds
+                    SELECT date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AS last_bucket
+                ) bounds,
+                LATERAL generate_series(
+                    last_bucket - ($3::int - 1) * INTERVAL '1 {trunc}',
+                    last_bucket,
+                    INTERVAL '1 {trunc}'
+                ) AS bucket_utc
             ),
             combined AS (
                 SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
