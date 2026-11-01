@@ -354,6 +354,8 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
   is suppressed rather than failed over, but still records `allowance_exhausted` and exhausts the
   account when the adapter's structured terminal error (`process_info.terminal_error_text`) or
   stderr carries the marker; transcript-bearing text (exception message, `error_detail`) never does.
+  The same trust rule gates the eligible path: a pre-work marker seen only in transcript-bearing
+  text fails over as a transient `rate_limit_before_work` and leaves the account available.
 - **Scheduler**: a due prompt-mode cron task or deadline threshold whose every fit candidate is on an
   exhausted account is not dispatched. A cron task moves `next_run_at` to the earliest reset and
   records `last_result.outcome='skipped_allowance'`; a deadline threshold stays unfired. Job-mode
