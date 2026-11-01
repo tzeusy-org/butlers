@@ -106,6 +106,10 @@ _EPISODE_KEEP_FIELDS: tuple[str, ...] = (
     # of re-deriving attendance from episode_type string-matching.
     "layer",
     "confidence",
+    # Reconciler notes on calendar intents (bu-2tsgqb.7): ``plan_producer``
+    # (butler-written plan vs a synced calendar event) and, for travel blocks,
+    # the ``location`` check verdict the narration may cite.
+    "reconciliation",
 )
 
 _EVENT_KEEP_FIELDS: tuple[str, ...] = (
