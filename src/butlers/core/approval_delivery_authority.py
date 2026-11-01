@@ -193,6 +193,7 @@ class ProtectedApprovalMCP:
                     ws="none",
                     access_log=False,
                     log_level="warning",
+                    log_config=None,
                     timeout_graceful_shutdown=2,
                 )
             )

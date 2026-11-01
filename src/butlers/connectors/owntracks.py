@@ -1665,6 +1665,7 @@ class OwnTracksConnector:
             host="0.0.0.0",
             port=port,
             log_level="warning",
+            log_config=None,
             access_log=False,
         )
         server = uvicorn.Server(uvicorn_config)

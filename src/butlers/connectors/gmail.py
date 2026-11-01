@@ -946,6 +946,7 @@ class GmailConnectorRuntime:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
         )
         self._health_server = uvicorn.Server(config)
 
@@ -998,6 +999,7 @@ class GmailConnectorRuntime:
             host="127.0.0.1",
             port=webhook_port,
             log_level="warning",
+            log_config=None,
         )
         self._webhook_server = uvicorn.Server(config)
 
@@ -4105,6 +4107,7 @@ class GmailConnectorManager:
             host="127.0.0.1",
             port=port,
             log_level="warning",
+            log_config=None,
         )
         self._health_server = uvicorn.Server(config)
 

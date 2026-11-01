@@ -128,6 +128,7 @@ class SessionRefusalListener:
                     lifespan="off",
                     access_log=False,
                     log_level="warning",
+                    log_config=None,
                     timeout_graceful_shutdown=5,
                 )
             )

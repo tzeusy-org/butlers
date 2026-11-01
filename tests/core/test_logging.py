@@ -226,6 +226,9 @@ def test_httpx_request_lines_never_leak_credentials(
     logging.getLogger("httpx").setLevel(logging.INFO)
     _request(f"https://api.telegram.org/file/bot{_SYNTHETIC_BOT_TOKEN}/voice/file_1.oga")
     _request("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=STEAMKEY1&x=1")
+    # structlog hands handlers its event dict as record.msg; redaction must keep
+    # it a dict or ProcessorFormatter raises and the record is dropped.
+    structlog.get_logger("butlers.x").info("structlog line", url="https://x.test/v1?key=SKEY2")
     for handler in logging.getLogger().handlers + logging.getLogger("httpx").handlers:
         handler.flush()
 
@@ -235,9 +238,11 @@ def test_httpx_request_lines_never_leak_credentials(
         "transport file": (tmp_path / "uvicorn" / "telegram-bot.log").read_text(),
     }
     assert "HTTP Request" in sinks["console"] and "HTTP Request" in sinks["transport file"]
+    assert "structlog line" in sinks["console"] and "structlog line" in sinks["butler file"]
     for name, text in sinks.items():
         assert _SYNTHETIC_BOT_TOKEN.split(":")[1] not in text, name
         assert "STEAMKEY1" not in text, name
+        assert "SKEY2" not in text, name
 
 
 def test_per_butler_file_handlers_filter_by_context(tmp_path: Path):
