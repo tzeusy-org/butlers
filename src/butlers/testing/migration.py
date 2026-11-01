@@ -27,15 +27,32 @@ database::
 
 Adding a migration column or table requires zero changes in tests — the next
 :func:`create_migrated_test_db` call picks it up automatically.
+
+Template clones
+---------------
+Migrating from scratch dominated many integration files' setup. Each process
+(xdist worker) therefore migrates once per distinct ``(server, chains, schemas,
+revisions)`` request into a template database, and every call returns a fresh
+``CREATE DATABASE ... TEMPLATE`` clone of it. A clone is still a separate
+database with the real migrated schema; it reuses the template's NOCREATEDB
+login, which owns every object in it. ``CREATE DATABASE`` does not copy
+database-level privileges or per-database role settings (``core_001`` sets each
+butler role's ``search_path`` with ``ALTER ROLE ... IN DATABASE``), so both are
+replayed onto each clone and checked. Set ``BUTLERS_TEST_DB_TEMPLATES=0`` to migrate every
+database from scratch instead.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
+import json
+import os
 import sys
 import threading
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from urllib.parse import quote, urlparse
@@ -47,6 +64,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
 _MODULE_REGISTRATION_LOCK = threading.RLock()
 _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
+_TEMPLATES_ENV = "BUTLERS_TEST_DB_TEMPLATES"
+
+
+@dataclass(frozen=True)
+class _Template:
+    """A migrated template database and the login that owns its objects."""
+
+    name: str
+    db_url: str
+
+
+_TEMPLATES: dict[str, _Template] = {}
+_TEMPLATE_LOCKS: dict[str, threading.Lock] = {}
+_TEMPLATE_LOCKS_GUARD = threading.Lock()
 
 
 def migration_db_name() -> str:
@@ -400,15 +431,24 @@ def create_migrated_test_db(
                 schemas={"relationship": "relationship"},
             )
     """
+    schemas = dict(schemas or {})
+    revisions = dict(revisions or {})
+    if os.environ.get(_TEMPLATES_ENV, "1") == "0":
+        db_url = create_migration_db(postgres_container, db_name)
+        _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+        return db_url
+    template = _migrated_template(
+        postgres_container, chains=chains, schemas=schemas, revisions=revisions
+    )
+    return _clone_template(postgres_container, template, db_name)
+
+
+def _migrate(
+    db_url: str, *, chains: list[str], schemas: dict[str, str], revisions: dict[str, str]
+) -> None:
+    """Run each chain's real migrations, in order, against *db_url*."""
     # Local import avoids a circular import at module load time.
     from butlers.migrations import run_migrations
-
-    if schemas is None:
-        schemas = {}
-    if revisions is None:
-        revisions = {}
-
-    db_url = create_migration_db(postgres_container, db_name)
 
     for chain in chains:
         schema = schemas.get(chain)
@@ -418,7 +458,151 @@ def create_migrated_test_db(
         else:
             _upgrade_chain_to_revision(db_url, chain=chain, schema=schema, revision=revision)
 
-    return db_url
+
+def template_key(
+    postgres_container: object,
+    *,
+    chains: list[str],
+    schemas: dict[str, str],
+    revisions: dict[str, str],
+) -> str:
+    """Identify one migrated state on one server; chain order is significant."""
+    server = postgres_container.get_connection_url()  # type: ignore[attr-defined]
+    request = {
+        "server": server,
+        "chains": list(chains),
+        "schemas": sorted(schemas.items()),
+        "revisions": sorted(revisions.items()),
+    }
+    return hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def _migrated_template(
+    postgres_container: object,
+    *,
+    chains: list[str],
+    schemas: dict[str, str],
+    revisions: dict[str, str],
+) -> _Template:
+    """Build (once per process and key) the migrated template to clone from."""
+    key = template_key(postgres_container, chains=chains, schemas=schemas, revisions=revisions)
+    with _TEMPLATE_LOCKS_GUARD:
+        lock = _TEMPLATE_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        template = _TEMPLATES.get(key)
+        if template is not None:
+            return template
+        name = f"tmpl_{key}_{uuid.uuid4().hex[:6]}"
+        db_url = create_migration_db(postgres_container, name)
+        _migrate(db_url, chains=chains, schemas=schemas, revisions=revisions)
+        admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
+        engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as conn:
+                # No session may remain in a template while it is copied, and no
+                # test may connect to it by accident afterwards.
+                conn.execute(
+                    text(f'ALTER DATABASE "{name}" WITH IS_TEMPLATE true ALLOW_CONNECTIONS false')
+                )
+                conn.execute(
+                    text(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                        "WHERE datname = :name AND pid <> pg_backend_pid()"
+                    ),
+                    {"name": name},
+                )
+        finally:
+            engine.dispose()
+        template = _Template(name=name, db_url=db_url)
+        _TEMPLATES[key] = template
+        return template
+
+
+def _database_acl(conn: Connection, db_name: str) -> set[tuple[str, str, bool]]:
+    """Each explicit ``(grantee, privilege, grantable)`` on a database; PUBLIC is ``""``."""
+    rows = conn.execute(
+        text(
+            "SELECT coalesce(r.rolname, ''), a.privilege_type, a.is_grantable "
+            "FROM pg_database d CROSS JOIN LATERAL aclexplode(d.datacl) a "
+            "LEFT JOIN pg_roles r ON r.oid = a.grantee WHERE d.datname = :name"
+        ),
+        {"name": db_name},
+    )
+    return {(grantee, privilege, grantable) for grantee, privilege, grantable in rows}
+
+
+def _database_role_settings(conn: Connection, db_name: str) -> set[tuple[str, str]]:
+    """Each ``(role, name=value)`` stored for a database; every-role settings use ``""``."""
+    rows = conn.execute(
+        text(
+            "SELECT coalesce(r.rolname, ''), unnest(s.setconfig) "
+            "FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase "
+            "LEFT JOIN pg_roles r ON r.oid = s.setrole WHERE d.datname = :name"
+        ),
+        {"name": db_name},
+    )
+    return {(role, setting) for role, setting in rows}
+
+
+def _replay_role_settings(conn: Connection, *, template: str, clone: str) -> None:
+    """Copy ``ALTER ROLE ... IN DATABASE`` / ``ALTER DATABASE ... SET`` onto *clone*."""
+    safe_clone = clone.replace('"', '""')
+    for role, setting in sorted(_database_role_settings(conn, template)):
+        name, _, value = setting.partition("=")
+        if not name.replace("_", "").replace(".", "").isalnum():
+            raise RuntimeError(f"unexpected database setting {setting!r} on {template}")
+        # search_path is stored as the list it was set to; other values are literals.
+        rendered = value if name == "search_path" else "'" + value.replace("'", "''") + "'"
+        target = (
+            f'DATABASE "{safe_clone}"'
+            if role == ""
+            else f'ROLE "{role.replace(chr(34), chr(34) * 2)}" IN DATABASE "{safe_clone}"'
+        )
+        conn.execute(text(f"ALTER {target} SET {name} = {rendered}"))
+    actual = _database_role_settings(conn, clone)
+    expected = _database_role_settings(conn, template)
+    if actual != expected:
+        raise RuntimeError(
+            f"clone {clone} role settings {sorted(actual)} differ from "
+            f"template {template} {sorted(expected)}"
+        )
+
+
+def _clone_template(postgres_container: object, template: _Template, db_name: str) -> str:
+    """Create *db_name* as a copy of *template* with the same database privileges."""
+    owner = urlparse(template.db_url).username or ""
+    safe_db = db_name.replace('"', '""')
+    safe_template = template.name.replace('"', '""')
+    admin_url = postgres_container.get_connection_url()  # type: ignore[attr-defined]
+    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    f'CREATE DATABASE "{safe_db}" TEMPLATE "{safe_template}" '
+                    f'OWNER "{owner.replace(chr(34), chr(34) * 2)}"'
+                )
+            )
+            expected = _database_acl(conn, template.name)
+            if expected:
+                conn.execute(text(f'REVOKE ALL ON DATABASE "{safe_db}" FROM PUBLIC'))
+                for grantee, privilege, grantable in sorted(expected):
+                    target = "PUBLIC" if grantee == "" else '"' + grantee.replace('"', '""') + '"'
+                    option = " WITH GRANT OPTION" if grantable else ""
+                    conn.execute(
+                        text(f'GRANT {privilege} ON DATABASE "{safe_db}" TO {target}{option}')
+                    )
+            _replay_role_settings(conn, template=template.name, clone=db_name)
+            actual = _database_acl(conn, db_name)
+            if actual != expected:
+                raise RuntimeError(
+                    f"clone {db_name} database privileges {sorted(actual)} differ from "
+                    f"template {template.name} {sorted(expected)}"
+                )
+    finally:
+        engine.dispose()
+    parsed = urlparse(template.db_url)
+    return parsed._replace(path=f"/{quote(db_name, safe='')}").geturl()
 
 
 def _upgrade_chain_to_revision(
