@@ -231,6 +231,30 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the stream proves a tool ran, for ``is_pre_tool_call``.
+
+    Evidence is any parsed tool call or a ``result`` event whose
+    ``stats.tool_calls`` is positive. That counter is the CLI's telemetry total
+    (``metrics.tools.totalCalls``), so it also counts tool calls that emit no
+    top-level ``tool_use`` event, such as a subagent's.
+    """
+    if tool_calls:
+        return True
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "result":
+            continue
+        stats = obj.get("stats")
+        count = stats.get("tool_calls") if isinstance(stats, dict) else None
+        if type(count) is int and count > 0:
+            return True
+    return False
+
+
 class GeminiAdapter(RuntimeAdapter):
     """Runtime adapter for the Google Gemini CLI.
 
@@ -424,12 +448,16 @@ class GeminiAdapter(RuntimeAdapter):
                 # Stream-json emits ``result``/``status: error`` and then exits with
                 # the error's code (turn limit is 53); keep its usage and tool evidence.
                 _, tool_calls = _parse_gemini_output(stdout, stderr)
-                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+                self._last_process_info["is_pre_tool_call"] = not _gemini_tools_ran(
+                    stdout, tool_calls
+                )
                 raise TerminalResultError(served, usage, tool_calls, message)
 
             result_text, tool_calls = _parse_gemini_output(stdout, stderr)
             if terminal_error:
-                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+                self._last_process_info["is_pre_tool_call"] = not _gemini_tools_ran(
+                    stdout, tool_calls
+                )
                 raise TerminalResultError(served, usage, tool_calls)
             return result_text, tool_calls, usage
 

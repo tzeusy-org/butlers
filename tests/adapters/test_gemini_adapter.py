@@ -338,6 +338,13 @@ async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() ->
     assert error.usage["input_tokens"] == 5
     assert info["is_pre_tool_call"] is True
 
+    # ``stats.tool_calls`` is the CLI's telemetry total, which also counts tool calls
+    # with no top-level ``tool_use`` event (a subagent's): it alone proves work ran.
+    counted = {**result, "stats": {**stats, "tool_calls": 2}}
+    error, info = await run([counted])
+    assert isinstance(error, TerminalResultError) and error.tool_calls == []
+    assert info["is_pre_tool_call"] is False
+
 
 def test_build_config_file_carries_the_invocation_header(tmp_path: Path):
     """The Spawner's per-invocation binding header survives into gemini_mcp.json (bu-m2zcah)."""
