@@ -150,6 +150,10 @@ The system SHALL evaluate a fixed set of deterministic anomaly rules against
 each day's rollup, distinguishing a known feeder outage from a genuine
 behavioral anomaly before emitting any flag.
 
+ID: REQ-chronicler-telemetry-distillation-004
+Source: chronicler-telemetry-distillation design.md decision 4 (classify before flagging)
+Scope: v1-mandatory
+
 #### Scenario: Feeder outage flags as an outage, not a behavior
 
 - **WHEN** a source's `source_adapter_state.active = false` or its checkpoint
