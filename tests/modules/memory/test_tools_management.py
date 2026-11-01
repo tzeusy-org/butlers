@@ -232,6 +232,93 @@ class TestMemoryContext:
         assert "memory_ref=" not in result
         assert len(result) <= token_budget * 4
 
+    async def test_non_owner_facts_are_qualified_whatever_their_subject(self) -> None:
+        """REQ-module-memory-013: every non-owner fact renders attributed, about anyone."""
+        mallory, ghost = uuid.uuid4(), uuid.uuid4()
+
+        def authored(content: str, subject: str, authority: str | None, sender=None) -> dict:
+            return {
+                **_fact(content),
+                "subject": subject,
+                "content_authority": authority,
+                "authority_entity_id": sender,
+                "source_butler": "finance",  # curator only: never the reporter
+            }
+
+        facts = [
+            authored("owner says aisle", "Owner", "owner"),
+            authored("bob owes money", "Bob", "third_party", mallory),
+            authored("owner wires money", "Owner", "third_party", ghost),
+            authored("bob moved", "Bob", "mixed", mallory),
+            authored("bob likes tea", "Bob", None),
+            authored("nightly digest ran", "Owner", "system"),
+        ]
+        pool = AsyncMock()
+
+        async def _fetch(sql: str, *args: Any) -> list[dict]:
+            if "canonical_name" in sql:
+                # ``ghost`` has no resolvable entity row; Bob is not a sender.
+                return [{"id": mallory, "canonical_name": "Mallory"}]
+            return []
+
+        pool.fetch = _fetch
+        pool.fetchval = AsyncMock(return_value=None)
+        with patch(
+            "butlers.modules.memory.tools.context._search.recall",
+            new_callable=AsyncMock,
+            return_value=facts,
+        ):
+            result = await memory_context(pool, MagicMock(), "prompt", "general")
+
+        lines = {
+            line.split("]: ", 1)[1].split(" (confidence")[0]
+            for line in result.splitlines()
+            if "]: " in line
+        }
+        assert lines == {
+            "owner says aisle",
+            "bob owes money (reported by Mallory)",
+            "owner wires money (reported by a third party)",
+            "bob moved (partly reported by Mallory)",
+            "bob likes tea (source unverified)",
+            "nightly digest ran",
+        }
+        assert "finance" not in result
+
+    async def test_failed_sender_lookup_keeps_the_qualification(self) -> None:
+        fact = {
+            **_fact("bob owes money"),
+            "content_authority": "third_party",
+            "authority_entity_id": uuid.uuid4(),
+        }
+        pool = AsyncMock()
+
+        async def _fetch(sql: str, *args: Any) -> list[dict]:
+            if "canonical_name" in sql:
+                raise RuntimeError("entities unavailable")
+            return []
+
+        pool.fetch = _fetch
+        pool.fetchval = AsyncMock(return_value=None)
+        with patch(
+            "butlers.modules.memory.tools.context._search.recall",
+            new_callable=AsyncMock,
+            return_value=[fact],
+        ):
+            result = await memory_context(pool, MagicMock(), "prompt", "general")
+
+        assert "bob owes money (reported by a third party)" in result
+
+    async def test_budget_drops_whole_attributed_lines_never_their_label(self) -> None:
+        facts = [{**_fact(f"report {i}"), "content_authority": "third_party"} for i in range(40)]
+        result = await _call_context(facts, token_budget=200)
+
+        fact_lines = [line for line in result.splitlines() if line.startswith("- [User]")]
+        assert 0 < len(fact_lines) < len(facts)
+        assert all(
+            "(reported by a third party)" in line and line.endswith("]") for line in fact_lines
+        )
+
     async def test_proven_rules_before_candidate(self) -> None:
         candidate = _rule("cand", maturity="candidate")
         proven = _rule("proven", maturity="proven")
