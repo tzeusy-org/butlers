@@ -110,6 +110,28 @@ async def test_invoke_flags_and_output():
     assert usage2 == {"input_tokens": 150, "output_tokens": 300}
 
 
+async def test_invoke_declares_sandbox_only_when_running_as_root():
+    """Claude Code refuses bypassPermissions as root unless the child declares IS_SANDBOX."""
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    spawned_env: dict[int, dict[str, str]] = {}
+    for euid in (0, 1000):
+        with (
+            patch("butlers.core.runtimes.claude_code.os.geteuid", return_value=euid),
+            patch(_EXEC, return_value=mock_proc) as mock_sub,
+        ):
+            await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+                prompt="hi", system_prompt="", mcp_servers={}, env={}
+            )
+        spawned_env[euid] = mock_sub.call_args.kwargs["env"]
+
+    assert spawned_env[0]["IS_SANDBOX"] == "1"
+    assert "IS_SANDBOX" not in spawned_env[1000]
+
+
 def test_supports_resume_flag():
     """ClaudeCodeAdapter opts into the resume extension point (bu-ep4ks.8)."""
     assert ClaudeCodeAdapter.supports_resume is True

@@ -76,6 +76,10 @@ The `claude` provider is **store-only**: it has no `token_path`, so the key live
   so the first key has somewhere to be pasted.
 - `POST /api/cli-auth/claude/test` runs the health probe. That probe checks key presence and
   format only; it does not call the Anthropic API.
+- The adapter always runs Claude with `--permission-mode bypassPermissions`, which Claude Code
+  refuses under root. The butlers image runs as root in its own container, so when the daemon's
+  effective uid is 0 the adapter sets `IS_SANDBOX=1` for the child; a non-root host keeps the
+  CLI's guard.
 
 The `openai` provider is store-only in the same way (`cli-auth/openai`), and the same save,
 placeholder and test behavior applies. It is an alternative credential for the Codex runtime, and
