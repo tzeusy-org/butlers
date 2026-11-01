@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -139,7 +139,10 @@ async def _record(
     if outcome is not None:
         assert await record_outcome(pool, operation.id, outcome)
     if reconciliation is not None:
-        assert await record_reconciliation(pool, operation.id, reconciliation)
+        # Settled at once: this table only cares about the reconciled outcome.
+        assert await record_reconciliation(
+            pool, operation.id, reconciliation, absence_settle=timedelta(0)
+        )
 
 
 @pytest.mark.parametrize(

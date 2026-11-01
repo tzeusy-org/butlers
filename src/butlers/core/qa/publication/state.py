@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 import asyncpg
@@ -31,6 +31,13 @@ Outcome = Literal["succeeded", "failed", "ambiguous"]
 Observation = Literal["resource_found", "resource_absent"]
 
 _OUTCOME_RESULT = {"succeeded": "success", "failed": "failed", "ambiguous": "ambiguous"}
+
+#: How long after its egress began (or its outcome was recorded) an operation must
+#: be before an absent resource is believed.  It must exceed the longest a provider
+#: call can stay in flight (client timeout plus GitHub's own processing of an
+#: accepted request).  :func:`record_reconciliation` enforces it against database
+#: time inside its guarded write.
+ABSENCE_SETTLE = timedelta(minutes=15)
 
 
 class PublicationRefused(RuntimeError):
@@ -54,6 +61,7 @@ class PublicationOperation:
     result: str | None
     reconciliation: str | None
     started_at: datetime
+    egress_started_at: datetime | None
     ended_at: datetime | None
     reconciled_at: datetime | None
 
@@ -136,7 +144,9 @@ async def mark_egress_started(pool: Any, operation_id: uuid.UUID) -> bool:
     The operation's attempt row is locked (``SELECT ... FOR UPDATE``) and must
     still be active in the same transaction as the stage transition, so a
     timed-out or terminal attempt can never enter ``egress_started``; it is
-    refused with ``attempt_not_active``.
+    refused with ``attempt_not_active``.  The transition stamps
+    ``egress_started_at`` with database time (core_300): ``started_at`` is the
+    bind time, and a resumed bind can egress long after it.
     """
     try:
         async with pool.acquire() as connection, connection.transaction():
@@ -157,7 +167,7 @@ async def mark_egress_started(pool: Any, operation_id: uuid.UUID) -> bool:
             claimed = await connection.fetchval(
                 """
                 UPDATE public.qa_publication_operations
-                SET stage = 'egress_started', stage_order = 2
+                SET stage = 'egress_started', stage_order = 2, egress_started_at = now()
                 WHERE id = $1 AND stage = 'bound'
                 RETURNING id
                 """,
@@ -219,6 +229,8 @@ async def record_reconciliation(
     observation: Observation,
     *,
     observed_object_id: str | None = None,
+    expected_stage: str | None = None,
+    absence_settle: timedelta = ABSENCE_SETTLE,
 ) -> bool:
     """Release a held lineage with an exact, read-only reconciliation.
 
@@ -228,6 +240,13 @@ async def record_reconciliation(
     NULL), so its ``resource_found`` adopts the observed PR number instead
     (core_298): the reconciler proves it is the only PR for the bound head and
     base.  Any other observation leaves the hold in place.
+
+    Absence is believed only once it has settled, judged by database time inside
+    this guarded write: the row's outcome (``ended_at``) or, while still in
+    flight, its egress (``egress_started_at``) must be at least
+    ``absence_settle`` old.  A row with neither timestamp never settles.  When
+    ``expected_stage`` is given the row must still be at the stage the caller
+    observed, so an outcome recorded between the read and this write wins.
     """
     try:
         recorded = await pool.fetchval(
@@ -237,6 +256,7 @@ async def record_reconciliation(
                 reconciled_object_id = $3, new_object_id = COALESCE(new_object_id, $3),
                 reconciled_at = now()
             WHERE id = $1 AND stage IN ('egress_started', 'ambiguous')
+              AND ($4::text IS NULL OR stage = $4::text)
               AND (
                   ($2 = 'resource_found' AND $3::text IS NOT NULL
                       AND $3::text = expected_object_id)
@@ -244,13 +264,16 @@ async def record_reconciliation(
                       AND expected_object_id IS NULL
                       AND $3::text ~ '^[1-9][0-9]{0,9}$'
                       AND new_object_id IS NULL)
-                  OR ($2 = 'resource_absent' AND $3::text IS NULL)
+                  OR ($2 = 'resource_absent' AND $3::text IS NULL
+                      AND COALESCE(ended_at, egress_started_at) <= now() - $5::interval)
               )
             RETURNING id
             """,
             operation_id,
             observation,
             observed_object_id,
+            expected_stage,
+            absence_settle,
         )
     except _DATASTORE_ERRORS as exc:
         raise PublicationRefused("datastore_unavailable") from exc

@@ -20,6 +20,9 @@ _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 
+#: The base every QA proposal targets; the reconciliation sweep rebuilds bindings with it.
+QA_BASE_REF = "main"
+
 
 class OperationKind(StrEnum):
     """The closed set of publication operations (REQ-qa-publication-authority-003)."""
