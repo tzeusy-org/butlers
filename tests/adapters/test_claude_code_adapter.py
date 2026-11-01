@@ -236,9 +236,27 @@ async def test_recorded_native_stream_reports_tool_use_and_result_text():
             "id": "toolu_01RMdcsGjy5bCCSfrXAj1eJv",
             "name": "Bash",
             "input": {"command": "true", "description": "Run the no-op shell command true once"},
+            "builtin": True,
         }
     ]
     assert usage is not None and usage["output_tokens"] == 252
+
+
+def test_recorded_subagent_stream_reports_tool_use_tagged_by_thread():
+    """Subagent tool_use is the session's work: reported, tagged with its parent call.
+
+    Every tool here is a CLI built-in (no ``mcp__`` prefix), so each record is
+    marked ``builtin`` and none counts as confirmed MCP work for the spawner.
+    """
+    stdout = (_STREAM_RECORDINGS / "subagent_tool_use.jsonl").read_text()
+    result_text, tool_calls, _usage = _parse_claude_output(stdout, "", 0)
+
+    assert result_text == "done"
+    agent_call_id = "toolu_01NZSoV9JHUed6pK2BdoFQpX"
+    assert [
+        (call["name"], call.get("parent_tool_use_id"), call["builtin"]) for call in tool_calls
+    ] == [("Agent", None, True), ("Bash", agent_call_id, True)]
+    assert tool_calls[0]["id"] == agent_call_id
 
 
 def test_native_assistant_text_is_the_answer_only_without_a_result_event():

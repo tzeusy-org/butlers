@@ -58,6 +58,8 @@ ID: REQ-core-spawner-016
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
 - **AND** read the CLI's native shape, where content blocks nest under the event's `message`
 - **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
+- **AND** mark each call whose name is not `mcp__<server>__<tool>` as `builtin: true` (a CLI built-in such as `Bash`, `Read`, `ToolSearch` or `Agent`)
+- **AND** report `tool_use` made inside a subagent (an event with a non-null `parent_tool_use_id`) as session work, carrying that `parent_tool_use_id` on the record
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess
