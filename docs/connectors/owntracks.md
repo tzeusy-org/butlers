@@ -138,5 +138,6 @@ access accordingly and use SSID/region names that reveal no more than intended.
   watermark; database errors and cancellation cannot acknowledge partial state.
   Revisions keep existing point identities, privacy, retention and tombstones.
   Missing evidence is not recreated. Pending retained candidates are reread by
-  exact UUID only; unavailable seed evidence leaves the prior anchor trusted
+  exact UUID only. The accepted anchor UUID distinguishes tied-time replay from
+  a continuation at that mature anchor; unavailable seed evidence leaves it trusted
   with an explicit warning rather than fabricating a historical correction.

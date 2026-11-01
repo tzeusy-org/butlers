@@ -29,7 +29,8 @@ fix is provisional until a plausible companion confirms it. Three mutually
 consistent candidates reject an isolated provisional seed, but never retract
 an established earlier trail. Retained candidate rows are read again by exact
 source identity, so their verdicts and derived contributions can be revised.
-Replay from before an anchor resets its bootstrap state deterministically.
+Replay from before an anchor's timestamp/UUID position resets its bootstrap
+state deterministically; starting at a mature anchor retains its trust.
 
 Pure functions only: no I/O, no LLM, no external geocoding.
 """
@@ -41,6 +42,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -174,11 +176,24 @@ def load_trail_state(carryover: dict) -> dict[str, dict[str, Any]]:
             continue
         seed = entry.get("seed_id")
         pending = entry.get("pending_ids", [])
+        anchor_id = entry.get("anchor_id")
+        if anchor_id is not None and not isinstance(anchor_id, str):
+            continue
         if (seed is not None and not isinstance(seed, str)) or not isinstance(pending, list):
             continue
         if len(pending) > REANCHOR_RUN - 1 or not all(isinstance(i, str) for i in pending):
             continue
+        try:
+            if any(
+                value is not None and str(UUID(value)) != value
+                for value in (seed, anchor_id, *pending)
+            ):
+                continue
+        except ValueError:
+            continue
         result[endpoint] = {"seed_id": seed, "pending_ids": list(pending)}
+        if "anchor_id" in entry:
+            result[endpoint]["anchor_id"] = anchor_id
     return result
 
 
@@ -205,20 +220,31 @@ def classify_trail(
     pending: dict[str, list[int]] = {}
     seeds: dict[str, int] = {}
     outliers: dict[int, TrailOutlier] = {}
-    first_ts: dict[str, datetime] = {}
+    first_rows: dict[str, dict[str, Any]] = {}
     for row in rows:
-        first_ts.setdefault(row["endpoint_identity"], row["ts"])
-    for endpoint, ts in first_ts.items():
-        if endpoint in anchors and ts < anchors[endpoint].ts:
+        first_rows.setdefault(row["endpoint_identity"], row)
+    for endpoint, row in first_rows.items():
+        anchor = anchors.get(endpoint)
+        if anchor is None:
+            continue
+        anchor_id = state.get(endpoint, {}).get("anchor_id")
+        before_anchor = row["ts"] < anchor.ts or (
+            row["ts"] == anchor.ts
+            and isinstance(anchor_id, str)
+            and "id" in row
+            and str(row["id"]) < anchor_id
+        )
+        if before_anchor:
             del anchors[endpoint]
             state.pop(endpoint, None)
     for index, row in enumerate(rows):
         endpoint = row["endpoint_identity"]
         identity = str(row["id"]) if "id" in row else None
-        entry = state.setdefault(endpoint, {"seed_id": None, "pending_ids": []})
+        entry = state.setdefault(endpoint, {"seed_id": None, "pending_ids": [], "anchor_id": None})
         anchor = anchors.get(endpoint)
         if anchor is None:
             anchors[endpoint] = TrailAnchor(row["ts"], row["lat"], row["lon"])
+            entry["anchor_id"] = identity
             entry["seed_id"] = identity
             seeds[endpoint] = index
             continue
@@ -228,6 +254,7 @@ def classify_trail(
         distance, speed = _jump(anchor.ts, anchor.lat, anchor.lon, row)
         if _plausible(distance, speed, max_speed_kmh):
             anchors[endpoint] = TrailAnchor(row["ts"], row["lat"], row["lon"])
+            entry["anchor_id"] = identity
             entry["seed_id"] = None
             seeds.pop(endpoint, None)
             pending.pop(endpoint, None)
@@ -253,6 +280,7 @@ def classify_trail(
                 if "id" in rows[accepted]:
                     changes[str(rows[accepted]["id"])] = None
             anchors[endpoint] = TrailAnchor(row["ts"], row["lat"], row["lon"])
+            entry["anchor_id"] = identity
             entry["seed_id"] = None
             seeds.pop(endpoint, None)
             pending.pop(endpoint, None)

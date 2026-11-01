@@ -135,6 +135,21 @@ def test_anchor_carryover_round_trip_and_malformed_entries_dropped() -> None:
         json.dumps({TRAIL_STATE_CARRYOVER_KEY: {"version": 1, "endpoints": state}})
     )
     assert load_trail_state(encoded) == state
+    identified = {**state[_EP], "anchor_id": str(UUID(int=3))}
+    assert load_trail_state(
+        {TRAIL_STATE_CARRYOVER_KEY: {"version": 1, "endpoints": {_EP: identified}}}
+    ) == {_EP: identified}
+    for malformed in (
+        {**identified, "anchor_id": "not-a-source-uuid"},
+        {**identified, "seed_id": "not-a-source-uuid"},
+        {**identified, "pending_ids": ["not-a-source-uuid"]},
+    ):
+        assert (
+            load_trail_state(
+                {TRAIL_STATE_CARRYOVER_KEY: {"version": 1, "endpoints": {_EP: malformed}}}
+            )
+            == {}
+        )
     for version in (True, 2, "1"):
         assert (
             load_trail_state({TRAIL_STATE_CARRYOVER_KEY: {"version": version, "endpoints": state}})
@@ -179,3 +194,28 @@ def test_replaying_a_batch_reproduces_its_outlier_verdicts() -> None:
     for _ in range(2):
         replayed, anchors = classify_trail(cold, prior_anchors=anchors, state=state)
         assert set(replayed) == {0}
+
+    # An equal-ts replay starts BEFORE the saved anchor by UUID, even though
+    # its timestamp alone is not older. Established earlier fixes stay valid.
+    tied = [
+        {**_fix(0, where), "id": UUID(int=i + 1)}
+        for i, where in enumerate([BEIJING, BEIJING, POLAND, POLAND, POLAND])
+    ]
+    state = {}
+    first, anchors = classify_trail(tied, state=state)
+    assert first == {}
+    for _ in range(2):
+        state = load_trail_state(
+            json.loads(json.dumps({TRAIL_STATE_CARRYOVER_KEY: {"version": 1, "endpoints": state}}))
+        )
+        replayed, anchors = classify_trail(tied, prior_anchors=anchors, state=state)
+        assert replayed == first
+
+    # Starting exactly AT a mature identified anchor is incremental, not a
+    # replay from before it; a later consensus must not retract that history.
+    continuation = [
+        tied[-1],
+        *[{**_fix(0, BEIJING), "id": UUID(int=i)} for i in (6, 7, 8)],
+    ]
+    continued, _ = classify_trail(continuation, prior_anchors=anchors, state=state)
+    assert continued == {}
