@@ -199,9 +199,13 @@ _DEFAULT_MAX_INFLIGHT = 8
 # silently masked by sibling resources' successful polls.
 _RESOURCE_DEGRADED_FAILURE_THRESHOLD = 3
 
-# Upper bound on ``nextPageToken`` continuations followed for one measurement poll.
+# Upper bound on ``nextPageToken`` continuations followed for one paged poll window.
 # Exceeding it leaves the window incomplete: the poll fails and keeps its checkpoint.
-_MAX_MEASUREMENT_PAGES = 50
+_MAX_WINDOW_PAGES = 50
+
+# GET bundle categories whose ``:reconcile`` window may span several provider pages.
+# Session bundles request 25 points per page, so a backfill window can overflow one page.
+_PAGED_CATEGORIES = frozenset({"sleep", "workout", "measurement"})
 
 
 class GoogleHealthPollIncompleteError(GoogleHealthError):
@@ -2069,19 +2073,19 @@ class GoogleHealthConnector:
     ) -> list[dict[str, Any]]:
         """Fetch a GET resource's records for one poll window.
 
-        Measurement bundles follow ``nextPageToken`` (sent back as ``pageToken`` with the
-        same filter) until the window is exhausted; a window that needs more than
-        ``_MAX_MEASUREMENT_PAGES`` pages raises instead of counting as consumed.
+        Session and measurement bundles follow ``nextPageToken`` (sent back as
+        ``pageToken`` with the same filter) until the window is exhausted; a window that
+        needs more than ``_MAX_WINDOW_PAGES`` pages raises instead of counting as consumed.
         """
         data = await client.get_json(bundle.endpoint_path, params=params)
         records = _extract_records(data)
-        if bundle.category != "measurement":
+        if bundle.category not in _PAGED_CATEGORIES:
             return records
         pages = 1
         while isinstance(data, dict) and (token := data.get("nextPageToken")):
-            if pages >= _MAX_MEASUREMENT_PAGES:
+            if pages >= _MAX_WINDOW_PAGES:
                 raise GoogleHealthPollIncompleteError(
-                    f"{bundle.resource}: window exceeds {_MAX_MEASUREMENT_PAGES} pages"
+                    f"{bundle.resource}: window exceeds {_MAX_WINDOW_PAGES} pages"
                 )
             data = await client.get_json(
                 bundle.endpoint_path, params={**params, "pageToken": token}
