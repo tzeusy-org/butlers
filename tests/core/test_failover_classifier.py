@@ -883,34 +883,37 @@ class TestRateLimitErrorsEligible:
             "reached usage limit for this period",
         ],
     )
-    def test_codex_usage_limit_is_eligible(self, msg: str) -> None:
+    @pytest.mark.parametrize("trusted_key", ["terminal_error_text", "stderr"])
+    def test_codex_usage_limit_is_eligible(self, msg: str, trusted_key: str) -> None:
         """Codex plan usage-cap exhaustion is failover-eligible.
 
         Exit 1 with no tool calls is a pre-invocation systemic rejection; the
         spawner should fail over to a same-tier non-codex model rather than
-        terminating the session.
+        terminating the session. The adapter's trusted text carries the limit.
         """
-        dec = classify_failover_eligibility(_ctx(RuntimeError(msg)))
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(msg), process_info={trusted_key: msg})
+        )
         assert _eligible(dec), f"Expected eligible for usage-limit msg={msg!r}, got: {dec.reason}"
         assert dec.reason.startswith("usage_limit")
 
     def test_codex_clock_time_reset_is_not_guessed(self) -> None:
         """ "try again at 12:25 PM" has no date or timezone, so no reset is invented."""
+        msg = (
+            "Codex CLI exited with code 1: You've hit your usage limit. "
+            "Visit https://example.invalid/usage or try again at 12:25 PM."
+        )
         dec = classify_failover_eligibility(
-            _ctx(
-                RuntimeError(
-                    "Codex CLI exited with code 1: You've hit your usage limit. "
-                    "Visit https://example.invalid/usage or try again at 12:25 PM."
-                )
-            )
+            _ctx(RuntimeError(msg), process_info={"terminal_error_text": msg})
         )
         assert dec.reason.startswith("usage_limit")
         assert dec.reset_at is None
 
     def test_claude_usage_limit_epoch_reset_is_parsed(self) -> None:
         reset = datetime.now(UTC) + timedelta(hours=2)
+        msg = f"Claude AI usage limit reached|{int(reset.timestamp())}"
         dec = classify_failover_eligibility(
-            _ctx(RuntimeError(f"Claude AI usage limit reached|{int(reset.timestamp())}"))
+            _ctx(RuntimeError(msg), process_info={"terminal_error_text": msg})
         )
         assert dec.reason.startswith("usage_limit")
         assert dec.reset_at == reset.replace(microsecond=0)
@@ -928,6 +931,52 @@ class TestRateLimitErrorsEligible:
         )
         assert _eligible(dec)
         assert dec.reason.startswith("usage_limit")
+
+    @pytest.mark.parametrize(
+        ("exc_msg", "process_info"),
+        [
+            # Exception text falls back to the stdout transcript: a pre-tool
+            # transcript quoting "usage limit" with no trusted adapter text.
+            ("Claude CLI exited with code 1: tool said: You've hit your usage limit", None),
+            (
+                "Claude CLI exited with code 1: tool said: You've hit your usage limit",
+                {"is_pre_tool_call": True, "stderr": "", "terminal_error_text": None},
+            ),
+            # error_detail reaches the stderr gate but can be raw stdout too.
+            (
+                "runtime exited with code 1",
+                {
+                    "is_pre_tool_call": True,
+                    "error_detail": "tool said: You've hit your usage limit",
+                    "stderr": "",
+                },
+            ),
+        ],
+    )
+    def test_untrusted_usage_limit_text_never_exhausts_the_account(
+        self, exc_msg: str, process_info: dict | None
+    ) -> None:
+        """Without trusted evidence a usage-limit marker reads as a transient
+        pre-work rate limit: still failed over, but never ``usage_limit``, so the
+        spawner records ``runtime_failure`` and leaves the account alone."""
+        dec = classify_failover_eligibility(_ctx(RuntimeError(exc_msg), process_info=process_info))
+        assert _eligible(dec), dec.reason
+        assert dec.reason.startswith("rate_limit_before_work"), dec.reason
+        assert dec.reset_at is None
+
+    def test_usage_limit_reset_comes_from_trusted_text(self) -> None:
+        """The reset window is read from the trusted source, not transcript text."""
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        dec = classify_failover_eligibility(
+            _ctx(
+                RuntimeError("Claude CLI exited with code 1: usage limit reached|4102444800"),
+                process_info={
+                    "terminal_error_text": f"Claude AI usage limit reached|{int(reset.timestamp())}"
+                },
+            )
+        )
+        assert dec.reason.startswith("usage_limit")
+        assert dec.reset_at == reset.replace(microsecond=0)
 
     def test_plain_rate_limit_stays_a_rate_limit(self) -> None:
         dec = classify_failover_eligibility(_ctx(RuntimeError("429 Too Many Requests")))

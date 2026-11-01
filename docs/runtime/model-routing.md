@@ -354,8 +354,10 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
   is suppressed rather than failed over, but still records `allowance_exhausted` and exhausts the
   account when the adapter's structured terminal error (`process_info.terminal_error_text`) or
   stderr carries the marker; transcript-bearing text (exception message, `error_detail`) never does.
-  A usage limit on a provider-resume attempt is never treated as a stale handle: it skips the
-  same-candidate cold retry (`resume_failure`) and takes this account-exhausting failover path,
+  The same trust rule gates the eligible path: a pre-work marker seen only in transcript-bearing
+  text fails over as a transient `rate_limit_before_work` and leaves the account available.
+  A trusted usage limit on a provider-resume attempt is never treated as a stale handle: it skips
+  the same-candidate cold retry (`resume_failure`) and takes this account-exhausting failover path,
   labelled `resume_outcome=resume_failed_terminal`.
 - **Scheduler**: a due prompt-mode cron task or deadline threshold whose every fit candidate is on an
   exhausted account is not dispatched. A cron task moves `next_run_at` to the earliest reset and

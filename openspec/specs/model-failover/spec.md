@@ -222,6 +222,17 @@ config/MCP/empty-response buckets). No marker may appear in more than one bucket
 - **AND** a usage-limit marker found only in the exception message or `error_detail` SHALL NOT
   mark the account, because both can carry the stdout transcript
 
+#### Scenario: Eligible usage limit requires trusted adapter evidence
+- **WHEN** a failover-eligible `RuntimeError` matches a usage-limit marker in its exception message
+  or, through the opt-in stderr gate, in `process_info["error_detail"]`
+- **AND** neither `process_info["terminal_error_text"]` nor `process_info["stderr"]` matches a
+  usage-limit marker
+- **THEN** the classifier SHALL return a reason prefixed `rate_limit_before_work`, not
+  `usage_limit`, so the spawner records `runtime_failure` and SHALL NOT mark the provider account
+  exhausted, because both texts can carry a pre-tool stdout transcript quoting "usage limit"
+- **AND** when a trusted source does match, the decision SHALL be `usage_limit` with its reset
+  window parsed from that trusted text
+
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)
 - RFC 0001 (Daemon Lifecycle and Triggers; the spawner orchestrates ephemeral runtime invocations for a logical session)
