@@ -32,8 +32,10 @@ Two rules, matching design.md's worked examples exactly:
    flight, or a route block such as ``SIN -> Aomori``) is weighed against the
    OwnTracks fixes passed as ``location_fixes``
    (:mod:`butlers.chronicler.travel_location`). Same place before and after
-   the window drops it as contradicted; a long, plausible displacement keeps it
-   with a ``consistent`` location note, which never asserts the trip itself;
+   the window drops it as contradicted, but only when the intent expects a
+   long trip (a flight, or a route with an airport-code endpoint); a long,
+   plausible displacement keeps it with a ``consistent`` location note, which
+   never asserts the trip itself;
    anything else stays ``unknown``.
 
 Every kept or dropped intent carries a ``reconciliation`` mapping with its
@@ -73,6 +75,7 @@ from butlers.chronicler.travel_location import (
     LOCATION_CONTRADICTED,
     accepted_fixes,
     check_travel_intent,
+    expects_long_displacement,
     is_travel_intent,
     plan_producer,
 )
@@ -342,7 +345,9 @@ def reconcile_day(
         )
         start, end = _window(intent)
         if dropped is None and is_travel_intent(intent, start, end):
-            check = check_travel_intent(start, end, fixes)
+            check = check_travel_intent(
+                start, end, fixes, long_displacement=expects_long_displacement(intent)
+            )
             notes["location"] = check.to_payload()
             if check.verdict == LOCATION_CONTRADICTED:
                 dropped = DroppedIntent(

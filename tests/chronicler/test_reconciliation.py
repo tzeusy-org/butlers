@@ -534,6 +534,26 @@ def test_butler_route_plan_contradicted_by_same_place_before_and_after() -> None
     assert dropped.intent["reconciliation"]["plan_producer"] == "butler"
 
 
+def test_local_route_at_nearby_places_stays_unknown() -> None:
+    """A 12 km 'Home -> Office' block expects no long displacement, so nearby
+    anchors cannot contradict it."""
+    start = datetime(2026, 10, 22, 8, 0, tzinfo=_SGT)
+    end = datetime(2026, 10, 22, 9, 0, tzinfo=_SGT)
+    home, office = (1.3521, 103.8198), (1.2840, 103.8510)
+    fixes = [
+        _fix(datetime(2026, 10, 22, 7, 0, tzinfo=_SGT), home),
+        _fix(datetime(2026, 10, 22, 7, 50, tzinfo=_SGT), home),
+        _fix(datetime(2026, 10, 22, 9, 10, tzinfo=_SGT), office),
+        _fix(datetime(2026, 10, 22, 9, 40, tzinfo=_SGT), office),
+    ]
+
+    result = reconcile_day([_travel_intent("Home -> Office", start, end)], location_fixes=fixes)
+
+    assert result.dropped_intents == []
+    [kept] = result.kept_intents
+    assert kept["reconciliation"]["location"]["verdict"] == "unknown"
+
+
 @pytest.mark.parametrize(
     "fixes",
     [
@@ -549,6 +569,13 @@ def test_butler_route_plan_contradicted_by_same_place_before_and_after() -> None
                 for row in _sq800_fixes()
             ],
             id="timezone-shifted",
+        ),
+        pytest.param(
+            [
+                {**row, "occurred_at": row["occurred_at"].replace(tzinfo=None)}
+                for row in _sq800_fixes()
+            ],
+            id="naive-timestamps",
         ),
     ],
 )

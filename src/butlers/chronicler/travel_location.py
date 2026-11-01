@@ -32,8 +32,12 @@ Verdicts:
   only the claim "the owner's location moved this far across the scheduled
   window". It never asserts that the owner took the planned flight.
 - ``contradicted``: the anchors are within :data:`SAME_PLACE_KM` of each
-  other. The owner was at the same place before and after a one-way trip, so
-  the trip did not happen as planned.
+  other **and** the intent expects a long displacement (see
+  :func:`expects_long_displacement`: a flight, or a route with an airport-code
+  endpoint). The owner was at the same place before and after a long one-way
+  trip, so the trip did not happen as planned. A local route such as
+  ``Home -> Office`` has no known expected distance, so nearby anchors leave it
+  ``unknown``.
 - ``unknown``: anything else (missing or thin fixes, a middling distance, an
   implausible speed). Unknown is never narrated as either outcome.
 """
@@ -92,7 +96,10 @@ LOCATION_CONTRADICTED = "contradicted"
 LOCATION_UNKNOWN = "unknown"
 
 _FLIGHT_WORD = re.compile(r"\bflights?\b|✈", re.IGNORECASE)
-_ROUTE_ARROW = re.compile(r"\S\s*(?:->|=>|→|⟶|➔)\s*\S")
+_ARROW = r"(?:->|=>|→|⟶|➔)"
+_ROUTE_ARROW = re.compile(rf"\S\s*{_ARROW}\s*\S")
+# A route endpoint written as an IATA-style airport code (``SIN -> Aomori``).
+_AIRPORT_ENDPOINT = re.compile(rf"\b[A-Z]{{3}}\s*{_ARROW}|{_ARROW}\s*[A-Z]{{3}}\b")
 
 
 @dataclass(frozen=True)
@@ -159,6 +166,17 @@ def is_travel_intent(intent: Mapping[str, Any], start: datetime, end: datetime) 
     return bool(_FLIGHT_WORD.search(text) or _ROUTE_ARROW.search(text))
 
 
+def expects_long_displacement(intent: Mapping[str, Any]) -> bool:
+    """True when the travel intent itself implies a long trip.
+
+    Only then can "same place before and after" contradict it: a flight, or a
+    route with an airport-code endpoint. Without geocoding, a plain route's
+    endpoints (``Home -> Office``) have no known distance.
+    """
+    text = _text(intent)
+    return bool(_FLIGHT_WORD.search(text) or _AIRPORT_ENDPOINT.search(text))
+
+
 def _finite(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         return None
@@ -204,7 +222,11 @@ def _anchor(candidates: list[Fix]) -> list[Fix] | None:
 
 
 def check_travel_intent(
-    start: datetime, end: datetime, fixes: Sequence[Fix]
+    start: datetime,
+    end: datetime,
+    fixes: Sequence[Fix],
+    *,
+    long_displacement: bool = True,
 ) -> TravelLocationCheck:
     """Judge one travel window against accepted fixes (see the module docstring)."""
     if start.tzinfo is None or end.tzinfo is None:
@@ -231,7 +253,7 @@ def check_travel_intent(
         "origin_last_at": last_origin.at,
         "destination_first_at": first_destination.at,
     }
-    if distance_km <= SAME_PLACE_KM:
+    if distance_km <= SAME_PLACE_KM and long_displacement:
         return TravelLocationCheck(
             LOCATION_CONTRADICTED,
             "location fixes show the same place before and after the scheduled travel",
@@ -264,6 +286,7 @@ __all__ = [
     "TravelLocationCheck",
     "accepted_fixes",
     "check_travel_intent",
+    "expects_long_displacement",
     "is_travel_intent",
     "plan_producer",
 ]

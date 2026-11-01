@@ -16,14 +16,21 @@ Scope: v1-mandatory
 - **THEN** the intent SHALL be kept with a `consistent` location verdict and the displacement
 - **AND** the narration SHALL NOT state that the owner took the planned trip
 
-#### Scenario: Same place before and after contradicts the trip
+#### Scenario: Same place before and after contradicts a long trip
 
 - **WHEN** both anchors exist and lie within 50 km of each other
+- **AND** the intent expects a long displacement: its title names a flight, or its route has an IATA-style airport-code endpoint (three capital letters next to the arrow)
 - **THEN** the intent SHALL be dropped as contradicted with `evidence` set to `location`
+
+#### Scenario: A local route is never contradicted by nearby anchors
+
+- **WHEN** a route intent names no flight and no airport-code endpoint (for example `Home -> Office`)
+- **AND** both anchors exist and lie within 50 km of each other
+- **THEN** the intent SHALL be kept with an `unknown` location verdict
 
 #### Scenario: Missing or unreliable location stays unknown
 
-- **WHEN** either anchor has fewer than two fixes, or the anchors are between 50 and 300 km apart, or the implied speed is implausible
+- **WHEN** either anchor has fewer than two fixes, or the anchors are between 50 and 300 km apart, or the implied speed is implausible, or the anchors are within 50 km for an intent that does not expect a long displacement
 - **THEN** the location verdict SHALL be `unknown` and SHALL be narrated as neither corroborated nor contradicted
 - **AND** fixes flagged `trail_outlier`, fixes with accuracy worse than 1000 m, fixes without a timezone and non-normal privacy fixes SHALL NOT form an anchor
 
