@@ -6,6 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 import structlog
 
@@ -37,6 +38,7 @@ def _reset_logging():
     root.setLevel(logging.WARNING)
     for name in _NOISE_LOGGERS:
         logger = logging.getLogger(name)
+        logger.setLevel(logging.NOTSET)
         for handler in list(logger.handlers):
             handler.close()
         logger.handlers.clear()
@@ -187,15 +189,55 @@ def test_log_directory_structure_and_credential_redaction(tmp_path: Path):
     f.filter(r3)
     assert r3.args == ()
 
-    # configure_logging attaches filter; idempotent
-    configure_logging()
-    root2 = logging.getLogger()
-    assert len([f for f in root2.filters if isinstance(f, CredentialRedactionFilter)]) == 1
-    configure_logging()
-    assert (
-        len([f for f in logging.getLogger().filters if isinstance(f, CredentialRedactionFilter)])
-        == 1
+    r4 = logging.LogRecord(
+        "test",
+        logging.INFO,
+        "",
+        0,
+        "GET https://x.test/v1?appid=1&key=SECRETKEY&pageToken=c",
+        (),
+        None,
     )
+    f.filter(r4)
+    assert "SECRETKEY" not in r4.msg and "appid=1" in r4.msg and "pageToken=c" in r4.msg
+
+
+_SYNTHETIC_BOT_TOKEN = "123456789:AAsyntheticBotTokenForLogTest_xyz"
+
+
+def _request(url: str) -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"ok": True}))
+    with httpx.Client(transport=transport) as client:
+        client.get(url)
+
+
+def test_httpx_request_lines_never_leak_credentials(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    """httpx request logs never carry a credential to the console or log files.
+
+    The INFO request line is suppressed by default; and if a caller turns httpx
+    back up to INFO, the propagated record is still redacted by every handler.
+    """
+    configure_logging(fmt="json", log_root=tmp_path, butler_name="telegram-bot")
+    _request(f"https://api.telegram.org/bot{_SYNTHETIC_BOT_TOKEN}/getUpdates")
+    assert "HTTP Request" not in capsys.readouterr().err
+
+    logging.getLogger("httpx").setLevel(logging.INFO)
+    _request(f"https://api.telegram.org/file/bot{_SYNTHETIC_BOT_TOKEN}/voice/file_1.oga")
+    _request("https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?key=STEAMKEY1&x=1")
+    for handler in logging.getLogger().handlers + logging.getLogger("httpx").handlers:
+        handler.flush()
+
+    sinks = {
+        "console": capsys.readouterr().err,
+        "butler file": (tmp_path / "butlers" / "telegram-bot.log").read_text(),
+        "transport file": (tmp_path / "uvicorn" / "telegram-bot.log").read_text(),
+    }
+    assert "HTTP Request" in sinks["console"] and "HTTP Request" in sinks["transport file"]
+    for name, text in sinks.items():
+        assert _SYNTHETIC_BOT_TOKEN.split(":")[1] not in text, name
+        assert "STEAMKEY1" not in text, name
 
 
 def test_per_butler_file_handlers_filter_by_context(tmp_path: Path):
