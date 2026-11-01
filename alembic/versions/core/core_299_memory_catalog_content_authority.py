@@ -1,7 +1,7 @@
 """Carry the source row's content authority on public.memory_catalog rows.
 
-Revision ID: core_298
-Revises: core_297
+Revision ID: core_299
+Revises: core_298
 Create Date: 2026-11-02 00:00:00.000000
 
 bu-q7vx1q.25, REQ-module-memory-013 "Catalog readers attribute non-owner
@@ -25,8 +25,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_298"
-down_revision = "core_297"
+revision = "core_299"
+down_revision = "core_298"
 branch_labels = None
 depends_on = None
 

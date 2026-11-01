@@ -396,7 +396,7 @@ async def _upsert_catalog(
     to the spec-required columns added in core_024.  They are all nullable so
     the call remains backward-compatible before that migration is applied.
 
-    ``content_authority`` copies the source row's authority class (core_298,
+    ``content_authority`` copies the source row's authority class (core_299,
     REQ-module-memory-013) so cross-butler readers can attribute non-owner
     content; an upsert overwrites it, so a re-stamped source re-syncs here.
 
@@ -841,7 +841,7 @@ async def _sync_catalog_authority(
 ) -> int:
     """Copy the source row's ``content_authority`` onto up to *limit* drifted catalog rows.
 
-    Rows cataloged before core_298 start NULL even when their source fact or
+    Rows cataloged before core_299 start NULL even when their source fact or
     rule is stamped; this brings them in line (REQ-module-memory-013).  Only
     rows whose authority differs are touched (``IS DISTINCT FROM``), so a
     legacy NULL source stays NULL and a re-run is a no-op.  Stale rows are
