@@ -65,9 +65,9 @@ from __future__ import annotations
 import json
 import logging
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 
@@ -77,6 +77,13 @@ from butlers.chronicler.adapters._owner_entity import (
     upsert_owner_episode_entity,
 )
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.owntracks_trail import (
+    TRAIL_ANCHORS_CARRYOVER_KEY,
+    classify_trail,
+    dump_anchors,
+    haversine_meters,
+    load_anchors,
+)
 from butlers.chronicler.confidence import (
     EvidenceKind,
     derive_confidence,
@@ -131,23 +138,23 @@ DEFAULT_LABEL_RADIUS_METERS = 200.0
 
 PLACE_UNKNOWN_LABEL = "place_unknown"
 
-_EARTH_RADIUS_METERS = 6_371_000.0
+# A cluster with no owner reference match takes the OwnTracks region (an
+# owner-defined waypoint on the phone, reported in ``inregions``) seen on at
+# least this share of its points. Owner-named, local: no geocoding.
+REGION_LABEL_MIN_SHARE = 0.5
 
-
-def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance between two lat/lon points, in meters.
-
-    Pure function — no I/O, deterministic. Accurate enough at the sub-city
-    scale this adapter clusters at (haversine error vs. an ellipsoidal model
-    is negligible below tens of kilometers).
-    """
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    d_phi = math.radians(lat2 - lat1)
-    d_lambda = math.radians(lon2 - lon1)
-    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return _EARTH_RADIUS_METERS * c
+# Away-from-home spans (bu-2tsgqb.6). Accepted fixes farther than this from
+# every owner-declared ``home`` reference are "away"; a span closes at the
+# first fix back inside it. 50 km keeps a commute or a day in town local.
+DEFAULT_AWAY_RADIUS_KM = 50.0
+# An away span is emitted once it lasts this long with at least two fixes.
+DEFAULT_MIN_AWAY_MINUTES = 180
+# No fix for longer than this splits an away span: the trail cannot say what
+# happened in between, so it is not bridged.
+DEFAULT_AWAY_MAX_GAP_HOURS = 36
+EPISODE_TYPE_AWAY = "away_episode"
+HOME_LABEL = "home"
+AWAY_CARRYOVER_KEY = "_away"
 
 
 @dataclass(frozen=True)
@@ -247,6 +254,21 @@ class ClusterSpan:
     sum_lat: float
     sum_lon: float
     point_count: int
+    # OwnTracks region name -> number of the cluster's points reporting it.
+    region_counts: dict[str, int] = field(default_factory=dict)
+
+    def add_regions(self, regions: Any) -> None:
+        for region in regions or ():
+            self.region_counts[region] = self.region_counts.get(region, 0) + 1
+
+    def dominant_region(self) -> str | None:
+        """The region reported on at least ``REGION_LABEL_MIN_SHARE`` of points."""
+        if not self.region_counts:
+            return None
+        region, count = max(self.region_counts.items(), key=lambda kv: (kv[1], kv[0]))
+        if count < REGION_LABEL_MIN_SHARE * self.point_count:
+            return None
+        return region
 
     @property
     def centroid_lat(self) -> float:
@@ -322,6 +344,7 @@ def cluster_points(
                 sum_lon=rows[i]["lon"],
                 point_count=1,
             )
+            cluster.add_regions(rows[i].get("regions"))
         i += 1
 
         while i < n:
@@ -341,6 +364,7 @@ def cluster_points(
                 cluster.sum_lon += row["lon"]
                 cluster.point_count += 1
                 cluster.end_at = row["ts"]
+                cluster.add_regions(row.get("regions"))
                 i += 1
                 continue
 
@@ -363,6 +387,7 @@ def cluster_points(
                     cluster.sum_lon += nxt["lon"]
                     cluster.point_count += 1
                     cluster.end_at = nxt["ts"]
+                    cluster.add_regions(nxt.get("regions"))
                     i += 2
                     continue
 
@@ -380,6 +405,7 @@ def cluster_points(
             "sum_lat": span.sum_lat,
             "sum_lon": span.sum_lon,
             "point_count": span.point_count,
+            "regions": dict(span.region_counts),
         }
 
     return spans, new_carryover
@@ -453,14 +479,142 @@ def _resume_from_carryover(
     if haversine_meters(centroid_lat, centroid_lon, row["lat"], row["lon"]) > radius_m:
         return None  # owner moved away before this batch started; start fresh
 
-    return ClusterSpan(
+    raw_regions = carry.get("regions")
+    region_counts = (
+        {str(k): int(v) for k, v in raw_regions.items() if isinstance(v, int)}
+        if isinstance(raw_regions, dict)
+        else {}
+    )
+    span = ClusterSpan(
         endpoint_identity=endpoint,
         start_at=start_at,
         end_at=row["ts"],
         sum_lat=sum_lat + row["lat"],
         sum_lon=sum_lon + row["lon"],
         point_count=point_count + 1,
+        region_counts=region_counts,
     )
+    span.add_regions(row.get("regions"))
+    return span
+
+
+@dataclass
+class AwaySpan:
+    """A contiguous run of accepted fixes far from every ``home`` reference."""
+
+    endpoint_identity: str
+    start_at: datetime
+    end_at: datetime
+    point_count: int
+    max_distance_m: float
+    farthest_lat: float
+    farthest_lon: float
+
+    @property
+    def duration(self) -> timedelta:
+        return self.end_at - self.start_at
+
+    def source_ref(self) -> str:
+        start_tst = int(self.start_at.timestamp())
+        return f"{_EVIDENCE_TABLE}:away:{self.endpoint_identity}:{start_tst}"
+
+    def extend(self, row: dict[str, Any], distance_m: float) -> None:
+        self.end_at = row["ts"]
+        self.point_count += 1
+        if distance_m > self.max_distance_m:
+            self.max_distance_m = distance_m
+            self.farthest_lat = row["lat"]
+            self.farthest_lon = row["lon"]
+
+    def to_carryover(self) -> dict[str, Any]:
+        return {
+            "start_at": self.start_at.isoformat(),
+            "end_at": self.end_at.isoformat(),
+            "point_count": self.point_count,
+            "max_distance_m": self.max_distance_m,
+            "farthest_lat": self.farthest_lat,
+            "farthest_lon": self.farthest_lon,
+        }
+
+    @classmethod
+    def from_carryover(cls, endpoint: str, raw: Any) -> AwaySpan | None:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            span = cls(
+                endpoint_identity=endpoint,
+                start_at=datetime.fromisoformat(raw["start_at"]),
+                end_at=datetime.fromisoformat(raw["end_at"]),
+                point_count=int(raw["point_count"]),
+                max_distance_m=float(raw["max_distance_m"]),
+                farthest_lat=float(raw["farthest_lat"]),
+                farthest_lon=float(raw["farthest_lon"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            logger.warning("Discarding malformed away carryover for %s: %r", endpoint, raw)
+            return None
+        if span.start_at.tzinfo is None or span.end_at.tzinfo is None:
+            return None
+        return span
+
+
+def detect_away_spans(
+    rows: list[dict[str, Any]],
+    *,
+    homes: tuple[PlaceReference, ...],
+    away_radius_m: float,
+    max_gap: timedelta,
+    prior_carryover: dict | None = None,
+) -> tuple[list[AwaySpan], dict]:
+    """Find away-from-home spans in accepted fixes (sorted by ``ts``).
+
+    Boundaries: a span opens at the first fix farther than ``away_radius_m``
+    from every home reference and closes at the last such fix before a fix
+    back inside the radius, an endpoint's gap longer than ``max_gap``, or the
+    end of the batch (then it is carried and may continue next batch).
+    Without a home reference nothing is "away", so no span is produced.
+
+    Returns ``(spans, carryover)``; ``carryover`` maps endpoint to the span
+    still open at the end of the batch.
+    """
+    if not homes or not rows:
+        return [], {}
+    prior_carryover = prior_carryover or {}
+    open_spans: dict[str, AwaySpan | None] = {}
+    spans: list[AwaySpan] = []
+
+    for row in rows:
+        endpoint = row["endpoint_identity"]
+        if endpoint not in open_spans:
+            carried = AwaySpan.from_carryover(endpoint, prior_carryover.get(endpoint))
+            if carried is not None and timedelta(0) <= row["ts"] - carried.end_at <= max_gap:
+                spans.append(carried)
+                open_spans[endpoint] = carried
+            else:
+                open_spans[endpoint] = None
+        current = open_spans[endpoint]
+
+        distance_m = min(haversine_meters(h.lat, h.lon, row["lat"], row["lon"]) for h in homes)
+        if distance_m <= away_radius_m:
+            open_spans[endpoint] = None
+            continue
+        if current is not None and row["ts"] - current.end_at <= max_gap:
+            current.extend(row, distance_m)
+            continue
+        new_span = AwaySpan(
+            endpoint_identity=endpoint,
+            start_at=row["ts"],
+            end_at=row["ts"],
+            point_count=1,
+            max_distance_m=distance_m,
+            farthest_lat=row["lat"],
+            farthest_lon=row["lon"],
+        )
+        spans.append(new_span)
+        open_spans[endpoint] = new_span
+
+    carryover = {ep: span.to_carryover() for ep, span in open_spans.items() if span is not None}
+    return spans, carryover
 
 
 class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
@@ -481,6 +635,9 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         max_gap_minutes: int = DEFAULT_MAX_GAP_MINUTES,
         clock_skew_threshold_hours: int = CLOCK_SKEW_THRESHOLD_HOURS,
         reference_points: tuple[PlaceReference, ...] = (),
+        away_radius_km: float = DEFAULT_AWAY_RADIUS_KM,
+        min_away_minutes: int = DEFAULT_MIN_AWAY_MINUTES,
+        away_max_gap_hours: int = DEFAULT_AWAY_MAX_GAP_HOURS,
     ) -> None:
         super().__init__(SOURCE_NAME)
         if radius_m <= 0:
@@ -499,6 +656,17 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         self.max_gap = timedelta(minutes=max_gap_minutes)
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
         self.reference_points = tuple(reference_points)
+        if away_radius_km <= 0 or min_away_minutes < 0 or away_max_gap_hours <= 0:
+            raise ValueError(
+                "away_radius_km and away_max_gap_hours must be positive and "
+                "min_away_minutes non-negative"
+            )
+        self.away_radius_m = away_radius_km * 1000.0
+        self.min_away = timedelta(minutes=min_away_minutes)
+        self.away_max_gap = timedelta(hours=away_max_gap_hours)
+        self.homes = tuple(
+            ref for ref in self.reference_points if ref.label.strip().lower() == HOME_LABEL
+        )
 
     async def project(
         self,
@@ -543,8 +711,15 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         if valid_rows:
             entity_id = await resolve_owner_entity_id(pool)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+            # Shared impossible-jump policy (owntracks_trail.py): rejected
+            # fixes never seed a cluster or an away span.
+            valid_rows.sort(key=lambda r: (r["ts"], str(r["id"])))
+            outliers, anchors = classify_trail(
+                valid_rows, prior_anchors=load_anchors(prior_carryover)
+            )
+            accepted = [row for i, row in enumerate(valid_rows) if i not in outliers]
             spans, new_carryover = cluster_points(
-                valid_rows,
+                accepted,
                 radius_m=self.radius_m,
                 max_gap=self.max_gap,
                 prior_carryover=prior_carryover,
@@ -554,6 +729,23 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 if episode is not None:
                     result.rows_projected += 1
                     result.episodes_closed += 1
+
+            prior_away = prior_carryover.get(AWAY_CARRYOVER_KEY)
+            away_spans, away_carryover = detect_away_spans(
+                accepted,
+                homes=self.homes,
+                away_radius_m=self.away_radius_m,
+                max_gap=self.away_max_gap,
+                prior_carryover=prior_away if isinstance(prior_away, dict) else None,
+            )
+            for away in away_spans:
+                episode = await self._maybe_emit_away(chronicler_pool, away, entity_id=entity_id)
+                if episode is not None:
+                    result.rows_projected += 1
+                    result.episodes_closed += 1
+
+            new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
+            new_carryover[AWAY_CARRYOVER_KEY] = away_carryover
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
@@ -620,9 +812,29 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 "lat": lat,
                 "lon": lon,
                 "endpoint_identity": endpoint_identity.strip(),
+                "regions": self._owner_regions(row),
             },
             warnings,
         )
+
+    @staticmethod
+    def _owner_regions(row: asyncpg.Record) -> tuple[str, ...]:
+        """Owner-defined OwnTracks region names the device reported for a fix."""
+        try:
+            raw_payload = row["raw_payload"]
+        except (KeyError, IndexError):
+            return ()
+        if isinstance(raw_payload, str):
+            try:
+                raw_payload = json.loads(raw_payload)
+            except json.JSONDecodeError:
+                return ()
+        if not isinstance(raw_payload, dict):
+            return ()
+        regions = raw_payload.get("inregions")
+        if not isinstance(regions, list):
+            return ()
+        return tuple(r.strip() for r in regions if isinstance(r, str) and r.strip())
 
     @staticmethod
     def _coerce_finite_float(value: Any) -> float | None:
@@ -659,7 +871,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 if since is None:
                     rows = await conn.fetch(
                         f"""
-                        SELECT id, ts, lat, lon, endpoint_identity, recorded_at
+                        SELECT id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload
                         FROM {_EVIDENCE_TABLE}
                         ORDER BY ts ASC, id ASC
                         LIMIT $1
@@ -669,7 +881,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 else:
                     rows = await conn.fetch(
                         f"""
-                        SELECT id, ts, lat, lon, endpoint_identity, recorded_at
+                        SELECT id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload
                         FROM {_EVIDENCE_TABLE}
                         WHERE ts > $1
                         ORDER BY ts ASC, id ASC
@@ -708,7 +920,16 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
         if span.dwell < self.min_dwell:
             return None
 
+        # Label provenance: owner reference point, else the owner's own
+        # OwnTracks region, else an explicit unknown. Never inferred.
         label, matched = self._label_for(span.centroid_lat, span.centroid_lon)
+        label_source = "owner_reference"
+        if matched is None:
+            region = span.dominant_region()
+            if region is not None:
+                label, label_source = region, "owntracks_region"
+            else:
+                label_source = "unknown"
         source_ref = span.source_ref()
 
         payload: dict[str, Any] = {
@@ -717,6 +938,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             "centroid_lat": span.centroid_lat,
             "centroid_lon": span.centroid_lon,
             "label": label,
+            "label_source": label_source,
         }
         if matched is not None:
             payload["matched_reference"] = matched.label
@@ -743,6 +965,52 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                         layer=Layer.ACTIVITY,
                         confidence=confidence,
                         evidence_refs=evidence_refs,
+                    ),
+                )
+                ep_id = episode.id if episode is not None else None
+                await upsert_owner_episode_entity(conn, ep_id, owner_id=entity_id)
+        return episode
+
+    async def _maybe_emit_away(
+        self,
+        chronicler_pool: asyncpg.Pool,
+        span: AwaySpan,
+        *,
+        entity_id: Any,
+    ) -> Episode | None:
+        """Upsert an away span once it has two fixes and the minimum duration.
+
+        Evidence layer: it frames the day ("away from home") without counting
+        as lived activity time, so a multi-day trip never inflates a lane.
+        """
+        if span.point_count < 2 or span.duration < self.min_away:
+            return None
+        distance_km = span.max_distance_m / 1000.0
+        payload: dict[str, Any] = {
+            "endpoint_identity": span.endpoint_identity,
+            "point_count": span.point_count,
+            "max_distance_km": round(distance_km, 1),
+            "farthest_lat": span.farthest_lat,
+            "farthest_lon": span.farthest_lon,
+            "home_reference": HOME_LABEL,
+        }
+        async with chronicler_pool.acquire() as pooled:
+            conn = cast(asyncpg.Connection, pooled)
+            async with owner_episode_transaction(conn):
+                episode = await upsert_episode(
+                    conn,
+                    Episode(
+                        source_name=self.source_name,
+                        source_ref=span.source_ref(),
+                        episode_type=EPISODE_TYPE_AWAY,
+                        start_at=span.start_at,
+                        end_at=span.end_at,
+                        precision=Precision.EXACT,
+                        title=f"Away from home (up to ~{distance_km:,.0f} km)",
+                        payload=payload,
+                        privacy=Privacy.NORMAL,
+                        layer=Layer.EVIDENCE,
+                        confidence=derive_confidence([EvidenceKind(name="gps")]),
                     ),
                 )
                 ep_id = episode.id if episode is not None else None
@@ -784,18 +1052,27 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
 
 __all__ = [
     "CLOCK_SKEW_THRESHOLD_HOURS",
+    "AWAY_CARRYOVER_KEY",
+    "DEFAULT_AWAY_MAX_GAP_HOURS",
+    "DEFAULT_AWAY_RADIUS_KM",
     "DEFAULT_BATCH_LIMIT",
     "DEFAULT_LABEL_RADIUS_METERS",
     "DEFAULT_MAX_GAP_MINUTES",
     "DEFAULT_MIN_DWELL_MINUTES",
+    "DEFAULT_MIN_AWAY_MINUTES",
     "DEFAULT_RADIUS_METERS",
+    "EPISODE_TYPE_AWAY",
     "EPISODE_TYPE_PLACE",
+    "HOME_LABEL",
+    "REGION_LABEL_MIN_SHARE",
     "PLACE_UNKNOWN_LABEL",
+    "AwaySpan",
     "ClusterSpan",
     "OwnTracksPlaceClusterAdapter",
     "PlaceReference",
     "SOURCE_NAME",
     "cluster_points",
+    "detect_away_spans",
     "haversine_meters",
     "parse_place_references",
 ]

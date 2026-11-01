@@ -56,6 +56,9 @@ _CATEGORY_MAP: dict[tuple[str, str], str] = {
     # design doc §6.2 lane-discipline note); a future explicit corroborator
     # wiring in occupation.py is a separate, coordinated change.
     ("owntracks.place_cluster", "place_episode"): "home",
+    # Away-from-home spans (bu-2tsgqb.6) are evidence-layer framing, never
+    # counted time; they display in the Travel lane.
+    ("owntracks.place_cluster", "away_episode"): "travel",
     ("owntracks.ssid_presence", "presence_episode"): "home",
     ("owntracks.ssid_presence", "occupation_presence_episode"): "occupation",
     ("google_health.measurements", "sleep_episode"): "sleep",
