@@ -59,9 +59,23 @@ and kind, so pushing a follow-up to an existing PR needs its own operation ident
 No concrete credentialed provider ships yet. Activation needs bu-mc01y5.7 (isolation) and the
 operational gates bu-nh37dt/bu-vc90le.
 
-The sealed export lives in publisher memory for one run. The ledger keeps only its digest (inside
-the `branch_push` payload digest), next to the persisted diff snapshot. Durable retention of the
-export bytes before worktree teardown is a follow-up.
+Before its first egress the publisher retains the sealed export's exact bytes in
+`public.qa_publication_exports` (migration `core_294`, `butlers.core.qa.publication.retention`): one
+immutable row per attempt with base, head, commit list, framed objects and digest. The agent worktree,
+its branch and its objects are deleted at teardown, so a push or PR creation that fails or ends
+ambiguous still leaves the proposal recoverable for read-only reconciliation, next to the persisted
+diff snapshot, investigation notes and ledger stage. Retaining the same export again is a no-op; a
+different export for the same attempt refuses (`export_changed`), and a store failure refuses
+(`export_unretained`) with nothing sent. `load_retained_export` re-derives every object id and the
+digest, so altered stored bytes refuse with `export_tampered`.
+
+Only `butler_qa_rw` inserts (forced row security, as for the ledger); every runtime role reads, since
+the bytes already passed `validate_anonymized()` and are what a successful publication makes public.
+No role can update or delete a row: there is no UPDATE or DELETE policy, and a BEFORE UPDATE trigger
+(`qa_publication_exports_immutable`) refuses rewrites from a privileged login too. Only the last schema
+to leave `core_294` drops the table, and only while no export is retained. The table is excluded from
+`deploy/backup/pg_dump.sh` for the same reason as the ledger. Pruning old retained exports is not
+implemented.
 
 Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
 kept, and no remote branch or PR is deleted.

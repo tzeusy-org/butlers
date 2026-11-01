@@ -97,6 +97,7 @@ plane by name:
 | `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
 | `public.runtime_probe_control_receipts` | Fenced runtime probe control receipts |
 | `public.qa_publication_operations` | Fenced QA publication operation control |
+| `public.qa_publication_exports` | Retained sealed QA export bytes (fenced like the ledger) |
 | `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing
