@@ -1,13 +1,13 @@
 """Content-blind, attempt-owned runtime serving evidence.
 
 Revision ID: core_290
-Revises: core_289
+Revises: core_287
 """
 
 from alembic import op
 
 revision = "core_290"
-down_revision = "core_289"
+down_revision = "core_287"
 branch_labels = None
 depends_on = None
 _LOCK = "butlers:core_290:served-identity"
