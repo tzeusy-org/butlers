@@ -289,6 +289,56 @@ async def test_invoke_nonzero_exit_records_process_info() -> None:
     assert "auth error" in info["stderr"]
 
 
+async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() -> None:
+    """Pinned 0.46.0 stream-json emits ``result``/``status: error`` then exits non-zero.
+
+    Its ``handleError``/``handleMaxTurnsExceededError`` always ``process.exit`` with the
+    error's exit code (``FatalTurnLimitedError`` is 53) after emitting the envelope, so
+    the exit-zero path never sees it. The non-zero raise keeps the attempt's usage and
+    tool calls; the classified message stays the plain exit text. Shapes are synthetic,
+    mirroring that CLI's ``tool_use`` (tool_name/tool_id/parameters) and result events.
+    """
+    from butlers.core.runtimes.served_identity import TerminalResultError
+
+    stats = {"input_tokens": 105, "cached": 100, "input": 5, "output_tokens": 3}
+    result = {
+        "type": "result",
+        "status": "error",
+        "error": {"type": "FatalTurnLimitedError", "message": "synthetic"},
+        "stats": stats,
+    }
+    tool_use = {
+        "type": "tool_use",
+        "tool_name": "state_get",
+        "tool_id": "c1",
+        "parameters": {"key": "bar"},
+    }
+
+    async def run(lines: list[dict]) -> tuple[Exception, dict]:
+        adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+        proc = AsyncMock(returncode=53, pid=7)
+        stdout = "\n".join(json.dumps(line) for line in lines)
+        proc.communicate = AsyncMock(return_value=(stdout.encode(), b""))
+        with patch(_EXEC, return_value=proc), pytest.raises(RuntimeError) as caught:
+            await adapter.invoke(prompt="x", system_prompt="", mcp_servers={}, env={})
+        return caught.value, adapter.last_process_info
+
+    # A tool ran before the turn limit: usage and the tool call survive, not pre-tool-call.
+    error, info = await run([tool_use, result])
+    assert isinstance(error, TerminalResultError)
+    assert str(error).startswith("Gemini CLI exited with code 53: ")
+    assert error.usage["input_tokens"] == 5 and error.usage["cache_read_input_tokens"] == 100
+    assert error.tool_calls == [{"id": "c1", "name": "state_get", "input": {"key": "bar"}}]
+    assert error.served["executions"][0]["error"]["code"] == "max_turns"
+    assert info["is_pre_tool_call"] is False and info["exit_code"] == 53
+
+    # No tool evidence: still a terminal result with usage, but pre-tool-call for failover.
+    error, info = await run([result])
+    assert isinstance(error, TerminalResultError) and error.tool_calls == []
+    assert error.usage["input_tokens"] == 5
+    assert info["is_pre_tool_call"] is True
+
+
 def test_build_config_file_carries_the_invocation_header(tmp_path: Path):
     """The Spawner's per-invocation binding header survives into gemini_mcp.json (bu-m2zcah)."""
     from butlers.core.fact_authority import INVOCATION_HEADER

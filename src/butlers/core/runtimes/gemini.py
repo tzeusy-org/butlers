@@ -215,6 +215,14 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
             "input": fn_call.get("args", fn_call.get("arguments", {})),
         }
 
+    # Stream-json ``tool_use`` event: {"tool_name": ..., "tool_id": ..., "parameters": ...}
+    if "tool_name" in obj:
+        return {
+            "id": obj.get("tool_id", ""),
+            "name": obj.get("tool_name", ""),
+            "input": obj.get("parameters", {}),
+        }
+
     # Standard tool_use format
     return {
         "id": obj.get("id", ""),
@@ -322,6 +330,11 @@ class GeminiAdapter(RuntimeAdapter):
             If the gemini binary is not found on PATH.
         TimeoutError
             If the Gemini process exceeds the timeout.
+        RuntimeError
+            If the Gemini process exits non-zero with no failed terminal result.
+        TerminalResultError
+            If the stream carries a failed terminal result (``status: "error"``),
+            at any exit code; it keeps the attempt's usage and tool calls.
         """
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
@@ -395,20 +408,27 @@ class GeminiAdapter(RuntimeAdapter):
                 "runtime_type": "gemini",
             }
 
+            aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
+            usage = aggregate if aggregate.get("input_tokens") is not None else None
+            terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
-                # On non-zero exit the adapter raises immediately — no tool calls
-                # were captured by the adapter itself, so this is pre-tool-call.
-                # The spawner will layer in daemon-side tool-call capture.
-                self._last_process_info["is_pre_tool_call"] = True
-                raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
+                message = f"Gemini CLI exited with code {returncode}: {error_detail}"
+                if not terminal_error:
+                    # No result envelope: nothing proves work started, so this is
+                    # pre-tool-call. The spawner layers in daemon-side capture.
+                    self._last_process_info["is_pre_tool_call"] = True
+                    raise RuntimeError(message)
+                # Stream-json emits ``result``/``status: error`` and then exits with
+                # the error's code (turn limit is 53); keep its usage and tool evidence.
+                _, tool_calls = _parse_gemini_output(stdout, stderr)
+                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+                raise TerminalResultError(served, usage, tool_calls, message)
 
             result_text, tool_calls = _parse_gemini_output(stdout, stderr)
-            aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
-            usage = aggregate if aggregate.get("input_tokens") is not None else None
-            if any(item["error"]["is_error"] is True for item in served["executions"]):
+            if terminal_error:
                 self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
                 raise TerminalResultError(served, usage, tool_calls)
             return result_text, tool_calls, usage
