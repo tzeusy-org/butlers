@@ -2412,9 +2412,11 @@ class GoogleHealthConnector:
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
                 record_error(str(exc))
-                # Never a rejection: fastmcp raises RuntimeError for dropped sessions, and the
-                # ingest tool raises for transient persistence failures. Only the explicit
-                # ``status: error`` reply (envelope validation) is a durable refusal.
+                # Never a rejection: CachedMCPClient raises ConnectionError for dropped
+                # sessions and TransientToolError (a ConnectionError) for the ingest tool's
+                # transient persistence reply; a RuntimeError is an unexpected tool error.
+                # Only the explicit ``status: error`` reply (envelope validation) is a
+                # durable refusal.
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:

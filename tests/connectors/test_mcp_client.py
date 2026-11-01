@@ -120,3 +120,25 @@ async def test_session_drop_on_both_attempts_raises_connection_error(monkeypatch
         await client.call_tool("ingest", {"ok": True})
 
     assert len(built) == 2
+
+
+async def test_transient_tool_reply_raises_a_typed_connection_error(monkeypatch):
+    """A ``transient_error`` reply fails closed for callers that ignore results."""
+    calls: list[str] = []
+    server = FastMCP("switchboard-stub")
+
+    @server.tool
+    def ingest(ok: bool) -> dict[str, Any]:
+        calls.append("ingest")
+        return {"status": "transient_error", "retryable": True, "error": "retry later"}
+
+    monkeypatch.setattr(mcp_client, "MCPClient", lambda url, *, name: Client(server, name=name))
+    client = CachedMCPClient("http://switchboard/sse", client_name="test")
+    try:
+        with pytest.raises(mcp_client.TransientToolError, match="retry later") as excinfo:
+            await client.call_tool("ingest", {"ok": True})
+    finally:
+        await client.aclose()
+
+    assert isinstance(excinfo.value, ConnectionError)
+    assert calls == ["ingest"]
