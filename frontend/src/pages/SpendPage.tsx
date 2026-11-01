@@ -3158,6 +3158,15 @@ export default function SpendPage() {
               sourceError={dailySourceError}
               unavailableButlers={dailyUnavailableButlers}
             />
+            <section aria-label="Reported runtime cost" className="mt-3 text-xs space-y-2">
+              <p>Operational totals are computed requested-route estimates. CLI estimates are separate comparison evidence.</p>
+              {(currentSummaryError || currentSummary?.data?.served_source_error) && <p role="status">Served cost evidence unavailable.</p>}
+              {!currentSummaryError && currentSummary?.data?.reported_cost_comparisons?.map((row) => (
+                <p key={`${row.attempt_id}:${row.execution_index}:${row.model_id}`}>
+                  {row.model_id}: CLI estimate {row.reported_cost_usd == null ? "unknown" : `$${row.reported_cost_usd.toFixed(6)}`}; computed model estimate {row.computed_served_cost_usd == null ? "unknown" : `$${row.computed_served_cost_usd.toFixed(6)}`}; {row.comparison_state === "comparable" ? `difference $${row.difference_usd?.toFixed(6)}` : row.comparison_state}.
+                </p>
+              ))}
+            </section>
             {dailyUnpricedModels.length > 0 && (
               <SourceDegradedNote
                 className="mt-3"

@@ -38,6 +38,7 @@ from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import append_stream, observe_invocation
 
 logger = logging.getLogger(__name__)
 
@@ -942,6 +943,7 @@ class OpenCodeAdapter(RuntimeAdapter):
         return build_config_file(mcp_servers, tmp_dir)
 
     @override
+    @observe_invocation("opencode")
     async def invoke(
         self,
         prompt: str,
@@ -1081,6 +1083,13 @@ class OpenCodeAdapter(RuntimeAdapter):
                         logger.debug("OpenCode stderr: %s", stderr[:500])
 
                     returncode = proc.returncode if proc.returncode is not None else 0
+                    append_stream(
+                        self,
+                        "opencode",
+                        stdout,
+                        configured=model,
+                        completion="error" if returncode else "success",
+                    )
 
                     self._last_process_info = {
                         "pid": proc.pid,

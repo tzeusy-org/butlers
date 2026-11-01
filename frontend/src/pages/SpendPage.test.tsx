@@ -1132,6 +1132,20 @@ describe("SpendPage — what changed", () => {
     expect(strip.textContent).not.toContain(
       "No spend change vs the prior window",
     );
+    expect(screen.getByLabelText("Reported runtime cost").textContent).toContain("computed requested-route estimates");
+    mockUseSpendSummary.mockImplementation(() => ({
+      data: { data: { total_cost_usd: 0, by_butler: {}, source_error: true,
+        served_source_error: true, reported_cost_comparisons: [{
+          attempt_id: 41, execution_index: 0, model_id: "claude-opus-4-6",
+          reported_cost_usd: 0.05, computed_served_cost_usd: null,
+          comparison_state: "unknown", difference_usd: null,
+        }] }, meta: {} }, isLoading: false, isError: false,
+    }));
+    await act(async () => { renderPage(); });
+    const evidence = screen.getAllByLabelText("Reported runtime cost").at(-1);
+    expect(evidence?.textContent).toContain("Served cost evidence unavailable.");
+    expect(evidence?.textContent).toContain("CLI estimate $0.050000");
+    expect(evidence?.textContent).toContain("computed model estimate unknown; unknown");
   });
 
   it("suppresses movers and the calm spend verdict when either comparison window is unpriced", async () => {
