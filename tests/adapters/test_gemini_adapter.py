@@ -13,6 +13,7 @@ Unique behaviors not in test_adapter_contract.py:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -91,26 +92,42 @@ async def test_invoke():
     mock_proc.communicate = AsyncMock(
         return_value=(json.dumps({"type": "result", "result": "Task done."}).encode(), b"")
     )
-    staged: dict[str, str] = {}
+    staged: dict[str, Any] = {}
 
     def _spawn(*_cmd: str, **kwargs: Any) -> AsyncMock:
-        staged["system_md"] = Path(kwargs["env"]["GEMINI_SYSTEM_MD"]).read_text()
+        env = kwargs["env"]
+        staged["system_md"] = Path(env["GEMINI_SYSTEM_MD"]).read_text(encoding="utf-8")
+        staged["settings"] = json.loads(Path(env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"]).read_text())
         return mock_proc
 
     with patch(_EXEC, side_effect=_spawn) as mock_sub:
         result_text, _, _ = await adapter.invoke(
             prompt="do something",
-            system_prompt="you are helpful",
+            system_prompt="you are helpful — ${AvailableTools} ${state_get_ToolName} ${HOME}",
             mcp_servers={"test": {"url": "http://localhost:9100/mcp"}},
             env={"GOOGLE_API_KEY": "gk-test"},
+            max_turns=7,
+            model="gemini-2.5-pro",
         )
     assert result_text == "Task done."
     assert mock_sub.call_args.kwargs["env"]["GOOGLE_API_KEY"] == "gk-test"
-    # gemini-cli 0.46.0 has a strict parser and no --system-prompt flag; the prompt is
-    # staged as a GEMINI_SYSTEM_MD file instead.
-    assert staged["system_md"] == "you are helpful"
+    # gemini-cli 0.46.0 has a strict parser and no system-prompt flag; the prompt is staged
+    # as a utf-8 GEMINI_SYSTEM_MD file. The CLI substitutes ${AvailableTools}-style tokens
+    # in that file, so the adapter breaks them with a zero-width space; others pass intact.
+    assert staged["system_md"] == (
+        "you are helpful — $​{AvailableTools} $​{state_get_ToolName} ${HOME}"
+    )
+    # The CLI has no --max-turns flag; model.maxSessionTurns in the staged system
+    # settings is its turn limit (exit 53 when reached).
+    assert staged["settings"]["model"] == {"maxSessionTurns": 7}
+    assert staged["settings"]["mcpServers"]["test"]["httpUrl"] == "http://localhost:9100/mcp"
     cmd = list(mock_sub.call_args[0])
     assert cmd[:2] == ["/usr/bin/gemini", "--sandbox=false"]
+    # Headless runs exit 55 in an untrusted folder; stream-json carries usage and the
+    # terminal result; -m makes the catalog model_id take effect.
+    assert "--skip-trust" in cmd
+    assert cmd[cmd.index("-o") + 1] == "stream-json"
+    assert cmd[cmd.index("-m") + 1] == "gemini-2.5-pro"
     assert "--system-prompt" not in cmd and cmd[cmd.index("--prompt") + 1] == "do something"
 
     # functionCall output
@@ -131,7 +148,7 @@ async def test_invoke():
         result_text2, tool_calls, _ = await adapter.invoke(
             prompt="use tools", system_prompt="", mcp_servers={}, env={}
         )
-    assert empty_sub.call_args.kwargs["env"] == {}
+    assert set(empty_sub.call_args.kwargs["env"]) == {"GEMINI_CLI_SYSTEM_SETTINGS_PATH"}
     assert (
         result_text2 == "Complete" and len(tool_calls) == 1 and tool_calls[0]["name"] == "state_get"
     )
@@ -355,6 +372,65 @@ async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() ->
     error, info = await run([counted])
     assert isinstance(error, TerminalResultError) and error.tool_calls == []
     assert info["is_pre_tool_call"] is False
+
+
+_RECORDED = Path(__file__).parent.parent / "fixtures" / "gemini_stream_json"
+
+
+async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -> None:
+    """Real 0.46.0 stream-json (see the fixture README): the echoed user prompt is not
+    result text, assistant ``delta`` chunks join, and the turn limit keeps tool evidence."""
+    from butlers.core.runtimes.served_identity import TerminalResultError
+
+    async def run(name: str, returncode: int) -> tuple[Any, dict]:
+        adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+        proc = AsyncMock(returncode=returncode, pid=7)
+        proc.communicate = AsyncMock(return_value=((_RECORDED / name).read_bytes(), b""))
+        with patch(_EXEC, return_value=proc):
+            try:
+                outcome: Any = await adapter.invoke(
+                    prompt="list files", system_prompt="", mcp_servers={}, env={}
+                )
+            except TerminalResultError as error:
+                outcome = error
+        return outcome, adapter.last_process_info
+
+    (text, tool_calls, usage), _ = await run("tool_run_success.jsonl", 0)
+    assert text == "Checking.\nListed the directory."
+    assert tool_calls == [
+        {
+            "id": "list_directory__list_directory_1793565529446_0",
+            "name": "list_directory",
+            "input": {"dir_path": "."},
+        }
+    ]
+    assert usage == {
+        "input_tokens": 120,
+        "output_tokens": 11,
+        "cache_read_input_tokens": 100,
+        "cache_creation_input_tokens": None,
+    }
+
+    error, info = await run("turn_limit_error.jsonl", 53)
+    assert isinstance(error, TerminalResultError)
+    assert error.served["executions"][0]["error"]["code"] == "max_turns"
+    assert [call["name"] for call in error.tool_calls] == ["list_directory"]
+    assert error.usage["input_tokens"] == 100
+    assert info["is_pre_tool_call"] is False and info["exit_code"] == 53
+
+
+async def test_invoke_staging_failure_removes_the_temp_dir(tmp_path: Path) -> None:
+    """A failure while staging system.md or settings never leaks the per-invocation dir."""
+    adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+    with (
+        patch("butlers.core.runtimes.gemini.tempfile.tempdir", str(tmp_path)),
+        patch.object(GeminiAdapter, "build_config_file", side_effect=OSError("disk full")),
+        patch(_EXEC) as spawn,
+        pytest.raises(OSError, match="disk full"),
+    ):
+        await adapter.invoke(prompt="p", system_prompt="sys", mcp_servers={}, env={})
+    spawn.assert_not_called()
+    assert os.listdir(tmp_path) == []
 
 
 def test_build_config_file_carries_the_invocation_header(tmp_path: Path):

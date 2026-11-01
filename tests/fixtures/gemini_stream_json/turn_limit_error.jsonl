@@ -1,0 +1,6 @@
+{"type":"init","model":"gemini-2.5-flash"}
+{"type":"message","role":"user","content":"list files"}
+{"type":"message","role":"assistant","content":"Checking.","delta":true}
+{"type":"tool_use","tool_name":"list_directory","tool_id":"list_directory__list_directory_1793565539154_0","parameters":{"dir_path":"."}}
+{"type":"tool_result","tool_id":"list_directory__list_directory_1793565539154_0","status":"success"}
+{"type":"result","status":"error","error":{"type":"FatalTurnLimitedError","message":"Reached max session turns for this session. Increase the number of turns by specifying maxSessionTurns in settings.json."},"stats":{"total_tokens":105,"input_tokens":100,"output_tokens":5,"cached":0,"input":100,"duration_ms":0,"tool_calls":1,"models":{"gemini-3.5-flash":{"total_tokens":105,"input_tokens":100,"output_tokens":5,"cached":0,"input":100}}}}

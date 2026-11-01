@@ -96,7 +96,8 @@ async def test_each_invocation_gets_its_own_config_path_and_cleans_up() -> None:
 
 async def test_no_servers_adds_no_mcp_wiring() -> None:
     seen = await _invoke({})
-    assert seen["settings_path"] is None
+    # Settings are still staged (they carry the turn limit) but name no MCP server.
+    assert seen["settings"]["mcpServers"] == {}
     assert "--allowed-mcp-server-names" not in seen["cmd"]
 
 
