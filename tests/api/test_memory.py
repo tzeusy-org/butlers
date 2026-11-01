@@ -2812,6 +2812,7 @@ def _catalog_search_row(
     memory_type: str = "fact",
     score_key: str = "rrf_score",
     score: float = 0.42,
+    content_authority: str | None = "owner",
 ) -> dict:
     """Build a dict mimicking a public.memory_catalog search_catalog() result row."""
     return {
@@ -2832,6 +2833,7 @@ def _catalog_search_row(
         "importance": 6.0,
         "retention_class": "operational",
         "sensitivity": "normal",
+        "content_authority": content_authority,
         score_key: score,
     }
 
@@ -2856,7 +2858,7 @@ async def test_catalog_search_returns_normalized_results(app, monkeypatch):
         "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
     )
 
-    row = _catalog_search_row()
+    row = _catalog_search_row(content_authority="third_party")
     captured: dict = {}
 
     async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
@@ -2879,6 +2881,8 @@ async def test_catalog_search_returns_normalized_results(app, monkeypatch):
     assert result["title"] == "Budget review cadence"
     assert result["memory_type"] == "fact"
     assert result["score"] == pytest.approx(0.42)
+    # REQ-module-memory-013: the catalog row's authority class reaches the caller.
+    assert result["content_authority"] == "third_party"
     # Defaults propagated through to search_catalog.
     assert captured["query"] == "budget review"
     assert captured["mode"] == "hybrid"
