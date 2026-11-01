@@ -110,6 +110,12 @@ async def test_last_process_info_populated(
     assert info is not None
     assert info["pid"] == 12345 and info["exit_code"] == 0
     assert "warn" in info["stderr"] and info["runtime_type"] == runtime_type
+    assert info["served"]["runtime_type"] == runtime_type
+    assert (
+        info["served"]["executions"][0]["served_models"] == []
+        if info["served"]["executions"]
+        else True
+    )
 
     # Timeout populates last_process_info with exit_code=-1
     mock_proc2 = AsyncMock()
@@ -126,3 +132,5 @@ async def test_last_process_info_populated(
     assert info2 is not None
     assert info2["pid"] == 5678 and info2["exit_code"] == -1
     assert "timeout" in info2["stderr"].lower()
+    assert info2["served"]["executions"][-1]["completion_state"] == "timeout"
+    assert info2["served"]["executions"][-1]["model_usage"] == []

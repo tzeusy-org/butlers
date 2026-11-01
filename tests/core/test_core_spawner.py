@@ -3244,6 +3244,9 @@ class TestCancelSession:
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock) as mock_complete,
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as mock_attempt,
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000ca")
             mock_create.return_value = fake_session_id
@@ -3284,6 +3287,11 @@ class TestCancelSession:
             assert args[0] is mock_pool and args[1] == fake_session_id
             assert kwargs["success"] is False
             assert kwargs["error"] == SESSION_CANCELLED_ERROR
+            # The invoked attempt is recorded once, as the owner's own Stop.
+            mock_attempt.assert_awaited_once()
+            attempt = mock_attempt.await_args.kwargs
+            assert attempt["outcome"] == "owner_cancelled"
+            assert attempt["failure_reason"] == "owner_cancelled"
 
     async def test_cancel_after_completion_is_benign_noop(self, tmp_path: Path):
         """A session that already finished is not cancellable — no false 'stopped' claim."""
@@ -3865,6 +3873,9 @@ class TestCancelSession:
         with (
             patch("butlers.core.spawner.session_create", new_callable=AsyncMock) as mock_create,
             patch("butlers.core.spawner.session_complete", new_callable=AsyncMock),
+            patch(
+                "butlers.core.spawner._write_dispatch_attempt", new_callable=AsyncMock
+            ) as mock_attempt,
         ):
             fake_session_id = uuid.UUID("00000000-0000-0000-0000-0000000000ce")
             mock_create.return_value = fake_session_id
@@ -3901,3 +3912,9 @@ class TestCancelSession:
             finally:
                 if not trigger_task.done():
                     trigger_task.cancel()
+
+        # Shutdown drain, not the overlapping owner Stop, ended the attempt.
+        mock_attempt.assert_awaited_once()
+        attempt = mock_attempt.await_args.kwargs
+        assert attempt["outcome"] == "suppressed"
+        assert attempt["failure_reason"] == "drain_cancelled"

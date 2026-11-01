@@ -356,7 +356,8 @@ class DiscretionDispatcher:
 
     async def _adapter_for(self, candidate: Candidate) -> RuntimeAdapter:
         provider_config = await self._resolve_provider_config(candidate.model_id)
-        return self._get_or_create_adapter(candidate.runtime_type, provider_config)
+        # One worker per invocation: its serving evidence belongs to this call alone.
+        return self._get_or_create_adapter(candidate.runtime_type, provider_config).create_worker()
 
     def get_auth_health(self) -> dict[str, Any]:
         """Lightweight, synchronous auth-health snapshot for connector /status.

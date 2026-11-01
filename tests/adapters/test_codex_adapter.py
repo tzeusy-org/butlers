@@ -888,6 +888,24 @@ _MCP_SERVERS = {"switchboard": {"url": "http://localhost:41100/mcp"}}
 _MCP_DISCOVERY_STDERR = b"MCP connection failed: connection refused"
 
 
+async def test_later_turn_completed_supersedes_transient_error_event():
+    """A transient ``error`` event followed by ``turn.completed`` at exit 0 is a success."""
+    adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+    proc = AsyncMock(returncode=0, pid=7)
+    transient = json.dumps({"type": "error", "message": "Reconnecting... 1/5"}) + "\n"
+    proc.communicate = AsyncMock(return_value=(transient.encode() + _make_completed_stdout(), b""))
+    with patch(_EXEC, return_value=proc), patch(_PREWARM):
+        result_text, _, usage = await adapter.invoke(
+            prompt="test", system_prompt="", mcp_servers={}, env={}
+        )
+    assert result_text == "Recovered answer"
+    assert usage == {"input_tokens": 12, "output_tokens": 34}
+    execution = adapter.last_process_info["served"]["executions"][0]
+    assert execution["completion_state"] == "success"
+    assert execution["error"]["is_error"] is not True
+    assert execution["aggregate_usage"]["output_tokens"] == 34
+
+
 async def test_retry_on_mcp_connection_failure():
     """invoke() retries when MCP tools not discovered, succeeds on second attempt."""
     adapter = CodexAdapter(codex_binary="/usr/bin/codex")

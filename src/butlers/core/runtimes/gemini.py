@@ -33,6 +33,11 @@ from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import (
+    TerminalResultError,
+    append_stream,
+    observe_invocation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +267,7 @@ class GeminiAdapter(RuntimeAdapter):
         return _find_gemini_binary()
 
     @override
+    @observe_invocation("gemini")
     async def invoke(
         self,
         prompt: str,
@@ -306,8 +312,9 @@ class GeminiAdapter(RuntimeAdapter):
         Returns
         -------
         tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]
-            A tuple of (result_text, tool_calls, usage). Usage is always
-            None for the Gemini adapter (no token reporting).
+            A tuple of (result_text, tool_calls, usage). Valid terminal
+            stream counters supply normalized uncached/cache usage; absent
+            or contradictory counters remain unknown.
 
         Raises
         ------
@@ -373,6 +380,13 @@ class GeminiAdapter(RuntimeAdapter):
                 logger.debug("Gemini stderr: %s", stderr[:500])
 
             returncode = proc.returncode or 0
+            served = append_stream(
+                self,
+                "gemini",
+                stdout,
+                configured=model,
+                completion="error" if returncode else "success",
+            )
             self._last_process_info = {
                 "pid": proc.pid,
                 "exit_code": returncode,
@@ -392,10 +406,12 @@ class GeminiAdapter(RuntimeAdapter):
                 raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
 
             result_text, tool_calls = _parse_gemini_output(stdout, stderr)
-            # Token reporting contract: Gemini CLI does not expose token counts
-            # in its output format. Usage is None — no ledger row will be written
-            # for this invocation. This is intentional and documented.
-            return result_text, tool_calls, None
+            aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
+            usage = aggregate if aggregate.get("input_tokens") is not None else None
+            if any(item["error"]["is_error"] is True for item in served["executions"]):
+                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+                raise TerminalResultError(served, usage, tool_calls)
+            return result_text, tool_calls, usage
 
         except TimeoutError:
             logger.error("Gemini CLI timed out after %ds", effective_timeout)
