@@ -66,8 +66,9 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    make test-ci-integration
    ```
 
-   CI also runs `guards` for static checks, `check-preflight` for the lane-group
-   totals, per-lane budgets and smoke/release evidence,
+   CI also runs `guards` for static checks, `check-preflight` (beside the lane groups)
+   for the fresh lane counts, per-lane budgets and smoke/release evidence, `check-totals`
+   for the lane-group totals,
    plus the fail-closed `check` fan-in, so these targets alone are not a full
    hosted Python gate claim. Run only one broad
    Docker-backed lane at a time, and only one owner may run a broad local lane
@@ -89,8 +90,9 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    `check-affected`; any planner uncertainty (escalation trigger, empty plan, or
    a plan reaching into `tests/e2e/`) reports `mode=full` and all eleven children run.
    Measured precision is in `about/craft-and-care/testing-and-verification.md`.
-   `check-preflight` enforces one fresh `--collect-only` count per lane against
-   the sum of that lane's pytest-split group counts and against the per-lane
+   `check-preflight` takes one fresh `--collect-only` count per lane while the groups run;
+   `check-totals` then requires the sum of that lane's pytest-split group counts to match
+   it, and preflight checks the same count against the per-lane
    collected-test budget in `scripts/test-budget-baseline.json`: a PR that
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
@@ -284,8 +286,9 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
 
 ## CI fan-out and guard predicates
 
-- CI fan-out: route→five unit/six integration pytest-split groups→lane totals, budgets and dedicated
-  smoke/release evidence in `check-preflight`, then
+- CI fan-out: route→five unit/six integration pytest-split groups beside `check-preflight`
+  (fresh lane counts, budgets and dedicated smoke/release evidence)→lane totals in
+  `check-totals`, then
   the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
   `always()` alone does not enforce prerequisites: route and guards verdicts
   must succeed, and preflight is checked independently of the heavy-shard consistency state.
@@ -295,8 +298,9 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
   accept success and deny skips until an explicit policy is added. Malformed or missing results,
   classifier outputs or planner paths fail closed.
   Lock, lint, format and SQL safety run in guards with their original scopes;
-  the lane-group totals (each lane's pytest-split group counts against one fresh
-  `--collect-only` count), budgets and smoke/release evidence run in preflight. Lane groups
+  the fresh `--collect-only` lane counts, budgets and smoke/release evidence run in preflight
+  beside the groups, and `check-totals` compares each lane's pytest-split group counts with
+  those counts once the groups finish. Lane groups
   balance on the committed `.test_durations`; the nightly `durations-refresh` job opens a PR
   to update it (bu-29wkwj.2). `make check-guards` includes the same
   nonmutating static checks (`check-lock`, `lint`, `check-format`, `check-for-update-joins`).

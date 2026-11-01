@@ -199,3 +199,106 @@ def test_merged_durations_cover_every_group_and_refuse_a_missing_one(tmp_path: P
     with pytest.raises(ValueError, match=r"integration: no durations for groups \[6\]"):
         ci_lanes.merge_durations(evidence, tmp_path / "refused")
     assert not (tmp_path / "refused").exists()
+
+
+def _budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **budgets: int) -> None:
+    import check_test_budget
+
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {lane: {"budget": value, "collected_at_update": 0} for lane, value in budgets.items()}
+        )
+    )
+    monkeypatch.setattr(check_test_budget, "BASELINE_PATH", path)
+
+
+def test_early_count_writes_lane_counts_and_passes_within_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ci_lanes, "fresh_lane_counts", lambda repo_root: {"unit": 50, "integration": 60}
+    )
+    _budget(tmp_path, monkeypatch, unit=50, integration=60)
+    output = tmp_path / "counts" / "lane-counts.json"
+
+    assert ci_lanes.count(output) == 0
+    assert json.loads(output.read_text()) == {"integration": 60, "unit": 50}
+
+
+def test_early_count_fails_fast_when_a_lane_is_over_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        ci_lanes, "fresh_lane_counts", lambda repo_root: {"unit": 51, "integration": 60}
+    )
+    _budget(tmp_path, monkeypatch, unit=50, integration=60)
+
+    assert ci_lanes.count(tmp_path / "lane-counts.json") == 1
+    assert "unit" in capsys.readouterr().err
+
+
+def _write_groups(directory: Path, counts: dict[str, dict[int, int]]) -> None:
+    for lane, groups in counts.items():
+        for group, collected in groups.items():
+            path = directory / ci_lanes.evidence_name(lane, group) / ci_lanes.COUNT_FILE
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({"lane": lane, "group": group, "collected": collected}))
+
+
+def test_totals_against_the_early_count_needs_no_fresh_collection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(repo_root: Path) -> dict[str, int]:
+        raise AssertionError("totals --expected must not collect again")
+
+    monkeypatch.setattr(ci_lanes, "fresh_lane_counts", refuse)
+    counts = _complete()
+    _write_groups(tmp_path / "groups", counts)
+    expected = tmp_path / "lane-counts.json"
+    expected.write_text(json.dumps(_expected(counts)))
+
+    assert ci_lanes.totals(tmp_path / "groups", expected_path=expected) == 0
+
+    expected.write_text(json.dumps({**_expected(counts), "unit": _expected(counts)["unit"] + 1}))
+    assert ci_lanes.totals(tmp_path / "groups", expected_path=expected) == 1
+
+
+@pytest.mark.parametrize(
+    "record",
+    [{"unit": 1}, {"unit": 1, "integration": "2"}, {"unit": True, "integration": 2}, [1, 2]],
+)
+def test_malformed_early_counts_are_refused(tmp_path: Path, record: object) -> None:
+    path = tmp_path / "lane-counts.json"
+    path.write_text(json.dumps(record))
+
+    with pytest.raises(ValueError, match="malformed lane counts"):
+        ci_lanes.read_lane_counts(path)
+
+
+def test_totals_against_the_early_count_runs_on_the_standard_library_alone(
+    tmp_path: Path,
+) -> None:
+    counts = _complete()
+    _write_groups(tmp_path / "groups", counts)
+    expected = tmp_path / "lane-counts.json"
+    expected.write_text(json.dumps(_expected(counts)))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(REPO_ROOT / "scripts/ci_lanes.py"),
+            "totals",
+            "--counts",
+            str(tmp_path / "groups"),
+            "--expected",
+            str(expected),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
