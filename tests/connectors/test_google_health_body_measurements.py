@@ -225,12 +225,12 @@ async def test_failed_submission_keeps_checkpoint_and_replays_same_keys() -> Non
     [
         pytest.param(
             [{"dataPoints": [_weight_point()], "nextPageToken": "t1"}, RuntimeError("503")],
-            RuntimeError,
+            "RuntimeError",
             id="page-fetch-fails",
         ),
         pytest.param(
             [{"dataPoints": [_weight_point()], "nextPageToken": "t"}] * gh._MAX_WINDOW_PAGES,
-            gh.GoogleHealthPollIncompleteError,
+            "GoogleHealthPollIncompleteError",
             id="page-bound-exceeded",
         ),
     ],
@@ -241,7 +241,10 @@ async def test_incomplete_window_submits_nothing_and_keeps_checkpoint(
     connector, acct, state, _api = _poll_harness(pages, resource)
     connector._submit_envelope = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-    with pytest.raises(error):
+    # Resolve the class at run time: another test reloads ``google_health``, so a class
+    # captured at collection time would not match the one the reloaded module raises.
+    expected = RuntimeError if error == "RuntimeError" else getattr(gh, error)
+    with pytest.raises(expected):
         await connector._poll_resource(acct, state)
 
     connector._submit_envelope.assert_not_awaited()
