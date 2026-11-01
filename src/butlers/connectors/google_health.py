@@ -2436,7 +2436,12 @@ class GoogleHealthConnector:
             return
 
         uvicorn_config = uvicorn.Config(
-            app=app, host="127.0.0.1", port=port, log_level="warning", access_log=False
+            app=app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            access_log=False,
+            log_config=None,
         )
         server = uvicorn.Server(uvicorn_config)
         self._health_server = server

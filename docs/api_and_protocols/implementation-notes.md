@@ -37,3 +37,8 @@ Moved verbatim from `AGENTS.md` (API and security contracts).
 - `src/butlers/core/logging.py` pins `httpx` and `httpcore` to `WARNING`: at INFO they log full
   request URLs, which carry Telegram bot tokens and OAuth query parameters. Keep that pin on any new
   logging setup.
+- `CredentialRedactionFilter` (Telegram `/bot<token>/`, `Bearer`, `?key=`-style query parameters)
+  sits on every handler `configure_logging` installs, never on the root logger: a logger's own
+  filters only see records logged directly to it, so a root filter never sees records propagated
+  from `httpx` or `butlers.*`. It scrubs the message only; exception text in tracebacks is not
+  scrubbed, so log only the exception type for errors raised from credential-bearing URLs.
