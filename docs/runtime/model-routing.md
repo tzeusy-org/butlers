@@ -225,8 +225,12 @@ The ledger also carries a token digest for five tracked layers of the composed s
 `butlers.core.model_call.call_model(pool, spec, attempt_fn, adapter_for=..., sink=...)` is the
 one attempt loop for single-call (session-less) model invocations. It owns tier resolution and
 spend routing rules, the monthly spend ceiling (before the first attempt and before every
-relaunch), per-entry quota skips, failover classification, same-tier failover, attempt rows, usage
-recording and the failover metrics. The caller supplies only `attempt_fn`, which invokes a resolved
+relaunch), per-entry quota skips, failover classification, same-tier failover, attempt rows and the
+failover metrics. Each invoked attempt (success, runtime failure or owner cancellation) commits one
+attempt row together with its token evidence (`unmeasurable` when the adapter reported no complete
+counts) and its served-identity record, under a fresh `attempt_key`. `adapter_for` returns an
+invocation-owned worker (`create_worker()`), and the kernel snapshots that worker's evidence before
+any persistence await, so concurrent calls never borrow each other's serving metadata. The caller supplies only `attempt_fn`, which invokes a resolved
 adapter for one candidate. `CallSpec.max_relaunches` bounds runtime-failure relaunches (RFC 0038
 D14 callers pass `1`); a failure whose exception carries captured `tool_calls` is never relaunched.
 Every call is also capped at `MAX_ATTEMPTS` (5) invocations and quota skips. Adapters come from
@@ -456,3 +460,10 @@ psql -h localhost -U butlers -d butlers -c \
 - [LLM CLI Spawner](spawner.md) --- where model resolution integrates into the spawn pipeline, including same-tier failover flow
 - [Session Lifecycle](session-lifecycle.md) --- how resolution metadata is recorded on sessions
 - [Scheduler Execution](scheduler-execution.md) --- how scheduled tasks specify complexity tiers
+
+
+## Served identity evidence
+
+Serving evidence belongs beside the immutable requested-route resolution receipt. A catalog join proves which route was invoked, not which internal provider model served. Breaker/routing scores remain route reliability. Separate normalized serving metadata and provider_breakdown rows disclose actual response, CLI-reported, request-fallback and unknown provenance; no serving mismatch reroutes. Exit-zero typed terminal errors cease being success, but no-side-effect/default-closed retry gates stay. Existing aggregate ledger quota/ceiling totals remain computed requested-route estimates; serving/CLI cost comparisons are separate, scope-qualified and never additive. Claude cumulative estimated costs cannot be charged as attempt costs without a validated same-lineage predecessor. Pinned Codex lacks model/version/cost; Gemini reported model keys have fallback-ambiguous provenance. Actual /opt/cli-versions.txt expected image versions are distinct from emitted versions. Missing values, missing prices and unavailable sources are unknown, not requested-as-served or zero.
+
+Normalized input_tokens means uncached input. Cache-read and cache-creation counts are independent and may exceed uncached input. Only a pinned provider-inclusive prompt counter is compared with its explicitly included cache component before checked subtraction. Unproved cache overlap stays unknown; report and price proven buckets once.

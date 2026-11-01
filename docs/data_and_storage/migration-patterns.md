@@ -512,3 +512,9 @@ the existing complete backup and restore scripts retain every ledger row, owner,
 policy and constraint. No backup exclusion or new privileged owner is needed.
 Downgrade refuses durable goals/admission history. `core_273` likewise refuses
 to discard configured admission limits. These migrations do not activate callers.
+
+### Served identity evidence
+
+Serving evidence is additive core-owned data (`core_290`). Do not edit historical revisions or backfill serving from requested labels. Multiple schema replays must preserve the public table checks and exact data. Keep existing one aggregate partitioned ledger record; per-model usage belongs in a separate evidence table so every quota/ceiling read does not double count. A populated downgrade refuses instead of deleting serving receipts; prove refusal with planted sentinels and separate readback. Replaying bootstrap/runtime roles is required for SQL evidence; a mock and a role string are not grant/RLS proof.
+
+Managed reapplication creates `public.model_served_usage` as the actual established owner of `public.model_dispatch_attempts`, using that owner's existing per-creator default ACLs and then restoring the calling role. This preserves ordinary writer visibility after privileged empty downgrade/re-upgrade without adding a grant profile or principal. Discretion's pool fixtures must install the same `register_jsonb_codec` initializer as runtime pools: the atomic attempt/usage recorder binds structured JSONB evidence. An unconfigured-pool refusal is a fixture diagnostic, not permission to stringify evidence, weaken atomicity or change the runtime outcome.
