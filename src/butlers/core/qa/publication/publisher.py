@@ -335,8 +335,14 @@ class QaPublisher:
     def _resume(
         operation: PublicationOperation, kind: OperationKind, transport: ClosedTransport
     ) -> PublicationResult | None:
-        """A prior run already reached this operation: reuse success, never re-egress."""
-        if operation.stage == "succeeded":
+        """A prior run already reached this operation: reuse success, never re-egress.
+
+        A hold reconciled as ``resource_found`` counts as success: the read-only
+        reconciler proved the bound resource exists (for ``pr_create``, it adopted the
+        only PR from the bound head onto the bound base).
+        """
+        found = operation.stage == "reconciled" and operation.reconciliation == "resource_found"
+        if operation.stage == "succeeded" or found:
             if kind is OperationKind.PR_CREATE and operation.new_object_id:
                 transport.adopt_created_pr(int(operation.new_object_id))
             return None

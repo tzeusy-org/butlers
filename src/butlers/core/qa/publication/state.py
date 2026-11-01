@@ -195,6 +195,24 @@ async def record_outcome(
     return recorded is not None
 
 
+async def get_operation(
+    pool: Any, attempt_id: uuid.UUID, kind: OperationKind
+) -> PublicationOperation | None:
+    """Return the attempt's operation of ``kind``, or ``None`` when none was bound."""
+    try:
+        row = await pool.fetchrow(
+            f"""
+            SELECT {_COLUMNS} FROM public.qa_publication_operations
+            WHERE attempt_id = $1 AND kind = $2
+            """,
+            attempt_id,
+            kind.value,
+        )
+    except _DATASTORE_ERRORS as exc:
+        raise PublicationRefused("datastore_unavailable") from exc
+    return None if row is None else PublicationOperation.from_row(row)
+
+
 async def record_reconciliation(
     pool: Any,
     operation_id: uuid.UUID,
@@ -205,8 +223,11 @@ async def record_reconciliation(
     """Release a held lineage with an exact, read-only reconciliation.
 
     ``resource_found`` must name exactly the bound ``expected_object_id``;
-    ``resource_absent`` records that the bound resource does not exist.  Any
-    other observation leaves the hold in place.
+    ``resource_absent`` records that the bound resource does not exist.  A
+    ``pr_create`` binds no PR number before egress (``expected_object_id`` is
+    NULL), so its ``resource_found`` adopts the observed PR number instead
+    (core_298): the reconciler proves it is the only PR for the bound head and
+    base.  Any other observation leaves the hold in place.
     """
     try:
         recorded = await pool.fetchval(
@@ -219,6 +240,10 @@ async def record_reconciliation(
               AND (
                   ($2 = 'resource_found' AND $3::text IS NOT NULL
                       AND $3::text = expected_object_id)
+                  OR ($2 = 'resource_found' AND kind = 'pr_create'
+                      AND expected_object_id IS NULL
+                      AND $3::text ~ '^[1-9][0-9]{0,9}$'
+                      AND new_object_id IS NULL)
                   OR ($2 = 'resource_absent' AND $3::text IS NULL)
               )
             RETURNING id
