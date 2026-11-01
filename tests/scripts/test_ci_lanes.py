@@ -107,6 +107,8 @@ def test_group_command_selects_its_lane_group_over_the_committed_durations() -> 
     assert command[command.index("--splitting-algorithm") + 1] == "duration_based_chunks"
     assert command[command.index("--durations-path") + 1] == ".test_durations"
     assert command[command.index("-p") + 1] == "ci_group_count"
+    # Skip reasons reach the log, so a real-PG node that silently skips is visible.
+    assert "-rs" in command
     assert "--ignore=tests/e2e" not in command
     assert not any(part.startswith("--cov") for part in command)
     with pytest.raises(ValueError, match="between 1 and 6"):
