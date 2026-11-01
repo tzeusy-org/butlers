@@ -494,6 +494,7 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
         pr_url=None,
         pr_number=None,
         finding_structured_evidence={"investigation_notes": _notes_payload()},
+        pr_absence_proven=True,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 
@@ -508,6 +509,34 @@ async def test_case_detail_marks_retained_local_diff_as_unpublished_proposal() -
     assert body["investigation_notes"]["diff_snapshot"]
 
 
+@pytest.mark.parametrize("pr_absence_proven", [False, None])
+async def test_case_detail_never_claims_unpublished_without_proof_of_no_pr(
+    pr_absence_proven: bool | None,
+) -> None:
+    """A retained diff plus missing PR metadata is not proof that no PR exists.
+
+    A lost ``pr_create`` response leaves no local PR metadata while a PR may
+    exist, so without ledger proof of absence the state stays ambiguous.
+    """
+    attempt_id = _uuid7_with_timestamp(1_771_234_567_901)
+    row = _make_case_row(
+        id=attempt_id,
+        status="failed",
+        error_detail="publication_ambiguous",
+        finding_structured_evidence={"investigation_notes": _notes_payload()},
+        pr_absence_proven=pr_absence_proven,
+    )
+    app, _pool = _build_app(fetchrow_result=row, rows=[])
+
+    response = await _call(app, f"/api/qa/cases/{attempt_id}")
+
+    assert response.status_code == 200
+    body = response.json()["data"]
+    assert body["proposal_state"] == "ambiguous"
+    assert body["proposal_diff_snapshot"] == _notes_payload()["diff_snapshot"]
+    assert body["pr"] is None
+
+
 async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> None:
     attempt_id = _uuid7_with_timestamp(1_771_234_567_900)
     diff_snapshot = [{"kind": "+", "text": "fixed = True"}]
@@ -516,6 +545,7 @@ async def test_case_detail_retains_diff_when_narrative_notes_are_invalid() -> No
         status="failed",
         error_detail="git_auth_failed: repository write authorization failed",
         finding_structured_evidence={"investigation_notes": {"diff_snapshot": diff_snapshot}},
+        pr_absence_proven=True,
     )
     app, _pool = _build_app(fetchrow_result=row, rows=[])
 

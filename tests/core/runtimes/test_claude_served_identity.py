@@ -35,10 +35,12 @@ _RECORDINGS = Path(__file__).parents[2] / "fixtures" / "claude_served_identity"
 async def test_recorded_claude_served_identity_contract():
     """Genuine CLI 2.1.316 recordings: two models, error_max_turns, no modelUsage."""
 
-    async def replay(name: str, returncode: int):
+    adapter_info: dict = {}
+
+    async def replay(name: str, returncode: int, extra: bytes = b""):
         adapter = ClaudeCodeAdapter(claude_binary="/recorded/claude")
         process = AsyncMock(returncode=returncode, pid=7)
-        stdout = (_RECORDINGS / f"{name}.jsonl").read_bytes()
+        stdout = extra + (_RECORDINGS / f"{name}.jsonl").read_bytes()
         process.communicate = AsyncMock(return_value=(stdout, b""))
         outcome: object
         with patch(
@@ -50,6 +52,8 @@ async def test_recorded_claude_served_identity_contract():
                 )
             except Exception as exc:  # noqa: BLE001 -- each subcase asserts the exception type
                 outcome = exc
+        adapter_info.clear()
+        adapter_info.update(adapter.last_process_info)
         return outcome, adapter.last_process_info["served"]
 
     # Subcase: two models served one invocation (Sonnet main loop, Haiku subagent).
@@ -78,13 +82,24 @@ async def test_recorded_claude_served_identity_contract():
     assert execution["reported_cost"]["value"] == "0.067815100"
     assert "recorded response removed" not in json.dumps(served)
 
-    # Subcase: error_max_turns at the recorded exit code (CLI 2.1.316 exits 1).
+    # Subcase: error_max_turns at the recorded exit code (CLI 2.1.316 exits 1). The parseable
+    # result envelope keeps the attempt's usage, and its two turns prove the Bash tool ran,
+    # so the failure is not pre-tool-call. The exit detail stays in the classified message.
     outcome, served = await replay("error_max_turns", 1)
-    assert isinstance(outcome, RuntimeError) and not isinstance(outcome, TerminalResultError)
+    assert isinstance(outcome, TerminalResultError)
+    assert outcome.usage == {
+        "input_tokens": 2,
+        "output_tokens": 74,
+        "cache_read_input_tokens": 11616,
+        "cache_creation_input_tokens": 15473,
+    }
+    assert str(outcome).startswith("Claude CLI exited with code 1: ")
+    assert outcome.served["executions"][0]["error"]["code"] == "max_turns"
     execution = served["executions"][0]
     assert execution["error"] == {**execution["error"], "is_error": True, "code": "max_turns"}
     assert execution["completion_state"] == "error"
     assert [row["model_id"] for row in execution["model_usage"]] == ["claude-haiku-5-5"]
+    assert adapter_info["is_pre_tool_call"] is False and adapter_info["exit_code"] == 1
 
     # Subcase: the same terminal result at exit 0 (earlier CLIs) is still a failure,
     # and it carries the invocation's usage for the attempt row.
@@ -94,11 +109,37 @@ async def test_recorded_claude_served_identity_contract():
     assert served["executions"][0]["error"]["code"] == "max_turns"
 
     # Subcase: no modelUsage (unknown model) leaves served identity empty, never the request.
+    # One turn and no tool_use: the failure stays pre-tool-call for failover.
     outcome, served = await replay("no_model_usage", 1)
-    assert isinstance(outcome, RuntimeError)
+    assert isinstance(outcome, TerminalResultError)
+    assert adapter_info["is_pre_tool_call"] is True
     execution = served["executions"][0]
     assert execution["model_usage"] == [] and execution["served_models"] == []
     assert execution["error"]["is_error"] is True
+
+    # Synthetic CLI-shaped tool_use (nested under ``message``) also proves tools ran, even
+    # when the recording's single turn says nothing more.
+    tool_use = {
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}]},
+    }
+    outcome, _ = await replay("no_model_usage", 1, json.dumps(tool_use).encode() + b"\n")
+    assert isinstance(outcome, TerminalResultError)
+    assert adapter_info["is_pre_tool_call"] is False
+
+    # A non-zero exit with no result envelope keeps the plain pre-tool-call RuntimeError.
+    adapter = ClaudeCodeAdapter(claude_binary="/recorded/claude")
+    process = AsyncMock(returncode=1, pid=7)
+    process.communicate = AsyncMock(return_value=(b"", b"boom"))
+    with (
+        patch(
+            "butlers.core.runtimes.claude_code.asyncio.create_subprocess_exec", return_value=process
+        ),
+        pytest.raises(RuntimeError, match="exited with code 1: boom") as caught,
+    ):
+        await adapter.invoke(prompt="x", system_prompt="", mcp_servers={}, env={})
+    assert not isinstance(caught.value, TerminalResultError)
+    assert adapter.last_process_info["is_pre_tool_call"] is True
 
 
 async def test_claude_served_identity_conformance(tmp_path):
