@@ -17,7 +17,7 @@ Scope: v1-mandatory
 
 #### Scenario: Unknown collection cannot become a budget pass
 - **WHEN** the fresh collect-only run fails
-- **THEN** check-preflight refuses both the totals and the budget, and the required check fails
+- **THEN** check-preflight refuses the count and the budget, check-totals cannot run, and the required check fails
 
 #### Scenario: Historical counts do not replace current population
 - **WHEN** the committed budget baseline or an old count is presented
@@ -203,7 +203,7 @@ Scope: v1-mandatory
 
 #### Scenario: Every moved checker has an enforcing survivor
 - **WHEN** inventory, partition, receipt, budget, smoke or browser-build enforcement moves
-- **THEN** each has a named survivor: the check-preflight totals (drops and duplicates), the check-preflight, `make check` and pre-push budget, the check-preflight smoke command, and the guards and browser builds
+- **THEN** each has a named survivor: the check-totals totals (drops and duplicates), the check-preflight, `make check` and pre-push budget, the check-preflight smoke command, and the guards and browser builds
 
 #### Scenario: Parallel changes retain source ownership
 - **WHEN** the .5 setup/observer/worker cache work or other current protected/public hunks overlap

@@ -587,7 +587,7 @@ jobs:
     # Full mode only: no group may drop or duplicate a test. Each lane's group
     # counts must sum to check-preflight's fresh --collect-only count. Standard
     # library only, so it needs no Python environment setup.
-    if: always() && needs.route.outputs.mode == 'full' && needs.check-preflight.result == 'success'
+    if: ${{ !cancelled() && needs.route.outputs.mode == 'full' && needs.check-preflight.result == 'success' }}
 
     steps:
       - uses: actions/checkout@v6

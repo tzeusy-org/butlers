@@ -3,6 +3,7 @@
 - [x] 1.1 Set up every ci.yml Python job with the composite action.
 - [x] 1.2 Run the unit and integration lanes as pytest-split groups through `scripts/ci_lanes.py`, recording each group's collected count.
 - [x] 1.3 Check each lane's group total against one fresh collect-only count in check-preflight, with the per-lane budget on the same counts.
+- [x] 1.3a Take that count beside the groups in check-preflight and compare the totals in a stdlib-only check-totals job after them, so the budget fails early (bu-q1hzqn.12).
 - [x] 1.4 Build the browser bundle inside the e2e job so it no longer waits for guards.
 
 ## 2. Durations

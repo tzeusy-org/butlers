@@ -1556,8 +1556,8 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     check_totals = jobs["check-totals"]
     assert check_totals["needs"] == ["route", "check-preflight", "check-unit", "check-integration"]
     assert check_totals["if"] == (
-        "always() && needs.route.outputs.mode == 'full' "
-        "&& needs.check-preflight.result == 'success'"
+        "${{ !cancelled() && needs.route.outputs.mode == 'full' "
+        "&& needs.check-preflight.result == 'success' }}"
     )
     assert not any("uv" in step.get("run", "") for step in check_totals["steps"])
     # Each group runs its pytest-split slice through the one lane runner, starting
