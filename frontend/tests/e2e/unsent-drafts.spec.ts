@@ -267,6 +267,117 @@ test("chat restores local text without replay and preserves the existing accepte
   expect(posts).toHaveLength(1);
 });
 
+// REQ-dashboard-chat-ui-017 and adopted chat.message storage identity: actual
+// IndexedDB, real posture/useDraft/DraftSession, only deterministic HTTP fixtures.
+test("archived conversations retain their exact draft across remount and reconcile deliberate follow-ups", async ({ page, context }) => {
+  type Summary = ResponseOf<"getConversationById">;
+  let current: Summary;
+  const patches: { owner: string; id: string; body: unknown }[] = [];
+  const posts: { owner: string; id: string; body: { message: string; message_id: string } }[] = [];
+  const creates: string[] = [];
+  await context.route((url) => url.pathname === "/api/butlers/switchboard", (route) => route.fulfill({
+    json: mockResponse("getButler", { meta: {}, data: { name: "switchboard", status: "running", port: 0, type: "butler", sessions_24h: 0, modules: [], schedules: [], skills: [] } }),
+  }));
+  await context.route((url) => /\/conversations(?:\/|$)/.test(url.pathname), async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === `/api/conversations/${current.id}`) {
+      return route.fulfill({ json: mockResponse("getConversationById", current) });
+    }
+    const base = `/api/butlers/${current.butler_name}/conversations`;
+    if (url.pathname === base) {
+      if (method === "POST") { creates.push(url.pathname); return route.fulfill({ status: 500 }); }
+      const status = url.searchParams.get("status") ?? "active";
+      return route.fulfill({ json: mockResponse("listConversations", { data: status === current.status ? [current] : [], meta: { total: 1, offset: 0, limit: 50, has_more: false } }) });
+    }
+    if (url.pathname === `${base}/${current.id}` && method === "PATCH") {
+      const body: unknown = route.request().postDataJSON();
+      patches.push({ owner: current.butler_name, id: current.id, body });
+      expect(body).toEqual({ status: "archived" });
+      current = { ...current, status: "archived", updated_at: new Date().toISOString() };
+      return route.fulfill({ json: mockResponse("updateConversation", current) });
+    }
+    if (url.pathname === `${base}/${current.id}/messages`) {
+      if (method === "POST") {
+        const body: { message: string; message_id: string } = route.request().postDataJSON();
+        posts.push({ owner: current.butler_name, id: current.id, body });
+        // Existing backend continuation contract, reconciled by the real hook's
+        // message_complete invalidation. This fixture does not execute backend logic.
+        current = { ...current, status: "active", updated_at: new Date().toISOString(), message_count: 2 };
+        return route.fulfill({ status: 200, contentType: "text/event-stream", body: 'event: message_complete\ndata: {}\n\nevent: done\ndata: {}\n\n' });
+      }
+      return route.fulfill({ json: mockResponse("getConversationMessages", { data: [{ id: "saved-message", conversation_id: current.id, role: "assistant", content: "Existing saved history", tool_calls: null, error: null, model: null, input_tokens: null, output_tokens: null, duration_ms: null, session_id: null, request_id: null, created_at: current.created_at }], meta: {} }) });
+    }
+    return route.fallback();
+  });
+  for (const posture of ["page", "dock", "floating", "panel"] as const) {
+    current = { id: `archive-${posture}`, butler_name: "switchboard", title: `Archive ${posture} thread`, status: "active", created_at: "2026-07-01T00:00:00Z", updated_at: new Date().toISOString(), message_count: 1, routed_butler: null };
+    const open = async (explicit = false) => {
+      await page.setViewportSize({ width: posture === "dock" ? 1440 : 1100, height: 900 });
+      await page.goto(posture === "panel" ? "/butlers/switchboard?tab=system&section=state" : explicit ? `/chat/${current.id}` : "/chat");
+      if (posture === "floating") await page.getByRole("button", { name: "Talk to Butlers", exact: true }).click();
+      if (posture === "panel") await page.getByRole("button", { name: "Chat", exact: true }).click();
+      const surface = posture === "page" ? page.getByTestId("chat-page") : posture === "dock" ? page.getByTestId("chat-dock") : posture === "floating" ? page.getByTestId("floating-chat-panel") : page.getByRole("dialog", { name: "Chat with switchboard", exact: true });
+      return { surface, input: surface.getByRole("textbox", { name: "Type a message...", exact: true }) };
+    };
+    const { surface, input } = await open(posture === "page");
+    await expect(surface.getByText(current.title!, { exact: true }).last()).toBeVisible();
+    await expect(surface.getByText("Existing saved history", { exact: true })).toBeVisible();
+    const message = `Unsent same-conversation ${posture} thought`;
+    await input.fill(message);
+    const record = async () => (await rows(page)).find((row) => row.surfaceId === "chat.message" && JSON.stringify(row.context) === JSON.stringify([current.butler_name, current.id]));
+    await expect.poll(async () => (await record())?.fields).toEqual({ message });
+    const committed = (await record())!;
+    expect(committed.state).toBe("live");
+    const patchBaseline = patches.length; const postBaseline = posts.length;
+    await surface.getByRole("button", { name: `Actions for ${current.title} (switchboard)`, exact: true }).last().click();
+    await page.getByRole("menuitem", { name: "Archive conversation", exact: true }).click();
+    await expect(surface.getByRole("button", { name: "Unarchive", exact: true })).toBeVisible();
+    await expect(input).toHaveValue(message);
+    expect(patches.slice(patchBaseline)).toEqual([{ owner: "switchboard", id: current.id, body: { status: "archived" } }]);
+    expect(posts).toHaveLength(postBaseline); expect(creates).toHaveLength(0);
+    expect((await record())?.contentRevision).toBe(committed.contentRevision);
+
+    const remounted = await open();
+    await expect(remounted.surface.getByText("New conversation", { exact: true })).toBeVisible();
+    await expect(remounted.input).toHaveValue("");
+    expect((await record())?.contentRevision).toBe(committed.contentRevision);
+    let selected = remounted.surface;
+    if (posture === "page" || posture === "dock") {
+      // Dock has no own history selector: its supported explicit path is /chat/C.
+      await page.goto(`/chat/${current.id}`);
+      selected = page.getByTestId("chat-page");
+      await expect(page).toHaveURL(new RegExp(`/chat/${current.id}$`));
+    } else {
+      if (posture === "floating") await selected.getByRole("button", { name: "Conversation history", exact: true }).click();
+      await selected.getByRole("button", { name: "Archived", exact: true }).click();
+      await selected.getByText(current.title!, { exact: true }).click();
+    }
+    const restored = selected.getByRole("textbox", { name: "Type a message...", exact: true });
+    await expect(restored).toHaveValue(message);
+    await expect(selected.getByText("Draft restored", { exact: true })).toBeVisible();
+    await expect(selected.getByRole("button", { name: "Unarchive", exact: true })).toBeVisible();
+    await expect(selected.getByText(/Sending a message makes it active again/)).toBeVisible();
+    const restoredRecord = (await record())!;
+    expect(restoredRecord).toMatchObject({ state: "live", draftKey: committed.draftKey, context: committed.context, contentRevision: committed.contentRevision, fields: { message } });
+    expect(restoredRecord).not.toHaveProperty("deletedAt");
+    expect((await rows(page)).filter((row) => row.state === "live" && (row.fields as {message?: string})?.message === message)).toHaveLength(1);
+    expect(patches).toHaveLength(patchBaseline + 1); // Viewing never unarchives.
+    expect(posts).toHaveLength(postBaseline);
+    await selected.getByRole("button", { name: "Send message", exact: true }).click();
+    await expect.poll(() => posts.length).toBe(postBaseline + 1);
+    expect(posts.at(-1)).toMatchObject({ owner: "switchboard", id: current.id, body: { message, message_id: expect.any(String) } });
+    expect(posts.at(-1)!.body.message_id).not.toBe(committed.contentRevision);
+    await expect(selected.getByRole("button", { name: "Unarchive", exact: true })).toHaveCount(0);
+    await expect(selected.getByRole("button", { name: `Actions for ${current.title} (switchboard)`, exact: true }).last()).toBeVisible();
+    await expect.poll(async () => (await record())?.state).toBe("tombstone");
+    expect(await record()).toMatchObject({ draftKey: committed.draftKey, deletionReason: "submitted" });
+    expect(await record()).not.toHaveProperty("fields");
+    await expect(restored).toHaveValue("");
+    expect(patches).toHaveLength(patchBaseline + 1); expect(creates).toHaveLength(0);
+  }
+});
+
 test("native quota refusal preserves editable values and does not prevent one valid domain submission", async ({ page, context }) => {
   const cdp = await context.newCDPSession(page);
   await cdp.send("Storage.overrideQuotaForOrigin", { origin: new URL(test.info().project.use.baseURL!).origin, quotaSize: 1 });
