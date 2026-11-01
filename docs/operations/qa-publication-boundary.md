@@ -1,9 +1,70 @@
 # QA Publication Boundary
 
-QA automated publication is disabled (program bu-mc01y5, slice 1). The state described here is the
-durable ledger the future publisher will use; nothing in the repository publishes yet. The governing
-requirements are `REQ-qa-publication-authority-002` (immutable binding) and `-006` (durable ambiguous
-outcome recovery) in `openspec/changes/confine-qa-publication-authority`.
+QA automated publication is disabled in production (program bu-mc01y5). The repository holds the
+trusted deterministic publisher (slice 3, below) and the durable ledger it writes, but no production
+configuration injects a publisher, so a committed investigation still fails `publication_unavailable`
+until process isolation is proven (bu-mc01y5.7). The governing requirements are
+`REQ-qa-publication-authority-002` (immutable binding), `-003` (closed operations), `-004` (whole
+reachable artifact sanitization) and `-006` (durable ambiguous outcome recovery) in
+`openspec/changes/confine-qa-publication-authority`.
+
+## Publisher architecture
+
+The package `butlers.core.qa.publication` has four parts. The dispatcher calls
+`proposal.publish_investigation` only when `QaDispatchConfig.publisher` is set.
+
+1. Sealed export (`export.py`). The dispatcher reads the QA branch head once with hardened git and
+   binds it. `build_sealed_export` then reads raw objects with `git cat-file --batch`. It runs against
+   a fresh, empty, publisher-owned repository whose `GIT_OBJECT_DIRECTORY` is the agent's object
+   store, so no agent hook, config, `core.hooksPath`, fsmonitor, filter, driver, include or
+   credential helper is ever consulted. Every object is re-hashed against its id, so a rewritten
+   loose object is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
+   accepts only single-parent commits with plain `tree`/`parent`/`author`/`committer` headers. Author
+   and committer must equal the configured QA identity (`BUTLERS_QA_GIT_AUTHOR_*`). The message,
+   every new path and every added line of every new blob must pass `validate_anonymized()`. Git
+   bytes are content-addressed, so agent content is validated, not rewritten. A leak in an earlier
+   commit that a later commit removes is still reachable and still refuses. Base content is already
+   public and is not re-validated. The result is a frozen `SealedExport` (objects plus SHA-256
+   digest). `verify()` re-derives both before every transport call.
+2. Closed transport (`transport.py`). `ClosedTransport` is the only caller of a
+   `PublicationProvider`, a protocol with exactly four effects: a ref update, PR create, PR update
+   and set labels. There is no merge, review, approval, queue or generic call. Each request is
+   authorized against the binding before the provider is reached. A ref update must target the
+   bound `qa/` branch, which must not be the base, and must move to the bound head. It is never
+   forced, never deletes, and carries the expected old object id (`None` means the branch must not
+   exist yet). The provider's atomic compare turns a stale head into a refusal. PR create must use
+   the bound head and base. Update and labels must name the PR this attempt created, and labels
+   must be exactly the fixed sanitized set. The provider's repository is the fixed origin; the
+   binding cannot name another one.
+3. Publisher (`publisher.py`). `QaPublisher.publish` verifies the export, refuses when the
+   repository whitelist is missing or denies the repository, and anonymizes and validates the PR
+   title, body (including the raw-evidence markers) and labels. A failure there is
+   `anonymization_failed` before any egress. It then runs `branch_push`, `pr_create` and `pr_labels`.
+   Each operation is persisted at `bound`, then moved to `egress_started` by `mark_egress_started`.
+   That call locks the attempt row (`SELECT ... FOR UPDATE`) and refuses `attempt_not_active` unless
+   the attempt is still active, so a timed-out or terminal attempt cannot start egress. The publisher
+   then makes exactly one provider call and records the outcome. A lost response, or any unexpected
+   error after egress started, is recorded `ambiguous` and stops the sequence. A rerun for the same
+   attempt reuses recorded successes, returns a held operation as ambiguous, and never re-egresses.
+   Nothing is ever deleted.
+4. Dispatcher (`dispatch.py`). On `published`, the attempt moves to `pr_open` with the PR number, a
+   `drafted` journal event is recorded and the local branch is kept. On `anonymization_failed`, the
+   counter `qa_anonymization_failed_total` is incremented and the attempt moves to
+   `anonymization_failed` with an `escalated` event that carries only the content-free category. On
+   refused, failed or ambiguous, the attempt fails with `publication_<status>: <category>` and is
+   escalated.
+
+Review follow-ups still record `publication_unavailable`. The ledger allows one operation per attempt
+and kind, so pushing a follow-up to an existing PR needs its own operation identity (follow-up bead).
+No concrete credentialed provider ships yet. Activation needs bu-mc01y5.7 (isolation) and the
+operational gates bu-nh37dt/bu-vc90le.
+
+The sealed export lives in publisher memory for one run. The ledger keeps only its digest (inside
+the `branch_push` payload digest), next to the persisted diff snapshot. Durable retention of the
+export bytes before worktree teardown is a follow-up.
+
+Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
+kept, and no remote branch or PR is deleted.
 
 ## Durable operations and holds
 

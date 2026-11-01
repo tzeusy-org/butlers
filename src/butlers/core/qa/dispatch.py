@@ -39,7 +39,10 @@ proceeding to Gate 6.
 
 Investigation agents run in sandboxed worktree environments with only PATH and
 build-tool variables; they never receive a GitHub credential.  Automated
-publication (push / PR create) is unavailable until the isolated publisher lands.
+publication goes only through an injected trusted publisher
+(``QaDispatchConfig.publisher``, sealed export over a closed transport); with
+none configured, which is the production default until isolation is proven
+(bu-mc01y5.7), nothing is pushed and the attempt fails ``publication_unavailable``.
 
 Spec reference
 --------------
@@ -96,12 +99,20 @@ from butlers.core.qa.findings import (
 from butlers.core.qa.journal import (
     record_escalated_event,
     record_event,
+    record_pr_drafted_event,
     record_pr_merged_event,
     record_wait_event_once,
 )
 from butlers.core.qa.models import QaFinding
 from butlers.core.qa.notes import InvestigationNotes, ParseStatus, parse_investigation_notes
 from butlers.core.qa.prompts import build_investigation_prompt, build_review_followup_prompt
+from butlers.core.qa.publication.export import GitIdentity
+from butlers.core.qa.publication.proposal import publish_investigation
+from butlers.core.qa.publication.publisher import (
+    PublicationResult,
+    PublicationStatus,
+    QaPublisher,
+)
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.severity import failed_with_human_action
 from butlers.core.qa.sources.infra_state import SOURCE_NAME as INFRA_STATE_SOURCE_NAME
@@ -317,8 +328,8 @@ class QaDispatchConfig:
         Maximum wall-clock minutes for an investigation agent session.
         Default 30.
     pr_labels:
-        Labels for QA investigation PRs.  Unused while publication is disabled;
-        reserved for the isolated publisher (bu-mc01y5.6).
+        Fixed labels for QA investigation PRs; the publisher sanitizes them and
+        the transport applies exactly these.
     dashboard_base_url:
         Optional dashboard URL for inclusion in investigation prompts and PRs.
         When ``None``, links are omitted (dashboard may be on private tailnet).
@@ -332,12 +343,10 @@ class QaDispatchConfig:
     pr_labels: list[str] = field(default_factory=lambda: list(_DEFAULT_PR_LABELS))
     dashboard_base_url: str | None = None
     repo_whitelist: RepoWhitelist | None = None
-    """Repository whitelist for PR creation enforcement.
-
-    Unused while publication is disabled (nothing is pushed and no PR is
-    created); reserved for the isolated publisher (bu-mc01y5.6), which must
-    fail closed when it is ``None``.
-    """
+    """Repository whitelist the publisher enforces; ``None`` refuses publication."""
+    publisher: QaPublisher | None = None
+    """Trusted deterministic publisher.  ``None`` (the production default) disables
+    publication: a committed investigation fails ``publication_unavailable``."""
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +791,9 @@ def _human_action_error_detail(error_detail: str | None) -> bool:
             "git_auth_failed",
             "repo_not_whitelisted",
             "gh_pr_create_failed",
+            "publication_refused",
+            "publication_failed",
+            "publication_ambiguous",
         )
     )
 
@@ -813,6 +825,177 @@ async def _record_escalation_for_terminal(
             attempt_id,
             exc,
         )
+
+
+def _get_qa_anonymization_failed_total():
+    """Return the qa_anonymization_failed_total Prometheus Counter."""
+    try:
+        from prometheus_client import Counter
+
+        return Counter(
+            "qa_anonymization_failed_total",
+            "Total QA PR payloads rejected by anonymization validation",
+        )
+    except (ImportError, ValueError):
+        logger.debug("qa_anonymization_failed_total counter unavailable", exc_info=True)
+        return None
+
+
+_qa_anonymization_failed_total = _get_qa_anonymization_failed_total()
+
+_ANONYMIZATION_FAILURE_EVENT_TEXT = "anonymization validator rejected PR payload"
+
+
+def _record_qa_anonymization_failed() -> None:
+    if _qa_anonymization_failed_total is not None:
+        _qa_anonymization_failed_total.inc()
+
+
+async def _transition_anonymization_failed_with_journal(
+    pool: asyncpg.Pool,
+    *,
+    attempt_id: uuid.UUID,
+    category: str,
+    healing_session_id: uuid.UUID | None,
+) -> None:
+    """Move to ``anonymization_failed`` and journal the escalation in one transaction.
+
+    The escalated event carries only the fixed, content-free refusal category;
+    no validator context or source content reaches the journal.
+    """
+
+    async def _record(session: Any) -> None:
+        transitioned = await update_attempt_status(
+            session,
+            attempt_id,
+            "anonymization_failed",
+            error_detail="PR blocked: residual PII or credentials detected after anonymization",
+            healing_session_id=healing_session_id,
+        )
+        if transitioned:
+            await record_event(
+                session,
+                attempt_id=attempt_id,
+                step="escalated",
+                text=_ANONYMIZATION_FAILURE_EVENT_TEXT,
+                detail=category,
+            )
+
+    if not isinstance(pool, asyncpg.Pool):
+        await _record(pool)
+        return
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await _record(conn)
+    except Exception:  # noqa: BLE001 — the terminal status must land even if the journal fails
+        logger.warning("QA anonymization journal failed (attempt=%s)", attempt_id, exc_info=True)
+        await update_attempt_status(
+            pool,
+            attempt_id,
+            "anonymization_failed",
+            error_detail="PR blocked: residual PII or credentials detected after anonymization",
+            healing_session_id=healing_session_id,
+        )
+
+
+def _diff_snapshot_stats(diff_snapshot: list[dict[str, str]]) -> tuple[int, int, int]:
+    additions = sum(1 for line in diff_snapshot if line.get("kind") == "+")
+    deletions = sum(1 for line in diff_snapshot if line.get("kind") == "-")
+    files = sum(
+        1
+        for line in diff_snapshot
+        if line.get("kind") == "meta" and line.get("text", "").startswith("diff --git ")
+    )
+    return additions, deletions, files
+
+
+async def _record_publication_outcome(
+    pool: asyncpg.Pool,
+    publication: PublicationResult,
+    *,
+    attempt_id: uuid.UUID,
+    branch_name: str,
+    diff_snapshot: list[dict[str, str]],
+    healing_session_id: uuid.UUID | None,
+    phase_session_id: uuid.UUID | None,
+    metrics: ButlerMetrics | None,
+    elapsed_ms: float,
+) -> None:
+    """Record the terminal state, journal events and metrics for one publication."""
+    status = publication.status
+    published = status is PublicationStatus.PUBLISHED
+    outcome = "pr_open" if published else status.value
+    if metrics is not None:
+        metrics.record_recovery_phase_duration(
+            workflow="qa", phase="investigate", outcome=outcome, duration_ms=elapsed_ms
+        )
+        if not published:
+            metrics.record_recovery_execution_failure(
+                workflow="qa", phase="investigate", error_class=f"publication_{status.value}"
+            )
+    if phase_session_id is not None:
+        try:
+            if published:
+                await update_phase_session_status(pool, phase_session_id, "completed")
+            else:
+                await update_phase_session_status(
+                    pool,
+                    phase_session_id,
+                    "failed",
+                    error_detail=f"publication_{status.value}: {publication.category}",
+                )
+        except Exception as _pss_exc:  # noqa: BLE001
+            logger.debug("Failed to update phase session after publication: %s", _pss_exc)
+
+    if published:
+        await update_attempt_status(
+            pool,
+            attempt_id,
+            "pr_open",
+            pr_url=publication.pr_url,
+            pr_number=publication.pr_number,
+            healing_session_id=healing_session_id,
+        )
+        additions, deletions, file_count = _diff_snapshot_stats(diff_snapshot)
+        try:
+            await record_pr_drafted_event(
+                pool,
+                attempt_id=attempt_id,
+                pr_number=publication.pr_number,
+                branch_name=branch_name,
+                additions=additions,
+                deletions=deletions,
+                file_count=file_count,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "QA dispatch: drafted journal event failed (attempt=%s): %s", attempt_id, exc
+            )
+        return
+
+    if status is PublicationStatus.ANONYMIZATION_FAILED:
+        _record_qa_anonymization_failed()
+        await _transition_anonymization_failed_with_journal(
+            pool,
+            attempt_id=attempt_id,
+            category=publication.category,
+            healing_session_id=healing_session_id,
+        )
+        return
+
+    # Refused, failed or ambiguous: an ambiguous ledger operation keeps holding the
+    # lineage until an exact read-only reconciliation; nothing is retried or deleted.
+    error_detail = f"publication_{status.value}: {publication.category}"
+    await update_attempt_status(
+        pool,
+        attempt_id,
+        "failed",
+        error_detail=error_detail,
+        healing_session_id=healing_session_id,
+    )
+    await _record_escalation_for_terminal(
+        pool, attempt_id=attempt_id, status="failed", error_detail=error_detail
+    )
 
 
 async def _persist_diff_snapshot(
@@ -956,6 +1139,7 @@ async def _run_investigation_session(
     git_author_name: str | None = None,
     git_author_email: str | None = None,
     metrics: ButlerMetrics | None = None,
+    base_sha: str | None = None,
 ) -> None:
     """Run the QA investigation agent and record its terminal outcome.
 
@@ -1197,6 +1381,49 @@ async def _run_investigation_session(
             return
 
         diff_snapshot = await _capture_commit_diff_snapshot(worktree_path)
+        if config.publisher is not None:
+            publication = await publish_investigation(
+                config.publisher,
+                repo_root=repo_root,
+                worktree_path=worktree_path,
+                attempt_id=attempt_id,
+                finding=finding,
+                branch_name=branch_name,
+                base_sha=base_sha,
+                identity=(
+                    GitIdentity(git_author_name.strip(), git_author_email.strip())
+                    if git_author_name and git_author_email
+                    else None
+                ),
+                labels=list(config.pr_labels),
+                whitelist=config.repo_whitelist,
+                dashboard_base_url=config.dashboard_base_url,
+            )
+            await _record_publication_outcome(
+                pool,
+                publication,
+                attempt_id=attempt_id,
+                branch_name=branch_name,
+                diff_snapshot=diff_snapshot,
+                healing_session_id=investigation_session_id,
+                phase_session_id=phase_session_id,
+                metrics=metrics,
+                elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
+            )
+            await _persist_notes_and_remove_worktree(
+                pool,
+                attempt_id,
+                repo_root,
+                branch_name,
+                worktree_path,
+                # The local branch is kept only when it backs a published PR.
+                delete_branch=publication.status is not PublicationStatus.PUBLISHED,
+                delete_remote=False,
+                diff_snapshot=diff_snapshot,
+                otel_span=_inv_span,
+            )
+            return
+
         if metrics is not None:
             _elapsed = (_time.monotonic() - _phase_start) * 1000
             metrics.record_recovery_phase_duration(
@@ -2802,6 +3029,7 @@ async def dispatch_qa_investigation(
                 git_author_name=git_author_name,
                 git_author_email=git_author_email,
                 metrics=metrics,
+                base_sha=_base_ref,
             ),
             name=f"qa-investigation-{attempt_id}",
         )

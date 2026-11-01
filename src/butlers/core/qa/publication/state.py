@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import asyncpg
 
+from butlers.core.healing.tracking import ACTIVE_STATUSES
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding
 
 logger = logging.getLogger(__name__)
@@ -130,17 +131,38 @@ async def begin_operation(
 
 
 async def mark_egress_started(pool: Any, operation_id: uuid.UUID) -> bool:
-    """Persist that egress is about to begin; True for exactly one caller."""
+    """Persist that egress is about to begin; True for exactly one caller.
+
+    The operation's attempt row is locked (``SELECT ... FOR UPDATE``) and must
+    still be active in the same transaction as the stage transition, so a
+    timed-out or terminal attempt can never enter ``egress_started``; it is
+    refused with ``attempt_not_active``.
+    """
     try:
-        claimed = await pool.fetchval(
-            """
-            UPDATE public.qa_publication_operations
-            SET stage = 'egress_started', stage_order = 2
-            WHERE id = $1 AND stage = 'bound'
-            RETURNING id
-            """,
-            operation_id,
-        )
+        async with pool.acquire() as connection, connection.transaction():
+            status = await connection.fetchval(
+                """
+                SELECT attempt.status
+                FROM public.qa_publication_operations AS operation
+                JOIN public.healing_attempts AS attempt ON attempt.id = operation.attempt_id
+                WHERE operation.id = $1
+                FOR UPDATE OF attempt
+                """,
+                operation_id,
+            )
+            if status is None:
+                raise PublicationRefused("unknown_operation")
+            if status not in ACTIVE_STATUSES:
+                raise PublicationRefused("attempt_not_active")
+            claimed = await connection.fetchval(
+                """
+                UPDATE public.qa_publication_operations
+                SET stage = 'egress_started', stage_order = 2
+                WHERE id = $1 AND stage = 'bound'
+                RETURNING id
+                """,
+                operation_id,
+            )
     except _DATASTORE_ERRORS as exc:
         raise PublicationRefused("datastore_unavailable") from exc
     return claimed is not None
