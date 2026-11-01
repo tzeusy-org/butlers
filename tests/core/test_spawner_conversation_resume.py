@@ -638,6 +638,10 @@ class TestResumeFailureFallsBackToCold:
             "allowance_exhausted",
             "success",
         ]
+        # Resume was attempted but never retried cold on the same candidate.
+        assert {c.kwargs["resume_outcome"] for c in mock_write.await_args_list} == {
+            "resume_failed_terminal"
+        }
         mark.assert_awaited_once()
         assert mark.await_args.args[1] == _PRIMARY_CATALOG_ID
         assert mark.await_args.kwargs == {"reset_at": reset, "attempt_id": 42}

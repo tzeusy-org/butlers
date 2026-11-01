@@ -2909,13 +2909,18 @@ class Spawner:
                     )
                 )
 
+                # A plan usage limit is account-scoped, not a stale handle: retrying
+                # the same exhausted account cold cannot succeed, so it never takes
+                # the resume cold-retry branch below and exhausts the account via
+                # ordinary failover instead (bu-s11n0s.36).
+                _is_usage_limit = _failover_decision.reason.startswith("usage_limit")
                 attempted_resume = _attempt_count == 1 and bool(
                     invoke_kwargs.get("resume_session_id")
                 )
                 if attempted_resume:
                     _resume_outcome = (
                         "resume_failed_retried_cold"
-                        if _failover_decision.eligible
+                        if _failover_decision.eligible and not _is_usage_limit
                         else "resume_failed_terminal"
                     )
 
@@ -2994,16 +2999,8 @@ class Spawner:
                 # Record it under a non-breaker outcome, then evict the handle and
                 # loop back without advancing to another candidate: this must never
                 # consume a failover slot or count against the model's circuit breaker.
-                # A plan usage limit is account-scoped, not a stale handle: retrying
-                # the same exhausted account cold cannot succeed, so it skips this
-                # branch and exhausts the account via ordinary failover below
-                # (bu-s11n0s.36).
-                _is_usage_limit = _failover_decision.reason.startswith("usage_limit")
-                if (
-                    _attempt_count == 1
-                    and invoke_kwargs.get("resume_session_id")
-                    and not _is_usage_limit
-                ):
+                # A usage limit skips this branch (see _is_usage_limit above).
+                if attempted_resume and not _is_usage_limit:
                     logger.info(
                         "Provider resume attempt failed for butler=%s conversation=%s "
                         "runtime_type=%s (%s); evicting handle and retrying cold",
