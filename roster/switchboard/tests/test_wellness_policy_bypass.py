@@ -26,18 +26,18 @@ from butlers.ingestion_policy import (
     IngestionPolicyEvaluator,
     PolicyDecision,
 )
-from butlers.tools.switchboard.ingestion.ingest import (
-    _build_request_context,
-    _make_ingestion_envelope,
-    _run_policy_evaluation,
-)
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.tools.switchboard.contracts import (
     IngestControlV1,
     IngestEnvelopeV1,
     IngestEventV1,
     IngestPayloadV1,
     IngestSenderV1,
     IngestSourceV1,
+)
+from butlers.tools.switchboard.ingestion.ingest import (
+    _build_request_context,
+    _make_ingestion_envelope,
+    _run_policy_evaluation,
 )
 
 pytestmark = pytest.mark.unit

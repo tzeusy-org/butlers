@@ -28,21 +28,16 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/contacts", tags=["contacts"])
 
 _TELEGRAM_HANDLE_PREFIX = "telegram:"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +160,8 @@ _IDENTIFIER_MATCH_SQL = """
 async def search_contacts(
     q: str = Query("", description="Typeahead query; matched case-insensitively"),
     limit: int = Query(20, ge=1, le=50, description="Max results to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ContactSearchResponse:
     """Search known person entities for a contact typeahead.
 

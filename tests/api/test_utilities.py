@@ -30,8 +30,8 @@ from butlers.api.deps import (
     discover_butlers,
     init_db_manager,
 )
-from butlers.api.routers.secrets import _get_db_manager as _secrets_get_db
-from butlers.api.routers.state import _get_db_manager as _state_get_db
+from butlers.api.deps import get_db as _secrets_get_db
+from butlers.api.deps import get_db as _state_get_db
 from butlers.credential_store import SecretMetadata
 
 pytestmark = pytest.mark.unit

@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +40,7 @@ const EMPTY_FORM = {
 export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [constraintsError, setConstraintsError] = useState<string | null>(null);
+  const draft = useDraft("approvals.rule.create", ["create"], { tool_name: form.tool_name, description: form.description, arg_constraints_text: form.arg_constraints_text, max_uses: form.max_uses, expires_days: form.expires_days }, (v) => setForm((current) => ({ ...current, ...v })), open, { tool_name: EMPTY_FORM.tool_name, description: EMPTY_FORM.description, arg_constraints_text: EMPTY_FORM.arg_constraints_text, max_uses: EMPTY_FORM.max_uses, expires_days: EMPTY_FORM.expires_days });
   const createMutation = useCreateRule();
   const butlersQuery = useButlers();
   const butlerNames = butlersQuery.data
@@ -49,7 +52,7 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
     setConstraintsError(null);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     let argConstraints: Record<string, unknown>;
     try {
       argConstraints = JSON.parse(form.arg_constraints_text);
@@ -74,11 +77,14 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
       expires_at: expiresAt,
     };
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     createMutation.mutate(payload, {
       onSuccess: () => {
-        resetForm();
-        onOpenChange(false);
+        void draft.submitted(submission, () => { resetForm(); onOpenChange(false); });
       },
+      onSettled: draft.finish,
     });
   }
 
@@ -89,8 +95,8 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!v) resetForm();
-        onOpenChange(v);
+        if (!v) draft.dismiss(() => { resetForm(); onOpenChange(false); });
+        else onOpenChange(v);
       }}
     >
       <DialogContent className="max-w-lg">
@@ -101,6 +107,7 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
           </DialogDescription>
         </DialogHeader>
 
+        <DraftNotice session={draft.session} />
         <div className="space-y-4">
           <div>
             <Label htmlFor="butler">Butler</Label>
@@ -221,12 +228,12 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => { resetForm(); onOpenChange(false); }}>
+          <Button variant="outline" onClick={() => draft.dismiss(() => { resetForm(); onOpenChange(false); })}>
             Cancel
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!isValid || createMutation.isPending}
+            disabled={!isValid || createMutation.isPending || draft.session?.presentation.submitting || draft.session?.presentation.cleanup}
           >
             {createMutation.isPending ? "Creating..." : "Create rule"}
           </Button>

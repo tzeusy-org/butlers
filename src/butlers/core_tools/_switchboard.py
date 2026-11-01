@@ -7,7 +7,6 @@ import json
 import logging
 from collections.abc import Callable
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -254,8 +253,6 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     if not ctx.is_switchboard:
         return
 
-    import importlib.util as _ilu
-
     from butlers.core.model_routing import coerce_complexity_tier
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
@@ -269,19 +266,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     pool = ctx.pool
     butler_name = ctx.butler_name
 
-    _hb_path = (
-        Path(__file__).resolve().parents[3]
-        / "roster"
-        / "switchboard"
-        / "tools"
-        / "connector"
-        / "heartbeat.py"
-    )
-    _hb_spec = _ilu.spec_from_file_location("roster_switchboard_heartbeat", _hb_path)
-    assert _hb_spec is not None and _hb_spec.loader is not None
-    _hb_mod = _ilu.module_from_spec(_hb_spec)
-    _hb_spec.loader.exec_module(_hb_mod)
-    _connector_heartbeat = _hb_mod.heartbeat
+    from butlers.tools.switchboard.connector.heartbeat import heartbeat as _connector_heartbeat
 
     pipeline = daemon._pipeline
     # DurableBuffer instance created by _wire_pipelines (may be None if

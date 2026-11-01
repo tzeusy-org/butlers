@@ -51,6 +51,22 @@ _EXECUTION_SCAFFOLD_RE = re.compile(
     r"^\s*(?:execution\s+)?(?:plan|steps?|next\s+steps?)\s*:", re.IGNORECASE
 )
 
+# These are control-plane summaries, including the historical day-close
+# assistant tail. Match framing, not ordinary retrospective words such as
+# "delivery of the parcel" or "we called the team".
+_DELIVERY_SCAFFOLD_RE = re.compile(
+    r"^\s*(?:Delivery\s+(?:deferred|failed|suppressed|queued|completed)\b|"
+    r"(?:notification|message|summary|recap)\s+(?:sent|delivered|deferred|queued|suppressed)\b|"
+    r"sent\s+via\s+(?:telegram|email)\b)",
+    re.IGNORECASE,
+)
+_TOOL_SUMMARY_RE = re.compile(
+    r"^\s*(?:\#{1,6}\s*)?(?:\*\*)?(?:MCP\s+tools?\s+called|"
+    r"tools?\s+(?:called|used)|delivery\s+status|notification\s+status)"
+    r"(?:\*\*)?\s*:(?:\*\*)?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 INADMISSIBLE_PROSE = "inadmissible_prose"
 DATE_MISMATCH = "date_mismatch"
 
@@ -63,7 +79,8 @@ def classify_prose_shape(text: str | None) -> str | None:
 
     Rejects: empty/whitespace-only text, a fenced code block, a leaked
     machine-role/protocol prefix, a tool-call/agent-protocol payload, a
-    planning-verb preamble, or a candidate that is itself a serialized JSON or
+    planning-verb preamble, an MCP tool-use summary or delivery-status scaffold,
+    or a candidate that is itself a serialized JSON or
     Python-literal container. Fails closed: only affirmatively prose-shaped
     text passes.
     """
@@ -81,6 +98,8 @@ def classify_prose_shape(text: str | None) -> str | None:
     if _PLANNING_PREAMBLE_RE.match(stripped):
         return INADMISSIBLE_PROSE
     if _EXECUTION_SCAFFOLD_RE.match(stripped):
+        return INADMISSIBLE_PROSE
+    if _DELIVERY_SCAFFOLD_RE.match(stripped) or _TOOL_SUMMARY_RE.search(stripped):
         return INADMISSIBLE_PROSE
     # JSON containers begin with ``{``/``[``; Python literal containers can
     # also begin with ``(`` (tuple) or ``set`` (empty sets accept arbitrary

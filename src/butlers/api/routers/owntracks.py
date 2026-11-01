@@ -41,8 +41,9 @@ import secrets
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 
+from butlers.api.deps import OptionalDb
 from butlers.api.models.owntracks import (
     OwnTracksConfigResponse,
     OwnTracksConnectionState,
@@ -69,15 +70,6 @@ _DEFAULT_CONNECTOR_PORT = 40083
 # ---------------------------------------------------------------------------
 # Optional DB manager dependency for credential persistence
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> Any:
-    """Stub replaced at startup by wire_db_dependencies().
-
-    When not wired (e.g. in tests that don't boot the full app), returns None
-    so endpoints degrade gracefully.
-    """
-    return None
 
 
 def _make_credential_store(db_manager: Any) -> CredentialStore | None:
@@ -323,7 +315,8 @@ def _derive_connection_state(
 
 @router.post("/token/generate", response_model=OwnTracksTokenResponse)
 async def generate_owntracks_token(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> OwnTracksTokenResponse:
     """Generate a new webhook authentication token for OwnTracks.
 
@@ -363,7 +356,8 @@ async def generate_owntracks_token(
 
 @router.get("/status", response_model=OwnTracksStatusResponse)
 async def get_owntracks_status(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> OwnTracksStatusResponse:
     """Return the current OwnTracks connector connection state.
 
@@ -407,7 +401,8 @@ async def get_owntracks_status(
 
 @router.get("/config", response_model=OwnTracksConfigResponse)
 async def get_owntracks_config(
-    db_manager: Any = Depends(_get_db_manager),
+    *,
+    db_manager: OptionalDb,
 ) -> OwnTracksConfigResponse:
     """Return the computed webhook URL and setup instructions metadata.
 

@@ -12,7 +12,7 @@
 
 ## 3. Deferred
 
-- [ ] 3.1 Dashboard Debrief card with a pinned reply.
+- [x] 3.1 Dashboard Debrief card with a pinned reply.
 - [ ] 3.2 "Work commitments" filter on the condition ledger.
 - [ ] 3.3 Sphere derived from endpoint custody.
 

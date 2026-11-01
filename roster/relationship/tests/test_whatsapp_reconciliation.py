@@ -758,6 +758,8 @@ async def test_apply_revalidates_drift_under_lock_before_writing(
     assert await pool.fetchval("SELECT count(*) FROM relationship.merge_reviews") == 0
 
 
+# Relies on a PostgreSQL statement_timeout firing; it never fires in the faketime legs' shifted server.
+@pytest.mark.faketime_fragile
 async def test_locked_guard_serializes_new_decisions_and_protected_references(
     reconciliation_pool,
 ) -> None:

@@ -17,7 +17,6 @@ only when their tier-appropriate cadence has been exceeded.
 
 ## When to Use This Skill
 
-- During scheduled check-ins (e.g., weekly review via `relationship-maintenance`)
 - When the user asks "who should I reach out to?"
 - As part of a periodic relationship maintenance routine
 - When planning upcoming social activities

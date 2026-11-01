@@ -99,3 +99,54 @@ The Health butler SHALL run a deterministic daily `baseline_watch` job, with no 
 
 - **WHEN** the latest day is scored back inside the band
 - **THEN** the episode SHALL close, the owner-condition SHALL resolve, and no new message SHALL be sent for the closure
+
+
+### Requirement: Stored baseline reads preserve evidence and state
+
+ID: REQ-personal-baselines-006
+Source: bu-q7vx1q.77 original stored-reader, registered-tool and Health API criteria; personal-baselines scoring and owning-schema requirements above
+Scope: v1-mandatory
+
+A stored read SHALL use only the caller's own schema and the scorer's current method
+version, without writes. It SHALL carry metric key, method version, counts, coverage,
+computation time and freshness. With injected current time, a row older than twice
+the metric's refresh interval SHALL be stale. State precedence SHALL match scoring:
+unmeasurable, stale, insufficient history, ready. Only a ready row SHALL expose a band.
+The single-key core read SHALL return None for a key without a current-method row.
+The registered infrastructure tool `metric_baseline_get` SHALL use its daemon's pool
+and return a typed `no_baseline` result for that absence.
+
+#### Scenario: A stored band keeps its denominator
+
+- **WHEN** the Health watch stores a current ready baseline with 54 of 60 days
+- **THEN** a subsequent read SHALL return its stored band, counts and coverage unchanged
+
+#### Scenario: An old method cannot supply a current band
+
+- **WHEN** a newer-computed row exists only under a different method version
+- **THEN** a read SHALL select the current scorer's row or report no baseline
+
+### Requirement: Health usual ranges are honest and metric-specific
+
+ID: REQ-personal-baselines-007
+Source: bu-q7vx1q.77 original Health Measurements display criterion; Health MANIFESTO.md
+Scope: v1-mandatory
+
+The Health baselines API SHALL use the Health pool for the three existing metrics
+resting_hr, hrv and sleep_duration. A failed read SHALL return an explicitly degraded
+envelope rather than an empty successful list. Measurements SHALL show ready usual
+ranges with their n-observed of n-expected days, using each metric's own units. HRV's
+ready range SHALL overlay its HRV trend. Resting heart rate SHALL remain distinct
+from generic heart rate, and sleep duration in hours from sleep stages in minutes.
+Insufficient history, unmeasurable, stale and missing states SHALL have no band.
+Baseline degradation SHALL preserve independently loaded measurement trends.
+
+#### Scenario: A resting-heart-rate band does not label generic heart rate
+
+- **WHEN** a resting_hr band is ready
+- **THEN** it SHALL be labelled as resting heart rate and SHALL NOT overlay heart_rate
+
+#### Scenario: Missing evidence is not a usual range
+
+- **WHEN** a baseline is thin, unmeasurable, stale, missing or unreadable
+- **THEN** the display SHALL name that state and SHALL NOT draw a usual-range band

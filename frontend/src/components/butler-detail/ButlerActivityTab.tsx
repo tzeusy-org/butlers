@@ -30,7 +30,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { RangeToggle, type RangeValue } from "@/components/ui/range-toggle"
 import { ActivityStripe } from "@/components/butlers/ActivityStripe"
 import { DayBars } from "@/components/butlers/DayBars"
-import { KpiCell, Panel } from "@/components/butler-detail/atoms"
+import { KpiCell, Panel } from "@/components/ui/atoms"
 import {
   useButlerHourlyActivity,
   useButlerDailyActivity,

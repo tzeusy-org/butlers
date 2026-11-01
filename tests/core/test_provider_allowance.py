@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
+from butlers.api.deps import get_db
 from butlers.core.dispatch_intent import derive_dispatch_intent
 from butlers.core.model_routing import (
     ALLOWANCE_DEFAULT_WINDOW,
@@ -251,7 +252,7 @@ class TestAccountScopedExclusion:
                 "TRUNCATE public.provider_allowance_states, public.model_catalog CASCADE"
             )
             app = create_authenticated_domain_app()
-            app.dependency_overrides[model_settings._get_db_manager] = lambda: db
+            app.dependency_overrides[get_db] = lambda: db
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url="http://test"
             ) as client:

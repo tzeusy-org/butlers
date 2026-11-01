@@ -13,6 +13,7 @@ Tests:
 from __future__ import annotations
 
 import pytest
+from cryptography.exceptions import InvalidTag
 
 from butlers.core.crypto import aes_gcm
 
@@ -122,7 +123,7 @@ def test_decrypt_tampered_tag_raises():
     # Flip last byte (part of the GCM tag)
     tampered = bytearray(blob)
     tampered[-1] ^= 0xFF
-    with pytest.raises(Exception):  # cryptography raises InvalidTag
+    with pytest.raises(InvalidTag):  # cryptography raises InvalidTag
         aes_gcm.decrypt(bytes(tampered), key=_TEST_KEY)
 
 
@@ -130,7 +131,7 @@ def test_decrypt_wrong_key_raises():
     """Decrypting with a different key raises an error."""
     blob = aes_gcm.encrypt("secret", key=_TEST_KEY)
     other_key = bytes(reversed(range(32)))
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidTag):
         aes_gcm.decrypt(blob, key=other_key)
 
 

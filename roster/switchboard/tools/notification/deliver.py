@@ -20,23 +20,27 @@ from butlers.core.approval_delivery_transport import (
 )
 from butlers.core.approval_review import review_from_notify_refusal
 from butlers.core.tool_call_capture import get_current_runtime_session_id
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.tools.switchboard.contracts import (
+    NotifyRequestV1,
+    parse_notify_request,
+)
 from butlers.tools.switchboard.notification.log import (
     _log_notification_with_review,
     log_notification,
 )
+from butlers.tools.switchboard.notification.self_links import resolve_self_links
 from butlers.tools.switchboard.registry.registry import (
     expected_route_target,
     receiver_route_cutover_enabled,
     resolve_control_plane_target,
 )
 from butlers.tools.switchboard.routing.contracts import (
-    NotifyRequestV1,
     RouteRequestContextV1,
-    parse_notify_request,
     parse_route_envelope,
 )
 from butlers.tools.switchboard.routing.route import route
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.transport import (
     PROVIDER_REJECTED,
     TRANSPORT_CONNECTION_LOST,
     TransportResult,
@@ -385,6 +389,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": retryable,
+            **terminal_telegram_metadata(route_result),
             **_transport_fragment(transport),
         }
         return result
@@ -431,6 +436,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": False,
+            **terminal_telegram_metadata(route_result),
             **_transport_fragment(failure_transport),
         }
 
@@ -468,6 +474,7 @@ async def _deliver_via_notify_request(
             "error": error_msg,
             "error_class": error_class,
             "retryable": retryable,
+            **terminal_telegram_metadata(route_result),
             **_transport_fragment(transport),
         }
 
@@ -676,6 +683,7 @@ async def deliver(
     call_fn: Any | None = None,
     trusted_source: str | None = None,
     verified_context: TrustedRecoveryContext | None = None,
+    content_requires_inert_links: bool = False,
 ) -> dict[str, Any]:
     """Deliver a notification through the specified channel.
 
@@ -723,6 +731,17 @@ async def deliver(
         if authenticated is None:
             return _recovery_authority_refusal()
         parsed_notify, request_context, trusted = authenticated
+        from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+        # Authenticate the original source-admitted envelope first. Rendering
+        # authority is a separate private sender fact, never its public flag.
+        parsed_notify = parsed_notify.model_copy(
+            update={
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                )
+            }
+        )
         tracer = trace.get_tracer("butlers")
         with tracer.start_as_current_span("switchboard.deliver") as span:
             span.set_attribute("source_butler", trusted.issuer)
@@ -730,7 +749,7 @@ async def deliver(
             span.set_attribute("target_butler", MESSENGER_BUTLER_NAME)
             return await _deliver_recovery_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 trusted=trusted,
                 call_fn=call_fn,
@@ -752,6 +771,16 @@ async def deliver(
             return {"error": error_msg, "status": "failed"}
 
         if envelope_payload is not None:
+            from butlers.core.delivery_rendering import delivery_content_requires_inert_links
+
+            # The input envelope is a tool argument. Only deterministic, internal
+            # sender facts can supply this field at the Switchboard boundary.
+            envelope_payload = {
+                **envelope_payload,
+                "render_links_inert": (
+                    delivery_content_requires_inert_links() or content_requires_inert_links is True
+                ),
+            }
             try:
                 parsed_notify = parse_notify_request(envelope_payload)
             except ValidationError as exc:
@@ -780,7 +809,7 @@ async def deliver(
 
             return await _deliver_via_notify_request(
                 pool,
-                notify_request=parsed_notify,
+                notify_request=resolve_self_links(parsed_notify),
                 request_context=request_context,
                 source_butler=source_butler,
                 metadata=metadata,
@@ -868,6 +897,47 @@ async def deliver(
                 source_butler=source_butler,
                 call_fn=call_fn,
             )
+            terminal = terminal_telegram_metadata(candidate_result)
+            candidate_transport = transport_result_from_envelope(candidate_result)
+            if (
+                channel == "telegram"
+                and candidate_transport is not None
+                and candidate_transport.as_dict()["outcome"] == "uncertain"
+            ):
+                terminal = terminal or {"telegram_effect_uncertain": True, "retryable": False}
+            if terminal:
+                terminal_reason = (
+                    "telegram_partial_delivery"
+                    if terminal.get("partial_delivery")
+                    else "telegram_delivery_uncertain"
+                )
+                span.set_status(trace.StatusCode.ERROR, terminal_reason)
+                # Preserve the route's existing error ABI; typed fields fence replay.
+                failure = (
+                    str(candidate_result["error"])
+                    if "error" in candidate_result
+                    else terminal_reason
+                )
+                notification_id = await _log_notification_best_effort(
+                    pool,
+                    source_butler=source_butler,
+                    channel=channel,
+                    recipient=recipient,
+                    message=message or "",
+                    metadata=metadata,
+                    status="failed",
+                    error=failure,
+                    session_id=session_id,
+                    trace_id=_current_trace_id(),
+                )
+                return {
+                    "notification_id": notification_id,
+                    "status": "failed",
+                    "error": failure,
+                    "error_class": "delivery_error",
+                    **terminal,
+                    **_transport_fragment(TRANSPORT_CONNECTION_LOST),
+                }
             if "error" in candidate_result:
                 route_errors.append(str(candidate_result["error"]))
                 continue

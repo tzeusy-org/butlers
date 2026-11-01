@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import shutil
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
 
+from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.tools.finance import claim_reconciliation
 from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
 
 pytestmark = [
@@ -35,14 +38,21 @@ async def _finance_pool(db_url: str) -> asyncpg.Pool:
         await conn.execute("SET ROLE butler_finance_rw")
         await conn.execute("SET search_path TO finance, public")
 
-    return await asyncpg.create_pool(db_url, min_size=1, max_size=2, setup=setup)
+    return await asyncpg.create_pool(
+        db_url, min_size=1, max_size=2, init=register_jsonb_codec, setup=setup
+    )
 
 
 async def _role_conn(db_url: str, role: str) -> asyncpg.Connection:
     conn = await asyncpg.connect(db_url)
-    await conn.execute(f"SET ROLE {role}")
-    await conn.execute("SET search_path TO finance, public")
-    return conn
+    try:
+        await register_jsonb_codec(conn)
+        await conn.execute(f"SET ROLE {role}")
+        await conn.execute("SET search_path TO finance, public")
+        return conn
+    except BaseException:
+        await conn.close()
+        raise
 
 
 async def _claim(
@@ -326,7 +336,7 @@ async def test_fresh_feed_distinguishes_no_candidate_multiple_and_currency_misma
             "ambiguous",
             "multiple_candidates",
         )
-        assert len(json.loads(multi_row["match_refs"])) == 2
+        assert len(multi_row["match_refs"]) == 2
 
         # Remove the same-currency candidates and leave an otherwise matching
         # USD credit: no implicit conversion is permitted.
@@ -384,9 +394,7 @@ async def test_same_currency_candidate_with_cross_currency_candidate_is_ambiguou
             "ambiguous",
             "currency_mismatch",
         )
-        assert set(json.loads(row["match_refs"])) == {
-            str(transaction["id"]) for transaction in transaction_ids
-        }
+        assert set(row["match_refs"]) == {str(transaction["id"]) for transaction in transaction_ids}
         assert (
             await pool.fetchval(
                 "SELECT count(*) FROM claim_match_bindings WHERE claim_id = $1", claim_id
@@ -451,3 +459,145 @@ async def test_concurrent_sweep_loser_exits_without_writing(db_url: str) -> None
         )
         await blocker.close()
         await pool.close()
+
+
+async def test_production_codec_sweep_array_rollback_and_restoration(
+    db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real-role sweep/observer, including an exact defective-writer SQL mutant."""
+    claim_id = await _claim(db_url, key=f"test:codec:{uuid.uuid4()}")
+    pool = await _finance_pool(db_url)
+    observer = None
+    try:
+        observer = await _role_conn(db_url, "butler_finance_rw")
+
+        async def read_resolution() -> asyncpg.Record:
+            return await observer.fetchrow(
+                "SELECT r.*, jsonb_typeof(match_refs) AS refs_type "
+                "FROM public.cost_claim_resolutions r WHERE claim_id = $1",
+                claim_id,
+            )
+
+        async def snapshot() -> tuple:
+            return (
+                dict(await read_resolution()),
+                [
+                    dict(r)
+                    for r in await observer.fetch(
+                        "SELECT * FROM claim_match_bindings ORDER BY claim_id"
+                    )
+                ],
+                [
+                    dict(r)
+                    for r in await observer.fetch(
+                        "SELECT * FROM public.cost_claim_events WHERE claim_id = $1 ORDER BY id",
+                        claim_id,
+                    )
+                ],
+            )
+
+        # Empty/default references really traverse the same migrated writer.
+        await reconcile_cost_claims(pool)
+        empty = await read_resolution()
+        assert empty["refs_type"] == "array"
+        assert empty["match_refs"] == []
+        assert empty["decided_by"] == "butler_finance_rw"
+
+        account_id = await pool.fetchval(
+            "INSERT INTO accounts (institution, type, currency, last_synced_at) "
+            "VALUES ('Test', 'checking', 'SGD', now()) RETURNING id"
+        )
+        first, second = uuid.uuid4(), uuid.uuid4()
+        posted_at = datetime.now(UTC)
+
+        async def insert_transaction(transaction_id: uuid.UUID, when: datetime) -> None:
+            await pool.execute(
+                "INSERT INTO transactions "
+                "(id, account_id, posted_at, merchant, amount, currency, direction, category) "
+                "VALUES ($1, $2, $3, 'Alex', 25, 'SGD', 'credit', 'income')",
+                transaction_id,
+                account_id,
+                when,
+            )
+
+        await insert_transaction(first, posted_at)
+        await reconcile_cost_claims(pool)
+        single = await read_resolution()
+        assert single["refs_type"] == "array"
+        assert single["match_refs"] == [str(first)]
+        assert single["state"] == "settled"
+        assert single["matched_amount"] == 25
+        assert single["matched_currency"] == "SGD"
+        assert single["decided_by"] == "butler_finance_rw"
+        await insert_transaction(second, posted_at + timedelta(seconds=1))
+        await reconcile_cost_claims(pool)
+        baseline_multiple = await read_resolution()
+        assert baseline_multiple["refs_type"] == "array"
+        assert baseline_multiple["match_refs"] == [str(first), str(second)]
+        assert baseline_multiple["state"] == "ambiguous"
+        await pool.execute("DELETE FROM transactions WHERE id = $1", second)
+        await reconcile_cost_claims(pool)
+        before = await snapshot()
+        assert len(before[1]) == 1
+        assert before[1][0]["transaction_id"] == first
+        await insert_transaction(second, posted_at + timedelta(seconds=1))
+
+        # Discover the actual installed CHECK, rather than accept arbitrary SQL errors.
+        checks = await observer.fetch(
+            "SELECT conname, convalidated FROM pg_constraint "
+            "WHERE conrelid = 'public.cost_claim_resolutions'::regclass "
+            "AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%jsonb_typeof(match_refs)%'"
+        )
+        assert len(checks) == 1
+        assert checks[0]["convalidated"] is True
+        writer_source = inspect.getsource(claim_reconciliation._write_resolution)
+        native_bind = "        _refs(matches or []),"
+        assert writer_source.count(native_bind) == 1
+        namespace = dict(vars(claim_reconciliation), json=json)
+        exec(
+            compile(
+                writer_source.replace(native_bind, "        json.dumps(_refs(matches or [])),"),
+                "<scheduled-cost-claim-serialization-mutant>",
+                "exec",
+            ),
+            namespace,
+        )
+        with monkeypatch.context() as mutation:
+            mutation.setattr(
+                claim_reconciliation, "_write_resolution", namespace["_write_resolution"]
+            )
+            with pytest.raises(asyncpg.CheckViolationError) as failure:
+                await reconcile_cost_claims(pool)
+        assert failure.value.sqlstate == "23514"
+        assert failure.value.constraint_name == checks[0]["conname"]
+        # Failed rebuild/write must retain the last committed binding, verdict and history.
+        assert await snapshot() == before
+        acquired = await observer.fetchval(
+            "SELECT pg_try_advisory_lock(hashtextextended($1, 0))",
+            "finance:cost-claim-reconciliation",
+        )
+        try:
+            assert acquired is True
+        finally:
+            if acquired:
+                await observer.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended($1, 0))",
+                    "finance:cost-claim-reconciliation",
+                )
+
+        # Exact restored writer now commits the ordered multi-reference upsert.
+        await reconcile_cost_claims(pool)
+        multiple = await read_resolution()
+        assert multiple["refs_type"] == "array"
+        assert multiple["match_refs"] == [str(first), str(second)]
+        assert multiple["state"] == "ambiguous"
+        assert multiple["unmatched_reason"] == "multiple_candidates"
+        assert multiple["decided_by"] == "butler_finance_rw"
+        assert multiple["evidence_horizon_at"] == posted_at + timedelta(seconds=1)
+        assert await observer.fetchval("SELECT count(*) FROM claim_match_bindings") == 0
+    finally:
+        try:
+            if observer is not None:
+                await observer.close()
+        finally:
+            await pool.close()

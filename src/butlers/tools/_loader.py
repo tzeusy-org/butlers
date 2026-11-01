@@ -1,17 +1,12 @@
-"""Dynamic loader for butler-specific tools from config directories.
+"""Eager discovery adapter for canonical roster tools.
 
-Each butler keeps its tools in either ``roster/<name>/tools.py`` (single file)
-or ``roster/<name>/tools/__init__.py`` (package directory).  This module provides
-``register_butler_tools`` which uses ``importlib`` to load those files and inject
-them into ``sys.modules`` as ``butlers.tools.<name>`` so that existing import
-paths continue to work throughout the codebase.
+Entry selection and execution belong to :mod:`butlers.roster_imports`; this
+adapter preserves discovery, missing-file errors and optional warning/continue.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -56,31 +51,21 @@ def register_butler_tools(
         If neither ``tools.py`` nor ``tools/__init__.py`` exists in *config_dir*.
     ImportError
         If the module cannot be loaded.
+    ValueError
+        If the name or config directory is outside the owning roster root.
     """
     tools_path = _find_tools_entry(config_dir)
     if tools_path is None:
         raise FileNotFoundError(f"No tools.py or tools/__init__.py found in {config_dir}")
 
-    module_name = f"butlers.tools.{butler_name}"
+    from butlers import roster_imports
 
-    # Skip if already registered.
-    if module_name in sys.modules:
-        return
-
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        tools_path,
-        submodule_search_locations=(
-            [str(tools_path.parent)] if tools_path.name == "__init__.py" else None
-        ),
-    )
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Cannot create module spec for {tools_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    logger.debug("Registered butler tools: %s from %s", module_name, tools_path)
+    if not roster_imports._NAME.fullmatch(butler_name):
+        raise ValueError("Invalid roster name")
+    if config_dir.resolve() != (roster_imports._ROSTER / butler_name).resolve():
+        raise ValueError("Tools config directory differs from owning roster root")
+    roster_imports.roster_module(butler_name, "tools")
+    logger.debug("Registered butler tools: %s from %s", butler_name, tools_path)
 
 
 def _discover_butler_names(butlers_root: Path) -> list[str]:

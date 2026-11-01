@@ -314,7 +314,7 @@ class SourceApprovalAdmission:
         self._admissions.pop(hashlib.sha256(proof.encode()).hexdigest(), None)
 
     async def mint(self, claim: DeliveryClaim, payload: dict[str, Any]) -> str:
-        from butlers.tools.switchboard.routing.contracts import parse_notify_request
+        from butlers.tools.switchboard.contracts import parse_notify_request
 
         if self._retired:
             raise RecoveryAuthorityError(_REFUSAL)

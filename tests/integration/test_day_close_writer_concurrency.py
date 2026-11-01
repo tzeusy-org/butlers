@@ -14,6 +14,7 @@ from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_clo
 from butlers.chronicler.day_close_writer import DAY_CLOSE_TASK_NAME, write_day_close_cache
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -114,18 +115,20 @@ async def test_concurrent_invalid_candidate_cannot_overwrite_valid_cache_row(
                 )
 
                 async with asyncio.timeout(5):
-                    while (
-                        await pool.fetchval(
-                            """
-                            SELECT count(*)
-                            FROM pg_locks
-                            WHERE locktype = 'transactionid'
-                              AND NOT granted
-                            """
-                        )
-                        < 2
-                    ):
-                        await asyncio.sleep(0.01)
+
+                    async def _condition_met() -> bool:
+                        return (
+                            await pool.fetchval(
+                                """
+                                SELECT count(*)
+                                FROM pg_locks
+                                WHERE locktype = 'transactionid'
+                                  AND NOT granted
+                                """
+                            )
+                        ) >= 2
+
+                    await poll_until(_condition_met, interval_s=0.01)
 
                 assert not invalid_task.done()
                 assert not valid_task.done()

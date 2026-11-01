@@ -1,3 +1,14 @@
+## Fold-in disposition: core-skills
+
+The `AGENTS.md Read/Write Access` delta (`REQ-core-skills-004`) now lives in
+`generalist-lead-focused-delegation/specs/core-skills/spec.md`; this source no longer edits
+`core-skills`. The 37 task bodies and checkbox states below retain their historical drafting
+evidence and outstanding proposal-spine delivery gates. In particular, completed tasks 1.13,
+2.3 and 2.5 record earlier draft work, not current ownership of the moved delta. Future task
+5.1 syncs only the remaining `improvement-proposal-spine` delta from this change; it must not
+reintroduce the moved `core-skills` block. All implementation, owner-review, verification and
+archive holds remain pending as recorded. This fold does not tick tasks or archive the source.
+
 ## 1. Draft the contract
 
 - [x] 1.1 Specify the restricted public schema (`public.improvement_proposals` /

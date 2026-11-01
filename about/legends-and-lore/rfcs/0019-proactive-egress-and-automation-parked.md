@@ -177,3 +177,47 @@ The per-butler egress applications that depend on the parked capabilities
 enrichment, face-recognition media tagging) live in the
 [Ideas Ledger](../ideas-ledger.md#egress-owner-delegated-actions-rfc-0019), each
 with its unpark condition.
+
+## Proposed notify-only narrowing (2026-10-24; adoption pending)
+
+This is bu-dhloi1.19's exact review carrier for bu-nt2eda's recorded notify-only
+direction. It does not label new words already adopted, release a runtime or
+reopen calendar auto-responses. Until reserved exact-text adoption, the parked
+contract above remains current. After adoption the following is the sole
+narrow exception to “nothing else accepted / no spec or implementation” above;
+the general trigger-to-action engine and all other egress remain parked.
+
+The first switch SHALL provide only the minimal RFC0038 S4 evaluator interface
+for registered goal/owner/effect/time/perception conditions. M7
+bu-4c7nvp.1.5 owns the later watch consumer. A watch SHALL be explicitly
+owner-authored and owner-confirmed, notify only that owner, and have an immutable
+predicate/source/category/grant boundary, finite expiry, stable ID/version,
+delivery subject and receipt. Models may propose a bounded watch for review;
+no proposal, inferred routine, subscription or source text creates one.
+Registration is an owner action, not a grantable approval/admin bypass.
+
+The later watch consumer SHALL use the one evaluator, not text/code predicates
+or a second automation language. Cap active watches at 50, expire at 90 days
+unless the owner renews, and default to digest delivery unless the owner chose
+right-away. A useful-rule promotion suggestion may appear after 3 useful uses
+only with no “Never” in 60 days; the suggestion cannot install or broaden a
+watch. An existing rule/subscription does not acquire watch authority by being
+renamed. Every read, wake and delivery retains current grants, labels,
+availability-only/private-custody restrictions, finite quotas, deduplication,
+Stop/expiry and the owner-only delivery subject. Missing evidence remains
+unknown; no event implies absence or permission.
+
+No watch sends to third parties, mutates an external service, spends, schedules
+an arbitrary action or activates the rejected calendar-based auto-response.
+Such behavior is outside this exception and retains its existing owner/egress
+gates. Per-event/always-per-event approval and owner-selection rules remain.
+This narrowing does not change RFC0011 attention budgets, .18 urgency/step-up
+policy or the Owner Attention Policy consolidation scope guard above.
+
+Confirmed-routine storage/expect.* publication remains the separately owned
+Chronicler feeder and canonical perception registry. A routine-obligation
+suggestion uses the existing insight/dedup path at most weekly with 7-day dedup;
+only owner YES may park the corresponding administer action/card. It never
+creates an unapproved obligation. Exact RFC0014/v1 amendments and the limited
+routine/perception conformance delegation remain separately bounded; this text
+is not their blanket adoption or implementation.

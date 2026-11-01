@@ -92,14 +92,16 @@ Alembic migration). Predicates MUST be grouped into families:
   inverse: person is managed by a person), `rental-agent` (person acts as rental agent for an
   organization or place) and `rental-location` (person rents from, or has a rental relationship
   with, a place). `manages-property` (person manages a place or organization) was approved
-  separately (owner decision 2026-09-30, `bu-60pwv6.35`). Migration `rel_026` seeds all five.
+  separately (owner walkthrough 2026-09-30, item (b), `bu-60pwv6.35`). Migration `rel_026`
+  seeds all five.
   `participant-of` and `invited-by` are NOT catalog predicates: a participation edge is written
   as `member-of`, and an invitation or referral stays narrative (owner decision 2026-09-30,
   `bu-60pwv6.35`; conformance: `bu-eba4tw`, because `rel_026` still seeds both).
 
   The central writer's alias map collapses `sibling_of` to `family-of` and `married_to` to
-  `partner-of` (implemented by `bu-i0pgi` for `relational-edges-single-home`, recorded here as
-  the chosen option); neither is a separate catalog predicate.
+  `partner-of` (implemented by `bu-i0pgi`, commit `c0e99f067`, for
+  `relational-edges-single-home`, recorded here as the chosen option); neither is a separate
+  catalog predicate.
 - **Override predicates** (`object_kind='literal'`, JSON): `dunbar_tier_override` (per
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
 

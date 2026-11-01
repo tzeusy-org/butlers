@@ -8,7 +8,8 @@ Covers:
 - Nonfinite coordinate handling (skip + warn).
 - Missing evidence surface graceful degradation.
 - Checkpoint advance / resume (watermark advances by ts).
-- Clock-skew clamping: implausible device timestamps clamped to recorded_at.
+- Clock-skew clamping: future-dated device timestamps clamped to recorded_at;
+  late-delivered (buffered offline) points keep their device timestamp.
 - Source-scan guardrail: no LLM imports in adapters/owntracks.py.
 """
 
@@ -511,15 +512,16 @@ def test_owntracks_adapter_exported_from_package() -> None:
 
 @pytest.mark.asyncio
 async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> None:
-    """A point whose device timestamp deviates from recorded_at by more than the
+    """A point whose device timestamp runs ahead of recorded_at by more than the
     threshold must be clamped to recorded_at BEFORE episode projection, preventing
     an inverted episode without ever invoking the swap-bounds guard.
     """
     server_time = _NOW + timedelta(hours=2)  # 12:00 UTC relative to _NOW baseline
 
-    # Point A: device clock is skewed by 4h + 5min backward
-    skewed_ts = server_time - timedelta(hours=4, minutes=5)  # 07:55
-    recorded_at_a = server_time + timedelta(minutes=5)  # 12:05 (server time)
+    # Point A: device clock is skewed by 4h + 5min forward (a fix cannot be
+    # recorded before it was taken, so a future-dated ts is a broken clock).
+    skewed_ts = server_time + timedelta(hours=4, minutes=5)  # 16:05
+    recorded_at_a = server_time  # 12:00 (server time)
 
     # Point B: device clock is accurate
     good_ts = server_time + timedelta(minutes=10)  # 12:10
@@ -570,9 +572,94 @@ async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> No
             f"start_at={ep.start_at.isoformat()}, end_at={ep.end_at.isoformat()}"
         )
 
-    # The clamped point A ts should be recorded_at_a (12:05), not skewed_ts (07:55).
+    # The clamped point A ts should be recorded_at_a (12:00), not skewed_ts (16:05).
     for ep in upserted_episodes:
         assert ep.start_at >= recorded_at_a, (
             f"Episode start_at {ep.start_at.isoformat()} predates clamped ts "
             f"{recorded_at_a.isoformat()} — skewed timestamp leaked into projection"
         )
+        assert ep.end_at < skewed_ts, (
+            f"Episode end_at {ep.end_at.isoformat()} reaches the future-dated device ts "
+            f"{skewed_ts.isoformat()} — skewed timestamp leaked into projection"
+        )
+
+
+@pytest.mark.asyncio
+async def test_buffered_offline_points_keep_device_ts_and_split_by_ts() -> None:
+    """Points buffered offline and uploaded hours later keep their device ts.
+
+    Regression for bu-8r9q06: the phone was offline on a TPE -> NRT flight and
+    uploaded its queued Taoyuan fixes together with the first Narita fix after
+    landing.  One Taoyuan fix arrived 4h18m late; clamping it to recorded_at
+    placed the owner back in Taiwan 39 minutes after the Narita fix.  Upload
+    order also differed from device order, which merged both airports into one
+    movement episode when segmenting by recorded_at.
+    """
+    upload = datetime(2026, 10, 26, 2, 43, 50, tzinfo=UTC)
+    taoyuan_late = datetime(2026, 10, 25, 22, 25, 39, tzinfo=UTC)
+    taoyuan_b = datetime(2026, 10, 25, 23, 3, 43, tzinfo=UTC)
+    taoyuan_c = datetime(2026, 10, 25, 23, 8, 38, tzinfo=UTC)
+    narita = datetime(2026, 10, 26, 2, 4, 34, tzinfo=UTC)
+    assert upload - taoyuan_late > timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS)
+
+    # Fetched in ts order (as the SQL does), but recorded_at order differs.
+    rows = [
+        {
+            **_make_row(ts=taoyuan_late, lat=25.077, lon=121.236, idempotency_key="tpe-a"),
+            "recorded_at": upload,
+        },
+        {
+            **_make_row(ts=taoyuan_b, lat=25.071, lon=121.224, idempotency_key="tpe-b"),
+            "recorded_at": upload + timedelta(seconds=2),
+        },
+        {
+            **_make_row(ts=taoyuan_c, lat=25.053, lon=121.223, idempotency_key="tpe-c"),
+            "recorded_at": upload + timedelta(seconds=1),
+        },
+        {
+            **_make_row(ts=narita, lat=35.762, lon=140.385, idempotency_key="nrt-a"),
+            "recorded_at": upload + timedelta(seconds=3),
+        },
+    ]
+
+    adapter = OwnTracksPointAdapter()
+    upserted_events: list[PointEvent] = []
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_pe(conn: object, event: PointEvent) -> PointEvent:
+        upserted_events.append(event)
+        return event
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_point_event",
+            side_effect=_fake_upsert_pe,
+        ),
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+    ):
+        result = await adapter.project(
+            _pool_returning(*rows), chronicler_pool=_chronicler_pool(), since=None
+        )
+
+    assert not any("implausible" in w for w in result.warnings), result.warnings
+    occurred = {e.payload["idempotency_key"]: e.occurred_at for e in upserted_events}
+    assert occurred == {
+        "tpe-a": taoyuan_late,
+        "tpe-b": taoyuan_b,
+        "tpe-c": taoyuan_c,
+        "nrt-a": narita,
+    }
+
+    spans = sorted((ep.start_at, ep.end_at) for ep in upserted_episodes)
+    assert spans == [
+        (taoyuan_late, taoyuan_late),
+        (taoyuan_b, taoyuan_c),
+        (narita, narita),
+    ]

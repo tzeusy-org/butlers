@@ -764,8 +764,7 @@ class TestStep8cBlobStorageDegradation:
             db_schema="test_butler",
         )
         daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
+        daemon._registry.load_from_config.return_value = []
         daemon._validate_module_configs.return_value = {}
         daemon._collect_module_credentials.return_value = {}
         daemon._module_statuses = {}
@@ -896,8 +895,7 @@ class TestStep8c2CodexAuthorityWiring:
             db_schema="test_butler",
         )
         daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
+        daemon._registry.load_from_config.return_value = []
         daemon._validate_module_configs.return_value = {}
         daemon._collect_module_credentials.return_value = {}
         daemon._module_statuses = {}

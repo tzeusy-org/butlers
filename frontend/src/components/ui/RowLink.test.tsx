@@ -25,7 +25,7 @@ vi.mock("@/api/index.ts", () => ({
 }))
 
 import { RowLink } from "./RowLink"
-import { PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-prefetch-on-intent"
+import { NAV_INTENT_DELAY_MS } from "@/hooks/use-nav-intent"
 
 afterEach(() => {
   cleanup()
@@ -206,7 +206,7 @@ describe("RowLink: prefetch on hover intent (bu-qvnce.14 slice 4)", () => {
     expect(prefetchSpy).not.toHaveBeenCalled()
 
     act(() => {
-      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS)
+      vi.advanceTimersByTime(NAV_INTENT_DELAY_MS)
     })
 
     expect(prefetchSpy).toHaveBeenCalledWith(
@@ -229,7 +229,7 @@ describe("RowLink: prefetch on hover intent (bu-qvnce.14 slice 4)", () => {
 
     fireEvent.pointerEnter(screen.getByTestId("row"))
     act(() => {
-      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS)
+      vi.advanceTimersByTime(NAV_INTENT_DELAY_MS)
     })
 
     expect(prefetchSpy).not.toHaveBeenCalled()
@@ -251,11 +251,11 @@ describe("RowLink: prefetch on hover intent (bu-qvnce.14 slice 4)", () => {
     const row = screen.getByTestId("row")
     fireEvent.pointerEnter(row)
     act(() => {
-      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS / 2)
+      vi.advanceTimersByTime(NAV_INTENT_DELAY_MS / 2)
     })
     fireEvent.pointerLeave(row)
     act(() => {
-      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS)
+      vi.advanceTimersByTime(NAV_INTENT_DELAY_MS)
     })
 
     expect(prefetchSpy).not.toHaveBeenCalled()

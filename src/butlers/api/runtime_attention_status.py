@@ -14,11 +14,17 @@ Condition attention status (REQ-butler-control-plane-liveness-007):
 ``failed``              definitively not delivered (pre-transport or rejected)
 ``uncertain``           may or may not have arrived; never automatically resent
 ``unavailable``         the attention projection itself could not be read
+``not_raised``          no marker exists and the condition outlived the attention grace
+                        plus one controller pass: nothing paged the owner
+``within_grace``        no marker yet, but the producer is not yet due to page
 """
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any, Final
+
+from butlers.core.liveness import DEFAULT_LIVENESS_TTL_SECONDS
 
 ATTENTION_REASON_COPY: Final[dict[tuple[str, str], str]] = {
     ("pre_transport", "recipient_unavailable"): "Recipient unavailable before delivery",
@@ -33,8 +39,25 @@ ATTENTION_REASON_COPY: Final[dict[tuple[str, str], str]] = {
 }
 
 CONDITION_ATTENTION_STATUSES: Final[frozenset[str]] = frozenset(
-    {"pending", "worker_unavailable", "sending", "sent", "failed", "uncertain", "unavailable"}
+    {
+        "pending",
+        "worker_unavailable",
+        "sending",
+        "sent",
+        "failed",
+        "uncertain",
+        "unavailable",
+        "not_raised",
+        "within_grace",
+    }
 )
+
+# Mirror of ``v_attention_grace`` in ``public.append_runtime_attention_condition``
+# (scripts/init-db.sql), which owns the grace; ``tests/api/test_system.py`` pins agreement.
+CONDITION_ATTENTION_GRACE: Final = timedelta(minutes=5)
+# The controller runs after every observer cycle, at most half the registry TTL apart
+# (docs/operations/runtime-attention.md), so a page may land this long after the grace.
+CONDITION_ATTENTION_PASS_ALLOWANCE: Final = timedelta(seconds=DEFAULT_LIVENESS_TTL_SECONDS / 2)
 
 
 def safe_reason(error_class: str | None, error_detail: str | None) -> str | None:

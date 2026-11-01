@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
 
@@ -34,6 +35,11 @@ from butlers.core.approval_delivery_transport import (
     TrustedRecoveryContext,
 )
 from butlers.core.approval_delivery_worker import HandoffResult
+from butlers.core.approvals_hooks import (
+    EmailGuardDecision,
+    is_approved_tool_execution,
+    park_pending_action,
+)
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
 from butlers.core.permissions import PermissionDenied, PermissionUnavailable
@@ -54,12 +60,12 @@ from butlers.core.telemetry import extract_trace_context, tag_butler_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
 from butlers.core_tools._base import ToolContext
 from butlers.identity import resolve_owner_channel_via_definer
-from butlers.tools.switchboard.routing.contracts import (
+from butlers.telegram_api import TelegramPartialDeliveryError
+from butlers.tools.switchboard.contracts import (
     OWNER_CONTROL_INTENTS,
-    parse_notify_request,
-    parse_route_envelope,
 )
-from butlers.tools.switchboard.routing.transport import (
+from butlers.tools.switchboard.routing.contracts import parse_route_envelope
+from butlers.tools.switchboard.transport import (
     POLICY_DENIED,
     PROVIDER_REJECTED,
     RECIPIENT_UNAVAILABLE,
@@ -158,7 +164,10 @@ def _preauthenticate_messenger_recovery(
     raw_notify_request = input_context.get("notify_request")
     if not isinstance(raw_notify_request, dict):
         raise RecoveryAuthorityError("recovery notify request is missing")
-    notify_request = parse_notify_request(raw_notify_request)
+    # Defer the notification package until roster tool discovery has completed.
+    from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
+    notify_request = parse_delivered_notify_request(raw_notify_request)
     recovery = notify_request.recovery
     if recovery is None:
         raise RecoveryAuthorityError("recovery correlation is missing")
@@ -402,14 +411,18 @@ async def _build_routed_delivery_command(
     recipient: str | None,
     subject: str | None,
     notify_context: Any,
+    render_links_inert: bool = False,
 ) -> _RoutedDeliveryCommand | None:
     """Materialize the registered native command before approval evaluation."""
     if intent not in {"send", "reply"}:
         return None
     if channel not in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES:
+        if render_links_inert:
+            return None
         raise ValueError(f"Unsupported notify channel: {channel}")
 
     notify_prefix = f"[{origin}]"
+    rendering_kwargs = {"render_links_inert": True} if render_links_inert else {}
     if channel == "email":
         email_module = modules_by_name.get("email")
         if email_module is None:
@@ -438,6 +451,7 @@ async def _build_routed_delivery_command(
                     recipient,
                     normalized_subject,
                     message_text,
+                    **rendering_kwargs,
                 ),
             )
 
@@ -467,6 +481,7 @@ async def _build_routed_delivery_command(
                 thread_id,
                 message_text,
                 normalized_subject,
+                **rendering_kwargs,
             ),
         )
 
@@ -487,7 +502,9 @@ async def _build_routed_delivery_command(
                 approval_target=recipient,
                 tool_name="telegram_send_message",
                 tool_args={"chat_id": recipient, "text": rendered_text},
-                execute=partial(telegram_module._send_message, recipient, rendered_text),
+                execute=partial(
+                    telegram_module._send_message, recipient, rendered_text, **rendering_kwargs
+                ),
             )
 
         thread_identity = notify_context.source_thread_identity if notify_context else None
@@ -508,6 +525,7 @@ async def _build_routed_delivery_command(
                     chat_id,
                     reply_message_id,
                     rendered_text,
+                    **rendering_kwargs,
                 ),
             )
 
@@ -536,7 +554,9 @@ async def _build_routed_delivery_command(
             approval_target=fallback_recipient,
             tool_name="telegram_send_message",
             tool_args={"chat_id": fallback_recipient, "text": rendered_text},
-            execute=partial(telegram_module._send_message, fallback_recipient, rendered_text),
+            execute=partial(
+                telegram_module._send_message, fallback_recipient, rendered_text, **rendering_kwargs
+            ),
         )
 
     if channel == "whatsapp":
@@ -566,6 +586,127 @@ async def _build_routed_delivery_command(
         )
 
     raise RuntimeError(f"Registered notify channel lacks a delivery handler: {channel}")
+
+
+async def _check_routed_delivery_approval(
+    *,
+    daemon: Any,
+    command: _RoutedDeliveryCommand | None,
+    route_payload: dict[str, Any],
+    notify_request: Any,
+    modules_by_name: dict[str, Any],
+    dossier: dict[str, Any],
+) -> EmailGuardDecision | None:
+    """Gate the exact envelope, retaining native arguments for standing rules.
+
+    A parked envelope returns through the existing registered route.execute and
+    executor. Its existing exact-task/tool/argument binding is the only replay
+    authority; no argument in the routed request can supply that authority.
+    """
+    approval_pool = daemon.db.pool if daemon.db is not None else None
+    if approval_pool is None:
+        raise RuntimeError("Messenger recipient approval requires an initialized database pool.")
+    if is_approved_tool_execution(
+        approval_pool, tool_name="route.execute", tool_args=route_payload
+    ):
+        return None
+
+    channel = notify_request.delivery.channel
+    adapter = modules_by_name.get(channel)
+    unsupported_rendering = notify_request.render_links_inert and (
+        getattr(adapter, "supports_inert_link_delivery", False) is not True
+    )
+    if command is None and not unsupported_rendering:
+        return None
+
+    # Retain the full raw JSON input, not a reconstructed/normalized envelope.
+    # The same stored dictionary is handed back to the registered handler.
+    approved_args = json.loads(json.dumps(route_payload))
+    session_id = get_current_runtime_session_id()
+    dossier = dict(dossier)
+    if session_id is None and dossier.get("why") is None:
+        dossier["why"] = (
+            "Messenger received a deterministic delivery proposal; owner review is required "
+            "unless its destination is uniquely the live owner or an owner-created rule matches."
+        )
+
+    if unsupported_rendering:
+        from butlers.core.approvals_hooks import validate_non_owner_dossier
+
+        validated = validate_non_owner_dossier(
+            raw_why=dossier.get("why"),
+            raw_evidence=dossier.get("evidence"),
+            raw_blast_radius=dossier.get("blast_radius"),
+            raw_reversibility=dossier.get("reversibility"),
+        )
+        if isinstance(validated, dict):
+            return EmailGuardDecision(
+                allowed=False, reason="dossier_error", dossier_error=validated
+            )
+        action_id = uuid.uuid4()
+        now = datetime.now(UTC)
+        await park_pending_action(
+            approval_pool,
+            action_id=action_id,
+            tool_name="route.execute",
+            tool_args=approved_args,
+            agent_summary=f"{channel} cannot guarantee inert URLs and disabled previews.",
+            requested_at=now,
+            expires_at=now + timedelta(hours=72),
+            session_id=uuid.UUID(session_id) if session_id else None,
+            why=validated.why,
+            evidence=validated.evidence,
+            blast_radius=validated.blast_radius,
+            reversibility=validated.reversibility,
+            origin_butler=daemon.config.name,
+            approval_push_runtime=daemon._approval_push_runtime,
+        )
+        return EmailGuardDecision(
+            allowed=False,
+            reason="parked",
+            action_id=action_id,
+            contact_desc="delivery requiring explicit rendering approval",
+        )
+
+    if command is None:
+        return None
+    kwargs = {
+        "rule_tool_name": command.tool_name,
+        "rule_match_args": command.tool_args,
+        "park_tool_name": "route.execute",
+        "park_tool_args": approved_args,
+        "park_summary": "Messenger delivery to a recipient not uniquely identified as owner.",
+        "session_id": session_id,
+        "butler_name": daemon.config.name,
+        **dossier,
+        "enforce_dossier": True,
+        "approval_push_runtime": daemon._approval_push_runtime,
+    }
+    if channel == "email":
+        from butlers.core.approvals_hooks import check_email_recipient
+
+        decision = await check_email_recipient(
+            approval_pool, email_target=command.approval_target, **kwargs
+        )
+    else:
+        from butlers.core.approvals_hooks import check_recipient
+
+        decision = await check_recipient(
+            approval_pool, channel=channel, target=command.approval_target, **kwargs
+        )
+    if decision.allowed and getattr(decision, "reason", None) == "no_approvals_module":
+        # Generic hooks preserve optional-module behavior outside Messenger.
+        # Here only a positively verified live owner may bypass missing hooks.
+        from butlers.identity import resolve_channel_contact_with_owner_corroboration
+
+        contact = await resolve_channel_contact_with_owner_corroboration(
+            approval_pool, channel, command.approval_target
+        )
+        if contact is None or "owner" not in contact.roles:
+            raise RuntimeError(
+                "Messenger delivery blocked: recipient approval parking is unavailable."
+            )
+    return decision
 
 
 def _format_validation_error(prefix: str, exc: ValidationError) -> str:
@@ -632,49 +773,16 @@ def _approval_request_reply_markup(actions: Any) -> dict[str, Any]:
         decision_buttons.append({"text": "Reject", "callback_data": reject.callback_token})
 
     open_dashboard = by_verb.get("open_dashboard")
-    if open_dashboard is None:
-        raise ValueError("approval_request actions are missing open_dashboard.")
+    open_link = by_verb.get("open_link")
+    if open_dashboard is None and open_link is None:
+        raise ValueError("approval_request actions are missing a self route.")
 
     keyboard: list[list[dict[str, str]]] = []
     if decision_buttons:
         keyboard.append(decision_buttons)
-    keyboard.append([{"text": "Open dashboard", "url": open_dashboard.dashboard_url}])
+    if open_link is not None:
+        keyboard.append([{"text": open_link.label, "url": open_link.url}])
     return {"inline_keyboard": keyboard}
-
-
-def _decision_request_reply_markup(actions: Any) -> dict[str, Any]:
-    """One button row per offered option, then the dashboard link (bu-ckkpz.3)."""
-    keyboard: list[list[dict[str, str]]] = []
-    dashboard_url: str | None = None
-    for action in actions:
-        if action.verb == "choose":
-            if action.callback_token is None or action.label is None:
-                raise ValueError("decision_request choose action is missing token or label.")
-            keyboard.append([{"text": action.label, "callback_data": action.callback_token}])
-        elif action.verb == "open_dashboard":
-            dashboard_url = action.dashboard_url
-    if not keyboard or dashboard_url is None:
-        raise ValueError("decision_request actions need choices and open_dashboard.")
-    keyboard.append([{"text": "Open dashboard", "url": dashboard_url}])
-    return {"inline_keyboard": keyboard}
-
-
-def _owner_control_plain_text(intent: str, message: str, actions: Any) -> str:
-    """Text for a channel without inline buttons: a decision prompt carries its link.
-
-    The decision template names options for buttons, so without them the owner
-    needs the dashboard URL to answer; approval messages already embed theirs.
-    """
-    if intent != "decision_request":
-        return message
-    url = next((a.dashboard_url for a in actions if a.verb == "open_dashboard"), None)
-    return f"{message}\n\nDecide in the dashboard: {url}" if url else message
-
-
-def _owner_control_reply_markup(intent: str, actions: Any) -> dict[str, Any]:
-    if intent == "decision_request":
-        return _decision_request_reply_markup(actions)
-    return _approval_request_reply_markup(actions)
 
 
 def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> None:
@@ -789,6 +897,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             notify_response: dict[str, Any] | None = None,
             retryable: bool | None = None,
             transport: TransportResult | None = None,
+            partial_delivery: bool = False,
+            message_ids: tuple[int, ...] = (),
         ) -> dict[str, Any]:
             resolved_retryable = (
                 _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
@@ -803,6 +913,21 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 },
                 "timing": {"duration_ms": _elapsed_ms()},
             }
+            if partial_delivery:
+                response["error"]["partial_delivery"] = True
+                response["error"]["message_ids"] = list(message_ids)
+            elif (
+                transport is not None
+                and transport.as_dict()["outcome"] == "uncertain"
+                and notify_response is not None
+                and notify_response.get("delivery", {}).get("channel") == "telegram"
+            ):
+                # This marker comes from the actual selected adapter/transport,
+                # not a caller-provided channel label or requested retry flag.
+                response["error"]["telegram_effect_uncertain"] = True
+                notify_response["error"]["telegram_effect_uncertain"] = True
+                response["error"]["retryable"] = False
+                notify_response["error"]["retryable"] = False
             if context_payload is not None:
                 response["request_context"] = context_payload
             if notify_response is not None:
@@ -832,6 +957,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             message: str,
             retryable: bool | None = None,
             approval_review: dict[str, str] | None = None,
+            partial_delivery: bool = False,
+            message_ids: tuple[int, ...] = (),
         ) -> dict[str, Any]:
             resolved_retryable = (
                 _ROUTE_ERROR_RETRYABLE.get(error_class, False) if retryable is None else retryable
@@ -845,6 +972,9 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     "retryable": resolved_retryable,
                 },
             }
+            if partial_delivery:
+                notify_payload["error"]["partial_delivery"] = True
+                notify_payload["error"]["message_ids"] = list(message_ids)
             if request_id is not None:
                 notify_payload["request_context"] = {"request_id": request_id}
             if channel is not None:
@@ -1489,8 +1619,10 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 ),
             )
 
+        from butlers.tools.switchboard.notification.self_links import parse_delivered_notify_request
+
         try:
-            notify_request = parse_notify_request(raw_notify_request)
+            notify_request = parse_delivered_notify_request(raw_notify_request)
         except ValidationError as exc:
             message = (
                 "Invalid approval recovery request."
@@ -1562,6 +1694,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     )
                 if owner_channel is None:
                     preflight_reason = "owner_recipient_unavailable"
+                elif notify_request.render_links_inert and (
+                    getattr(modules_by_name.get(channel), "supports_inert_link_delivery", False)
+                    is not True
+                ):
+                    # This is already an approval presentation. Retain the
+                    # ledger's pre-provider safe retry instead of recursively
+                    # parking another approval or starting an unsafe send.
+                    preflight_reason = "transport_unavailable"
                 elif channel == "telegram" and (telegram_module := modules_by_name.get("telegram")):
                     rendered = notify_request.delivery.message
                     prefix = f"[{notify_request.origin_butler}]"
@@ -1574,6 +1714,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             rendered,
                             reply_markup=_approval_request_reply_markup(
                                 notify_request.actions or ()
+                            ),
+                            **(
+                                {"render_links_inert": True, "server_built_reply_markup": True}
+                                if notify_request.render_links_inert
+                                else {}
                             ),
                         )
 
@@ -1592,6 +1737,11 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                             recipient,
                             subject,
                             notify_request.delivery.message,
+                            **(
+                                {"render_links_inert": True}
+                                if notify_request.render_links_inert
+                                else {}
+                            ),
                         )
 
                     provider_call = _email_provider_call
@@ -1669,7 +1819,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
         approval_recipient: str | None = None
 
         try:
-            # approval_request and decision_request are daemon-owned
+            # Approval requests are daemon-owned
             # control-plane envelopes.  Their recipient must resolve to the owner
             # before any transport module is touched; ordinary recipient gates
             # deliberately do not park or recurse this already-pending decision
@@ -1707,72 +1857,39 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 recipient=notify_request.delivery.recipient,
                 subject=notify_request.delivery.subject,
                 notify_context=notify_context,
+                render_links_inert=notify_request.render_links_inert,
             )
 
-            # Channel-general role-based approval gating for non-email channels.
-            # route.execute calls
-            # module delivery methods directly (not MCP tools), so the MCP-level
-            # approval wrappers are not in this path.  Mirror what notify() does
-            # via check_recipient (bu-nsml2 / #2722) so a non-owner recipient on
-            # any non-email channel is gated/parked exactly as on email:
-            # owner-directed sends auto-approve on any active verified owner
-            # channel, while non-owner recipients require a standing rule or are
-            # parked (fail-closed). Email is gated separately via
-            # check_email_recipient so non-owner context conflicts retain their
-            # established behavior; owner authorization is channel-uniform.
-            if delivery_command is not None and channel != "email":
-                gate_target = delivery_command.approval_target
-                if gate_target:
-                    approval_pool = daemon.db.pool if daemon.db is not None else None
-                    if approval_pool is not None:
-                        from butlers.core.approvals_hooks import check_recipient
-
-                        decision = await check_recipient(
-                            approval_pool,
-                            channel=channel,
-                            target=gate_target,
-                            rule_tool_name=delivery_command.tool_name,
-                            rule_match_args=delivery_command.tool_args,
-                            park_tool_name=delivery_command.tool_name,
-                            park_tool_args=delivery_command.tool_args,
-                            park_summary=(
-                                f"{delivery_command.tool_name} blocked: "
-                                f"{channel} to {gate_target!r}. "
-                                f"Message: {message_text!r}"
-                            ),
-                            session_id=get_current_runtime_session_id(),
-                            # The pending row and push runtime belong to Messenger.
-                            # The originating domain butler remains in the routed
-                            # request, but cannot be asserted as the sender of a
-                            # second Messenger-owned approval notification.
-                            butler_name=daemon.config.name,
-                            **dossier_kwargs,
-                            enforce_dossier=True,
-                            approval_push_runtime=daemon._approval_push_runtime,
+            decision = await _check_routed_delivery_approval(
+                daemon=daemon,
+                command=delivery_command,
+                route_payload=route_payload,
+                notify_request=notify_request,
+                modules_by_name=modules_by_name,
+                dossier=dossier_kwargs,
+            )
+            if decision is not None:
+                if decision.dossier_error is not None:
+                    return _dossier_error_response(
+                        context_payload=route_context,
+                        request_id=notify_request_id,
+                        channel=channel,
+                        dossier_error=decision.dossier_error,
+                    )
+                if not decision.allowed:
+                    if decision.reason == "parking_failed":
+                        raise RuntimeError(
+                            "Delivery remains blocked because approval parking failed; "
+                            "no pending action was created."
                         )
-                        if decision.dossier_error is not None:
-                            return _dossier_error_response(
-                                context_payload=route_context,
-                                request_id=notify_request_id,
-                                channel=channel,
-                                dossier_error=decision.dossier_error,
-                            )
-                        if not decision.allowed:
-                            if decision.reason == "parking_failed":
-                                raise RuntimeError(
-                                    "Delivery remains blocked because approval parking failed; "
-                                    "no pending action was created."
-                                )
-                            from butlers.core.approval_review import ParkedApprovalRefusal
+                    from butlers.core.approval_review import ParkedApprovalRefusal
 
-                            raise ParkedApprovalRefusal(
-                                f"Delivery blocked: {channel} target '{gate_target}' is a "
-                                f"{decision.contact_desc} and no standing approval rule "
-                                f"matches. Parked for owner review on the approval "
-                                f"dashboard (action_id={decision.action_id}).",
-                                decision=decision,
-                                butler=daemon.config.name,
-                            )
+                    raise ParkedApprovalRefusal(
+                        "Delivery blocked; parked for owner review on the approval dashboard "
+                        f"(action_id={decision.action_id}).",
+                        decision=decision,
+                        butler=daemon.config.name,
+                    )
 
             if channel == "telegram":
                 telegram_module = modules_by_name.get("telegram")
@@ -1794,8 +1911,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                     adapter_result = await telegram_module._send_message(
                         approval_recipient,
                         rendered_text,
-                        reply_markup=_owner_control_reply_markup(
-                            intent, notify_request.actions or ()
+                        reply_markup=_approval_request_reply_markup(notify_request.actions or ()),
+                        **(
+                            {
+                                "render_links_inert": True,
+                                "server_built_reply_markup": True,
+                            }
+                            if notify_request.render_links_inert
+                            else {}
                         ),
                     )
                 elif intent == "react":
@@ -1830,60 +1953,8 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 if email_module is None:
                     raise RuntimeError("Messenger email adapter is unavailable.")
 
-                # route.execute calls module methods directly (not MCP tools),
-                # so MCP-level approval wrappers are not in the path.
-                # Enforce role-based email delivery gating here.
-                if delivery_command is not None:
-                    email_target = delivery_command.approval_target
-                    approval_pool = daemon.db.pool if daemon.db is not None else None
-                    if approval_pool is not None:
-                        from butlers.core.approvals_hooks import check_email_recipient
-
-                        decision = await check_email_recipient(
-                            approval_pool,
-                            email_target=email_target,
-                            rule_tool_name=delivery_command.tool_name,
-                            rule_match_args=delivery_command.tool_args,
-                            park_tool_name=delivery_command.tool_name,
-                            park_tool_args=delivery_command.tool_args,
-                            park_summary=(
-                                f"{delivery_command.tool_name} blocked: "
-                                f"email to {email_target!r}. "
-                                f"Message: {message_text!r}"
-                            ),
-                            session_id=get_current_runtime_session_id(),
-                            butler_name=daemon.config.name,
-                            **dossier_kwargs,
-                            enforce_dossier=True,
-                            approval_push_runtime=daemon._approval_push_runtime,
-                        )
-                        if decision.dossier_error is not None:
-                            return _dossier_error_response(
-                                context_payload=route_context,
-                                request_id=notify_request_id,
-                                channel=channel,
-                                dossier_error=decision.dossier_error,
-                            )
-                        if not decision.allowed:
-                            if decision.reason == "parking_failed":
-                                raise RuntimeError(
-                                    "Delivery remains blocked because approval parking failed; "
-                                    "no pending action was created."
-                                )
-                            from butlers.core.approval_review import ParkedApprovalRefusal
-
-                            raise ParkedApprovalRefusal(
-                                f"Delivery blocked: email target '{email_target}' is a "
-                                f"{decision.contact_desc} and no standing approval rule matches. "
-                                f"Parked for owner review on the approval dashboard "
-                                f"(action_id={decision.action_id}).",
-                                decision=decision,
-                                butler=daemon.config.name,
-                            )
-
                 raw_subject = notify_request.delivery.subject or {
                     "approval_request": "Approval requested",
-                    "decision_request": "Decision requested",
                 }.get(intent, "Notification")
                 normalized_subject = (
                     raw_subject
@@ -1899,12 +1970,16 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         raise ValueError(
                             "notify_request.delivery.recipient is required for owner delivery."
                         )
+                    control_message = message_text
+                    if notify_request.render_links_inert:
+                        from butlers.core.delivery_rendering import defang_delivery_text
+
+                        normalized_subject = defang_delivery_text(normalized_subject)
+                        control_message = defang_delivery_text(control_message)
                     adapter_result = await email_module._send_email(
                         approval_recipient,
                         normalized_subject,
-                        _owner_control_plain_text(
-                            intent, message_text, notify_request.actions or ()
-                        ),
+                        control_message,
                     )
                 else:
                     raise ValueError(f"Unsupported email intent: {intent}")
@@ -1933,9 +2008,7 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                         raise RuntimeError("WhatsApp module does not expose _send_message method.")
                     adapter_result = await send_tool(
                         recipient=approval_recipient,
-                        text=_owner_control_plain_text(
-                            intent, rendered_text, notify_request.actions or ()
-                        ),
+                        text=rendered_text,
                     )
                 else:
                     raise ValueError(f"Unsupported whatsapp intent: {intent}")
@@ -1943,6 +2016,28 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
             else:
                 raise ValueError(f"Unsupported notify channel: {channel}")
 
+        except TelegramPartialDeliveryError as exc:
+            # A known accepted prefix is terminal; never describe it as an
+            # unavailable target or authorize a retry of the original text.
+            error_message = "Telegram accepted a message prefix; automatic replay is forbidden."
+            return _route_error_response(
+                context_payload=route_context,
+                error_class="delivery_error",
+                message=error_message,
+                retryable=False,
+                partial_delivery=True,
+                message_ids=exc.message_ids,
+                transport=classify_transport_exception(exc),
+                notify_response=_notify_error_response(
+                    request_id=notify_request_id,
+                    channel=channel,
+                    error_class="delivery_error",
+                    message=error_message,
+                    retryable=False,
+                    partial_delivery=True,
+                    message_ids=exc.message_ids,
+                ),
+            )
         except PermissionUnavailable:
             # The module refused before provider traffic; retry is safe after recovery.
             error_message = "Permission store unavailable; delivery was not attempted."

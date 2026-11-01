@@ -236,7 +236,7 @@ async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
         from fastmcp import Client, FastMCP
 
         from butlers.core.healing import create_or_join_attempt
-        from butlers.modules.self_healing import SelfHealingModule
+        from butlers.core.qa.relay import QaRelay
 
         error = {
             "error_type": "ValueError",
@@ -281,11 +281,10 @@ async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
                         "result": await target.call_tool(arguments["tool_name"], arguments["args"])
                     }
 
-        relay = SelfHealingModule()
-        await relay.on_startup({}, SimpleNamespace(pool=pool))
+        relay = QaRelay("general", pool, lambda: transport)
+        transport = QaMcpRelay()
         source = FastMCP("general")
-        await relay.register_tools(source, None, SimpleNamespace(pool=pool), "general")
-        relay.wire_runtime(None, "/synthetic", QaMcpRelay())
+        relay.register_tools(source)
         async with Client(source) as reporting:
             accepted = (await reporting.call_tool("report_error", error)).data
             assert accepted["accepted"] is True  # planted active row must not suppress QA
@@ -308,7 +307,6 @@ async def test_file_bug_report_lands_qa_finding_with_correct_fingerprint(
                 await reporting.call_tool("get_healing_status", {"fingerprint": canonical})
             ).data
             assert status["attempts"][0]["id"] == str(attempt_id)
-        await relay.on_shutdown()
         rejected_fp = compute_fingerprint_from_report(
             error_type=error["error_type"],
             error_message=rejected_error["error_message"],

@@ -522,6 +522,22 @@ the dashboard instead of only via direct database access.
   condition, so each suppression is traceable back to the condition that
   caused it
 
+#### Scenario: An aged paging condition with no owner alert reads not raised, never calm
+
+- **WHEN** a fleet-control or overdue-QA condition has been active longer than the
+  producer's attention grace plus one controller pass and no owner-alert marker
+  exists for it
+- **THEN** its `attention.status` is `not_raised` and the panel shows "No owner alert
+  has been raised for this condition" and marks the tile degraded
+- **AND** the same condition still inside that bound reports `within_grace` and
+  renders calmly
+- **AND** a condition resolved inside that bound (its active time at most the grace
+  plus one controller pass) with no marker carries no attention line, because nothing
+  should have paged; one resolved after that bound keeps `not_raised`
+- **AND** an unreadable attention projection still reports `unavailable`, which wins
+  over `not_raised`
+- **AND** the grace reuses the producer's own constant and this surface sends no page
+
 ### Requirement: System Page Privacy Contract
 
 The System page and all `/api/system/*` endpoints SHALL operate under a strict access

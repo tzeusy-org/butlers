@@ -23,7 +23,14 @@ spec:
         {{- if $c.oauth }}
         {{- include "butlers.oauthGate" $ | nindent 8 }}
         {{- end }}
-        {{- include "butlers.waitFor" (dict "root" $ "name" "butlers-up" "url" "http://butlers-up:41100/health") | nindent 8 }}
+        {{- include "butlers.waitFor" (dict "root" $ "name" "butlers-up" "url" (printf "http://%s:41100/health" (include "butlers.switchboardHost" $))) | nindent 8 }}
+        {{- if $c.waitForHealthRoutes }}
+        - name: wait-for-health-routes
+          image: {{ include "butlers.image" $ }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["uv", "run", "--frozen", "--no-dev", "python", "scripts/wait_for_butler_routes.py"]
+          args: ["--url", "http://butlers-up:41103/internal/control-plane/identity", "--butler", "health"]
+        {{- end }}
       containers:
         - name: connector
           image: {{ include "butlers.image" $ }}
@@ -40,7 +47,7 @@ spec:
             - butlers.connectors.{{ $c.module }}
           env:
             {{- include "butlers.postgresEnv" $ | nindent 12 }}
-            - {name: SWITCHBOARD_MCP_URL, value: "http://butlers-up:41100/sse"}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" $ }}:41100/sse"}
             - {name: CONNECTOR_PROVIDER, value: {{ $c.provider | quote }}}
             - {name: CONNECTOR_CHANNEL, value: {{ $c.channel | quote }}}
             {{- if $c.healthPort }}

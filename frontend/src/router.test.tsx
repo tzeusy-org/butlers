@@ -3,8 +3,19 @@
 import { describe, expect, it, afterEach, beforeEach } from 'vitest'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { Navigate, MemoryRouter, Route, Routes, useParams, useSearchParams } from 'react-router'
+import {
+  Navigate,
+  MemoryRouter,
+  Outlet,
+  Route,
+  RouterProvider,
+  Routes,
+  createMemoryRouter,
+  useParams,
+  useSearchParams,
+} from 'react-router'
 import { navSections } from './components/layout/nav-config'
+import { routes } from './router-config'
 
 ;(
   globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -419,5 +430,86 @@ describe('nav-config', () => {
         item.path === '/entities/circles',
     )
     expect(groupsItem).toBeUndefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Unmatched routes and route errors (bu-h40h2b.17)
+//
+// The real route table is reused, with the heavyweight RootLayout swapped for a stub that keeps
+// the layout route's own errorElement, so what is under test is router-config's wiring.
+// ---------------------------------------------------------------------------
+
+describe('router-config unmatched routes and route errors', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(() => {
+    act(() => {
+      root.unmount()
+    })
+    container.remove()
+    document.body.innerHTML = ''
+  })
+
+  function Shell() {
+    return (
+      <div data-testid="shell">
+        <Outlet />
+      </div>
+    )
+  }
+
+  function renderTable(children: (typeof routes)[number]['children'], path: string) {
+    const layout = routes[0]
+    const router = createMemoryRouter(
+      [{ element: <Shell />, errorElement: layout.errorElement, children }],
+      { initialEntries: [path] },
+    )
+    act(() => {
+      root.render(<RouterProvider router={router} />)
+    })
+  }
+
+  it('renders a not-found page inside the shell for an unmatched path, with a way home', () => {
+    const registeredPaths = routes[0].children?.map((route) => route.path)
+    expect(registeredPaths).not.toContain('/decisions')
+    expect(registeredPaths).not.toContain('/beads/:beadId')
+    expect(registeredPaths).toContain('/approvals')
+    const catchAll = routes[0].children?.at(-1)
+    expect(catchAll?.path).toBe('*')
+
+    renderTable([catchAll!], '/does-not-exist')
+
+    const shell = container.querySelector('[data-testid="shell"]')
+    expect(shell?.querySelector('h1')?.textContent).toBe('Page not found')
+    expect(shell?.textContent).toContain('/does-not-exist')
+    expect(shell?.querySelector('a[href="/"]')).not.toBeNull()
+  })
+
+  it('shows the shared error fallback when a route throws', () => {
+    const consoleError = console.error
+    console.error = () => {}
+    try {
+      const Boom = () => {
+        throw new Error('route exploded')
+      }
+      renderTable([{ path: '/boom', element: <Boom /> }], '/boom')
+    } finally {
+      console.error = consoleError
+    }
+
+    expect(container.textContent).toContain('Something went wrong')
+    expect(container.textContent).toContain('route exploded')
+    const retry = Array.from(container.querySelectorAll('button')).find(
+      (b) => b.textContent === 'Try again',
+    )
+    expect(retry).toBeDefined()
   })
 })

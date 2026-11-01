@@ -29,7 +29,7 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
@@ -261,6 +261,7 @@ class GeminiAdapter(RuntimeAdapter):
             return self._gemini_binary
         return _find_gemini_binary()
 
+    @override
     async def invoke(
         self,
         prompt: str,

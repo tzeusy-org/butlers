@@ -2,45 +2,45 @@
 
 ### Requirement: [TARGET-STATE] Semantic fleet readiness
 The canonical exact public `GET /ready` and its sole owner-auth method/path
-exception SHALL be implemented by Q4. It SHALL report content-blind
+exception SHALL be implemented by Q4. The retained `route_canary` check and internal `/internal/control-plane/route-preflight` path are compatibility names for the effect-free service-availability contract, not generic routing or domain session startup. Availability does not satisfy caller authentication, capability grants, approval, Stop or taint gates. It SHALL report content-blind
 control-plane readiness separately from lightweight `GET /health`. Success
 SHALL require a working database, complete and fresh controller observation of
 every configured expected non-paused daemon at its latest registered boot
-epoch, advertised route acceptance and compatibility, a qualifying completed
+epoch, advertised service acceptance and compatibility, a qualifying completed
 QA patrol whose enabled sources all succeeded, progress from the existing
 process-fenced supervised-job health projection for named Dashboard lifespan
 control loops, and a fresh successful cached result from the Switchboard-owned
-read-only route preflight in `REQ-butler-switchboard-004`. Unavailable, unknown,
+read-only service preflight in `REQ-butler-switchboard-004`. Unavailable, unknown,
 stale, or stopped Dashboard supervisor or preflight evidence SHALL fail closed;
 this requirement consumes existing projections and defines no second job-health
 store. The Switchboard runtime-attention delivery worker is not covered by the
 Dashboard supervisor projection; its pending, failed, uncertain, or unavailable
 delivery state SHALL remain separately visible through linked condition/outbox
 evidence and SHALL NOT be implied healthy by `/ready.checks.supervisors`.
-Switchboard's internal preflight traverses production target selection, route
+Switchboard's internal preflight traverses production target selection, service
 policy, registry eligibility, compatibility, and exact endpoint resolution for
 one fixed configured non-paused domain target, then performs one bounded
 shared-verifier identity GET. Neither the public request nor Dashboard's
 readiness handler SHALL execute that path or call `route.execute`; public
 requests read only the controller's bounded snapshot. The preflight proves
 control-plane selection and reachability, not transactional target acceptance
-or session success. Delivery receipts and conditions are separate evidence.
+or goal/invocation success. Delivery receipts and conditions are separate evidence.
 An intentional QA pause remains separately visible but does not satisfy
 readiness. A database connection and nonempty roster alone SHALL NOT make
 `/ready` successful. Deployment launchers consume Q4's route; they SHALL NOT
-register a second readiness handler or public auth exception.
+register a second readiness handler or public auth exception. Launcher names in historical evidence do not authorize production Compose resurrection or deployment activation; current consumers must follow the actually adopted deployment contract.
 
 ID: REQ-dashboard-api-063
-Source: RFC 0007 §API Surface; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
+Source: RFC 0038 D1/D2/D7/D19; generalist-lead-focused-delegation collision disposition for this change; RFC 0007 §API Surface; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
 #### Scenario: Control plane is ready
-- **WHEN** all required observations and dependencies are fresh, the QA patrol is current, and the bounded route preflight confirms fixed-target selection, reachability, and current advertised acceptance without creating an inbox or session
+- **WHEN** all required observations and dependencies are fresh, the QA patrol is current, and the bounded service preflight confirms fixed-target selection, reachability, and current advertised acceptance without creating an inbox or session
 - **THEN** `GET /ready` returns HTTP 200 with a content-blind ready result
 
 #### Scenario: Preflight has no transactional acceptance claim
-- **WHEN** the fixed target is reachable and advertises route acceptance but a separate `route.execute` inbox transaction would fail
-- **THEN** the preflight does not claim an accepted delivery receipt or downstream session success
+- **WHEN** the fixed target is reachable and advertises service acceptance but a separate authorized capability transaction would fail
+- **THEN** the preflight does not claim an accepted delivery receipt or downstream goal/invocation success
 - **AND** the failure remains detectable through actual target-delivery evidence rather than being hidden as a passed end-to-end canary
 - **AND** repeated public `/ready` reads do not trigger new Switchboard probes or write routing evidence
 
@@ -60,7 +60,7 @@ Scope: v1-mandatory
 - **AND** a quarantined or review-required daemon remains an ineligible failure rather than a paused exclusion
 
 #### Scenario: Process lives while routing is unavailable
-- **WHEN** the dashboard process is live but controller progress, an expected daemon, QA patrol, or the route canary is not ready
+- **WHEN** the dashboard process is live but controller progress, an expected daemon, QA patrol, or the service canary is not ready
 - **THEN** `GET /health` remains process-only while `GET /ready` returns HTTP 503 with bounded per-check status
 - **AND** the response exposes no private roster identity, payload, credential, or endpoint address
 
@@ -68,7 +68,7 @@ Scope: v1-mandatory
 - **WHEN** an unauthenticated deployment probe requests exact `GET /ready`
 - **THEN** it may read only the content-blind readiness verdict and bounded check categories
 - **AND** no other protected dashboard API is opened by this exception
-- **AND** Q4 owns the one handler and exact method/path exception; Compose only consumes it
+- **AND** Q4 owns the one handler and exact method/path exception; a supported launcher only consumes it and does not create an alternative exception
 
 ### Requirement: [TARGET-STATE] Deployment waits for sustained semantic readiness
 The canonical deployment launcher SHALL refuse to declare completion until
@@ -88,7 +88,7 @@ that derived minimum SHALL fail configuration validation rather than create a
 healthy deployment that can never pass its own gate.
 
 ID: REQ-dashboard-api-064
-Source: heart-and-soul/vision.md:51-53,120-137; RFC 0008 deployment boundary; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
+Source: RFC 0038 D1/D2/D7/D19; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; RFC 0008 deployment boundary; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.4
 Scope: v1-mandatory
 
 #### Scenario: Brief post-restart freshness cannot pass deploy
@@ -106,14 +106,14 @@ Scope: v1-mandatory
 - **AND** a bounded timeout or a false readiness sample never produces a successful deployment receipt
 
 #### Scenario: Sustained functional route passes deploy
-- **WHEN** required observation, patrol, supervisor, database, and effect-free route checks remain valid beyond a full TTL
+- **WHEN** required observation, patrol, supervisor, database, and effect-free service checks remain valid beyond a full TTL
 - **THEN** the launcher may record semantic deployment completion with a content-blind receipt
 
 ### Requirement: [TARGET-STATE] External functional monitoring remains owner-gated
 Enabling the public, content-blind `GET /ready` SHALL NOT configure an external functional monitor or claim that a separate host is observing it. Activation of such monitoring SHALL require a separately approved operator contract for the target, checks, notification route, and evidence. The already-approved separate-host minimal process-health pull monitor remains valid and distinct.
 
 ID: REQ-dashboard-api-065
-Source: heart-and-soul/security.md; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Expected-infinite dashboard loops; docs/reviews/2026-09-23-liveness-control-plane-reliability-packet.md §10
+Source: RFC 0038 D1/D2/D7/D19; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/security.md; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Expected-infinite dashboard loops; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §10
 Scope: v1-mandatory
 
 #### Scenario: Internal readiness does not provision external monitoring

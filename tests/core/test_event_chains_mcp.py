@@ -112,7 +112,7 @@ class TestEventChainsDB:
             pool,
             butler_name=butler,
             name="visit-chain",
-            trigger_type="calendar_event_end",
+            trigger_type="deadline_passed",
             actions=self._ACTIONS,
         )
         assert chain["id"] is not None
@@ -124,13 +124,38 @@ class TestEventChainsDB:
         assert len(chains) == 1
 
         # filter by trigger_type works
-        filtered = await event_chain_list(
-            pool, butler_name=butler, trigger_type="calendar_event_end"
-        )
+        filtered = await event_chain_list(pool, butler_name=butler, trigger_type="deadline_passed")
         assert len(filtered) == 1
 
-        empty = await event_chain_list(pool, butler_name=butler, trigger_type="deadline_passed")
+        empty = await event_chain_list(pool, butler_name=butler, trigger_type="deadline_threshold")
         assert len(empty) == 0
+
+        # Historical calendar rows are intentionally preserved, readable and inert.
+        historical_id = await pool.fetchval(
+            "INSERT INTO event_chains (name, trigger_type, actions, butler_name) "
+            "VALUES ('historical', 'calendar_event_end', $1, $2) RETURNING id",
+            self._ACTIONS,
+            butler,
+        )
+        historical = await event_chain_list(
+            pool, butler_name=butler, trigger_type="calendar_event_end"
+        )
+        assert [r["id"] for r in historical] == [str(historical_id)]
+        from butlers.core.temporal.event_chains_db import get_chain_by_id
+
+        historical_row = await get_chain_by_id(pool, historical_id, butler_name=butler)
+        assert historical_row is not None
+        assert historical_row["trigger_type"] == "calendar_event_end"
+        from butlers.core.scheduler import _tick_event_chain_pass
+
+        assert await _tick_event_chain_pass(pool, None, datetime.now(UTC)) == 0
+        assert (
+            await pool.fetchval("SELECT status FROM event_chains WHERE id=$1", historical_id)
+            == "active"
+        )
+        from butlers.core.temporal.event_chains_db import event_chain_delete
+
+        assert await event_chain_delete(pool, historical_id, butler_name=butler) is True
 
     async def test_create_validation_errors(self, pool):
         """Duplicate name raises; invalid trigger_type raises; empty name raises."""
@@ -144,7 +169,7 @@ class TestEventChainsDB:
             trigger_type="deadline_passed",
             actions=self._ACTIONS,
         )
-        with pytest.raises(Exception):  # duplicate name
+        with pytest.raises(ValueError, match="already exists"):  # duplicate name
             await event_chain_create(
                 pool,
                 butler_name=butler,
@@ -205,3 +230,71 @@ class TestEventChainsDB:
 
         not_found = await event_chain_delete(pool, chain_id=str(uuid.uuid4()), butler_name=butler)
         assert not_found is False
+
+
+async def test_calendar_end_writes_refuse_before_any_database_access():
+    """Historical rows remain readable; retired trigger cannot be selected."""
+    from unittest.mock import AsyncMock
+
+    from butlers.core.temporal.event_chains_db import event_chain_create, event_chain_update
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = {"id": uuid.uuid4(), "trigger_type": "calendar_event_end"}
+    actions = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "synthetic"}]
+    with pytest.raises(ValueError, match="calendar_event_end"):
+        await event_chain_create(
+            pool,
+            name="retired",
+            trigger_type="calendar_event_end",
+            actions=actions,
+            butler_name="general",
+        )
+    with pytest.raises(ValueError, match="calendar_event_end"):
+        await event_chain_update(
+            pool, uuid.uuid4(), butler_name="general", trigger_type="calendar_event_end"
+        )
+    pool.fetchrow.assert_not_awaited()
+    pool.execute.assert_not_awaited()
+
+    # The actual registered core interface must preserve the same refusal before IO.
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    from fastmcp import Client, FastMCP
+
+    from butlers.config import ButlerConfig, RuntimeSeedConfig
+    from butlers.daemon import ButlerDaemon
+
+    daemon = ButlerDaemon(Path("/synthetic"))
+    daemon.config = ButlerConfig(
+        name="general", port=18999, runtime_seed=RuntimeSeedConfig(core_groups=("temporal",))
+    )
+    daemon.db = MagicMock(pool=pool)
+    daemon.mcp = FastMCP("calendar-write-refusal")
+    daemon._modules = []
+    daemon._register_core_tools()
+    async with Client(daemon.mcp) as client:
+        created = (
+            await client.call_tool(
+                "event_chain_create",
+                {
+                    "name": "retired",
+                    "trigger_type": "calendar_event_end",
+                    "actions": actions,
+                },
+            )
+        ).data
+        updated = (
+            await client.call_tool(
+                "event_chain_update",
+                {
+                    "chain_id": str(uuid.uuid4()),
+                    "trigger_type": "calendar_event_end",
+                },
+            )
+        ).data
+    assert created["status"] == updated["status"] == "error"
+    assert "calendar_event_end" in created["error"]
+    assert "calendar_event_end" in updated["error"]
+    pool.fetchrow.assert_not_awaited()
+    pool.execute.assert_not_awaited()

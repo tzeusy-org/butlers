@@ -29,6 +29,7 @@ import sys
 import uuid
 from datetime import UTC, datetime, timedelta
 from importlib import import_module
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -42,6 +43,8 @@ from butlers.testing.schema_standins import (
     PENDING_ACTIONS,
 )
 
+_THIS_FILE = Path(__file__).resolve()
+
 
 def _apply_evidence_schema():
     """Load ``roster/relationship/tests/evidence_schema.py`` by path.
@@ -51,15 +54,8 @@ def _apply_evidence_schema():
     would drift from the migration the moment either side changes.
     """
     import importlib.util
-    from pathlib import Path
 
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "relationship"
-        / "tests"
-        / "evidence_schema.py"
-    )
+    schema_path = _THIS_FILE.parents[2] / "roster" / "relationship" / "tests" / "evidence_schema.py"
     spec = importlib.util.spec_from_file_location("_rel034_evidence_schema", schema_path)
     assert spec and spec.loader
     mod = importlib.util.module_from_spec(spec)
@@ -87,8 +83,6 @@ def _get_rjobs() -> ModuleType:
 
 
 _ASSERT_FACT_PATCH = "butlers.tools.relationship.relationship_assert_fact.relationship_assert_fact"
-
-_NOW = datetime(2026, 7, 1, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -187,7 +181,8 @@ async def _insert_event(
         VALUES ($1, $2, 'email', $3, $4, $5, $6, 'ingested')
         """,
         uuid.uuid4(),
-        _NOW - timedelta(days=day_offset),
+        # The job's lookback window ends at the wall clock, so events must too.
+        datetime.now(UTC) - timedelta(days=day_offset),
         address,
         display_name,
         thread_id,
@@ -346,76 +341,6 @@ class TestEmailIdentityEnrichmentJobRealDb:
             "SELECT COUNT(*) FROM pending_actions WHERE tool_name = 'relationship_assert_fact'"
         )
         assert action_count == 1
-
-
-class TestBackfillScriptRealDb:
-    async def test_links_existing_entity_via_real_central_writer(self, identity_pool) -> None:
-        import importlib.util
-        from pathlib import Path
-
-        script_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "backfill_email_identity_facts.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "backfill_email_identity_facts_db", script_path
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        pool = identity_pool
-        existing_id = await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type) "
-            "VALUES ('John Doe', 'person') RETURNING id"
-        )
-        await _insert_event(pool, address="john.doe@example.com", thread_id="t1", day_offset=0)
-
-        summary = await mod.backfill_email_identity_facts(
-            pool, lookback_days=180, row_limit=20_000, dry_run=False
-        )
-
-        assert summary["linked"] == 1
-        assert summary["errors"] == 0
-
-        fact_row = await pool.fetchrow(
-            "SELECT subject, object, validity FROM relationship.entity_facts "
-            "WHERE predicate = 'has-email' AND object = $1",
-            "john.doe@example.com",
-        )
-        assert fact_row is not None
-        assert fact_row["subject"] == existing_id
-        assert fact_row["validity"] == "active"
-
-    async def test_dry_run_leaves_no_fact_behind(self, identity_pool) -> None:
-        import importlib.util
-        from pathlib import Path
-
-        script_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / "scripts"
-            / "backfill_email_identity_facts.py"
-        )
-        spec = importlib.util.spec_from_file_location(
-            "backfill_email_identity_facts_db_dryrun", script_path
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        pool = identity_pool
-        await pool.fetchval(
-            "INSERT INTO public.entities (canonical_name, entity_type) "
-            "VALUES ('John Doe', 'person') RETURNING id"
-        )
-        await _insert_event(pool, address="john.doe@example.com", thread_id="t1", day_offset=0)
-
-        summary = await mod.backfill_email_identity_facts(
-            pool, lookback_days=180, row_limit=20_000, dry_run=True
-        )
-
-        assert summary["linked"] == 1  # "would link"
-        fact_count = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_facts")
-        assert fact_count == 0
 
 
 # ---------------------------------------------------------------------------

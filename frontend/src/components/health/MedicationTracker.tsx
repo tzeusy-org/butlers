@@ -322,7 +322,20 @@ function MedicationRow({
           </div>
           <AdherenceStatement medicationId={medication.id} />
           <Mono muted className="mt-0.5 block">
-            {medication.quantity == null ? "Supply: unknown" : `Supply: ${medication.quantity}`}
+            {medication.quantity == null ? (
+              "Supply: unknown"
+            ) : (
+              <>
+                {`Supply: ${medication.quantity} · `}
+                {Number.isNaN(Date.parse(medication.quantity_updated_at ?? "")) ? (
+                  "recorded date unknown"
+                ) : (
+                  <>
+                    recorded <Time value={medication.quantity_updated_at as string} mode="relative" />
+                  </>
+                )}
+              </>
+            )}
           </Mono>
           {medication.notes && (
             <p className="mt-0.5 truncate text-xs text-muted-foreground">{medication.notes}</p>

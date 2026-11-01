@@ -37,6 +37,7 @@ from butlers.core.model_routing import QuotaStatus
 pytestmark = pytest.mark.unit
 
 _MODULE = "butlers.connectors.discretion_dispatcher"
+_KERNEL = "butlers.core.model_call"
 
 
 def _allowed_quota() -> QuotaStatus:
@@ -88,11 +89,11 @@ async def test_get_auth_health_ok_after_successful_call_with_no_registered_provi
     adapter = _make_adapter(side_effect=[("FORWARD", [], {"input_tokens": 5, "output_tokens": 2})])
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         result = await dispatcher.call("hi")
 
@@ -130,12 +131,12 @@ async def test_call_records_auth_failure_and_increments_metric() -> None:
     before = discretion_auth_failures_total.labels(runtime_type="codex")._value.get()
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.next_same_tier_candidate", AsyncMock(return_value=None)),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -168,12 +169,12 @@ async def test_call_does_not_record_auth_failure_for_availability_error() -> Non
     before = discretion_auth_failures_total.labels(runtime_type="codex")._value.get()
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.next_same_tier_candidate", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.next_same_tier_candidate", AsyncMock(return_value=None)),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(RuntimeError, match="same_tier_failover_exhausted"):
             await dispatcher.call("hi")
@@ -196,11 +197,11 @@ async def test_call_does_not_record_auth_failure_for_unrelated_error() -> None:
     before = discretion_auth_failures_total.labels(runtime_type="codex")._value.get()
 
     with (
-        patch(f"{_MODULE}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
-        patch(f"{_MODULE}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch(f"{_KERNEL}.resolve_model_with_effective_tier", AsyncMock(return_value=catalog)),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
         patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
         patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
-        patch(f"{_MODULE}.record_token_usage", AsyncMock()),
+        patch(f"{_KERNEL}.record_token_usage", AsyncMock()),
     ):
         with pytest.raises(ValueError, match="Unrecognisable"):
             await dispatcher.call("hi")

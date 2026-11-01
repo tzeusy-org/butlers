@@ -112,11 +112,10 @@ Connectors maintain their own health sockets for liveness probes, heartbeat repo
 
 ### Connector Environment Variables
 
-Each connector reads its configuration from environment variables:
+Each connector derives its static type, channel and provider from its canonical row
+in `butlers.connectors.catalog`. Runtime and transport settings remain configurable:
 
 - `SWITCHBOARD_MCP_URL` --- SSE endpoint URL for the Switchboard MCP server (required for all connectors)
-- `CONNECTOR_PROVIDER` --- provider type (e.g., `"telegram"`)
-- `CONNECTOR_CHANNEL` --- channel identifier (e.g., `"telegram_bot"`)
 - `CONNECTOR_POLL_INTERVAL_S` --- poll interval for polling-based connectors
 - `CONNECTOR_MAX_INFLIGHT` --- max concurrent ingest submissions (default 8)
 - `CONNECTOR_HEALTH_PORT` --- HTTP port for the health endpoint

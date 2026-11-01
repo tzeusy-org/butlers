@@ -65,11 +65,30 @@ The endpoint SHALL call the existing `mastery_get_map_summary(pool, mind_map_id)
 
 ### Requirement: Mind map status update endpoint
 
-The system SHALL expose `PUT /api/education/mind-maps/{mind_map_id}/status` accepting a JSON body `{"status": "<new_status>"}` where `new_status` is one of `active`, `completed`, `abandoned`.
+The system SHALL expose `PUT /api/education/mind-maps/{mind_map_id}/status`
+accepting a JSON body `{"status": "<new_status>"}` where `new_status` is one of
+`active`, `completed`, `abandoned`.
 
-The endpoint SHALL call the existing `mind_map_update_status(pool, mind_map_id, status)` tool function. The endpoint SHALL return 404 if the mind map does not exist. The endpoint SHALL return 422 if the status value is not one of the three allowed values.
+`draft` SHALL NOT be an accepted request value: a mind map enters `draft` only
+through its creation path, and the dashboard MUST NOT be able to manufacture
+one. Read responses SHALL nonetheless be able to carry `status = 'draft'`,
+because draft maps are real rows the dashboard lists and can abandon.
 
-On success, the endpoint SHALL return the updated mind map object (without nodes/edges).
+The endpoint SHALL call the existing
+`mind_map_update_status(pool, mind_map_id, status)` tool function. The endpoint
+SHALL return 404 if the mind map does not exist. The endpoint SHALL return 422
+if the status value is not one of the three allowed request values.
+
+The endpoint SHALL return 409 when the requested transition is rejected by the
+mind map lifecycle rules rather than by request validation — in particular when
+the target status is `active` and the mind map has zero nodes, and when the
+transition itself is not permitted (for example `draft` → `completed`). The
+409 body SHALL state which rule rejected the transition, so the dashboard can
+explain the refusal rather than reporting a generic failure. The endpoint MUST
+NOT translate a lifecycle rejection into a 200 with an unchanged status.
+
+On success, the endpoint SHALL return the updated mind map object (without
+nodes/edges).
 
 #### Scenario: Abandon an active mind map
 
@@ -78,12 +97,32 @@ On success, the endpoint SHALL return the updated mind map object (without nodes
 - **THEN** the response status SHALL be 200
 - **AND** the returned mind map object SHALL have `status` equal to `abandoned`
 
+#### Scenario: Abandon a draft mind map
+
+- **WHEN** a PUT request is made to `/api/education/mind-maps/{id}/status` with body `{"status": "abandoned"}`
+- **AND** the mind map exists with status `draft` and zero nodes
+- **THEN** the response status SHALL be 200
+- **AND** the returned mind map object SHALL have `status` equal to `abandoned`
+
 #### Scenario: Re-activate an abandoned mind map
 
 - **WHEN** a PUT request is made to `/api/education/mind-maps/{id}/status` with body `{"status": "active"}`
-- **AND** the mind map exists with status `abandoned`
+- **AND** the mind map exists with status `abandoned` and at least one node
 - **THEN** the response status SHALL be 200
 - **AND** the returned mind map object SHALL have `status` equal to `active`
+
+#### Scenario: Activating a zero-node mind map is refused
+
+- **WHEN** a PUT request is made to `/api/education/mind-maps/{id}/status` with body `{"status": "active"}`
+- **AND** the mind map exists with zero nodes
+- **THEN** the response status SHALL be 409
+- **AND** the response body SHALL state that a curriculum with no concepts cannot be activated
+- **AND** the mind map's stored `status` SHALL be unchanged
+
+#### Scenario: Draft is rejected as a request value
+
+- **WHEN** a PUT request is made to `/api/education/mind-maps/{id}/status` with body `{"status": "draft"}`
+- **THEN** the response status SHALL be 422
 
 #### Scenario: Invalid status value
 
@@ -152,8 +191,6 @@ On success, the endpoint SHALL return 202 Accepted with body `{"status": "accept
 
 - **WHEN** a POST request is made with a `topic` longer than 200 characters
 - **THEN** the response status SHALL be 422
-
----
 
 ### Requirement: Curriculum request receipt lifecycle
 

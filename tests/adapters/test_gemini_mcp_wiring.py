@@ -5,6 +5,7 @@ Header values are synthetic and never printed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -36,7 +37,9 @@ async def _invoke(mcp_servers: dict, env: dict[str, str] | None = None) -> dict:
             cmd=list(cmd),
             env=child_env,
             settings_path=settings,
-            settings=json.loads(Path(settings).read_text()) if settings else None,
+            settings=json.loads(await asyncio.to_thread(Path(settings).read_text))
+            if settings
+            else None,
         )
         process = AsyncMock(returncode=0)
         process.communicate.return_value = (
@@ -88,7 +91,7 @@ async def test_each_invocation_gets_its_own_config_path_and_cleans_up() -> None:
     first = await _invoke(_SERVERS)
     second = await _invoke(_SERVERS)
     assert first["settings_path"] != second["settings_path"]
-    assert not Path(first["settings_path"]).exists()
+    assert not await asyncio.to_thread(Path(first["settings_path"]).exists)
 
 
 async def test_no_servers_adds_no_mcp_wiring() -> None:

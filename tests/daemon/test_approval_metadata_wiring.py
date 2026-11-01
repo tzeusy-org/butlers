@@ -125,13 +125,19 @@ async def test_enabled_home_roster_injects_metadata_and_applies_gates(
 
     assert result == {}
     assert approvals.received_tool_metadata == {
-        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False}),
+        "report_error": ToolMeta(
+            arg_sensitivities={"error_message": True, "traceback": True, "context": True}
+        ),
     }
     assert approvals.tool_executor is not None
     apply_gates.assert_awaited_once()
     assert apply_gates.await_args.args[1].enabled is True
     assert apply_gates.await_args.kwargs["tool_metadata"] == {
-        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False}),
+        "report_error": ToolMeta(
+            arg_sensitivities={"error_message": True, "traceback": True, "context": True}
+        ),
     }
 
 

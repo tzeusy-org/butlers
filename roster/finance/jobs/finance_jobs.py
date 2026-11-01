@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 import httpx
 
-from butlers.core.insight_premise import probe_premise
+from butlers.core.insight_premise import owner_condition_premise, probe_premise
 from butlers.core.owner_conditions import Observation as OwnerObservation
 from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
 from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
@@ -31,7 +31,10 @@ from butlers.credential_store import CredentialStore
 from butlers.tools.finance.alerts import detect_price_changes, register_obligations
 from butlers.tools.finance.anomaly_detection import anomaly_scan
 from butlers.tools.finance.budgets import _period_anchor, budget_status, resolve_budget_zone
+from butlers.tools.finance.cancellation_door import defanged_domain, registrable_domain
 from butlers.tools.finance.claim_reconciliation import reconcile_cost_claims
+from butlers.tools.finance.expected_signals import signal_source_from_metadata
+from butlers.tools.finance.memorial_claims import list_memorial_open_claims
 from butlers.tools.finance.overview import subscription_audit
 from butlers.tools.finance.pattern_recognition import predict_bills
 from butlers.tools.finance.reconciliation import reconcile_bills
@@ -49,7 +52,91 @@ logger = logging.getLogger(__name__)
 async def run_cost_claim_reconciliation_sweep(db_pool: asyncpg.Pool) -> dict[str, Any]:
     """Run the deterministic cost-claim sweep without an LLM session."""
     async with _finance_scoped_connection(db_pool) as conn:
-        return await reconcile_cost_claims(_SingleConnectionPool(conn))
+        result = await reconcile_cost_claims(_SingleConnectionPool(conn))
+    # bu-q7vx1q.45: a concurrent sweep that lost the lock leaves this step to the winner.
+    if result.get("acquired"):
+        result["memorial_claims"] = await _ask_about_memorial_claims(db_pool)
+    return result
+
+
+_OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE = "finance:memorial-claim"
+_MEMORIAL_CLAIM_PRIORITY = 40
+_MEMORIAL_CLAIM_EXPIRES = timedelta(days=14)
+
+
+def _memorial_claim_message(name: str, direction: str) -> str:
+    """Fixed copy: names the person and the direction, never an amount or description."""
+    owes = f"{name} owes you" if direction == "inbound" else f"you owe {name}"
+    return (
+        f"You marked {name} as remembered, and an open loan is still recorded ({owes}). "
+        "Retract it or keep it?"
+    )
+
+
+async def _ask_about_memorial_claims(db_pool: asyncpg.Pool) -> dict[str, Any]:
+    """Ask the owner once per open loan claim against a memorial counterparty.
+
+    One owner condition per claim; the question is proposed only on the ``opened``
+    transition, so a re-run, an owner who keeps the claim and a cooldown expiry never
+    re-ask. The claim itself is never touched. A posture/claim read failure is unknown:
+    nothing is reconciled (so no existing condition resolves on a guess) or proposed.
+    """
+    try:
+        claims = await list_memorial_open_claims(db_pool)
+    except Exception:
+        logger.warning("Finance memorial-claim question: claim read failed", exc_info=True)
+        return {"status": "degraded", "opened": 0}
+
+    by_fingerprint: dict[str, dict[str, Any]] = {}
+    observations: list[OwnerObservation] = []
+    for claim in claims:
+        fingerprint = owner_condition_fingerprint(
+            _OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE,
+            1,
+            # An amend, rename or partial repayment supersedes the row under a new id; the
+            # (asserted_by, claim_key) pair is the claim's stable identity, so the owner is
+            # not asked again.
+            {"asserted_by": claim["asserted_by"], "claim_key": claim["claim_key"]},
+        )
+        by_fingerprint[fingerprint] = claim
+        observations.append(
+            OwnerObservation(
+                fingerprint=fingerprint,
+                summary="Open loan claim against a person marked memorial",
+                metadata={"claim_id": str(claim["id"])},
+            )
+        )
+    try:
+        transitions = await reconcile_owner_condition(
+            db_pool,
+            source=_OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=_OWNER_CONDITION_GRACE_S,
+        )
+    except Exception:
+        logger.warning("Finance memorial-claim question: reconcile failed", exc_info=True)
+        return {"status": "degraded", "opened": 0}
+
+    opened = 0
+    now = datetime.now(UTC)
+    for transition in transitions:
+        claim = by_fingerprint.get(transition.fingerprint)
+        if transition.transition != "opened" or claim is None:
+            continue
+        await _propose(
+            db_pool,
+            priority=_MEMORIAL_CLAIM_PRIORITY,
+            category="memorial-claim",
+            dedup_key=f"finance:memorial-claim:{transition.condition_id}",
+            message=_memorial_claim_message(claim["counterparty_name"], claim["direction"]),
+            expires_at=now + _MEMORIAL_CLAIM_EXPIRES,
+            premise=owner_condition_premise(
+                _OWNER_CONDITION_MEMORIAL_CLAIM_SOURCE, transition.fingerprint
+            ),
+        )
+        opened += 1
+    return {"status": "ok", "opened": opened}
 
 
 class _SingleConnectionPool:
@@ -809,7 +896,7 @@ async def _reconcile_owner_conditions(
         )
 
 
-async def _register_obligations(db_pool: asyncpg.Pool) -> None:
+async def _register_obligations(db_pool: asyncpg.Pool, *, today: date | None = None) -> None:
     """Best-effort forward obligation ledger write (bu-8cdl1.10 slice 2).
 
     A STATE side effect alongside the insight-candidate delivery above, not
@@ -822,7 +909,7 @@ async def _register_obligations(db_pool: asyncpg.Pool) -> None:
     """
     try:
         async with _finance_scoped_connection(db_pool) as conn:
-            await register_obligations(conn)
+            await register_obligations(conn, today=today)
     except Exception:
         logger.warning("Finance insight scan: obligation ledger registration failed", exc_info=True)
 
@@ -911,7 +998,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     # this STATE side effect is genuinely "alongside, not instead of"
     # candidate delivery rather than silently unreachable whenever an
     # earlier category's submission gets filtered.
-    await _register_obligations(db_pool)
+    await _register_obligations(db_pool, today=today)
 
     # ------------------------------------------------------------------
     # 1. Spending anomalies
@@ -1267,14 +1354,27 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
     async with db_pool.acquire() as conn:
         sub_rows = await conn.fetch(
             """
-            SELECT id, service, amount, currency, next_renewal,
-                   cancellation_url, notice_period_days, cancel_by
-            FROM finance.subscriptions
-            WHERE status = 'active'
+            SELECT s.id, s.service, s.amount, s.currency, s.next_renewal,
+                   s.field_claims, s.date_epoch, s.renewal_source, s.price_source,
+                   selected.warning_date,
+                   status, cancellation_url, cancellation_url_source, status_source,
+                   notice_period_days, cancel_by, metadata
+            FROM finance.subscriptions s
+            CROSS JOIN LATERAL (
+                SELECT min(day) AS warning_date FROM (
+                    SELECT s.next_renewal AS day
+                    UNION ALL
+                    SELECT (claim->>'value')::date FROM jsonb_array_elements(s.field_claims) claim
+                    WHERE claim->>'field' = 'renewal' AND claim->>'resolved' = 'false'
+                ) dates WHERE day >= $1 AND day <= $2
+            ) selected
+            -- An owner-set cancelled/paused status silences the warning; one reported by
+            -- an extracted write must not (bu-svqpzo.10), so it warns and asks to confirm.
+            WHERE (status = 'active'
+                   OR (status IN ('cancelled', 'paused') AND status_source = 'extracted'))
               AND frequency = 'yearly'
-              AND next_renewal >= $1
-              AND next_renewal <= $2
-            ORDER BY next_renewal ASC
+              AND selected.warning_date IS NOT NULL
+            ORDER BY selected.warning_date ASC
             """,
             today,
             renewal_window_end,
@@ -1303,7 +1403,7 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         )
 
     for row in sub_rows:
-        renewal_date = row["next_renewal"]
+        renewal_date = row["warning_date"]
         days_until = (renewal_date - today).days
         sub_id = str(row["id"])
         service = row["service"]
@@ -1312,6 +1412,19 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         cancellation_url = row["cancellation_url"]
         notice_period_days = row["notice_period_days"]
         cancel_by = row["cancel_by"]
+        # A door written by anything but an owner-attested session is never a live link.
+        door_verified = cancellation_url is not None and row["cancellation_url_source"] == "owner"
+        door_domain = None
+        if not door_verified:
+            domain = registrable_domain(cancellation_url)
+            # Defanged: a bare domain would still be auto-linked by chat clients.
+            door_domain = defanged_domain(domain) if domain else None
+        # Email origin is only known from the last writer's attested signal source.
+        from_email = (
+            getattr(signal_source_from_metadata(row["metadata"]), "producer", None)
+            == "connector:gmail"
+        )
+        reporter = "An email" if from_email else "An unverified source"
 
         ledger_row = ledger_by_key.get((sub_id, renewal_date))
         if ledger_row is not None:
@@ -1340,10 +1453,20 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
             if days_until == 0
             else ("tomorrow" if days_until == 1 else f"in {days_until} days")
         )
+        from butlers.tools.finance.subscriptions import field_claims
+
+        pending = [claim for claim in field_claims(row) if not claim.get("resolved", False)]
         renewal_clause = (
             f"Annual subscription renewing {urgency_label}: {service} — "
             f"{currency} {amount:.2f} on {renewal_date.isoformat()}"
         )
+        if row["renewal_source"] != "owner" or renewal_date != row["next_renewal"] or pending:
+            renewal_clause += ". Unverified renewal report; confirm the date and price with Butlers"
+        price_claims = [claim["value"] for claim in pending if claim["field"] == "price"]
+        if price_claims:
+            renewal_clause += ". Unverified reported prices: " + "; ".join(
+                f"{pair['currency']} {pair['amount']}" for pair in price_claims
+            )
         if unknown_door:
             # bu-8cdl1.10: a missing cancellation door is exactly as unusable
             # to the owner as a missing date -- surface an explicit enrichment
@@ -1354,15 +1477,28 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 f"warning can reach you in time to act."
             )
         else:
+            if door_verified:
+                door_text = cancellation_url
+            elif door_domain is None:
+                door_text = "an unrecognised link (not verified)"
+            elif from_email:
+                door_text = f"{door_domain} (link from an email, not verified)"
+            else:
+                door_text = f"{door_domain} (link from an unverified source, not verified)"
             message = (
                 f"{renewal_clause}. Cancel by {cancel_by.isoformat()} "
                 f"({days_remaining_to_act} day{'s' if days_remaining_to_act != 1 else ''} left) "
-                f"at {cancellation_url} to avoid this charge."
+                f"at {door_text} to avoid this charge."
+            )
+        if row["status"] != "active":
+            message += (
+                f" {reporter} reported this as {row['status']}; "
+                f"confirm the subscription status with Butlers."
             )
         if price_change_amount is not None:
             message += (
-                f" Price is set to {price_change_direction or 'change'} to "
-                f"{currency} {price_change_amount} at this renewal."
+                f" Unverified reported price {price_change_direction or 'change'} to "
+                f"{currency} {price_change_amount} at this renewal; confirm the complete price."
             )
         dedup_key = f"finance:subscription-renewal:{sub_id}:{renewal_date.isoformat()}"
         expires_at = _owner_midnight(renewal_date + timedelta(days=1), zone)
@@ -1370,6 +1506,15 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
         keep_going = await _submit(
             priority=priority,
             category="subscription-renewal",
+            premise=probe_premise(
+                "finance",
+                "subscription_warning_still_relevant",
+                {
+                    "subject": sub_id,
+                    "selected_date": renewal_date.isoformat(),
+                    "epoch": row["date_epoch"],
+                },
+            ),
             dedup_key=dedup_key,
             message=message,
             expires_at=expires_at,
@@ -1381,10 +1526,16 @@ async def run_insight_scan(db_pool: asyncpg.Pool, *, now: datetime | None = None
                 # As with bills, preserve the source renewal date rather than
                 # treating a finance-local ID as a cross-domain entity identity.
                 "event_date": renewal_date.isoformat(),
+                "date_epoch": row["date_epoch"],
+                "unverified_claims": bool(pending),
                 # bu-8cdl1.10 slice 3: cancellation-door fields so this
                 # insight carries the door + days-remaining-to-act, not just
                 # the amount.
-                "cancellation_url": cancellation_url,
+                # An unverified door carries no URL, only its display domain.
+                "cancellation_url": cancellation_url if door_verified else None,
+                "cancellation_domain": door_domain,
+                "door_verified": door_verified,
+                "reported_status": row["status"] if row["status"] != "active" else None,
                 "notice_period_days": notice_period_days,
                 "cancel_by": cancel_by.isoformat() if cancel_by else None,
                 "warn_by": warn_by.isoformat() if warn_by else None,

@@ -116,6 +116,35 @@ def _make_butler_toml(tmp_path: Path, *, butler_name: str = "health", port: int 
 def _patch_infra(butler_name: str = "health"):
     mock_pool = AsyncMock()
     mock_pool.fetchval.return_value = None
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
+    acquisition = MagicMock()
+    acquisition.__aenter__ = AsyncMock(return_value=mock_conn)
+    acquisition.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = MagicMock(return_value=acquisition)
+
+    async def runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": butler_name,
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow.side_effect = runtime_row
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -133,7 +162,7 @@ def _patch_infra(butler_name: str = "health"):
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -146,7 +175,9 @@ def _patch_infra(butler_name: str = "health"):
         ),
         "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
         "connect_switchboard": patch.object(
@@ -188,7 +219,7 @@ async def _start_daemon_with_route_execute(butler_dir: Path, patches: dict):
         patches["sync_schedules"],
         patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patch("butlers.lifecycle.Spawner", return_value=patches["mock_spawner"]),
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],

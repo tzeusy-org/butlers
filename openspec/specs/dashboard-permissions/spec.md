@@ -126,7 +126,7 @@ Scope: v1-mandatory
 - **THEN** the archive contains the actual data for that scope, never an empty/near-empty file behind a success response:
   - `memory` → the memory module's facts/rules/episodes data
   - `audit` → `public.audit_log`
-  - `config` → runtime/config tables (`public.runtime_config`, `public.model_catalog`, `public.permissions`)
+  - `config` → runtime/config tables (each registered butler’s own-schema `runtime_config`, read through its own pool and ordered by `butler_name`, plus `public.model_catalog` and `public.permissions`); the combined runtime rows retain the logical archive member `public_runtime_config.ndjson`
   - `all` → the union of every scope above
 - **AND** a scope that resolves to zero rows is reported as such (explicit empty marker), but a *known* scope MUST NOT silently map to "no tables" — the export must cover the data the scope name promises.
 - **AND** the `memory` scope reads the own memory schema of every butler that runs the memory module, one file per butler and table named `<butler>_memory_<table>.ndjson`.

@@ -27,7 +27,7 @@
  *     use their deterministic 30s/60s intervals from use-health.ts
  *
  * Design contracts:
- *   - Health hue (--category-5 / "health" slot) ONLY on ButlerMark
+ *   - Health identity hue is owned by ButlerMark and appears ONLY on that mark
  *   - No Card shells, no shadcn Card chrome
  *   - Display-500 headline (font-medium, not font-bold)
  *   - Absent readings render "—", never a fake number
@@ -53,8 +53,11 @@ import {
 import { insightHref } from "@/lib/health-insight-links";
 import {
   chartableMeasurementTypes,
+  CORE_KPI_SLOTS,
   selectKpiMeasurementSlots,
 } from "@/lib/measurement-vocabulary";
+import { isMeasurementUnreachable, type MeasurementSignalRead } from "@/lib/measurement-acquisition";
+import { MeasurementSignalHealthNote } from "@/components/health/MeasurementSignalHealthNote";
 import type { LatestMeasurementEntry, MeasurementSource, MeasurementTypeInfo } from "@/api/types.ts";
 import type { InsightCandidate } from "@/api/types.ts";
 
@@ -308,7 +311,7 @@ function toAttentionItems(
 const INSIGHT_PARAMS = { butler: "health", status: "pending" };
 const EMPTY_MEASUREMENT_TYPES: readonly MeasurementTypeInfo[] = [];
 
-export default function HealthOverviewPage() {
+export default function HealthOverviewPage({ expectedSignals }: { expectedSignals?: MeasurementSignalRead }) {
   // --- Voice briefing (no refetchInterval — LLM cost guard) ---
   const {
     data: briefing,
@@ -385,10 +388,15 @@ export default function HealthOverviewPage() {
   // an alternate type KPI-eligible, the pure slot selector fills only an
   // absent core position, preserving the structural four-cell strip.
   const kpiLoading = measurementTypesLoading || latestMeasurementsLoading;
-  const kpiCells = kpiSlots.map((slot) => {
+  const kpiCells = kpiSlots.map((slot, index) => {
     const entry = slot.type ? measurements[slot.type] ?? null : null;
     const value = slot.type === "blood_pressure" ? fmtBloodPressure(entry) : fmtScalar(entry);
     const cell = buildVitalCell(slot.label, slot.type ?? "", value, entry);
+    if (!kpiLoading && !measurementTypesError && !latestMeasurementsError && !entry &&
+      isMeasurementUnreachable(expectedSignals, slot.type ?? CORE_KPI_SLOTS[index].type)) {
+      return { ...cell, delta: "Unreachable", deltaTone: "amber" as const,
+        title: "Instrument unavailable; owner-behavior nudges paused." };
+    }
     return kpiLoading ? { ...cell, delta: "Loading…" } : cell;
   }) as [
     ReturnType<typeof buildVitalCell>,
@@ -438,7 +446,7 @@ export default function HealthOverviewPage() {
           {/* Butler identity mark + date eyebrow + briefing status pill */}
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {/*
-             * Health hue (--category-5) appears ONLY on ButlerMark.
+             * Health identity hue is owned by and appears ONLY on ButlerMark.
              * No other chrome element uses the health category hue.
              */}
             <ButlerMark name="health" tone="fill" size={16} />
@@ -490,6 +498,7 @@ export default function HealthOverviewPage() {
               "no data logged". */}
           <Section eyebrow="Vitals">
             <KpiStrip cells={kpiCells} />
+            <MeasurementSignalHealthNote read={expectedSignals} />
             {measurementTypesError && (
               <SourceDegradedNote
                 label="Vitals"

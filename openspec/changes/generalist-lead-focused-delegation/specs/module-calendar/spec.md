@@ -71,8 +71,7 @@ Scope: v1-mandatory
 Every calendar capability whose call can invite, notify or share with a party
 (`calendar_create_event` and `calendar_update_event` with `attendees`,
 `calendar_update_event_instance`, `calendar_delete_event` and
-`calendar_delete_event_instance` with updates sent, `calendar_add_attendees`,
-`calendar_remove_attendees`, and `calendar_respond`) SHALL declare its
+`calendar_delete_event_instance` with updates sent, and `calendar_respond`) SHALL declare its
 attendee and update-sending arguments as party arguments. Because the broker
 cannot see attendees already stored on an event, the module's own approval
 gate SHALL also resolve them: a call that would add, invite, update or notify

@@ -171,8 +171,10 @@ Ambiguous actions are excluded from outbound content until reconciliation so
 homecoming cannot become an ambiguity bypass.
 
 The activity channel is used only if eligible; otherwise normal eligible order
-applies. Quiet hours and burst counting still apply. Restart and concurrent
-activity replay the epoch key.
+applies. For this summary only, unused-channel state belongs to its singleton
+presence epoch, not to a member action's attention episode. Original/reminder
+channel histories and lifetime ordinals are unchanged. Quiet hours and burst
+counting still apply. Restart and concurrent activity replay the epoch key.
 
 ### D8 - Disengagement keeps its actual denominator
 
@@ -198,6 +200,24 @@ Ack-first blocks reminder admission. Admission-first can be cancelled before
 handoff. Handoff-start-first may finish only that started attempt; the
 acknowledgement blocks later ordinals. Decisions and expiry fence all future
 starts. Replays return the durable prior result.
+
+### D10 - Review resolutions (bu-8cdl1.23)
+
+Independent security and product review of commit
+`a09fb3ce28437aa5bd5ac8013b3cdff1e0d419e2` (re-reviewed at the resolution PR head
+under bu-ijsbde) produced findings S1-S7 and P1-P7.
+Each is resolved in the RFC and the spec (REQ-001, -002, -003, -004, -005, -006,
+-007, -008) or in the added REQ-010, REQ-011, and REQ-012:
+
+- S1 server-derived evidence key; S2 closed stored-field and rejection
+  vocabularies; S3 content-blind link-only reminders; S4 owner-only recipient
+  and egress re-verification; S5 any-presentation ambiguity and no
+  reconciliation re-anchor; S6 no model-reachable or grantable attention
+  surface; S7 approval-id keying and the RFC 0038 `cancelled` fence.
+- P1 immediate hold when all channels are used; P2 reminder copy; P3 strict
+  24-hour boundary shared with the homecoming gap; P4 closed hold vocabulary and
+  owner-visible truth; P5 homecoming empty, overflow, and ambiguity rules; P6
+  admitted-then-cancelled ordinals stay spent; P7 silence never adapts policy.
 
 ## Success/failure/replay/concurrency coverage matrix
 

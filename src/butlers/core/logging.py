@@ -323,7 +323,11 @@ def configure_logging(
     else:
         # Console: compact HH:MM:SS, no microseconds
         console_processors = _build_processors(time_fmt="%H:%M:%S")
-        renderer = structlog.dev.ConsoleRenderer()
+        # Never render traceback locals: frames such as Database.connect hold
+        # connection kwargs, including the login password.
+        renderer = structlog.dev.ConsoleRenderer(
+            exception_formatter=structlog.dev.RichTracebackFormatter(show_locals=False)
+        )
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processors=[

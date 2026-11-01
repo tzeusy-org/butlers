@@ -134,12 +134,12 @@ async def _get_module_states_via_mcp(
             )
         return states
 
-    except (ButlerUnreachableError, TimeoutError):
+    except (ButlerUnreachableError, TimeoutError) as exc:
         logger.debug("Butler %s is unreachable for module.states call", butler_name)
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{butler_name}' is unreachable",
-        )
+        ) from exc
     except ToolError as exc:
         if is_tool_absent_error(exc):
             # module.states is gated behind the 'module_mgmt' core group, which
@@ -160,8 +160,8 @@ async def _get_module_states_via_mcp(
         raise HTTPException(
             status_code=502,
             detail=f"Failed to retrieve module states for butler '{butler_name}'",
-        )
-    except Exception:
+        ) from exc
+    except Exception as exc:
         logger.warning(
             "Unexpected error fetching module states for butler %s",
             butler_name,
@@ -170,7 +170,7 @@ async def _get_module_states_via_mcp(
         raise HTTPException(
             status_code=502,
             detail=f"Failed to retrieve module states for butler '{butler_name}'",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -271,11 +271,11 @@ async def set_module_enabled(
             ),
             timeout=_STATUS_TIMEOUT_S,
         )
-    except (ButlerUnreachableError, TimeoutError):
+    except (ButlerUnreachableError, TimeoutError) as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
+        ) from exc
     except ToolError as exc:
         if is_tool_absent_error(exc):
             # module.set_enabled is gated behind 'module_mgmt', which

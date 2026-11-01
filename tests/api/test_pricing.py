@@ -356,7 +356,7 @@ class TestPricingDependency:
             "opencode-go/qwen3.7-plus", 1_000_000, 1_000_000, context_tokens=0
         ) == pytest.approx(2.0)
         assert cfg.estimate_cost(
-            "opencode-go/qwen3.7-plus", 1_000_000, 1_000_000, context_tokens=256_000
+            "opencode-go/qwen3.7-plus", 1_000_000, 1_000_000, context_tokens=256_001
         ) == pytest.approx(6.0)
 
     def test_repo_default_ollama_models_are_billed_as_local(self):

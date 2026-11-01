@@ -3,7 +3,7 @@
  * routed page (bu-86c4c.16).
  *
  * The previous version of this file (bu-sfeuw.4) ran axe against a local
- * `ActionsShell` stub built from ButlerStatusBadge plus hand-written
+ * `ActionsShell` stub built from a local status badge plus hand-written
  * `<button>` markup that merely "mirrored" the real actions bar — a change
  * to the real ButlerDetailHeader/ButlerDetailActions/tab content could
  * regress accessibility without this suite ever noticing (JARVIS audit

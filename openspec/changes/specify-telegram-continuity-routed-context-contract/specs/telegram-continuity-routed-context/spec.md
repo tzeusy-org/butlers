@@ -1,224 +1,256 @@
-# Telegram Continuity and Routed Context
+# Telegram Conversation Continuity at Goal Admission
 
 ## Purpose
 
-Defines the contract for two coupled gaps in Telegram bot routing: (1) stable, chat-keyed affinity —
-when a follow-up message in the same Telegram chat may skip LLM classification and go directly to
-the previously-routed butler, and how that affinity expires, resets, and behaves under an
-unavailable target or concurrent turns — and (2) the bounded, trust-fenced conversation context a
-target butler deterministically receives, whether reached through classification or an affinity
-bypass. Preserves the Switchboard as the sole ingest/route authority and reconciles with the future
-`bu-0ynlk.15` owner-thread spine rather than introducing a competing thread-identity store (see
-design.md D9). This spec is a prerequisite contract; no code, configuration, migration, or runtime
-described here exists yet.
+Preserve deterministic, bounded and trust-fenced Telegram conversation continuity
+as goal input/context under RFC 0038 D1/D5/D6/D15. Sticky target affinity, affinity
+TTL reclassification and correction re-dispatch retire. This is a future behavior
+contract, not a claim that runtime implementation, cutover or archive has occurred.
 
 ## ADDED Requirements
 
-### Requirement: Chat-Keyed Affinity Lookup
+### Requirement: Conversation Identity for Goal Continuity
 
-Telegram bot affinity SHALL be keyed on the `chat_id` extracted from `event.external_thread_id`
-(format `<chat_id>:<message_id>`, falling back to a bare `chat_id`), matched against
-`switchboard.routing_log.thread_id` using the same `thread_id = $chat_id OR thread_id LIKE
-($chat_id || ':%')` pattern already used by the pipeline's realtime-history loader, not the raw
-per-message thread identity.
+Telegram continuity SHALL use the existing `external_conversation_id`, independently
+of `reply_target_ref`, with no target-affinity lookup or model classification before
+goal admission. History SHALL select `message_inbox` rows only by
+`request_context ->> 'external_conversation_id'`, never by a per-message reply target
+or `source_thread_identity`. The existing Telegram field mapping and forum-topic
+boundary SHALL remain binding; no new wire field or identity table is introduced.
 
-#### Scenario: New chat has no affinity
+ID: REQ-telegram-continuity-routed-context-001
+Source: RFC 0038 D1, D5, D15; connector-telegram-bot ingest.v1 Field Mapping; module-pipeline Conversation History for Routing Context
+Scope: v1-mandatory
 
-- **WHEN** a `telegram_bot` message arrives for a `chat_id` with no prior routing history within the
-  configured TTL
-- **THEN** the affinity lookup reports a miss and the message proceeds to LLM classification, exactly
-  as an email thread with no history does today
+#### Scenario: New conversation needs no affinity
+- **WHEN** an accepted Telegram message has no earlier history in its conversation
+- **THEN** it follows ordinary goal admission without an affinity lookup or classifier
+- **AND** absence of history is not represented as successfully loaded context
 
-#### Scenario: Follow-up message hits the pinned target
+#### Scenario: Follow-up context grants no target or goal ownership
+- **WHEN** another accepted message arrives in the same Telegram conversation
+- **THEN** bounded same-conversation history can supply context, but its prior domain
+  choices neither select a target butler nor prove a goal join
+- **AND** only the existing exact server-held owner-reply binding contract may join
+  a live goal; otherwise the existing ordinary admission rules apply
 
-- **WHEN** a `telegram_bot` message arrives for a `chat_id` that has exactly one distinct
-  `target_butler` in its routing history within the configured TTL, and that butler is currently
-  registered and available
-- **THEN** the affinity lookup reports a hit and the message is dispatched directly to that butler,
-  skipping LLM classification
+#### Scenario: Conversation identity stays distinct from reply targets
+- **WHEN** Telegram messages carry the current split identity fields
+- **THEN** history uses `telegram:<chat_id>`, with `:topic:<message_thread_id>` only
+  when Telegram marks the message `is_topic_message`, as `external_conversation_id`
+- **AND** separate per-message `reply_target_ref` values do not split that history
+- **AND** different conversations/topics do not share history, and the envelope
+  carries no retired `event.external_thread_id`
 
-#### Scenario: Extraction matches both thread-identity shapes
+### Requirement: No Affinity TTL Reclassification
 
-- **WHEN** `routing_log.thread_id` for a chat's prior routes is stored as either a bare `chat_id` or
-  a `<chat_id>:<message_id>` composite
-- **THEN** the affinity lookup's `chat_id` match includes both shapes, exactly as the pipeline's
-  existing realtime-history query already does for the same identity format
+Telegram continuity SHALL NOT create a 24-hour target-affinity TTL, consult a prior
+target pin, or reclassify a message when such a pin would have expired. The separate
+15-minute/30-message context bound SHALL remain unchanged. This prose amendment
+SHALL NOT change live email behavior or create a post-cutover email routing exception.
 
-### Requirement: Telegram-Specific Affinity TTL
+ID: REQ-telegram-continuity-routed-context-002
+Source: RFC 0038 D1, D5, D15; canonical bu-u5euwb.16; generalist collision dispositions and connector-base-spec routing retirement
+Scope: v1-mandatory
 
-Telegram affinity SHALL use a TTL setting distinct from and independent of email thread-affinity's
-TTL, defaulting to 24 hours, without altering email's existing 30-day default or its settings row.
+#### Scenario: No default target-affinity TTL
+- **WHEN** no Telegram continuity configuration is provided
+- **THEN** no 24-hour affinity setting or target pin is inferred
+- **AND** the existing bounded context rule still applies
 
-#### Scenario: Default TTL applies without configuration
+#### Scenario: A conversational gap does not trigger classification
+- **WHEN** a new message follows a gap beyond the former affinity TTL
+- **THEN** accepted reasoning ingress still follows ordinary goal admission without
+  classification, and only history inside the current bounded window is eligible
 
-- **WHEN** no Telegram-specific affinity TTL is configured
-- **THEN** the effective TTL is 24 hours
+#### Scenario: Email has no new legacy routing exemption
+- **WHEN** this Telegram contract is amended or later applied at the switch
+- **THEN** this spec-only amendment has made no live email runtime/configuration change
+- **AND** target-state email follows generalist's adopted retirement of affinity and
+  classification; this capability creates no separate email policy or TTL override
 
-#### Scenario: Affinity expires after the TTL window
+### Requirement: Unavailable Prior Domain Grants No Dispatch
 
-- **WHEN** a `chat_id`'s most recent routing-history entry is older than the configured Telegram TTL
-- **THEN** the affinity lookup reports a miss (stale) and the message proceeds to fresh LLM
-  classification
+An unavailable or unregistered previously-used domain SHALL NOT become an affinity
+target, classification fallback or dispatch destination. Accepted ingress SHALL
+follow the existing admission contract and capability availability/authorization
+checks. Unavailable context SHALL NOT be fabricated, selected from another conversation
+or treated as evidence authenticating a sender.
 
-#### Scenario: Email affinity settings are unaffected
+ID: REQ-telegram-continuity-routed-context-003
+Source: RFC 0038 D1, D2, D5, D15; generalist butler-switchboard and goal-orchestration
+Scope: v1-mandatory
 
-- **WHEN** the Telegram-specific TTL is configured or changed
-- **THEN** `switchboard.thread_affinity_settings`'s existing `thread_affinity_ttl_days` and
-  `thread_overrides` for `source_channel == "email"` are unchanged
+#### Scenario: A previously used domain is absent
+- **WHEN** history mentions a domain that is no longer registered or available
+- **THEN** no target-affinity fallback, classifier or route dispatch runs
+- **AND** unavailable history/capabilities are reported honestly under their existing
+  contracts, without fabricating continuity or starting a domain reasoning session
 
-### Requirement: Unavailable Pinned Target Falls Through
+### Requirement: No Pin Conflict or Guessed Goal Join
 
-Affinity SHALL NOT dispatch to a pinned `target_butler` that is not currently registered and
-available; such a hit SHALL be treated as a miss and the message SHALL proceed to LLM classification.
+Concurrent messages SHALL NOT be resolved by target-pin conflict, reclassification
+or guessed chat-to-goal ownership. Independent goals SHALL remain independent;
+existing authenticated owner-reply joins SHALL retain their exact prompt/effect,
+recipient, liveness, locking, immutable source and authority/accounting checks.
 
-#### Scenario: Pinned butler removed from roster
+ID: REQ-telegram-continuity-routed-context-004
+Source: RFC 0038 D1, D5; generalist goal-orchestration Whole-goal accountability and owner-reply join contract
+Scope: v1-mandatory
 
-- **WHEN** an affinity lookup would otherwise hit on a `target_butler` that is no longer present in
-  the current butler registry
-- **THEN** the lookup reports a miss and the message is classified fresh, exactly as an invalid
-  `control.pinned_target` is rejected today rather than silently misrouted
+#### Scenario: Prior messages used multiple domains
+- **WHEN** messages in one conversation previously used several domains' capabilities
+- **THEN** no ambiguous affinity pin is chosen and no conflict classifier runs
+- **AND** that history does not grant capability access or bind a later message to a goal
 
-### Requirement: Concurrent Turn Conflict Resolution
-
-The affinity lookup SHALL report a miss and fall through to fresh LLM classification when more than
-one distinct `target_butler` appears in a `chat_id`'s routing history within the TTL window (e.g.,
-from two messages racing past the lookup before the first turn's route is recorded), self-healing to
-a single new pin once that classification's route is recorded.
-
-#### Scenario: Two distinct butlers in the window
-
-- **WHEN** a `chat_id`'s routing history within the TTL window contains routes to two or more
-  distinct butlers
-- **THEN** the affinity lookup reports a miss (conflict) rather than guessing between them
-
-#### Scenario: Conflict self-heals
-
-- **WHEN** a conflicted `chat_id` is subsequently classified fresh and routed to a single butler
-- **THEN** the next affinity lookup for that `chat_id` sees a single distinct butler in the window
-  (once the conflicting older entry ages past the TTL, or immediately if only one route remains
-  within it) and can report a hit again
+#### Scenario: A later turn cannot repair a pin that no longer exists
+- **WHEN** another accepted turn follows concurrent messages
+- **THEN** it follows ordinary admission unless the existing exact owner-reply join
+  contract proves a live binding; no target re-pin or conflict-then-reclassify runs
+- **AND** unknown, foreign, mismatched or expired bindings follow the existing
+  ordinary admission outcome without guessed continuity or enlarged authority
 
 ### Requirement: Replay and Dedup Inherit Existing Ingest Idempotency
 
-A redelivered or duplicate Telegram update SHALL NOT be treated as a new turn for affinity purposes;
-this requirement adds no new dedup mechanism and relies entirely on the existing
-`connector-telegram-bot` Idempotency and Safety guarantee.
+A duplicate Telegram update SHALL retain existing connector/ingress idempotency and
+resolve to the goal already admitted from that envelope. This contract SHALL NOT
+introduce a second dedup store, affinity write, routing decision or domain session.
+Canonical accepted request/sender lineage and crash-safe checkpoint semantics remain.
 
-#### Scenario: Duplicate update does not double-write affinity
+ID: REQ-telegram-continuity-routed-context-005
+Source: RFC 0038 D5; connector-telegram-bot Idempotency and Safety; generalist connector-base-spec and module-pipeline
+Scope: v1-mandatory
 
-- **WHEN** a Telegram update with an already-seen `control.idempotency_key`
-  (`tg:<chat_id>:<message_id>`) is redelivered
-- **THEN** it is deduplicated by Switchboard before triage or routing runs, and no second
-  `routing_log` row or affinity-relevant routing decision is produced for it
+#### Scenario: Duplicate update returns the existing admission
+- **WHEN** an already accepted Telegram update is redelivered with canonical key
+  `tg:<chat_id>:<message_id>`, shared with the user-client connector
+- **THEN** existing dedup returns the existing admission/goal and canonical request
+  reference, without a second goal, affinity write or route dispatch
+- **AND** the documented `telegram:<endpoint_identity>:<update_id>` fallback is used
+  only when chat/message IDs are unavailable; checkpoint advances only after ingest
+  acceptance, with the existing blocked-source acknowledgement and safe replay rules
 
-### Requirement: Owner Correction Updates Affinity
+### Requirement: No Correction Redispatch or Repinning
 
-The existing `correct_route` tool SHALL also update a chat's affinity pin to the corrected butler
-when dispatching a misroute correction for a `telegram_bot`-channel request, so a subsequent message
-in the same chat does not repeat the same misroute.
+The goal runtime SHALL NOT use `correct_route` to re-dispatch a message, create a
+domain session or re-pin a Telegram target. Correction SHALL follow the adopted
+new-goal/Stop or within-goal capability contract without a new correction protocol,
+replacement session identity or authority grant from conversation history.
 
-#### Scenario: Correction re-pins the chat
+ID: REQ-telegram-continuity-routed-context-006
+Source: RFC 0038 D1, D5; canonical bu-u5euwb.16; generalist removal of Misroute Correction Re-dispatch
+Scope: v1-mandatory
 
-- **WHEN** `correct_route` successfully re-dispatches a `telegram_bot`-channel request's original
-  message to `correct_butler`
-- **THEN** the affinity state for that request's `chat_id` reflects `correct_butler` as the current
-  pin, using the same write path an ordinary successful route already exercises
+#### Scenario: A wrong domain choice does not re-pin the chat
+- **WHEN** a goal's lead determines that another domain's capability is appropriate
+- **THEN** it may call only capabilities within its existing grant and goal
+- **AND** no original message is re-dispatched and no chat affinity pin is written
 
-#### Scenario: Next message in the chat uses the corrected target
+#### Scenario: The next message has no corrected target
+- **WHEN** another accepted Telegram message follows a wrong goal outcome
+- **THEN** no previous correction or pin selects a butler or grants a goal join
+- **AND** the existing new-goal/Stop and exact owner-reply admission rules remain
+  binding without classification or replacement domain sessions
 
-- **WHEN** a subsequent `telegram_bot` message arrives in a chat whose affinity was just updated by a
-  correction, within the Telegram affinity TTL
-- **THEN** the affinity lookup reports a hit on `correct_butler`, skipping LLM classification
+### Requirement: Bounded Goal Admission Conversation Context
 
-### Requirement: Bounded Target-Side Routed Context
+A deterministic history block SHALL provide conversation continuity as goal
+input/context under the existing module-pipeline contract, never as a `route.v1`
+envelope or downstream domain prompt. It SHALL supplement the accepted message and
+its immutable request/sender context, with at most the most recent 30 messages within
+the most recent 15 minutes of that same conversation. Admission SHALL NOT use a model
+to classify, summarize or select a target for this block. Later retrieval SHALL retain
+existing authorized context/domain read boundaries and private-custody restrictions.
 
-A deterministic, bounded conversation-history block SHALL be appended to the routed `route.v1`
-envelope's `input.context` for every `telegram_bot`-channel route dispatched via
-`route_to_butler`/`route.execute` — whether reached through LLM classification or an affinity bypass
-— using the same 15-minute window and 30-message cap already normative for classifier-side realtime
-history (`module-pipeline`'s Conversation History for Routing Context requirement). This block is
-additive to any classifier-authored `context` string when classification ran, and is the target
-butler's sole source of conversation continuity when classification was skipped.
+ID: REQ-telegram-continuity-routed-context-007
+Source: RFC 0038 D1, D5, D6, D15; generalist module-pipeline Conversation History for Routing Context and connector-base-spec Request Context Construction
+Scope: v1-mandatory
 
-#### Scenario: Additive to classifier-authored context
+#### Scenario: Context supplements the accepted goal input
+- **WHEN** an accepted Telegram message contributes bounded history to goal admission
+- **THEN** history supplements rather than replaces or truncates the accepted message
+- **AND** its canonical ingest/request reference, resolved sender context and per-item
+  stamps survive; no classifier-authored route context is required
 
-- **WHEN** a `telegram_bot` message is routed after LLM classification wrote its own `context` string
-- **THEN** the deterministic bounded-history block is appended after the classifier's `context`,
-  neither replacing nor truncating it
+#### Scenario: Continuity needs no affinity-bypass carrier
+- **WHEN** an accepted Telegram message has eligible same-conversation history
+- **THEN** goal input/context receives the deterministic bounded block under the
+  existing context contract, without an affinity lookup or classification session
+- **AND** the accepted input remains the actual incoming message, not an invented
+  classifier restatement or downstream domain prompt
 
-#### Scenario: Sole context on an affinity-bypass turn
+#### Scenario: The existing history bound remains exact
+- **WHEN** more than 30 messages or history older than 15 minutes is available
+- **THEN** only the most recent 30 messages within the most recent 15-minute window
+  are eligible for the block; no larger or unbounded transcript is introduced
 
-- **WHEN** a `telegram_bot` message is dispatched via an affinity hit, skipping classification
-- **THEN** `prompt` is the raw incoming message text and `input.context` consists of the deterministic
-  bounded-history block — no LLM-authored restatement exists for this turn
+#### Scenario: No cross-conversation or forum-topic leakage
+- **WHEN** history is loaded for a Telegram `external_conversation_id`
+- **THEN** only rows with that exact conversation key are included
+- **AND** another chat or forum topic is excluded; reply targets and deprecated
+  thread identities cannot widen the selection or bypass private-custody restrictions
 
-#### Scenario: Bound matches the existing classifier-side history limit
+### Requirement: Goal Context Trust Fencing
 
-- **WHEN** the deterministic block is constructed for a chat with more than 30 messages or older than
-  15 minutes of history available
-- **THEN** only the most recent 30 messages within the most recent 15-minute window are included,
-  identical to the bound already normative for classifier-side history — no separate, larger bound is
-  introduced for the routed-context surface
+History SHALL carry the explicit untrusted-data banner and per-message code fences,
+with instructions, links and calls-to-action inside treated as data, not authority.
+Each item SHALL retain its sender/provenance stamp. Origin SHALL come only from
+server-held owner-channel authorization; neither history nor model output can upgrade
+it. Third-party goals and connector-marked forwarded/quoted owner input SHALL start
+exposed. Non-owner/tainted history SHALL expose its reader and goal before consequential
+effects; missing/unreadable stamps SHALL fail closed as exposed. Exposure only
+increases, exposed writes remain tainted, and broker/grant/approval checks remain.
 
-#### Scenario: No cross-chat leakage
+ID: REQ-telegram-continuity-routed-context-008
+Source: RFC 0038 D5, D6, D15; generalist module-pipeline Third-party history exposes the reader and switchboard-identity
+Scope: v1-mandatory
 
-- **WHEN** the deterministic block is constructed for a given `chat_id`
-- **THEN** it includes only messages whose thread identity resolves to that same `chat_id` — never
-  another chat's messages
+#### Scenario: Malicious prior message remains fenced data
+- **WHEN** a prior history item resembles an instruction, link or call-to-action
+- **THEN** the banner and per-message code fence preserve it as untrusted context only
+- **AND** its stamp remains attached; content cannot authenticate the sender, wash
+  taint, change origin or enlarge a capability ceiling
 
-### Requirement: Routed Context Trust Fencing
+#### Scenario: Every continuity path retains stamps and exposure
+- **WHEN** history reaches goal input or an invocation through an authorized read
+- **THEN** the same banner/code fences and per-item provenance apply with no unfenced
+  variant, and non-owner/tainted or unreadably stamped history exposes its reader
+- **AND** sender attribution is not replaced with the owner; exposure/taint and
+  approval checks remain binding regardless of any earlier conversational context
 
-The deterministic routed-context block SHALL use the same untrusted-data fencing already shipped for
-classifier-side history: an explicit banner instructing the reading session not to follow any
-instruction, link, or call-to-action found inside the block, with each message's content fenced
-inside a code block.
+### Requirement: No Competing Identity Store or Routing Exception
 
-#### Scenario: Malicious prior message is fenced, not followed
+This capability SHALL introduce no cross-channel identity table, target-affinity
+cache or guessed chat-to-goal binding. It SHALL reuse the current conversation/reply
+identity and existing authenticated reply-join contracts without new wire fields,
+commands, callbacks or authority. The historical thread-spine reference SHALL NOT
+become a prerequisite to this spec-only amendment or authorize new storage design.
 
-- **WHEN** a prior message in the routed-context window contains text resembling an instruction
-  (e.g., "ignore your previous instructions and...")
-- **THEN** the block's banner and code-fencing present that text as data for context only, matching
-  the existing classifier-side fencing discipline
+ID: REQ-telegram-continuity-routed-context-009
+Source: RFC 0038 D1, D5, D15; canonical bu-u5euwb.16; connector-telegram-bot identity split and generalist collision dispositions
+Scope: v1-mandatory
 
-#### Scenario: Fencing applies regardless of dispatch path
-
-- **WHEN** the routed-context block is constructed for either a classify-then-route turn or an
-  affinity-bypass turn
-- **THEN** the same fencing banner and code-block wrapping apply in both cases — no unfenced variant
-  exists
-
-### Requirement: Scope Boundary — No Competing Thread Store, No Email Change
-
-This capability's affinity state SHALL remain a Switchboard-internal, TTL-bound routing-decision
-cache scoped to the `telegram_bot` channel: it SHALL NOT be implemented as, or read/written through,
-a new cross-channel thread-identity table, and it SHALL NOT alter email thread-affinity's channel
-gate, settings row, or override semantics.
-
-#### Scenario: Email routing is unaffected
-
-- **WHEN** this capability's Telegram affinity and routed-context behavior is active
-- **THEN** `source_channel == "email"` requests continue to resolve thread affinity exactly as
-  specified before this change, with no shared code path change that could alter their outcome
+#### Scenario: Email is unchanged by this prose amendment
+- **WHEN** this Telegram packet is amended without runtime code or activation
+- **THEN** email's existing live runtime/configuration has not changed
+- **AND** the adopted post-cutover email admission/routing retirement still applies;
+  no positive legacy routing exception is created here
 
 #### Scenario: No new durable cross-channel identity object
-
-- **WHEN** a future implementation of this capability is built
-- **THEN** it reuses `switchboard.routing_log` and a per-channel TTL/override settings surface,
-  introducing no new table that models a durable, cross-channel conversation or thread identity
-  (that remains `bu-0ynlk.15`'s scope; see design.md D9 for the future consolidation path)
+- **WHEN** this capability is later implemented under separate authority
+- **THEN** it uses the existing conversation identity/context boundaries and creates
+  no competing thread table, affinity pin or chat-to-goal ownership store
+- **AND** `bu-0ynlk.15` remains a separate historical/future coordination reference,
+  not a requirement to implement its storage before this prose amendment
 
 ## Source References
 
-- `about/heart-and-soul/vision.md` Non-Negotiable Rule (Switchboard is the sole ingress/routing
-  authority): preserved — this capability adds no new ingress path and no bypass of Switchboard's
-  routing decision; affinity only changes whether classification runs before an existing dispatch
-  mechanism, and correction remains mediated by the existing `correct_route` tool.
-- `openspec/specs/module-pipeline/spec.md` "Conversation History for Routing Context": source of the
-  15-minute/30-message bound this capability reuses rather than redefining.
-- `openspec/specs/connector-telegram-bot/spec.md` "Idempotency and Safety" and "ingest.v1 Field
-  Mapping": source of the `chat_id:message_id` thread-identity shape and the dedup guarantee this
-  capability inherits rather than re-specifying.
-- `openspec/specs/butler-switchboard/spec.md` "Misroute Correction Re-dispatch": the existing
-  mechanism this capability's owner-correction reset path extends (see the modified delta in this
-  same change).
-- No RFC governs this capability; see design.md for why none is proposed.
+- RFC 0038 D1/D2: control-plane admission, domain capabilities and routing retirement.
+- RFC 0038 D5/D6/D15: deterministic origins, idempotency, stamps, exposure and context.
+- Generalist collision dispositions: this packet is re-scoped; Misroute Correction
+  Re-dispatch is removed; sticky routing `bu-p6v8k` is obsolete at the switch.
+- Generalist module-pipeline: bounded goal history by `external_conversation_id`,
+  including third-party reader exposure, without target routing.
+- Connector Telegram bot: current conversation/topic/reply split and canonical dedup.
+- Generalist switchboard-identity and connector-base-spec: canonical request and
+  server-held sender identity survive in goal admission, not copied route envelopes.

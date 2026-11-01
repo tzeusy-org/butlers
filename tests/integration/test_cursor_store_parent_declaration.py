@@ -271,6 +271,14 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
         parent_endpoint_identity=NO_PARENT,
     )
 
+    await pool.execute(
+        "UPDATE switchboard.connector_registry SET capabilities = $1::jsonb "
+        "WHERE connector_type = $2 AND endpoint_identity = $3",
+        {"backfill": True},
+        "google_drive",
+        endpoint,
+    )
+
     manager = GDriveConnectorManager(
         db_pool=None,  # type: ignore[arg-type]
         cursor_pool=pool,
@@ -306,6 +314,13 @@ async def test_drive_per_account_heartbeat_claims_the_runtime_role(pool: asyncpg
     roster, unparented = await _dashboard_buckets(pool)
     assert unparented == []
     assert endpoint in roster
+    capabilities = await pool.fetchval(
+        "SELECT capabilities FROM switchboard.connector_registry "
+        "WHERE connector_type = $1 AND endpoint_identity = $2",
+        "google_drive",
+        endpoint,
+    )
+    assert capabilities == {"backfill": True, "channel_kind": "feed"}
 
 
 async def _wait_for_role(
@@ -329,3 +344,53 @@ async def _wait_for_role(
             return
         await asyncio.sleep(0.02)
     raise AssertionError(f"operational_role stayed {role!r}, never became {expected!r}")
+
+
+async def test_heartbeat_without_checkpoint_keeps_the_saved_cursor(pool: asyncpg.Pool) -> None:
+    """A heartbeat that carries no checkpoint must not erase a saved cursor.
+
+    Gmail reports no checkpoint until its first save after a restart; on dev
+    (2026-10-27) that heartbeat overwrote the saved cursor with NULL and the
+    polling loop then failed every cycle with "Cursor not found in DB".
+    """
+    from butlers.tools.switchboard.connector.heartbeat import (
+        _persist_registry,
+        parse_connector_heartbeat,
+    )
+
+    endpoint = "gmail:user:synthetic@example.invalid"
+    cursor = '{"history_id": "42", "last_updated_at": "2026-10-27T13:27:00+00:00"}'
+    await save_cursor(pool, "gmail", endpoint, cursor, parent_endpoint_identity=NO_PARENT)
+
+    envelope = parse_connector_heartbeat(
+        {
+            "schema_version": "connector.heartbeat.v1",
+            "connector": {
+                "connector_type": "gmail",
+                "endpoint_identity": endpoint,
+                "instance_id": "00000000-0000-4000-8000-000000000001",
+                "version": "test",
+            },
+            "status": {"state": "healthy", "uptime_s": 1},
+            "counters": {
+                "messages_ingested": 0,
+                "messages_failed": 0,
+                "source_api_calls": 0,
+                "checkpoint_saves": 0,
+                "dedupe_accepted": 0,
+            },
+            "sent_at": datetime.now(UTC).isoformat(),
+        }
+    )
+    assert envelope.checkpoint is None
+    await _persist_registry(pool, envelope, datetime.now(UTC), None)
+
+    row = await pool.fetchrow(
+        "SELECT checkpoint_cursor, checkpoint_updated_at, operational_role"
+        " FROM switchboard.connector_registry"
+        " WHERE connector_type = 'gmail' AND endpoint_identity = $1",
+        endpoint,
+    )
+    assert row["checkpoint_cursor"] == cursor
+    assert row["checkpoint_updated_at"] is not None
+    assert row["operational_role"] == "runtime_instance"

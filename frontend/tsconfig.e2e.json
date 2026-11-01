@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./.vite/tsconfig.e2e.tsbuildinfo",
+    "types": [
+      "vite/client",
+      "node"
+    ],
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": [
+    "tests/e2e/**/*.ts",
+    "scripts/e2e-api-mock.mjs"
+  ]
+}

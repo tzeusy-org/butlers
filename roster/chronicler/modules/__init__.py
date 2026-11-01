@@ -119,21 +119,13 @@ class ChroniclerModule(Module):
 
     def __init__(self) -> None:
         self._db: Any = None
+        self._credential_store: Any = None
 
-    @property
-    def name(self) -> str:
-        return "chronicler"
+    name = "chronicler"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return ChroniclerModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None
 
     async def on_startup(
         self,
@@ -143,6 +135,8 @@ class ChroniclerModule(Module):
         blob_store: Any = None,
     ) -> None:
         self._db = db
+        # Borrow the daemon-selected store; its pools remain owned by the daemon.
+        self._credential_store = credential_store
         await self._register_default_schedules(db)
 
     async def _register_default_schedules(self, db: Any) -> None:
@@ -181,6 +175,7 @@ class ChroniclerModule(Module):
                 )
 
     async def on_shutdown(self) -> None:
+        self._credential_store = None
         self._db = None
 
     def _get_pool(self) -> Any:
@@ -444,8 +439,9 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         evaluate → max-one-per-day dedupe (KV state) → quiet-hours /
         delivery-preferences gate → deliver a Telegram inline-button message
         (✅ Work day / ✏️ Not work / 🚫 Dismiss) whose taps route back to
-        :func:`chronicler_resolve_gap_interview`. The scheduled prompt only needs
-        to call this tool; it sends nothing itself.
+        :func:`chronicler_resolve_gap_interview`. The 09:00 ``chronicler_gap_interview``
+        job-mode schedule calls the same service,
+        :func:`butlers.chronicler.gap_interview_job.ask_gap_interview`.
 
         Args:
             date_label: Closed local day in ``YYYY-MM-DD``.
@@ -455,104 +451,16 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         ``no_gap``, ``deferred_quiet_hours``, ``delivery_failed``, or
         ``not_configured`` (no owner telegram chat / bot token).
         """
-        from dataclasses import asdict
-        from datetime import UTC, datetime, timedelta
-        from zoneinfo import ZoneInfo
+        from butlers.chronicler.gap_interview_job import ask_gap_interview
 
-        import httpx
-
-        from butlers.chronicler.editorial import WAKING_HOUR_END, WAKING_HOUR_START
-        from butlers.chronicler.gap_interview import run_gap_interview
-        from butlers.chronicler.gap_interview_telegram import build_telegram_transport
-        from butlers.chronicler.storage import list_episodes
-        from butlers.core.state import state_get, state_set
-        from butlers.core.temporal.delivery import should_defer_notification
-        from butlers.core.temporal.delivery_db import get_delivery_preferences
-
-        pool = module._get_pool()
-        asked_key = f"gap_interview:asked:{date_label}"
-
-        async def already_asked() -> bool:
-            return await state_get(pool, asked_key) is not None
-
-        # Cheap short-circuit before resolving a token / building an HTTP client.
-        if await already_asked():
-            return {"status": "already_asked", "date": date_label}
-
-        day = datetime.fromisoformat(date_label).date()
-        tzinfo = ZoneInfo(timezone)
-        start_at = datetime(day.year, day.month, day.day, tzinfo=tzinfo).astimezone(UTC)
-        end_at = (
-            datetime(day.year, day.month, day.day, tzinfo=tzinfo) + timedelta(days=1)
-        ).astimezone(UTC)
-
-        async def mark_asked(decision, interview_id) -> None:
-            # Persist the answer-side mapping (occupation episode + routine) the
-            # callback resolver reads, then record the per-day dedupe marker.
-            await state_set(
-                pool,
-                f"gap_interview:pending:{interview_id}",
-                {
-                    "interview_id": interview_id,
-                    "local_date": date_label,
-                    "occupation_episode_id": (
-                        str(decision.occupation_episode_id)
-                        if decision.occupation_episode_id
-                        else None
-                    ),
-                    "routine_id": str(decision.routine_id) if decision.routine_id else None,
-                    "answered": False,
-                },
-            )
-            await state_set(
-                pool, asked_key, {"interview_id": interview_id, "reasons": list(decision.reasons)}
-            )
-
-        async def delivery_allowed() -> bool:
-            # Same quiet-hours / delivery-preferences gate notify() applies; the
-            # gap-interview prompt is low priority (deferrable). Fail-open.
-            try:
-                prefs = await get_delivery_preferences(pool, "chronicler")
-            except Exception:
-                return True
-            if prefs is None:
-                return True
-            tz_name = prefs.get("timezone", "UTC")
-            try:
-                gate_tz = ZoneInfo(tz_name)
-            except Exception:
-                gate_tz = ZoneInfo("UTC")
-            now_local = datetime.now(UTC).astimezone(gate_tz).time()
-            return not should_defer_notification(
-                priority="low", current_time=now_local, prefs=prefs, channel="telegram"
-            )
-
-        episodes = await list_episodes(pool, start_from=start_at, start_to=end_at, limit=1000)
-        episode_dicts = [asdict(ep) for ep in episodes]
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            transport = await build_telegram_transport(pool, http_client=client)
-            if transport is None:
-                return {
-                    "status": "not_configured",
-                    "detail": "no owner telegram chat id or bot token configured",
-                }
-            # interview_id == date_label: unique per day (one prompt/day) and
-            # compact inside the 64-byte telegram callback_data budget.
-            return await run_gap_interview(
-                episode_dicts,
-                local_date=date_label,
-                day_start_utc=start_at,
-                day_end_utc=end_at,
-                tz=tzinfo,
-                interview_id=date_label,
-                transport=transport,
-                already_asked=already_asked,
-                mark_asked=mark_asked,
-                delivery_allowed=delivery_allowed,
-                waking_hour_start=WAKING_HOUR_START,
-                waking_hour_end=WAKING_HOUR_END,
-            )
+        store_kwargs = (
+            {"credential_store": module._credential_store}
+            if module._credential_store is not None
+            else {}
+        )
+        return await ask_gap_interview(
+            module._get_pool(), date_label=date_label, timezone=timezone, **store_kwargs
+        )
 
     # ------------------------------------------------------------------
     # chronicler_resolve_gap_interview  — day-close gap interview ANSWER
@@ -607,8 +515,8 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         Fetches all non-tombstoned episodes and events for *date_label*
         (``YYYY-MM-DD`` in *timezone*), then applies:
 
-        1. **Sensitive masking** — ``canonical_privacy='sensitive'`` rows
-           are excluded from the bundle unconditionally.
+        1. **Sensitive masking** — sensitive payloads are excluded; only
+           bounded time/category envelopes survive. Restricted rows are absent.
         2. **Field stripping** — low-signal payload keys are removed.
         3. **Per-source roll-up** — sources emitting > *rollup_threshold*
            items are collapsed to a count/time-range/subjects summary.
@@ -638,7 +546,11 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from datetime import UTC, datetime
         from zoneinfo import ZoneInfo
 
-        from butlers.chronicler.bundle_assembler import BundleConfig, assemble_day_close_bundle
+        from butlers.chronicler.bundle_assembler import (
+            BundleConfig,
+            assemble_day_close_bundle,
+            partition_day_close_rows,
+        )
         from butlers.chronicler.reconciliation import reconcile_day
         from butlers.chronicler.storage import list_episodes, list_point_events
 
@@ -674,12 +586,17 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         episode_dicts = [asdict(ep) for ep in episodes]
         event_dicts = [asdict(ev) for ev in events]
 
+        # Partition before reconciliation can select titles, merge source refs,
+        # or derive contradictions. Private rows cannot affect normal narration.
+        normal_episodes, sensitive_episodes = partition_day_close_rows(episode_dicts)
+        normal_events, sensitive_events = partition_day_close_rows(event_dicts)
+
         # Deterministic reconciliation core (tasks.md §7): merge duplicate
         # same-lane activity candidates and drop calendar intents contradicted
         # by activity evidence, BEFORE the LLM ever sees this bundle. Aggregate
         # correctness (what counts, what's dropped) is decided entirely here;
         # the day-close LLM only narrates over the result.
-        reconciled = reconcile_day(episode_dicts)
+        reconciled = reconcile_day(normal_episodes)
         reconciled_episodes = [
             *reconciled.activities,
             *reconciled.kept_intents,
@@ -695,8 +612,8 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         )
         bundle_input = assemble_day_close_bundle(
             date_label=date_label,
-            episodes=reconciled_episodes,
-            events=event_dicts,
+            episodes=[*reconciled_episodes, *sensitive_episodes],
+            events=[*normal_events, *sensitive_events],
             timezone=timezone,
             config=cfg,
             dropped_intents=dropped_intents_payload,

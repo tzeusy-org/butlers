@@ -106,8 +106,8 @@
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
-# No ordinary application data is excluded. The three cost-claim tables are the
-# narrow exception to pg_dump's data path: their schema, ownership, FORCE RLS,
+# No ordinary application data is excluded. The three cost-claim tables and the
+# confidential pending_confirms table use narrow scoped data paths: their schema, ownership, FORCE RLS,
 # policies, triggers, and definer function remain in the ordinary dump, while
 # their rows travel through an explicit hex-wrapped JSON staging block. The ordinary dump
 # still runs with row_security=off, so every other unexcluded fenced relation
@@ -122,6 +122,16 @@
 # execute grant. tests/scripts/test_pg_dump_backup.py and
 # tests/scripts/test_pg_restore_definer_ownership.py prove row parity and the
 # restored FORCE RLS, owner, and definer posture against real PostgreSQL.
+#
+# Confirm rows have their own confidential contract, never PUBLIC USING (true).
+# Only CURRENT_USER equal to the actual table owner can export every row. The
+# exact conditional policy and absence of extra/restrictive SELECT policies are
+# proven in the same snapshot. The fixed SECURITY INVOKER confirm_restore_row()
+# independently refuses every identity except that exact table owner, even if
+# bootstrap later regrants function execution. It cannot select another table.
+# Immutable accepted answers, unfinished application receipts and ambiguous send
+# fences all survive. A populated staging block refuses restore without source
+# owner membership; an empty block has no answer history requiring replay.
 
 # NOTE: no `set -o pipefail` here. It is not POSIX, so the shebang above was a
 # lie on any host whose /bin/sh is dash — the script died on line 1 of its own
@@ -142,10 +152,14 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.fleet_cases public.fleet_case_links public.task_continuity public.qa_publication_operations"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
-BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events"
+BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events public.fleet_cases public.fleet_case_links"
+# Evidence is deliberately unfenced; move only its data for parent-first replay.
+BACKUP_FLEET_EVIDENCE_DATA_TABLES="public.fleet_case_evidence"
+# Confidential durable answers: owner-conditional SELECT, separately proven below.
+BACKUP_CONFIRM_DATA_TABLES="public.pending_confirms"
 
 # A gzip stream smaller than this cannot hold a real dump (gzip's own
 # header+footer is ~20 bytes). Matches _BACKUP_MIN_SIZE_BYTES in
@@ -256,6 +270,12 @@ done
 for table in ${BACKUP_SCOPED_DATA_TABLES}; do
   set -- "$@" "--exclude-table-data=${table}"
 done
+for table in ${BACKUP_FLEET_EVIDENCE_DATA_TABLES}; do
+  set -- "$@" "--exclude-table-data=${table}"
+done
+for table in ${BACKUP_CONFIRM_DATA_TABLES}; do
+  set -- "$@" "--exclude-table-data=${table}"
+done
 
 # pg_dump and the scoped ledger query must see one database instant. Keep a
 # read-only repeatable-read transaction open, export its snapshot, and bind
@@ -266,6 +286,8 @@ SNAPSHOT_DIR="$(mktemp -d)"
 SNAPSHOT_CONTROL="${SNAPSHOT_DIR}/control"
 SNAPSHOT_ID_FILE="${SNAPSHOT_DIR}/id"
 SNAPSHOT_POLICY_COUNT_FILE="${SNAPSHOT_DIR}/policy-count"
+SNAPSHOT_CONFIRM_POLICY_FILE="${SNAPSHOT_DIR}/confirm-policy-count"
+SNAPSHOT_FLEET_EVIDENCE_FILE="${SNAPSHOT_DIR}/fleet-evidence-proof"
 SNAPSHOT_LOG="${SNAPSHOT_DIR}/holder.log"
 mkfifo "${SNAPSHOT_CONTROL}"
 PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
@@ -292,7 +314,9 @@ printf '\\o %s\nSELECT count(*)
      WHERE n.nspname || '\''.'\'' || c.relname IN (
                '\''public.cost_claims'\'',
                '\''public.cost_claim_resolutions'\'',
-               '\''public.cost_claim_events'\''
+               '\''public.cost_claim_events'\'',
+               '\''public.fleet_cases'\'',
+               '\''public.fleet_case_links'\''
            )
        AND c.relrowsecurity
        AND c.relforcerowsecurity
@@ -313,8 +337,56 @@ printf '\\o %s\nSELECT count(*)
        );
 \\o\n' "${SNAPSHOT_POLICY_COUNT_FILE}" >&9
 
+# Unlike the public cost-claim read model, prompts contain private recipient
+# information. Only the exact table owner (this backup identity) can export all
+# rows. An extra or restrictive read policy fails before publishing anything.
+printf '\\o %s\nSELECT count(*) FROM pg_class c
+    WHERE c.oid = '\''public.pending_confirms'\''::regclass
+      AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname=current_user)
+      AND c.relrowsecurity AND c.relforcerowsecurity
+      AND (SELECT count(*)=2 FROM pg_policy p WHERE p.polrelid=c.oid
+           AND p.polcmd IN ('\''r'\'','\''*'\''))
+      AND NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid
+           AND p.polcmd IN ('\''r'\'','\''*'\'') AND NOT p.polpermissive)
+      AND EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid=c.oid
+           AND p.polname='\''confirm_backup_read'\'' AND p.polcmd='\''r'\''
+           AND p.polroles=ARRAY[0::oid]
+           AND pg_get_expr(p.polqual,p.polrelid)=
+               format('\''(CURRENT_USER = %%L::name)'\'',current_user));
+\\o\n' "${SNAPSHOT_CONFIRM_POLICY_FILE}" >&9
+
+# An unfenced evidence table is not another PUBLIC-read RLS exception. Prove
+# its source shape, common owner and enabled validated FK in this same snapshot.
+printf '\\o %s\nSELECT count(*) FROM pg_class e
+ WHERE e.oid='\''public.fleet_case_evidence'\''::regclass
+ AND NOT e.relrowsecurity AND NOT e.relforcerowsecurity
+ AND e.relowner=(SELECT relowner FROM pg_class WHERE oid='\''public.fleet_cases'\''::regclass)
+ AND e.relowner=(SELECT relowner FROM pg_class WHERE oid='\''public.fleet_case_links'\''::regclass)
+ AND (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+      WHERE attrelid=e.oid AND attnum>0 AND NOT attisdropped)=
+     ARRAY['\''id'\'','\''case_id'\'','\''contributor'\'','\''kind'\'','\''ref'\'','\''payload'\'','\''contributed_at'\'']
+ AND EXISTS(SELECT FROM pg_constraint f WHERE f.conrelid=e.oid
+   AND f.conname='\''fleet_case_evidence_case_id_fkey'\'' AND f.contype='\''f'\''
+   AND f.confrelid='\''public.fleet_cases'\''::regclass AND f.convalidated
+   AND f.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=e.oid AND attname='\''case_id'\'')]
+   AND f.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=f.confrelid AND attname='\''id'\'')]
+   AND NOT f.condeferrable AND f.confdeltype='\''c'\''
+   AND 4=(SELECT count(*) FROM pg_trigger t WHERE t.tgconstraint=f.oid)
+   AND NOT EXISTS(SELECT FROM pg_trigger t WHERE t.tgconstraint=f.oid AND t.tgenabled NOT IN ('\''O'\'','\''A'\'')))
+ AND EXISTS(SELECT FROM pg_constraint f
+   WHERE f.conrelid='\''public.fleet_case_links'\''::regclass
+   AND f.conname='\''fleet_case_links_case_id_fkey'\'' AND f.contype='\''f'\''
+   AND f.confrelid='\''public.fleet_cases'\''::regclass AND f.convalidated
+   AND NOT f.condeferrable AND f.confdeltype='\''c'\''
+   AND f.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=f.conrelid AND attname='\''case_id'\'')]
+   AND f.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=f.confrelid AND attname='\''id'\'')]
+   AND 4=(SELECT count(*) FROM pg_trigger t WHERE t.tgconstraint=f.oid)
+   AND NOT EXISTS(SELECT FROM pg_trigger t WHERE t.tgconstraint=f.oid AND t.tgenabled NOT IN ('\''O'\'','\''A'\'')));
+\\o\n' "${SNAPSHOT_FLEET_EVIDENCE_FILE}" >&9
+
 SNAPSHOT_WAIT=0
-while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; } \
+while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] \
+  || [ ! -s "${SNAPSHOT_CONFIRM_POLICY_FILE}" ] || [ ! -s "${SNAPSHOT_FLEET_EVIDENCE_FILE}" ]; } \
   && kill -0 "${SNAPSHOT_HOLDER_PID}" 2>/dev/null; do
   SNAPSHOT_WAIT=$((SNAPSHOT_WAIT + 1))
   if [ "${SNAPSHOT_WAIT}" -ge 100 ]; then
@@ -322,7 +394,8 @@ while { [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}"
   fi
   sleep 0.05
 done
-if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ]; then
+if [ ! -s "${SNAPSHOT_ID_FILE}" ] || [ ! -s "${SNAPSHOT_POLICY_COUNT_FILE}" ] \
+  || [ ! -s "${SNAPSHOT_CONFIRM_POLICY_FILE}" ] || [ ! -s "${SNAPSHOT_FLEET_EVIDENCE_FILE}" ]; then
   FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: could not establish a shared backup snapshot and policy proof; not publishing" >&2
   exit 1
@@ -336,9 +409,21 @@ case "${BACKUP_SNAPSHOT}" in
     ;;
 esac
 COST_CLAIM_BACKUP_POLICY_COUNT="$(tr -d '\r\n' < "${SNAPSHOT_POLICY_COUNT_FILE}")"
-if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "3" ]; then
+if [ "${COST_CLAIM_BACKUP_POLICY_COUNT}" != "5" ]; then
   FAILURE_REASON="pg_dump_failed"
   echo "[backup] FAILED: cost-claim backup policy is not the exact full-row contract; not publishing" >&2
+  exit 1
+fi
+CONFIRM_BACKUP_POLICY_COUNT="$(tr -d '\r\n' < "${SNAPSHOT_CONFIRM_POLICY_FILE}")"
+if [ "${CONFIRM_BACKUP_POLICY_COUNT}" != "1" ]; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: confirm backup policy is not the exact confidential-row contract; not publishing" >&2
+  exit 1
+fi
+
+if [ "$(tr -d '\r\n' < "${SNAPSHOT_FLEET_EVIDENCE_FILE}")" != "1" ]; then
+  FAILURE_REASON="pg_dump_failed"
+  echo "[backup] FAILED: Fleet evidence shape/owner/FK proof differs; not publishing" >&2
   exit 1
 fi
 
@@ -421,6 +506,73 @@ SET ROLE %I;',
   || { echo "$?" > "${STATUSFILE}"; exit 0; }
   printf "SELECT public.cost_claim_restore_row(\n  relation_name,\n  convert_from(decode(payload_hex, 'hex'), 'UTF8')::jsonb\n)\nFROM butlers_cost_claim_restore_rows\nORDER BY ordinal, payload_hex;\n"
   printf 'RESET ROLE;\n\\else\n\\echo cost-claim ledger replay skipped: restore owner membership unavailable\n\\endif\nDROP TABLE butlers_cost_claim_restore_rows;\n'
+
+  printf '\n-- Butlers confidential confirm data\n'
+  printf 'CREATE TEMP TABLE butlers_confirm_restore_rows (payload_hex text);\n'
+  printf 'COPY butlers_confirm_restore_rows (payload_hex) FROM stdin;\n'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+        SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+        COPY (SELECT encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex')
+              FROM public.pending_confirms t ORDER BY id) TO STDOUT;
+        COMMIT" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf '\\.\n'
+  printf 'SELECT EXISTS(SELECT 1 FROM butlers_confirm_restore_rows) AS butlers_confirm_restore_needed \\gset\n\\if :butlers_confirm_restore_needed\n'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "SELECT format(
+          'SELECT coalesce(pg_has_role(current_user,to_regrole(%L),''MEMBER''),false) AS butlers_confirm_restore_authorized \\gset
+\\if :butlers_confirm_restore_authorized
+\\set ON_ERROR_STOP on
+GRANT SELECT ON butlers_confirm_restore_rows TO %I;
+SET ROLE %I;',
+          pg_get_userbyid(relowner),pg_get_userbyid(relowner),pg_get_userbyid(relowner))
+        FROM pg_class WHERE oid='public.pending_confirms'::regclass" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf "SELECT public.confirm_restore_row(convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)\nFROM butlers_confirm_restore_rows;\n"
+  printf 'RESET ROLE;\n\\else\n\\set ON_ERROR_STOP on\nDO $$ BEGIN RAISE EXCEPTION '\''confirm restore requires source table-owner membership'\''; END $$;\n\\endif\n\\endif\nDROP TABLE butlers_confirm_restore_rows;\n'
+
+  printf '%s\n' '' '-- Butlers Fleet case history' '\set ON_ERROR_STOP on' 'BEGIN;'
+  printf '%s\n' 'CREATE TEMP TABLE butlers_fleet_restore_rows (ordinal integer NOT NULL CHECK(ordinal IN(1,2,3)),relation_name text NOT NULL,payload_hex text NOT NULL);' 'COPY butlers_fleet_restore_rows (ordinal,relation_name,payload_hex) FROM stdin;'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --quiet --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+        SET TRANSACTION SNAPSHOT '${BACKUP_SNAPSHOT}';
+        COPY (
+          SELECT 1,'fleet_cases',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM public.fleet_cases t
+          UNION ALL
+          SELECT 2,'fleet_case_evidence',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM public.fleet_case_evidence t
+          UNION ALL
+          SELECT 3,'fleet_case_links',encode(convert_to(to_jsonb(t)::text,'UTF8'),'hex') FROM public.fleet_case_links t
+          ORDER BY 1,3) TO STDOUT;
+        COMMIT" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf '%s\n' '\.'
+  printf '%s\n' 'SELECT EXISTS(SELECT 1 FROM butlers_fleet_restore_rows) AS butlers_fleet_restore_needed \gset' '\if :butlers_fleet_restore_needed'
+  PGPASSWORD="${POSTGRES_PASSWORD:-}" psql \
+    --host="${POSTGRES_HOST}" --port="${POSTGRES_PORT}" \
+    --username="${POSTGRES_USER}" --dbname="${POSTGRES_DB}" \
+    --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 \
+    -c "SELECT format(
+       'SELECT coalesce(pg_has_role(current_user,to_regrole(%L),''MEMBER''),false) AS butlers_fleet_restore_authorized \gset
+\if :butlers_fleet_restore_authorized
+GRANT SELECT ON butlers_fleet_restore_rows TO %I;
+SET ROLE %I;',
+       pg_get_userbyid(relowner),pg_get_userbyid(relowner),pg_get_userbyid(relowner))
+       FROM pg_class WHERE oid='public.fleet_cases'::regclass" \
+  || { echo "$?" > "${STATUSFILE}"; exit 0; }
+  printf '%s\n' "SELECT public.fleet_case_restore_row(relation_name, convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb) FROM butlers_fleet_restore_rows WHERE ordinal=1 ORDER BY payload_hex;"
+  printf '%s\n' "INSERT INTO public.fleet_case_evidence SELECT (jsonb_populate_record(NULL::public.fleet_case_evidence,convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb)).* FROM butlers_fleet_restore_rows WHERE ordinal=2 ORDER BY payload_hex;"
+  printf '%s\n' "SELECT public.fleet_case_restore_row(relation_name, convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb) FROM butlers_fleet_restore_rows WHERE ordinal=3 ORDER BY payload_hex;"
+  printf '%s\n' '\else' "DO \$\$ BEGIN RAISE EXCEPTION 'Fleet restore requires source table-owner membership'; END \$\$;" '\endif' '\endif' 'RESET ROLE;' 'COMMIT;' 'DROP TABLE butlers_fleet_restore_rows;'
 } | gzip > "${TMPFILE}"
 
 printf 'COMMIT;\n\\q\n' >&9

@@ -15,8 +15,8 @@ from butlers.config import (
     GatedToolConfig,
     LoggingConfig,
     RuntimeSeedConfig,
-    ScheduleConfig,
     ScheduleDispatchMode,
+    ScheduleSpec,
     load_config,
     parse_approval_config,
     validate_approval_config,
@@ -77,7 +77,7 @@ def test_load_config_full_and_minimal(tmp_path: Path):
     assert cfg.name == "jarvis" and cfg.port == 41100 and cfg.db_name == "jarvis_db"
     assert cfg.runtime_seed.max_concurrent_sessions == 3
     assert len(cfg.schedules) == 2
-    assert cfg.schedules[0] == ScheduleConfig(
+    assert cfg.schedules[0] == ScheduleSpec(
         name="daily_digest", cron="0 8 * * *", prompt="Summarise overnight emails"
     )
     assert "email" in cfg.modules
@@ -141,15 +141,67 @@ def test_schedule_parsing(tmp_path: Path):
     ).schedules[0]
     assert sched2.dispatch_mode == ScheduleDispatchMode.JOB and sched2.job_name == "sweep"
 
-    for extra, match in [
-        (
-            'dispatch_mode = "native"\nprompt = "run"\n',
-            r"Invalid butler\.schedule\[0\]\.dispatch_mode",
-        ),  # noqa: E501
+
+@pytest.mark.parametrize(
+    "extra, match",
+    [
+        ('dispatch_mode = "native"\nprompt = "run"\n', r"butler\.schedule\[0\]\.dispatch_mode"),
+        ("dispatch_mode = 7\nprompt = 'run'\n", r"butler\.schedule\[0\]\.dispatch_mode"),
         ('dispatch_mode = "job"\n', r"dispatch_mode='job' requires non-empty job_name"),
-    ]:
-        with pytest.raises(ConfigError, match=match):
-            load_config(_write_toml(tmp_path, base + extra))
+        ('dispatch_mode = "job"\njob_name = "  "\n', r"requires non-empty job_name"),
+        ('dispatch_mode = "job"\njob_name = "j"\nprompt = "p"\n', r"prompt is not allowed"),
+        (
+            'dispatch_mode = "job"\njob_name = "j"\ncontinuity = true\n',
+            r"continuity is only valid when dispatch_mode='prompt'",
+        ),
+        ("", r"dispatch_mode='prompt' requires non-empty prompt"),
+        ('prompt = " "\n', r"requires non-empty prompt"),
+        ('prompt = "p"\njob_name = "j"\n', r"job_name is only valid"),
+        ('prompt = "p"\njob_args = { a = 1 }\n', r"job_args is only valid"),
+        ('prompt = "p"\nmax_token_budget = 0\n', r"butler\.schedule\[0\]\.max_token_budget"),
+        ('prompt = "p"\nmax_token_budget = "9"\n', r"butler\.schedule\[0\]\.max_token_budget"),
+        ('prompt = "p"\ncomplexity = "turbo"\n', r"butler\.schedule\[0\]\.complexity"),
+        ('prompt = "p"\ncontinuity = "yes"\n', r"butler\.schedule\[0\]\.continuity"),
+        ('prompt = "p"\ntimezone = "UTC"\n', r"Etc/UTC"),
+        ('prompt = "p"\ntimezone = "Mars/Base"\n', r"butler\.schedule\[0\]\.timezone"),
+        ('prompt = "p"\nsurprise = 1\n', r"Unknown key: butler\.schedule\[0\]\.surprise"),
+        ('prompt = "p"\ntarget_date = 2030-01-01\n', r"only valid when task_type='deadline'"),
+        ('prompt = "p"\ntask_type = "deadline"\n', r"target_date is required"),
+        (
+            'prompt = "p"\ntask_type = "deadline"\ntarget_date = 2030-01-01\n'
+            "lead_time_days = 0\nalert_thresholds = [{ d = 1 }]\n",
+            r"lead_time_days must be a positive integer",
+        ),
+        (
+            'prompt = "p"\ntask_type = "deadline"\ntarget_date = 2030-01-01\n'
+            "lead_time_days = 3\nalert_thresholds = []\n",
+            r"alert_thresholds must be a non-empty list",
+        ),
+    ],
+)
+def test_invalid_schedule_shapes_are_rejected_at_load(tmp_path: Path, extra: str, match: str):
+    """Every invalid [[butler.schedule]] shape fails in load_config, naming the offending key."""
+    base = (
+        '[butler]\nname = "cronbot"\nport = 7001\n\n'
+        '[[butler.schedule]]\nname = "t"\ncron = "*/5 * * * *"\n'
+    )
+    with pytest.raises(ConfigError, match=match):
+        load_config(_write_toml(tmp_path, base + extra))
+
+
+@pytest.mark.parametrize(
+    "head, match",
+    [
+        ('name = ""\ncron = "* * * * *"\nprompt = "p"\n', r"butler\.schedule\[0\]\.name"),
+        ('name = "t"\nprompt = "p"\n', r"Missing required field: butler\.schedule\[0\]\.cron"),
+        ('name = "t"\ncron = " "\nprompt = "p"\n', r"butler\.schedule\[0\]\.cron"),
+        ('name = "t"\ncron = "not a cron"\nprompt = "p"\n', r"'not a cron' is not a valid cron"),
+    ],
+)
+def test_invalid_schedule_identity_is_rejected_at_load(tmp_path: Path, head: str, match: str):
+    toml = '[butler]\nname = "cronbot"\nport = 7001\n\n[[butler.schedule]]\n' + head
+    with pytest.raises(ConfigError, match=match):
+        load_config(_write_toml(tmp_path, toml))
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +299,46 @@ def test_legacy_runtime_sections_rejected(tmp_path: Path, toml: str, match: str)
         load_config(_write_toml(tmp_path, toml))
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        '[butler.runtime]\ntype = "codex"\nmodel = "old"\n',
+        '[butler.seed_configs]\nmodel = "old"\n',
+        'blob_dir = "/var/blobs"\n',
+        'blob_storage_dir = "/var/blobs"\n',
+        '[butler.storage]\nblob_dir = "/var/blobs"\n',
+        '[butler.storage]\nblob_storage_dir = "/var/blobs"\n',
+    ],
+)
+def test_legacy_keys_named_by_the_spec_are_accepted_and_ignored(tmp_path: Path, extra: str):
+    """core-daemon spec: obsolete runtime/seed_configs tables and blob keys never alter config."""
+    # Scalar keys must sit in the [butler] table, before any sub-table header.
+    head, _, tables = extra.partition("[")
+    toml = f'[butler]\nname = "m"\nport = 7031\n{head}' + (f"[{tables}" if tables else "")
+    baseline = load_config(_write_toml(tmp_path, '[butler]\nname = "m"\nport = 7031\n'))
+
+    cfg = load_config(_write_toml(tmp_path, toml))
+
+    assert cfg.runtime_seed == baseline.runtime_seed
+    assert not hasattr(cfg, "blob_storage_dir")
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "mystery = 1\n",
+        '[butler.storage]\nendpoint_url = "http://s3"\n',
+        '[butler.storage]\nbucket = "b"\n',
+    ],
+)
+def test_other_unknown_keys_still_raise(tmp_path: Path, extra: str):
+    head, _, tables = extra.partition("[")
+    toml = f'[butler]\nname = "m"\nport = 7032\n{head}' + (f"[{tables}" if tables else "")
+
+    with pytest.raises(ConfigError, match="Unknown key"):
+        load_config(_write_toml(tmp_path, toml))
+
+
 def test_roster_runtime_identity_is_internally_consistent():
     """Every roster butler's runtime_seed stays clean of catalog-owned fields.
 
@@ -259,17 +351,15 @@ def test_roster_runtime_identity_is_internally_consistent():
     roster_dir = repo_root / "roster"
     assert roster_dir.is_dir(), f"Expected roster dir at {roster_dir}"
 
-    parsed_any = False
-    for entry in sorted(roster_dir.iterdir()):
-        if not entry.is_dir() or not (entry / "butler.toml").exists():
-            continue
-        parsed_any = True
-        cfg = load_config(entry)
-        # runtime_seed exposes only operational fields; catalog-owned names
-        # would have been rejected by _parse_runtime_seed.
+    tomls = sorted(roster_dir.glob("*/butler.toml"))
+    assert tomls, "No roster butlers discovered — check tests/config layout"
+    for toml_path in tomls:
+        # Every roster file goes through the strict models: an unknown key or a
+        # retired runtime_seed field raises ConfigError here.
+        cfg = load_config(toml_path.parent)
         assert cfg.runtime_seed.max_concurrent_sessions > 0
         assert cfg.runtime_seed.max_queued_sessions > 0
-    assert parsed_any, "No roster butlers discovered — check tests/config layout"
+        assert all(isinstance(s, ScheduleSpec) for s in cfg.schedules)
 
 
 def test_finance_and_relationship_seed_delegation_group():
@@ -366,7 +456,7 @@ def test_butler_type_and_permissions(tmp_path: Path):
 
     for toml_frag, match in [
         ('type = "robot"', "Invalid butler.type"),
-        ("type = 42", "butler.type must be a string"),
+        ("type = 42", "Invalid butler.type"),
     ]:
         with pytest.raises(ConfigError, match=match):
             load_config(
@@ -470,7 +560,7 @@ def test_validate_approval_config_flags_ungated_chat_reachable_write_tool():
 # ---------------------------------------------------------------------------
 
 
-def test_messenger_and_switchboard_and_memory_config(tmp_path: Path):
+def test_messenger_and_switchboard_and_memory_config(tmp_path: Path, monkeypatch):
     """Messenger requires delivery module; switchboard URL defaults; memory module parses."""
     with pytest.raises(ConfigError, match="requires at least one delivery module"):
         load_config(_write_toml(tmp_path, '[butler]\nname = "messenger"\nport = 41104\n'))
@@ -493,9 +583,31 @@ def test_messenger_and_switchboard_and_memory_config(tmp_path: Path):
 
     cfg_nomem = load_config(_write_toml(tmp_path, '[butler]\nname = "nomem"\nport = 40201\n'))
     assert "memory" not in cfg_nomem.modules
+    # A retired [butler.memory] table is an unknown key now, not silently dropped.
     legacy_toml = '[butler]\nname = "legacy"\nport = 8202\n\n[butler.memory]\nenabled = true\n'
-    cfg_legacy = load_config(_write_toml(tmp_path, legacy_toml))
-    assert "memory" not in cfg_legacy.modules
+    with pytest.raises(ConfigError, match=r"Unknown key: butler\.memory"):
+        load_config(_write_toml(tmp_path, legacy_toml))
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://butlers-control:41100/sse")
+    monkeypatch.setenv("BUTLERS_HOST", "butlers-up")
+    explicit = '[butler]\nname = "general"\nport = 41101\n[butler.switchboard]\nurl = "{}"\n'
+    for configured, expected in (
+        ("http://localhost:41100/mcp?keep=yes", "http://butlers-control:41100/mcp?keep=yes"),
+        ("http://localhost:41100/sse", "http://butlers-control:41100/sse"),
+        ("https://remote.invalid:8443/custom?q=1", "https://remote.invalid:8443/custom?q=1"),
+        ("http://localhost:49999/custom", "http://localhost:49999/custom"),
+        ("http://127.0.0.1:41100/mcp", "http://127.0.0.1:41100/mcp"),
+    ):
+        cfg = load_config(_write_toml(tmp_path, explicit.format(configured)))
+        assert cfg.switchboard_url == expected
+    monkeypatch.delenv("SWITCHBOARD_MCP_URL")
+    monkeypatch.delenv("BUTLERS_HOST")
+    assert (
+        load_config(
+            _write_toml(tmp_path, explicit.format("http://localhost:41100/mcp"))
+        ).switchboard_url
+        == "http://localhost:41100/mcp"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -577,14 +689,14 @@ def test_oauth_section_valid_parsing(tmp_path: Path):
 def test_oauth_section_invalid_scopes_not_list(tmp_path: Path):
     """[oauth.google].scopes must be a list — a string raises ConfigError."""
     toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = "openid email"\n'
-    with pytest.raises(ConfigError, match=r"\[oauth\.google\]\.scopes must be a list"):
+    with pytest.raises(ConfigError, match=r"Invalid oauth\.google\.scopes"):
         load_config(_write_toml(tmp_path, toml))
 
 
 def test_oauth_section_invalid_scope_item_not_string(tmp_path: Path):
     """Individual scope entries must be strings — an integer raises ConfigError."""
     toml = '[butler]\nname = "general"\nport = 41100\n\n[oauth.google]\nscopes = [1, 2, 3]\n'
-    with pytest.raises(ConfigError, match=r"\[oauth\.google\]\.scopes\[0\] must be a string"):
+    with pytest.raises(ConfigError, match=r"Invalid oauth\.google\.scopes\[0\]"):
         load_config(_write_toml(tmp_path, toml))
 
 
@@ -592,5 +704,5 @@ def test_oauth_top_level_not_table_raises(tmp_path: Path):
     """Top-level oauth key set to a scalar raises ConfigError rather than silently skipping."""
     # `oauth = "not-a-table"` at the top level is valid TOML but a misconfiguration.
     toml = 'oauth = "not-a-table"\n\n[butler]\nname = "general"\nport = 41100\n'
-    with pytest.raises(ConfigError, match=r"\[oauth\] must be a table"):
+    with pytest.raises(ConfigError, match=r"Invalid oauth"):
         load_config(_write_toml(tmp_path, toml))

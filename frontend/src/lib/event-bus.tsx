@@ -27,8 +27,9 @@
  * EventBusProvider wraps `useEventStream()` ONCE and re-exposes its per-type
  * events to any number of subscribers via `subscribe(type, cb)`. Cache
  * invalidation keeps happening exactly as before -- `useEventStream` still
- * calls `applyFleetEvent` on every message internally, independent of
- * whether anyone subscribes here. This layer only adds fan-out for
+ * uses `applyFleetEvent` for live messages and this provider's
+ * `applyFleetEventBatch` snapshot policy, independent of whether anyone
+ * subscribes here. This layer also adds fan-out for
  * consumers that need the raw event (a ticker, a toast), not just the cache
  * side effect.
  */
@@ -43,7 +44,7 @@ import {
 } from "react";
 
 import { useEventStream, type EventBusHealth, type EventStreamStatus } from "@/hooks/use-event-stream";
-import type { FleetEvent } from "@/hooks/event-cache-registry";
+import { applyFleetEventBatch, type FleetEvent } from "@/hooks/event-cache-registry";
 
 /** Metadata delivered alongside every event handed to a bus listener. */
 export interface BusEventMeta {
@@ -97,6 +98,7 @@ export function EventBusProvider({ children }: EventBusProviderProps) {
 
   const { status, lastEventAt, health } = useEventStream({
     onEvent: dispatch,
+    applySnapshot: applyFleetEventBatch,
   });
 
   const subscribe = useCallback((type: string, listener: BusListener) => {

@@ -8,7 +8,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { axe, toHaveNoViolations } from "jest-axe";
 
 import type { SessionSummary } from "@/api/types";
-import { PREFETCH_INTENT_DELAY_MS } from "@/hooks/use-prefetch-on-intent";
+import { NAV_INTENT_DELAY_MS } from "@/hooks/use-nav-intent";
 import { SessionTable } from "@/components/sessions/SessionTable";
 
 vi.mock("@/api/index.ts", () => ({
@@ -145,7 +145,7 @@ describe("SessionTable keyboard accessibility", () => {
 
     fireEvent.pointerEnter(getByTestId("session-row"));
     act(() => {
-      vi.advanceTimersByTime(PREFETCH_INTENT_DELAY_MS);
+      vi.advanceTimersByTime(NAV_INTENT_DELAY_MS);
     });
 
     expect(getSession).toHaveBeenCalledWith("sess-abc123");

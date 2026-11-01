@@ -21,21 +21,17 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel
 
 from butlers.api.audit_emit import authenticated_principal
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.routers.audit import append as _audit_append
+from butlers.connectors.catalog import default_policy_required_keys
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingestion/channel-defaults", tags=["ingestion"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -49,22 +45,7 @@ def _get_db_manager() -> DatabaseManager:
 # None on success, or a string describing the validation error.
 # ---------------------------------------------------------------------------
 
-_REQUIRED_KEYS: dict[str, set[str]] = {
-    "email": {"priority_action", "max_age_days"},
-    "telegram": {"priority_action"},
-    "telegram_bot": {"priority_action"},
-    "telegram_user_client": {"priority_action"},
-    "home-assistant": {"priority_action"},
-    "home_assistant": {"priority_action"},
-    "discord": {"priority_action"},
-    "spotify": {"priority_action"},
-    "owntracks": {"priority_action"},
-    "whatsapp": {"priority_action"},
-    "steam": {"priority_action"},
-    "google_calendar": {"priority_action"},
-    "google_drive": {"priority_action"},
-    "google_health": {"priority_action"},
-}
+_REQUIRED_KEYS: dict[str, set[str]] = default_policy_required_keys()
 
 _VALID_PRIORITY_ACTIONS = frozenset(
     {"pass_through", "block", "skip", "metadata_only", "low_priority_queue"}
@@ -135,7 +116,8 @@ class ChannelDefaultPatchRequest(BaseModel):
 @router.get("/{channel}", response_model=ChannelDefaultEntry)
 async def get_channel_default(
     channel: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChannelDefaultEntry:
     """Return the default policy document for a single channel.
 
@@ -180,7 +162,8 @@ async def upsert_channel_default(
     channel: str,
     body: ChannelDefaultPatchRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ChannelDefaultEntry:
     """Upsert the default policy document for a channel.
 

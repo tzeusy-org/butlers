@@ -324,7 +324,7 @@ describe("EntityDetailPage — Workbench KPI strip accuracy", () => {
   it("shows lower-bound counts with '+' suffix when facts window is truncated (has_more=true)", () => {
     // Simulate >200 facts: has_more=true; the visible window has 1 src and 1 channel.
     useEntityFacts.mockReturnValue({
-      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", has_more: true },
+      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", limit: 200 },
       isFetching: false,
       error: null,
     });

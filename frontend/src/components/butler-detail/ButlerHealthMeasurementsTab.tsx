@@ -25,6 +25,8 @@ import { Link } from "react-router";
 
 import type {
   LatestMeasurementEntry,
+  HealthBaseline,
+  HealthBaselinesResponse,
   ExpectedSignal,
   Measurement,
   MeasurementSource,
@@ -42,6 +44,7 @@ import {
   useSleepLatest,
   useMeasurementSources,
   useExpectedSignals,
+  useHealthBaselines,
   useMeasurements,
   useMedications,
   useConditions,
@@ -270,6 +273,7 @@ function TrendSparkline({
   label,
   valueKey,
   unit,
+  band,
 }: {
   measurements: Measurement[];
   isLoading: boolean;
@@ -277,6 +281,7 @@ function TrendSparkline({
   label: string;
   valueKey?: string;
   unit?: string;
+  band?: HealthBaseline["band"];
 }) {
   const prefersReducedMotion = usePrefersReducedMotion();
   const points = useMemo(() => {
@@ -346,6 +351,7 @@ function TrendSparkline({
         height={80}
         compact
         yDomain={["auto", "auto"]}
+        band={band ?? undefined}
         tooltip={<TrendTooltip unit={unit} />}
         animate={!prefersReducedMotion}
       />
@@ -365,12 +371,14 @@ function TrendPanel({
   valueKey,
   unit,
   drilldownLink,
+  baseline,
 }: {
   title: string;
   type: string;
   valueKey?: string;
   unit?: string;
   drilldownLink?: string;
+  baseline?: HealthBaseline;
 }) {
   const { since, until } = useMemo(() => fourteenDayWindow(), []);
   const { data, isLoading, isError } = useMeasurements({ type, since, until, limit: 50 });
@@ -394,6 +402,7 @@ function TrendPanel({
           isLoading={isLoading}
           isError={isError}
           label={title}
+          band={baseline?.state === "ready" ? baseline.band : null}
           valueKey={valueKey}
           unit={unit}
         />
@@ -720,12 +729,92 @@ function RecentConditionsPanel({
 }
 
 // ---------------------------------------------------------------------------
+// Baseline display uses only the scorer's three declared metrics. Generic heart_rate
+// is intentionally separate from resting_hr and never receives its range.
+const BASELINE_LABELS = [
+  ["resting_hr", "Resting heart rate usual range"],
+  ["hrv", "HRV usual range"],
+  ["sleep_duration", "Sleep duration usual range"],
+] as const;
+
+const BASELINE_REASONS: Record<HealthBaseline["state"], string> = {
+  ready: "No usual range yet",
+  insufficient_history: "Not enough history",
+  unmeasurable: "Measurement source unavailable",
+  stale: "Usual range is out of date",
+  no_baseline: "No usual range yet",
+};
+
+function BaselinesPanel({ data, isLoading, isError }: {
+  data?: HealthBaselinesResponse;
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  if (isLoading) return <LoadingLine testId="baselines-loading" />;
+
+  return (
+    <Section>
+      <SectionHeader>
+        <SectionTitle>Your usual ranges</SectionTitle>
+      </SectionHeader>
+      <SectionContent>
+        {isError || !data?.available ? (
+          <EmptyLine>Usual ranges unavailable</EmptyLine>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            {BASELINE_LABELS.map(([key, label]) => {
+              const reading = data.baselines?.find((b) => b.metric_key === key);
+              const band = reading?.state === "ready" ? reading.band : null;
+              const reason = BASELINE_REASONS[reading?.state ?? "no_baseline"];
+              return (
+                <div key={key} data-testid={`baseline-${key}`} className="space-y-1">
+                  <p className="text-xs text-muted-foreground">{label}</p>
+                  {band ? (
+                    <>
+                      <p className="font-mono tnum text-sm">
+                        {band.low.toFixed(1).replace(/\.0$/, "")}–{band.high.toFixed(1).replace(/\.0$/, "")} {reading?.unit}
+                      </p>
+                      <div
+                        role="img"
+                        aria-label={`${label}: ${band.low} to ${band.high} ${reading?.unit}`}
+                        className="h-1.5 rounded bg-chart-1/20"
+                      />
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">{reason}</p>
+                  )}
+                  {reading && reading.n_expected > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      {reading.n_observed} of {reading.n_expected} days
+                    </p>
+                  )}
+                  {reading?.state === "stale" && reading.computed_at && (
+                    <p className="text-xs text-muted-foreground">
+                      Computed <Time value={reading.computed_at} />
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </SectionContent>
+    </Section>
+  );
+}
+
 // ButlerHealthMeasurementsTab — composed entry point
 // ---------------------------------------------------------------------------
 
 export default function ButlerHealthMeasurementsTab() {
   // Google Health connector status (for the per-account status card)
   const { data: googleHealthStatus } = useGoogleHealthStatus();
+
+  const baselineQuery = useHealthBaselines();
+  const hrvBaseline =
+    !baselineQuery.isLoading && !baselineQuery.isError && baselineQuery.data?.available
+      ? baselineQuery.data.baselines?.find((b) => b.metric_key === "hrv")
+      : undefined;
 
   // Row 1: KPI quartet
   const { data: latestData, isLoading: latestLoading } = useMeasurementsLatest([
@@ -776,6 +865,12 @@ export default function ButlerHealthMeasurementsTab() {
         isLoading={kpiLoading}
       />
 
+      <BaselinesPanel
+        data={baselineQuery.data}
+        isLoading={baselineQuery.isLoading}
+        isError={baselineQuery.isError}
+      />
+
       {/* Row 2: Glucose trend + Heart rate trend */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TrendPanel
@@ -796,6 +891,7 @@ export default function ButlerHealthMeasurementsTab() {
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <TrendPanel
           title="HRV"
+          baseline={hrvBaseline}
           type="hrv"
           unit="ms"
           drilldownLink="/health/measurements"

@@ -1,13 +1,24 @@
 """Availability regressions and opt-in installed RFC0036 feasibility evidence."""
 
+import io
 import json
 import os
 import subprocess
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 from tests.adapters import runtime_diagnostic_executor_feasibility_harness as harness
+
+
+def test_bounded_output_drains_both_pipes(monkeypatch):
+    process = Mock(stdout=io.BytesIO(b"stdout bytes"), stderr=io.BytesIO(b"stderr bytes"))
+    fence = Mock()
+    # The real fence is namespace-only; never invoke it on the host.
+    monkeypatch.setattr(harness, "_fence_descendants", fence)
+    assert harness._bounded_output(process) == (b"stdout bytes", b"stderr bytes", False, False)
+    process.wait.assert_called_once_with(timeout=6)
+    fence.assert_called_once_with()
 
 
 @pytest.mark.parametrize(

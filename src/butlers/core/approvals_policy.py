@@ -41,6 +41,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 logger = logging.getLogger(__name__)
 
 
+class AttentionReadUnavailable(RuntimeError):
+    """A failed read is not a successful empty policy or permission to deliver."""
+
+
 # ---------------------------------------------------------------------------
 # Pure logic helpers
 # ---------------------------------------------------------------------------
@@ -166,8 +170,8 @@ def is_policy_quiet_now(
     """Return whether an aware instant is inside the Owner Attention Policy.
 
     This is the sole timezone-aware boolean reader for direct owner-attention
-    callers. It deliberately returns ``False`` for unavailable/incomplete/
-    invalid persisted policy data so an attention decision fails open.
+    callers. Successfully read missing/incomplete/invalid policy returns False;
+    storage failure is raised by the accessor before this pure predicate.
     """
     state = _policy_local_now(policy, now=now)
     if state is None:
@@ -270,8 +274,9 @@ async def get_approvals_policy_quiet_hours(pool: Any) -> dict[str, Any] | None:
     """Fetch the ``public.approvals_policy`` singleton quiet-hours fields.
 
     Returns a dict with keys ``quiet_start_hour``, ``quiet_end_hour``,
-    ``timezone`` on success, or ``None`` if the row is missing or the
-    table does not exist yet (schema predates core_095).
+    ``timezone`` on success, or ``None`` for a successfully read missing row.
+    Missing tables, pool failures and other read errors raise
+    ``AttentionReadUnavailable``; they are not delivery permission.
 
     The default row has ``quiet_start_hour = NULL`` and
     ``quiet_end_hour = NULL``, which ``should_suppress_by_policy`` treats
@@ -282,13 +287,8 @@ async def get_approvals_policy_quiet_hours(pool: Any) -> dict[str, Any] | None:
             "SELECT quiet_start_hour, quiet_end_hour, timezone "
             "FROM public.approvals_policy WHERE id = 1"
         )
-    except Exception:
-        # Table absent (older schema) or DB error — treat as no policy
-        logger.debug(
-            "approvals_policy unavailable; quiet-hours suppression disabled",
-            exc_info=True,
-        )
-        return None
+    except Exception as exc:
+        raise AttentionReadUnavailable("attention_policy_unavailable") from exc
 
     if row is None:
         return None

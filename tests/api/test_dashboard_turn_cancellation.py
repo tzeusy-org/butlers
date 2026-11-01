@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import MCPClientManager, get_db, get_mcp_manager
 from butlers.core.dashboard_turns import DashboardTurnResult, DashboardTurnSession
 
 pytestmark = pytest.mark.unit
@@ -158,7 +158,7 @@ async def test_message_scoped_stop_endpoint_never_needs_a_live_api_process_map(
 
     db = MagicMock(spec=DatabaseManager)
     mcp_mgr = MagicMock(spec=MCPClientManager)
-    app.dependency_overrides[subject._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_mgr
 
     async with httpx.AsyncClient(

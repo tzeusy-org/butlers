@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS public.provider_feature_catalogue (
 
 def test_catalogue_seed_entries_are_native_lists_not_json_strings() -> None:
     """Regression guard: seed data must never regress to hand-authored JSON strings."""
-    for provider, butler, feature, severity, required_scopes in _CATALOGUE_SEED:
+    for provider, butler, feature, _severity, required_scopes in _CATALOGUE_SEED:
         assert isinstance(required_scopes, list), (
             f"{provider}/{butler}/{feature!r} required_scopes is "
             f"{type(required_scopes).__name__!r}, not a list — reintroducing a "

@@ -20,6 +20,7 @@ import asyncpg
 import pytest
 
 from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -213,11 +214,30 @@ async def pool(postgres_container):
     await p.close()
 
 
+@pytest.fixture(scope="module")
+def scheduler_db_url(postgres_container) -> str:
+    """Finish the actual core migrations synchronously before opening the async pool."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": "general"},
+    )
+
+
 @pytest.fixture
-async def scheduler_pool(postgres_container):
-    p = await _make_pool(postgres_container, _SCHEDULED_TASKS_DDL, _SEASONAL_TABLE_DDL)
-    yield p
-    await p.close()
+async def scheduler_pool(scheduler_db_url: str):
+    p = await asyncpg.create_pool(
+        scheduler_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "general,public"},
+    )
+    try:
+        yield p
+    finally:
+        await p.close()
 
 
 # ---------------------------------------------------------------------------

@@ -85,6 +85,7 @@ job_name = "eligibility_sweep"
 [[butler.schedule]]
 name = "insight-delivery-cycle"
 cron = "15,45 6-11 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "insight_delivery_cycle"
 
@@ -112,6 +113,7 @@ job_name = "insight_urgent_subcycle"
 [[butler.schedule]]
 name = "commitment-escalation"
 cron = "40 5 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "commitment_escalation"
 
@@ -119,6 +121,7 @@ job_name = "commitment_escalation"
 [[butler.schedule]]
 name = "spend-rule-savings"
 cron = "15 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "spend_rule_savings"
 
@@ -144,39 +147,6 @@ cron = "*/15 * * * *"
 dispatch_mode = "job"
 job_name = "dropped_known_watch"
 
-# Decision-review digest (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk") —
-# weekly digest of open owner-decision beads ("N decisions waiting, oldest
-# Xd"), Monday 09:00 UTC. Reads the beads JSONL export bind-mounted into this
-# container (see docker-compose.yml + butlers.jobs.decision_review's module
-# docstring for why: no butler daemon has a live path to the Dolt/bd server).
-# This and decision-escalation-check are no-ops when the deployment sets
-# BUTLERS_DECISION_REVIEW_ENABLED=0 (dev does, until the owner opts in).
-[[butler.schedule]]
-name = "decision-review-digest"
-cron = "0 9 * * 1"
-dispatch_mode = "job"
-job_name = "decision_review_digest"
-
-# P1/deploy decision-block age escalation (bu-ckkpz.4) — every 6h, escalates
-# once (via the same notify/attention-ledger path, debounced through
-# public.audit_log) when an open decision bead has blocked a P1 bug or a
-# deploy-marked bead for more than 48h.
-[[butler.schedule]]
-name = "decision-escalation-check"
-cron = "0 */6 * * *"
-dispatch_mode = "job"
-job_name = "decision_escalation_check"
-
-# Decision Desk routing (bu-ckkpz.3) -- offers open decision beads to the owner
-# as one-tap Telegram prompts through quiet hours, the context bus and a
-# 3-per-24h budget, at most once per bead. A no-op unless the deployment sets
-# BUTLERS_DECISION_ROUTING_ENABLED=1 (it sends real owner messages).
-[[butler.schedule]]
-name = "decision-routing"
-cron = "7,22,37,52 * * * *"
-dispatch_mode = "job"
-job_name = "decision_routing"
-
 # Domain-event-bus delivery reconciliation sweep (bu-1yw6d, PR #3585 review
 # follow-up) — re-drives pending/failed public.domain_event_deliveries rows
 # that a fresh publish's fan-out never resolved (crash after claim, or a
@@ -197,8 +167,8 @@ job_name = "domain_event_reconciliation_sweep"
 [[butler.schedule]]
 name = "fleet-case-lapse-sweep"
 cron = "10 4 * * *"
+timezone = "Etc/UTC"
 dispatch_mode = "job"
 job_name = "fleet_case_lapse_sweep"
 
-# RFC 0015: report errors to QA; this module never dispatches locally.
-[modules.self_healing]
+# RFC 0015: core always registers the error relay; no module opt-in is required.

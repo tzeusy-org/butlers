@@ -17,6 +17,67 @@ A successful build or review is not evidence that a deployed instance has been
 enrolled. Run live procedures only for an explicitly authorized instance and
 operation, after implementation verification and deployment preflight.
 
+## Standing-rule confirmation
+
+Creating a standing approval rule, creating one from an action, approving with
+a rule, and confirming an autonomy promotion require a fresh action-bound
+passkey assertion from the authenticated dashboard session. An API key,
+Telegram callback, authenticated actor map, or an existing cookie alone cannot
+authorize that expansion. Ordinary one-tap approval, rejection, revocation and
+demotion retain their existing doors. Ingestion rule-promotion and Finance's
+separate rule stores are outside this approvals interface.
+
+The browser requests `/api/approvals/step-up/options` for the exact intent,
+performs native WebAuthn authentication, and finishes at
+`/api/auth/owner/step-up/finish`. The returned short-lived nonce stays in memory
+and accompanies only the explicit mutation as `X-Dashboard-Step-Up`. Cancelled,
+expired or failed ceremonies do not submit or automatically retry that mutation.
+The nonce is bound to the real cookie session, credential/session epochs,
+receiver database/schema, current source snapshot, policy inventory and final
+arguments. Changed authority or arguments require fresh confirmation.
+
+`dashboard_stepup.consume` runs on the owning rule/action transaction. It holds
+the existing auth-instance fence through rule, decision, audit and durable
+receipt commit; it never consumes through a separately committed auth pool.
+Different databases or missing trusted interfaces fail closed. Completed receipt
+lookups return existing identities without dispatch, memory writeback or rule
+reactivation. Logout, credential recovery and nonce revocation fence admission.
+The five-minute maximum confirmation lifetime is also bounded by session expiry.
+
+Privileged bootstrap installs the fixed `core_277` interface under an isolated
+NOLOGIN owner. Daemon runtime roles receive only schema usage and exact consume
+execution, never the issuer, host API or old private auth tables. The ordinary
+backup can read the new hashed bindings and closed UUID result references from
+their initial design; no raw nonce, challenge, credential, tool arguments or
+description is stored there. A stored hash is not accepted as a bearer nonce.
+No old private auth read grants or backup exclusions are changed. The existing
+shared migration login still owns the older auth schema; this interface does
+not claim to remove that pre-existing migration trust or grant it to daemon
+roles.
+
+Restore requires the existing privileged owner-preserving procedure. The restore
+auditor also checks this private schema and refuses missing expected modern
+objects, altered owners, unsafe ACLs or a receipt-row population differing
+from the managed dump's single native COPY block. Legacy dumps without step-up DDL and
+without a recorded `core_277` or later revision may still lack it. Downgrade
+disables consumption and revokes unused proofs while retaining committed
+receipts; it does not authorize an older image to bypass confirmation.
+
+WebAuthn user verification proves use of the registered credential. Synced
+passkeys and browser metadata do not establish physical device separation;
+the adopted separate-device custody remains an owner operational obligation.
+This source interface does not enroll a device, provision credentials, deploy
+or expose an instance, or activate future goal-runtime consumers.
+
+Future Vouch, Contain and mode-loosening owners can reuse the neutral
+`DashboardStepUpProof` projection, the restricted service's binding ceremony,
+and the real synthetic `authority`/`signed_binding_proof` fixtures in
+`tests/integration/test_dashboard_stepup.py`. Their own source must derive its
+exact binding and enlist consumption in its owning transaction. The currently
+closed SQL consumer catalog admits only the four approvals kinds above;
+fixture reuse does not register another consumer, grant permission, or replace
+those owners' contract, migration, race and rollback proofs.
+
 ## How trust is established
 
 ```mermaid
@@ -324,6 +385,34 @@ and fail the launcher without an alternate trust value or a success report.
 This prevents a full `down`/`up` from retaining a stale Docker bridge gateway.
 The canonical origin, RP ID, and forwarded-header checks remain required.
 
+## Ordinary owner attention authoring
+
+The narrow pre-switch creation ticket and owner break-through clauses use the
+existing verified owner cookie, canonical origin and CSRF service boundary.
+They do not accept the internal audit actor fallback, a model boolean or a
+separate device-factor claim. Standing-permission step-up remains D13's distinct
+purpose and existing fixed kinds.
+
+`POST /api/butlers/attention/break-through-clauses` and the matching
+`DELETE .../{id}` are HTTP-only backend primitives. A clause has at least one
+fixed matcher (`entity_id`, canonical `sender_domain`, `channel`, or
+`security_kind`), a scope (`always` or `quiet_hours_only`) and optional expiry.
+Matchers compose conjunctively; current expiry and revocation are re-read by
+both delivery consumers. Domain matching uses authenticated accepted email
+provenance; a security label alone never authenticates a sender. These routes
+are the single shared `.8` backend store; they do not deliver its later editor,
+Telegram authoring, shadow-event activation or decay workflow.
+
+Privileged bootstrap stages the separate `dashboard_attention` fixed interface
+before the untouched D13 block. Ordinary `core_278` invokes its checked installer
+or finalizer. Runtime roles have no direct ticket/stamp/clause write access;
+only the owner-auth API role can author through the closed current-session
+function. The ordinary managed dump retains all five durable populations,
+including final-occurrence witnesses and revoked tombstones;
+privileged restore refuses missing modern schema/data or untrusted ownership
+and ACLs. Rollback revokes admission and clauses while preserving committed
+receipts and effects, rather than restoring model-selected urgency.
+
 ## Implementation Notes
 
 - Owner-auth pools admit only the dedicated login and `dashboard_auth_api` in the SET ROLE
@@ -334,3 +423,9 @@ The canonical origin, RP ID, and forwarded-header checks remain required.
 - Bitwarden's WebAuthn wrapper can return `credProps: undefined` unrequested. Treat undefined
   optional outputs as absent, keep rejecting defined extension data, and send
   `clientExtensionResults: {}`.
+- The WebAuthn adapter loads the installed vendor server implementation into a private module
+  namespace with a private disabled publisher. Its methods retain that namespace throughout
+  verification, including concurrent reloads of the canonical vendor module during `to_thread`
+  execution. Rebinding the canonical module logger at entry cannot protect an in-flight call.
+  Keep ordinary application and capture sinks active; never retain library credential messages
+  or reflect library exception arguments.

@@ -11,16 +11,13 @@ from __future__ import annotations
 
 import ast
 import textwrap
-from fnmatch import fnmatchcase
 from functools import cache
 from pathlib import Path
 
 import pytest
-import yaml
 
 from butlers.migrations import (
     _resolve_chain_dir,
-    chain_root_workflow_path_filters,
     get_all_chains,
     get_chain_head,
     get_chain_revision_ids,
@@ -36,56 +33,6 @@ from butlers.testing.source_guard import (
 )
 
 pytestmark = pytest.mark.unit
-
-_MIGRATION_CHAIN_WORKFLOW_PATH = (
-    Path(__file__).resolve().parents[2] / ".github" / "workflows" / "migration-chain-main.yml"
-)
-
-
-def _migration_chain_workflow_push_paths() -> list[str]:
-    """Load the workflow path filters without YAML 1.1 coercing ``on`` to ``True``."""
-    workflow = yaml.load(
-        _MIGRATION_CHAIN_WORKFLOW_PATH.read_text(encoding="utf-8"), Loader=yaml.BaseLoader
-    )
-    assert isinstance(workflow, dict)
-    push = workflow["on"]["push"]
-    assert "main" in push["branches"]
-    paths = push["paths"]
-    assert isinstance(paths, list)
-    assert all(isinstance(path, str) for path in paths)
-    return paths
-
-
-@cache
-def _github_path_glob_matches(path_parts: tuple[str, ...], pattern_parts: tuple[str, ...]) -> bool:
-    """Match the segment glob semantics used by the workflow's path filters."""
-    if not pattern_parts:
-        return not path_parts
-
-    pattern_part = pattern_parts[0]
-    remaining_patterns = pattern_parts[1:]
-    if pattern_part == "**":
-        return any(
-            _github_path_glob_matches(path_parts[index:], remaining_patterns)
-            for index in range(len(path_parts) + 1)
-        )
-
-    return (
-        bool(path_parts)
-        and fnmatchcase(path_parts[0], pattern_part)
-        and _github_path_glob_matches(path_parts[1:], remaining_patterns)
-    )
-
-
-def _workflow_selects_path(changed_path: str, path_filters: list[str]) -> bool:
-    """Apply the ordered include/exclude behavior of GitHub Actions path filters."""
-    selected = False
-    for path_filter in path_filters:
-        is_exclusion = path_filter.startswith("!")
-        pattern = path_filter.removeprefix("!")
-        if _github_path_glob_matches(tuple(changed_path.split("/")), tuple(pattern.split("/"))):
-            selected = not is_exclusion
-    return selected
 
 
 def test_get_chain_head_returns_the_real_core_head():
@@ -118,40 +65,6 @@ def test_every_recognized_chain_resolves_exactly_one_head():
     for chain in get_all_chains():
         head = get_chain_head(chain)
         assert head in get_chain_revision_ids(chain)
-
-
-def _representative_changed_path(path_filter: str) -> str:
-    """Build one concrete changed-file path that should match ``path_filter``.
-
-    ``**`` is substituted first (with a filename) so the subsequent
-    single-segment ``*`` substitution doesn't also match inside it.
-    """
-    path = path_filter.replace("**", "001_future.py")
-    return path.replace("*", "future_module")
-
-
-@pytest.mark.parametrize("path_filter", chain_root_workflow_path_filters())
-def test_post_merge_migration_chain_workflow_covers_all_discovered_root_families(
-    path_filter: str,
-):
-    """Every root family migrations.py declares must select the main-chain gate.
-
-    ``chain_root_workflow_path_filters()`` is the single source of truth that
-    ``_resolve_chain_dir`` also resolves against, so a fourth migration-root
-    shape added to ``_CHAIN_ROOT_FAMILIES`` without a matching workflow
-    path-filter glob makes this test fail instead of landing with the
-    "Migration Chain Integrity (main)" check silently absent — the same
-    silent-absence failure mode behind the core_164 duplicate-revision
-    incident.
-    """
-    workflow_path_filters = _migration_chain_workflow_push_paths()
-    assert set(workflow_path_filters) == set(chain_root_workflow_path_filters())
-
-    changed_path = _representative_changed_path(path_filter)
-    assert _workflow_selects_path(changed_path, workflow_path_filters), (
-        f"Migration change {changed_path!r} (root family {path_filter!r}) does not "
-        "select the post-merge chain workflow"
-    )
 
 
 def _collect_revision_locations(chain_dirs: dict[str, Path]) -> dict[str, list[str]]:

@@ -179,6 +179,7 @@ UNATTRIBUTABLE_REASONS = (
     "read-budget",
     "unreadable-run",
     "over-100-jobs",
+    "rerun-attempt",
     "missing-timestamps",
     "index-truncated",
     "stage-failure",
@@ -289,15 +290,30 @@ def attribute(read, repository, samples, sample_jobs):
                 else:
                     summary["job_reads"] += 1
                     try:
-                        endpoint = (
-                            f"repos/{repository}/actions/runs/{key}/attempts/"
-                            f"{run['run_attempt']}/jobs?per_page=100"
-                        )
+                        # A re-run's in-flight jobs at the instant may belong to an earlier
+                        # attempt, so read every attempt in the same single bounded page.
+                        rerun = run["run_attempt"] > 1
+                        if rerun:
+                            endpoint = (
+                                f"repos/{repository}/actions/runs/{key}/"
+                                "jobs?filter=all&per_page=100"
+                            )
+                        else:
+                            endpoint = (
+                                f"repos/{repository}/actions/runs/{key}/attempts/"
+                                f"{run['run_attempt']}/jobs?per_page=100"
+                            )
                         response = read(endpoint)
                         if not isinstance(response["jobs"], list):
                             cache[key] = "unreadable-run"
                         elif response["total_count"] > 100:
-                            cache[key] = "over-100-jobs"
+                            cache[key] = "rerun-attempt" if rerun else "over-100-jobs"
+                        elif rerun and not all(
+                            isinstance(job.get("run_attempt"), int)
+                            and 1 <= job["run_attempt"] <= run["run_attempt"]
+                            for job in response["jobs"]
+                        ):
+                            cache[key] = "rerun-attempt"
                         else:
                             cache[key] = response["jobs"]
                     except TimeoutError:
@@ -544,8 +560,9 @@ def write_report(report, output):
         lines += [
             "Shard scheduling wait attribution: jobs executing on a runner when each merge_group "
             "run's shards were created, by triggering event (own run excluded). Unattributable "
-            "samples are counted, not dropped, with the cause of each recorded. Only each other "
-            "run's latest attempt is read. Extra job reads: "
+            "samples are counted, not dropped, with the cause of each recorded. Each other run's "
+            "latest attempt is read, and a re-run's earlier attempts too (one filter=all page). "
+            "Extra job reads: "
             f"{attribution['job_reads']} of "
             f"{attribution['job_read_budget']}; run-index pages: {attribution['run_index_pages']}"
             + ("; run index truncated" if attribution["run_index_truncated"] else "")

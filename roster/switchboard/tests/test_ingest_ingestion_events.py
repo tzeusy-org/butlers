@@ -28,6 +28,7 @@ from uuid import UUID
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.switchboard.ingestion.ingest import IngestAcceptedResponse, ingest_v1
 
 pytestmark = pytest.mark.unit
@@ -50,7 +51,7 @@ class _FakeConn:
         self._inserted_id: UUID | None = None
 
     def transaction(self) -> Any:
-        return _FakeTransaction()
+        return AsyncCtx(None)
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.execute_calls.append((sql, args))
@@ -78,25 +79,6 @@ class _FakeConn:
         return any("public.ingestion_events" in sql for sql, _ in self.execute_calls)
 
 
-class _FakeTransaction:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
-
-
-class _FakeAcquire:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
-
-
 class _FakePool:
     """Fake asyncpg pool with one shared connection."""
 
@@ -117,8 +99,8 @@ class _FakePool:
         """Make pool.execute() raise exc (simulates ensure_partition failure)."""
         self._pool_execute_raises = exc
 
-    def acquire(self) -> _FakeAcquire:
-        return _FakeAcquire(self.conn)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self.conn)
 
     async def execute(self, sql: str, *args: Any) -> str:
         """Pool-level execute — used for ensure_partition (outside transaction)."""

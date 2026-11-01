@@ -15,7 +15,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_mcp_manager
+from butlers.api.deps import get_db, get_mcp_manager
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
@@ -69,9 +69,9 @@ def activity_app(pool: asyncpg.Pool) -> FastAPI:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     app = create_app()
-    for name, module in app.state.butler_routers:
+    for name, _module in app.state.butler_routers:
         if name == "relationship":
-            app.dependency_overrides[module._get_db_manager] = lambda: db
+            app.dependency_overrides[get_db] = lambda: db
             break
     else:  # pragma: no cover
         raise AssertionError("relationship router not discovered")

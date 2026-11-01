@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.api.read_models.insights_v1 import (
+from butlers.api.read_models.insights import (
     INSIGHT_DELIVERY_COLUMNS,
     READ_MODEL_VERSION,
     InsightDeliveryStateRow,

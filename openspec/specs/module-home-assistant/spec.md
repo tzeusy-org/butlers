@@ -230,6 +230,47 @@ The tool SHALL return state history for entities over a time window from HA's re
 - **WHEN** `ha_get_history` is called without `entity_ids`
 - **THEN** the tool SHALL raise `ValueError` (unbounded history queries are prohibitively expensive)
 
+### Requirement: Durable Recorded State History
+
+The read-only `ha_get_recorded_history(entity_ids, start, end=None, limit=500,
+include_attributes=false)` tool SHALL read `connectors.home_assistant_history`
+without contacting Home Assistant or changing the live `ha_get_history` tool.
+It SHALL return only named entities, ordered by `recorded_at` ascending then
+`id` ascending, with `entity_id`, nullable `state`, and `recorded_at`.
+Attributes SHALL be omitted unless explicitly requested. The positive window
+SHALL use timezone-aware ISO 8601 timestamps, include `start`, exclude `end`,
+and span at most 31 days; an omitted `end` SHALL mean now. The limit SHALL be
+an integer from 1 through 2000. The Home runtime role SHALL receive only the
+explicit per-table SELECT grant needed for this read.
+
+#### Scenario: Named stored transitions have bounded ordering and freshness
+
+- **WHEN** a valid bounded query names entities with stored transitions
+- **THEN** the tool SHALL return `status=ok`, ordered `transitions`, and `truncated=false` when no additional row exists beyond the limit
+- **AND** source freshness SHALL report `last_success_at` from `ha_source_health`, using PostgreSQL's clock to classify a successful contact within five minutes as `healthy` and an expired healthy lease as `stale`
+- **AND** an absent health row or successful-contact timestamp SHALL be `unknown`, never an invented healthy verdict
+- **AND** freshness SHALL describe last confirmed HA contact, not prove gap-free history or absence of activity
+
+#### Scenario: HA outage does not hide stored history
+
+- **WHEN** `ha_source_health` reports `error` while the durable table is readable
+- **THEN** the tool SHALL still return stored transitions with source status `error` and the last successful contact, including a null value when no success was recorded
+- **AND** it SHALL NOT call HA or suppress the transitions because HA is unreachable
+
+#### Scenario: Invalid bounds are refused and additional rows signal truncation
+
+- **WHEN** entity IDs are empty or invalid, timestamps are malformed or lack timezones, the window is non-positive or exceeds 31 days, or the limit is outside 1 through 2000
+- **THEN** the tool SHALL refuse the query with `ValueError` before reading storage
+- **WHEN** more stored transitions match than the requested limit
+- **THEN** it SHALL return only that limit and set `truncated=true`, using a bounded extra-row probe
+
+#### Scenario: Missing storage or read authority is unavailable rather than empty
+
+- **WHEN** a required table is missing, SELECT permission is denied, or the database connection is unavailable
+- **THEN** the tool SHALL return a typed `status=unavailable` with reason `missing_table`, `permission_denied`, or `database_unavailable` respectively, without a `transitions` list or private exception details
+- **WHEN** storage is readable but no transition matches
+- **THEN** it SHALL return `status=ok` with an empty list and truthful source freshness
+
 ### Requirement: Query Tool — ha_get_statistics
 
 The tool SHALL return aggregated hourly/daily statistics for sensor entities from HA's recorder.
@@ -472,7 +513,7 @@ The module SHALL declare approval sensitivity for control tools via `tool_metada
 #### Scenario: Query tools not declared
 
 - **WHEN** `tool_metadata()` is called
-- **THEN** no entries SHALL exist for `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, or `ha_render_template`
+- **THEN** no entries SHALL exist for `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_recorded_history`, `ha_get_statistics`, or `ha_render_template`
 
 ### Requirement: Module Identity and Dependencies
 
@@ -487,17 +528,17 @@ The module SHALL register under the name `home_assistant` with a dependency on `
 
 ### Requirement: Tool Registration
 
-The module SHALL register up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
+The module SHALL register up to 14 MCP tools during `register_tools()`: 10 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
 
 #### Scenario: Tool inventory
 
 - **WHEN** `register_tools(mcp, config, db)` is called with `read_only = false` (default)
-- **THEN** the following tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`, `ha_maintenance_list`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove`
+- **THEN** the following tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_recorded_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`, `ha_maintenance_list`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove`
 
 #### Scenario: Read-only tool inventory
 
 - **WHEN** `register_tools(mcp, config, db)` is called with `read_only = true`
-- **THEN** only the query tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_maintenance_list`
+- **THEN** only the query tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_recorded_history`, `ha_get_statistics`, `ha_render_template`, `ha_maintenance_list`
 - **AND** the mutation tools `ha_call_service`, `ha_activate_scene`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove` SHALL NOT be registered
 
 ### Requirement: Maintenance Tool Suite

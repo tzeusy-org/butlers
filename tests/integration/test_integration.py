@@ -53,12 +53,13 @@ async def _make_pool(postgres_container, *chains: str):
     # include it — otherwise resolve_routing_target()'s schema-qualified
     # ``switchboard.butler_registry`` query and this fixture's bare/unqualified
     # references disagree on where the tables live.
-    schema = "switchboard" if "switchboard" in chains else None
+    schema = "switchboard" if "switchboard" in chains else "general"
+    schemas = {"switchboard": "switchboard"} if "switchboard" in chains else {"core": "general"}
 
     return await create_migrated_test_pool(
         postgres_container,
         chains=list(chains),
-        schemas={"switchboard": "switchboard"} if schema is not None else None,
+        schemas=schemas,
         pool_schema=schema,
         min_pool_size=1,
         max_pool_size=3,
@@ -107,7 +108,7 @@ class TestButlerStartupIntegration:
     async def test_core_tables_exist(self, pool):
         """Core migrations create the state, scheduled_tasks, and sessions tables."""
         tables = await pool.fetch(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'general' ORDER BY tablename"
         )
         table_names = {row["tablename"] for row in tables}
         assert "state" in table_names
@@ -395,7 +396,10 @@ class TestButlerStartupIntegration:
 
         # Exercise the actual daemon dispatcher rather than comparing it with
         # another mutable production catalog.
-        assert len(set(registered_tools)) == 72
+        assert len(set(registered_tools)) == 75
+        assert "metric_baseline_get" in registered_tools
+        assert {"report_error", "get_healing_status"} <= set(registered_tools)
+        assert "retry_healing" not in registered_tools
         assert "schedule_toggle" in registered_tools
         assert {
             "cost_claim_assert",

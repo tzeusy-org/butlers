@@ -11,7 +11,8 @@ REQ-dashboard-relationship-004.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
+import importlib
+import inspect
 import socket
 import sys
 import uuid
@@ -26,10 +27,12 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
+from fastapi.routing import APIRoute
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 from starlette.applications import Starlette
 
+from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.owner_auth.service import AuthError, OwnerAuthService
@@ -60,7 +63,10 @@ from butlers.tools.relationship.relationship_assert_fact import (
     relationship_assert_fact,
 )
 from butlers.tools.switchboard.registry.registry import register_butler
+from tests.polling import poll_until
 from tests.relationship_authority_helpers import baseline_writer
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
@@ -90,6 +96,18 @@ async def _tcp(app):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         listener.close()
+
+
+@pytest.fixture(autouse=True)
+def admitted_standing_rule_boundary(monkeypatch):
+    """Retain this owner's non-auth invariants after explicit D13 admission.
+
+    No factor/nonce/role evidence is claimed here; the dedicated migrated
+    dashboard-stepup owner executes that authority with real signed assertions.
+    """
+    from tests.approval_stepup_helpers import admit_rule_boundary_for_non_auth_owner
+
+    admit_rule_boundary_for_non_auth_owner(monkeypatch)
 
 
 @pytest.fixture(scope="module")
@@ -344,22 +362,22 @@ async def _accepted(
 
 async def _wait_for_lock(pool, pid):
     async with asyncio.timeout(5):
-        while not await pool.fetchval(
-            "SELECT wait_event_type='Lock' FROM pg_catalog.pg_stat_activity WHERE pid=$1",
-            pid,
-        ):
-            await asyncio.sleep(0.01)
+
+        async def _condition_met() -> bool:
+            return await pool.fetchval(
+                "SELECT wait_event_type='Lock' FROM pg_catalog.pg_stat_activity WHERE pid=$1",
+                pid,
+            )
+
+        await poll_until(_condition_met, interval_s=0.01)
 
 
 async def _router():
     name = "relationship_api_router"
     if name in sys.modules:
         return sys.modules[name]
-    path = Path(__file__).resolve().parents[2] / "roster/relationship/api/router.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
+    _THIS_FILE.parents[2] / "roster/relationship/api/router.py"
+    module = importlib.import_module("butlers.api._roster.relationship.router")
     return module
 
 
@@ -403,7 +421,7 @@ async def _owner_app(env, *, browser=False):
     module = await _router()
     app.include_router(module.router)
     manager = SimpleNamespace(pool=lambda _name: env.rel)
-    app.dependency_overrides[module._get_db_manager] = lambda: manager
+    app.dependency_overrides[get_db] = lambda: manager
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://butlers.example.test"
     ) as client:
@@ -1146,6 +1164,17 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
     # at the same bridge, before a pending/context/evidence/use-count effect.
     from butlers.tools.relationship.fact_temporal import CUTOVER_PENDING, TemporalError
 
+    def temporal_rule_endpoint(constraints):
+        async def create_temporal_rule():
+            return await create_approval_rule(
+                env.rel,
+                "relationship_assert_fact",
+                constraints,
+                "Synthetic explicitly bounded temporal permission",
+            )
+
+        return create_temporal_rule
+
     assert await env.rel.fetchval("SELECT to_regclass('relationship.uq_ef_spo_active') IS NOT NULL")
     for kind, temporal_args in (
         (
@@ -1163,15 +1192,15 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
             key: {"type": "exact", "value": value} for key, value in temporal_args.items()
         }
         async with _owner_app(env) as (client, _service, headers):
-
-            @client._transport.app.post(f"/api/test-temporal-rule/{kind}")
-            async def create_temporal_rule():
-                return await create_approval_rule(
-                    env.rel,
-                    "relationship_assert_fact",
-                    temporal_constraints,
-                    "Synthetic explicitly bounded temporal permission",
-                )
+            app = client._transport.app
+            path = f"/api/test-temporal-rule/{kind}"
+            app.post(path)(temporal_rule_endpoint(temporal_constraints))
+            registered = next(
+                route for route in app.routes if isinstance(route, APIRoute) and route.path == path
+            )
+            assert not inspect.signature(registered.endpoint).parameters
+            assert not registered.dependant.query_params
+            assert not registered.dependant.body_params
 
             admitted = await client.post(f"/api/test-temporal-rule/{kind}", headers=headers)
             assert admitted.status_code == 200 and "error" not in admitted.json()
@@ -1194,6 +1223,7 @@ async def test_approval_replay_original_args_and_legacy_normalization(env, monke
         original_rule = await env.rel.fetchrow(
             "SELECT * FROM approval_rules WHERE id=$1", temporal_rule_id
         )
+        assert original_rule["arg_constraints"] == temporal_constraints
         async with _context(report):
             with pytest.raises(TemporalError) as refused:
                 await gate(**temporal_args, why="Synthetic temporal fence must remain", evidence=[])
@@ -2277,8 +2307,7 @@ async def test_core_only_dashboard_stamp_and_rollback_refusal(env, postgres_cont
     assert recovered.to_record() == device.to_record()
     # Classified data makes downgrade refusal causal, not an empty-store test.
     migration = (
-        Path(__file__).resolve().parents[2]
-        / "roster/relationship/migrations/037_fact_content_authority.py"
+        _THIS_FILE.parents[2] / "roster/relationship/migrations/037_fact_content_authority.py"
     )
     spec = importlib.util.spec_from_file_location("_authority_owned_migration", migration)
     module = importlib.util.module_from_spec(spec)

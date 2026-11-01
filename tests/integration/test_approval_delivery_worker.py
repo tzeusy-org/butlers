@@ -299,6 +299,14 @@ async def test_confirmed_delivery_renders_current_material_only_in_memory(
         "UPDATE pending_actions SET why = 'updated-render-sentinel' WHERE id = $1",
         admission.action_id,
     )
+    # The card offers one-tap Approve/Reject (and so mints a callback token) only for a
+    # tool with an exact-call preview; make the parked call one so the oracle below
+    # still proves the token is never persisted.
+    await delivery_pool.execute(
+        "UPDATE pending_actions SET tool_name = 'email_send_message', tool_args = $2 WHERE id = $1",
+        admission.action_id,
+        {"to": "dana@x.com", "subject": "Re: Thursday", "body": "Thursday at 3pm works."},
+    )
     runtime = _Runtime(handoff_result=HandoffResult("confirmed", provider_reference="ref-1"))
     worker = ApprovalDeliveryWorker(
         ApprovalDeliveryRepository(delivery_pool),

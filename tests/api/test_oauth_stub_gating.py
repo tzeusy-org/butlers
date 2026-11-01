@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from butlers.api.deps import get_db_optional
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import (
     _OAUTH_STUB_ENV,
@@ -97,7 +98,7 @@ def _make_stub_app(app, *, client_id: str = "stub-client-id", client_secret: str
     pool.fetchval = AsyncMock(return_value=None)
     db_manager = MagicMock()
     db_manager.credential_shared_pool.return_value = pool
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: db_manager
+    app.dependency_overrides[get_db_optional] = lambda: db_manager
     return app, pool
 
 

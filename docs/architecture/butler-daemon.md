@@ -10,13 +10,27 @@
 ![Daemon Startup Sequence](./startup-sequence.svg)
 Every butler in the system is a long-running Python process managed by the `ButlerDaemon` class (`src/butlers/daemon.py`). The daemon owns the full lifecycle of a butler: loading configuration, provisioning infrastructure, wiring modules, and serving MCP tools over an SSE transport. It is the single entry point for both `butlers run --config` (single butler) and `butlers up` (multi-butler) execution modes.
 
+## Key-absent control stage
+
+`butlers control --profile KEY_ABSENT_STAGE --config roster/switchboard` uses the
+same daemon for current classification, routing, notify and deliver, alongside
+a separate refusal-only listener. `butlers up --exclude switchboard` runs the
+domains. Trusted startup checks forbidden environment/mount names before daemon
+construction, and stored credential key names before credential resolution.
+Presence (including an empty environment assignment) refuses startup without
+reading private values. Metadata errors also refuse startup. This is an absence
+check, not signer readiness. Service health stays on 41100; session health on
+41199 deliberately returns 503. See [the full stage boundary](key-absent-control.md).
+
 ## Startup Sequence
 
 The daemon follows a deterministic multi-phase startup. Each phase depends on the successful completion of the previous one. If any phase fails, already-initialized modules receive their `on_shutdown()` call before the process exits.
 
+`butlers.lifecycle.STARTUP_PHASES` declares the execution order. Its 22 named async functions implement the 17 RFC 0001 stages, splitting phase 8 into module migrations, credential-store setup, blob storage, CLI-auth restoration, shared bootstrap and orphan recovery. Each receives the daemon and a fresh per-run `StartupState` carrying shared prerequisites such as the pool, credential store and migration inputs. Fatal exceptions stop the sequence; module phases retain their existing failure isolation.
+
 ### Phase 1: Load and Validate Config
 
-The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig`, and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
+The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig` through strict pydantic models (`ButlerToml` in `config.py`; an unknown key or an invalid schedule is a `ConfigError` at load, and each `[[butler.schedule]]` entry becomes a validated `ScheduleSpec` that `sync_schedules()` consumes as-is), and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.
 
 ### Phase 2: Initialize Telemetry and Scan Config
 
@@ -24,7 +38,7 @@ The daemon reads `butler.toml` from the config directory, parses it into a `Butl
 
 ### Phase 3: Initialize Modules (Topological Order)
 
-The `ModuleRegistry` instantiates modules in dependency order. The daemon admits only names explicitly declared in `[modules.*]`, independent of configuration schema shape. Unknown declarations fail before database provisioning or migrations. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
+The `ModuleRegistry` registers classes without constructors and constructs only names explicitly declared in `[modules.*]`, independent of configuration schema shape. It returns them in dependency order. Unknown declarations and missing declared dependencies fail before database provisioning or migrations. Discovery, successful startup and user-enabled state are separate sets. Dependency cycles are startup-blocking errors.
 
 ### Phase 4: Validate Module Configs
 
@@ -60,7 +74,7 @@ Each healthy module's `on_startup(config, db)` runs in topological order after s
 
 ### Phase 12: Create Spawner and Runtime Wiring
 
-The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and module credentials. It then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
+The daemon creates a `Spawner` with the runtime adapter, verified binary, connection pool, and credential store for explicitly declared butler variables and selected runtime authentication. Module channel credentials remain daemon-owned: startup still validates them and modules resolve them, but their declarations do not add them to runtime child environments. Explicit `[butler.env]` declarations remain supported, subject to owner-auth and administrative-variable exclusions. The daemon then establishes daemon-side audit/runtime wiring, configures the switchboard pipeline where applicable, and opens the Switchboard client connection.
 
 ### Phase 13: Create FastMCP and Register Core Tools
 
@@ -107,13 +121,13 @@ The component that invokes ephemeral AI runtime instances. Controlled by an `asy
 Modules implement the `Module` abstract base class. The loading process:
 
 1. The `ModuleRegistry` maps module names to their implementation classes.
-2. The daemon instantiates registered modules; `[modules.*]` sections provide explicit configuration, while only modules with omitted required config are skipped.
+2. The daemon uses `load_from_config()` to construct only explicitly declared `[modules.*]` names; omitted modules are never constructed.
 3. Dependencies declared by each module (via the `dependencies` property) are resolved into a topological order using a deterministic sort.
 4. Circular dependencies are detected and reported as startup errors.
 5. Modules are initialized, started, and their tools registered in dependency order.
 6. On shutdown, modules are torn down in reverse topological order.
 
-Each module has a well-defined lifecycle: `config_schema` validation, `migration_revisions()` for DB setup, `on_startup()` for initialization, `register_tools()` for MCP tool registration, and `on_shutdown()` for cleanup.
+Each module has a well-defined lifecycle: `config_schema` validation, directory-selected migration chains for DB setup, `on_startup()` for initialization, `register_tools()` for MCP tool registration, and `on_shutdown()` for cleanup.
 
 ## Graceful Shutdown
 
@@ -162,6 +176,11 @@ kill -TERM $(pgrep -f "butlers run --config roster/general")
 ```
 
 ## Implementation Notes
+
+- Startup phases stay in `src/butlers/lifecycle.py`, including the owner/catalogue/event-contract
+  bootstrap group. Dependencies remain resolved in that module so existing monkeypatch seams
+  still exercise production startup. Keep `STARTUP_PHASES` in RFC order and each phase at most
+  120 lines; the determinism contract checks execution order, fatal abort and phase size.
 
 - Fleet-event publication (`butlers.fleet_events.publish_fleet_event`) is lossy and bounded:
   pool acquisition/query work has a one-second budget. Caller-owned asyncpg connections use a

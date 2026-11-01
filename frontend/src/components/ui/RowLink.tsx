@@ -21,7 +21,7 @@ import * as React from "react"
 import { Link, type LinkProps } from "react-router"
 
 import { cn, composeHandlers } from "@/lib/utils"
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent"
+import { useNavIntent } from "@/hooks/use-nav-intent"
 
 export interface RowLinkProps extends Omit<LinkProps, "onKeyDown"> {
   /**
@@ -69,7 +69,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
     // route-registry prefetch map. `to` is only ever a plain string in this
     // codebase's call sites; a `Partial<Path>` `to` (react-router's other
     // accepted shape) just resolves to no target, same as any unmapped route.
-    const prefetch = usePrefetchOnIntent(typeof props.to === "string" ? props.to : null)
+    const prefetch = useNavIntent(typeof props.to === "string" ? props.to : null)
 
     if (hasNestedInteractive) {
       // `to` is not a valid DOM attribute — it's consumed only by the <Link>
@@ -93,7 +93,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
             className,
           )}
           onClick={(event) => {
-            prefetch.onActivate?.()
+            prefetch.onActivate()
             onClick?.(event)
             onActivate?.()
           }}
@@ -101,7 +101,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
             if (e.target !== e.currentTarget) return
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault()
-              prefetch.onActivate?.()
+              prefetch.onActivate()
               onActivate?.()
             }
           }}
@@ -126,7 +126,7 @@ export const RowLink = React.forwardRef<HTMLAnchorElement | HTMLDivElement, RowL
         onFocus={composeHandlers(prefetch.onFocus, onFocus)}
         onBlur={composeHandlers(prefetch.onBlur, onBlur)}
         onClick={(event) => {
-          prefetch.onActivate?.()
+          prefetch.onActivate()
           onClick?.(event)
         }}
         {...linkProps}

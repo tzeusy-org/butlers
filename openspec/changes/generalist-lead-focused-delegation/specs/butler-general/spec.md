@@ -19,12 +19,19 @@ Scope: v1-mandatory
 ### Requirement: General Butler Tool Surface
 The general butler SHALL provide collection and item management tools for organizing freeform data, registered as General capabilities with the control plane.
 
-Source: RFC 0038 D2 and D7
+ID: REQ-butler-general-001
+Source: RFC 0038 D2 and D7; RFC 0037 ordinary capture; compose-general-capture-with-private-custody fold-in
 Scope: v1-mandatory
 
 #### Scenario: Tool inventory
 - **WHEN** the general butler registers its capabilities with the control plane
 - **THEN** it registers: `collection_create`, `collection_list`, `collection_delete`, `item_create`, `item_get`, `item_update`, `item_delete`, `item_search`, `collection_export`, and calendar tools
+
+#### Scenario: Adopted ordinary capture availability remains configured and private-safe
+- **WHEN** the General capture target is implemented and its existing configured group/module authority admits the capability
+- **THEN** ordinary capture, explicit ordinary collection declaration and bounded capture search SHALL be available through their documented owner/source boundary
+- **AND** existing ordinary collection/item creation semantics remain compatible, private-only names cannot resolve private identities, and no record-bearing custody tool is introduced
+- **AND** disabled groups, missing source authority or unavailable privacy fencing SHALL NOT be bypassed to expose these tools or their data
 
 ### Requirement: General Butler Schedules
 The general butler SHALL run memory maintenance, briefing aggregation, and a daily end-of-day preparation obligation that incorporates cross-butler data. When `eod-tomorrow-prep` is due, the general daemon SHALL submit an obligation admission whose grant is no larger than the capability set declared for that obligation in git, and the obligation's governing brief SHALL replace the prompt previously sent to a General session. Memory episode cleanup and briefing aggregation SHALL remain deterministic jobs. The `memory_consolidation` job SHALL only submit consolidation obligation admissions with their declared capability set (`REQ-module-memory-005`), because consolidation reasons with a model (RFC 0038 D2 and D18).

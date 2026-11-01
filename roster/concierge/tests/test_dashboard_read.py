@@ -196,7 +196,7 @@ async def test_concierge_outbound_scope_preserves_only_qa_error_relay():
     config = load_config(_REPO_ROOT / "roster" / "concierge")
     assert config.type is ButlerType.STAFFER
     assert config.permissions.cross_butler_access == ["qa"]
-    assert set(config.modules) == {"dashboard_read", "self_healing"}
+    assert set(config.modules) == {"dashboard_read"}
 
 
 class TestRosterIntegration:
@@ -285,7 +285,7 @@ class TestParity:
     async def test_sessions_recent_matches_sessions_v1_row_to_summary(
         self, fleet_db_url, admin_pool, concierge_db
     ):
-        from butlers.api.read_models.sessions_v1 import SUMMARY_COLUMNS, row_to_summary
+        from butlers.api.read_models.sessions import SUMMARY_COLUMNS, row_to_summary
         from butlers.modules.dashboard_read import queries as q
 
         now = datetime.now(UTC)
@@ -397,7 +397,7 @@ class TestParity:
         self, fleet_db_url, admin_pool, concierge_db
     ):
         from butlers.api.db import DatabaseManager
-        from butlers.api.read_models.butlers_v1 import query_sessions_24h
+        from butlers.api.read_models.butlers import query_sessions_24h
         from butlers.modules.dashboard_read import queries as q
 
         now = datetime.now(UTC)

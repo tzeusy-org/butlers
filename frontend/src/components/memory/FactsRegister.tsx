@@ -27,7 +27,8 @@
 import { Link, useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
-import { Mono } from "@/components/ui/Mono";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { Pill } from "@/components/ui/Pill";
 import { RowLink } from "@/components/ui/RowLink";
 import { Voice } from "@/components/ui/Voice";
@@ -37,7 +38,6 @@ import {
   useMemoryUrlState,
 } from "@/hooks/use-memory-url-state";
 import { effectiveConfidence, permanenceTag } from "@/lib/memory-derived";
-import { formatNumeral } from "@/lib/memory-overture";
 import { cn } from "@/lib/utils";
 import type { Fact } from "@/api/types.ts";
 
@@ -187,55 +187,6 @@ function ValidityPills({
 }
 
 // ---------------------------------------------------------------------------
-// Pagination footer
-// ---------------------------------------------------------------------------
-
-/** `1–50 of 3,182` left, prev/next pills right. Mono dim, no numbered pages. */
-function PaginationFooter({
-  offset,
-  count,
-  total,
-  hasMore,
-  onOffset,
-}: {
-  offset: number;
-  count: number;
-  total: number;
-  hasMore: boolean;
-  onOffset: (next: number) => void;
-}) {
-  if (total === 0) return null;
-
-  const from = offset + 1;
-  const to = offset + count;
-  const atStart = offset === 0;
-
-  return (
-    <div className="flex items-baseline justify-between pt-1">
-      <Mono muted>
-        {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
-      </Mono>
-      <div className="flex gap-1.5">
-        <Pill
-          selected={false}
-          disabled={atStart}
-          onClick={() => onOffset(Math.max(0, offset - FACTS_PAGE_SIZE))}
-        >
-          prev
-        </Pill>
-        <Pill
-          selected={false}
-          disabled={!hasMore}
-          onClick={() => onOffset(offset + FACTS_PAGE_SIZE)}
-        >
-          next
-        </Pill>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // FactsRegister
 // ---------------------------------------------------------------------------
 
@@ -262,7 +213,7 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
   const { state, setState } = useMemoryUrlState();
   const { validity, offset } = state;
 
-  const { data: response, isError, refetch } = useFacts({
+  const { data: response, isError, isPending, refetch } = useFacts({
     validity,
     scope: butlerScope,
     offset,
@@ -274,6 +225,7 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
   const facts = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   const onSelectValidity = (v: MemoryValidity) => {
     // Switching filter resets paging to the first page.
@@ -284,16 +236,26 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
     <div className="flex flex-col gap-4">
       <ValidityPills validity={validity} onSelect={onSelectValidity} />
 
+      <PoolsDegradedNote
+        label="Facts"
+        poolsFailed={poolsFailed}
+        onRetry={() => void refetch()}
+        testId="memory-facts-degraded"
+      />
+
       {isError && facts.length === 0 ? (
         // An errored fetch must not render "The ledger is empty." — a down
         // backend would read as a genuinely empty ledger (bu-mkd5r).
         <MemoryLoadError label="the ledger" onRetry={() => void refetch()} testId="memory-facts-error" />
-      ) : facts.length === 0 ? (
-        <Voice variant="italic" className="py-6">
-          {validity === "active"
-            ? "The ledger is empty."
-            : "No facts answer this."}
-        </Voice>
+      ) : facts.length === 0 && poolsFailed.length === 0 ? (
+        // The calm empty copy is a verdict: only a completed response may say it.
+        !isPending && (
+          <Voice variant="italic" className="py-6">
+            {validity === "active"
+              ? "The ledger is empty."
+              : "No facts answer this."}
+          </Voice>
+        )
       ) : (
         <div className="flex flex-col">
           {facts.map((fact) => (
@@ -302,11 +264,13 @@ export default function FactsRegister({ butlerScope, now }: FactsRegisterProps) 
         </div>
       )}
 
-      <PaginationFooter
+      <MemoryPaginationFooter
         offset={offset}
         count={facts.length}
         total={total}
         hasMore={hasMore}
+        pageSize={FACTS_PAGE_SIZE}
+        partial={poolsFailed.length > 0}
         onOffset={(next) => setState({ offset: next })}
       />
     </div>

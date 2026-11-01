@@ -220,7 +220,9 @@ class TestLoadAvailableButlers:
 
     async def test_excludes_staffers_from_candidate_set(self) -> None:
         """_load_available_butlers only returns butler-typed agents."""
-        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+        from butlers.tools.switchboard.registry.registry import (
+            load_available_butlers as _load_available_butlers,
+        )
 
         butler_row = _make_registry_row("general", agent_type="butler")
         staffer_row = _make_registry_row("messenger", agent_type="staffer")
@@ -238,7 +240,9 @@ class TestLoadAvailableButlers:
 
     async def test_empty_registry_auto_discover_filters_staffers(self) -> None:
         """After auto-discovery, _load_available_butlers still filters staffers."""
-        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+        from butlers.tools.switchboard.registry.registry import (
+            load_available_butlers as _load_available_butlers,
+        )
 
         butler_row = _make_registry_row("health", agent_type="butler")
         staffer_row = _make_registry_row("switchboard", agent_type="staffer")
@@ -250,7 +254,7 @@ class TestLoadAvailableButlers:
         pool.execute = AsyncMock(return_value=None)
 
         with patch(
-            "butlers.tools.switchboard.routing.classify.discover_butlers",
+            "butlers.tools.switchboard.registry.registry.discover_butlers",
             new_callable=AsyncMock,
         ) as mock_discover:
             mock_discover.return_value = [{"name": "health"}, {"name": "switchboard"}]
@@ -263,17 +267,19 @@ class TestLoadAvailableButlers:
     async def test_receiver_cutover_uses_separated_candidates_despite_legacy_holds(
         self, monkeypatch
     ) -> None:
-        from butlers.tools.switchboard.routing.classify import _load_available_butlers
+        from butlers.tools.switchboard.registry.registry import (
+            load_available_butlers as _load_available_butlers,
+        )
 
         monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
         pool = AsyncMock()
         with (
             patch(
-                "butlers.tools.switchboard.routing.classify.list_control_plane_candidates",
+                "butlers.tools.switchboard.registry.registry.list_control_plane_candidates",
                 new=AsyncMock(return_value=[{"name": "health", "modules": ["health"]}]),
             ) as candidates,
             patch(
-                "butlers.tools.switchboard.routing.classify.list_butlers",
+                "butlers.tools.switchboard.registry.registry.list_butlers",
                 new_callable=AsyncMock,
             ) as legacy,
         ):

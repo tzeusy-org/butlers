@@ -51,8 +51,13 @@ _VERIFIER_CONFIG = "runtime_probe_control_verifiers"
 
 #: The two Dashboard runtimes: the only signing side in the deployment.
 _SIGNING_SERVICES = ("dashboard-api", "dashboard-api-hotreload")
-#: The two all-butlers runtimes: Switchboard verifies here and never signs.
-_VERIFYING_ONLY_SERVICES = ("butlers-up", "butlers-up-hotreload")
+#: Domain and control runtimes verify only; none receives the private signer.
+_VERIFYING_ONLY_SERVICES = (
+    "butlers-up",
+    "butlers-up-hotreload",
+    "butlers-control",
+    "butlers-control-hotreload",
+)
 
 _PLACEHOLDERS = _REPO_ROOT / "deploy" / "runtime-probe-control"
 _SIGNER_PLACEHOLDER = _PLACEHOLDERS / "signing-key-unprovisioned.json"
@@ -102,7 +107,7 @@ def test_both_sides_share_exactly_one_public_keyring_source(service_name: str) -
 
 
 def test_no_other_service_receives_either_document() -> None:
-    """Nothing outside those four names touches the control plane's material."""
+    """Nothing outside these six names touches the control plane's material."""
     services = _compose()["services"]
     permitted = set(_SIGNING_SERVICES) | set(_VERIFYING_ONLY_SERVICES)
 

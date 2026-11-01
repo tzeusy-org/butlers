@@ -205,21 +205,22 @@ from uuid import UUID
 
 import httpx
 from asyncpg.exceptions import InvalidSchemaNameError, PostgresError, UndefinedTableError
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from butlers._sql_utils import escape_like_pattern
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
+from butlers.api.deps import Db
 from butlers.api.models import ApiMeta, ApiResponse
-from butlers.api.models.audit import (
-    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
-)
-from butlers.api.models.audit import clamp_failure_category
 from butlers.api.models.cli_auth import CLIAuthSessionState
 from butlers.api.routers import audit as audit_router
 from butlers.cli_auth.registry import PROVIDERS
 from butlers.cli_auth.session import CLIAuthSession, store_session
+from butlers.core.audit import (
+    PROBE_FAILURE_VOCABULARY as PROBE_FAILURE_VOCABULARY,  # re-export; see below
+)
+from butlers.core.audit import clamp_failure_category
 from butlers.core.credential_keys import normalize_credential_key
 from butlers.core.runtime_probe_control.keys import RESERVED_SIGNING_KEY_SECRET_NAME
 from butlers.credential_store import CredentialStore
@@ -230,11 +231,6 @@ from butlers.spotify_credentials import SPOTIFY_MANAGED_ENTITY_INFO_TYPES
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/secrets", tags=["secrets"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -1983,6 +1979,9 @@ _SYSTEM_KEY_USED_BY: dict[str, tuple[str, ...]] = {
     "BUTLER_TELEGRAM_TOKEN": ("telegram",),
     "APPROVAL_CALLBACK_SECRET": ("approvals", "telegram"),
     "APPROVAL_CALLBACK_CONNECTOR_TOKEN": ("approvals", "telegram"),
+    # Finance payment-destination fingerprint key (bu-s11n0s.21) — HMAC key resolved
+    # once at FinanceModule startup; absent means bill destinations read as unverifiable.
+    "FINANCE_PAYMENT_DESTINATION_KEY": ("finance",),
     # S3-compatible blob storage — core infra wired at butler startup
     # (lifecycle.py, api/routers/blob_storage.py), not a single opt-in module.
     "BLOB_S3_ENDPOINT_URL": ("blob_storage",),
@@ -2331,14 +2330,14 @@ async def _fetch_user_secrets(
 
     google_entity_ids = [
         str(row["entity_id"])
-        for row, provider in zip(rows, providers_by_row)
+        for row, provider in zip(rows, providers_by_row, strict=True)
         if provider == "google"
     ]
     google_scopes_map = await _fetch_google_granted_scopes(pool, google_entity_ids)
     google_expiry_map = await _fetch_google_test_mode_expiry(pool, google_entity_ids)
 
     results: list[UserSecret] = []
-    for row, provider in zip(rows, providers_by_row):
+    for row, provider in zip(rows, providers_by_row, strict=True):
         value: str | None = row["value"]
         last_test_ok: bool | None = row["last_test_ok"]
         entity_id = str(row["entity_id"])
@@ -2469,6 +2468,41 @@ async def _fetch_cli_secrets(
         )
 
     return results
+
+
+def _store_only_cli_placeholders() -> dict[str, str]:
+    """Return ``{credential key: display name}`` for store-only CLI providers.
+
+    An ``api_key`` provider without a ``token_path`` keeps its credential only
+    in ``butler_secrets`` (e.g. ``cli-auth/claude``), so a missing row is the
+    whole story: without a ``never_set`` placeholder the owner has no row on
+    the Passport to paste the first key into. File-backed providers are
+    excluded because their login flows create the row.
+    """
+    return {
+        f"cli-auth/{provider.name}": provider.display_name
+        for provider in PROVIDERS.values()
+        if provider.auth_mode == "api_key" and provider.token_path is None
+    }
+
+
+def _missing_store_only_cli_placeholders(
+    *,
+    cli_secrets: list[CliRuntime],
+    system_secrets: list[SystemSecret],
+) -> list[CliRuntime]:
+    """Return ``never_set`` rows for store-only providers with no row anywhere.
+
+    A key present in any family — including a legacy per-butler ``cli-auth``
+    row the Passport relocates to CLI — is real state, and a placeholder
+    beside it would shadow it in the CLI dedupe.
+    """
+    present = {secret.key for secret in cli_secrets} | {secret.key for secret in system_secrets}
+    return [
+        CliRuntime(key=key, category="cli-auth", description=label, state="never_set")
+        for key, label in _store_only_cli_placeholders().items()
+        if key not in present
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -2793,7 +2827,8 @@ async def get_inventory(
             "When omitted, defaults to the owner entity (projection-lens semantics)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[InventoryData]:
     """Return the aggregated secrets inventory for the passport-book /secrets page.
 
@@ -2925,6 +2960,17 @@ async def get_inventory(
         user_secrets = shared_result.user_secrets
         cli_secrets = shared_result.cli_secrets
         identities = shared_result.identities
+        # Only a readable shared source can prove a store-only key is unset.
+        cli_secrets = sorted(
+            [
+                *cli_secrets,
+                *_missing_store_only_cli_placeholders(
+                    cli_secrets=cli_secrets,
+                    system_secrets=system_secrets,
+                ),
+            ],
+            key=lambda secret: secret.key,
+        )
 
     # --- Build response ---
     # State counts (aggregate and family-specific) must be computed over a
@@ -3407,7 +3453,8 @@ async def get_user_credential(
             "When omitted, defaults to the owner entity (projection-lens semantics)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UserSecretDetail]:
     """Return full evidence payload for a single user-scoped credential.
 
@@ -3451,7 +3498,8 @@ async def get_user_credential(
 )
 async def get_system_credential(
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemCredentialDetail]:
     """Return the content-blind evidence payload for one system credential.
 
@@ -3528,7 +3576,8 @@ async def get_system_credential(
 )
 async def get_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliCredentialDetail]:
     """Return the content-blind evidence payload for one CLI runtime token.
 
@@ -3563,7 +3612,11 @@ async def get_cli_credential(
             detail="CLI credential source unavailable for shared-public",
         ) from exc
     if detail is None:
-        raise HTTPException(status_code=404, detail="Credential not found")
+        placeholder_label = _store_only_cli_placeholders().get(credential_id)
+        if placeholder_label is None:
+            raise HTTPException(status_code=404, detail="Credential not found")
+        # Mirror the inventory's never_set placeholder so the page can open it.
+        detail = CliRuntimeDetail(id=credential_id, label=placeholder_label, state="never_set")
 
     return ApiResponse[CliCredentialDetail](data=_content_blind_cli_detail(detail), meta=ApiMeta())
 
@@ -3630,7 +3683,8 @@ async def get_audit_history(
             f"(default {_AUDIT_DEFAULT_LIMIT}, max {_AUDIT_MAX_LIMIT})."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[AuditEvent]]:
     """Return recent audit events for a single credential.
 
@@ -3815,7 +3869,8 @@ async def get_breaks_catalogue(
             "available in meta.by_provider."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[BreakEntry]]:
     """Return feature catalogue rows for the WhatBreaks affordance.
 
@@ -5159,7 +5214,8 @@ async def rotate_user_credential(
             "Entity UUID for the credential to rotate. When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UserSecretDetail]:
     """Rotate (replace) the stored value for a user-scoped credential.
 
@@ -5301,7 +5357,8 @@ async def disconnect_user_credential(
             "When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[DisconnectStatus]:
     """Disconnect (remove) a user-scoped credential.
 
@@ -5419,7 +5476,7 @@ async def disconnect_user_credential(
 # ``last_test_message`` cache column, and the audit row — withheld from the
 # caller, not destroyed.
 #
-# The tuple itself now lives in ``butlers.api.models.audit`` (bu-vhie6): the
+# The tuple itself now lives in ``butlers.core.audit`` (bu-vhie6): the
 # same closed vocabulary is what ``public.audit_log.failure_category`` stores
 # at rest, and ``routers/audit`` cannot import this router.  It is re-exported
 # here so ``secrets_v2.PROBE_FAILURE_VOCABULARY`` keeps resolving for every
@@ -5485,7 +5542,8 @@ async def probe_user_credential(
             "Entity UUID for the credential to probe. When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TestResult]:
     """Probe a user-scoped credential and record the test result.
 
@@ -5827,7 +5885,8 @@ async def reauthorize_user_credential(
             "When omitted, defaults to the owner entity."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ReauthorizeResponse]:
     """Initiate an OAuth (re)authorization dance for a user-scoped credential.
 
@@ -6115,7 +6174,8 @@ async def _write_system_audit(
 async def set_system_credential(
     key: str,
     body: SystemSetRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemCredentialDetail]:
     """Set (first-time), rotate (update existing), or override (per-butler) a system credential.
 
@@ -6401,7 +6461,8 @@ async def set_system_credential(
 )
 async def probe_system_credential(
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[TestResult]:
     """Probe a system credential and record the test result.
 
@@ -6677,7 +6738,8 @@ async def delete_system_credential(
             "or a butler name to remove the per-butler override row (audit: revoked)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SystemDeleteStatus]:
     """Remove a system credential row.
 
@@ -6965,7 +7027,8 @@ class CliRevokeResult(BaseModel):
 async def rotate_cli_credential(
     credential_id: str,
     body: CliRotateRequest | None = None,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliRotateResult]:
     """Persist or rotate the secret value for a CLI runtime token.
 
@@ -7164,7 +7227,8 @@ async def rotate_cli_credential(
 )
 async def revoke_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliRevokeResult]:
     """Revoke (delete) a CLI runtime token.
 
@@ -7299,7 +7363,8 @@ class CliReauthorizeResponse(BaseModel):
 )
 async def reauthorize_cli_credential(
     credential_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CliReauthorizeResponse]:
     """Initiate (or resume) re-authentication for a CLI runtime provider.
 
@@ -7391,7 +7456,7 @@ async def reauthorize_cli_credential(
         try:
             await session.start()
             # Wait briefly for the device code to appear in stdout.
-            await session.wait(timeout=10.0)
+            await session.wait(timeout_s=10.0)
         except Exception as exc:  # noqa: BLE001
             if provider_def.name == "codex":
                 # Device-code subprocess errors can contain provider auth
@@ -7499,7 +7564,8 @@ class ProbeAllResponse(BaseModel):
     response_model=ApiResponse[ProbeAllResponse],
 )
 async def probe_all_credentials(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ProbeAllResponse]:
     """Sweep every probeable credential and report a per-row outcome.
 

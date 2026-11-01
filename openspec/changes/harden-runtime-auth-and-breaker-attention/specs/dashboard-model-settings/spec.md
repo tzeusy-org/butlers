@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Catalog Verify-All API
@@ -13,6 +18,20 @@ caller authority returns `401`. An absent API key alone is not unavailability wh
 healthy keyless session authority exists. Domain checks remain mandatory after
 central authentication; auth-store reads necessary for verification are distinct
 from forbidden pre-authentication domain access.
+
+After the goal switch, the private deterministic control-plane coordinator
+SHALL execute catalog verification through the applicable runtime tuple while
+credential projection/login targets the session host through the control-plane
+service listener (RFC 0038 D3). Verification and benchmark probes SHALL remain
+D18 tool-less, single-turn fixed-prompt/structured-output measurements, not
+goals, broker clients or domain-capability calls. "Same runtime environment"
+below means applicable authority, model, adapter mapping/configuration and
+arguments, never an invocation's broker access. All owner authentication,
+signed capability/receipt, readiness, rate/deadline, history and honest degraded
+outcomes below remain; a probe cannot produce routed success or reset a breaker.
+The private probe signer is not the goal-broker signer and never reaches the
+session host. Existing Models facts persist until the separately governed D19
+switch, with no invented replacement UI route in this amendment.
 
 ID: REQ-dashboard-model-settings-003
 Source: dashboard-owner-auth successor design D1-D9; existing dashboard-model-settings behavior preserved except explicit owner-auth supersession
@@ -101,7 +120,7 @@ The Models API's per-entry test and scheduled verification SHALL invoke a
 deterministic Switchboard-owned runtime-probe coordinator. The coordinator
 SHALL use the same runtime home, authoritative CLI-auth source, adapter
 construction, canonical model identifier, runtime-specific execution mapping,
-generated runtime configuration, and runtime arguments as a new daemon
+generated runtime configuration, and runtime arguments as a new goal
 invocation, but SHALL expose no domain MCP tools and SHALL not create routed
 dispatch provenance. It SHALL be reached only through an authenticated
 dashboard-to-Switchboard control-plane command that is not registered in the
@@ -164,7 +183,7 @@ Scope: v1-mandatory
   verification sweep runs
 - **THEN** the request is executed by the runtime-probe coordinator using the
   same shared runtime environment, canonical-to-execution mapping, generated
-  runtime configuration, and catalog arguments as new daemon work
+  runtime configuration, and catalog arguments as new goal invocation work
 - **AND** the returned evidence is labelled as a runtime probe rather than a
   routed session result
 

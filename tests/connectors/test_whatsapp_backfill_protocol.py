@@ -123,7 +123,7 @@ async def test_request_backfill_rejects_oversized_acknowledgement_before_eof(
     )
     original_wait_for = asyncio.wait_for
 
-    async def short_wait_for(awaitable, timeout):
+    async def short_wait_for(awaitable, timeout):  # noqa: ASYNC109 - stands in for asyncio.wait_for
         return await original_wait_for(awaitable, timeout=0.05)
 
     monkeypatch.setattr(
@@ -167,7 +167,7 @@ async def test_request_backfill_times_out_without_eof_without_stopping_connector
     )
     original_wait_for = asyncio.wait_for
 
-    async def short_wait_for(awaitable, timeout):
+    async def short_wait_for(awaitable, timeout):  # noqa: ASYNC109 - stands in for asyncio.wait_for
         return await original_wait_for(awaitable, timeout=0.05)
 
     monkeypatch.setattr(

@@ -27,7 +27,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_events import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -56,7 +56,7 @@ def _app_with_mock_db(app, *, shared_pool=None, shared_pool_error=None):
         mock_db.credential_shared_pool.return_value = shared_pool
     # Switchboard pool unavailable by default (non-fatal)
     mock_db.pool.side_effect = KeyError("no switchboard pool")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 

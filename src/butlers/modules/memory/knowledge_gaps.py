@@ -82,6 +82,41 @@ async def _lock_pair(conn: Any, entity_id: uuid.UUID, predicate: str) -> None:
     )
 
 
+async def reserve_gap_pairs(conn: Any, pairs: list[tuple[uuid.UUID, str]]) -> bool:
+    """Reserve mirrored closure pairs before the writer locks or inserts fact rows.
+
+    Capture uses the same schema-qualified keys. Acquire their actual signed database
+    hashes in numeric order, including collision deduplication, so reciprocal writers
+    cannot deadlock by acquiring the two pairs in opposite order. Successful savepoint
+    release retains the transaction locks until the enclosing fact write finishes.
+
+    Failed optional bookkeeping rolls back its savepoint. The caller must then skip
+    both closures, rather than falling back to their unsafe individual lock order.
+    Cancellation still propagates and rolls back the enclosing write.
+    """
+    global closure_failures
+    try:
+        async with conn.transaction():
+            if not await conn.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
+                return False
+            keys = await conn.fetch(
+                "SELECT DISTINCT hashtextextended(current_schema() || ':' || key, 0) AS lock_id"
+                " FROM unnest($1::text[]) AS pair(key) ORDER BY lock_id",
+                [_lock_key(entity_id, predicate) for entity_id, predicate in pairs],
+            )
+            for row in keys:
+                await conn.execute("SELECT pg_advisory_xact_lock($1::bigint)", row["lock_id"])
+        return True
+    except Exception:
+        closure_failures += 1
+        logger.warning(
+            "Knowledge-gap pair reservation failed (closure_failures=%s)",
+            closure_failures,
+            exc_info=True,
+        )
+        return False
+
+
 def _excerpt(value: str | None, limit: int) -> str | None:
     if value is None:
         return None

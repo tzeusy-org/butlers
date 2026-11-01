@@ -5,6 +5,23 @@
 to 11).
 **Tracking:** `bu-rn8frx` (doctrine); `bu-7p9ll5` (successor contract).
 
+## Proposed shared first-switch contract (2026-10-24)
+
+The original adoption above remains historical. bu-dhloi1.19 now supplies
+concrete review text for the recorded two-cutover programme: independent shared
+label/catalog, waiting/epoch/migration, perception/event/CAS, minimal evaluator,
+read-pure context, owner-fast, delivery/token, health and gateway interfaces.
+[RFC0038 S0–S8](../../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md#proposed-shared-switch-and-m7-interfaces-2026-10-24)
+is the field/state/API authority; [shared-contract-coverage.md](shared-contract-coverage.md)
+is the requirement/source-owner, approval and M6 handoff map.
+
+This is spec-only, with reserved exact-text adoption and independent normative
+review pending. All existing task states, D6 conservative handling, ASR,
+private-custody/approval/selection boundaries and .17 context remain intact.
+.18 owns later policy wording; .9/Dots own representation/reduction separately.
+Held typed-value and cited-label decisions remain held. No runtime, archive,
+switch, M7 activation, research, credential use or operational change is claimed.
+
 ## Why
 
 Domain ownership is valuable, but mandatory specialist reasoning per domain
@@ -23,8 +40,9 @@ is the design.
 - Every reasoning session becomes a lead or depth-1 child invocation of an
   admitted goal. Switchboard, moved into its own process, hosts admission, the
   goal ledger, the goal runner and the capability broker. Message
-  classification and route dispatch are removed. Engineering executors and
-  tool-less model functions are the only named model use outside goals.
+  classification and route dispatch are removed. Engineering executors,
+  tool-less model functions and dashboard fast answers are the only named model
+  use outside goals.
 - Domain butlers stop spawning sessions. Scheduled prompts become obligation
   admissions with capability sets declared in git.
 - Sessions run sandboxed on a separate session host, reach only the broker,

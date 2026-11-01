@@ -3,120 +3,6 @@
 ## Purpose
 Defines the test framework configuration, test categories and markers, test infrastructure (Docker PostgreSQL testcontainers, DB fixtures, resilient teardown), E2E staging harness architecture, E2E test domains (security, state, contracts, observability, approvals, resilience, flows, scheduling, performance, infrastructure), conftest fixture hierarchy, and test naming conventions.
 
-## Quick Start
-
-```bash
-# Install dependencies
-uv sync --dev
-
-# Run unit tests only (no Docker needed)
-uv run pytest tests/ --ignore=tests/e2e --ignore=tests/test_db.py --ignore=tests/test_migrations.py -q
-
-# Run integration tests (requires Docker)
-uv run pytest roster/ -q
-
-# Run E2E tests (requires Docker + ANTHROPIC_API_KEY + claude CLI)
-uv run pytest tests/e2e/ -v -s
-
-# Run a single E2E scenario by ID
-uv run pytest tests/e2e/test_scenario_runner.py -v -k "health-weight-log" -s
-
-# Run a single E2E flow module
-uv run pytest tests/e2e/test_health_flow.py -v -s --tb=long
-
-# Maximum verbosity (all logs to console)
-uv run pytest tests/e2e/ -v -s --log-cli-level=DEBUG --tb=long
-```
-
-## Debugging E2E Tests
-
-### Inspecting Databases During a Test Run
-
-While tests are running (or paused in a debugger), connect to any butler's database via the testcontainer's exposed port:
-
-```bash
-# The ecosystem fixture logs the actual port at session start.
-psql -h localhost -p $EXPOSED_PORT -U test -d butlers   # then: SET search_path TO health;
-```
-
-The `butler_ecosystem` fixture is session-scoped. If you set a breakpoint, all butlers remain running on their ports and all databases remain accessible.
-
-### Interactive Debugging
-
-From a debugger breakpoint inside a test, you can manually call MCP tools:
-
-```python
-from fastmcp import Client as MCPClient
-
-async with MCPClient("http://localhost:41103/sse") as client:
-    result = await client.call_tool("status", {})
-    print(result)
-```
-
-### Log Triage Commands
-
-All butler logs are captured to `.tmp/e2e-logs/e2e-latest.log`:
-
-```bash
-# All errors and exceptions
-grep -i 'error\|exception\|traceback' .tmp/e2e-logs/e2e-latest.log
-
-# Errors for a specific butler
-grep -i 'error.*health\|health.*error' .tmp/e2e-logs/e2e-latest.log
-
-# LLM invocations
-grep 'spawner.*trigger\|ClaudeCodeAdapter' .tmp/e2e-logs/e2e-latest.log
-
-# MCP tool calls
-grep 'tool_span\|call_tool' .tmp/e2e-logs/e2e-latest.log
-
-# Module failures (expected for telegram, email, calendar)
-grep 'Module.*disabled\|Module.*failed' .tmp/e2e-logs/e2e-latest.log
-
-# Routing decisions
-grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
-```
-
-### Architecture Diagram
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    TEST HARNESS (pytest)                       │
-│                                                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐    │
-│  │  conftest.py  │  │ scenarios.py │  │ test_*_flow.py   │    │
-│  │              │  │              │  │                  │    │
-│  │ Ecosystem    │  │ E2EScenario  │  │ Per-butler       │    │
-│  │ bootstrap    │  │ dataclass    │  │ complex flows    │    │
-│  │ + fixtures   │  │ registry     │  │                  │    │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘    │
-│         │                 │                    │               │
-│         ▼                 ▼                    ▼               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              BUTLER ECOSYSTEM (session-scoped)           │  │
-│  │                                                          │  │
-│  │  Switchboard ──► General ──► Relationship ──► Health     │  │
-│  │   :41100          :41101       :41102           :41103   │  │
-│  │                                                          │  │
-│  │  Messenger                                               │  │
-│  │   :41104                                                  │  │
-│  │                                                          │  │
-│  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
-│  └──────────────────────┬──────────────────────────────────┘  │
-│                         │                                      │
-│                         ▼                                      │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │          TESTCONTAINER PostgreSQL (session-scoped)       │  │
-│  │                                                          │  │
-│  │  One `butlers` database; per-butler SCHEMAS:             │  │
-│  │  switchboard  general  relationship  health  messenger   │  │
-│  │  plus shared `public`                                    │  │
-│  │  Core tables: state, scheduled_tasks, sessions           │  │
-│  │  Butler tables: measurements, contacts, butler_registry  │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
-```
-
 ## Requirements
 
 ### Requirement: Test Framework Configuration
@@ -783,19 +669,20 @@ fast smoke-tier framing and the latest-revision round-trip guard.
   session-scoped `postgres_container` fixture rather than introducing a parallel
   provisioning path
 
-#### Scenario: Post-merge migration-chain integrity gate
-- **WHEN** a push to `main` changes a migration under any root family discovered by
+#### Scenario: Merge-group migration-chain integrity gate
+- **WHEN** a pull request changes a migration under any root family discovered by
   `get_all_chains()`:
   - `alembic/versions/**` for shared/core chains
   - `src/butlers/modules/*/migrations/**` for module chains
   - `roster/*/migrations/**` for butler-specific chains
-- **THEN** the `Migration Chain Integrity (main)` workflow checks out the pushed
-  merged SHA and runs `tests/config/test_migration_chain_head.py`
-- **AND** the GitHub Actions check fails loudly if the merged tree has duplicate
+- **THEN** the required merge-group unit lane runs
+  `tests/config/test_migration_chain_head.py` against the exact merged tree before
+  it lands on `main`
+- **AND** the required check fails loudly if the merged tree has duplicate
   revisions or more than one Alembic head
-- **AND** a focused workflow-path regression evaluates a representative migration
-  change from each root family, so future chains within those families remain
-  covered without a static chain count
+- **AND** the guard discovers chains through `get_all_chains()`, so future chains
+  within those families stay covered without a static chain count or a separate
+  post-merge workflow (retired under owner decision bu-w72da2 = A)
 
 ### Requirement: Daemon Lifecycle Smoke Test
 The project SHALL prove that a butler daemon completes its lifecycle initialization
@@ -1126,6 +1013,13 @@ Scope: v1-mandatory
 - **THEN** the mandatory guard and required verdict fail before scan success is credited
 - **AND** no raw body, matched link or provider error is printed
 
+#### Scenario: Bounded metadata retries retain mandatory refusal
+- **WHEN** the fixed-PR metadata subprocess fails before a successful validated read
+- **THEN** at most three attempts use 30-second caps and 2/5-second backoffs within one 97-second monotonic retry budget
+- **AND** invalid successful metadata or local I/O errors refuse immediately without retry or stale fallback
+- **AND** title/body/digest-receipt outputs are removed before reading and after completed failure with categorical diagnostics only
+- **AND** the workflow's separate GNU TERM100/KILL+3 command envelope preserves nonzero refusal and completed-failure cleanup; incomplete execution remains UNKNOWN/non-pass
+
 #### Scenario: Existing metadata surfaces and permissions survive
 - **WHEN** the current PR guard scans title/body and trigger-bound commits with best-effort review comments
 - **THEN** title, non-trailer commit and comment positives remain detectable with exact terminal commit trailer exemption
@@ -1387,85 +1281,37 @@ Scope: v1-mandatory
 
 ### Requirement: Condensation requires current executable survivor evidence
 
-The system MUST refuse condensation admission until exact source-bound survivor evidence preserves the removed behavior, complete case multiplicity and protected architecture, wire, privacy, authorization, retry, idempotency and migration outcomes. Neither test counts, similar text, source deletion, attestation nor coverage alone establishes that evidence. The consumer SHALL preserve the existing selection, budgets, default coverage core, required CI event predicates and full terminal merge-group gate.
+Test removal SHALL be governed by review alone. The repository SHALL NOT keep a protected-test inventory, survivor ledger, contract-evolution manifest or deletion guard script, and no required check SHALL refuse a pull request because it removes or weakens tests. A pull request that deletes, moves or renames a test, or weakens one in place by dropping an assertion, parameter case, fixture or marker, SHALL carry a `Tests: +a ~m -d` line in its body, measured from its own collection. For each removed check it SHALL either name the executing survivor that still enforces that behavior at the pull-request head, or state that the behavior itself is intentionally removed or changed by the same pull request. Architecture, wire, privacy, authorization, no-send, retry, idempotency and migration-outcome checks SHALL keep a named executing survivor unless their governing requirement changes in the same pull request. Reviewers SHALL refuse a missing delta line, a survivor that does not exist or does not exercise the removed behavior, and a protected-check loss with neither a survivor nor a requirement change. Matching names, smaller counts and deleted production paths are not survivors on their own. This rule SHALL NOT change the per-lane collected-test budget, test selection, markers, coverage, required checks or the complete terminal merge-group gate.
 
-Separately, the same complete consumer MAY admit intentional contract evolution
-for retained owners under an independently reviewed, exact normative amendment
-authorized in the trusted public source before the candidate executes. This
-distinct mode SHALL require fresh actual before/after execution, identical
-complete owner and opaque case populations, successful setup/call/teardown,
-bounded owned cleanup, and exact reviewed owner/context/runtime/requirement and
-source/tool/run binding. It SHALL NOT infer authorization from a candidate plan,
-reviewer-name string, successful test result or current-branch approval file.
-Every candidate-only input change, including proof machinery and execution
-requests, SHALL have exact protected approval; an unobserved-tooling exemption
-SHALL NOT substitute for that approval. Owned cleanup SHALL include descendants
-that create nested sessions, on success, failure and interruption.
-The initial mode SHALL NOT admit deletions, renames, reduced case populations,
-environment waivers or migration/runtime substitutions. Every other loss SHALL
-retain ordinary survivor-evidence obligations.
+This requirement supersedes the executable survivor-proof admission, the intentional contract-evolution mode and the single bu-mmax8j.8 replay conformance account that it previously defined; none of them remains an admission route or an obligation.
 
 ID: REQ-testing-053
-Source: bu-ly3lv5.11 preserving A82/B146 contract; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md Five-Minute Routine-Lane Target; AGENTS.md Test Scope Policy
+Source: bu-lm2b4v owner decision B (2026-10-21), retiring the bu-ly3lv5.11 condensation ledger and the bu-mmax8j.9 replay exception; about/craft-and-care/testing-and-verification.md Removing or Weakening Tests; AGENTS.md Test Scope Policy
 Scope: v1-mandatory
 
-#### Scenario: Approved contract changes retain fresh complete execution
-- **WHEN** an independently reviewed normative amendment intentionally replaces expectations in retained owners
-- **THEN** an exact authorization already present in trusted public source binds the old/new owners, contexts, runtime inputs and changed requirement blocks
-- **AND** fresh before/after runs preserve identical opaque case identities and complete successful phases before the same loss consumer admits only those named changes
-- **AND** the original event comparison base still defines the old execution and complete loss scan when the pull-request public parent is newer
-- **AND** exact protected input approval includes proof machinery and requests, while bounded cleanup accounts for every owned descendant
+#### Scenario: A test deletion with a stated delta passes CI
 
-#### Scenario: Candidate declarations cannot grant their own exception
-- **WHEN** authorization exists only on the candidate, reviewed source drifts, cases change, execution is incomplete, or an additional loss is unlisted
-- **THEN** the evolution path refuses without a count fallback, cached receipt, attestation-only approval or automatic baseline rewrite
-- **AND** unrelated losses, deletions, renames and genuine condensation retain ordinary survivor proof requirements
+- **WHEN** a pull request deletes tests, states a `Tests:` line with the deletions and names each survivor or intentional behavior change
+- **THEN** no CI step refuses it for the test loss
+- **AND** the required check, guards and frontend verdicts and the complete terminal merge-group gate still run unchanged
 
-#### Scenario: Exact branch contexts and retained mutation kills
-- **WHEN** removed cases and named survivors execute a protected proof
-- **THEN** the producer uses actual ctrace branch arcs under literal exact per-case phase contexts and complete collected case identities
-- **AND** every removed-case mutant kill is retained by a named survivor with zero normative residue and no lost kills before dogfood deletion
-- **AND** setup, collection, timeout, incomplete phases or uncertain cleanup are UNKNOWN rather than semantic kills
+#### Scenario: Review refuses an unaccounted loss
 
-#### Scenario: Assertion and parameter loss inside a retained name refuses
-- **WHEN** an unchanged test qualname loses an assertion, parameter declaration, fixture/import context or collected case
-- **THEN** the consumer detects that change and requires its complete source-bound survivor account
-- **AND** matching qualnames or a smaller count cannot hide the lost invariant
+- **WHEN** a pull request removes or weakens a check without a `Tests:` line, or without a named survivor or stated behavior change for that check
+- **THEN** the reviewer refuses it until the line and the account are present
+- **AND** a survivor that does not exist at the pull-request head, or does not exercise the removed behavior, does not count
 
-#### Scenario: Moves and retirement have no automatic exemption
-- **WHEN** a test moves or renames, or a production source path is deleted
-- **THEN** admission still requires complete body/import/fixture/marker/case continuity or genuine governing retirement authority with a protected survivor account
-- **AND** filename similarity and deleted source paths grant no permission to remove protected coverage
+#### Scenario: Protected behavior keeps an executing survivor
 
-#### Scenario: Malformed stale or partial evidence refuses
-- **WHEN** evidence has duplicate keys or aliases, wrong JSON types, missing survivors, changed relevant bodies/modes/tools/selection, or incomplete phase/outcome/restore population
-- **THEN** admission refuses without automatic baseline repair or a count-only fallback
-- **AND** merge-group does not permit stale proof merely because its event differs from a pull request
+- **WHEN** a removed check covers architecture, wire, privacy, authorization, no-send, retry, idempotency or a migration outcome and its governing requirement is unchanged
+- **THEN** the pull request names the executing test that still enforces that behavior
+- **AND** a matching name, a smaller count or a deleted production path cannot stand in for it
 
-#### Scenario: Compatible protected union preserves dated proof identity
-- **WHEN** a protected union has freshly validated event/head lineage and exactly unchanged relevant source/mode/config/tool/selection inputs
-- **THEN** verification may reuse that unchanged proof within its named scope while retaining its dated original run identity
-- **AND** changed relevant inputs require fresh proof rather than a historical receipt restamp
+#### Scenario: An intended behavior change edits its pinning tests in the same pull request
 
-#### Scenario: Crash cancellation and timeout preserve recovery
-- **WHEN** an owned proof process fails, times out, is cancelled or crashes during a mutation
-- **THEN** a durable journal and scoped UNKNOWN receipt survive until exact file/mode restoration and owned process-group completion are attested
-- **AND** the live source, unrelated processes, environment and other proof runs remain untouched
-
-#### Scenario: Catalog and attestation cannot substitute for protected runtime proof
-- **WHEN** a proposed deletion relies on migration/catalog behavior or protected authority
-- **THEN** actual migrated PostgreSQL roles, bootstrap, constraints/defaults/indexes/functions/RLS/grants/rollback and relevant negative companions remain required
-- **AND** SQL-text coverage, synthetic catalogs and attested mode cannot discharge those outcomes
-
-#### Scenario: One guard species and complete survivor accounting
-- **WHEN** the required condensation guard is activated after genuine preparation qualification
-- **THEN** one stdlib source-scan consumer owns deletion admission across the complete declared tests and roster roots, including in-place losses
-- **AND** every moved or removed check names its executing survivor, with no empty-directory fail-open, new selector exclusion or duplicated normative scanner
-
-#### Scenario: Source evidence does not complete timing or delivery
-- **WHEN** the additive proof machinery and its private controls pass
-- **THEN** the first three real clusters, zero-residue/no-lost dogfood, shared-app isolation, original per-file/cluster and named before/after timing, supported native administration and current genuine/normal/protected/squash remain mandatory
-- **AND** the generic no-wall-clock-gain option applies only to its original timing paragraph
+- **WHEN** a reviewed product change alters behavior that an existing test pins
+- **THEN** that pull request changes or removes the pinning test itself and states the delta and the changed behavior
+- **AND** no authorization manifest, separate authorization bead or replacement guard is required
 
 ## Source References
 - Non-Negotiable Rule 4 (the daemon is deterministic infrastructure; it must be

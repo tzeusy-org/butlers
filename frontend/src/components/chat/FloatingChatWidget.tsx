@@ -1,3 +1,6 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
+import type { DraftSession, DraftSubmission } from "@/lib/draft-session";
 /**
  * Global floating chat widget (bu-p6ey8.3) — a compact popover chat panel
  * reachable from every dashboard route, mounted once in RootLayout.tsx.
@@ -69,7 +72,7 @@ import {
   useConversationMessages,
 } from "@/hooks/use-conversations.ts";
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
-import { useChatUnreadBadge } from "@/hooks/use-chat-unread.ts";
+import { useChatUnreadState } from "@/hooks/use-chat-unread.ts";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { useVisualViewportHeight } from "@/hooks/use-visual-viewport-height.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
@@ -94,7 +97,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   // wrong-focus-target fix); `obscureGuard` covers WCAG 2.2 2.4.11 for
   // elements the non-trapping panel could otherwise visually cover.
   const { rootRef, initialFocusRef, onKeyDown } = useModalChoreography<HTMLTextAreaElement>({
-    onClose,
+    onClose: () => draft.dismiss(onClose),
     trapFocus: false,
     obscureGuard: true,
   });
@@ -117,15 +120,25 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   // Set by a message-search jump-to-message result (bu-0ynlk.9); consumed
   // once that message's bubble has rendered (see the effect below).
   const [pendingScrollMessageId, setPendingScrollMessageId] = useState<string | null>(null);
-  const [inputValue, setInputValue] = useState("");
+  const composerContext = JSON.stringify([WIDGET_BUTLER, activeConversationId ?? "new"]);
+  const [composer, setComposer] = useState({ context: "", value: "" });
+  const inputValue = composer.context === composerContext ? composer.value : "";
+  const setInputValue = (value: string) => setComposer({ context: composerContext, value });
+  const draft = useDraft("chat.message", [WIDGET_BUTLER, activeConversationId ?? "new"], { message: inputValue }, (v) => setInputValue(v.message), true, { message: "" });
+  const pendingDraft = useRef<{ session: DraftSession; submission: DraftSubmission } | null>(null);
+  const sentDrafts = useRef(new Map<string, { session: DraftSession; submission: DraftSubmission }>());
   const { data: pricingMapData } = usePricingMap();
   const pricingMap = pricingMapData ?? null;
 
   // Fetch the conversation list once so we can resume the most recently
   // updated *active* (open) conversation on every reopen (list is
   // server-ordered updated_at DESC).
-  const { data: conversationsData, isLoading: isLoadingConversations } =
-    useConversations(WIDGET_BUTLER);
+  const {
+    data: conversationsData,
+    isLoading: isLoadingConversations,
+    isError: isConversationsError,
+    refetch: refetchConversations,
+  } = useConversations(WIDGET_BUTLER);
   const conversations: ConversationSummary[] = useMemo(
     () => conversationsData?.data ?? [],
     [conversationsData],
@@ -156,6 +169,15 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
     activeConversationId,
     setActiveConversationId,
     messagesData,
+    onMessagePrepared: (messageId) => {
+      if (pendingDraft.current) sentDrafts.current.set(messageId, pendingDraft.current);
+      pendingDraft.current = null;
+    },
+    onMessageAccepted: (messageId) => {
+      const submitted = sentDrafts.current.get(messageId);
+      sentDrafts.current.delete(messageId);
+      if (submitted) void submitted.session.submitted(submitted.submission, () => {});
+    },
   });
 
   // Resume the most recent open conversation ONCE per mount (== once per
@@ -167,28 +189,48 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (hasResumedRef.current) return;
+    if (activeConversationId == null && inputValue.length > 0) {
+      // Typing into a new thread is also intent; recovery must not replace it.
+      hasResumedRef.current = true;
+      return;
+    }
     if (conversations.length === 0) return;
     hasResumedRef.current = true;
     if (activeConversationId == null) {
       setActiveConversationId(conversations[0].id);
     }
-  }, [conversations, activeConversationId]);
+  }, [conversations, activeConversationId, inputValue]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const activeConversation = conversations.find((c) => c.id === activeConversationId) ?? null;
 
-  function handleSendClick() {
+  async function handleSendClick() {
     const text = inputValue.trim();
     if (!text) return;
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    if (draft.session && submission) {
+      pendingDraft.current = { session: draft.session, submission };
+      draft.session.composerSent();
+    }
     setInputValue("");
-    void sendText(text);
+    void sendText(text).finally(() => {
+      // Keep failed pre-acceptance bindings for the existing explicit Retry/message_id.
+      // Only onMessageAccepted consumes C; a retry must never capture newer input.
+      draft.finish();
+    });
   }
 
   function handleNewConversation() {
-    abandonCurrentStream();
+    draft.dismiss(() => {
+      // An explicit new thread must survive a later discovery retry.
+      hasResumedRef.current = true;
+      abandonCurrentStream();
     setActiveConversationId(null);
     resetTurnState();
     setViewMode("thread");
+    });
   }
 
   function handleCheckAgain() {
@@ -276,7 +318,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={onClose}
+            onClick={() => draft.dismiss(onClose)}
             aria-label="Close chat"
             title="Close"
             data-testid="chat-widget-close-button"
@@ -293,11 +335,13 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             activeConversationId={activeConversationId}
             collapsible={false}
             onSelectConversation={(id, messageId) => {
+              draft.dismiss(() => {
               abandonCurrentStream();
               setActiveConversationId(id);
               setPendingScrollMessageId(messageId ?? null);
               setSendError(null);
               setViewMode("thread");
+              });
             }}
             onNewConversation={handleNewConversation}
           />
@@ -312,7 +356,22 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             routedButler={visibleDispatchReceipt?.routedButler}
           />
 
-          {isLoadingMessages && activeConversationId && visibleMessages.length === 0 ? (
+          {isConversationsError && (
+            <>
+              <ConversationReadError
+                label="conversations"
+                onRetry={() => void refetchConversations()}
+              />
+              {conversationsData && (
+                <p className="px-3 py-1 text-xs text-muted-foreground">
+                  Saved conversation details may be out of date.
+                </p>
+              )}
+            </>
+          )}
+
+          {(isLoadingMessages && activeConversationId && visibleMessages.length === 0) ||
+          (isLoadingConversations && !activeConversationId) ? (
             <MessageThreadSkeleton />
           ) : (
             <MessageThread
@@ -320,7 +379,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
               streaming={streaming}
               pricingMap={pricingMap}
               conversationId={activeConversationId}
-              suppressEmptyState={isMessagesError}
+              suppressEmptyState={isMessagesError || (isConversationsError && !activeConversationId)}
             />
           )}
 
@@ -340,6 +399,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
             />
           )}
 
+          <DraftNotice session={draft.session} />
           <MessageInput
             ref={initialFocusRef}
             value={inputValue}
@@ -357,7 +417,7 @@ function WidgetPanel({ onClose }: WidgetPanelProps) {
                     ? `Could not stop this turn: ${streaming.cancelError}`
                     : null
             }
-            disabled={isLoadingConversations}
+            disabled={isLoadingConversations || !!draft.session?.presentation.submitting || !!draft.session?.presentation.cleanup}
             isStreaming={hasActiveRuntime}
             contextChip={{
               label: contextPreview.label,
@@ -408,7 +468,13 @@ export function FloatingChatWidget({ onExpandDock }: FloatingChatWidgetProps = {
   // Poll for replies that arrive while the panel is closed (bu-p6ey8.4 —
   // "Unread badge"). Always mounted (unlike WidgetPanel, which unmounts on
   // close) so polling continues regardless of open/closed state.
-  const hasUnread = useChatUnreadBadge(WIDGET_BUTLER, open);
+  const {
+    hasUnread,
+    data: unreadData,
+    isLoading: isUnreadLoading,
+    isError: isUnreadError,
+    refetch: refetchUnread,
+  } = useChatUnreadState(WIDGET_BUTLER, open);
 
   // Route the unread badge through the shell announcer (bu-0ynlk.13) so a
   // screen-reader user hears about a reply that arrived while the panel was
@@ -418,11 +484,12 @@ export function FloatingChatWidget({ onExpandDock }: FloatingChatWidgetProps = {
   // `announce`), but this keeps the intent explicit: once per new reply.
   const hadUnreadRef = useRef(false);
   useEffect(() => {
+    if (isUnreadError) return;
     if (hasUnread && !hadUnreadRef.current) {
       announce("New reply from Butlers");
     }
     hadUnreadRef.current = hasUnread;
-  }, [hasUnread]);
+  }, [hasUnread, isUnreadError]);
 
   // Global 'c' shortcut (use-keyboard-shortcuts.ts): open the widget if it's
   // closed. WidgetPanel's own listener (mounted only while open) handles
@@ -453,31 +520,47 @@ export function FloatingChatWidget({ onExpandDock }: FloatingChatWidgetProps = {
   return (
     <>
       {!open && (
-        <Button
-          ref={triggerRef}
-          type="button"
-          variant="default"
-          // bottom-20 (not bottom-4): the "?" keyboard-shortcuts trigger
-          // (ShortcutHints, also mounted globally in RootLayout) occupies
-          // fixed bottom-4 right-4 z-50 — sitting here too would put its
-          // 32px button exactly under this button's click center and
-          // intercept every click. Stacking above it avoids the collision
-          // entirely; the panel anchors to the same spot when open.
-          className="fixed bottom-20 right-4 z-40 size-12 rounded-full p-0 shadow-lg"
-          onClick={() => (onExpandDock ? onExpandDock() : setOpen(true))}
-          aria-label={hasUnread ? "Talk to Butlers (new reply)" : "Talk to Butlers"}
-          title="Talk to Butlers"
-          data-testid="floating-chat-trigger"
-        >
-          <MessageCircleIcon className="size-5" />
-          {hasUnread && (
-            <span
-              className="absolute right-1 top-1 size-2.5 rounded-full bg-destructive ring-2 ring-background"
-              data-testid="chat-widget-unread-badge"
-              aria-hidden="true"
-            />
+        <>
+          {isUnreadError && (
+            <div className="fixed bottom-20 right-20 z-40 w-[min(280px,calc(100vw-6rem))] overflow-hidden rounded-lg border bg-card shadow-lg">
+              <ConversationReadError
+                label="conversation updates"
+                onRetry={() => void refetchUnread()}
+              />
+              {unreadData && (
+                <p className="px-3 py-1 text-xs text-muted-foreground">
+                  Saved updates may be out of date.
+                </p>
+              )}
+            </div>
           )}
-        </Button>
+          <Button
+            ref={triggerRef}
+            type="button"
+            variant="default"
+            // bottom-20 (not bottom-4): the "?" keyboard-shortcuts trigger
+            // (ShortcutHints, also mounted globally in RootLayout) occupies
+            // fixed bottom-4 right-4 z-50 — sitting here too would put its
+            // 32px button exactly under this button's click center and
+            // intercept every click. Stacking above it avoids the collision
+            // entirely; the panel anchors to the same spot when open.
+            className="fixed bottom-20 right-4 z-40 size-12 rounded-full p-0 shadow-lg"
+            onClick={() => (onExpandDock ? onExpandDock() : setOpen(true))}
+            aria-label={hasUnread ? "Talk to Butlers (new reply)" : "Talk to Butlers"}
+            aria-busy={isUnreadLoading}
+            title="Talk to Butlers"
+            data-testid="floating-chat-trigger"
+          >
+            <MessageCircleIcon className="size-5" />
+            {hasUnread && (
+              <span
+                className="absolute right-1 top-1 size-2.5 rounded-full bg-destructive ring-2 ring-background"
+                data-testid="chat-widget-unread-badge"
+                aria-hidden="true"
+              />
+            )}
+          </Button>
+        </>
       )}
       {open && <WidgetPanel onClose={closeWidget} />}
     </>

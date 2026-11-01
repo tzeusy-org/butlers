@@ -100,7 +100,7 @@ successor below. Recover any of them with `git log --all -- <original path>`.
 | `docs/archive/butlers-review-improvement-cycles.md` | Closed review-cycle program `bu-dl98i` | Archived cycle changes under [changes/archive](../../openspec/changes/archive/) |
 | `docs/archive/decisions/2026-05-22-credential-readpath-deferred.md` | Credential read-path deferral until `bu-akads` (both closed) | [core-credentials](../../openspec/specs/core-credentials/spec.md) |
 | `docs/archive/decisions/2026-05-23-chronicler-adapter-entity-id-audit.md` | Self-declared superseded audit (column dropped, bu-cfsgy) | None; not actionable |
-| `docs/archive/draft-discord.md` | Discord connector research | [connector-discord](../../openspec/specs/connector-discord/spec.md), [RFC 0018](../../about/legends-and-lore/rfcs/0018-connector-scope-and-deferral-rationale.md) |
+| `docs/archive/draft-discord.md` | Discord connector research | [RFC 0018](../../about/legends-and-lore/rfcs/0018-connector-scope-and-deferral-rationale.md) |
 | `docs/archive/home-assistant-draft.md` | Home Assistant research | [connector-home-assistant](../../openspec/specs/connector-home-assistant/spec.md), [module-home-assistant](../../openspec/specs/module-home-assistant/spec.md) |
 | `docs/archive/photos-screenshots-draft.md` | Photo and screenshot ingestion research | Superseded research, not a build target |
 | `docs/archive/voice-draft.md` | Voice capture research | [connector-live-listener](../../openspec/specs/connector-live-listener/spec.md) and the open voice changes under [changes](../../openspec/changes/) |

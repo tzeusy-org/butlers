@@ -56,12 +56,14 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.discretion import (
     DiscretionEvaluator,
     DiscretionResult,
     classify_ignore_kind,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
@@ -98,6 +100,8 @@ from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, create_system_global_credential_store_from_env
 
+_DESCRIPTOR = connector_descriptor("live_listener")
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,7 +126,7 @@ def wall_clock_observed_at(
 DEFAULT_HEALTH_PORT = 40091
 
 # Connector identity constants
-CONNECTOR_TYPE = "live_listener"
+CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # connector_type value for connectors.filtered_events rows. Deliberately
 # distinct from the underscore-spelled `CONNECTOR_TYPE` above (which is
@@ -130,7 +134,7 @@ CONNECTOR_TYPE = "live_listener"
 # `connectors.*` identity space as checkpoint.py / filter_gate.py, which both
 # use this hyphenated "live-listener" spelling (see
 # butlers.connectors.live_listener.envelope.endpoint_identity).
-_FILTERED_EVENTS_CONNECTOR_TYPE = "live-listener"
+_FILTERED_EVENTS_CONNECTOR_TYPE = _DESCRIPTOR.stored_event_type
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +330,7 @@ class LiveListenerConnector:
         logger.info("live-listener: stopping connector")
 
         # Cancel pipeline tasks
-        for mic, task in self._pipeline_tasks.items():
+        for task in self._pipeline_tasks.values():
             task.cancel()
         for mic, task in self._pipeline_tasks.items():
             try:
@@ -488,8 +492,7 @@ class LiveListenerConnector:
             mic_state.last_error = None
             logger.info("live-listener: mic=%s pipeline running", mic)
             # Keep running until cancelled
-            while True:
-                await asyncio.sleep(1.0)
+            await asyncio.Event().wait()
 
         mic_state.connected = False
 
@@ -766,7 +769,7 @@ class LiveListenerConnector:
 
         buffer.record(
             external_message_id=event_id,
-            source_channel="voice",
+            source_channel=_DESCRIPTOR.channel,
             sender_identity="ambient",
             subject_or_preview=text[:200] if text else None,
             filter_reason=FilteredEventBuffer.reason_discretion_ignore(kind),
@@ -778,6 +781,8 @@ class LiveListenerConnector:
                 external_thread_id=None,
                 observed_at=observed_at.astimezone(UTC).isoformat(),
                 sender_identity="ambient",
+                untrusted_spans=email_untrusted_spans(text, subject="", has_attached_message=False)
+                or None,
                 raw={},
             ),
         )

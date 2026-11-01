@@ -11,6 +11,7 @@ Covers unique ClaudeCode behaviors:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -228,7 +229,7 @@ async def test_invoke_hands_the_cli_an_mcp_config_with_the_invocation_header():
 
     async def fake_exec(*cmd, **kwargs):
         config_path = Path(cmd[cmd.index("--mcp-config") + 1])
-        seen["config"] = json.loads(config_path.read_text())
+        seen["config"] = json.loads(await asyncio.to_thread(config_path.read_text))
         proc = AsyncMock()
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.returncode = 0

@@ -20,7 +20,7 @@ Endpoints tested:
 
 The tests mount the ingestion router via create_app() (shared `app` fixture)
 and wire the DB dependency by overriding
-``butlers.api.routers.ingestion_connectors._get_db_manager``.
+``butlers.api.deps.get_db``.
 
 Because the pause/run-now handlers use ``pool.acquire()`` context-manager
 semantics (not raw ``pool.fetchrow``), mocks must be built with a proper
@@ -39,7 +39,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -132,7 +132,7 @@ def _wire_db(app, pool, *, pool_available: bool = True):
         mock_db.pool.return_value = pool
     else:
         mock_db.pool.side_effect = KeyError("switchboard pool not available")
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 

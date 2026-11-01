@@ -15,6 +15,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useEgressFacts } from "@/hooks/use-system"
@@ -41,22 +42,6 @@ function TileSkeleton() {
   )
 }
 
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Data Egress</TileTitle>
-        <TileDescription>External services that received data</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="egress-tile-error" className="text-destructive text-sm">
-          Could not load egress catalog.
-        </p>
-      </TileContent>
-    </Tile>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // EgressCatalogTile
 // ---------------------------------------------------------------------------
@@ -71,11 +56,8 @@ function TileError() {
  * The catalog_covers_from field shows the earliest audit event timestamp.
  */
 export function EgressCatalogTile() {
-  const { data: response, isPending, isError, isForbidden } = useEgressFacts()
-
-  if (isPending) return <TileSkeleton />
-
-  if (isForbidden) {
+  const q = useEgressFacts()
+  if (q.isForbidden && !q.isPending) {
     return (
       <Tile degraded>
         <TileHeader>
@@ -91,11 +73,20 @@ export function EgressCatalogTile() {
     )
   }
 
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Data Egress" description="External services that received data"
+      errorMessage="Could not load egress catalog." errorTestId="egress-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <EgressCatalogContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const catalog = response?.data
+function EgressCatalogContent({ response }: {
+  response: NonNullable<ReturnType<typeof useEgressFacts>["data"]>
+}) {
+  const catalog = response.data
 
-  if (!catalog || catalog.actors.length === 0) {
+  if (catalog.actors.length === 0) {
     return (
       <Tile>
         <TileHeader>

@@ -24,6 +24,7 @@ These tests prove:
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import shutil
@@ -136,8 +137,9 @@ async def test_fresh_bootstrap_seeds_every_toml_tier(fresh_core_db_url: str) -> 
     """
     import tomllib
 
-    with open(_DEFAULTS_TOML_PATH, "rb") as f:
-        toml_data = tomllib.load(f)
+    toml_data = tomllib.loads(
+        await asyncio.to_thread(Path(_DEFAULTS_TOML_PATH).read_text, encoding="utf-8")
+    )
     tiers_in_toml = {m["complexity_tier"] for m in toml_data["models"]}
 
     rows = await _fetch_catalog_rows(fresh_core_db_url)

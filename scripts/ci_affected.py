@@ -19,7 +19,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from ci_partition import (
+from ci_evidence import (
     HEX,
     checkout_identity,
     digest,

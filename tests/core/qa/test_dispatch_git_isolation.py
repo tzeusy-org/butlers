@@ -217,7 +217,9 @@ async def test_main_refresh_neutralises_planted_commands_and_hides_daemon_secret
 
     # Control: the unhardened daemon environment really runs the planted command.
     _git(repo_root, "remote", "add", "remote-ssh", "ssh://git@127.0.0.1:1/x.git")
-    subprocess.run(["git", "fetch", "remote-ssh"], cwd=repo_root, capture_output=True)
+    await asyncio.to_thread(
+        subprocess.run, ["git", "fetch", "remote-ssh"], cwd=repo_root, capture_output=True
+    )
     assert (tmp_path / "ssh.marker").exists()
     (tmp_path / "ssh.marker").unlink()
     _clear(markers)
@@ -363,7 +365,9 @@ async def test_main_refresh_never_runs_planted_ext_or_git_proxy_transport(
         _git(repo_root, "remote", "set-url", "origin", "git://127.0.0.1:1/x.git")
         _git(repo_root, "config", "core.gitProxy", str(script))
 
-    subprocess.run(["git", "fetch", "origin"], cwd=repo_root, capture_output=True)
+    await asyncio.to_thread(
+        subprocess.run, ["git", "fetch", "origin"], cwd=repo_root, capture_output=True
+    )
     assert marker.exists()  # Control: the unhardened fetch runs the planted command.
     marker.unlink()
 
@@ -467,13 +471,18 @@ async def test_commit_diff_snapshot_runs_no_planted_driver_and_sees_no_daemon_se
     _git(repo_root, "config", "diff.probe.textconv", str(textconv))
 
     # Control: a plain daemon-environment diff really runs the planted drivers.
-    subprocess.run(["git", "diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True)
+    await asyncio.to_thread(
+        subprocess.run, ["git", "diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True
+    )
     assert (tmp_path / "external.marker").read_text().startswith("postgres://daemon:secret")
     (tmp_path / "external.marker").unlink()
     (tmp_path / "textconv.marker").unlink(missing_ok=True)
     # Control: with the external driver bypassed, the textconv plant fires on its own.
-    subprocess.run(
-        ["git", "diff", "--no-ext-diff", "HEAD~1..HEAD"], cwd=repo_root, capture_output=True
+    await asyncio.to_thread(
+        subprocess.run,
+        ["git", "diff", "--no-ext-diff", "HEAD~1..HEAD"],
+        cwd=repo_root,
+        capture_output=True,
     )
     assert (tmp_path / "textconv.marker").exists()
     (tmp_path / "textconv.marker").unlink()
@@ -512,21 +521,26 @@ async def test_no_op_branch_detection_runs_no_planted_signature_program(tmp_path
         "committer t <t@e> 1700000000 +0000\n"
         "gpgsig -----BEGIN PGP SIGNATURE-----\n \n fake\n -----END PGP SIGNATURE-----\n\nsigned\n"
     )
-    sha = subprocess.run(
+    hashed = await asyncio.to_thread(
+        subprocess.run,
         ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
         cwd=repo_root,
         input=commit,
         check=True,
         capture_output=True,
         text=True,
-    ).stdout.strip()
+    )
+    sha = hashed.stdout.strip()
     _git(repo_root, "update-ref", "refs/heads/agent-branch", sha)
     _git(repo_root, "config", "log.showSignature", "true")
     _git(repo_root, "config", "gpg.program", str(program))
 
     # Control: the plain daemon-style log really runs the planted program.
-    subprocess.run(
-        ["git", "log", "main..agent-branch", "--oneline"], cwd=repo_root, capture_output=True
+    await asyncio.to_thread(
+        subprocess.run,
+        ["git", "log", "main..agent-branch", "--oneline"],
+        cwd=repo_root,
+        capture_output=True,
     )
     assert marker.exists()
     marker.unlink()

@@ -6,7 +6,6 @@ Issue: butlers-1003.6
 from __future__ import annotations
 
 import asyncio
-import logging
 import shutil
 import uuid
 from urllib.parse import urlparse
@@ -639,7 +638,7 @@ def test_set_role_blocks_private_restore_drill_ledger_for_every_runtime_role(pos
         assert _restore_drill_ledger_effective_privileges(db_url, role) == expected_denial
 
 
-def test_connector_writer_role_enforcement(postgres_container):
+def test_connector_writer_role_enforcement(postgres_container, request):
     """SET ROLE connector_writer: can write connectors schema and public.ingestion_events.
 
     Verifies that connector_writer cannot write to a butler runtime schema.
@@ -649,9 +648,22 @@ def test_connector_writer_role_enforcement(postgres_container):
     _require_runtime_acl(db_url)
     _require_connector_writer(db_url)
 
-    session_role = "connector_probe"
+    # Roles are cluster-level: dropping the per-test database leaves this one behind for the
+    # next test on the container (a stray `connector_probe` failed the goal-ledger isolation
+    # test by shard order, bu-28av8x.12). Use a unique name and drop it on teardown.
+    session_role = f"connector_probe_{uuid.uuid4().hex[:8]}"
 
     control_db_url = migration_bootstrap_db_url(postgres_container, db_name)
+
+    def _drop_probe_role() -> None:
+        engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(f"DROP ROLE IF EXISTS {session_role}"))
+        finally:
+            engine.dispose()
+
+    request.addfinalizer(_drop_probe_role)
     setup_engine = create_engine(control_db_url, isolation_level="AUTOCOMMIT")
     try:
         with setup_engine.connect() as conn:
@@ -713,14 +725,9 @@ def test_connector_writer_role_enforcement(postgres_container):
         )
 
 
-def test_role_fallback_when_absent(postgres_container, caplog):
-    """Database.connect() with a non-existent role creates the pool without SET ROLE.
-
-    The butler should operate normally (shared-user privileges) and log a warning
-    rather than raising an exception.
-    """
+def test_role_absent_refuses_without_shared_user_pool(postgres_container):
+    """Adopted runtime policy refuses even when the normal login could query."""
     db_url = _create_db(postgres_container, _unique_db_name())
-
     from butlers.db import Database
 
     parsed = urlparse(db_url)
@@ -731,31 +738,18 @@ def test_role_fallback_when_absent(postgres_container, caplog):
         port=parsed.port or 5432,
         user=parsed.username or "postgres",
         password=parsed.password or "postgres",
-        min_pool_size=1,
+        min_pool_size=0,
         max_pool_size=2,
     )
 
-    async def _exercise() -> tuple[int | None, bool]:
-        pool = await db.connect()
-        try:
-            result = await pool.fetchval("SELECT 1")
-            return result, db._role_verified
-        finally:
-            await db.close()
+    async def _exercise():
+        with pytest.raises(RuntimeError, match="role establishment failed"):
+            await db.connect()
+        assert db.pool is None
+        assert not db._role_verified
+        assert db.role_enforcement_disabled
 
-    with caplog.at_level(logging.WARNING, logger="butlers.db"):
-        result, role_verified = asyncio.run(_exercise())
-
-    # Pool was created; basic queries still work.
-    assert result == 1
-    # Role verification failed; _role_verified must be False.
-    assert not role_verified
-    # A warning about the missing role should have been logged.
-    assert any(
-        "butler_nonexistent_role_xyz" in record.message
-        for record in caplog.records
-        if record.levelno >= logging.WARNING
-    ), "Expected a warning about the absent role, got: " + str([r.message for r in caplog.records])
+    asyncio.run(_exercise())
 
 
 def test_role_reset_on_connection_return(postgres_container):
@@ -834,15 +828,6 @@ def test_role_reset_requires_normal_migration_login_membership(postgres_containe
 
     assert login_attributes == (False, False, False)
 
-    control_engine = create_engine(
-        migration_bootstrap_db_url(postgres_container, db_name), isolation_level="AUTOCOMMIT"
-    )
-    try:
-        with control_engine.connect() as conn:
-            conn.execute(text(f"REVOKE {_quote_ident(role)} FROM {_quote_ident(migration_user)}"))
-    finally:
-        control_engine.dispose()
-
     from butlers.db import Database
 
     db = Database(
@@ -859,11 +844,29 @@ def test_role_reset_requires_normal_migration_login_membership(postgres_containe
     async def _run() -> None:
         pool = await db.connect()
         try:
-            with pytest.raises(
-                asyncpg.exceptions.InsufficientPrivilegeError, match="permission denied"
-            ):
-                async with pool.acquire():
-                    pass
+            async with pool.acquire() as conn:
+                assert await conn.fetchval("SELECT current_user") == role
+            control_engine = create_engine(
+                migration_bootstrap_db_url(postgres_container, db_name),
+                isolation_level="AUTOCOMMIT",
+            )
+            try:
+                with control_engine.connect() as control:
+                    control.execute(
+                        text(f"REVOKE {_quote_ident(role)} FROM {_quote_ident(migration_user)}")
+                    )
+                with pytest.raises(RuntimeError, match="role acquisition failed") as error:
+                    async with pool.acquire():
+                        pytest.fail("revoked connection reached caller")
+                assert isinstance(
+                    error.value.__cause__, asyncpg.exceptions.InsufficientPrivilegeError
+                )
+            finally:
+                with control_engine.connect() as control:
+                    control.execute(
+                        text(f"GRANT {_quote_ident(role)} TO {_quote_ident(migration_user)}")
+                    )
+                control_engine.dispose()
         finally:
             await db.close()
 

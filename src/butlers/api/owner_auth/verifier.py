@@ -11,9 +11,9 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from importlib.util import find_spec, module_from_spec
 
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from fido2.server import Fido2Server
 from fido2.webauthn import (
     AttestationObject,
     AttestedCredentialData,
@@ -22,11 +22,21 @@ from fido2.webauthn import (
     UserVerificationRequirement,
 )
 
-# Yubico's debug messages can contain credential identifiers.
-logging.getLogger("fido2").disabled = True
-logging.getLogger("fido2").propagate = False
-logging.getLogger("fido2").handlers = [logging.NullHandler()]
-logging.getLogger("fido2.server").disabled = True
+# Execute the installed vendor implementation in a private module namespace.
+# Its methods then retain their own globals for the whole call, including while
+# another thread reloads the canonical fido2.server module. Do not register this
+# module in sys.modules or mutate the canonical module or registry loggers.
+_library_spec = find_spec("fido2.server")
+if _library_spec is None or _library_spec.loader is None:
+    raise RuntimeError("WebAuthn verifier implementation is unavailable")
+_library_server = module_from_spec(_library_spec)
+_library_spec.loader.exec_module(_library_server)
+_library_log_sink = logging.Logger("fido2.server")
+_library_log_sink.disabled = True
+_library_log_sink.propagate = False
+_library_log_sink.addHandler(logging.NullHandler())
+_library_server.logger = _library_log_sink
+Fido2Server = _library_server.Fido2Server
 
 
 class InvalidProof(ValueError):

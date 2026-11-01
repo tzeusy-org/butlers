@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
-from ci_partition import digest, file_path
+from ci_evidence import digest, file_path
 from ci_shard_observer import (  # noqa: F401 - source hooks retained for execution
     Observer,
     node_digest,

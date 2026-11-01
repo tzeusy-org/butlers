@@ -277,7 +277,7 @@ export function ConversationList({
   const readError = isSearchActive ? isSearchError : isConversationsError;
   const retryRead = isSearchActive ? refetchSearch : refetchConversations;
   const errorLabel = isSearchActive ? "conversation search results" : "conversations";
-  const messageSearchResults: MessageSearchResult[] = messageSearchData?.data ?? [];
+  const messageSearchResults: MessageSearchResult[] = messageSearchData?.items ?? [];
 
   // Collapse strategy: width switches INSTANTLY (no width transition) so no
   // layout property is animated. Expandable content (search, list labels) is

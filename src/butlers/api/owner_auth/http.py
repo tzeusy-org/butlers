@@ -16,8 +16,13 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
-from butlers.api.owner_auth.context import in_http_request, verified_http_principal
-from butlers.api.owner_auth.service import AuthError
+from butlers.api.owner_auth.service import AuthError, _locator
+from butlers.core.dashboard_stepup import (
+    DashboardStepUpProof,
+    dashboard_stepup_proof,
+    verified_dashboard_session,
+)
+from butlers.core.owner_auth_context import in_http_request, verified_http_principal
 
 PREFIX = "/api/auth/owner"
 CEREMONY_ROUTES = {
@@ -28,6 +33,7 @@ CEREMONY_ROUTES = {
     ("POST", "/registration/finish"): 65536,
     ("POST", "/login/options"): 1024,
     ("POST", "/login/finish"): 16384,
+    ("POST", "/step-up/finish"): 16384,
     ("POST", "/ceremony/cancel"): 1024,
     ("POST", "/session"): 4096,
     ("GET", "/csrf"): 0,
@@ -77,6 +83,8 @@ def _single_headers(connection: HTTPConnection) -> None:
         "host",
         "origin",
         "x-api-key",
+        "x-butlers-confirm-callback-token",
+        "x-dashboard-step-up",
         "x-csrf-token",
         "content-type",
         "content-length",
@@ -175,6 +183,8 @@ class OwnerAuthMiddleware:
             return
         request_context = in_http_request.set(True)
         principal_context = verified_http_principal.set(None)
+        dashboard_context = verified_dashboard_session.set(None)
+        stepup_context = dashboard_stepup_proof.set(None)
         try:
             _single_headers(connection)
             service = getattr(scope["app"].state, "owner_auth_service", None)
@@ -191,6 +201,18 @@ class OwnerAuthMiddleware:
 
                 expected = getattr(scope["app"].state, "approval_callback_connector_token", None)
                 supplied = connection.headers.get(APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER)
+                confirm_token = connection.headers.get("x-butlers-confirm-callback-token")
+                if (
+                    method == "POST"
+                    and path == "/api/confirms/callback"
+                    and expected
+                    and confirm_token
+                    and hmac.compare_digest(confirm_token.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    scope.setdefault("state", {})["confirm_callback_authenticated"] = True
+                    # Informational callback authority never creates an owner principal/session.
+                    await self.app(scope, receive, send)
+                    return
                 if (
                     expected
                     and supplied
@@ -249,6 +271,14 @@ class OwnerAuthMiddleware:
                 raise _bad_request()
             scope.setdefault("state", {})["owner_authority"] = authority
             verified_http_principal.set("owner")
+            session_digest = getattr(authority, "session_digest", None)
+            if session_digest is not None:
+                verified_dashboard_session.set(session_digest)
+                nonce = connection.headers.get("x-dashboard-step-up")
+                if nonce is not None:
+                    dashboard_stepup_proof.set(
+                        DashboardStepUpProof(session_digest, _locator(nonce))
+                    )
 
             streaming = False
             stream_closed = False
@@ -289,6 +319,8 @@ class OwnerAuthMiddleware:
             else:
                 await _error(exc)(scope, receive, send)
         finally:
+            dashboard_stepup_proof.reset(stepup_context)
+            verified_dashboard_session.reset(dashboard_context)
             verified_http_principal.reset(principal_context)
             in_http_request.reset(request_context)
 
@@ -319,9 +351,13 @@ class OwnerAuthMiddleware:
             ):
                 raise _forbidden()
         # Every cookie-bound ceremony proves CSRF before buffering its body.
-        if method == "POST" and path not in {"/context", "/session"}:
+        if method == "POST" and path not in {"/context", "/session", "/step-up/finish"}:
             if not preauth or not csrf:
                 raise _forbidden()
+        if path == "/step-up/finish":
+            if key is not None:
+                raise _forbidden()
+            await service.authorize(session_token=owner, csrf_token=csrf, unsafe=True)
         if method == "DELETE":
             await service.authorize(session_token=owner, api_key=key, csrf_token=csrf, unsafe=True)
         body = await _body(request, CEREMONY_ROUTES[route])
@@ -352,6 +388,11 @@ class OwnerAuthMiddleware:
             _fields(body, {"request_id": str})
             result = await service.registration_options(preauth, csrf, body["request_id"])
             return _response(result.data, result.status_code)
+        if path == "/step-up/finish":
+            _fields(body, {"ceremony_id": str, "credential": dict})
+            return _response(
+                await service.finish_stepup(owner, csrf, body["ceremony_id"], body["credential"])
+            )
         if path == "/login/options":
             _fields(body, {})
             return _response(await service.login_options(preauth, csrf))

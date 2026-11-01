@@ -374,20 +374,19 @@ async def test_no_unexpected_errors_in_log(
     ]
 
     unexpected_errors = []
-    with open(e2e_log_path) as log_file:
-        for line in log_file:
-            if error_pattern.search(line):
-                # Check if this is an expected error
-                is_expected = any(
-                    re.search(pattern, line, re.IGNORECASE) for pattern in expected_error_patterns
-                )
-                if not is_expected:
-                    unexpected_errors.append(line.strip())
-
+    log_text = await asyncio.to_thread(Path(e2e_log_path).read_text)
+    for line in log_text.splitlines(keepends=True):
+        if error_pattern.search(line):
+            # Check if this is an expected error
+            is_expected = any(
+                re.search(pattern, line, re.IGNORECASE) for pattern in expected_error_patterns
+            )
+            if not is_expected:
+                unexpected_errors.append(line.strip())
     # Assert no unexpected errors (allow up to 5 lines for context)
     if unexpected_errors:
         error_summary = "\n".join(unexpected_errors[:5])
-        assert False, (
+        raise AssertionError(
             f"Found {len(unexpected_errors)} unexpected ERROR log entries:\n{error_summary}"
         )
 

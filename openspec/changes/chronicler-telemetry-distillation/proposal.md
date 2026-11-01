@@ -24,6 +24,16 @@ feeder-repair counterpart. Full grounding, code citations, and the detailed
 per-source gap analysis live in
 `docs/plans/2026-07-06-telemetry-distillation-design.md`.
 
+## Goal-runtime conformance
+
+This change is re-scoped to adopted RFC 0038 before archive, as recorded in
+`generalist-lead-focused-delegation/collision-dispositions.md`. The existing
+projection, retention, rollup and source-health rules remain deterministic.
+Day-close narration is a declared Chronicler obligation goal, not a model
+function or a session/model call launched by the domain daemon. This is a
+specification amendment, not evidence of runtime conversion or permission to
+activate it; the one-release cutover and archive gates remain unchanged.
+
 ## What Changes
 
 - **New deterministic projection adapter** `home_assistant.sensor_activity`:
@@ -49,16 +59,21 @@ per-source gap analysis live in
   `sleep_missing`, `routine_break`, `lane_share_outlier`), each rule
   consulting `source_adapter_state` first so a known feeder outage is flagged
   as an outage, not fabricated as a behavioral anomaly.
-- **Optional, additive, bounded LLM labeling pass**: exactly one LLM call per
-  local day (same cost/shape profile as the existing `chronicler_day_close`
-  job), invoked only after the deterministic rollup + flags are written, over
-  the already-reduced rollup output — never per-event, per RFC 0014 §D5.
-  Presentation polish only; the deterministic rollup/flags are correct and
-  complete without it.
+- **Optional, additive, bounded goal narration**: after deterministic
+  rollup + flags are written, a scheduled producer submits a declared
+  Chronicler obligation to goal admission (RFC 0038 D2, D5 and D18). Its lead
+  narrates only the already-reduced output, never raw events. The existing
+  at-most-one model call per local day remains a separate hard bound across
+  turns, retries and recovery; one goal alone does not satisfy it. The
+  obligation's declared capabilities, origin ceiling, source exposure/taint
+  and finite goal budget govern execution. Presentation polish only;
+  deterministic rollup/flags remain correct and complete without narration.
 - **No new ingestion path, no new connector, no schema change to another
   butler.** Every new adapter reuses the existing `ProjectionAdapter` contract
-  and scheduled-job/cron pattern; the rollup tables are new Chronicler-owned
-  tables only.
+  and deterministic scheduled-job/cron pattern; the rollup tables are new
+  Chronicler-owned tables only. Scheduling reasoning submits an obligation
+  admission instead of launching a domain session, and no new subscription,
+  capability grant or model-function exception is introduced here.
 
 ## Capabilities
 
@@ -92,8 +107,10 @@ per-source gap analysis live in
 - **Backend** (`roster/chronicler/api/router.py` + `api/models.py`): new
   `GET /api/chronicler/rollups` (or equivalent) read surface, following the
   degraded-source envelope conventions where a `feeder_dark` flag is present.
-- **Backend** (`roster/chronicler/butler.toml`): new scheduled-job entries for
-  the two adapters and the rollup materializer.
+- **Backend** (`roster/chronicler/butler.toml`): deterministic scheduled-job
+  entries for the two adapters and rollup materializer; narration requires a
+  git-declared Chronicler obligation and its declared capability set. This
+  amendment changes no roster configuration or running schedule.
 - **Migration** (`roster/chronicler/migrations/`): `daily_rollups`,
   `daily_rollup_flags` tables; `source_adapter_state`-consulting retention-lag
   metric for the new HA adapter (illustrative shapes only — see design doc
@@ -111,8 +128,10 @@ per-source gap analysis live in
   aggregates whatever `activity`-layer episodes already exist), but is more
   useful once they land, so it sequences after in practice.
 - The anomaly-flag rule set depends on the rollup materializer.
-- The LLM labeling pass depends on the anomaly-flag rule set (it narrates
-  flags) and is the last, fully optional link in the chain.
+- The narration obligation depends on the anomaly-flag rule set (it narrates
+  flags) and is the last, fully optional link in the chain. Its admission and
+  grant/budget custody follow RFC 0038; deterministic projection jobs do not
+  become goals merely because narration uses their reduced output.
 - Wiring `routine_break` into bu-whhll.12's gap-interview surface is a
   coordination point, not a hard dependency — implement against whichever of
   the two lands first.
