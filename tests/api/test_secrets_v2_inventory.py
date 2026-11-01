@@ -489,13 +489,37 @@ def test_inventory_empty_store():
     assert "meta" in body
 
     data = body["data"]
-    assert data["cli"] == []
+    # Store-only CLI providers (Claude) always get a row to paste a key into.
+    assert [(row["key"], row["state"]) for row in data["cli"]] == [("cli-auth/claude", "never_set")]
     assert data["system"] == []
     assert data["user"] == []
 
     meta = body["meta"]
     assert meta["failing_count"] == 0
     assert meta["unverified_count"] == 0
+
+
+def test_inventory_stored_store_only_key_replaces_placeholder():
+    """A stored Claude key is listed once, from its real row."""
+    cli_row = _make_system_row(key="cli-auth/claude", category="cli-auth", last_test_ok=True)
+    mock_db = _make_db_manager(butler_names=[], cli_rows=[cli_row])
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+
+    rows = [row for row in resp.json()["data"]["cli"] if row["key"] == "cli-auth/claude"]
+    assert len(rows) == 1
+    assert rows[0]["state"] != "never_set"
+    assert rows[0]["fingerprint"] is not None
+
+
+def test_inventory_no_placeholder_beside_legacy_per_butler_cli_auth_row():
+    """A relocated per-butler Claude row is real state; no placeholder shadows it."""
+    legacy = _make_system_row(key="cli-auth/claude", category="cli-auth", last_test_ok=None)
+    mock_db = _make_db_manager(butler_names=["switchboard"], system_rows=[legacy])
+    resp = _build_app(mock_db).get("/api/secrets/inventory")
+    assert resp.status_code == 200, resp.text
+
+    assert all(row["key"] != "cli-auth/claude" for row in resp.json()["data"]["cli"])
 
 
 def test_inventory_no_shared_pool_returns_empty_user_and_cli():

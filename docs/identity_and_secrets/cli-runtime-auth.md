@@ -17,6 +17,7 @@ The provider registry at `src/butlers/cli_auth/registry.py` defines:
 | `opencode-openai` | OpenCode (OpenAI) | device_code | opencode | `opencode` |
 | `codex` | Codex (OpenAI) | device_code | codex | `codex` |
 | `opencode-go` | OpenCode Go | api_key | opencode | `opencode` |
+| `claude` | Claude (Anthropic) | api_key | claude | `claude` |
 
 ### Provider Definition
 
@@ -63,6 +64,17 @@ The `opencode-go` provider uses `api_key` auth mode instead of device-code:
 - The API key is entered through the dashboard and stored in the credential store.
 - The key is injected as an environment variable (`OPENCODE_GO_API_KEY`) at runtime.
 - Validation runs a test command against the provider to verify the key works.
+
+The `claude` provider is **store-only**: it has no `token_path`, so the key lives only in
+`butler_secrets` under `cli-auth/claude`, and `ClaudeCodeAdapter` injects it as
+`ANTHROPIC_API_KEY` at spawn time.
+
+- `PUT /api/cli-auth/claude/api-key` writes that row directly. It returns 503 when no credential
+  store is reachable rather than reporting an unsaved key as stored.
+- `/secrets` always lists a `cli-auth/claude` CLI row. It shows `never_set` until a key is saved,
+  so the first key has somewhere to be pasted.
+- `POST /api/cli-auth/claude/test` runs the health probe. That probe checks key presence and
+  format only; it does not call the Anthropic API.
 
 ## Health Probes
 
@@ -136,7 +148,7 @@ for name, p in PROVIDERS.items():
     print(name, p.auth_mode, p.binary)
 "
 # Expected: codex (device_code, codex), opencode-openai (device_code, opencode),
-# opencode-go (api_key, opencode)
+# opencode-go (api_key, opencode), claude (api_key, claude)
 
 # 2. Confirm tokens are stored in butler_secrets under the cli-auth/ namespace
 psql -h localhost -U butlers -d butlers -c \

@@ -4,7 +4,7 @@ Provides a REST API for starting and polling CLI tool authentication
 flows. Supports two modes:
 
 - **device_code**: Interactive device-code authorization (OpenCode, Codex).
-- **api_key**: Simple API key storage and validation (OpenCode Go).
+- **api_key**: Simple API key storage and validation (OpenCode Go, Claude).
 
 After a successful auth flow, credentials are persisted to the shared
 credential store so they survive container restarts (no PV needed).
@@ -34,6 +34,7 @@ from butlers.api.models.cli_auth import (
 from butlers.cli_auth.health import AuthHealthState, probe_all, probe_provider
 from butlers.cli_auth.persistence import (
     capture_device_auth_authority_baseline,
+    persist_store_only_api_key,
     persist_validated_staged_device_auth_bytes,
 )
 from butlers.cli_auth.registry import PROVIDERS, CLIAuthProviderDef
@@ -329,6 +330,25 @@ async def save_api_key(
         raise HTTPException(
             status_code=400,
             detail=f"Provider '{provider}' uses {provider_def.auth_mode} mode, not api_key.",
+        )
+
+    if provider_def.token_path is None:
+        # Store-only provider (e.g. Claude): the credential store row is the
+        # only copy, so there is nothing to report as stored without a DB.
+        store = _make_credential_store(db_manager)
+        if store is None:
+            raise HTTPException(status_code=503, detail="Credential store unavailable.")
+        try:
+            await persist_store_only_api_key(provider_def, store, body.api_key)
+        except Exception as exc:
+            # Never log the exception: DB bind context can retain the key.
+            logger.warning("CLI auth: failed to store API key for %s", provider_def.name)
+            raise HTTPException(status_code=500, detail="Failed to store API key.") from exc
+        logger.info("CLI auth: stored API key for %s", provider_def.name)
+        return CLIAuthApiKeyResponse(
+            provider=provider_def.name,
+            stored=True,
+            message=f"API key saved for {provider_def.display_name}.",
         )
 
     # Write the key into the CLI's auth.json so the binary can use it
@@ -744,8 +764,9 @@ async def _run_provider_test(
     sandbox: DashboardCLIAuthSandbox | None = None,
 ) -> CLIAuthTestResponse:
     """Run the live credential check for a provider and return the outcome."""
-    if provider_def.auth_mode != "api_key":
-        # device_code (and any non-api_key) provider: probe live auth health.
+    if provider_def.auth_mode != "api_key" or provider_def.token_path is None:
+        # device_code providers, and store-only api_key providers (e.g. Claude)
+        # with no auth file for a test command to read: probe live auth health.
         store = credential_store or _make_credential_store(db_manager)
         health = await probe_provider(
             provider_def,

@@ -917,6 +917,19 @@ def test_cli_credential_miss_returns_404():
     assert resp.status_code == 404
 
 
+def test_cli_credential_miss_for_store_only_provider_returns_never_set_placeholder():
+    """An unset Claude key opens as never_set, matching its inventory row."""
+    mock_db = _make_db_manager_for_per_credential(cli_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/cli/cli-auth/claude")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["id"] == "cli-auth/claude"
+    assert data["state"] == "never_set"
+    assert data["fingerprint"] is None
+
+
 def test_cli_credential_miss_no_shared_pool_returns_404():
     """Miss case: unavailable shared pool returns 404."""
     mock_db = _make_db_manager_for_per_credential(cli_row=None, shared_pool_available=False)
