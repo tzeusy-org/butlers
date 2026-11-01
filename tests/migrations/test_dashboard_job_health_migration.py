@@ -43,7 +43,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
         postgres_container,
         name,
         chains=["core"],
-        revisions={"core": "core_295"},
+        revisions={"core": "core_297"},
     )
     owner = make_url(url).username
     assert owner is not None
@@ -178,8 +178,8 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     bootstrap_config = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, name), chains=["core"]
     )
-    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_294")
-    await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_295")
+    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_295")
+    await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_297")
     conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
         posture = await conn.fetch(
@@ -241,7 +241,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     config = _build_alembic_config(url, chains=["core"])
     for direction, target, revision in (
         ("downgrade", "core_282", "core_282"),
-        ("upgrade", "core@core_295", "core_295"),
+        ("upgrade", "core@core_297", "core_297"),
     ):
         await asyncio.to_thread(getattr(command, direction), config, target)
         conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
@@ -285,7 +285,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     finally:
         await prerequisites.close()
     peer_config = _build_alembic_config(url, chains=["core"], target_schema="general")
-    await asyncio.to_thread(command.upgrade, peer_config, "core@core_295")
+    await asyncio.to_thread(command.upgrade, peer_config, "core@core_297")
     pool = await asyncpg.create_pool(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
         shared_store = JobHealthStore(lambda: pool)
@@ -328,25 +328,25 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
                     ),
                 }
 
-        # Exercise own295's immediate public294 boundary before preserving the
-        # older genuine287 serving-evidence control below. A294 schema is no
+        # Exercise own295's immediate public295 boundary before preserving the
+        # older genuine287 serving-evidence control below. A295 schema is no
         # longer a health consumer, while its295 peer still is.
         boundary_snapshot = await shared_snapshot()
         assert boundary_snapshot["health"] and boundary_snapshot["history"]
-        await asyncio.to_thread(command.downgrade, bootstrap_config, "core_294")
-        # pinned-revision: this schema leaves own295 for its exact public294 predecessor
-        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_294"
+        await asyncio.to_thread(command.downgrade, bootstrap_config, "core_295")
+        # pinned-revision: this schema leaves own295 for its exact public295 predecessor
+        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_295"
         # pinned-revision: its peer remains at own295 while the first schema leaves
-        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_295"
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_297"
         assert await shared_snapshot() == boundary_snapshot
-        await asyncio.to_thread(command.downgrade, peer_config, "core_294")
-        # pinned-revision: this peer also leaves own295 for its exact public294 predecessor
-        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_294"
+        await asyncio.to_thread(command.downgrade, peer_config, "core_295")
+        # pinned-revision: this peer also leaves own295 for its exact public295 predecessor
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_295"
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NULL")
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_transitions') IS NULL")
         assert await pool.fetchval("SELECT to_regclass('public.model_served_usage') IS NOT NULL")
-        await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_295")
-        await asyncio.to_thread(command.upgrade, peer_config, "core@core_295")
+        await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_297")
+        await asyncio.to_thread(command.upgrade, peer_config, "core@core_297")
         await shared_recorder.starting()
         await shared_recorder.tick_ok()
         assert not shared_store.unavailable_jobs
@@ -360,10 +360,10 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
             "attempt_key",
         }
         assert before_shared["served_child"] is True
-        # pinned-revision: this schema explicitly enters own core_295 for the shared-lifetime control
-        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_295"
-        # pinned-revision: this schema explicitly enters own core_295 for the shared-lifetime control
-        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_295"
+        # pinned-revision: this schema explicitly enters own core_297 for the shared-lifetime control
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_297"
+        # pinned-revision: this schema explicitly enters own core_297 for the shared-lifetime control
+        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_297"
         await asyncio.to_thread(command.downgrade, bootstrap_config, "core_287")
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NOT NULL")
         assert await pool.fetchval(
@@ -381,8 +381,8 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
         assert await shared_snapshot() == before_shared
         # pinned-revision: this schema explicitly leaves public core_290 to its actual core_287 parent
         assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_287"
-        # pinned-revision: this schema explicitly enters own core_295 for the shared-lifetime control
-        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_295"
+        # pinned-revision: this schema explicitly enters own core_297 for the shared-lifetime control
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_297"
         await shared_recorder.tick_ok()
         assert not shared_store.unavailable_jobs
         await asyncio.to_thread(command.downgrade, peer_config, "core_287")
@@ -399,7 +399,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
             )
             == 0
         )
-        await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_295")
+        await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_297")
         # The public chain was just recreated by bootstrap, including public291's
         # owner-required ALTER. Replay this later chain with that same authority;
         # the initial full-chain replay and its ordinary-role proofs stay above.
@@ -408,7 +408,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
             chains=["core"],
             target_schema="general",
         )
-        await asyncio.to_thread(command.upgrade, bootstrap_peer_config, "core@core_295")
+        await asyncio.to_thread(command.upgrade, bootstrap_peer_config, "core@core_297")
         restored_shared = await shared_snapshot()
         assert restored_shared["served_columns"] == before_shared["served_columns"]
         assert restored_shared["served_child"] is True
@@ -436,7 +436,7 @@ async def test_job_health_ordinary_backup_preserves_typed_history_and_fresh_proc
         postgres_container,
         name,
         chains=["core"],
-        revisions={"core": "core_295"},
+        revisions={"core": "core_297"},
     )
     source = make_url(url)
     root = _REPO_ROOT

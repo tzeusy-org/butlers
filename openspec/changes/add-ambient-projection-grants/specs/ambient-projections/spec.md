@@ -85,6 +85,27 @@ Scope: v1-mandatory
 - **THEN** both SHALL return the same `state_class`
 - **AND** the glance SHALL make no model call
 
+### Requirement: Glance formats for dumb surfaces
+
+The glance route SHALL accept `format=json` (the default envelope above), `format=text` or `format=png`; any other format SHALL be refused with 422. The text and PNG formats SHALL render the same composed glance, one fact per line, and SHALL print `valid_until` (in UTC, to the minute) so a surface that cannot parse JSON still shows when its picture stops being true. The PNG SHALL be 1-bit, sized by `width` and `height` between 128 and 1600 pixels (default 400 by 300), and SHALL keep the `valid_until` line on its bottom edge however much text precedes it. A household grant's text and PNG SHALL carry no more than its JSON glance. Grant fetches of one projection within 30 seconds SHALL reuse one composed glance (a per-grant cache), and each such fetch SHALL still stamp the grant's last fetch; an owner preview SHALL always recompose and SHALL NOT fill the cache. A revoked grant never reaches the cache, because the grant boundary answers 404 first.
+
+ID: REQ-ambient-projections-005
+Source: bu-q7vx1q.11 acceptance criteria (glance 2, PNG); bu-q7vx1q.95
+Scope: v1-mandatory
+
+#### Scenario: Text and PNG print their expiry
+
+- **WHEN** a household grant fetches `format=text` and `format=png`
+- **THEN** the text SHALL end with `Valid until` and the glance's `valid_until`
+- **AND** the PNG SHALL be a 1-bit image of the requested size whose bottom edge carries the expiry
+- **AND** neither SHALL contain a name, amount or health fact from an attention item
+
+#### Scenario: Format fetches share one composition
+
+- **WHEN** a surface fetches its JSON glance and then its PNG within 30 seconds
+- **THEN** the dashboard state SHALL be composed once and both fetches SHALL stamp the grant
+- **AND** an owner preview in between SHALL compose afresh
+
 ### Requirement: Consumer liveness
 
 A projection surface that stops fetching SHALL become visible to the owner. Each active grant whose last fetch time, or its creation time if it has never fetched, is older than twice its expected fetch interval (the moment that surface's last glance passed its `valid_until`) SHALL contribute exactly one low-severity attention item with `source = "projection"` to the dashboard attention model that `GET /api/dashboard/briefing` and the glance share. The item SHALL name the grant's label and how long ago the surface last fetched. The condition SHALL be derived when the attention model is read, from `public.ambient_projections` through a role that may only SELECT it: it SHALL write nothing, schedule nothing and call no model, and the item SHALL disappear on the surface's next successful grant fetch. A revoked grant SHALL contribute no item. The glance served to a surface under its own grant SHALL omit that surface's own item, because the surface is fetching. A household glance SHALL show the item only as its fixed kind label. A failure to read the grants SHALL record `projections` as a failed source rather than read as no lapsed surface.
