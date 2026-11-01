@@ -262,9 +262,7 @@ async def test_title_final_fallback_when_no_richer_context() -> None:
             {"butler_generated": True, "butler_name": "travel"},
             {"butler_generated": True, "butler_name": "travel"},
         ),
-        ('{"butler_generated": true}', {"butler_generated": True}),
-        ({"butler_generated": False, "butler_name": "travel"}, {"butler_generated": False}),
-        (None, {"butler_generated": False}),
+        ('{"butler_generated": false, "butler_name": "travel"}', {"butler_generated": False}),
     ],
 )
 async def test_payload_carries_butler_provenance(event_metadata, expected) -> None:

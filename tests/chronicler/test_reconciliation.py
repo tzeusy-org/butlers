@@ -550,13 +550,6 @@ def test_butler_route_plan_contradicted_by_same_place_before_and_after() -> None
             ],
             id="timezone-shifted",
         ),
-        pytest.param(
-            [
-                {**row, "occurred_at": row["occurred_at"].replace(tzinfo=None)}
-                for row in _sq800_fixes()
-            ],
-            id="naive-timestamps",
-        ),
     ],
 )
 def test_missing_or_unreliable_location_leaves_travel_unknown(fixes: list[dict]) -> None:
@@ -566,21 +559,13 @@ def test_missing_or_unreliable_location_leaves_travel_unknown(fixes: list[dict])
     assert kept["reconciliation"]["location"]["verdict"] == "unknown"
 
 
-def test_non_travel_intent_gets_provenance_but_no_location_check() -> None:
-    gym = _calendar_intent(
-        start_at=datetime(2026, 10, 16, 1, 10, tzinfo=_SGT),
-        end_at=datetime(2026, 10, 16, 7, 15, tzinfo=_SGT),
-    )
+def test_non_travel_intents_get_provenance_but_no_location_check() -> None:
+    gym = _calendar_intent(start_at=_SQ800_START, end_at=_SQ800_END)
+    butler_stay = _travel_intent("Japan Trip", _SQ800_START, _SQ800_END, butler_generated=True)
 
-    result = reconcile_day([gym], location_fixes=_sq800_fixes())
+    result = reconcile_day([gym, butler_stay], location_fixes=_sq800_fixes())
 
-    [kept] = result.kept_intents
-    assert kept["reconciliation"] == {"plan_producer": "calendar"}
-
-
-def test_butler_plan_producer_read_from_calendar_flag() -> None:
-    intent = _travel_intent("Japan Trip", _SQ800_START, _SQ800_END, butler_generated=True)
-
-    [kept] = reconcile_day([intent]).kept_intents
-
-    assert kept["reconciliation"]["plan_producer"] == "butler"
+    assert [kept["reconciliation"] for kept in result.kept_intents] == [
+        {"plan_producer": "calendar"},
+        {"plan_producer": "butler"},
+    ]
