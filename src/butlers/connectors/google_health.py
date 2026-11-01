@@ -199,6 +199,14 @@ _DEFAULT_MAX_INFLIGHT = 8
 # silently masked by sibling resources' successful polls.
 _RESOURCE_DEGRADED_FAILURE_THRESHOLD = 3
 
+# Upper bound on ``nextPageToken`` continuations followed for one measurement poll.
+# Exceeding it leaves the window incomplete: the poll fails and keeps its checkpoint.
+_MAX_MEASUREMENT_PAGES = 50
+
+
+class GoogleHealthPollIncompleteError(GoogleHealthError):
+    """A poll could not consume its whole window; its checkpoint must not advance."""
+
 
 # ---------------------------------------------------------------------------
 # Google Health-specific Prometheus metrics
@@ -402,11 +410,11 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
         normalized_summary="Workout: {activity_type} ({duration_label})",
     ),
     # Body measurements: one reading per sample (``category="measurement"``), keyed on
-    # the sample's physical time.  Plain ``dataPoints`` list endpoints: ``:reconcile`` is
-    # unconfirmed for these types (bu-q7vx1q.35).
+    # the sample's physical time.  ``:reconcile`` under Reconciled Stream Consumption; every
+    # ``nextPageToken`` page is consumed before the window counts as complete (bu-u5euwb.10).
     ResourceBundle(
         resource="weight",
-        endpoint_path="/users/me/dataTypes/weight/dataPoints",
+        endpoint_path="/users/me/dataTypes/weight/dataPoints:reconcile",
         data_type="weight",
         filter_field="weight.sample_time.physical_time",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
@@ -416,7 +424,7 @@ RESOURCE_BUNDLES: tuple[ResourceBundle, ...] = (
     ),
     ResourceBundle(
         resource="body_fat",
-        endpoint_path="/users/me/dataTypes/body-fat/dataPoints",
+        endpoint_path="/users/me/dataTypes/body-fat/dataPoints:reconcile",
         data_type="body-fat",
         filter_field="body_fat.sample_time.physical_time",
         poll_interval_key="GOOGLE_HEALTH_POLL_HEALTH_METRICS_S",
@@ -1961,9 +1969,9 @@ class GoogleHealthConnector:
                 ]
         else:
             params = self._build_params(bundle, state, since, until)
-            data = await client.get_json(bundle.endpoint_path, params=params)
             records = [
-                _normalize_google_health_record(bundle, record) for record in _extract_records(data)
+                _normalize_google_health_record(bundle, record)
+                for record in await self._get_window_records(client, bundle, params)
             ]
 
         # Observe rate-limit headers per (account, resource) for metrics visibility.
@@ -1982,6 +1990,7 @@ class GoogleHealthConnector:
         observed_at = now.isoformat()
         emitted = 0
         latest_cursor = state.last_cursor
+        submission_failed = False
 
         for record in records:
             record_id = _record_identity(bundle, record)
@@ -2020,7 +2029,9 @@ class GoogleHealthConnector:
                     normalized_summary_template=bundle.normalized_summary,
                     observed_at=observed_at,
                 )
-            await self._submit_envelope(envelope, resource=bundle.resource)
+            if not await self._submit_envelope(envelope, resource=bundle.resource):
+                submission_failed = True
+                break
             emitted += 1
             latest_cursor = record_id
 
@@ -2028,6 +2039,13 @@ class GoogleHealthConnector:
             endpoint_identity=endpoint_identity,
             resource=bundle.resource,
         ).inc(emitted)
+
+        if submission_failed:
+            # Accepted samples replay under their unchanged keys on the next poll; the
+            # checkpoint, poll time and backfill flag stay at their last committed values.
+            raise GoogleHealthPollIncompleteError(
+                f"{bundle.resource}: an ingest submission failed; checkpoint not advanced"
+            )
 
         if latest_cursor and latest_cursor != state.last_cursor:
             await self._save_cursor(account_uuid, state, latest_cursor)
@@ -2042,6 +2060,35 @@ class GoogleHealthConnector:
         ).inc()
         self._last_source_api_ok = True
         self._source_api_error_message = None
+
+    async def _get_window_records(
+        self,
+        client: GoogleHealthClient,
+        bundle: ResourceBundle,
+        params: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Fetch a GET resource's records for one poll window.
+
+        Measurement bundles follow ``nextPageToken`` (sent back as ``pageToken`` with the
+        same filter) until the window is exhausted; a window that needs more than
+        ``_MAX_MEASUREMENT_PAGES`` pages raises instead of counting as consumed.
+        """
+        data = await client.get_json(bundle.endpoint_path, params=params)
+        records = _extract_records(data)
+        if bundle.category != "measurement":
+            return records
+        pages = 1
+        while isinstance(data, dict) and (token := data.get("nextPageToken")):
+            if pages >= _MAX_MEASUREMENT_PAGES:
+                raise GoogleHealthPollIncompleteError(
+                    f"{bundle.resource}: window exceeds {_MAX_MEASUREMENT_PAGES} pages"
+                )
+            data = await client.get_json(
+                bundle.endpoint_path, params={**params, "pageToken": token}
+            )
+            records.extend(_extract_records(data))
+            pages += 1
+        return records
 
     def _compute_window(self, state: ResourceState) -> tuple[datetime, datetime]:
         """Compute [since, until] for the next poll.
@@ -2125,11 +2172,15 @@ class GoogleHealthConnector:
     # Submission
     # ------------------------------------------------------------------
 
-    async def _submit_envelope(self, envelope: dict[str, Any], *, resource: str) -> None:
+    async def _submit_envelope(self, envelope: dict[str, Any], *, resource: str) -> bool:
         """Evaluate filter gate and submit to Switchboard.
 
         Filtered events land in :class:`FilteredEventBuffer` (status=filtered).
         Submission errors land in the same buffer (status=error).
+
+        Returns ``True`` when the envelope is handled (accepted, queued, duplicate, or a
+        recorded policy drop) and ``False`` when submission raised or was refused, so the
+        caller does not count the sample as consumed.
         """
         source = envelope.get("source", {})
         event = envelope.get("event", {})
@@ -2179,7 +2230,7 @@ class GoogleHealthConnector:
                                 policy_tier=control.get("policy_tier", "default"),
                             ),
                         )
-                    return
+                    return True
             except Exception as exc:  # noqa: BLE001
                 logger.debug("GoogleHealthConnector: policy evaluation error (fail-open): %s", exc)
 
@@ -2189,16 +2240,19 @@ class GoogleHealthConnector:
                 result = await self._mcp_client.call_tool("ingest", envelope)
                 latency = time.perf_counter() - start_t
                 status = "success"
+                handled = True
                 if isinstance(result, dict):
                     resp_status = result.get("status", "")
                     if resp_status == "duplicate":
                         status = "duplicate"
                     elif resp_status not in ("accepted", "queued", "duplicate"):
+                        handled = False
                         logger.warning(
                             "GoogleHealthConnector: unexpected ingest response: %s", result
                         )
                 self._metrics.record_ingest_submission(status, latency)
                 self._last_source_api_ok = True
+                return handled
             except Exception as exc:  # noqa: BLE001
                 latency = time.perf_counter() - start_t
                 self._metrics.record_ingest_submission("error", latency)
@@ -2215,6 +2269,7 @@ class GoogleHealthConnector:
                         status="error",
                         error_detail=str(exc),
                     )
+                return False
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
         """Submit directly to Switchboard — bypasses filter gate (replay path)."""

@@ -100,8 +100,8 @@ def test_google_health_scope_and_resource_registry_contract() -> None:
         "breathing_rate": "/users/me/dataTypes/daily-respiratory-rate/dataPoints:reconcile",
         "vo2_max": "/users/me/dataTypes/daily-vo2-max/dataPoints:reconcile",
         "workout": "/users/me/dataTypes/exercise/dataPoints:reconcile",
-        "weight": "/users/me/dataTypes/weight/dataPoints",
-        "body_fat": "/users/me/dataTypes/body-fat/dataPoints",
+        "weight": "/users/me/dataTypes/weight/dataPoints:reconcile",
+        "body_fat": "/users/me/dataTypes/body-fat/dataPoints:reconcile",
     }
 
 
@@ -1723,8 +1723,9 @@ async def test_two_account_integration_distinct_heartbeats_and_mints(
 
     submitted_envelopes: list[dict[str, Any]] = []
 
-    async def _capture_envelope(env: dict[str, Any], **kwargs: Any) -> None:
+    async def _capture_envelope(env: dict[str, Any], **kwargs: Any) -> bool:
         submitted_envelopes.append(env)
+        return True
 
     monkeypatch.setattr(connector, "_submit_envelope", _capture_envelope)
 
@@ -2345,7 +2346,8 @@ async def test_policy_block_persists_no_raw_payload() -> None:
         ),
     )
 
-    await connector._submit_envelope(_privacy_envelope(), resource="steps")
+    # A recorded policy drop is handled, so it does not hold the poll checkpoint.
+    assert await connector._submit_envelope(_privacy_envelope(), resource="steps") is True
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
@@ -2366,13 +2368,30 @@ async def test_submission_error_retains_raw_payload() -> None:
     connector._mcp_client.call_tool = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
     envelope = _privacy_envelope()
-    await connector._submit_envelope(envelope, resource="steps")
+    assert await connector._submit_envelope(envelope, resource="steps") is False
 
     rows = connector._filtered_event_buffer._rows
     assert len(rows) == 1
     row = rows[0]
     assert row[8] == "error"
     assert row[9]["payload"]["raw"] == {"steps": 1234}
+
+
+@pytest.mark.parametrize(
+    ("response", "handled"),
+    [
+        ({"status": "accepted"}, True),
+        ({"status": "duplicate"}, True),
+        ({"status": "error", "error": "refused"}, False),
+    ],
+)
+async def test_submission_reports_whether_ingest_handled_it(response, handled) -> None:
+    """A refused ingest response is not reported as consumed (bu-u5euwb.10)."""
+    connector = _make_connector()
+    connector._ingestion_policy = None
+    connector._mcp_client.call_tool = AsyncMock(return_value=response)  # type: ignore[method-assign]
+
+    assert await connector._submit_envelope(_privacy_envelope(), resource="steps") is handled
 
 
 # ---------------------------------------------------------------------------
