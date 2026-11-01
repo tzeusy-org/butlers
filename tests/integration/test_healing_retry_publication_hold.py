@@ -124,13 +124,32 @@ async def _bound_operation(qa_pool, attempt_id: uuid.UUID):
     )
 
 
+async def _egress_started_on_active_attempt(api_pool, qa_pool, attempt_id: uuid.UUID):
+    """Start egress while the attempt is active, then close it as ``failed``.
+
+    Egress may only start for an active attempt (``attempt_not_active``); the
+    hold under test is the one that outlives the attempt reaching terminal.
+    """
+    await api_pool.execute(
+        "UPDATE public.healing_attempts SET status = 'investigating', closed_at = NULL "
+        "WHERE id = $1",
+        attempt_id,
+    )
+    operation = await _bound_operation(qa_pool, attempt_id)
+    assert await mark_egress_started(qa_pool, operation.id)
+    await api_pool.execute(
+        "UPDATE public.healing_attempts SET status = 'failed', closed_at = now() WHERE id = $1",
+        attempt_id,
+    )
+    return operation
+
+
 @pytest.mark.parametrize("stage", ["egress_started", "ambiguous"])
 async def test_retry_of_a_held_fingerprint_is_refused_with_no_insert_or_dispatch(
     api_pool, qa_pool, failed_attempt, stage: str
 ) -> None:
     attempt_id, fingerprint = failed_attempt
-    operation = await _bound_operation(qa_pool, attempt_id)
-    assert await mark_egress_started(qa_pool, operation.id)
+    operation = await _egress_started_on_active_attempt(api_pool, qa_pool, attempt_id)
     if stage == "ambiguous":
         assert await record_outcome(qa_pool, operation.id, "ambiguous")
     client = _Client(api_pool)
@@ -206,8 +225,7 @@ async def test_retry_proceeds_once_the_hold_is_reconciled(
     api_pool, qa_pool, failed_attempt
 ) -> None:
     attempt_id, fingerprint = failed_attempt
-    operation = await _bound_operation(qa_pool, attempt_id)
-    assert await mark_egress_started(qa_pool, operation.id)
+    operation = await _egress_started_on_active_attempt(api_pool, qa_pool, attempt_id)
     client = _Client(api_pool)
     assert (await client.retry(attempt_id)).status_code == 404
     with pytest.raises(PublicationLineageHeld):

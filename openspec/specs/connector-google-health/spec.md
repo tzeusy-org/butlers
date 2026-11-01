@@ -151,9 +151,10 @@ Scope: v1-mandatory
 
 #### Scenario: Provider pages and durable sample cursors remain distinct
 
-- **WHEN** a body-measurement response carries a continuation token
+- **WHEN** a body-measurement, sleep-session or workout-session response carries a continuation token
 - **THEN** the connector SHALL consume the complete selected resource window using the provider's verified continuation semantics for that operation before claiming the window complete
-- **AND** verification and implementation of that continuation remain work of `ingest-google-health-body-measurements`; the retained one-page shape receipt alone SHALL NOT establish multi-page completeness
+- **AND** for body measurements, verification of that continuation remains work of `ingest-google-health-body-measurements`; the retained one-page shape receipt alone SHALL NOT establish multi-page completeness
+- **AND** the sleep and workout session bundles SHALL follow the same continuation and checkpoint rule (bu-u5euwb.29)
 - **AND** an intermediate `nextPageToken` SHALL NOT replace the existing durable cursor keyed by account and resource
 - **AND** the durable sample cursor SHALL advance only after the complete poll's required submissions succeed, retaining the existing Source Filter Gate rule that a properly recorded policy drop is handled
 
@@ -164,6 +165,21 @@ Scope: v1-mandatory
 - **AND** a submission exception or refusal SHALL NOT become successful consumption merely because the submission helper returned
 - **AND** already accepted samples may be retried with their unchanged sample-time idempotency keys; this SHALL NOT claim that accepted effects were rolled back
 - **AND** existing error-buffer, filtered-content privacy, replay, rate-limit and account-isolation requirements SHALL remain in force
+- **AND** the only exception is a sample quarantined under the bounded poison-envelope rule below
+
+#### Scenario: A repeatedly rejected envelope is quarantined with a receipt
+
+- **WHEN** the Switchboard replies refusing the same envelope with an ingest error status (its envelope-validation refusal) on 5 consecutive submission attempts
+- **THEN** the connector SHALL quarantine that envelope: it SHALL record a `connectors.filtered_events` row with `status="error"`, `filter_reason="poison_quarantine"` and the full envelope, which is the receipt an operator replays from
+- **AND** it SHALL count the quarantine on `connector_google_health_quarantined_envelopes_total` and treat the sample as consumed, so the rest of the window can commit
+- **AND** a submission exception (a transport failure, dropped session or MCP tool error, any of which may be transient) SHALL NOT count toward quarantine and SHALL keep holding the checkpoint; a handled submission of that envelope resets its count
+- **AND** the count is held in memory, so a restart can grant a poison envelope at most one further run of attempts
+
+#### Scenario: Persistent poll failures are alertable
+
+- **WHEN** a resource's poll fails
+- **THEN** the connector SHALL publish that resource's consecutive-failure streak on the `connector_google_health_resource_consecutive_failures` gauge, reset to 0 by its next successful poll
+- **AND** a poll window that needs more provider pages than the connector's page cap SHALL fail without advancing the checkpoint and SHALL increment `connector_google_health_window_page_cap_exceeded_total`, so an always-oversized window alerts instead of failing silently
 
 #### Scenario: Reconciliation does not create local mutation authority
 

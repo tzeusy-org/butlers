@@ -209,6 +209,11 @@ Scope: v1-mandatory
 - **WHEN** the supported Vitest dependency optimizer reuses bundled library transforms in node or jsdom workers
 - **THEN** every child still performs its own fresh complete unsharded collection and actual isolated-fork shard execution, with unchanged full-reference, declaration, ready and terminal-result reconciliation
 
+#### Scenario: Failed execution retains informational opaque diagnostics only
+- **WHEN** an actual nonzero Vitest child leaves a fresh closed reporter file bound to its unchanged tracked source/run/attempt/shard identity and mandatory configuration predicates
+- **THEN** validated available opaque module/item observations and error/outcome counters survive cleanup while the original child exit, incomplete receipt and nonpassing wrapper verdict remain explicit
+- **AND** absent independent-reference membership and configuration-match authority remain `UNKNOWN` without discarding otherwise safe reported observations; missing, stale, malformed or mismatched evidence stays `UNKNOWN`, raw names/parameters/provider/exception/output text never escape, and diagnostics cannot authorize complete population, frontend or required-check success
+
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the five-minute lane target. Matrix conversion and frontend expansion SHALL account for actual expanded rows and a concurrent peak no greater than14. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.
 

@@ -88,13 +88,19 @@ Verify that an implementation matches the change artifacts (specs, tasks, design
 7. **Verify Coherence**
 
    **Design Adherence**:
-   - If design.md exists in contextFiles:
+   - First recheck `about/heart-and-soul/development.md`: a change to a
+     cross-butler contract, schema shared across butlers, or security boundary
+     requires design. If it is missing, add a CRITICAL missing-design issue;
+     CLI readiness and optional schema selection cannot waive it.
+   - If design.md exists, even when absent from contextFiles:
      - Extract key decisions (look for sections like "Decision:", "Approach:", "Architecture:")
      - Verify implementation follows those decisions
      - If contradiction detected:
        - Add WARNING: "Design decision not followed: <decision>"
        - Recommendation: "Update implementation or revise design.md to match reality"
-   - If no design.md: Skip design adherence check, note "No design.md to verify against"
+   - If no design.md and the single-butler change is eligible to omit it:
+     note the scope evidence and skip only document adherence. Continue full
+     contract, pattern, source, approval, task, test and executing-evidence review.
 
    **Code Pattern Consistency**:
    - Review new code for consistency with project patterns

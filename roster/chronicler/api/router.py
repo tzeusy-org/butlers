@@ -33,6 +33,8 @@ from butlers.api.models import (
     PaginatedResponse,
     PaginationMeta,
 )
+from butlers.api.owner_control import require_dashboard_owner_control
+from butlers.chronicler import location_retention as _location_retention
 from butlers.chronicler.adapters.comms import CHANNEL_LABELS
 from butlers.chronicler.adapters.sessions import (
     EXCLUDED_TRIGGER_SOURCE_PREFIX,
@@ -111,6 +113,8 @@ CorrectionPrompts = _models.CorrectionPrompts
 RoutineRow = _models.RoutineRow
 CreateRoutineRequest = _models.CreateRoutineRequest
 UpdateRoutineRequest = _models.UpdateRoutineRequest
+LocationRetentionPolicyResponse = _models.LocationRetentionPolicyResponse
+UpdateLocationRetentionRequest = _models.UpdateLocationRetentionRequest
 RollupLaneRow = _models.RollupLaneRow
 RollupFlagRow = _models.RollupFlagRow
 RollupDay = _models.RollupDay
@@ -3824,3 +3828,83 @@ async def resolve_gap_interview(
         answer=body.answer,
         now=datetime.now(UTC),
     )
+
+
+# ── Location retention policy (bu-s11n0s.7) ────────────────────────────────
+
+
+def _location_retention_response(
+    policy: _location_retention.LocationRetentionPolicy,
+) -> LocationRetentionPolicyResponse:
+    return LocationRetentionPolicyResponse(
+        days=policy.days,
+        version=policy.version,
+        updated_at=policy.updated_at,
+        min_days=_location_retention.MIN_RETENTION_DAYS,
+        max_days=_location_retention.MAX_RETENTION_DAYS,
+        raw_age_basis=_location_retention.RAW_AGE_BASIS,
+        precision_after_forgetting=_location_retention.PRECISION_AFTER_FORGETTING,
+        covered_sources=list(_location_retention.COVERED_SOURCES),
+        status=_location_retention.ENFORCEMENT_STATUS,
+    )
+
+
+_LOCATION_RETENTION_UNAVAILABLE = "Location retention policy is unavailable"
+
+
+@router.get("/location-retention", response_model=LocationRetentionPolicyResponse)
+async def get_location_retention(*, db: Db) -> LocationRetentionPolicyResponse:
+    """Return the declared raw OwnTracks retention horizon and its semantics.
+
+    A missing policy row fails closed (503) rather than reporting a default.
+    """
+    pool = _pool(db)
+    try:
+        policy = await _location_retention.get_location_retention_policy(pool)
+    except _location_retention.PolicyUnavailable as exc:
+        raise HTTPException(status_code=503, detail=_LOCATION_RETENTION_UNAVAILABLE) from exc
+    return _location_retention_response(policy)
+
+
+@router.put("/location-retention", response_model=LocationRetentionPolicyResponse)
+async def put_location_retention(
+    request: Request,
+    body: UpdateLocationRetentionRequest = Body(...),
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> LocationRetentionPolicyResponse:
+    """Owner sets the raw location horizon (1..30 days) by compare-and-set.
+
+    ``expected_version`` must name the stored version, else 409 with the
+    current policy. The actor is the authenticated owner, never a body field.
+    """
+    actor = authenticated_principal()
+    pool = _pool(db)
+    try:
+        policy = await _location_retention.set_location_retention_policy(
+            pool, days=body.days, expected_version=body.expected_version, actor=actor
+        )
+    except _location_retention.PolicyVersionConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Location retention policy changed; reload and retry",
+                "current_version": exc.current.version,
+                "current_days": exc.current.days,
+            },
+        ) from exc
+    except _location_retention.PolicyUnavailable as exc:
+        raise HTTPException(status_code=503, detail=_LOCATION_RETENTION_UNAVAILABLE) from exc
+
+    await emit_dashboard_audit(
+        db,
+        butler="chronicler",
+        operation="location_retention_set",
+        method="PUT",
+        path="/api/chronicler/location-retention",
+        body={"days": policy.days, "version": policy.version},
+        response_status=200,
+        request=request,
+    )
+    return _location_retention_response(policy)

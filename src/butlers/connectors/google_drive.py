@@ -2121,6 +2121,7 @@ class GDriveConnectorManager:
                 host="127.0.0.1",
                 port=self._health_port,
                 log_level="warning",
+                log_config=None,
             )
             self._health_server = uvicorn.Server(config)
 

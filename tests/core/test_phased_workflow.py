@@ -295,11 +295,6 @@ async def test_qa_dispatch_records_phase_session_on_success():
             new="UNFIXABLE",
         ),
         patch(
-            "butlers.core.qa.dispatch._create_qa_pr",
-            new_callable=AsyncMock,
-            return_value=("https://github.com/org/repo/pull/2", 2, None, None),
-        ),
-        patch(
             "butlers.core.qa.dispatch.remove_healing_worktree",
             new_callable=AsyncMock,
         ),

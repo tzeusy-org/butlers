@@ -113,6 +113,13 @@ deterministic completion-hook write-back
    **Relationship over MCP** (switchboard-routed). It NEVER writes
    `relationship.entity_facts` (or any other butler's tables) directly.
 
+**The day-close session itself writes no memory.** Only the deterministic
+write-back above stores chronicler facts. Delivery and scheduling receipts
+(notify sent / deferred until 08:00 / queued / failed / `not_configured`) are
+operational status, not autobiographical facts, and never go to
+`memory_store_fact`. Insight confidence comes from baseline coverage
+(`evidence_confidence` in `writeback.py`), never a blanket 1.0.
+
 **Write-back adds NO owner-facing message.** "No notifications" means no new
 proactive/coaching nudge or correction ping from the write-back path; the
 once-daily retrospective day-close summary (sent by the `chronicler_day_close`

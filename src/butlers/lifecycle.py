@@ -35,7 +35,7 @@ from butlers.core.approvals_policy import (
     get_approvals_policy_quiet_hours,
 )
 from butlers.core.general_settings import resolve_general_timezone
-from butlers.core.logging import resolve_log_root
+from butlers.core.logging import CREDENTIAL_REDACTION, resolve_log_root
 from butlers.core.metrics import init_metrics
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.registry import build_runtime_adapter
@@ -221,6 +221,7 @@ async def _startup_database(daemon: Any, state: StartupState) -> None:
         butler_logger=butler_db_logger,
         butler_name=daemon.config.name,
     )
+    daemon._db_log_handler.addFilter(CREDENTIAL_REDACTION)
     logging.getLogger().addHandler(daemon._db_log_handler)
 
 
@@ -699,6 +700,21 @@ STARTUP_PHASES: list[Phase] = [
 ]
 
 
+# Snapshot labels from the declared functions once, never from a failing
+# callable's attributes. Replacement/unknown callables receive "unknown".
+_STARTUP_PHASE_LABELS = tuple(
+    (phase, phase.__name__.removeprefix("_startup_")) for phase in STARTUP_PHASES
+)
+_STARTUP_ERROR_CATEGORIES = (
+    (TimeoutError, "timeout"),
+    (ConnectionError, "connection"),
+    (OSError, "os"),
+    (ValueError, "validation"),
+    (TypeError, "type"),
+    (RuntimeError, "runtime"),
+)
+
+
 async def run_startup(daemon: Any) -> None:
     """Execute the ordered startup phases with fresh per-run state.
 
@@ -707,7 +723,25 @@ async def run_startup(daemon: Any) -> None:
     """
     state = StartupState()
     for phase in STARTUP_PHASES:
-        await phase(daemon, state)
+        try:
+            await phase(daemon, state)
+        except Exception as exc:
+            try:
+                phase_label = next(
+                    (label for known, label in _STARTUP_PHASE_LABELS if phase is known), "unknown"
+                )
+                category = next(
+                    (label for known, label in _STARTUP_ERROR_CATEGORIES if type(exc) is known),
+                    "unknown",
+                )
+                logger.error(
+                    "Startup phase failed",
+                    extra={"startup_phase": phase_label, "error_category": category},
+                )
+            except Exception:
+                # Diagnostic transport failure must not mask the startup error.
+                pass
+            raise
 
 
 async def _warmup_mcp_endpoints_best_effort(daemon: Any) -> None:

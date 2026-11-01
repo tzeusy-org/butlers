@@ -8,8 +8,14 @@ same selection, so a group that silently drops (or duplicates) tests fails the
 run. This replaced the computed inventory, partition and receipt tooling
 (bu-29wkwj.2).
 
+In hosted CI the fresh count is taken early: ``count`` runs beside the groups,
+checks the test budget and writes the lane counts, and ``totals --expected``
+compares the finished groups against that file with the standard library only.
+
 Usage:
   uv run python scripts/ci_lanes.py run --lane unit --group 3 --output DIR
+  uv run python scripts/ci_lanes.py count --output FILE
+  python3 scripts/ci_lanes.py totals --counts DIR --expected FILE
   uv run python scripts/ci_lanes.py totals --counts DIR
   python3 scripts/ci_lanes.py durations --evidence DIR [--output .test_durations]
 """
@@ -112,7 +118,17 @@ def pytest_command(lane: str, group: int, *, output: Path, coverage: bool) -> li
     config = lane_config(lane)
     if group not in range(1, config.groups + 1):
         raise ValueError(f"{lane}: group must be between 1 and {config.groups}, got {group}")
-    command = [sys.executable, "-m", "pytest", "-q", f"--maxfail={config.maxfail}", "--tb=short"]
+    # -rs lists every skip reason in the log, so a real-PG node that skips (for
+    # example "Docker not available") is visible instead of silently green.
+    command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "-rs",
+        f"--maxfail={config.maxfail}",
+        "--tb=short",
+    ]
     if config.ignore_e2e:
         command.append("--ignore=tests/e2e")
     command += [
@@ -233,19 +249,66 @@ def compare_totals(group_counts: dict[str, dict[int, int]], expected: dict[str, 
     return errors
 
 
-def totals(counts_dir: Path, *, repo_root: Path = REPO_ROOT) -> int:
-    """Fail unless every lane's groups sum to its fresh --collect-only count.
+def fresh_lane_counts(repo_root: Path = REPO_ROOT) -> dict[str, int]:
+    """One fresh ``--collect-only`` count per lane."""
+    return {lane: len(collect_lane_node_ids(lane, repo_root=repo_root)) for lane in LANES}
 
-    The same fresh counts feed the per-lane test budget, so one collection
-    serves both checks.
-    """
+
+def budget_errors(expected: dict[str, int]) -> list[str]:
+    """The per-lane test budget, checked against the same fresh counts."""
     from check_test_budget import BASELINE_PATH, compare, load_baseline
 
+    return compare(expected, load_baseline(BASELINE_PATH))
+
+
+def count(output: Path, *, repo_root: Path = REPO_ROOT) -> int:
+    """Write each lane's fresh count and fail when a lane is over its test budget.
+
+    Runs beside the lane groups, so an over-budget tree fails within minutes
+    instead of after the whole suite.
+    """
+    expected = fresh_lane_counts(repo_root)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(expected, sort_keys=True) + "\n", encoding="utf-8")
+    errors = budget_errors(expected)
+    for lane in sorted(LANES):
+        print(f"{lane}: collect-only={expected[lane]}")
+    for error in errors:
+        print(error, file=sys.stderr)
+    return 1 if errors else 0
+
+
+def read_lane_counts(path: Path) -> dict[str, int]:
+    """Read ``count``'s output; anything but one count per lane fails closed."""
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        not isinstance(record, dict)
+        or set(record) != set(LANES)
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in record.values()
+        )
+    ):
+        raise ValueError(f"{path}: malformed lane counts {record!r}")
+    return record
+
+
+def totals(
+    counts_dir: Path, *, expected_path: Path | None = None, repo_root: Path = REPO_ROOT
+) -> int:
+    """Fail unless every lane's groups sum to its fresh --collect-only count.
+
+    Without ``expected_path`` this collects afresh and also checks the test
+    budget, so one collection serves both checks. With it, the counts come from
+    an earlier ``count`` of the same tree, which already checked the budget.
+    """
     group_counts = read_group_counts(counts_dir)
-    expected = {lane: len(collect_lane_node_ids(lane, repo_root=repo_root)) for lane in LANES}
-    errors = compare_totals(group_counts, expected) + compare(
-        expected, load_baseline(BASELINE_PATH)
-    )
+    if expected_path is None:
+        expected = fresh_lane_counts(repo_root)
+        errors = compare_totals(group_counts, expected) + budget_errors(expected)
+    else:
+        expected = read_lane_counts(expected_path)
+        errors = compare_totals(group_counts, expected)
     for lane in sorted(LANES):
         print(f"{lane}: groups={sum(group_counts[lane].values())} collect-only={expected[lane]}")
     for error in errors:
@@ -286,8 +349,11 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--lane", choices=sorted(LANES), required=True)
     run_parser.add_argument("--group", type=int, required=True)
     run_parser.add_argument("--output", type=Path, required=True)
+    count_parser = commands.add_parser("count", help="count each lane and check the budget")
+    count_parser.add_argument("--output", type=Path, required=True)
     totals_parser = commands.add_parser("totals", help="check group counts add up")
     totals_parser.add_argument("--counts", type=Path, required=True)
+    totals_parser.add_argument("--expected", type=Path, default=None)
     durations_parser = commands.add_parser("durations", help="merge group durations")
     durations_parser.add_argument("--evidence", type=Path, required=True)
     durations_parser.add_argument("--output", type=Path, default=REPO_ROOT / DURATIONS_PATH)
@@ -297,7 +363,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "durations":
         merge_durations(args.evidence, args.output)
         return 0
-    return totals(args.counts)
+    if args.command == "count":
+        return count(args.output)
+    return totals(args.counts, expected_path=args.expected)
 
 
 if __name__ == "__main__":

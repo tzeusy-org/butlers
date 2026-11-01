@@ -6,9 +6,10 @@ step distills *derived* insights from the chronicler's OWN already-materialized
 data (``daily_rollups``, ``daily_rollup_flags``, ``episode_entities``) and:
 
 1. writes synthesized insight facts into the chronicler's OWN memory schema
-   (``store_fact``, ``source_butler="chronicler"``) with provenance, confidence
-   (carried in metadata — the facts table's own ``confidence`` column is fixed
-   at 1.0 by ``store_fact``), and decay (via ``permanence``);
+   (``store_fact``, ``source_butler="chronicler"``) with provenance, an
+   evidence-derived confidence (see :func:`evidence_confidence`, written to the
+   facts ``confidence`` column and mirrored in metadata), and decay (via
+   ``permanence``);
 2. writes self-reminder facts marking low-confidence day blocks for
    re-reconciliation once more evidence lands;
 3. PROPOSES recurring-companion enrichment through an injected
@@ -60,6 +61,13 @@ RELATIONSHIP_BUTLER = "relationship"
 SLEEP_DEBT_THRESHOLD_SECONDS = 3 * 3600
 SLEEP_DEBT_MIN_SHORTFALL_DAYS = 2
 
+# Insight confidence (see evidence_confidence). A derived insight is never
+# certain: a full baseline window earns the ceiling, a thin one sits near the
+# floor. A self-reminder exists *because* a block is uncertain, so it carries
+# the floor.
+INSIGHT_CONFIDENCE_FLOOR = 0.4
+INSIGHT_CONFIDENCE_CEILING = 0.9
+
 # Recurring companion: co-present on at least this many distinct local days
 # across the trailing window before it is worth proposing to relationship.
 COMPANION_MIN_DISTINCT_DAYS = 3
@@ -85,9 +93,9 @@ _REVISIT_FLAG_TYPES = frozenset({"feeder_dark", "sleep_missing"})
 class InsightFact:
     """A derived fact the chronicler writes into its OWN memory schema.
 
-    ``confidence`` is carried into fact metadata (the facts table column is
-    fixed at 1.0 by ``store_fact``); ``permanence`` sets the decay tier so a
-    low-confidence, fast-fading insight can be distinguished from a durable one.
+    ``confidence`` is stored on the fact row (and mirrored in metadata);
+    ``permanence`` sets the decay tier so a low-confidence, fast-fading insight
+    can be distinguished from a durable one.
     """
 
     subject: str
@@ -162,11 +170,33 @@ def _fmt_hours(seconds: float) -> str:
     return f"{seconds / 3600:.1f}h"
 
 
-def synthesize_lane_skew_insights(day: date, balances: Iterable[LaneBalance]) -> list[InsightFact]:
+def evidence_confidence(sample_days: int, window_days: int) -> float:
+    """Confidence of a derived insight from how much of its window had data.
+
+    Linear in baseline coverage (``sample_days / window_days``, clamped to
+    ``[0, 1]``) between :data:`INSIGHT_CONFIDENCE_FLOOR` and
+    :data:`INSIGHT_CONFIDENCE_CEILING`, rounded to two decimals. Days whose
+    sources did not report never count as samples, so a sparse history yields
+    a visibly weaker insight instead of a confident one.
+    """
+    if window_days <= 0:
+        return INSIGHT_CONFIDENCE_FLOOR
+    coverage = min(1.0, max(0, sample_days) / window_days)
+    span = INSIGHT_CONFIDENCE_CEILING - INSIGHT_CONFIDENCE_FLOOR
+    return round(INSIGHT_CONFIDENCE_FLOOR + span * coverage, 2)
+
+
+def synthesize_lane_skew_insights(
+    day: date,
+    balances: Iterable[LaneBalance],
+    *,
+    window_days: int = DEFAULT_BASELINE_LOOKBACK_DAYS,
+) -> list[InsightFact]:
     """One insight per lane whose day-vs-usual delta clears the anomaly bar.
 
     Reuses :func:`butlers.chronicler.balance.is_lane_anomalous` so the skew
-    signal never diverges from the balance/trends API surface.
+    signal never diverges from the balance/trends API surface. Confidence
+    follows :func:`evidence_confidence` over the lane's baseline sample days.
     """
     out: list[InsightFact] = []
     for b in sorted(balances, key=lambda x: x.lane):
@@ -188,7 +218,7 @@ def synthesize_lane_skew_insights(day: date, balances: Iterable[LaneBalance]) ->
                 # A single day's skew is a fast-fading observation.
                 permanence="volatile",
                 importance=5.0,
-                confidence=0.7,
+                confidence=evidence_confidence(b.baseline_sample_days, window_days),
                 tags=("chronicler-insight", PREDICATE_LANE_SKEW, b.lane),
                 metadata={
                     "local_date": day.isoformat(),
@@ -197,6 +227,7 @@ def synthesize_lane_skew_insights(day: date, balances: Iterable[LaneBalance]) ->
                     "seconds": b.seconds,
                     "baseline_seconds": b.baseline_seconds,
                     "delta_seconds": b.delta_seconds,
+                    "baseline_sample_days": b.baseline_sample_days,
                 },
             )
         )
@@ -212,11 +243,19 @@ def synthesize_sleep_debt_insight(
     """A cumulative sleep-debt insight, or ``None`` when the pattern is noise.
 
     ``sleep_daily_seconds`` is the trailing window of the sleep lane's per-day
-    seconds (baseline days + the closed day). Debt accrues only on days that
-    fell short of ``sleep_baseline_seconds``; both a total-debt floor and a
-    minimum number of short days must be cleared before an insight is emitted.
+    seconds (baseline days + the closed day, last). Debt accrues only on days
+    that fell short of ``sleep_baseline_seconds``; both a total-debt floor and
+    a minimum number of short days must be cleared before an insight is
+    emitted. Debt is only "building" when the closed day itself fell short: a
+    closed day at or above the usual adds nothing, and claiming growing debt
+    beside a "slept more than usual" skew would contradict it.
+
+    Callers pass only complete windows, so confidence is the full-coverage
+    :func:`evidence_confidence`.
     """
     if sleep_baseline_seconds is None or sleep_baseline_seconds <= 0:
+        return None
+    if not sleep_daily_seconds or sleep_daily_seconds[-1] >= sleep_baseline_seconds:
         return None
     debt = 0.0
     shortfall_days = 0
@@ -237,7 +276,7 @@ def synthesize_sleep_debt_insight(
         content=content,
         permanence="volatile",
         importance=6.0,
-        confidence=0.7,
+        confidence=evidence_confidence(len(sleep_daily_seconds), len(sleep_daily_seconds)),
         tags=("chronicler-insight", PREDICATE_SLEEP_DEBT),
         metadata={
             "as_of": day.isoformat(),
@@ -274,7 +313,7 @@ def synthesize_self_reminders(day: date, flags: Iterable[Any]) -> list[InsightFa
                 # A reminder should fade if it is never reconciled.
                 permanence="ephemeral",
                 importance=4.0,
-                confidence=0.4,
+                confidence=INSIGHT_CONFIDENCE_FLOOR,
                 tags=("chronicler-self-reminder", str(flag_type)),
                 metadata={
                     "local_date": day.isoformat(),
@@ -360,6 +399,7 @@ async def execute_writeback(
                 content=fact.content,
                 permanence=fact.permanence,
                 importance=fact.importance,
+                confidence=fact.confidence,
                 tags=list(fact.tags),
                 metadata={
                     **fact.metadata,
@@ -589,7 +629,7 @@ async def run_day_close_writeback(
         if b.lane in day_seconds_by_lane
     ]
 
-    insights = synthesize_lane_skew_insights(day_date, balances)
+    insights = synthesize_lane_skew_insights(day_date, balances, window_days=baseline_lookback_days)
     # The pure synthesis text describes consecutive calendar days. Missing
     # dates cannot be compressed into a confident shorter debt window.
     sleep_by_day = {
@@ -654,6 +694,7 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
         content: str,
         permanence: str,
         importance: float,
+        confidence: float,
         tags: list[str],
         metadata: dict[str, Any],
     ) -> Any:
@@ -664,6 +705,7 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
             content,
             embedding_engine,
             importance=importance,
+            confidence=confidence,
             permanence=permanence,
             tags=tags,
             metadata=metadata,
@@ -676,6 +718,8 @@ def build_chronicler_fact_writer(pool: Any, embedding_engine: Any) -> StoreFactF
 
 __all__ = [
     "COMPANION_MIN_DISTINCT_DAYS",
+    "INSIGHT_CONFIDENCE_CEILING",
+    "INSIGHT_CONFIDENCE_FLOOR",
     "PREDICATE_LANE_SKEW",
     "PREDICATE_RECURRING_COMPANION",
     "PREDICATE_SELF_REMINDER",
@@ -687,6 +731,7 @@ __all__ = [
     "InsightFact",
     "WriteBackResult",
     "build_chronicler_fact_writer",
+    "evidence_confidence",
     "execute_writeback",
     "fetch_companion_copresence",
     "run_day_close_writeback",

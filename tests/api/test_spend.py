@@ -29,7 +29,12 @@ from butlers.api.deps import (
 )
 from butlers.api.deps import get_db_optional as _costs_get_db
 from butlers.api.models import ScheduleCost, SpendSummary
-from butlers.api.routers.spend import _is_tool_absent_error, _ledger_session_divergences
+from butlers.api.routers.spend import (
+    SERVED_EVIDENCE_GROUP_LIMIT,
+    _is_tool_absent_error,
+    _ledger_session_divergences,
+    _served_cost_evidence,
+)
 from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.pricing import (
     ModelPricing,
@@ -591,6 +596,68 @@ async def test_summary_names_models_falling_back_to_full_cache_price(app):
         )
 
     assert resp.json()["data"]["no_cache_price_models"] == ["claude-sonnet-4-20250514"]
+
+
+async def test_served_cost_evidence_is_a_bounded_per_model_aggregate():
+    """Serving evidence groups per model in SQL under a hard cap, never one row per attempt."""
+
+    buckets = {
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+
+    def group(model: str, *, executions: int, complete: int, reported: str) -> dict:
+        # Every complete row here also has a reported cost, so both sums match.
+        return {
+            "model_id": model,
+            "identity_authority": "cli_usage_breakdown",
+            "provenance": "cli_reported_unproven",
+            "attempt_count": executions,
+            "execution_count": executions,
+            "cumulative_count": executions - complete,
+            "complete_count": complete,
+            "compared_count": complete,
+            **buckets,
+            **{f"compared_{key}": value for key, value in buckets.items()},
+            "reported_cost_usd": reported,
+            "group_count": SERVED_EVIDENCE_GROUP_LIMIT + 1,
+        }
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            # 3 compared executions of 5; two cumulative snapshots stay uncompared.
+            group("claude-sonnet-4-20250514", executions=5, complete=3, reported="0.01"),
+            group("mystery-model", executions=2, complete=2, reported="0.02"),
+        ]
+    )
+    db = MagicMock(credential_shared_pool=lambda: pool)
+
+    breakdown, comparisons, source_error, truncated = await _served_cost_evidence(
+        db, _flat_pricing(), date(2026, 11, 1), date(2026, 11, 1), butler="health"
+    )
+
+    sql, *args = pool.fetch.await_args.args
+    assert "GROUP BY model_id, identity_authority, provenance" in sql and "LIMIT $4" in sql
+    assert args[2:] == ["health", SERVED_EVIDENCE_GROUP_LIMIT]
+    assert source_error is False and truncated is True
+    sonnet, mystery = comparisons
+    assert sonnet["comparison_state"] == "comparable"
+    assert sonnet["execution_count"] == 5 and sonnet["compared_execution_count"] == 3
+    assert sonnet["computed_served_cost_usd"] == pytest.approx(0.0045)
+    assert sonnet["difference_usd"] == pytest.approx(0.0055)
+    assert sonnet["reason"] == "cumulative_scope"
+    assert mystery["comparison_state"] == "unpriced" and mystery["reason"] == "unpriced_model"
+    assert mystery["computed_served_cost_usd"] is None and mystery["difference_usd"] is None
+    assert breakdown[0]["token_buckets"]["input_tokens"] == 1000
+    assert breakdown[0]["complete_execution_count"] == 3
+
+    pool.fetch = AsyncMock(side_effect=RuntimeError("down"))
+    assert await _served_cost_evidence(
+        db, _flat_pricing(), date(2026, 11, 1), date(2026, 11, 1)
+    ) == ([], [], True, False)
 
 
 async def test_ledger_session_divergence_deadman_reports_material_day_butler_drift():

@@ -16,6 +16,7 @@ import math
 import os
 import re
 import signal
+import stat
 import subprocess
 import tempfile
 import threading
@@ -591,6 +592,193 @@ def reconcile(root: Path, receipts: list[dict]) -> None:
         raise ValueError("actual Vitest item partition incomplete or overlapping")
 
 
+def failure_diagnostics(root, path, reference, expected_identity, shard, started_ns):
+    """Project failure observations only; never admit an incomplete population.
+
+    A fresh private file and unchanged tracked source bind reported observations.
+    Only an observed successful independent reference can verify membership and
+    matching runtime configuration. Its absence never discards otherwise safe
+    counters, but leaves that authority UNKNOWN. Raw values are never serialized.
+    """
+    unavailable = {"status": "UNKNOWN", "reason": "invalid_evidence"}
+    try:
+        if not same_json_value(identity(root), expected_identity):
+            return {"status": "UNKNOWN", "reason": "identity_changed"}
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            return unavailable
+        if metadata.st_mtime_ns < started_ns:
+            return {"status": "UNKNOWN", "reason": "stale_evidence"}
+        execution = json.loads(path.read_text())
+        fields = {
+            "schema",
+            "config",
+            "modules",
+            "queued",
+            "starts",
+            "ends",
+            "ready",
+            "results",
+            "terminal_files",
+            "unhandled_errors",
+            "reporter_problems",
+            "update_errors",
+            "reason",
+            "complete",
+        }
+        if (
+            not isinstance(execution, dict)
+            or set(execution) != fields
+            or execution["schema"] != "ci-vitest-execution.v2"
+            or (
+                reference is not None
+                and not same_json_value(execution["config"], reference["config"])
+            )
+            or type(execution["complete"]) is not bool
+            or execution["reason"] not in {"passed", "failed", "interrupted"}
+        ):
+            return unavailable
+
+        def count(value):
+            if type(value) is not int or value < 0:
+                raise ValueError("invalid diagnostic counter")
+            return value
+
+        validate_config(execution["config"], root)
+        selected = (
+            reference["halves"][str(shard)]
+            if reference is not None
+            else subprocess.check_output(["git", "ls-files", "-z", "frontend"], cwd=root)
+            .decode()
+            .split("\0")
+        )
+        modules, items = {}, {}
+        for name in ("modules", "queued", "starts", "ends"):
+            if not isinstance(execution[name], dict) or not set(execution[name]) <= set(selected):
+                return unavailable
+            for file in execution[name]:
+                path_in_source = (root / file).resolve()
+                if (
+                    not path_in_source.is_relative_to((root / "frontend").resolve())
+                    or not path_in_source.is_file()
+                ):
+                    return unavailable
+        for file, module in execution["modules"].items():
+            if (
+                not isinstance(module, dict)
+                or set(module) != {"file", "items", "errors", "ok"}
+                or module["file"] != file
+                or type(module["ok"]) is not bool
+                or not isinstance(module["items"], dict)
+                or (
+                    reference is not None
+                    and not same_json_value(module["items"], reference["modules"][file]["items"])
+                )
+            ):
+                return unavailable
+            for token, item in module["items"].items():
+                if (
+                    not isinstance(token, str)
+                    or HASH.fullmatch(token) is None
+                    or not isinstance(item, dict)
+                    or set(item) != {"key", "mode"}
+                    or not isinstance(item["key"], str)
+                    or HASH.fullmatch(item["key"]) is None
+                    or item["mode"] not in {"run", "skip", "todo", "only"}
+                ):
+                    return unavailable
+            modules[hashlib.sha256(file.encode()).hexdigest()] = {
+                "errors": count(module["errors"]),
+                "ok": module["ok"],
+            }
+        declarations = reference["modules"] if reference is not None else execution["modules"]
+        occurrences = {}
+        for file in selected if reference is not None else declarations:
+            for token, item in declarations[file]["items"].items():
+                if token in occurrences:
+                    return unavailable
+                occurrences[token] = item
+        counters = {}
+        for name in ("queued", "starts"):
+            counters[name] = {
+                hashlib.sha256(file.encode()).hexdigest(): count(value)
+                for file, value in execution[name].items()
+            }
+        ends = {}
+        for file, end in execution["ends"].items():
+            if (
+                not isinstance(end, dict)
+                or set(end) != {"count", "errors", "ok", "state"}
+                or type(end["ok"]) is not bool
+                or end["state"] not in {"passed", "skipped", "failed"}
+            ):
+                return unavailable
+            ends[hashlib.sha256(file.encode()).hexdigest()] = {
+                "count": count(end["count"]),
+                "errors": count(end["errors"]),
+                "ok": end["ok"],
+                "state": end["state"],
+            }
+        for name in ("ready", "results"):
+            if not isinstance(execution[name], dict) or not set(execution[name]) <= set(
+                occurrences
+            ):
+                return unavailable
+        ready = {token: count(value) for token, value in execution["ready"].items()}
+        for token, result in execution["results"].items():
+            if (
+                not isinstance(result, dict)
+                or set(result) != {"state", "declared_mode"}
+                or result["state"] not in {"passed", "skipped", "failed"}
+                or result["declared_mode"] != occurrences[token]["mode"]
+            ):
+                return unavailable
+            items[token] = {**occurrences[token], "state": result["state"]}
+        terminal = execution["terminal_files"]
+        problems = execution["reporter_problems"]
+        if (
+            not isinstance(terminal, list)
+            or terminal != sorted(set(terminal))
+            or not set(terminal) <= set(selected)
+            or not isinstance(problems, dict)
+            or not set(problems)
+            <= {
+                "unknown_occurrence",
+                "changed_identity",
+                "ready_multiplicity",
+                "result_duplicate",
+                "result_pending",
+                "result_unknown",
+            }
+        ):
+            return unavailable
+        return {
+            "status": "available",
+            "reference": "validated" if reference is not None else "UNKNOWN",
+            "membership": "reference_checked_subset" if reference is not None else "UNKNOWN",
+            "configuration_match": "validated" if reference is not None else "UNKNOWN",
+            "population_complete": False,
+            "modules": modules,
+            **counters,
+            "ends": ends,
+            "ready": ready,
+            "items": items,
+            "outcomes": dict(collections.Counter(item["state"] for item in items.values())),
+            "unhandled_errors": count(execution["unhandled_errors"]),
+            "update_errors": count(execution["update_errors"]),
+            "reporter_problems": {name: count(value) for name, value in problems.items()},
+            "reporter_complete": execution["complete"],
+        }
+    except FileNotFoundError:
+        return {"status": "UNKNOWN", "reason": "missing_evidence"}
+    except (OSError, ValueError, TypeError, KeyError):
+        return unavailable
+    except Exception:
+        # Informational projection must never mask the original nonzero child,
+        # including an unexpected observer error. Parent cancellation propagates.
+        return {"status": "UNKNOWN", "reason": "diagnostic_unavailable"}
+
+
 def run(root: Path, shard: int, output: Path) -> int:
     # One900s total envelope, not a refreshed900s after the full reference.
     started = time.monotonic()
@@ -605,6 +793,8 @@ def run(root: Path, shard: int, output: Path) -> int:
         with tempfile.TemporaryDirectory(prefix="ci-vitest-evidence-") as temporary:
             reference_path = Path(temporary) / "reference.json"
             execution_path = Path(temporary) / "execution.json"
+            reference = None
+            evidence_started_ns = time.time_ns()
             environment = {**os.environ, "CI": "1"}
             stage = "concurrent"
             commands = {
@@ -642,20 +832,29 @@ def run(root: Path, shard: int, output: Path) -> int:
                     if phase == "execute":
                         receipt["exit_code"] = result.returncode
                     if result.returncode:
+                        if phase == "execute":
+                            receipt["failure_diagnostics"] = failure_diagnostics(
+                                root,
+                                execution_path,
+                                reference,
+                                receipt["identity"],
+                                shard,
+                                evidence_started_ns,
+                            )
                         raise VitestSubprocessFailure("actual locked Vitest phase failed")
                     if phase == "collect-full":
                         reference = validate_reference(json.loads(reference_path.read_text()), root)
-                        receipt["reference"] = reference
                     else:
                         stage = "report"
                         # Parse promptly so malformed execution also cancels a
                         # still-running full reference. Full reconciliation waits.
-                        receipt["execution"] = json.loads(execution_path.read_text())
+                        execution = json.loads(execution_path.read_text())
             stage = "report"
-            proof = validate_execution(reference, receipt["execution"], shard)
+            proof = validate_execution(reference, execution, shard)
             if not same_json_value(identity(root), receipt["identity"]):
                 raise ValueError("frontend source changed during collection/execution")
             receipt.update(proof)
+            receipt.update(reference=reference, execution=execution)
             if time.monotonic() > deadline:
                 raise VitestTimeout(900, {"phase": "report"})
             receipt["complete"] = result.returncode == 0

@@ -77,6 +77,62 @@ an older deployment and a first-ever run both look like, and neither is evidence
 that a backup ran. The QA infra-state patrol raises a failed run as its own
 finding (`BackupRunFailed`) on the night it happens.
 
+### Supervised-job health history
+
+`public.dashboard_job_health` and `public.dashboard_job_transitions` remain in
+the backup, including their bounded transition history. Their FORCE RLS policy
+allows only the configured ordinary migration/API identity. The ordinary
+`row_security=off` dump carries schema/owner/policy but omits direct table-data
+COPY; a separate hex-wrapped JSON block exports all rows under that exact owner
+in the same exported snapshot. The snapshot holder locks both relations through
+export and verifies the exact sole owner-conditional policy, refusing an extra,
+restrictive, PUBLIC or drifted policy rather than silently filtering rows.
+
+The job-health migration is `core_297`, directly after applied
+`core_296` (transitive custody holds), following `core_295` (custody hardening),
+`core_294` (QA exports),
+`core_293` (endpoint custody),
+`core_291` (ambient projections) and
+`core_290` (serving evidence). Its number stays above the applied predecessor because shared core
+downgrades use numeric revision thresholds to retain public objects for other
+schema-local chains. The health tables and their rows/policies remain while
+another schema is at `core_297` or later; only the last schema leaving that
+revision removes them. Upgrade and downgrade serialize on the same migration
+advisory lock. Native multi-schema fixtures first use the ordinary migration
+login for real full-chain replay, positively verifying the already finalized
+fixed authority interface instead of reinstalling it as bootstrap. The later
+replay after both genuine `core_287` downgrades uses bootstrap for both schemas,
+matching the public objects just recreated by that same bootstrap authority.
+An additional immediate `core_297` to `core_296` roundtrip checks first-schema
+retention and last-schema removal without replacing the older serving-evidence
+controls. No genuine older migration target is advanced.
+
+Genuine pre-health schemas (including `core_282` and `core_287`) may contain
+neither relation. Only a successful catalogue query in the exported snapshot
+that positively proves both names absent may omit the health-only projection
+and replay. An autocommit existence hint selects the lock path before BEGIN;
+it is not absence evidence. Installed relations are locked before the snapshot
+is established, and then require the same exact two-table policy proof. If a
+relation appears between an absent hint and snapshot establishment, the proof
+refuses publication. Partial installation, wrong kind/owner/policy, query error
+and missing or malformed proof never become absence. No historical migration
+target is advanced and no missing health table is created for a backup.
+
+Restore requires membership in the source table owner, switches only to that
+identity and inserts the parent current-state rows before transition children.
+It preserves UUIDs, counters, timestamps, nulls and reason codes without a PUBLIC
+read grant or wider runtime privilege. An unavailable source owner refuses
+populated replay; no empty history is certified as a recovered populated one.
+A new API process does not treat a restored prior process's success as current;
+existing process fencing and starting/unknown semantics remain mandatory.
+
+For snapshots containing Capture, ordinary health-history restore follows the
+public persistent-epoch protocol too: supply a fresh absolute
+`--capture-epoch-file` outside the database/repository and writable host storage
+for that file. Disposable native tests mount their own temporary host directory
+at `/capture-host`; they do not reuse the source/dumped epoch or bypass Capture
+recovery admission. A health-only replay does not waive that restore boundary.
+
 ### What the backup does not contain
 
 The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login
@@ -97,6 +153,7 @@ plane by name:
 | `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
 | `public.runtime_probe_control_receipts` | Fenced runtime probe control receipts |
 | `public.qa_publication_operations` | Fenced QA publication operation control |
+| `public.qa_publication_exports` | Retained sealed QA export bytes (fenced like the ledger) |
 | `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing
@@ -228,6 +285,15 @@ and equally if the script excludes something the dump role can in fact read
 (which would silently narrow them). Do not add an entry to that set to make a
 red run go green — an entry there is a decision that data will not be in the
 backup.
+
+Fleet case parents, links and evidence now travel together under the adopted
+Fleet recovery contract described above. The fixed owner-only importer restores
+the fenced parents and links before their readable evidence; the final audit
+requires the real validated, enabled foreign key and refuses orphan data. An
+authentic older zero-history artifact remains supported, while excluded parents
+with retained evidence cannot be certified. This does not grant runtime INSERT
+authority or synthesize missing cases. General capture validation and its host
+epoch prerequisite remain independent of the Fleet audit.
 
 ### Confidential signed-confirm history
 
@@ -652,3 +718,49 @@ into the live application database or manually erase recovery evidence.
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
+
+## General capture recovery boundary
+
+Capture data is durable. `deploy/backup/pg_dump.sh` retains its schema, ownership,
+FORCE RLS and immutability triggers in the ordinary dump, excludes only capture table
+**data** from that role-less path, and appends a fixed General-role projection. The
+capture query, exact policy proof, ordinary General `source_versions`, and existing
+cost-claim export use the same exported snapshot. Capture uses effective General
+role RLS; it does not acquire the cost-claim PUBLIC SELECT exception. Missing or
+altered policy/role installation refuses publication.
+
+For a capture-bearing dump, `scripts/pg_restore.sh` requires an explicit absolute
+`--capture-epoch-file` (or `CAPTURE_EPOCH_FILE`) on a persistent host volume outside
+the repository/database. It disables existing target admission/dispatch before
+import and atomically rotates this nonsecret JSON manifest with a new generation
+and precise occurrence cutoff. The scoped General import transaction explicitly
+sets `row_security=on`, overriding the ordinary dump's session setting while
+keeping FORCE RLS active through deferred receipt validation at commit. The
+fixed invoker-rights importer restores only the three allowlisted row types,
+exact UUID/digest/operation bindings and terminal
+receipts. Conflicts refuse. Imported control always has admission/dispatch false
+and recovery required, regardless of dumped enablement. Capture row/operation,
+FORCE-RLS and trigger checks run before certification; the prior definer-ownership
+and cost-claim fences remain required.
+
+Captures may import before operations in one transaction, but deferred commit
+validation requires the complete relationship and the exact immutable General
+create-version proof. A routed capture cannot omit its operation or substitute a
+locator/digest. Historical routed receipts remain durable after later deletion or
+private classification; validating restore history does not reopen current source
+read authority.
+
+An older snapshot may omit a completed effect's receipt. Missing proof is not
+permission to repeat it: the rotated host cutoff denies the original pre-restore
+source occurrence even if a later adapter tries to mint it under the new epoch.
+Restored in-flight/unknown operations retain their old lineage and remain held.
+Recovery needs exact source-owned read-only outcomes and explicit control adoption;
+there is no automatic resume, old-epoch rebase, timer expiry or reconstructed epoch
+from restored rows. Shipping these scripts does not run a live restore or provision
+its host path. The internal capture service is initially inactive.
+
+An empty inactive ledger may be removed on downgrade. Repeated schema-chain
+downgrade tolerates complete shared absence; partial tables, altered General
+policies or retained admission/operation evidence require forward remediation.
+The empty check holds exclusive table locks so a concurrent admission cannot
+commit between inspection and removal.

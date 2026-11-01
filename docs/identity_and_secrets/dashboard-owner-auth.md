@@ -285,6 +285,24 @@ host-authorized replacement registration; configured-key mode keeps its
 exclusive header path and permits a fresh key-backed session at the new origin. An existing credential cannot be moved to a new
 RP by editing a stored hostname. Never delete auth rows to reopen enrollment.
 
+## Ambient projection grants
+
+A wall display, e-ink panel or Home Assistant sensor reads its glance with a
+projection grant, never the owner key. The owner mints one per surface with
+`POST /api/projections` (owner session only); the response carries the token
+once, and `public.ambient_projections` keeps only its SHA-256 digest. The token
+unlocks exactly `GET /api/projections/{id}/glance` for that projection, sent as
+`X-Projection-Token` (preferred) or `?token=`, which can reach proxy access
+logs. Every other route treats it as no credential; a non-GET request is 405 and
+an unknown or revoked grant is 404. Revoke with `DELETE /api/projections/{id}`;
+revoking every grant is the rollback. A surface that misses two expected fetch
+intervals shows up as one low-severity "last fetched ... ago" item in the
+briefing's attention model until it fetches again; the item is derived on read,
+so nothing is written or scheduled. `?format=text` and `?format=png` render the
+same glance for dumb panels; wiring and a Home Assistant package live in
+[Ambient Projections](../operations/ambient-projections-home-assistant.md).
+Contract: `ambient-projections` (REQ-ambient-projections-001 to -005).
+
 ## Failure, restore and rollback
 
 | Condition | Operator response |

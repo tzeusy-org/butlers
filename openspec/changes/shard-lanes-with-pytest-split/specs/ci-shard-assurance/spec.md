@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Fresh collected membership and one inventory
-The CI system SHALL derive both lane populations from the exact installed pytest corpus and lane marker predicates at run time. Durations, diffs, file globs and cached counts MUST NOT establish membership. Each backend lane group SHALL select its tests with pytest-split from that fresh selection and record how many tests it collected. Check-preflight SHALL make one fresh `--collect-only` count per lane, and both test budgets SHALL consume those same counts. Lane groups SHALL depend on route only, independently of static guards. Collection failures SHALL be non-passing.
+The CI system SHALL derive both lane populations from the exact installed pytest corpus and lane marker predicates at run time. Durations, diffs, file globs and cached counts MUST NOT establish membership. Each backend lane group SHALL select its tests with pytest-split from that fresh selection and record how many tests it collected. Check-preflight SHALL make one fresh `--collect-only` count per lane, and both test budgets SHALL consume those same counts. Check-preflight SHALL depend on route only and run beside the lane groups, so an over-budget or uncollectable tree fails before the suite finishes. Lane groups SHALL depend on route only, independently of static guards. Collection failures SHALL be non-passing.
 
 ID: REQ-ci-shard-assurance-001
 Source: bu-ly3lv5.6 P1-P3; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
@@ -17,14 +17,14 @@ Scope: v1-mandatory
 
 #### Scenario: Unknown collection cannot become a budget pass
 - **WHEN** the fresh collect-only run fails
-- **THEN** check-preflight refuses both the totals and the budget, and the required check fails
+- **THEN** check-preflight refuses the count and the budget, check-totals cannot run, and the required check fails
 
 #### Scenario: Historical counts do not replace current population
 - **WHEN** the committed budget baseline or an old count is presented
 - **THEN** the fresh collect-only count governs the comparison and historical counts remain provenance only
 
 ### Requirement: Deterministic whole-file weighted assignment
-Each lane SHALL split its fresh selection into five unit or six integration groups with pytest-split's `duration_based_chunks` algorithm over the committed `.test_durations`. Contiguous chunks in collection order SHALL keep files whole except at group boundaries, under `--dist loadfile` within each group. Durations SHALL influence balancing only: a test missing from the file SHALL receive pytest-split's average duration and still run. The nightly covered groups SHALL measure every test's duration, and a `durations-refresh` job SHALL merge them, refuse a merge with any group missing, upload the merged file, and open a pull request with it on Monday's scheduled run or a manual dispatch on main. It MUST NOT push to main.
+Each lane SHALL split its fresh selection into five unit or six integration groups with pytest-split's `duration_based_chunks` algorithm over the committed `.test_durations`. Contiguous chunks in collection order SHALL keep files whole except at group boundaries, under `--dist loadfile` within each group. Durations SHALL influence balancing only: a test missing from the file SHALL receive pytest-split's average duration and still run. Every required lane group SHALL measure and publish each test's duration untraced, and a nightly `durations-refresh` job SHALL merge those of the latest successful merge-group run, refuse a merge with any group missing, upload the merged file, and open a pull request with it on Monday's scheduled run or a manual dispatch on main. It MUST NOT push to main.
 
 ID: REQ-ci-shard-assurance-002
 Source: bu-ly3lv5.6 P4/P12; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
@@ -52,7 +52,7 @@ Scope: v1-mandatory
 - **AND** durations never change which tests a lane selects
 
 ### Requirement: Independent complete-identity execution reconciliation
-Every required lane group SHALL record the number of tests it collected after marker deselection and group selection, as `collected=<n>` in its step summary and a `collected.json` evidence file. Check-preflight SHALL read every group's count, refuse a malformed, duplicated, missing or unexpected group, and compare each lane's sum with the fresh `--collect-only` count of the same selection. A lane whose sum differs SHALL fail check-preflight. Per-item execution receipts are no longer produced; pytest-split's deterministic selection over the one fresh collection, checked by these totals, replaces them.
+Every required lane group SHALL record the number of tests it collected after marker deselection and group selection, as `collected=<n>` in its step summary and a `collected.json` evidence file. A check-totals job SHALL run after the lane groups, read every group's count and check-preflight's lane counts, refuse malformed, duplicated, missing or unexpected input, and compare each lane's sum with the fresh `--collect-only` count of the same selection. A lane whose sum differs SHALL fail check-totals, and the required check SHALL require check-totals success wherever the lane groups run. Per-item execution receipts are no longer produced; pytest-split's deterministic selection over the one fresh collection, checked by these totals, replaces them.
 
 ID: REQ-ci-shard-assurance-003
 Source: bu-ly3lv5.6 P5; bu-29wkwj.2 (owner decision bu-w72da2 = A; 2026-10-21 simplicity audit); adopted testing-and-verification
@@ -64,15 +64,16 @@ Scope: v1-mandatory
 
 #### Scenario: Duplicate execution fails independently of assignment
 - **WHEN** a test is selected by two groups of one lane
-- **THEN** the lane sum exceeds the collect-only count and check-preflight fails
+- **THEN** the lane sum exceeds the collect-only count and check-totals fails
 
 #### Scenario: Missing and partial children cannot hide behind matrix success
 - **WHEN** a group is skipped, cancelled or emits no count
-- **THEN** all eleven expected groups are checked, the missing group is named and check-preflight cannot report success
+- **THEN** all eleven expected groups are checked, the missing group is named and check-totals cannot report success
 
 #### Scenario: Retry identity and privacy remain exact
 - **WHEN** a group uploads its count evidence
-- **THEN** the evidence carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **THEN** the count record carries only the lane, group and an integer count, without test names or parameter values, and a negative, boolean, non-integer or duplicated count is refused
+- **AND** the group's separate `durations.json` carries test node ids exactly as the committed `.test_durations` already publishes them, and no other payload
 
 ### Requirement: Fail-closed matrix routing and event policy
 Routing SHALL remain stdlib-only and conservative. The required check SHALL remain verdict-only and always evaluate all current needed results under explicit event/plan rules. Lane groups SHALL depend on route only and start independently of static guards. Static guards SHALL remain mandatory in every required final verdict. Existing required contexts SHALL survive; merge_group MUST retain all eleven backend groups, check-preflight, guards, frontend and browser evidence.
@@ -83,7 +84,7 @@ Scope: v1-mandatory
 
 #### Scenario: A full terminal tree requires eleven backend carriers
 - **WHEN** merge_group or a full backend PR executes
-- **THEN** five unit and six integration groups, guards and check-preflight must succeed; an unknown, failed or partial result fails the required verdict
+- **THEN** five unit and six integration groups, guards, check-preflight and check-totals must succeed; an unknown, failed or partial result fails the required verdict
 
 #### Scenario: Scoped and docs skips remain explicitly bounded
 - **WHEN** a genuine scoped backend PR or classifier-proven docs-only PR is evaluated
@@ -91,7 +92,7 @@ Scope: v1-mandatory
 
 #### Scenario: Main push retains fresh inventory without rerunning heavy lanes
 - **WHEN** push targets main after protected queue validation
-- **THEN** the lane groups and check-preflight skip explicitly, because the merge group already ran the totals and budget over the identical tree
+- **THEN** the lane groups, check-preflight and check-totals skip explicitly, because the merge group already ran the totals and budget over the identical tree
 
 #### Scenario: Unknown inputs widen or fail
 - **WHEN** classifier/planner/inventory-change evidence is absent or an added needed job lacks skip permission
@@ -180,6 +181,12 @@ Scope: v1-mandatory
 - **WHEN** the supported Vitest dependency optimizer reuses bundled library transforms in node or jsdom workers
 - **THEN** every child still performs its own fresh complete unsharded collection and actual isolated-fork shard execution, with unchanged full-reference, declaration, ready and terminal-result reconciliation
 
+#### Scenario: Failed execution retains informational opaque diagnostics only
+- **WHEN** an actual nonzero Vitest child leaves a fresh closed reporter file bound to its unchanged tracked source/run/attempt/shard identity and mandatory configuration predicates
+- **THEN** validated available opaque module/item observations and error/outcome counters survive cleanup while the original child exit, incomplete receipt and nonpassing wrapper verdict remain explicit
+- **AND** absent independent-reference membership and configuration-match authority remain `UNKNOWN` without discarding otherwise safe reported observations; missing, stale, malformed or mismatched evidence stays `UNKNOWN`, raw names/parameters/provider/exception/output text never escape, and diagnostics cannot authorize complete population, frontend or required-check success
+
+
 ### Requirement: Measured efficiency and owned integration remain explicit
 The implementation SHALL preserve finite watchdogs, all protected checks and the lane target: the slowest group of each lane SHALL take 300 s or less, or the gap SHALL be reported with its measured cause. The 420 s lane p95 objective remains the tracked metric. Shard counts SHALL stay at least five unit and six integration groups and change only from measured durations. Every Python job in ci.yml SHALL set up through the one composite action. Matrix conversion and frontend expansion SHALL account for actual expanded rows and their concurrent peak. Unavailable p95/spread/timing evidence SHALL remain an unfinished observation, never an inferred gain.
 
@@ -203,7 +210,7 @@ Scope: v1-mandatory
 
 #### Scenario: Every moved checker has an enforcing survivor
 - **WHEN** inventory, partition, receipt, budget, smoke or browser-build enforcement moves
-- **THEN** each has a named survivor: the check-preflight totals (drops and duplicates), the check-preflight, `make check` and pre-push budget, the check-preflight smoke command, and the guards and browser builds
+- **THEN** each has a named survivor: the check-totals totals (drops and duplicates), the check-preflight, `make check` and pre-push budget, the check-preflight smoke command, and the guards and browser builds
 
 #### Scenario: Parallel changes retain source ownership
 - **WHEN** the .5 setup/observer/worker cache work or other current protected/public hunks overlap

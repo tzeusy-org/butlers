@@ -178,7 +178,9 @@ path moves). Rules for consuming and maintaining it:
     and labels that name clock hours on a rolling window. *e.g.* (2026-10, connector detail)
     `ConnectorDetailView.tsx:752-763` pads by position over `ingestion_connectors.py:548-575`, which
     returns only non-empty hours; `ingestion_connectors.py:173-177,188-192` default liveness fields to
-    0. *Fix posture:* time-keyed dense buckets from the server, a per-bucket listening state distinct
+    0. (Positional placement and clock labels fixed 2026-11-02 by bu-s11n0s.5 S1: dense keyed
+    server buckets, `lib/bucket-series.ts`, relative labels. Liveness defaults still open.)
+    *Fix posture:* time-keyed dense buckets from the server, a per-bucket listening state distinct
     in shape from a measured zero, and a lint ban on positional zero-fill.
 
 16. **Sibling reader left behind**: a fix moves a shared predicate (a helper, a posture, a scrub)

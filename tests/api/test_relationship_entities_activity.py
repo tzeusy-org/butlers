@@ -502,6 +502,8 @@ class TestMergedStreamSort:
                 }
             )
         ]
+        # A Chronicler row without a selected timestamp is malformed, so it is
+        # excluded (and degrades the read) rather than joining the null tail.
         episodes = [{"id": str(chronicler_id), "canonical_title": "Null episode"}]
         app, _, _ = _app_with_mocks(
             narrative_rows=narrative_rows,
@@ -509,14 +511,15 @@ class TestMergedStreamSort:
             chronicler_episodes=episodes,
         )
 
-        items = (await _get(app)).json()["items"]
+        body = (await _get(app)).json()
+        items = body["items"]
 
         assert items[0]["id"] == str(timestamped_id)
         assert [(item["src"], item["store"], item["id"]) for item in items[1:]] == [
-            ("chronicler", None, str(chronicler_id)),
             ("relationship", "identity", str(identity_id)),
             ("relationship", "narrative", str(narrative_id)),
         ]
+        assert body["degraded_reason"] == "chronicler_activity_unavailable"
 
 
 # ---------------------------------------------------------------------------

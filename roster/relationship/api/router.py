@@ -121,6 +121,8 @@ ActivityResponse = _models_module.ActivityResponse
 EntityFactEntry = _models_module.EntityFactEntry
 ActivityBin = _models_module.ActivityBin
 ActivityBinsResponse = _models_module.ActivityBinsResponse
+EntityCommitmentItem = _models_module.EntityCommitmentItem
+EntityCommitmentsResponse = _models_module.EntityCommitmentsResponse
 ViewMarkResponse = _models_module.ViewMarkResponse
 DeltaFactEntry = _models_module.DeltaFactEntry
 DeltaFactsResponse = _models_module.DeltaFactsResponse
@@ -6667,7 +6669,10 @@ async def _fetch_chronicler_activity(
     Returns ``(entries, None)`` on a successful read. When Chronicler is
     unreachable, the MCP call fails, or the response envelope is unreadable,
     returns ``([], chronicler_activity_unavailable)`` so callers cannot confuse
-    missing source evidence with genuine zero activity.
+    missing source evidence with genuine zero activity. A non-object row, a
+    missing or invalid episode UUID, or a missing or unparseable selected
+    timestamp is malformed: it is excluded, every readable row is kept, and the
+    contribution is reported as degraded.
 
     INVARIANT: No direct SQL on chronicler.* tables.
     """
@@ -6729,14 +6734,17 @@ async def _fetch_chronicler_activity(
             malformed_count += 1
             continue
 
-        # Use canonical_start_at as the primary timestamp; fall back to start_at.
+        # The selected timestamp is a nonempty canonical_start_at, else start_at.
+        # A row without a parseable selected timestamp is malformed, not undated.
         ts_raw = ep.get("canonical_start_at") or ep.get("start_at")
-        ts: datetime | None = None
-        if ts_raw:
-            try:
-                ts = datetime.fromisoformat(str(ts_raw))
-            except (ValueError, TypeError):
-                pass
+        if not ts_raw:
+            malformed_count += 1
+            continue
+        try:
+            ts = datetime.fromisoformat(str(ts_raw))
+        except (ValueError, TypeError):
+            malformed_count += 1
+            continue
 
         summary = ep.get("canonical_title") or ep.get("title")
 
@@ -6751,13 +6759,15 @@ async def _fetch_chronicler_activity(
                 summary=str(summary) if summary is not None else None,
             )
         )
-    if malformed_count > 0 and len(entries) == 0:
+    if malformed_count > 0:
+        # Partial failure: keep every readable row, but never claim completeness.
         logger.info(
-            "Chronicler activity: all %d episode rows were malformed for entity %s; degrading",
+            "Chronicler activity: %d of %d episode rows were malformed for entity %s; degrading",
             malformed_count,
+            len(episodes),
             entity_id,
         )
-        return [], _CHRONICLER_ACTIVITY_UNAVAILABLE
+        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE
     return entries, None
 
 
@@ -6832,6 +6842,12 @@ async def get_entity_activity(
         description="When true (and bins=daily), return only {bins:[...]} and omit "
         "the merged stream.",
     ),
+    source: Literal["all", "relationship", "chronicler"] = Query(
+        "all",
+        description="Which contributions to execute: 'all' (default), 'relationship' "
+        "(both local stores, no Chronicler call) or 'chronicler' (episodes only, no "
+        "Relationship fact query). Applied before totals, bins, ordering and pagination.",
+    ),
     *,
     db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
@@ -6861,6 +6877,13 @@ async def get_entity_activity(
     sourced via the same ``chronicler_list_episodes`` MCP path before binning —
     the binning step never crosses the chronicler boundary.
 
+    **Source selection**: ``source`` is an execution boundary, not a response
+    filter. ``relationship`` never acquires a Chronicler client, so it cannot
+    inherit Chronicler degradation; ``chronicler`` never runs a Relationship
+    fact query. Totals, bins, ordering and pagination all use only the selected
+    contributions. An invalid value fails query validation (422) before either
+    fetch.
+
     **Authorization**: owner-only gate (Amendment 12b) — returns HTTP 403
     with ``{"code": "owner_required"}`` when no owner entity is registered.
 
@@ -6886,11 +6909,20 @@ async def get_entity_activity(
     # Entity existence gate.
     await _assert_entity_exists(pool, entity_id)
 
-    # Fetch each local store independently; never join or deduplicate them.
+    # Only selected contributions execute. Each local store is read
+    # independently; nothing is joined or deduplicated across stores.
+    async def _no_entries() -> list[ActivityEntry]:
+        return []
+
+    async def _no_chronicler() -> tuple[list[ActivityEntry], None]:
+        return [], None
+
+    with_relationship = source in ("all", "relationship")
+    with_chronicler = source in ("all", "chronicler")
     narrative_entries, identity_entries, chronicler_result = await asyncio.gather(
-        _fetch_narrative_activity(pool, entity_id),
-        _fetch_identity_activity(pool, entity_id),
-        _fetch_chronicler_activity(mcp_manager, entity_id),
+        _fetch_narrative_activity(pool, entity_id) if with_relationship else _no_entries(),
+        _fetch_identity_activity(pool, entity_id) if with_relationship else _no_entries(),
+        _fetch_chronicler_activity(mcp_manager, entity_id) if with_chronicler else _no_chronicler(),
     )
     chr_entries, degraded_reason = chronicler_result
     degraded = degraded_reason is not None
@@ -6935,6 +6967,71 @@ async def get_entity_activity(
         degraded=degraded,
         degraded_reason=degraded_reason,
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /entities/{entity_id}/commitments — read-only entity commitment view
+# ---------------------------------------------------------------------------
+
+# Content-blind discriminator for any commitment-source failure. Never expose
+# the upstream exception or row content through this response.
+_COMMITMENT_SOURCE_UNAVAILABLE: Literal["commitment_source_unavailable"] = (
+    "commitment_source_unavailable"
+)
+
+
+@router.get("/entities/{entity_id}/commitments", response_model=EntityCommitmentsResponse)
+async def get_entity_commitments(
+    entity_id: UUID,
+    limit: int = Query(50, ge=1, le=200, description="Maximum commitments per page."),
+    offset: int = Query(0, ge=0, description="Pagination offset."),
+    *,
+    db: Db,
+) -> EntityCommitmentsResponse | JSONResponse:
+    """Return the owner's active commitments with one entity, in both directions.
+
+    Reads ``public.owner_conditions`` through the core commitment seam
+    (:func:`butlers.core.commitments.list_entity_commitment_page`): open or
+    aging commitment-class rows whose counterparty is this entity and whose
+    direction is ``owner_to_other`` or ``other_to_owner``, across every
+    originating source, ordered ``first_detected_at DESC, fingerprint ASC``.
+
+    Items carry only ``kind``, ``direction``, ``summary``, ``deadline``,
+    ``escalation_level`` and ``fingerprint``. The read has no side effects.
+
+    Owner-only (403 ``owner_required``); 404 for an unknown entity. A known
+    entity with no matches is an honest empty 200. Any commitment-source
+    failure returns 200 with ``items=[]``, ``total=0``, ``degraded=true`` and
+    the fixed ``commitment_source_unavailable`` reason, so a failure never
+    reads as "no commitments".
+    """
+    from butlers.core.commitments import list_entity_commitment_page
+
+    pool = _pool(db)
+    if (err := await _assert_owner_role(pool)) is not None:
+        return err
+    await _assert_entity_exists(pool, entity_id)
+
+    try:
+        rows, total = await list_entity_commitment_page(
+            pool, entity_id=str(entity_id), limit=limit, offset=offset
+        )
+        items = [EntityCommitmentItem.model_validate(row) for row in rows]
+    except Exception as exc:  # noqa: BLE001 — any source failure degrades honestly
+        logger.warning(
+            "Entity commitments read failed for entity %s (degraded): %s",
+            entity_id,
+            type(exc).__name__,
+        )
+        return EntityCommitmentsResponse(
+            items=[],
+            total=0,
+            limit=limit,
+            offset=offset,
+            degraded=True,
+            degraded_reason=_COMMITMENT_SOURCE_UNAVAILABLE,
+        )
+    return EntityCommitmentsResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 # ---------------------------------------------------------------------------

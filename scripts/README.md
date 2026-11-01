@@ -240,6 +240,7 @@ changes infrastructure or historical data.
 | [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition. |
 | [`check_countable_tasks.py`](check_countable_tasks.py) | `ci.yml`, `make check-countable-tasks`, `pre_push.py` | Fails when an unarchived change's tasks cannot be counted by the archive gate. |
 | [`check_duplicate_toplevel_names.py`](check_duplicate_toplevel_names.py) | `ci.yml`, `make check-duplicate-names`, `pre_push.py` | Finds module-level Python definitions that would silently shadow each other after a merge. |
+| [`check_host_policy_selectors.py`](check_host_policy_selectors.py) | `ci.yml`, `make check-host-policy-selectors`, `make check-guards` | Checks the reviewed static name-selector inventory for unclassified growth, unexplained loss and evidenced host-policy growth; does not certify runtime authority or configurability. |
 | [`check_for_update_joins.py`](check_for_update_joins.py) | `make check-for-update-joins`, `pre_push.py` | Statically rejects `FOR UPDATE` on nullable outer-join sides. |
 | [`check_owner_emails.py`](check_owner_emails.py) | `ci.yml`, Make, `pre_push.py` | Fails when a tracked file contains a blocked deployment-owner email address. |
 | [`check_requirement_trace_lines.py`](check_requirement_trace_lines.py) | `ci.yml`, `make check-requirement-trace` | Requires ID, Source and Scope lines on ADDED/MODIFIED requirement blocks; today's debt is frozen in `requirement-trace-baseline.json`. |
@@ -304,6 +305,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`dev_entrypoint.sh`](dev_entrypoint.sh) | `docker-compose.yml`, Helm templates | Container entrypoint for dev services. |
 | [`dashboard_proxy_peer.py`](dashboard_proxy_peer.py) | `compose.sh` | Measures the host-published API's TCP peer for the dashboard-proxy readiness check. |
 | [`oauth_gate.py`](oauth_gate.py) | `docker-compose.yml`, Helm helpers | Polls the database for a Google refresh token and exits 0 when found. |
+| [`wait_for_butler_routes.py`](wait_for_butler_routes.py) | Helm Google Health connector init container | Waits within finite deadlines for the expected daemon identity and literal route acceptance; never recovers old events. |
 | [`site-env.sh`](site-env.sh) | `.envrc`, `k8s/*.sh` | Loads site-specific environment. |
 | [`k8s/`](k8s/) | developers, `make` and Helm flows | Build, push and deploy helpers for the dev cluster. |
 | [`setup_worktree.sh`](setup_worktree.sh) | developers (`AGENTS.md`) | Prepares a newly created worktree with its machine-local pointers and cache links. |

@@ -156,7 +156,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
     heavy = {"check-unit", "check-integration"}
     contexts = [("full", "pull_request", "refs/pull/1/merge", full, True)]
     scoped = copy.deepcopy(full)
-    for name in heavy:
+    for name in (*heavy, "check-totals"):
         scoped[name]["result"] = "skipped"
     scoped["route"]["outputs"].update(
         mode="scoped", test_paths='["tests/contracts/test_ci_test_targets.py"]'
@@ -229,6 +229,7 @@ def test_ci_gate_reads_every_needed_verdict_without_counting_preflight_as_a_shar
             "route",
             "guards",
             "check-preflight",
+            "check-totals",
             "check-affected",
             "frontend-e2e",
             "go-bridge",
@@ -1248,6 +1249,222 @@ def _vitest_concurrent_receipt_controls(root, pair, monkeypatch, tmp_path, bound
         assert vitest.run(root, 1, tmp_path / "concurrent-private-caches") == 0
         assert len(caches) == 2 and caches[0] != caches[1]
         assert all(not Path(cache).exists() for cache in caches)
+    assert _vitest_nonzero_diagnostic_controls(root, pair, monkeypatch, tmp_path)
+    return True
+
+
+def _vitest_nonzero_diagnostic_controls(root, pair, monkeypatch, tmp_path):
+    """Actual bounded process transport, not installed Vitest/test performance."""
+    import contextlib
+    import io
+
+    import ci_vitest as vitest
+
+    area = tmp_path / "nonzero-diagnostics"
+    area.mkdir()
+    original_root = root
+    root = area / "checkout"
+    (root / "frontend").mkdir(parents=True)
+    for name in ("control-a.test.ts", "control-b.test.ts", "package-lock.json"):
+        (root / "frontend" / name).write_bytes((original_root / "frontend" / name).read_bytes())
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "add", "frontend"],
+        [
+            "git",
+            "-c",
+            "user.name=Transport Control",
+            "-c",
+            "user.email=control@example.invalid",
+            "commit",
+            "-qm",
+            "source",
+        ],
+    ):
+        subprocess.run(command, cwd=root, check=True, capture_output=True)
+    marker = area / "validated-reference"
+    helper = area / "transport.py"
+    helper.write_text(
+        """import json, os, sys, time
+from pathlib import Path
+phase, output, payload, marker, mode = sys.argv[1:]
+value = json.loads(Path(payload).read_text())
+if phase == 'reference':
+    if mode == 'no-reference':
+        time.sleep(5)
+    Path(output).write_text(json.dumps(value['reference']))
+else:
+    deadline = time.monotonic() + 2
+    while mode != 'no-reference' and not Path(marker).exists():
+        if time.monotonic() > deadline:
+            sys.exit(4)
+        time.sleep(.01)
+    print('PRIVATE_PROVIDER_PARAMETER_STDOUT')
+    print('PRIVATE_EXCEPTION_STDERR', file=sys.stderr)
+    if mode == 'nonregular':
+        os.mkfifo(output)
+    elif mode != 'missing':
+        Path(output).write_text('PRIVATE_RAW_MALFORMED' if mode == 'malformed'
+                                else json.dumps(value['execution']))
+        if mode == 'stale':
+            os.utime(output, ns=(1, 1))
+    sys.exit(0 if mode == 'healthy' else 1)
+"""
+    )
+    native_run, native_validate = vitest.run_process, vitest.validate_reference
+    native_identity = vitest.identity
+    canaries = (
+        "PRIVATE_PROVIDER_PARAMETER_STDOUT",
+        "PRIVATE_EXCEPTION_STDERR",
+        "PRIVATE_RAW_MALFORMED",
+        "PRIVATE_TEST_NAME",
+        "PRIVATE_PROVIDER_PARAMETER",
+        "PRIVATE_EXCEPTION_MESSAGE",
+    )
+    healthy = []
+    with monkeypatch.context() as local:
+        for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
+            local.delenv(name, raising=False)
+        mode = "failed"
+        payload = area / "payload.json"
+
+        def transport(command, **kwargs):
+            if command[:2] == ["node", str(vitest.REPORTER)]:
+                phase, output = "reference", command[4]
+            elif command[0] == str(root / "frontend/node_modules/.bin/vitest"):
+                phase, output = "execute", kwargs["env"]["BUTLERS_VITEST_EVIDENCE"]
+            else:
+                return native_run(command, **kwargs)
+            kwargs["timeout"] = 5
+            return native_run(
+                [sys.executable, str(helper), phase, output, str(payload), str(marker), mode],
+                **kwargs,
+            )
+
+        def validated(value, checkout):
+            result = native_validate(value, checkout)
+            if mode == "identity":
+                local.setenv("GITHUB_RUN_ATTEMPT", "other-attempt")
+            marker.write_text("validated")
+            return result
+
+        diagnostic_error_raised = False
+
+        def current_identity(checkout):
+            nonlocal diagnostic_error_raised
+            if mode == "diagnostic-error" and marker.exists() and not diagnostic_error_raised:
+                diagnostic_error_raised = True
+                raise RuntimeError("PRIVATE_EXCEPTION_MESSAGE")
+            return native_identity(checkout)
+
+        local.setattr(vitest, "identity", current_identity)
+        local.setattr(vitest, "run_process", transport)
+        local.setattr(vitest, "validate_reference", validated)
+        for mode in (
+            "failed",
+            "partial",
+            "missing",
+            "malformed",
+            "stale",
+            "nonregular",
+            "wrong-item",
+            "config",
+            "extra",
+            "private-state",
+            "private-module",
+            "boolean-count",
+            "diagnostic-error",
+            "identity",
+            "no-reference",
+            "healthy",
+            "healthy",
+        ):
+            local.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+            diagnostic_error_raised = False
+            marker.unlink(missing_ok=True)
+            shard = 2 if mode == "healthy" and healthy else 1
+            value = copy.deepcopy(pair[shard - 1])
+            execution = value["execution"]
+            file = next(iter(execution["modules"]))
+            token = next(iter(execution["results"]))
+            if mode != "healthy":
+                execution["results"][token]["state"] = "failed"
+                execution["ends"][file].update(errors=1, ok=False, state="failed")
+                execution.update(unhandled_errors=1, update_errors=1, reason="failed")
+                execution["reporter_problems"] = {"result_pending": 1}
+            if mode == "partial":
+                execution["results"] = {}
+                execution["ready"] = {}
+                execution["ends"] = {}
+                execution["terminal_files"] = []
+                execution["complete"] = False
+            elif mode == "wrong-item":
+                execution["results"]["f" * 64] = execution["results"].pop(token)
+            elif mode == "config":
+                execution["config"]["retry"] = True
+            elif mode == "extra":
+                execution["PRIVATE_TEST_NAME"] = "PRIVATE_PROVIDER_PARAMETER"
+            elif mode == "private-state":
+                execution["results"][token]["state"] = "PRIVATE_EXCEPTION_MESSAGE"
+            elif mode == "boolean-count":
+                execution["unhandled_errors"] = True
+            elif mode == "private-module":
+                execution["modules"]["PRIVATE_TEST_NAME"] = execution["modules"].pop(file)
+            payload.write_text(json.dumps(value))
+            destination = area / (mode + str(shard))
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                result = vitest.run(root, shard, destination)
+            text = (destination / "receipt.json").read_text()
+            receipt = json.loads(text)
+            assert all(
+                canary not in text + stdout.getvalue() + stderr.getvalue() for canary in canaries
+            ), "private canary escaped"
+            if mode == "healthy":
+                assert result == 0 and receipt["complete"] is True
+                healthy.append(receipt)
+                continue
+            assert result == receipt["wrapper_exit"] == 2
+            assert receipt["complete"] is False and receipt["exit_code"] == 1, (
+                "nonzero failure was admitted"
+            )
+            assert receipt["stage"] == "execute"
+            assert receipt["failure_category"] == "subprocess_failed"
+            diagnostic = receipt.get("failure_diagnostics", {})
+            if mode in {"failed", "partial", "no-reference"}:
+                assert diagnostic.get("status") == "available", "nonzero diagnostic was discarded"
+                assert diagnostic["population_complete"] is False
+                expected_reference = "UNKNOWN" if mode == "no-reference" else "validated"
+                assert diagnostic["reference"] == expected_reference
+                assert diagnostic["configuration_match"] == expected_reference
+                assert diagnostic["membership"] == (
+                    "UNKNOWN" if mode == "no-reference" else "reference_checked_subset"
+                )
+                assert diagnostic["unhandled_errors"] == diagnostic["update_errors"] == 1
+                assert diagnostic["reporter_problems"] == {"result_pending": 1}
+                if mode in {"failed", "no-reference"}:
+                    assert diagnostic["outcomes"] == {"failed": 1}
+                    assert diagnostic["items"][token] == {
+                        **value["reference"]["modules"][file]["items"][token],
+                        "state": "failed",
+                    }
+                    assert sum(end["errors"] for end in diagnostic["ends"].values()) == 1
+                else:
+                    assert diagnostic["items"] == diagnostic["outcomes"] == {}
+            else:
+                assert diagnostic["status"] == "UNKNOWN"
+                assert diagnostic["reason"] in {
+                    "missing_evidence",
+                    "invalid_evidence",
+                    "stale_evidence",
+                    "identity_changed",
+                    "reference_unavailable",
+                    "diagnostic_unavailable",
+                }
+                assert "items" not in diagnostic and "modules" not in diagnostic
+            with pytest.raises(ValueError):
+                vitest.reconcile(root, [receipt, pair[1]])
+        vitest.reconcile(root, healthy)
     return True
 
 
@@ -1415,7 +1632,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
         for index, job in enumerate(children, 1):
             artifact = _artifact_step(job=job, artifact_name=f"ci-{lane}-{index}-test-evidence")
-            filenames = ["junit.xml", "top-durations.txt", "collected.json"]
+            filenames = ["junit.xml", "top-durations.txt", "collected.json", "durations.json"]
             if lane == "unit":
                 filenames.append("condensation-refusal-*.json")
             assert artifact["if"] == "always()"
@@ -1547,11 +1764,18 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     ):
         assert command in dry_run
 
-    # The totals check runs after both matrix aggregates; every group's count is
-    # read before a full result is admitted.
-    assert preflight["needs"] == ["route", "guards", "check-unit", "check-integration"]
-    assert preflight["if"].startswith("always()")
+    # Preflight starts beside the groups: its fresh count and budget need no test
+    # result, so an over-budget tree fails early. The totals check runs after both
+    # matrix aggregates; every group's count is read before a full result is admitted.
+    assert preflight["needs"] == ["route"]
     assert "mode == 'full'" in preflight["if"] and "mode == 'scoped'" in preflight["if"]
+    check_totals = jobs["check-totals"]
+    assert check_totals["needs"] == ["route", "check-preflight", "check-unit", "check-integration"]
+    assert check_totals["if"] == (
+        "${{ !cancelled() && needs.route.outputs.mode == 'full' "
+        "&& needs.check-preflight.result == 'success' }}"
+    )
+    assert not any("uv" in step.get("run", "") for step in check_totals["steps"])
     # Each group runs its pytest-split slice through the one lane runner, starting
     # straight after route (bu-29wkwj.2).
     for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
@@ -1572,11 +1796,16 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         for job in jobs.values()
         for step in job.get("steps", [])
     )
-    totals = _workflow_step(
-        job=preflight, name="Check the lane groups add up and stay within the test budget"
+    lane_counts = '"${RUNNER_TEMP}/ci-lane-counts/lane-counts.json"'
+    count = _workflow_step(job=preflight, name="Count each lane and check the test budget")
+    assert count["run"] == (
+        f"uv run --no-sync python scripts/ci_lanes.py count --output {lane_counts}"
     )
+    assert _artifact_step(job=preflight, artifact_name="ci-lane-counts")
+    totals = _workflow_step(job=check_totals, name="Check the lane groups add up")
     assert totals["run"] == (
-        'uv run --no-sync python scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts"'
+        'python3 scripts/ci_lanes.py totals --counts "${RUNNER_TEMP}/ci-test-receipts" '
+        "--expected " + lane_counts
     )
 
     # Enumerate weighted antichains of the actual job DAG. Matrix aggregates
@@ -1614,9 +1843,10 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
         selected = [i for i in range(len(names)) if mask & (1 << i)]
         if all(mask & ~(compatible[i] | (1 << i)) == 0 for i in selected):
             peak = max(peak, sum(weights[i] for i in selected))
-    assert sum(weights) + 1 == 21  # Includes the mutually exclusive affected row.
-    # Existing fifteen concurrent rows plus the independent Go bridge job.
-    assert peak == 16
+    assert sum(weights) + 1 == 22  # Includes the mutually exclusive affected row.
+    # Fifteen concurrent rows, the independent Go bridge job and the early preflight
+    # count; check-totals runs after the groups and adds no concurrent row.
+    assert peak == 17
     assert "plan" not in jobs and "changes" not in jobs
     route_command = _workflow_step(
         job=changes, name="Classify and conservatively plan with stdlib only"
@@ -1984,6 +2214,7 @@ else:
         "route",
         "guards",
         "check-preflight",
+        "check-totals",
         "check-unit",
         "check-integration",
         "check-affected",
@@ -1999,7 +2230,7 @@ else:
     for step_name in (
         PYTHON_ENVIRONMENT_STEP,
         "Smoke tests (fast gate + release evidence)",
-        "Check the lane groups add up and stay within the test budget",
+        "Count each lane and check the test budget",
     ):
         _workflow_step(job=preflight, name=step_name)
     assert "check_integration_coverage.py" not in str(preflight)

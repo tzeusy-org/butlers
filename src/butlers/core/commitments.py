@@ -119,6 +119,7 @@ __all__ = [
     "validate_commitment_creation",
     "list_active_commitments",
     "list_entity_commitments",
+    "list_entity_commitment_page",
     "normalize_action_description",
     "resolve_commitment",
     "row_to_dict",
@@ -656,3 +657,73 @@ async def list_entity_commitments(
         limit,
     )
     return [row_to_dict(row) for row in rows]
+
+
+async def list_entity_commitment_page(
+    pool: asyncpg.Pool,
+    *,
+    entity_id: str,
+    limit: int,
+    offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return one page of an entity's active two-party commitments plus the total.
+
+    The read behind ``GET /api/relationship/entities/{id}/commitments``: the
+    same cross-source, counterparty-anchored selection as
+    :func:`list_entity_commitments`, narrowed to active (``open``/``aging``)
+    rows whose direction involves the counterparty (``self`` is excluded),
+    ordered ``first_detected_at DESC, fingerprint ASC`` before the slice.
+
+    Each row carries only the safe projection: ``kind``, ``direction``,
+    ``summary``, ``deadline``, ``escalation_level`` and ``fingerprint``. The
+    page and the total come from one statement, so they describe the same
+    snapshot; a page past the end still reports the full total.
+    """
+    _require_text("list_entity_commitment_page", "entity_id", entity_id)
+    rows = await pool.fetch(
+        f"""
+        WITH matched AS (
+            SELECT metadata->>'kind' AS kind,
+                   metadata->>'direction' AS direction,
+                   summary,
+                   metadata->>'deadline' AS deadline,
+                   escalation_level,
+                   fingerprint,
+                   first_detected_at
+            FROM {_TABLE}
+            WHERE metadata->>'class' = $1
+              AND metadata->>'counterparty_entity_id' = $2
+              AND state = ANY($3::text[])
+              AND metadata->>'direction' = ANY($4::text[])
+        ),
+        page AS (
+            SELECT * FROM matched
+            ORDER BY first_detected_at DESC, fingerprint ASC
+            LIMIT $5 OFFSET $6
+        )
+        SELECT (SELECT count(*) FROM matched) AS total, page.*
+        FROM (SELECT 1) AS anchor
+        LEFT JOIN page ON true
+        ORDER BY page.first_detected_at DESC, page.fingerprint ASC
+        """,
+        COMMITMENT_METADATA_CLASS,
+        entity_id,
+        list(_ACTIVE_STATES),
+        ["owner_to_other", "other_to_owner"],
+        limit,
+        offset,
+    )
+    total = int(rows[0]["total"]) if rows else 0
+    items = [
+        {
+            "kind": row["kind"],
+            "direction": row["direction"],
+            "summary": row["summary"],
+            "deadline": row["deadline"],
+            "escalation_level": row["escalation_level"],
+            "fingerprint": row["fingerprint"],
+        }
+        for row in rows
+        if row["fingerprint"] is not None
+    ]
+    return items, total

@@ -21,6 +21,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from butlers.core.job_health import record_tick
 from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 
 IDENTITY_PATH = "/internal/control-plane/identity"
@@ -489,5 +490,6 @@ async def run_shadow_observer_loop(
                 )
                 if after_cycle is not None:
                     await after_cycle(role_view, cycle)
+                await record_tick(failed=not cycle.complete, interval_s=interval_s)
         finally:
             await prober.cancel_all()

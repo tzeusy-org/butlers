@@ -37,6 +37,7 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the `claude` subprocess exits with a non-zero exit code
 - **THEN** the adapter SHALL raise `RuntimeError` with the exit code and stderr content
 - **AND** `last_process_info` SHALL contain the full subprocess metadata
+- **AND** when stdout carries a failed terminal `result` (for example `error_max_turns`, which CLI 2.1.316 exits 1 on), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls, and `is_pre_tool_call` SHALL be false when the stream shows a tool ran (a `tool_use` block or more than one turn)
 
 #### Scenario: Claude Code MCP config isolation
 - **WHEN** the adapter builds the invocation command
@@ -53,6 +54,8 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the `stream-json` output contains assistant message events with `tool_use` content blocks
 - **THEN** the adapter SHALL extract each tool call's `id`, `name`, and `input` fields
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
+- **AND** read the CLI's native shape, where content blocks nest under the event's `message`
+- **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess
@@ -111,8 +114,12 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the butler's runtime type is `gemini`
-- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
+- **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag, `-o stream-json`, `--skip-trust` (headless runs in an untrusted folder exit 55), and `-m <model>` when a model is resolved
+- **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
+- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally`
+- **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
 - **AND** passes declared butler env vars to the subprocess
+- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.46.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the butler's runtime type is `opencode`

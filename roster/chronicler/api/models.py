@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from butlers.api.audit_emit import IgnoresCallerAssertedActor
 
@@ -875,6 +875,37 @@ class UpdateRoutineRequest(BaseModel):
     timezone: str | None = None
 
 
+class LocationRetentionPolicyResponse(BaseModel):
+    """GET/PUT /api/chronicler/location-retention (bu-s11n0s.7).
+
+    ``status`` is ``not_enforced`` until raw expiry is gated on genuine
+    projection coverage; it never claims raw location evidence was forgotten.
+    """
+
+    days: int
+    version: int
+    updated_at: datetime
+    min_days: int
+    max_days: int
+    raw_age_basis: str
+    precision_after_forgetting: str
+    covered_sources: list[str]
+    status: Literal["not_enforced"]
+
+
+class UpdateLocationRetentionRequest(BaseModel):
+    """Owner shortens (or restores) the raw location horizon, 1..30 days.
+
+    Strict: booleans, strings, floats and unknown fields (including any
+    caller-asserted actor) are refused; the actor comes from authentication.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    days: int = Field(..., ge=1, le=30)
+    expected_version: int = Field(..., ge=1)
+
+
 __all__ = [
     "ActivityEvidenceChain",
     "AggregateByDayRow",
@@ -910,6 +941,7 @@ __all__ = [
     "RollupDay",
     "RollupFlagRow",
     "RollupLaneRow",
+    "LocationRetentionPolicyResponse",
     "ResolveGapInterviewRequest",
     "RollupsResponse",
     "RoutineRow",
@@ -921,6 +953,7 @@ __all__ = [
     "TrendLaneDay",
     "TrendLaneSeries",
     "TrendsResponse",
+    "UpdateLocationRetentionRequest",
     "UpdateRoutineRequest",
     "WhoYouWereWithResponse",
 ]

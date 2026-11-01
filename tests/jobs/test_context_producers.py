@@ -436,6 +436,76 @@ async def test_calendar_context_producer_malformed_provenance_retains_timed_huma
     set_context_mock.assert_awaited_once()
 
 
+def _self_attendee(status_key: str, status: str) -> dict[str, object]:
+    return {"attendees": [{"email": "owner@example.test", "self": True, status_key: status}]}
+
+
+_GUEST_DECLINED = {
+    "attendees": [
+        {"email": "owner@example.test", "self": True, "response_status": "accepted"},
+        {"email": "guest@example.test", "self": False, "response_status": "declined"},
+    ]
+}
+
+
+@pytest.mark.parametrize(
+    ("later_metadata", "expected_end_minutes"),
+    [
+        # REQ-context-bus-017: an excluded later row yields to the attended overlap.
+        (_self_attendee("response_status", "declined"), 20),
+        (_self_attendee("responseStatus", "Declined"), 20),
+        ({"transparency": "transparent"}, 20),
+        # Only the owner's own decline or a free marker excludes; these still assert.
+        (_GUEST_DECLINED, 40),
+        (_self_attendee("response_status", "tentative"), 40),
+        (_self_attendee("response_status", "needsAction"), 40),
+        ({"transparency": "opaque", "attendees": "not-a-list"}, 40),
+    ],
+)
+async def test_calendar_context_producer_applies_owner_attendance(
+    later_metadata, expected_end_minutes
+):
+    now = datetime(2026, 7, 1, 9, 0, tzinfo=UTC)
+    rows = [
+        _active_calendar_row(
+            title="Later overlap",
+            starts_at=now - timedelta(minutes=5),
+            ends_at=now + timedelta(minutes=40),
+            metadata=later_metadata,
+        ),
+        _active_calendar_row(
+            title="Attended standup",
+            starts_at=now - timedelta(minutes=10),
+            ends_at=now + timedelta(minutes=20),
+            metadata=_self_attendee("response_status", "accepted"),
+        ),
+    ]
+    pool = MagicMock()
+    set_context_mock = AsyncMock()
+    clear_context_mock = AsyncMock()
+
+    with (
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
+    ):
+        pool.fetch = AsyncMock(return_value=rows)
+        result = await run_calendar_context_producer(pool)
+        assert result["signal"] == "meeting"
+        assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(
+            minutes=expected_end_minutes
+        )
+
+        # Alone, an excluded row clears both signals instead of asserting.
+        set_context_mock.reset_mock()
+        pool.fetch = AsyncMock(return_value=rows[:1])
+        result = await run_calendar_context_producer(pool)
+        if expected_end_minutes == 20:
+            assert result == {"signal": None, "cleared": ["meeting", "focused"]}
+            set_context_mock.assert_not_awaited()
+        else:
+            assert result["signal"] == "meeting"
+
+
 async def test_travel_producer_publishes_trip_active_once_per_trip():
     """bu-317s5 slice 2: an active trip best-effort publishes travel.trip_active,
     memoized on the trip id via publish_domain_event_once (not on every tick)."""
@@ -766,14 +836,38 @@ class TestContextProducersIntegration:
                 """,
                 source_id,
             )
+            # REQ-context-bus-017: later-starting declined and free overlaps
+            # cannot displace the attended event or keep context alive after it.
+            await pool.execute(
+                """
+                INSERT INTO calendar_events
+                    (source_id, source_butler, origin_ref, title, timezone,
+                     starts_at, ends_at, status, metadata)
+                VALUES
+                    ($1, 'general', 'declined', 'Skipped sync', 'UTC',
+                     now() - interval '2 minutes', now() + interval '50 minutes',
+                     'confirmed', $2::jsonb),
+                    ($1, 'general', 'free', 'Optional talk', 'UTC',
+                     now() - interval '1 minute', now() + interval '50 minutes',
+                     'confirmed', '{"transparency": "transparent"}'::jsonb)
+                """,
+                source_id,
+                # The pool's jsonb codec encodes the dict; pre-dumping would store a
+                # JSON string instead of the object shape production writes.
+                {"attendees": [{"self": True, "response_status": "declined"}]},
+            )
             result = await run_calendar_context_producer(pool)
             assert result["signal"] == "meeting"
+            attended_end = await pool.fetchval(
+                "SELECT ends_at FROM calendar_events WHERE origin_ref = 'e1'"
+            )
             row = await pool.fetchrow(
                 "SELECT value, expires_at FROM public.user_context "
                 "WHERE signal_type = 'meeting' AND set_by_butler = 'general' "
                 "AND superseded_at IS NULL"
             )
             assert row is not None and row["value"] == "busy"
+            assert row["expires_at"] == attended_end
 
             from butlers.context_bus import format_context_preamble, get_active_context
 
@@ -785,8 +879,11 @@ class TestContextProducersIntegration:
             )
             assert metadata == {"source": "calendar"}
 
-            # Event ends: producer clears meeting.
-            await pool.execute("UPDATE calendar_events SET ends_at = now() - interval '1 minute'")
+            # Attended event ends: the still-live declined/free rows do not hold meeting.
+            await pool.execute(
+                "UPDATE calendar_events SET ends_at = now() - interval '1 minute' "
+                "WHERE origin_ref = 'e1'"
+            )
             result2 = await run_calendar_context_producer(pool)
             assert result2["signal"] is None
             active = await pool.fetchval(
