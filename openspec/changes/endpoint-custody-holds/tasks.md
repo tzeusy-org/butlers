@@ -8,6 +8,9 @@
 - [x] 1.4 Real-PostgreSQL tests: held email, Telegram and WhatsApp-by-phone stop resolving and
       release restores; runtime role cannot read, forge, release or delete; history cannot rewind;
       downgrade refusal and reapply.
+- [x] 1.5 Hardening (core_294): every custody function belongs to the database owner; a held phone
+      demotes every suffix-equivalent spelling of that owner; legacy exact-predicate mode matches
+      only holdable predicates.
 
 ## 2. Remaining slices
 
