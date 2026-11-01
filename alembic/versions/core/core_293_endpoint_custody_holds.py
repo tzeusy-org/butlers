@@ -13,7 +13,12 @@ channel must stop carrying owner authority. This revision adds:
   (``public.custody_target_digest``) over the typed fact universe of
   ``public.resolve_owner_triple`` (``has-email``, ``has-handle``,
   ``has-phone``) with the same normalization; no raw identifier is copied
-  into the hold table. Generations are
+  into the hold table. ``owner_entity_id`` is checked at insert by the
+  guard rather than a foreign key: ``TRUNCATE public.entities CASCADE``
+  truncates every referencing table regardless of ``ON DELETE``, and
+  immutable hold history must neither be wiped by nor block an entity
+  reset. Entities are soft-deleted and merged in place, so the pointer
+  stays meaningful. Generations are
   monotonic per target and never reset on release or rehold. History is
   immutable: no DELETE or TRUNCATE, and the only permitted change is a single
   ``released_at`` stamp.
@@ -68,7 +73,7 @@ _RUNTIME_ROLES = (
 _TABLE = """
 CREATE TABLE IF NOT EXISTS public.custody_holds (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    owner_entity_id UUID NOT NULL REFERENCES public.entities(id),
+    owner_entity_id UUID NOT NULL,
     target_kind TEXT NOT NULL
         CHECK (target_kind IN ('has-email', 'has-handle', 'has-phone')),
     target_digest TEXT NOT NULL CHECK (target_digest ~ '^[0-9a-f]{64}$'),
@@ -130,6 +135,10 @@ BEGIN
         SELECT COALESCE(max(h.generation), 0) + 1 INTO next_generation
         FROM public.custody_holds h
         WHERE h.target_kind = NEW.target_kind AND h.target_digest = NEW.target_digest;
+        IF NOT EXISTS (SELECT 1 FROM public.entities e WHERE e.id = NEW.owner_entity_id) THEN
+            RAISE EXCEPTION 'endpoint custody hold must name an existing owner entity'
+                USING ERRCODE = '23503';
+        END IF;
         IF NEW.generation <> next_generation OR NEW.released_at IS NOT NULL THEN
             RAISE EXCEPTION 'endpoint custody hold must open the next generation'
                 USING ERRCODE = '23514';

@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import uuid
 from urllib.parse import urlparse
 
 import asyncpg
@@ -990,6 +991,20 @@ class TestEndpointCustodyHolds:
                     await migration_pool.execute(statement, hold_id)
             with pytest.raises(asyncpg.PostgresError):
                 await migration_pool.execute("TRUNCATE public.custody_holds")
+            # TRUNCATE ... CASCADE follows foreign keys only, so an entity
+            # reset can never reach hold history; the guard checks the owner.
+            assert (
+                await migration_pool.fetchval(
+                    "SELECT count(*) FROM pg_constraint "
+                    "WHERE contype = 'f' AND (conrelid = 'public.custody_holds'::regclass "
+                    "OR confrelid = 'public.custody_holds'::regclass)"
+                )
+                == 0
+            )
+            with pytest.raises(asyncpg.PostgresError, match="existing owner entity"):
+                await migration_pool.fetchval(
+                    _HOLD_INSERT, uuid.uuid4(), "has-handle", "telegram:orphan-hold-1", 1
+                )
         finally:
             await _release(migration_pool, hold_id)
         with pytest.raises(asyncpg.PostgresError, match="released once"):
