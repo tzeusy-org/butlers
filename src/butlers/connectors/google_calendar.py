@@ -51,14 +51,13 @@ from typing import TYPE_CHECKING, Any, Literal
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics, get_error_type
@@ -2111,8 +2110,8 @@ class CalendarConnectorManager:
             return self._get_multi_account_health()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest(REGISTRY)
+        async def metrics():
+            return prometheus_metrics_response()
 
         @app.post("/reload")
         async def reload_accounts() -> dict[str, Any]:

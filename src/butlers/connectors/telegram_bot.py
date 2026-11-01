@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.catalog import connector_descriptor
@@ -522,11 +521,11 @@ class TelegramBotConnector:
             return await self.get_health_status()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
+        async def metrics():
             """Prometheus metrics endpoint."""
-            return generate_latest(REGISTRY)
+            return prometheus_metrics_response()
 
-        from butlers.connectors.health_socket import make_health_socket
+        from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 
         port = self._config.health_port
         sock = make_health_socket("127.0.0.1", port)
