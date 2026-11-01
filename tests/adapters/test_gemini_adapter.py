@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -90,7 +91,13 @@ async def test_invoke():
     mock_proc.communicate = AsyncMock(
         return_value=(json.dumps({"type": "result", "result": "Task done."}).encode(), b"")
     )
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+    staged: dict[str, str] = {}
+
+    def _spawn(*_cmd: str, **kwargs: Any) -> AsyncMock:
+        staged["system_md"] = Path(kwargs["env"]["GEMINI_SYSTEM_MD"]).read_text()
+        return mock_proc
+
+    with patch(_EXEC, side_effect=_spawn) as mock_sub:
         result_text, _, _ = await adapter.invoke(
             prompt="do something",
             system_prompt="you are helpful",
@@ -99,8 +106,12 @@ async def test_invoke():
         )
     assert result_text == "Task done."
     assert mock_sub.call_args.kwargs["env"]["GOOGLE_API_KEY"] == "gk-test"
-    cmd = mock_sub.call_args[0]
-    assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
+    # gemini-cli 0.46.0 has a strict parser and no --system-prompt flag; the prompt is
+    # staged as a GEMINI_SYSTEM_MD file instead.
+    assert staged["system_md"] == "you are helpful"
+    cmd = list(mock_sub.call_args[0])
+    assert cmd[:2] == ["/usr/bin/gemini", "--sandbox=false"]
+    assert "--system-prompt" not in cmd and cmd[cmd.index("--prompt") + 1] == "do something"
 
     # functionCall output
     output_lines = "\n".join(
