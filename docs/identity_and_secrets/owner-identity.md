@@ -74,9 +74,12 @@ owner's other unheld endpoints keep resolving.
 
 Phone spellings do not share one normalized form (`+65 8765 0123` and `87650123` digest
 differently), so a hold on one owner phone fact also demotes every phone fact of the same entity
-that is suffix-equivalent to it under the rule the definer uses to match candidates, whatever that
-sibling's validity (core_295). A writer therefore does not have to find every spelling, and a
-spelling added or retired after the hold stays covered. The core_145 exact-predicate mode
+with the same trailing eight digits, whatever that sibling's validity (core_296; core_295 used the
+candidate suffix rule, which is not transitive across a 12-digit and an 8-digit spelling). Every
+candidate the definer matches to a stored phone shares its trailing eight digits, so no chain of
+spellings escapes the hold; the class is deliberately wider than the candidate rule and fails
+closed. A writer therefore does not have to find every spelling, and a spelling added or retired
+after the hold stays covered. The core_145 exact-predicate mode
 (`p_predicate` other than `owner-channel`) only matches `has-email`, `has-handle` and `has-phone`,
 the predicates a hold can name; any other predicate resolves no owner.
 

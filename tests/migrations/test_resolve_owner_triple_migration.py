@@ -1,4 +1,4 @@
-"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145 to core_295).
+"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145 to core_296).
 
 Closes the gap identified in bu-6ui2o: the mocked-pool unit tests in
 ``test_gate.py`` and ``test_identity_resolution.py`` cover the Python layer
@@ -846,7 +846,7 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Endpoint custody holds (core_293, bu-s11n0s.1; core_295, bu-s11n0s.25)
+# Endpoint custody holds (core_293, bu-s11n0s.1; core_295, bu-s11n0s.25; core_296, bu-s11n0s.29)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _HOLD_INSERT = """
@@ -1062,6 +1062,59 @@ class TestEndpointCustodyHolds:
             assert not await resolves("0087650123")
         finally:
             await _release(migration_pool, hold_id)
+            await migration_pool.execute(
+                "DELETE FROM relationship.entity_facts WHERE id = ANY($1::uuid[])", fact_ids
+            )
+
+    async def test_hold_covers_spellings_beyond_the_candidate_length_window(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Hold coverage is transitive across spellings of one number (core_296).
+
+        '0065 8765 0123' (12 digits) and '87650123' (8 digits) are too far apart
+        for the candidate suffix rule to relate them directly, yet the candidate
+        '87650123' matches the unheld spelling. Every owner phone sharing the
+        trailing eight digits stays held; a different number keeps resolving.
+        """
+        owner_id = seeded_data["owner_id"]
+        fact_ids = [
+            await migration_pool.fetchval(
+                """
+                INSERT INTO relationship.entity_facts
+                    (subject, predicate, object, object_kind, src, "primary", validity)
+                VALUES ($1, 'has-phone', $2, 'literal', 'test', false, 'active')
+                RETURNING id
+                """,
+                owner_id,
+                spelling,
+            )
+            for spelling in ("0065 8765 0123", "87650123", "+65 9123 4567")
+        ]
+
+        async def resolves(digits: str) -> bool:
+            row = await isolated_role_pool.fetchrow(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                [f"phone-digits:{digits}"],
+            )
+            return row is not None and row["entity_id"] == owner_id
+
+        try:
+            assert await resolves("87650123")
+            hold_id = await migration_pool.fetchval(
+                _HOLD_INSERT, owner_id, "has-phone", "0065 8765 0123", 1
+            )
+            try:
+                assert not await resolves("87650123")
+                assert not await resolves("6587650123")
+                assert await resolves("6591234567")
+            finally:
+                await _release(migration_pool, hold_id)
+            assert await resolves("87650123")
+        finally:
             await migration_pool.execute(
                 "DELETE FROM relationship.entity_facts WHERE id = ANY($1::uuid[])", fact_ids
             )
