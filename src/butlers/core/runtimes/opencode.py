@@ -111,6 +111,27 @@ def _extract_stdout_error_detail(stdout: str) -> str | None:
     return None
 
 
+def _opencode_terminal_error_text(stdout: str) -> str | None:
+    """Return the last top-level ``error`` event's ``error`` payload, else ``None``.
+
+    ``opencode run --format json`` emits ``{"type": "error", "error": {...}}``
+    for a ``session.error`` (for example an ``APIError`` rejection). Unlike
+    ``error_detail``, which takes any stdout line carrying a ``message``-like
+    key and falls back to raw stdout, this reads only that CLI event: model
+    text and tool output stay nested inside ``part`` and cannot forge it, so
+    usage-limit detection can trust it.
+    """
+    text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "error":
+            text = _stringify_error_payload(obj.get("error"))
+    return text
+
+
 def _stringify_error_payload(payload: Any) -> str | None:
     """Render common OpenCode error payload shapes as a compact message."""
     if isinstance(payload, (str, int, float, bool)):
@@ -1100,6 +1121,8 @@ class OpenCodeAdapter(RuntimeAdapter):
                         "attempt_index": attempt_index,
                         "attempt_count": attempt_count,
                     }
+                    if terminal_text := _opencode_terminal_error_text(stdout):
+                        self._last_process_info["terminal_error_text"] = terminal_text
                     attempt_infos.append(self._last_process_info)
 
                     if returncode != 0:

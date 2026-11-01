@@ -576,3 +576,54 @@ class TestTerminalErrorText:
         assert info is not None
         assert info["terminal_error_text"] == "You've hit your usage limit."
         assert usage_limit_signal(info) is not None
+
+    @pytest.mark.parametrize("limit_message", ["You've hit your usage limit.", None])
+    async def test_gemini_failed_result_error_is_the_terminal_error(
+        self, limit_message: str | None
+    ) -> None:
+        # Shapes from tests/fixtures/gemini_stream_json/turn_limit_error.jsonl.
+        lines: list[dict] = [
+            {"type": "message", "role": "assistant", "content": "usage limit docs", "delta": True},
+            {"type": "tool_use", "tool_name": "read_file", "tool_id": "t1", "parameters": {}},
+            {"type": "tool_result", "tool_id": "t1", "status": "success"},
+        ]
+        if limit_message is not None:
+            error = {"type": "FatalAPIError", "message": limit_message}
+            lines.append({"type": "result", "status": "error", "error": error, "stats": {}})
+        stdout = "\n".join(json.dumps(line) for line in lines).encode()
+        with patch(_GEMINI_EXEC, return_value=_make_proc(1, stdout=stdout)):
+            adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+            with pytest.raises(RuntimeError):
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        info = adapter.last_process_info
+        assert info is not None
+        assert info.get("terminal_error_text") == limit_message
+        assert (usage_limit_signal(info) is not None) is (limit_message is not None)
+
+    @pytest.mark.parametrize("limit_message", ["You've hit your usage limit.", None])
+    async def test_opencode_error_event_is_the_terminal_error(
+        self, limit_message: str | None
+    ) -> None:
+        tool_use = {
+            "type": "tool_use",
+            "sessionID": "session-123",
+            "part": {
+                "tool": "bash",
+                "callID": "t1",
+                "state": {"status": "completed", "input": {}, "output": "usage limit docs"},
+            },
+        }
+        lines: list[dict] = [tool_use]
+        if limit_message is not None:
+            error = {"name": "APIError", "data": {"message": limit_message}}
+            lines.append({"type": "error", "sessionID": "session-123", "error": error})
+        stdout = "\n".join(json.dumps(line) for line in lines).encode()
+        with patch(_OPENCODE_EXEC, return_value=_make_proc(1, stdout=stdout)):
+            adapter = OpenCodeAdapter(opencode_binary="/usr/bin/opencode")
+            with pytest.raises(RuntimeError):
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        info = adapter.last_process_info
+        assert info is not None
+        expected = None if limit_message is None else f"APIError: {limit_message}"
+        assert info.get("terminal_error_text") == expected
+        assert (usage_limit_signal(info) is not None) is (limit_message is not None)
