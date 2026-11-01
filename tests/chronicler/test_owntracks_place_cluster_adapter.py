@@ -18,6 +18,7 @@ import math
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.owntracks_place_cluster import (
@@ -412,19 +413,21 @@ class _AsyncCtx:
 
 
 def _pool_returning(*rows: dict) -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
 
 def _pool_table_missing() -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
@@ -434,9 +437,10 @@ def _make_mock_row(r: dict) -> MagicMock:
 
 
 def _chronicler_pool(point_event_ids: list | None = None) -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetch = AsyncMock(return_value=[{"id": i} for i in (point_event_ids or [])])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
@@ -871,6 +875,13 @@ async def test_impossible_jump_never_breaks_or_seeds_a_place_cluster() -> None:
     places = [ep for ep in upserted if ep.episode_type == EPISODE_TYPE_PLACE]
     assert [(ep.start_at, ep.payload["point_count"]) for ep in places] == [(_NOW, 6)]
     assert "_trail_anchors" in saved
+
+    cold = [_row(_NOW, lat=52.12, lon=22.06, row_id="seed")]
+    cold += [_row(_NOW + timedelta(minutes=m), row_id=f"accepted-{m}") for m in (5, 15, 25)]
+    consensus, _ = await _project_place(cold, OwnTracksPlaceClusterAdapter())
+    assert [(ep.start_at, ep.payload["point_count"]) for ep in consensus] == [
+        (_NOW + timedelta(minutes=5), 3)
+    ]
 
 
 @pytest.mark.asyncio

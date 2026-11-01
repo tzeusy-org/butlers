@@ -74,7 +74,11 @@ from butlers.core.dispatch_outcomes import (
 from butlers.core.dispatch_outcomes import (
     project_resolution_receipt as _attempt_resolution_receipt,
 )
-from butlers.core.failover_classifier import FailoverContext, classify_failover_eligibility
+from butlers.core.failover_classifier import (
+    FailoverContext,
+    classify_failover_eligibility,
+    usage_limit_signal,
+)
 from butlers.core.logging import resolve_log_root
 from butlers.core.mcp_urls import (
     canonical_runtime_mcp_url,
@@ -2923,15 +2927,24 @@ class Spawner:
                         self._config.name,
                         _failover_decision.reason,
                     )
-                    # Record suppression provenance (best-effort).
+                    # Record suppression provenance (best-effort). A usage limit hit
+                    # after tool work is not retried, but the account is still out of
+                    # allowance: record it as such (the breaker ignores the outcome)
+                    # and exhaust the account so the next session skips it
+                    # (bu-s11n0s.34).
+                    _suppressed_usage_limit = usage_limit_signal(runtime.last_process_info)
                     if self._pool is not None and catalog_entry_id is not None:
-                        await _write_dispatch_attempt(
+                        if _suppressed_usage_limit is not None:
+                            _suppressed_outcome = ALLOWANCE_OUTCOME
+                        elif isinstance(_attempt_exc, TerminalResultError):
+                            _suppressed_outcome = "runtime_failure"
+                        else:
+                            _suppressed_outcome = "suppressed"
+                        _suppressed_attempt_row_id = await _write_dispatch_attempt(
                             self._pool,
                             catalog_entry_id=catalog_entry_id,
                             butler=self._config.name,
-                            outcome="runtime_failure"
-                            if isinstance(_attempt_exc, TerminalResultError)
-                            else "suppressed",
+                            outcome=_suppressed_outcome,
                             attempt_index=_current_attempt_index,
                             session_id=session_id,
                             failure_reason=_failover_decision.reason,
@@ -2955,6 +2968,13 @@ class Spawner:
                             resolution_receipt=_current_resolution_receipt,
                         )
                         _invoked_attempt_recorded = True
+                        if _suppressed_usage_limit is not None:
+                            await mark_allowance_exhausted(
+                                self._pool,
+                                catalog_entry_id,
+                                reset_at=_suppressed_usage_limit.reset_at,
+                                attempt_id=_suppressed_attempt_row_id,
+                            )
                     # Mark as already classified so the outer except handler does not
                     # double-emit the suppressed metric for this exception.
                     _failover_already_classified = True

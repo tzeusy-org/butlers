@@ -350,7 +350,10 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
   then records `reset_source='default_window'`. A default-window guess never shortens a parsed reset.
 - **Spawner**: the rejected attempt is written with outcome `allowance_exhausted`, which the breaker
   ignores (it counts only `runtime_failure`/`success`), then the failover loop continues on the next
-  admissible candidate, which is necessarily on another account.
+  admissible candidate, which is necessarily on another account. A usage limit hit after tool work
+  is suppressed rather than failed over, but still records `allowance_exhausted` and exhausts the
+  account when the adapter's structured terminal error (`process_info.terminal_error_text`) or
+  stderr carries the marker; transcript-bearing text (exception message, `error_detail`) never does.
 - **Scheduler**: a due prompt-mode cron task or deadline threshold whose every fit candidate is on an
   exhausted account is not dispatched. A cron task moves `next_run_at` to the earliest reset and
   records `last_result.outcome='skipped_allowance'`; a deadline threshold stays unfired. Job-mode

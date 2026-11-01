@@ -59,3 +59,34 @@ Scope: v1-mandatory
 - **AND** the span SHALL close at the first fix back within 50 km, and a gap of more than 36 hours SHALL split it
 - **AND** the episode SHALL record the maximum distance from home and SHALL NOT count as lived activity time
 - **AND** without a `home` reference no away span SHALL be emitted
+
+#### Scenario: Tied fixes share a deterministic identity order
+
+- **WHEN** both trail adapters process the same fixes with equal effective device timestamps
+- **THEN** each SHALL use source UUID order for ties, including movement grouping by endpoint
+- **AND** ingestion or insertion order SHALL NOT change their plausibility verdicts
+- **AND** the existing timestamp-only cursor semantics SHALL remain unchanged
+
+#### Scenario: Isolated startup seed is corrected across batches
+
+- **WHEN** an endpoint's provisional first fix is inconsistent with three later consecutive mutually plausible candidates
+- **THEN** the isolated seed SHALL be marked as an outlier and the three candidates accepted, including across batch boundaries
+- **AND** a plausible companion SHALL confirm a good seed, while established or unidentified legacy history SHALL NOT be retracted
+- **AND** only retained projections identified by their exact source identities SHALL be revised, with no raw evidence change, retention reset or resurrection of expired or tombstoned events
+- **AND** movement, place and away carryover SHALL exclude the rejected seed and count re-admitted candidates once
+
+#### Scenario: Bootstrap state and outcome commit together
+
+- **WHEN** a trail adapter persists a bootstrap decision or revises an earlier point marker
+- **THEN** bounded identity state, marker revisions and a successful run watermark SHALL commit atomically under source-local serialization
+- **AND** a failed or cancelled transaction SHALL NOT advance that success watermark or leave a held lock
+- **AND** retry or overlapping runs SHALL converge on the same identities, verdicts and evidence counts
+- **AND** unrelated point metadata, privacy, retention, ownership, links and tombstones SHALL remain unchanged
+
+#### Scenario: Merged movement retains its chronological terminal location
+
+- **WHEN** a movement is widened by overlapping stored evidence or replayed with a shorter current span
+- **THEN** its terminal coordinates and carryover SHALL correspond to the selected latest end time
+- **AND** equal end times SHALL retain a valid stored pair deterministically
+- **AND** a later legacy end without a valid pair SHALL remain explicitly unknown rather than borrowing an earlier location
+- **AND** canonical source identity, earliest start, evidence union and replay-stable point count SHALL remain intact

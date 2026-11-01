@@ -40,6 +40,7 @@ from butlers.core.qa.publication.transport import (
     StaleExpectedHead,
     TransportRefused,
     TransportRequest,
+    approved_rejection_code,
 )
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 
@@ -301,7 +302,9 @@ class QaPublisher:
             result = PublicationResult(PublicationStatus.FAILED, "stale_expected_head")
         except ProviderRejected as exc:
             outcome = "failed"
-            result = PublicationResult(PublicationStatus.FAILED, f"provider_rejected_{exc.code}")
+            # Re-narrow: a provider subclass could replace ``code`` after construction.
+            code = approved_rejection_code(exc.code)
+            result = PublicationResult(PublicationStatus.FAILED, f"provider_rejected_{code}")
         except (TransportRefused, ExportRefused) as exc:
             # Refused after egress_started was persisted: nothing was sent.
             outcome = "failed"
@@ -309,8 +312,13 @@ class QaPublisher:
         except AmbiguousOutcome:
             outcome = "ambiguous"
             result = PublicationResult(PublicationStatus.AMBIGUOUS, f"{kind.value}_ambiguous")
-        except Exception:  # noqa: BLE001 — an unknown error after egress is ambiguous
-            logger.warning("QA publication %s raised after egress started", kind, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 — an unknown error after egress is ambiguous
+            # Type name only: the message and traceback can carry PR or provider content.
+            logger.warning(
+                "QA publication %s raised %s after egress started",
+                kind.value,
+                type(exc).__name__,
+            )
             outcome = "ambiguous"
             result = PublicationResult(PublicationStatus.AMBIGUOUS, f"{kind.value}_ambiguous")
 

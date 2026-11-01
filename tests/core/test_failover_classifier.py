@@ -942,6 +942,41 @@ class TestRateLimitErrorsEligible:
         assert not _eligible(dec)
 
 
+class TestUsageLimitSignal:
+    """Usage-limit exhaustion is read apart from eligibility, from trusted text only.
+
+    A suppressed attempt (tool work already ran) can still mean the account is
+    out of allowance (bu-s11n0s.34). Exception text and ``error_detail`` can
+    embed the stdout transcript, tool output included, so only the adapter's
+    structured terminal error and its stderr count.
+    """
+
+    @pytest.mark.parametrize("key", ["terminal_error_text", "stderr"])
+    def test_trusted_source_yields_signal_with_reset(self, key: str) -> None:
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        signal = _fc.usage_limit_signal(
+            {
+                "is_pre_tool_call": False,
+                key: f"Claude AI usage limit reached|{int(reset.timestamp())}",
+            }
+        )
+        assert signal is not None
+        assert signal.reset_at == reset.replace(microsecond=0)
+
+    @pytest.mark.parametrize(
+        "process_info",
+        [
+            None,
+            {"stderr": "", "terminal_error_text": None},
+            {"stderr": "429 Too Many Requests"},
+            # error_detail falls back to raw stdout, which can quote tool output.
+            {"error_detail": "tool said: You've hit your usage limit", "stderr": ""},
+        ],
+    )
+    def test_untrusted_or_absent_text_yields_no_signal(self, process_info: dict | None) -> None:
+        assert _fc.usage_limit_signal(process_info) is None
+
+
 class TestParseUsageLimitReset:
     """Only unambiguous reset forms are parsed; anything else is None."""
 

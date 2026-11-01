@@ -530,8 +530,9 @@ class QaJournalEvent(BaseModel):
     data: dict[str, Any]
 
 
-#: ``unpublished`` requires ledger proof that no PR exists; ``ambiguous`` means a
-#: retained proposal whose publication outcome awaits exact read-only reconciliation.
+#: ``unpublished`` requires a retained sealed export and ledger proof that no PR
+#: exists; ``ambiguous`` means a retained proposal whose publication outcome awaits
+#: exact read-only reconciliation.
 ProposalState = Literal["none", "unpublished", "ambiguous", "published"]
 
 
@@ -2250,7 +2251,12 @@ async def get_case(
                           AND op.reconciliation IS DISTINCT FROM 'resource_absent'
                       )
                   )
-            ) AS pr_absence_proven
+            ) AS pr_absence_proven,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_exports x
+                WHERE x.attempt_id = a.id
+            ) AS export_retained
         FROM public.healing_attempts a
         LEFT JOIN LATERAL (
             SELECT id, fingerprint, source_type, source_butler, severity,
@@ -2313,7 +2319,11 @@ async def get_case(
         # Absent PR metadata is not proof that no PR exists: a lost pr_create
         # response leaves none while the PR may be live. Claim "unpublished"
         # only when the publication ledger proves no PR egress can have landed.
-        proposal_state = "unpublished" if row.get("pr_absence_proven") is True else "ambiguous"
+        # An empty ledger proves that only for an attempt the publisher handled:
+        # it retains the sealed export before its first egress, while an attempt
+        # from before the ledger cutover has no export and no ledger rows either.
+        absence_proven = row.get("pr_absence_proven") is True and row.get("export_retained") is True
+        proposal_state = "unpublished" if absence_proven else "ambiguous"
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,

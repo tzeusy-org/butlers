@@ -40,12 +40,33 @@ class StaleExpectedHead(RuntimeError):
     """The provider's atomic compare failed: the remote ref is not at the expected id."""
 
 
+#: The only provider refusal codes that may reach a publication category or journal.
+APPROVED_REJECTION_CODES = frozenset(
+    {"forbidden", "not_found", "conflict", "validation_failed", "rate_limited"}
+)
+#: Stands in for any code outside :data:`APPROVED_REJECTION_CODES`.
+UNRECOGNIZED_REJECTION = "unrecognized"
+
+
+def approved_rejection_code(code: object) -> str:
+    """Return ``code`` if it is approved, else :data:`UNRECOGNIZED_REJECTION`.
+
+    Providers are untrusted: a raw code could carry repository or PR content.
+    """
+    if isinstance(code, str) and code in APPROVED_REJECTION_CODES:
+        return code
+    return UNRECOGNIZED_REJECTION
+
+
 class ProviderRejected(RuntimeError):
-    """The provider definitely refused the effect (nothing changed); ``code`` is content-free."""
+    """The provider definitely refused the effect (nothing changed).
+
+    ``code`` is narrowed to an approved content-free value at construction.
+    """
 
     def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
+        self.code = approved_rejection_code(code)
+        super().__init__(self.code)
 
 
 class AmbiguousOutcome(RuntimeError):

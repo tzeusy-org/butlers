@@ -3739,6 +3739,12 @@
       "scenario": "Claude Code adapter invocation",
       "digest": "d5930dcd2681",
       "excerpt": "\"Claude Code adapter invocation\" is not in the block"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Gemini adapter invocation",
+      "digest": "da8a11ee56e8",
+      "excerpt": "- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags"
     }
   ],
   "connector-google-calendar/butler-switchboard/LLM-Driven Routing Contract": [
@@ -3929,6 +3935,12 @@
       "scenario": "Claude Code adapter invocation",
       "digest": "d5930dcd2681",
       "excerpt": "\"Claude Code adapter invocation\" is not in the block"
+    },
+    {
+      "kind": "clause",
+      "scenario": "Gemini adapter invocation",
+      "digest": "da8a11ee56e8",
+      "excerpt": "- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags"
     }
   ],
   "education-butler/education-butler-identity/Model and Runtime Configuration": [
@@ -4531,6 +4543,14 @@
       "scenario": null,
       "digest": "4a5a3bc8394f",
       "excerpt": "Calendar Mutation Undo Endpoint"
+    }
+  ],
+  "2026-04-25-claude-binary-adapter/core-spawner/Multi-Runtime Adapter Support": [
+    {
+      "kind": "clause",
+      "scenario": "Gemini adapter invocation",
+      "digest": "da8a11ee56e8",
+      "excerpt": "- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags"
     }
   ]
 }

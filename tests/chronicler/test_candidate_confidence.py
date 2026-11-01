@@ -20,6 +20,7 @@ from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.exercise import (
@@ -67,11 +68,11 @@ def _row(**values: object) -> MagicMock:
 
 
 def _chronicler_pool(fetch_rows: list[object] | None = None) -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetch = AsyncMock(return_value=list(fetch_rows or []))
     conn.fetchrow = AsyncMock(return_value=None)  # no overlapping stored episode
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
