@@ -111,7 +111,7 @@ async def test_invoke():
         )
     assert result_text == "Task done."
     assert mock_sub.call_args.kwargs["env"]["GOOGLE_API_KEY"] == "gk-test"
-    # gemini-cli 0.46.0 has a strict parser and no system-prompt flag; the prompt is staged
+    # gemini-cli 0.66.0 has a strict parser and no system-prompt flag; the prompt is staged
     # as a utf-8 GEMINI_SYSTEM_MD file. The CLI substitutes ${AvailableTools}-style tokens
     # in that file, so the adapter breaks them with a zero-width space; others pass intact.
     assert staged["system_md"] == (
@@ -189,7 +189,7 @@ async def test_invoke():
     with patch(_EXEC, return_value=mock_proc), pytest.raises(TerminalResultError):
         await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
 
-    # Pinned 0.46.0 emits these constructor names in terminal error.type.
+    # Pinned 0.66.0 emits these constructor names in terminal error.type.
     # Synthetic adapter conformance, not a provider recording or auth decision.
     for raw_type, expected in (
         ("FatalTurnLimitedError", "max_turns"),
@@ -318,7 +318,7 @@ async def test_invoke_nonzero_exit_records_process_info() -> None:
 
 
 async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() -> None:
-    """Pinned 0.46.0 stream-json emits ``result``/``status: error`` then exits non-zero.
+    """Pinned 0.66.0 stream-json emits ``result``/``status: error`` then exits non-zero.
 
     Its ``handleError``/``handleMaxTurnsExceededError`` always ``process.exit`` with the
     error's exit code (``FatalTurnLimitedError`` is 53) after emitting the envelope, so
@@ -378,7 +378,7 @@ _RECORDED = Path(__file__).parent.parent / "fixtures" / "gemini_stream_json"
 
 
 async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -> None:
-    """Real 0.46.0 stream-json (see the fixture README): the echoed user prompt is not
+    """Real 0.66.0 stream-json (see the fixture README): the echoed user prompt is not
     result text, assistant ``delta`` chunks join, and the turn limit keeps tool evidence."""
     from butlers.core.runtimes.served_identity import TerminalResultError
 
@@ -399,7 +399,7 @@ async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -
     assert text == "Checking.\nListed the directory."
     assert tool_calls == [
         {
-            "id": "list_directory__list_directory_1793565529446_0",
+            "id": "list_directory__list_directory_1793569777410_0",
             "name": "list_directory",
             "input": {"dir_path": "."},
         }
@@ -420,8 +420,8 @@ async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -
 
 
 def test_catalog_gemini_model_ids_were_probed_against_the_pinned_cli() -> None:
-    """The CLI rewrites some ``-m`` values (0.46.0 sends any ``*flash`` id as
-    gemini-3.5-flash), and its usage labels never raise ``requested_not_served``. So
+    """The CLI rewrites some ``-m`` values (0.66.0 sends gemini-3.5-flash as
+    gemini-3.8-flash), and its usage labels never raise ``requested_not_served``. So
     every Gemini catalog id needs a recorded probe for the pinned CLI (see the fixture
     README), and an entry may be enabled only if the CLI serves its id unchanged."""
     import re
@@ -441,11 +441,50 @@ def test_catalog_gemini_model_ids_were_probed_against_the_pinned_cli() -> None:
             assert served[entry["model_id"]] == entry["model_id"], entry["alias"]
 
 
+async def test_settings_are_staged_only_where_the_cli_will_read_them(
+    tmp_path: Path, gemini_settings_staging_root: Any
+) -> None:
+    """gemini-cli 0.66.0 skips a system settings file, with only a stderr warning, unless
+    the file and every ancestor directory are owned by uid 0 and not group/other-writable;
+    the session then runs without its MCP servers and turn limit. So staging refuses a
+    directory chain that fails that check instead of spawning."""
+    from butlers.core.runtimes import gemini
+
+    real_stat = os.stat
+    owner = {"uid": 0, "extra_mode": 0}
+
+    def fake_stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        st = real_stat(path, *args, **kwargs)
+        mode = (st.st_mode & ~0o022) | owner["extra_mode"]
+        return os.stat_result((mode, *st[1:4], owner["uid"], *st[5:]))
+
+    staging_root = gemini_settings_staging_root
+    root = tmp_path / "staging"
+    with (
+        patch.object(gemini, "_SETTINGS_ROOT", root),
+        patch.object(gemini, "_settings_staging_root", staging_root),
+        patch.object(gemini.os, "stat", fake_stat),
+    ):
+        assert staging_root() == root
+        assert real_stat(root).st_mode & 0o777 == 0o700
+        owner["extra_mode"] = 0o020
+        with pytest.raises(RuntimeError, match="group- or world-writable"):
+            staging_root()
+        owner.update(uid=1000, extra_mode=0)
+        adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+        with patch(_EXEC) as spawn, pytest.raises(RuntimeError, match="not owned by root"):
+            await adapter.invoke(prompt="p", system_prompt="", mcp_servers={}, env={})
+    spawn.assert_not_called()
+
+    # The settings file itself must not be group/other-writable under a loose umask.
+    config_path = adapter.build_config_file({}, tmp_path)
+    assert real_stat(config_path).st_mode & 0o777 == 0o600
+
+
 async def test_invoke_staging_failure_removes_the_temp_dir(tmp_path: Path) -> None:
     """A failure while staging system.md or settings never leaks the per-invocation dir."""
     adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
     with (
-        patch("butlers.core.runtimes.gemini.tempfile.tempdir", str(tmp_path)),
         patch.object(GeminiAdapter, "build_config_file", side_effect=OSError("disk full")),
         patch(_EXEC) as spawn,
         pytest.raises(OSError, match="disk full"),
