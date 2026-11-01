@@ -4027,14 +4027,6 @@
       "scenario": "Row status never renders as a filled pill"
     }
   ],
-  "recover-ingestion-target-deliveries/module-pipeline/Decomposition-to-Routing Fan-Out": [
-    {
-      "digest": "e7dd1119548f",
-      "excerpt": "- **THEN** `route()` is called sequentially for each conceptual message",
-      "kind": "clause",
-      "scenario": "Sequential fan-out routing"
-    }
-  ],
   "relationship-fact-effective-time/butler-relationship/Relationship Butler Registered Tool Surface": [
     {
       "digest": "5e2c30b8f566",
