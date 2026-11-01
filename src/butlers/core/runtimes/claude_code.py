@@ -616,7 +616,12 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             if terminal_error and (terminal_text := _claude_terminal_error_text(stdout)):
                 self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
-                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                error_detail = (
+                    stderr.strip()
+                    or self._last_process_info.get("terminal_error_text")
+                    or stdout.strip()
+                    or f"exit code {returncode}"
+                )
                 logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
                 message = f"Claude CLI exited with code {returncode}: {error_detail}"

@@ -562,6 +562,30 @@ class TestTerminalErrorText:
         assert info.get("terminal_error_text") == result_text
         assert (usage_limit_signal(info) is not None) is expected
 
+    @pytest.mark.parametrize(
+        ("stderr", "expected_detail"),
+        [
+            (b"", "Claude AI usage limit reached|4102444800"),
+            (b"stderr wins", "stderr wins"),
+        ],
+    )
+    async def test_claude_error_detail_prefers_envelope_over_raw_stdout(
+        self, stderr: bytes, expected_detail: str
+    ) -> None:
+        envelope = {
+            "type": "result",
+            "is_error": True,
+            "result": "Claude AI usage limit reached|4102444800",
+        }
+        stdout = (self._TOOL_OUTPUT + json.dumps(envelope)).encode()
+        with patch(_CLAUDE_EXEC, return_value=_make_proc(1, stdout=stdout, stderr=stderr)):
+            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+            with pytest.raises(RuntimeError):
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        info = adapter.last_process_info
+        assert info is not None
+        assert info["error_detail"] == expected_detail
+
     async def test_codex_turn_failed_message_is_the_terminal_error(self) -> None:
         stdout = (
             b'{"type":"item.completed","item":{"type":"command_execution",'
