@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 
+import asyncpg
 import pytest
 
 from butlers.core_tools._base import ToolContext
@@ -214,4 +215,72 @@ async def test_ingest_tool_reports_persistence_failure_as_transient(monkeypatch)
 
     assert result["status"] == "transient_error"
     assert result["retryable"] is True
+    assert MARKER not in str(result)
+
+
+class _PartitionFailingPool:
+    """Pool whose dedupe lookups miss and whose partition DDL raises ``failure``."""
+
+    def __init__(self, failure: Exception) -> None:
+        self._failure = failure
+
+    async def fetchrow(self, *_a: Any) -> None:
+        return None
+
+    async def execute(self, *_a: Any) -> str:
+        raise self._failure
+
+
+def _drive_real_ingest_v1(monkeypatch, failure: Exception) -> None:
+    """Route the tool to the real ``ingest_v1`` against a pool that raises ``failure``."""
+    pool = _PartitionFailingPool(failure)
+
+    async def _ingest_v1(_pool, envelope, **_kwargs):
+        return await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+    monkeypatch.setattr("butlers.tools.switchboard.ingestion.ingest.ingest_v1", _ingest_v1)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        ConnectionResetError(MARKER),
+        asyncpg.exceptions.SerializationError(MARKER),
+        asyncpg.exceptions.AdminShutdownError(MARKER),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+async def test_ingest_tool_reports_transport_driver_failure_as_transient(
+    failure, monkeypatch
+) -> None:
+    _drive_real_ingest_v1(monkeypatch, failure)
+    ingest = _grab_ingest_tool(monkeypatch)
+
+    result = await ingest(**_envelope())
+
+    assert result["status"] == "transient_error"
+    assert result["retryable"] is True
+    assert MARKER not in str(result)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        asyncpg.exceptions.UniqueViolationError(MARKER),
+        asyncpg.exceptions.DataError(MARKER),
+        asyncpg.exceptions.StringDataRightTruncationError(MARKER),
+    ],
+    ids=lambda e: type(e).__name__,
+)
+async def test_ingest_tool_reports_deterministic_driver_failure_as_non_retryable(
+    failure, monkeypatch
+) -> None:
+    """A poison envelope must not read as transient, or connectors hold it forever."""
+    _drive_real_ingest_v1(monkeypatch, failure)
+    ingest = _grab_ingest_tool(monkeypatch)
+
+    result = await ingest(**_envelope())
+
+    assert result["status"] == "error"
+    assert result["retryable"] is False
     assert MARKER not in str(result)

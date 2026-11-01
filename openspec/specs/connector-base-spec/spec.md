@@ -212,7 +212,8 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 #### Scenario: Ingest refusals distinguish validation from transient failure
 - **WHEN** the Switchboard `ingest` tool cannot accept a submission
 - **THEN** an envelope validation refusal SHALL return `status` `"error"` with `retryable` `false` and a content-free `error`; resubmitting the same envelope cannot succeed
-- **AND** a transient persistence failure for a valid envelope SHALL return `status` `"transient_error"` with `retryable` `true` and fixed error text that quotes no driver message or envelope value, instead of raising a string-only tool error (bu-u5euwb.33)
+- **AND** a transport-class persistence failure for a valid envelope (connection loss, timeout, serialization failure, deadlock, resource exhaustion, or operator shutdown; SQLSTATE classes 08, 40, 53, 57P, and 57014) SHALL return `status` `"transient_error"` with `retryable` `true` and fixed error text that quotes no driver message or envelope value, instead of raising a string-only tool error (bu-u5euwb.33)
+- **AND** any other persistence failure for a valid envelope, including deterministic SQLSTATE class 22, 23, and 42 errors, SHALL return `status` `"error"` with `retryable` `false` and fixed, content-free error text, so a connector that holds its checkpoint on a transient reply never holds it forever on a poison envelope
 - **AND** any other raised tool error is unexpected and SHALL NOT be read as either refusal kind
 
 ### Requirement: Request Context Construction
