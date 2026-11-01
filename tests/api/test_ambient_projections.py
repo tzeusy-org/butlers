@@ -10,6 +10,7 @@ The real ``create_app()`` owner-auth middleware runs; only its persistence
 from __future__ import annotations
 
 import io
+import threading
 import uuid
 from contextlib import ExitStack
 from dataclasses import replace
@@ -18,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from PIL import Image, ImageChops, ImageOps
+from PIL import Image, ImageChops, ImageFont, ImageOps
 
 from butlers.api.app import create_app
 from butlers.api.briefing.cache import BriefingCache
@@ -39,6 +40,7 @@ pytestmark = pytest.mark.unit
 KEY = "synthetic-projection-owner-key"
 ORIGIN = "https://owner.test.invalid"
 BRIEFING = "butlers.api.routers.dashboard_briefing"
+PROJECTIONS = "butlers.api.routers.projections"
 PII = ("Alice Tan", "S$4,200", "insulin")
 
 
@@ -326,6 +328,15 @@ async def test_text_and_png_glances_print_valid_until_and_stay_household_safe(ha
             household["path"], headers=grant, params={"format": "png", "width": 296}
         )
         bad = await client.get(household["path"], headers=grant, params={"format": "gif"})
+        # Panel sizes outside 128..1600 are refused before any rendering.
+        sizes = [
+            await client.get(
+                household["path"], headers=grant, params={"format": "png", side: value}
+            )
+            for side in ("width", "height")
+            for value in (127, 1601)
+        ]
+    assert [resp.status_code for resp in sizes] == [422] * 4
     assert text.headers["content-type"].startswith("text/plain")
     assert text.text.splitlines() == glance_lines(glance)
     assert glance["line"] in text.text and "An approval is waiting" in text.text
@@ -366,6 +377,31 @@ def test_png_glance_keeps_valid_until_whole_on_the_bottom_edge_of_a_full_panel()
     # Nothing overprints it: its band matches the band of a glance with little text.
     assert render(full).crop(band).tobytes() == render(glance({})).crop(band).tobytes()
     assert glance_png(full, 128, 128) == glance_png(dict(full), 128, 128)
+    # Fitting the expiry loads a bounded number of fonts, not one per size step, even
+    # on a narrow tall panel whose body size is far wider than the expiry can be set.
+    with patch.object(ImageFont, "load_default", wraps=ImageFont.load_default) as load:
+        glance_png(full, 128, 1600)
+    assert load.call_count <= 4
+
+
+async def test_png_glance_renders_off_the_event_loop(harness):
+    client, _ = harness
+    minted = await _mint(client)
+    loop_thread = threading.get_ident()
+    render_threads = []
+
+    def recording_png(*args):
+        render_threads.append(threading.get_ident())
+        return glance_png(*args)
+
+    with _seed()[0], patch(f"{PROJECTIONS}.glance_png", new=recording_png):
+        png = await client.get(
+            minted["path"],
+            headers={"x-projection-token": minted["token"]},
+            params={"format": "png"},
+        )
+    assert png.status_code == 200
+    assert render_threads and loop_thread not in render_threads
 
 
 async def test_grant_fetches_share_one_composition_per_cache_window(harness):
