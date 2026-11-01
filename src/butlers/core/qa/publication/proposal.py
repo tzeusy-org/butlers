@@ -124,7 +124,9 @@ def _read_no_follow(root: Path, parts: list[str]) -> bytes | None:
         fds.append(os.open(root, _OPEN_FLAGS | os.O_DIRECTORY))
         for part in parts[:-1]:
             fds.append(os.open(part, _OPEN_FLAGS | os.O_DIRECTORY, dir_fd=fds[-1]))
-        fd = os.open(parts[-1], _OPEN_FLAGS, dir_fd=fds[-1])
+        # O_NONBLOCK: a planted FIFO must not block the open (and the event loop) forever;
+        # it is a no-op for the regular file the S_ISREG check below insists on.
+        fd = os.open(parts[-1], _OPEN_FLAGS | os.O_NONBLOCK, dir_fd=fds[-1])
         fds.append(fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ExportRefused("branch_unreadable")

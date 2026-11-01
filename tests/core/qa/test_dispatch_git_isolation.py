@@ -586,6 +586,7 @@ def test_publication_head_lookup_reads_refs_without_running_git(
         ("symbolic", _BRANCH),
         ("symlinked_ref", _BRANCH),
         ("symlinked_git_dir", _BRANCH),
+        ("fifo_ref", _BRANCH),
         ("none", "qa/../../config"),
     ],
 )
@@ -606,6 +607,10 @@ def test_publication_head_lookup_refuses_agent_shaped_refs(tmp_path: Path, plant
         moved = tmp_path / "elsewhere.git"
         (repo_root / ".git").rename(moved)
         (repo_root / ".git").symlink_to(moved)
+    elif plant == "fifo_ref":
+        # A FIFO with no writer would block a plain open() forever.
+        ref.unlink()
+        os.mkfifo(ref)
 
     with pytest.raises(ExportRefused, match="branch_unreadable"):
         proposal.resolve_branch_head(repo_root, branch)
