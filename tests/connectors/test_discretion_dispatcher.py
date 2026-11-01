@@ -327,6 +327,44 @@ async def test_call_with_identity_records_per_connector_butler_name() -> None:
     assert borrowed == {5: "gpt-second", 7: "gpt-second"}
 
 
+@pytest.mark.parametrize("cause", ["connector_shutdown", "runtime"])
+async def test_discretion_cancellation_is_never_labelled_owner_cancelled(cause) -> None:
+    """Discretion has no owner Stop: a connector shutdown is a drain, never an owner act."""
+    dispatcher = DiscretionDispatcher(pool=MagicMock())
+    adapter = _make_adapter()
+    started = asyncio.Event()
+
+    async def invoke(**_arguments):
+        started.set()
+        if cause == "runtime":
+            raise asyncio.CancelledError
+        await asyncio.Event().wait()
+
+    adapter.invoke = invoke
+    with (
+        patch(
+            f"{_KERNEL}.resolve_model_with_effective_tier",
+            AsyncMock(return_value=_catalog_result()),
+        ),
+        patch(f"{_KERNEL}.check_token_quota", AsyncMock(return_value=_allowed_quota())),
+        patch.object(dispatcher, "_get_or_create_adapter", return_value=adapter),
+        patch.object(dispatcher, "_resolve_provider_config", AsyncMock(return_value=None)),
+        patch(f"{_KERNEL}.record_dispatch_attempt", AsyncMock()) as mock_record,
+    ):
+        task = asyncio.create_task(dispatcher.call("hi"))
+        await started.wait()
+        if cause == "connector_shutdown":
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    kwargs = mock_record.await_args.kwargs
+    assert kwargs["outcome"] == "suppressed"
+    assert kwargs["failure_reason"] == (
+        "drain_cancelled" if cause == "connector_shutdown" else "runtime_cancelled"
+    )
+
+
 async def test_private_content_uses_normal_catalog_and_content_blind_attribution() -> None:
     """The private lane records provenance without changing model selection."""
     pool = MagicMock()
