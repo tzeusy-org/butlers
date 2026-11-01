@@ -377,3 +377,106 @@ def test_oversized_loose_file_refuses_before_loading(
     with pytest.raises(ObjectStoreError, match="malformed_object"):
         with ObjectStore(tmp_path / "objects") as store:
             store.read(oid)
+
+
+# --- Declared-size refusal and the export-wide work budget (bu-mc01y5.27) -----------
+
+
+def _loose_object(objects: Path, raw: bytes) -> str:
+    oid = "ab" + "c" * 38
+    (objects / "ab").mkdir(parents=True)
+    (objects / "ab" / oid[2:]).write_bytes(zlib.compress(raw))
+    return oid
+
+
+def _record_inflates(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    inflated: list[int] = []
+    original = object_store._inflate
+    monkeypatch.setattr(
+        object_store, "_inflate", lambda read, size: inflated.append(size) or original(read, size)
+    )
+    return inflated
+
+
+def test_oversized_loose_object_refuses_from_its_declared_size(tmp_path: Path) -> None:
+    # The body is truncated, so only the header is ever trusted: a read that inflated
+    # past it would refuse as malformed instead.
+    oid = _loose_object(tmp_path / "objects", b"blob 100\0abc")
+
+    with ObjectStore(tmp_path / "objects") as store:
+        with pytest.raises(ObjectStoreError, match="object_too_large"):
+            store.read(oid, max_size=10)
+        with pytest.raises(ObjectStoreError, match="malformed_object"):
+            store.read(oid)
+
+
+@pytest.mark.parametrize("kind", ["base", "ofs-delta", "ref-delta"])
+def test_oversized_packed_object_refuses_before_inflating_or_resolving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    hello = _entry_header(3, 5) + zlib.compress(b"hello")
+    delta = _delta_size(5) + _delta_size(11) + b"\x90\x05" + b"\x06 world"
+    if kind == "base":
+        entries = [(_B, _entry_header(3, 100) + b"not zlib")]
+    elif kind == "ofs-delta":
+        ofs = _entry_header(6, len(delta)) + bytes([len(hello)]) + zlib.compress(delta)
+        entries = [(_A, hello), (_B, ofs)]
+    else:
+        entries = [(_A, hello), (_B, _ref_delta(_A, delta))]
+    _write_pack(tmp_path / "objects", entries)
+    inflated = _record_inflates(monkeypatch)
+
+    with ObjectStore(tmp_path / "objects") as store:
+        with pytest.raises(ObjectStoreError, match="object_too_large"):
+            store.read(_B.hex(), max_size=10)
+    assert inflated == []
+
+
+def test_work_budget_is_charged_across_reads(tmp_path: Path) -> None:
+    entries = [(_A, _entry_header(3, 5) + zlib.compress(b"hello"))]
+    _write_pack(tmp_path / "objects", entries)
+    oid = _loose_object(tmp_path / "objects", b"blob 5\0hello")
+
+    with ObjectStore(tmp_path / "objects", work_budget=12) as store:
+        assert store.read(_A.hex()) == ("blob", b"hello")
+        assert store.read(oid) == ("blob", b"hello")
+        with pytest.raises(ObjectStoreError, match="work_budget_exhausted"):
+            store.read(_A.hex())
+
+
+async def test_export_refuses_once_its_total_work_budget_is_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = commit_file(repo, "src/notes.py", "value = 1\n" * 50, "feat: add notes")
+    monkeypatch.setattr(export_module, "MAX_EXPORT_WORK_BYTES", 64)
+
+    with pytest.raises(ExportRefused, match="export_too_large"):
+        await _export(repo, base, head)
+
+
+async def test_export_refuses_an_oversized_blob_from_its_declared_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = commit_file(repo, "src/notes.py", "value = 1\n" * 50, "feat: add notes")
+    monkeypatch.setattr(export_module, "MAX_BLOB_BYTES", 64)
+    sizes: list[int | None] = []
+    original = ObjectStore.read
+    monkeypatch.setattr(
+        ObjectStore,
+        "read",
+        lambda self, oid, *, max_size=None: (
+            sizes.append(max_size) or original(self, oid, max_size=max_size)
+        ),
+    )
+
+    with pytest.raises(ExportRefused, match="export_too_large"):
+        await _export(repo, base, head)
+    assert 64 in sizes
+
+
+def test_object_cap_does_not_exceed_the_export_cap() -> None:
+    assert object_store.MAX_OBJECT_BYTES <= export_module.MAX_EXPORT_BYTES

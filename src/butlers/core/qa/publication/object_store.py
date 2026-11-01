@@ -13,6 +13,11 @@ read with ``object_store_unsafe`` instead of being followed or ignored.
 Only what the sealed export needs is supported: SHA-1 loose objects and version-2
 pack indexes over version-2/3 packs with ``OFS_DELTA``/``REF_DELTA`` entries.
 Callers re-hash every returned object against its id.
+
+Work is bounded at three levels: one object (``MAX_OBJECT_BYTES``, or a caller's
+``max_size``, checked against the declared size before anything is inflated or a
+delta chain resolved), one read (``MAX_CHAIN_BYTES`` across its delta chain) and the
+store's whole life (an optional ``work_budget`` charged by every read).
 """
 
 from __future__ import annotations
@@ -39,8 +44,9 @@ _CHUNK = 64 * 1024
 
 #: Longest delta chain followed; git itself never writes one deeper than 4095.
 MAX_DELTA_DEPTH = 4096
-#: Largest object (or intermediate delta base) materialised in memory.
-MAX_OBJECT_BYTES = 64 << 20
+#: Largest object (or intermediate delta base) materialised in memory.  The sealed
+#: export refuses past 20 MiB in total, so no larger object could ever be exported.
+MAX_OBJECT_BYTES = 20 << 20
 #: Most bytes one read may inflate or materialise across its whole delta chain, so a
 #: long (or cyclic) chain of large deltas costs bounded memory and CPU, not depth x size.
 MAX_CHAIN_BYTES = 256 << 20
@@ -67,6 +73,10 @@ def _unsafe(exc: BaseException | None = None) -> ObjectStoreError:
 
 def _malformed() -> ObjectStoreError:
     return ObjectStoreError("malformed_object")
+
+
+def _too_large() -> ObjectStoreError:
+    return ObjectStoreError("object_too_large")
 
 
 def _open_dir(name: str | Path, dir_fd: int | None = None) -> int:
@@ -115,6 +125,21 @@ def _inflate(read: Callable[[int], bytes], expected: int) -> bytes:
     if len(out) != expected:
         raise _malformed()
     return bytes(out)
+
+
+def _inflate_prefix(read: Callable[[int], bytes], limit: int) -> bytes:
+    """Inflate at most ``limit`` leading bytes of one zlib stream fed by ``read(n)``."""
+    decompressor = zlib.decompressobj()
+    out = b""
+    try:
+        while len(out) < limit and not decompressor.eof:
+            chunk = decompressor.unconsumed_tail or read(64)
+            if not chunk:
+                raise _malformed()
+            out += decompressor.decompress(chunk, limit - len(out))
+    except zlib.error as exc:
+        raise _malformed() from exc
+    return out
 
 
 def _varint(data: bytes, position: int) -> tuple[int, int]:
@@ -218,7 +243,9 @@ class _Pack:
 class ObjectStore:
     """Confined reads of one object directory; use as a context manager."""
 
-    def __init__(self, objects_dir: Path) -> None:
+    def __init__(self, objects_dir: Path, *, work_budget: int | None = None) -> None:
+        """``work_budget`` caps the bytes all reads may inflate or materialise together."""
+        self._work_left = work_budget
         self._fds: list[int] = []
         self._packs: list[_Pack] = []
         try:
@@ -283,14 +310,28 @@ class ObjectStore:
             pack_size = os.fstat(pack_fd).st_size
             self._packs.append(_Pack(index_fd, pack_fd, pack_size, fanout[255], fanout))
 
-    def read(self, oid: str) -> tuple[str, bytes]:
-        """Return ``(kind, data)`` for ``oid``; ``object_missing`` when the store lacks it."""
-        loose = self._read_loose(oid)
+    def read(self, oid: str, *, max_size: int | None = None) -> tuple[str, bytes]:
+        """Return ``(kind, data)`` for ``oid``; ``object_missing`` when the store lacks it.
+
+        An object whose declared size exceeds ``max_size`` refuses ``object_too_large``
+        before its body is inflated or its delta chain resolved.  Once the store's
+        ``work_budget`` is spent every read refuses ``work_budget_exhausted``.
+        """
+        limit = MAX_OBJECT_BYTES if max_size is None else min(max_size, MAX_OBJECT_BYTES)
+        loose = self._read_loose(oid, limit)
         if loose is not None:
             return loose
-        return self._read_entry(*self._locate(bytes.fromhex(oid)))
+        pack, offset = self._locate(bytes.fromhex(oid))
+        return self._read_entry(pack, offset, limit)
 
-    def _read_loose(self, oid: str) -> tuple[str, bytes] | None:
+    def _charge(self, size: int) -> None:
+        if self._work_left is None:
+            return
+        self._work_left -= size
+        if self._work_left < 0:
+            raise ObjectStoreError("work_budget_exhausted")
+
+    def _read_loose(self, oid: str, limit: int) -> tuple[str, bytes] | None:
         if not _FANOUT.fullmatch(oid[:2]):
             raise ObjectStoreError("object_missing")
         try:
@@ -312,10 +353,9 @@ class ObjectStore:
             raise _unsafe(exc) from exc
         if len(raw) > MAX_LOOSE_FILE_BYTES:
             raise _malformed()
-        return self._inflate_loose(raw)
+        return self._inflate_loose(raw, limit)
 
-    @staticmethod
-    def _inflate_loose(raw: bytes) -> tuple[str, bytes]:
+    def _inflate_loose(self, raw: bytes, limit: int) -> tuple[str, bytes]:
         decompressor = zlib.decompressobj()
         try:
             head = decompressor.decompress(raw, 64)
@@ -328,6 +368,9 @@ class ObjectStore:
         if not size_text.isdigit() or int(size_text) > MAX_OBJECT_BYTES:
             raise _malformed()
         size = int(size_text)
+        if size > limit:
+            raise _too_large()
+        self._charge(size)
         if len(rest) > size:
             raise _malformed()
         remainder = b""
@@ -352,14 +395,16 @@ class ObjectStore:
                 return pack, offset
         raise ObjectStoreError("object_missing")
 
-    def _read_entry(self, pack: _Pack, offset: int) -> tuple[str, bytes]:
+    def _read_entry(self, pack: _Pack, offset: int, limit: int) -> tuple[str, bytes]:
         """Resolve the entry at ``offset``, following its delta chain iteratively.
 
         The walk records only where each delta lives, then inflates and applies them one
         at a time from the base outward, so memory stays near three objects whatever the
         depth.  ``REF_DELTA`` links (which may form a cycle) are followed in the same loop
         under the same depth cap, and every inflated and materialised byte is charged to
-        one ``MAX_CHAIN_BYTES`` budget.
+        one ``MAX_CHAIN_BYTES`` budget and to the store's ``work_budget``.  The requested
+        object's declared size (a delta's target size, read from the head of its delta)
+        is checked against ``limit`` before anything else is inflated.
         """
         links: list[tuple[_Pack, int, int]] = []
         budget = MAX_CHAIN_BYTES
@@ -371,7 +416,10 @@ class ObjectStore:
             budget -= size
             if budget < 0:
                 raise _malformed()
+            self._charge(size)
             if kind_code in _PACK_KINDS:
+                if not links and size > limit:
+                    raise _too_large()
                 base = self._inflate_at(pack, position, size)
                 kind = _PACK_KINDS[kind_code]
                 break
@@ -379,11 +427,15 @@ class ObjectStore:
                 distance, position = self._ofs_distance(pack, position)
                 if distance <= 0 or distance > offset:
                     raise _malformed()
+                if not links:
+                    self._check_delta_target(pack, position, limit)
                 links.append((pack, position, size))
                 offset -= distance
                 continue
             if kind_code == _REF_DELTA:
                 base_oid = _pread_exact(pack.pack_fd, 20, position)
+                if not links:
+                    self._check_delta_target(pack, position + 20, limit)
                 links.append((pack, position + 20, size))
                 pack, offset = self._locate(base_oid)
                 continue
@@ -393,7 +445,25 @@ class ObjectStore:
             budget -= len(base)
             if budget < 0:
                 raise _malformed()
+            self._charge(len(base))
         return kind, base
+
+    @staticmethod
+    def _check_delta_target(pack: _Pack, position: int, limit: int) -> None:
+        """Refuse a delta declaring a target over ``limit``, inflating only its header."""
+        cursor = [position]
+
+        def _read(count: int) -> bytes:
+            chunk = os.pread(pack.pack_fd, count, cursor[0])
+            cursor[0] += len(chunk)
+            return chunk
+
+        # Two base-128 sizes of at most 64 bits each fit in 20 bytes.
+        head = _inflate_prefix(_read, 20)
+        _source_size, after = _varint(head, 0)
+        target_size, _ = _varint(head, after)
+        if target_size > limit:
+            raise _too_large()
 
     @staticmethod
     def _entry_header(pack: _Pack, offset: int) -> tuple[int, int, int]:

@@ -24,7 +24,10 @@ The package `butlers.core.qa.publication` has four parts. The dispatcher calls
    reader opens or hanging it. Delta chains (including `REF_DELTA` cycles) resolve
    iteratively under a depth cap and one per-read byte budget, and pack offsets and delta opcodes
    are bounds-checked, so hostile pack bytes refuse (`malformed_object`) instead of exhausting
-   memory or escaping as an uncaught error. Every object is re-hashed against its id, so a rewritten loose object
+   memory or escaping as an uncaught error. A blob declared over 1 MiB (any object over 20 MiB)
+   refuses (`export_too_large`) from its loose header or delta target size, before its body is
+   inflated or its chain resolved, and one 512 MiB work budget across every read of the export
+   bounds total inflate and delta work however many hostile objects are planted. Every object is re-hashed against its id, so a rewritten loose object
    is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
    accepts only single-parent commits with plain `tree`/`parent`/`author`/`committer` headers. Author
    and committer must equal the configured QA identity (`BUTLERS_QA_GIT_AUTHOR_*`). The message,
