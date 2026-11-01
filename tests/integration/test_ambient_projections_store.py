@@ -6,8 +6,10 @@ cannot write, even if a bootstrap rerun re-grants it the DML privileges.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 from datetime import timedelta
+from pathlib import Path
 from urllib.parse import urlparse
 
 import asyncpg
@@ -161,6 +163,22 @@ async def _assert_grant_boundary(conn, baseline):
     assert await _grant_boundary(conn) == baseline, "ambient grant authority or rows changed"
 
 
+def _restore_finalized_interface_sql() -> str:
+    """Read the unchanged protected predicate without executing migration code."""
+    boundary = Path(__file__).resolve().parents[2] / (
+        "alembic/versions/core/core_196_restore_drill_executor_boundary.py"
+    )
+    return next(
+        ast.literal_eval(node.value)
+        for node in ast.parse(boundary.read_text()).body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_TRUSTED_FINALIZED_INTERFACE_SQL"
+            for target in node.targets
+        )
+    )
+
+
 async def test_schema_downgrade_preserves_grants_until_final_empty_consumer(
     postgres_container, record_property
 ):
@@ -175,12 +193,13 @@ async def test_schema_downgrade_preserves_grants_until_final_empty_consumer(
     )
     pool = await asyncpg.create_pool(url, min_size=1, max_size=2)
     # Initial A genuinely traversed the complete chain as its normal login.
-    # Replaying the fixed bootstrap-owned installers for B needs the managed
-    # bootstrap URL, never a version stamp or a broadened ordinary login.
+    # Full-chain B replay uses the same ordinary caller so core196 can prove
+    # its exact finalized interface and avoid the absence-only installer.
+    # Managed rollback/catalogue observation does not replace that caller.
     bootstrap = migration_bootstrap_db_url(postgres_container, name)
     control = None
     first = _build_alembic_config(bootstrap, chains=["core"])
-    second = _build_alembic_config(bootstrap, chains=["core"], target_schema="general")
+    second = _build_alembic_config(url, chains=["core"], target_schema="general")
     try:
         role = await pool.fetchrow(
             "SELECT current_user, rolsuper, rolcreaterole, rolcreatedb "
@@ -196,6 +215,12 @@ async def test_schema_downgrade_preserves_grants_until_final_empty_consumer(
         control = await asyncpg.connect(
             bootstrap.replace("postgresql+psycopg2://", "postgresql://")
         )
+        # Exercise the actual unchanged protected predicate, rather than a
+        # copied or weakened interpretation of its caller/ACL conditions.
+        finalized_sql = await asyncio.to_thread(_restore_finalized_interface_sql)
+        assert await pool.fetchval(finalized_sql)
+        assert not await control.fetchval(finalized_sql)
+        record_property("ambient_peer_interface", "PASS:ordinary_true_bootstrap_false")
         await asyncio.to_thread(command.upgrade, second, "core_291")
         # pinned-revision: the bounded 291/290 lifetime boundary, not the current head.
         assert (

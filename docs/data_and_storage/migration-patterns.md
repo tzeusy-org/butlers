@@ -179,9 +179,13 @@ Any row, including a revoked grant, refuses rollback with roll-forward guidance;
 revoking grants does not erase their history or authorize deletion. Only a
 genuinely empty store without another migrated consumer can be removed. Reapply
 291 as the established ordinary migration owner to recreate an empty store with
-its existing creator ACLs. Managed full-chain peer-schema replay uses the
-bootstrap interface for its fixed installers; do not stamp past those installers
-or broaden the ordinary login to make a fixture pass.
+its existing creator ACLs. Full-chain peer-schema replay uses the original
+ordinary migration login: core196 proves the exact finalized read-only interface
+for that caller and skips its absence-only installer. A bootstrap superuser
+defeats that normal-caller proof and re-enters the installer, which correctly
+refuses pre-existing authority objects. Keep managed rollback/catalogue
+observation separate from full-chain replay; do not stamp past the installers or
+broaden the ordinary login to make a fixture pass.
 
 A string literal inside a stored function body is not reachable the way a schema
 object is. `ALTER ... RENAME` is expressible against an existing object, so a
