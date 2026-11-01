@@ -38,6 +38,9 @@ Eligible (pre-tool-call systemic failures):
 
 Suppressed (default-closed, any of the following):
 - Any captured MCP tool call  — world may have been touched
+- A ``RuntimeError`` whose adapter reported ``process_info["is_pre_tool_call"]
+  is False`` — tools ran natively, so no message marker reopens failover
+  (runtime config errors excepted: they fail before invocation by construction)
 - Guardrail terminations (``degenerate_tool_loop``, ``tool_call_budget_exceeded``,
   ``token_budget_exceeded``) — intentional runtime terminations
 - Business / validation errors (``ValueError``, ``TypeError``, application errors)
@@ -432,6 +435,23 @@ def classify_failover_eligibility(ctx: FailoverContext) -> FailoverDecision:
                 eligible=True,
                 reason="runtime_config_error: runtime configuration or registration "
                 "failure before invocation",
+            )
+
+        # GATE 6a: adapter-reported tool work (bu-s11n0s.28). Every marker
+        # branch below reads text that can embed the session transcript — the
+        # Claude adapter's error_detail falls back to raw stdout JSONL, tool
+        # output included — so a post-tool failure whose transcript mentions
+        # "rate limit" would otherwise read as a pre-work rejection. An
+        # explicit is_pre_tool_call=False means tools ran natively even though
+        # Gate 1 captured nothing; a retry could duplicate their side effects.
+        # Absent or True keeps the marker branches open.
+        if (ctx.process_info or {}).get("is_pre_tool_call") is False:
+            logger.debug("Failover suppressed: adapter reported tool work (exc=%s)", exc_class)
+            return FailoverDecision(
+                eligible=False,
+                reason="adapter_reported_tool_work: process_info.is_pre_tool_call=False; "
+                "tools ran before the failure, retry suppressed to prevent duplicate "
+                "side effects",
             )
 
         # Plan usage-limit exhaustion: account-scoped, with its own reset window.
