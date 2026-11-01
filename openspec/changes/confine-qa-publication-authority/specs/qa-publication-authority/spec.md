@@ -81,10 +81,10 @@ Scope: v1-mandatory
 - **THEN** publication is refused before egress
 
 #### Scenario: Admission gates read the hold, not the cooldown window
-- **WHEN** triage, the healing cooldown gate or the QA dispatch cooldown gate evaluates a lineage with an `egress_started` or `ambiguous` publication operation
+- **WHEN** triage or the QA dispatch cooldown gate evaluates a lineage with an `egress_started` or `ambiguous` publication operation
 - **THEN** an explicit publication-hold lookup refuses admission whether or not a terminal attempt closed inside the cooldown window
 - **AND** the recent-attempt lookup returns only a real terminal attempt or none, never a stand-in for the hold
-- **AND** read-only healing status reports the hold as a separate `publication_held` flag beside the real attempt
+- **AND** the QA relay's read-only healing status reports the hold as a separate `publication_held` flag beside the real attempt
 
 ### Requirement: Adversarial source and isolated live evidence
 Synthetic transport and actual process-isolation tests SHALL cover malicious exports/config, authority substitutions/races, duplicate requests and ambiguity. Live controlled-resource proof requires separate authority and no forbidden mutation negative.
