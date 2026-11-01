@@ -48,6 +48,11 @@ _TREE_ENTRY_MODES = frozenset({b"100644", b"100755", b"120000", _TREE_MODE, _SUB
 MAX_COMMITS = 50
 MAX_BLOB_BYTES = 1 << 20
 MAX_EXPORT_BYTES = 20 << 20
+#: Most bytes the whole export may inflate or materialise across every object read,
+#: delta chains included, so many hostile objects cost bounded CPU in total.
+MAX_EXPORT_WORK_BYTES = 512 << 20
+#: Object-store refusals that mean the export is too big, not that it is unsafe.
+_TOO_LARGE_CODES = frozenset({"object_too_large", "work_budget_exhausted"})
 
 
 class ExportRefused(RuntimeError):
@@ -122,10 +127,12 @@ class _ObjectReader:
         self.total_bytes = 0
 
     async def read(self, oid: str, expected_kind: str) -> bytes:
+        max_size = MAX_BLOB_BYTES if expected_kind == "blob" else MAX_EXPORT_BYTES
         try:
-            kind, data = await asyncio.to_thread(self._store.read, oid)
+            kind, data = await asyncio.to_thread(self._store.read, oid, max_size=max_size)
         except ObjectStoreError as exc:
-            raise ExportRefused(exc.code) from exc
+            code = "export_too_large" if exc.code in _TOO_LARGE_CODES else exc.code
+            raise ExportRefused(code) from exc
         if kind != expected_kind:
             raise ExportRefused("unexpected_object_type")
         if kind == "blob" and len(data) > MAX_BLOB_BYTES:
@@ -292,7 +299,7 @@ async def build_sealed_export(
     if not (_SHA.fullmatch(base_sha) and _SHA.fullmatch(head_sha)) or base_sha == head_sha:
         raise ExportRefused("invalid_range")
     try:
-        store = await asyncio.to_thread(ObjectStore, objects_dir)
+        store = await asyncio.to_thread(ObjectStore, objects_dir, work_budget=MAX_EXPORT_WORK_BYTES)
     except ObjectStoreError as exc:
         raise ExportRefused(exc.code) from exc
     except OSError as exc:
