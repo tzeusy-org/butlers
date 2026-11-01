@@ -585,6 +585,8 @@ def create_app(
                         None,
                         [
                             r".*/api/auth/owner(?:[/?]|$)",
+                            # A projection grant token may ride in the URL query.
+                            r".*/api/projections/[^/?]+/glance(?:[?]|$)",
                             os.environ.get(
                                 "OTEL_PYTHON_FASTAPI_EXCLUDED_URLS",
                                 os.environ.get("OTEL_PYTHON_EXCLUDED_URLS", ""),
@@ -628,6 +630,8 @@ def create_app(
     _effective_api_key = effective_key or None
     app.state.owner_auth_config = OwnerAuthConfig.from_env(effective_key or "")
     app.state.owner_auth_service = None
+    # None selects the shared-pool PostgresProjectionGrantStore at request time.
+    app.state.projection_grant_store = None
 
     register_error_handlers(app)
     # Last registration is outermost: authentication precedes general audit,
