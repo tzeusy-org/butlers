@@ -44,6 +44,7 @@ from butlers.core.model_routing import (
 )
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.runtimes.base import RuntimeAdapter
+from butlers.core.runtimes.served_identity import TerminalResultError
 from butlers.core.spawner import Spawner
 
 pytestmark = pytest.mark.unit
@@ -1464,13 +1465,16 @@ class TestUsageLimitAllowanceExhaustion:
         # The breaker counts only runtime_failure/success, so nothing here feeds it.
         assert all(c.kwargs["outcome"] != "runtime_failure" for c in write_attempt.await_args_list)
 
+    @pytest.mark.parametrize("terminal_result", [False, True])
     @pytest.mark.parametrize("trusted", [True, False])
     async def test_suppressed_usage_limit_marks_account_from_trusted_text_only(
-        self, tmp_path: Path, trusted: bool
+        self, tmp_path: Path, trusted: bool, terminal_result: bool
     ) -> None:
         """A limit hit after tool work is not failed over but still exhausts the account.
 
-        Transcript-derived ``error_detail`` alone never marks it (bu-s11n0s.34).
+        Transcript-derived ``error_detail`` alone never marks it (bu-s11n0s.34). A
+        trusted limit outranks a failed terminal result's ``runtime_failure``, so the
+        breaker never sees it (bu-s11n0s.36).
         """
         reset = datetime.now(UTC) + timedelta(hours=2)
         limit_text = f"Claude AI usage limit reached|{int(reset.timestamp())}"
@@ -1491,9 +1495,13 @@ class TestUsageLimitAllowanceExhaustion:
                 ),
             ),
         ):
-            result, adapter, write_attempt, mark, _clear = await self._run(
-                tmp_path, RuntimeError(f"Claude CLI exited with code 1: {limit_text}")
+            message = f"Claude CLI exited with code 1: {limit_text}"
+            error = (
+                TerminalResultError({}, None, [], message)
+                if terminal_result
+                else RuntimeError(message)
             )
+            result, adapter, write_attempt, mark, _clear = await self._run(tmp_path, error)
 
         assert result.success is False
         assert adapter.invoke_calls == 1
@@ -1512,7 +1520,8 @@ class TestUsageLimitAllowanceExhaustion:
                 "attempt_id": 42,
             }
         else:
-            assert failed.kwargs["outcome"] == "suppressed"
+            expected = "runtime_failure" if terminal_result else "suppressed"
+            assert failed.kwargs["outcome"] == expected
             mark.assert_not_awaited()
 
     async def test_ordinary_failure_does_not_touch_allowance(self, tmp_path: Path) -> None:
