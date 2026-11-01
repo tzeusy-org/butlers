@@ -489,8 +489,11 @@ def test_inventory_empty_store():
     assert "meta" in body
 
     data = body["data"]
-    # Store-only CLI providers (Claude) always get a row to paste a key into.
-    assert [(row["key"], row["state"]) for row in data["cli"]] == [("cli-auth/claude", "never_set")]
+    # Store-only CLI providers (Claude, OpenAI) always get a row to paste a key into.
+    assert [(row["key"], row["state"]) for row in data["cli"]] == [
+        ("cli-auth/claude", "never_set"),
+        ("cli-auth/openai", "never_set"),
+    ]
     assert data["system"] == []
     assert data["user"] == []
 

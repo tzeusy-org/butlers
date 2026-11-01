@@ -36,7 +36,8 @@ def test_providers_for_runtime_returns_matching_providers_only():
     for a resolved model-catalog runtime_type without hardcoding provider
     names."""
     codex_providers = providers_for_runtime("codex")
-    assert [p.name for p in codex_providers] == ["codex"]
+    # The store-only OpenAI API key authenticates the same Codex runtime.
+    assert [p.name for p in codex_providers] == ["codex", "openai"]
 
     # "opencode" has two registered providers (device-code + api_key) sharing
     # the same on-disk auth.json.
@@ -517,6 +518,48 @@ async def test_claude_health_probe_not_authenticated_or_unavailable():
     with patch("butlers.cli_auth.registry.shutil.which", return_value=None):
         result2 = await probe_provider(provider, credential_store=None)
     assert result2.state == AuthHealthState.unavailable
+
+
+async def test_openai_health_probe_reads_only_the_credential_store():
+    """The Codex adapter has no env fallback, so neither does the probe."""
+    import os
+
+    from butlers.cli_auth.health import AuthHealthState, probe_provider
+
+    provider = PROVIDERS["openai"]
+    store = MagicMock()
+    store.load = AsyncMock(return_value="sk-proj-test-key")
+    with patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"):
+        result = await probe_provider(provider, credential_store=store)
+    assert result.state == AuthHealthState.authenticated
+    store.load.assert_awaited_once_with("cli-auth/openai")
+
+    empty = MagicMock()
+    empty.load = AsyncMock(return_value=None)
+    with (
+        patch("butlers.cli_auth.registry.shutil.which", return_value="/usr/bin/codex"),
+        patch.dict(os.environ, {"CODEX_API_KEY": "sk-env", "OPENAI_API_KEY": "sk-env"}),
+    ):
+        result2 = await probe_provider(provider, credential_store=empty)
+    assert result2.state == AuthHealthState.not_authenticated
+
+
+async def test_save_api_key_persists_openai_key_to_credential_store():
+    """The OpenAI key takes the same store-only save path as Claude."""
+    from butlers.api.models.cli_auth import CLIAuthApiKeyRequest
+    from butlers.api.routers.cli_auth import save_api_key
+
+    persist = AsyncMock()
+    with patch("butlers.api.routers.cli_auth.persist_store_only_api_key", persist):
+        resp = await save_api_key(
+            "openai",
+            CLIAuthApiKeyRequest(api_key="sk-proj-test-key"),
+            db_manager=_make_persisting_db_manager()[0],
+        )
+
+    provider_def, _store, api_key = persist.await_args.args
+    assert (provider_def.name, api_key) == ("openai", "sk-proj-test-key")
+    assert resp.stored is True
 
 
 @pytest.mark.parametrize(

@@ -524,7 +524,9 @@ For a failed transport delivery, or an unexpected error after a complete message
 The runtime SHALL treat the shared/public Tier 1 `cli-auth/codex` value as the
 authoritative Codex device-auth state when its adapter is supplied a credential
 store with a shared fallback; only flat topology SHALL use its local store as
-authority. Before a new Codex subprocess is launched, it SHALL reconcile that
+authority. Before a new device-auth Codex subprocess is launched (one not
+running on a stored OpenAI API key; see Codex OpenAI API Key Preference), it
+SHALL reconcile that
 DB-backed value to the canonical local `~/.codex/auth.json` path when the
 contents differ. The reconciliation SHALL never log credential content, SHALL
 write a replacement atomically with mode `0600`, and SHALL refresh the local
@@ -586,6 +588,36 @@ rotation baseline after a DB-originated write.
 - **THEN** the value-changing write SHALL clear the prior test status, code,
   message, and verification timestamp in the same database statement
 - **AND** B SHALL not inherit A's healthy or failing state
+
+### Requirement: Codex OpenAI API Key Preference
+An OpenAI API key stored as the store-only `cli-auth/openai` credential SHALL
+take precedence over the `cli-auth/codex` device-auth authority for Codex
+invocations. The device-auth authority SHALL remain the fallback, and the
+API-key path SHALL never read, write, rotate, or record health against it.
+
+#### Scenario: Stored key is used first
+- **WHEN** `cli-auth/openai` holds a non-empty key at invocation time
+- **THEN** Codex SHALL run with that key as `CODEX_API_KEY`, with no device-auth
+  `auth.json` in its isolated home and no other Codex auth env var
+- **AND** no device-auth reconciliation, pre-warm, refresh lock, or
+  finalization SHALL run for that attempt
+
+#### Scenario: Rejected key falls back to device auth
+- **WHEN** the API-key attempt exits non-zero before any tool call with an auth
+  or quota rejection
+- **THEN** the invocation SHALL re-run on the device-auth authority
+- **AND** the fallback SHALL be logged without the key value and recorded as a
+  failed test of `cli-auth/openai`
+
+#### Scenario: Other failures do not fall back
+- **WHEN** the API-key attempt times out, is cancelled, fails MCP discovery, or
+  fails for a reason other than an auth or quota rejection
+- **THEN** that failure SHALL propagate without a device-auth attempt
+
+#### Scenario: Missing or unreadable key uses device auth
+- **WHEN** no key is stored or the key lookup fails
+- **THEN** the invocation SHALL use the device-auth authority unchanged, logging
+  only value-free context
 
 #### Scenario: Dashboard Codex probe binds to the canonical authority it tests
 - **WHEN** a dashboard Codex test begins with a shared credential B while the
