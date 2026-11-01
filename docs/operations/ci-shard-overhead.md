@@ -3,8 +3,8 @@
 > **Superseded (bu-29wkwj.2).** The backend lanes now run as pytest-split groups over the
 > committed `.test_durations` (`scripts/ci_lanes.py`). The `inventory` and `coverage-inventory`
 > jobs, the weight observer (`ci_weight_candidates.py`, `ci-shard-weights.yml`) and the preflight
-> receipt reconciler are retired; check-preflight compares each lane's group counts with one fresh
-> `--collect-only` count instead. This page records the retired computed-partition design and
+> receipt reconciler are retired; check-totals compares each lane's group counts with one fresh
+> `--collect-only` count that check-preflight takes beside the groups. This page records the retired computed-partition design and
 > its measurements; `ci_partition.py` survives only for the manual watchdog diagnostic.
 
 The backend has five unit and six integration computed file shards, independent
