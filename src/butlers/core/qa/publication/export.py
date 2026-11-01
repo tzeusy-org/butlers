@@ -208,12 +208,17 @@ def _parse_commit(data: bytes) -> _Commit:
     )
 
 
+# Canonical git "<epoch> <+/-HHMM>" tail: an unchecked epoch or zone is a covert channel,
+# so anything git itself would not write is refused. ``$`` is avoided: it admits "\n".
+_SIGNATURE_TAIL = re.compile(rb"(.*) (0|[1-9][0-9]{0,11}) [+-](?:[01][0-9]|2[0-3])[0-5][0-9]", re.S)
+
+
 def _identity(signature: bytes) -> bytes:
-    # "<name> <<email>> <epoch> <tz>": drop the trailing timestamp and zone.
-    parts = signature.rsplit(b" ", 2)
-    if len(parts) != 3:
+    # "<name> <<email>> <epoch> <+/-HHMM>": validate, then drop the timestamp and zone.
+    match = _SIGNATURE_TAIL.fullmatch(signature)
+    if match is None:
         raise ExportRefused("author_metadata")
-    return parts[0]
+    return match.group(1)
 
 
 def _decode(data: bytes, code: str) -> str:
