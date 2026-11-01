@@ -14,6 +14,7 @@ Spec: openspec/changes/add-ambient-projection-grants (REQ-ambient-projections-00
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -222,7 +223,9 @@ async def get_glance(
     if format == "text":
         return PlainTextResponse(glance_text(glance))
     if format == "png":
-        return Response(glance_png(glance, width, height), media_type="image/png")
+        # Rendering is CPU-bound; keep it off the event loop.
+        png = await asyncio.to_thread(glance_png, glance, width, height)
+        return Response(png, media_type="image/png")
     return ApiResponse(data=Glance(**glance))
 
 
