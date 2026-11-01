@@ -23,7 +23,9 @@ Eligible (pre-tool-call systemic failures):
 - Provider plan usage-limit exhaustion (``RuntimeError`` with a recognized usage-limit
   message) — reason prefix ``usage_limit``.  Distinct from a transient rate limit: the
   whole provider account is out of allowance until its reset window, so the decision
-  also carries the reset instant when the message states one (bu-q7vx1q.13)
+  also carries the reset instant when the message states one (bu-q7vx1q.13).  It
+  requires trusted adapter text (``terminal_error_text`` or ``stderr``); a marker seen
+  only in transcript-bearing text is a ``rate_limit_before_work`` (bu-s11n0s.37)
 - MCP discovery failure before any tool was executed (``MCPToolDiscoveryError``
   when ``tool_calls`` is empty)
 - Timeout before any tool call or side-effect-capable output (``TimeoutError``
