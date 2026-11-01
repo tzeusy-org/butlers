@@ -1,12 +1,13 @@
 """Sealed, sanitized export of an investigation branch (REQ-qa-publication-authority-004).
 
-The publisher never runs git inside the agent repository.  It reads raw objects
-through ``git cat-file --batch`` against a fresh, publisher-owned empty
-repository whose object directory points at the agent's object store, so no
-agent hook, config (including ``core.hooksPath``, ``core.fsmonitor``, filters,
-drivers or includes) or credential helper is ever consulted.  Every object read
-is re-hashed and must match its object id, so a tampered object store cannot
-substitute bytes for a known id.
+The publisher never runs git against the agent repository.  It parses raw
+objects in-process from the agent's object directory
+(:mod:`~butlers.core.qa.publication.object_store`), so no agent hook, config
+(including ``core.hooksPath``, ``core.fsmonitor``, filters, drivers or includes)
+or credential helper is ever consulted, and no planted alternate, symlink or FIFO
+can steer a read outside that directory.  Every object read is re-hashed and must
+match its object id, so a tampered object store cannot substitute bytes for a
+known id.
 
 The export walks every commit newly reachable from the bound head down to the
 trusted base and validates, before anything is pushed:
@@ -31,12 +32,11 @@ import asyncio
 import difflib
 import hashlib
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from butlers.core.git_env import isolated_git_env
 from butlers.core.healing.anonymizer import validate_anonymized
+from butlers.core.qa.publication.object_store import ObjectStore, ObjectStoreError
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _ALLOWED_COMMIT_HEADERS = frozenset({b"tree", b"parent", b"author", b"committer"})
@@ -115,30 +115,24 @@ def _export_digest(
 
 
 class _ObjectReader:
-    """Hash-verified raw object reads from an agent object store, with no agent config."""
+    """Hash-verified, size-bounded raw object reads from a confined agent object store."""
 
-    def __init__(self, process: asyncio.subprocess.Process) -> None:
-        self._process = process
+    def __init__(self, store: ObjectStore) -> None:
+        self._store = store
         self.total_bytes = 0
 
     async def read(self, oid: str, expected_kind: str) -> bytes:
-        stdin, stdout = self._process.stdin, self._process.stdout
-        assert stdin is not None and stdout is not None
-        stdin.write(f"{oid}\n".encode())
-        await stdin.drain()
-        header = (await stdout.readline()).rstrip(b"\n").split(b" ")
-        if len(header) != 3 or header[0].decode() != oid:
-            raise ExportRefused("object_missing")
-        kind, size = header[1].decode(), int(header[2])
+        try:
+            kind, data = await asyncio.to_thread(self._store.read, oid)
+        except ObjectStoreError as exc:
+            raise ExportRefused(exc.code) from exc
         if kind != expected_kind:
             raise ExportRefused("unexpected_object_type")
-        if kind == "blob" and size > MAX_BLOB_BYTES:
+        if kind == "blob" and len(data) > MAX_BLOB_BYTES:
             raise ExportRefused("export_too_large")
-        self.total_bytes += size
+        self.total_bytes += len(data)
         if self.total_bytes > MAX_EXPORT_BYTES:
             raise ExportRefused("export_too_large")
-        data = await stdout.readexactly(size + 1)
-        data = data[:-1]
         if _object_id(kind, data) != oid:
             raise ExportRefused("object_hash_mismatch")
         return data
@@ -282,36 +276,6 @@ class _Walker:
         return _parse_commit(await self._load(oid, "commit"))
 
 
-async def _open_reader(objects_dir: Path, scratch: Path) -> asyncio.subprocess.Process:
-    env = isolated_git_env()
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    init = await asyncio.create_subprocess_exec(
-        "git",
-        "init",
-        "--quiet",
-        "--bare",
-        "--template=",
-        str(scratch),
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-        env=env,
-    )
-    if await init.wait() != 0:
-        raise ExportRefused("reader_unavailable")
-    env["GIT_DIR"] = str(scratch)
-    env["GIT_OBJECT_DIRECTORY"] = str(objects_dir)
-    return await asyncio.create_subprocess_exec(
-        "git",
-        "cat-file",
-        "--batch",
-        cwd=str(scratch),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-        env=env,
-    )
-
-
 async def build_sealed_export(
     objects_dir: Path,
     *,
@@ -327,10 +291,15 @@ async def build_sealed_export(
     """
     if not (_SHA.fullmatch(base_sha) and _SHA.fullmatch(head_sha)) or base_sha == head_sha:
         raise ExportRefused("invalid_range")
-    with tempfile.TemporaryDirectory(prefix="qa-export-") as scratch:
-        process = await _open_reader(objects_dir, Path(scratch))
+    try:
+        store = await asyncio.to_thread(ObjectStore, objects_dir)
+    except ObjectStoreError as exc:
+        raise ExportRefused(exc.code) from exc
+    except OSError as exc:
+        raise ExportRefused("object_store_unsafe") from exc
+    with store:
         try:
-            walker = _Walker(_ObjectReader(process))
+            walker = _Walker(_ObjectReader(store))
             chain: list[tuple[str, _Commit]] = []
             cursor = head_sha
             while cursor != base_sha:
@@ -354,12 +323,8 @@ async def build_sealed_export(
                 _require_clean(_decode(commit.message, "binary_message"), "message_leak")
                 await walker.diff_trees(parent_tree, commit.tree, "")
                 parent_tree = commit.tree
-        except (ValueError, asyncio.IncompleteReadError) as exc:
+        except (ValueError, IndexError, OSError) as exc:
             raise ExportRefused("malformed_object") from exc
-        finally:
-            if process.returncode is None:
-                process.kill()
-            await process.wait()
 
     commits = tuple(oid for oid, _ in chain)
     objects = tuple(sorted(walker.objects.values(), key=lambda o: o.oid))

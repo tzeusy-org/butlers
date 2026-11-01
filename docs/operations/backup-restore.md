@@ -89,7 +89,8 @@ export and verifies the exact sole owner-conditional policy, refusing an extra,
 restrictive, PUBLIC or drifted policy rather than silently filtering rows.
 
 The job-health migration is `core_297`, directly after applied
-`core_295` (custody hardening), following `core_294` (QA exports),
+`core_296` (transitive custody holds), following `core_295` (custody hardening),
+`core_294` (QA exports),
 `core_293` (endpoint custody),
 `core_291` (ambient projections) and
 `core_290` (serving evidence). Its number stays above the applied predecessor because shared core
@@ -102,7 +103,7 @@ login for real full-chain replay, positively verifying the already finalized
 fixed authority interface instead of reinstalling it as bootstrap. The later
 replay after both genuine `core_287` downgrades uses bootstrap for both schemas,
 matching the public objects just recreated by that same bootstrap authority.
-An additional immediate `core_297` to `core_295` roundtrip checks first-schema
+An additional immediate `core_297` to `core_296` roundtrip checks first-schema
 retention and last-schema removal without replacing the older serving-evidence
 controls. No genuine older migration target is advanced.
 

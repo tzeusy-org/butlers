@@ -153,6 +153,36 @@ class TestToolCallsSuppressFailover:
         )
         assert _suppressed(dec)
 
+    @pytest.mark.parametrize(
+        "message",
+        [
+            # Claude terminal failure with empty stderr: the message embeds the raw
+            # stdout JSONL, so a tool's output mentioning a rate limit lands in it.
+            'Claude CLI exited with code 1: {"type":"user","message":{"content":'
+            '[{"type":"tool_result","content":"429 rate limit exceeded"}]}}\n'
+            '{"type":"result","is_error":true,"num_turns":3}',
+            "You've hit your usage limit",
+            "authentication failed",
+            "503 service unavailable",
+            "Runtime returned no response",
+            # Generic runtime-config wording inside embedded tool output.
+            'Claude CLI exited with code 1: {"type":"tool_result","content":"invalid runtime"}',
+        ],
+    )
+    @pytest.mark.parametrize(("pre_tool_call", "eligible"), [(False, False), (True, True)])
+    def test_message_markers_respect_adapter_reported_tool_work(
+        self, message: str, pre_tool_call: bool, eligible: bool
+    ) -> None:
+        """An adapter's explicit is_pre_tool_call=False means tools ran natively
+        even when Gate 1 captured nothing, so no message marker may reopen
+        failover; the same failure before any tool work still fails over."""
+        dec = classify_failover_eligibility(
+            _ctx(RuntimeError(message), process_info={"is_pre_tool_call": pre_tool_call})
+        )
+        assert dec.eligible is eligible, dec.reason
+        if not eligible:
+            assert dec.reason.startswith("adapter_reported_tool_work"), dec.reason
+
 
 # ---------------------------------------------------------------------------
 # AC-3: Guardrail terminations suppress failover
@@ -910,6 +940,41 @@ class TestRateLimitErrorsEligible:
             _ctx(RuntimeError("You've hit your usage limit"), tool_calls=[{"name": "x"}])
         )
         assert not _eligible(dec)
+
+
+class TestUsageLimitSignal:
+    """Usage-limit exhaustion is read apart from eligibility, from trusted text only.
+
+    A suppressed attempt (tool work already ran) can still mean the account is
+    out of allowance (bu-s11n0s.34). Exception text and ``error_detail`` can
+    embed the stdout transcript, tool output included, so only the adapter's
+    structured terminal error and its stderr count.
+    """
+
+    @pytest.mark.parametrize("key", ["terminal_error_text", "stderr"])
+    def test_trusted_source_yields_signal_with_reset(self, key: str) -> None:
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        signal = _fc.usage_limit_signal(
+            {
+                "is_pre_tool_call": False,
+                key: f"Claude AI usage limit reached|{int(reset.timestamp())}",
+            }
+        )
+        assert signal is not None
+        assert signal.reset_at == reset.replace(microsecond=0)
+
+    @pytest.mark.parametrize(
+        "process_info",
+        [
+            None,
+            {"stderr": "", "terminal_error_text": None},
+            {"stderr": "429 Too Many Requests"},
+            # error_detail falls back to raw stdout, which can quote tool output.
+            {"error_detail": "tool said: You've hit your usage limit", "stderr": ""},
+        ],
+    )
+    def test_untrusted_or_absent_text_yields_no_signal(self, process_info: dict | None) -> None:
+        assert _fc.usage_limit_signal(process_info) is None
 
 
 class TestParseUsageLimitReset:

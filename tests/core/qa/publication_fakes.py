@@ -27,6 +27,7 @@ class FakeProvider:
     prs: dict[int, dict] = field(default_factory=dict)
     calls: list[tuple[str, dict]] = field(default_factory=list)
     lose_response_on: str | None = None
+    raise_on_push: Exception | None = None
 
     def _maybe_lose(self, name: str) -> None:
         if self.lose_response_on == name:
@@ -34,6 +35,8 @@ class FakeProvider:
 
     async def update_ref(self, *, branch, expected_old, new, export) -> None:
         self.calls.append(("update_ref", {"branch": branch, "old": expected_old, "new": new}))
+        if self.raise_on_push is not None:
+            raise self.raise_on_push
         if self.refs.get(branch) != expected_old:
             raise StaleExpectedHead(branch)
         self.refs[branch] = new

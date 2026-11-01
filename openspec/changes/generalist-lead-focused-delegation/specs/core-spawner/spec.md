@@ -112,8 +112,10 @@ ID: REQ-core-spawner-016
 
 #### Scenario: Gemini adapter invocation
 - **WHEN** the selected runtime type is `gemini`
-- **THEN** the GeminiAdapter runs the `gemini` binary with `--system-prompt` and `--prompt` flags
-- **AND** passes only the environment its launcher provides plus its adapter-owned file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config and the `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointer, which names a settings file staged inside the invocation's sandbox
+- **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag
+- **AND** passes the system prompt as a per-invocation file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags)
+- **AND** passes only the environment its launcher provides plus its adapter-owned file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config, the `GEMINI_SYSTEM_MD` pointer and the `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointer, which names a settings file staged inside the invocation's sandbox
+- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.46.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the selected runtime type is `opencode`

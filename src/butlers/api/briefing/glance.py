@@ -130,11 +130,36 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font: Any, width: int) -> list[s
     return [*rows, row] if row else rows
 
 
+_MIN_FONT_SIZE = 6
+
+
+def _fit_font(
+    draw: ImageDraw.ImageDraw, text: str, size: int, font: Any, width: int
+) -> tuple[int, Any]:
+    """Return a size (at most ``size``) and font that set ``text`` within ``width``.
+
+    Text length scales roughly linearly with font size, so one proportional estimate
+    lands on or near the largest fit; the step-down loop only absorbs hinting error.
+    ``load_default(size=)`` needs Pillow 10.1+.
+    """
+    length = draw.textlength(text, font=font)
+    if length <= width:
+        return size, font
+    size = max(min(size - 1, int(size * width / length)), _MIN_FONT_SIZE)
+    font = ImageFont.load_default(size=size)
+    while size > _MIN_FONT_SIZE and draw.textlength(text, font=font) > width:
+        size -= 1
+        font = ImageFont.load_default(size=size)
+    return size, font
+
+
 def glance_png(glance: dict, width: int, height: int) -> bytes:
     """Render the glance lines as a 1-bit PNG for an e-ink or low-colour panel.
 
     The headline is set larger and the remaining lines follow it; ``Valid until``
     sits on the bottom edge. Rendering is deterministic for the same glance and size.
+    It is CPU-bound (tens of milliseconds at the largest panel), so async callers
+    run it in a worker thread.
     """
     image = Image.new("1", (width, height), color=1)
     draw = ImageDraw.Draw(image)
@@ -145,11 +170,7 @@ def glance_png(glance: dict, width: int, height: int) -> bytes:
     *lines, expiry = glance_lines(glance)
     # The expiry is pinned to the bottom edge, shrunk until it fits the width; lines
     # that would reach it are dropped, so overflowing text never clips or overprints it.
-    expiry_size = body_size
-    expiry_font = body
-    while expiry_size > 6 and draw.textlength(expiry, font=expiry_font) > width - 2 * margin:
-        expiry_size -= 1
-        expiry_font = ImageFont.load_default(size=expiry_size)
+    expiry_size, expiry_font = _fit_font(draw, expiry, body_size, body, width - 2 * margin)
     expiry_y = height - margin - int(expiry_size * 1.25)
     draw.text((margin, expiry_y), expiry, fill=0, font=expiry_font)
     y = margin

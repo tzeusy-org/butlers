@@ -496,7 +496,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-instrumentation-fastapi" },
     { name = "opentelemetry-sdk" },
-    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pillow", specifier = ">=10.1.0" },
     { name = "prometheus-client" },
     { name = "psycopg2-binary" },
     { name = "pydantic" },

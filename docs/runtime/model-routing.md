@@ -313,6 +313,7 @@ The `classify_failover_eligibility()` function (in `failover_classifier.py`) dec
 
 **Suppressed (default-closed):**
 - Any captured MCP tool call — world may have been touched
+- A marker-matched `RuntimeError` whose adapter reported `is_pre_tool_call=False` — tools ran natively, and the message may embed the transcript (runtime config markers included: a genuine config error never carries `False`)
 - Guardrail terminations (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
 - Unknown error classes — cannot confirm no side effect occurred
 - Business / validation errors (`ValueError`, `TypeError`)
@@ -349,7 +350,10 @@ and tracked per account in `public.provider_allowance_states` (`account_key`, `s
   then records `reset_source='default_window'`. A default-window guess never shortens a parsed reset.
 - **Spawner**: the rejected attempt is written with outcome `allowance_exhausted`, which the breaker
   ignores (it counts only `runtime_failure`/`success`), then the failover loop continues on the next
-  admissible candidate, which is necessarily on another account.
+  admissible candidate, which is necessarily on another account. A usage limit hit after tool work
+  is suppressed rather than failed over, but still records `allowance_exhausted` and exhausts the
+  account when the adapter's structured terminal error (`process_info.terminal_error_text`) or
+  stderr carries the marker; transcript-bearing text (exception message, `error_detail`) never does.
 - **Scheduler**: a due prompt-mode cron task or deadline threshold whose every fit candidate is on an
   exhausted account is not dispatched. A cron task moves `next_run_at` to the earliest reset and
   records `last_result.outcome='skipped_allowance'`; a deadline threshold stays unfired. Job-mode

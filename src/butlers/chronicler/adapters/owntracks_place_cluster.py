@@ -68,6 +68,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, cast
+from uuid import UUID
 
 import asyncpg
 
@@ -79,10 +80,13 @@ from butlers.chronicler.adapters._owner_entity import (
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.owntracks_trail import (
     TRAIL_ANCHORS_CARRYOVER_KEY,
+    TRAIL_STATE_CARRYOVER_KEY,
     classify_trail,
     dump_anchors,
     haversine_meters,
     load_anchors,
+    load_trail_state,
+    trail_order_key,
 )
 from butlers.chronicler.confidence import (
     EvidenceKind,
@@ -90,7 +94,19 @@ from butlers.chronicler.confidence import (
     evidence_refs_from_event_ids,
 )
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
-from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
+from butlers.chronicler.storage import (
+    get_owntracks_carryover as get_carryover,
+)
+from butlers.chronicler.storage import (
+    owntracks_connection,
+    owntracks_transaction,
+    retained_owntracks_rows,
+    run_owntracks_projection,
+    upsert_episode,
+)
+from butlers.chronicler.storage import (
+    save_owntracks_carryover as save_carryover,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -301,11 +317,12 @@ def cluster_points(
     max_gap: timedelta,
     prior_carryover: dict | None = None,
 ) -> tuple[list[ClusterSpan], dict]:
-    """Deterministic radius/dwell clustering over points sorted by ``ts``.
+    """Deterministic radius/dwell clustering over endpoint-contiguous trails.
 
-    ``rows`` must already be sorted by ``ts`` ascending (as returned by
-    ``_fetch_points``) and each must carry ``ts`` (tz-aware datetime),
-    ``lat``, ``lon``, ``endpoint_identity``.
+    ``rows`` must group each endpoint's fixes in canonical effective timestamp
+    and source-UUID order. The caller groups accepted globally ordered evidence
+    after plausibility classification. Each row carries ``ts`` (tz-aware
+    datetime), ``lat``, ``lon`` and ``endpoint_identity``.
 
     Returns ``(spans, new_carryover)``. ``spans`` includes every cluster
     formed in this batch, whether or not it has yet reached the dwell
@@ -668,13 +685,47 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             ref for ref in self.reference_points if ref.label.strip().lower() == HOME_LABEL
         )
 
+    async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
+        # Optional owner lookup keeps its original pool/error isolation.
+        entity_id = await resolve_owner_entity_id(pool)
+
+        async def project(
+            conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+            since: datetime | None,
+            since_id: int | None,
+        ) -> AdapterResult:
+            source = conn if pool is chronicler_pool else pool
+            return await self._project(
+                source, chronicler_pool=conn, since=since, since_id=since_id, entity_id=entity_id
+            )
+
+        return await run_owntracks_projection(
+            chronicler_pool, self.source_name, project, self._llm_probe
+        )
+
     async def project(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         *,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
         since_id: int | None = None,
+    ) -> AdapterResult:
+        entity_id = await resolve_owner_entity_id(pool)
+        async with owntracks_transaction(chronicler_pool, self.source_name) as conn:
+            source = conn if pool is chronicler_pool else pool
+            return await self._project(
+                source, chronicler_pool=conn, since=since, since_id=since_id, entity_id=entity_id
+            )
+
+    async def _project(
+        self,
+        pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        *,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        since: datetime | None,
+        since_id: int | None = None,
+        entity_id: UUID | None,
     ) -> AdapterResult:
         # owntracks_points.id is a UUID, not an integer serial — same
         # rationale as owntracks.py: watermark on ts only.
@@ -709,21 +760,69 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 valid_rows.append(normalized)
 
         if valid_rows:
-            entity_id = await resolve_owner_entity_id(pool)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
             # Shared impossible-jump policy (owntracks_trail.py): rejected
             # fixes never seed a cluster or an away span.
-            valid_rows.sort(key=lambda r: (r["ts"], str(r["id"])))
+            valid_rows.sort(key=trail_order_key)
+            state = load_trail_state(prior_carryover)
+            retained = await retained_owntracks_rows(pool, state)
+            recovered = {}
+            for raw in retained:
+                normalized, _ = self._normalize_row(raw)
+                if normalized is not None:
+                    recovered[str(normalized["id"])] = normalized
+            current_ids = {str(row["id"]) for row in valid_rows}
+            pending_ids = {
+                identity for entry in state.values() for identity in entry["pending_ids"]
+            }
+            if pending_ids - recovered.keys() - current_ids:
+                result.warnings.append(
+                    "OwnTracks candidate evidence unavailable; pending consensus restarts."
+                )
+            for entry in state.values():
+                if (
+                    entry["seed_id"] is not None
+                    and entry["seed_id"] not in recovered
+                    and entry["seed_id"] not in current_ids
+                ):
+                    entry["seed_id"] = None
+                    result.warnings.append(
+                        "OwnTracks bootstrap evidence unavailable; legacy anchor retained."
+                    )
+            pending_rows = [
+                row
+                for identity, row in recovered.items()
+                if identity in pending_ids and identity not in current_ids
+            ]
+            valid_rows = sorted([*pending_rows, *valid_rows], key=trail_order_key)
+            changes = {}
+            rejected_seeds: set[str] = set()
             outliers, anchors = classify_trail(
-                valid_rows, prior_anchors=load_anchors(prior_carryover)
+                valid_rows,
+                prior_anchors=load_anchors(prior_carryover),
+                state=state,
+                changes=changes,
+                rejected_seeds=rejected_seeds,
             )
+            for endpoint in rejected_seeds:
+                prior_carryover.pop(endpoint, None)
+
             accepted = [row for i, row in enumerate(valid_rows) if i not in outliers]
+            # Plausibility and source watermarks use global canonical order;
+            # clustering needs each endpoint's contiguous trail in that order.
+            cluster_rows = sorted(
+                accepted, key=lambda row: (row["endpoint_identity"], *trail_order_key(row))
+            )
             spans, new_carryover = cluster_points(
-                accepted,
+                cluster_rows,
                 radius_m=self.radius_m,
                 max_gap=self.max_gap,
                 prior_carryover=prior_carryover,
             )
+            new_carryover = {
+                **{key: value for key, value in prior_carryover.items() if not key.startswith("_")},
+                **new_carryover,
+            }
             for span in spans:
                 episode = await self._maybe_emit(chronicler_pool, span, entity_id=entity_id)
                 if episode is not None:
@@ -731,6 +830,10 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                     result.episodes_closed += 1
 
             prior_away = prior_carryover.get(AWAY_CARRYOVER_KEY)
+            if isinstance(prior_away, dict):
+                prior_away = {
+                    key: value for key, value in prior_away.items() if key not in rejected_seeds
+                }
             away_spans, away_carryover = detect_away_spans(
                 accepted,
                 homes=self.homes,
@@ -738,6 +841,16 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 max_gap=self.away_max_gap,
                 prior_carryover=prior_away if isinstance(prior_away, dict) else None,
             )
+            accepted_endpoints = {row["endpoint_identity"] for row in accepted}
+            if isinstance(prior_away, dict):
+                away_carryover = {
+                    **{
+                        key: value
+                        for key, value in prior_away.items()
+                        if key not in accepted_endpoints
+                    },
+                    **away_carryover,
+                }
             for away in away_spans:
                 episode = await self._maybe_emit_away(chronicler_pool, away, entity_id=entity_id)
                 if episode is not None:
@@ -745,6 +858,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                     result.episodes_closed += 1
 
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
+            new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
             new_carryover[AWAY_CARRYOVER_KEY] = away_carryover
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
@@ -850,46 +964,48 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
 
     async def _fetch_points(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
     ) -> list[asyncpg.Record] | None:
         """Fetch evidence rows since the watermark; ``None`` if table missing."""
         try:
-            async with pool.acquire() as conn:
-                exists = await conn.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = 'connectors'
-                          AND table_name = 'owntracks_points'
+            async with owntracks_connection(pool) as conn:
+                # Roll back a caught read error before updating projection status.
+                async with conn.transaction():
+                    exists = await conn.fetchval(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = 'connectors'
+                              AND table_name = 'owntracks_points'
+                        )
+                        """
                     )
-                    """
-                )
-                if not exists:
-                    return None
+                    if not exists:
+                        return None
 
-                if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE ts > $1
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
-                    )
+                    if since is None:
+                        rows = await conn.fetch(
+                            f"""
+                            SELECT id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload
+                            FROM {_EVIDENCE_TABLE}
+                            ORDER BY ts ASC, id ASC
+                            LIMIT $1
+                            """,
+                            self.batch_limit,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            f"""
+                            SELECT id, ts, lat, lon, endpoint_identity, recorded_at, raw_payload
+                            FROM {_EVIDENCE_TABLE}
+                            WHERE ts > $1
+                            ORDER BY ts ASC, id ASC
+                            LIMIT $2
+                            """,
+                            since,
+                            self.batch_limit,
+                        )
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None
@@ -911,7 +1027,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
 
     async def _maybe_emit(
         self,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         span: ClusterSpan,
         *,
         entity_id: Any,
@@ -945,7 +1061,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
 
         confidence = derive_confidence([EvidenceKind(name="gps")])
 
-        async with chronicler_pool.acquire() as conn:
+        async with owntracks_connection(chronicler_pool) as conn:
             evidence_ids = await self._fetch_location_point_event_ids(conn, span)
             evidence_refs = evidence_refs_from_event_ids(evidence_ids)
 
@@ -973,7 +1089,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
 
     async def _maybe_emit_away(
         self,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         span: AwaySpan,
         *,
         entity_id: Any,
@@ -994,7 +1110,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
             "farthest_lon": span.farthest_lon,
             "home_reference": HOME_LABEL,
         }
-        async with chronicler_pool.acquire() as pooled:
+        async with owntracks_connection(chronicler_pool) as pooled:
             conn = cast(asyncpg.Connection, pooled)
             async with owner_episode_transaction(conn):
                 episode = await upsert_episode(
@@ -1019,7 +1135,7 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
 
     @staticmethod
     async def _fetch_location_point_event_ids(
-        conn: asyncpg.Connection,
+        conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         span: ClusterSpan,
     ) -> list[Any]:
         """Look up already-projected ``location`` point events for evidence_refs.

@@ -8,7 +8,8 @@ Encapsulates all Gemini CLI-specific logic:
 
 The Gemini CLI is invoked with ``--prompt`` to pass the user prompt
 and ``--sandbox=false`` to disable sandboxing. The system prompt
-(from GEMINI.md or AGENTS.md) is passed inline via ``--system-prompt``.
+(from GEMINI.md or AGENTS.md) is written to a per-invocation file named by
+``GEMINI_SYSTEM_MD``, which replaces the CLI's built-in system prompt.
 MCP server configs are written to a per-invocation temporary settings file
 that the CLI reads as its system settings.
 
@@ -215,6 +216,14 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
             "input": fn_call.get("args", fn_call.get("arguments", {})),
         }
 
+    # Stream-json ``tool_use`` event: {"tool_name": ..., "tool_id": ..., "parameters": ...}
+    if "tool_name" in obj:
+        return {
+            "id": obj.get("tool_id", ""),
+            "name": obj.get("tool_name", ""),
+            "input": obj.get("parameters", {}),
+        }
+
     # Standard tool_use format
     return {
         "id": obj.get("id", ""),
@@ -223,12 +232,36 @@ def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the stream proves a tool ran, for ``is_pre_tool_call``.
+
+    Evidence is any parsed tool call or a ``result`` event whose
+    ``stats.tool_calls`` is positive. That counter is the CLI's telemetry total
+    (``metrics.tools.totalCalls``), so it also counts tool calls that emit no
+    top-level ``tool_use`` event, such as a subagent's.
+    """
+    if tool_calls:
+        return True
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "result":
+            continue
+        stats = obj.get("stats")
+        count = stats.get("tool_calls") if isinstance(stats, dict) else None
+        if type(count) is int and count > 0:
+            return True
+    return False
+
+
 class GeminiAdapter(RuntimeAdapter):
     """Runtime adapter for the Google Gemini CLI.
 
     Invokes the Gemini CLI binary via subprocess. The adapter handles:
     - Locating the ``gemini`` binary on PATH
-    - Passing system prompts via ``--system-prompt`` flag
+    - Passing system prompts via a ``GEMINI_SYSTEM_MD`` file
     - Writing MCP config in Gemini-compatible JSON format
     - Passing through env vars
     - Parsing CLI output into (result_text, tool_calls)
@@ -282,8 +315,9 @@ class GeminiAdapter(RuntimeAdapter):
     ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
         """Invoke the Gemini CLI with the given prompt and configuration.
 
-        Builds the command line, passes the system prompt via
-        ``--system-prompt``, and parses the output. When ``mcp_servers`` is
+        Builds the command line, stages the system prompt as the
+        ``GEMINI_SYSTEM_MD`` file in a per-invocation temporary directory, and
+        parses the output. When ``mcp_servers`` is
         non-empty it is written through :meth:`build_config_file` into a
         per-invocation temporary directory that the CLI is pointed at as its
         system settings file (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini
@@ -322,6 +356,11 @@ class GeminiAdapter(RuntimeAdapter):
             If the gemini binary is not found on PATH.
         TimeoutError
             If the Gemini process exceeds the timeout.
+        RuntimeError
+            If the Gemini process exits non-zero with no failed terminal result.
+        TerminalResultError
+            If the stream carries a failed terminal result (``status: "error"``),
+            at any exit code; it keeps the attempt's usage and tool calls.
         """
         binary = self._get_binary()
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
@@ -335,14 +374,19 @@ class GeminiAdapter(RuntimeAdapter):
             "--sandbox=false",
         ]
 
-        # Pass system prompt via --system-prompt flag
-        if system_prompt:
-            cmd.extend(["--system-prompt", system_prompt])
-
         # Pass prompt via --prompt flag
         cmd.extend(["--prompt", prompt])
 
         config_dir = tempfile.TemporaryDirectory(prefix="butlers-gemini-")
+        if system_prompt:
+            # The CLI has no system-prompt flag and its strict parser rejects unknown ones;
+            # GEMINI_SYSTEM_MD names a file that replaces the built-in system prompt.
+            system_md = Path(config_dir.name) / "system.md"
+            system_md.write_text(system_prompt)
+            filtered_env = {
+                **(filtered_env if filtered_env is not None else os.environ),
+                "GEMINI_SYSTEM_MD": str(system_md),
+            }
         if mcp_servers:
             # Gemini's ``url`` key is SSE; the butler endpoint is streamable HTTP, which
             # Gemini names ``httpUrl``.
@@ -395,21 +439,32 @@ class GeminiAdapter(RuntimeAdapter):
                 "runtime_type": "gemini",
             }
 
+            aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
+            usage = aggregate if aggregate.get("input_tokens") is not None else None
+            terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
-                # On non-zero exit the adapter raises immediately — no tool calls
-                # were captured by the adapter itself, so this is pre-tool-call.
-                # The spawner will layer in daemon-side tool-call capture.
-                self._last_process_info["is_pre_tool_call"] = True
-                raise RuntimeError(f"Gemini CLI exited with code {returncode}: {error_detail}")
+                message = f"Gemini CLI exited with code {returncode}: {error_detail}"
+                if not terminal_error:
+                    # No result envelope: nothing proves work started, so this is
+                    # pre-tool-call. The spawner layers in daemon-side capture.
+                    self._last_process_info["is_pre_tool_call"] = True
+                    raise RuntimeError(message)
+                # Stream-json emits ``result``/``status: error`` and then exits with
+                # the error's code (turn limit is 53); keep its usage and tool evidence.
+                _, tool_calls = _parse_gemini_output(stdout, stderr)
+                self._last_process_info["is_pre_tool_call"] = not _gemini_tools_ran(
+                    stdout, tool_calls
+                )
+                raise TerminalResultError(served, usage, tool_calls, message)
 
             result_text, tool_calls = _parse_gemini_output(stdout, stderr)
-            aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
-            usage = aggregate if aggregate.get("input_tokens") is not None else None
-            if any(item["error"]["is_error"] is True for item in served["executions"]):
-                self._last_process_info["is_pre_tool_call"] = not bool(tool_calls)
+            if terminal_error:
+                self._last_process_info["is_pre_tool_call"] = not _gemini_tools_ran(
+                    stdout, tool_calls
+                )
                 raise TerminalResultError(served, usage, tool_calls)
             return result_text, tool_calls, usage
 

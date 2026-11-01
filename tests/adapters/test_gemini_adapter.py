@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -90,7 +91,13 @@ async def test_invoke():
     mock_proc.communicate = AsyncMock(
         return_value=(json.dumps({"type": "result", "result": "Task done."}).encode(), b"")
     )
-    with patch(_EXEC, return_value=mock_proc) as mock_sub:
+    staged: dict[str, str] = {}
+
+    def _spawn(*_cmd: str, **kwargs: Any) -> AsyncMock:
+        staged["system_md"] = Path(kwargs["env"]["GEMINI_SYSTEM_MD"]).read_text()
+        return mock_proc
+
+    with patch(_EXEC, side_effect=_spawn) as mock_sub:
         result_text, _, _ = await adapter.invoke(
             prompt="do something",
             system_prompt="you are helpful",
@@ -99,8 +106,12 @@ async def test_invoke():
         )
     assert result_text == "Task done."
     assert mock_sub.call_args.kwargs["env"]["GOOGLE_API_KEY"] == "gk-test"
-    cmd = mock_sub.call_args[0]
-    assert cmd[0] == "/usr/bin/gemini" and "--sandbox=false" in cmd and "--system-prompt" in cmd
+    # gemini-cli 0.46.0 has a strict parser and no --system-prompt flag; the prompt is
+    # staged as a GEMINI_SYSTEM_MD file instead.
+    assert staged["system_md"] == "you are helpful"
+    cmd = list(mock_sub.call_args[0])
+    assert cmd[:2] == ["/usr/bin/gemini", "--sandbox=false"]
+    assert "--system-prompt" not in cmd and cmd[cmd.index("--prompt") + 1] == "do something"
 
     # functionCall output
     output_lines = "\n".join(
@@ -287,6 +298,63 @@ async def test_invoke_nonzero_exit_records_process_info() -> None:
     assert info["exit_code"] == 1
     assert info["runtime_type"] == "gemini"
     assert "auth error" in info["stderr"]
+
+
+async def test_invoke_nonzero_terminal_result_keeps_usage_and_tool_evidence() -> None:
+    """Pinned 0.46.0 stream-json emits ``result``/``status: error`` then exits non-zero.
+
+    Its ``handleError``/``handleMaxTurnsExceededError`` always ``process.exit`` with the
+    error's exit code (``FatalTurnLimitedError`` is 53) after emitting the envelope, so
+    the exit-zero path never sees it. The non-zero raise keeps the attempt's usage and
+    tool calls; the classified message stays the plain exit text. Shapes are synthetic,
+    mirroring that CLI's ``tool_use`` (tool_name/tool_id/parameters) and result events.
+    """
+    from butlers.core.runtimes.served_identity import TerminalResultError
+
+    stats = {"input_tokens": 105, "cached": 100, "input": 5, "output_tokens": 3}
+    result = {
+        "type": "result",
+        "status": "error",
+        "error": {"type": "FatalTurnLimitedError", "message": "synthetic"},
+        "stats": stats,
+    }
+    tool_use = {
+        "type": "tool_use",
+        "tool_name": "state_get",
+        "tool_id": "c1",
+        "parameters": {"key": "bar"},
+    }
+
+    async def run(lines: list[dict]) -> tuple[Exception, dict]:
+        adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
+        proc = AsyncMock(returncode=53, pid=7)
+        stdout = "\n".join(json.dumps(line) for line in lines)
+        proc.communicate = AsyncMock(return_value=(stdout.encode(), b""))
+        with patch(_EXEC, return_value=proc), pytest.raises(RuntimeError) as caught:
+            await adapter.invoke(prompt="x", system_prompt="", mcp_servers={}, env={})
+        return caught.value, adapter.last_process_info
+
+    # A tool ran before the turn limit: usage and the tool call survive, not pre-tool-call.
+    error, info = await run([tool_use, result])
+    assert isinstance(error, TerminalResultError)
+    assert str(error).startswith("Gemini CLI exited with code 53: ")
+    assert error.usage["input_tokens"] == 5 and error.usage["cache_read_input_tokens"] == 100
+    assert error.tool_calls == [{"id": "c1", "name": "state_get", "input": {"key": "bar"}}]
+    assert error.served["executions"][0]["error"]["code"] == "max_turns"
+    assert info["is_pre_tool_call"] is False and info["exit_code"] == 53
+
+    # No tool evidence: still a terminal result with usage, but pre-tool-call for failover.
+    error, info = await run([result])
+    assert isinstance(error, TerminalResultError) and error.tool_calls == []
+    assert error.usage["input_tokens"] == 5
+    assert info["is_pre_tool_call"] is True
+
+    # ``stats.tool_calls`` is the CLI's telemetry total, which also counts tool calls
+    # with no top-level ``tool_use`` event (a subagent's): it alone proves work ran.
+    counted = {**result, "stats": {**stats, "tool_calls": 2}}
+    error, info = await run([counted])
+    assert isinstance(error, TerminalResultError) and error.tool_calls == []
+    assert info["is_pre_tool_call"] is False
 
 
 def test_build_config_file_carries_the_invocation_header(tmp_path: Path):

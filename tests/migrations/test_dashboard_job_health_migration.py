@@ -178,7 +178,7 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
     bootstrap_config = _build_alembic_config(
         migration_bootstrap_db_url(postgres_container, name), chains=["core"]
     )
-    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_295")
+    await asyncio.to_thread(command.downgrade, bootstrap_config, "core_296")
     await asyncio.to_thread(command.upgrade, bootstrap_config, "core@core_297")
     conn = await asyncpg.connect(url.replace("postgresql+psycopg2://", "postgresql://"))
     try:
@@ -328,20 +328,20 @@ async def test_job_health_migration_retention_fencing_privacy_and_roundtrip(post
                     ),
                 }
 
-        # Exercise own295's immediate public295 boundary before preserving the
-        # older genuine287 serving-evidence control below. A295 schema is no
-        # longer a health consumer, while its295 peer still is.
+        # Exercise own297's immediate public296 boundary before preserving the
+        # older genuine287 serving-evidence control below. A296 schema is no
+        # longer a health consumer, while its297 peer still is.
         boundary_snapshot = await shared_snapshot()
         assert boundary_snapshot["health"] and boundary_snapshot["history"]
-        await asyncio.to_thread(command.downgrade, bootstrap_config, "core_295")
-        # pinned-revision: this schema leaves own295 for its exact public295 predecessor
-        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_295"
-        # pinned-revision: its peer remains at own295 while the first schema leaves
+        await asyncio.to_thread(command.downgrade, bootstrap_config, "core_296")
+        # pinned-revision: this schema leaves own297 for its exact public296 predecessor
+        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_296"
+        # pinned-revision: its peer remains at own297 while the first schema leaves
         assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_297"
         assert await shared_snapshot() == boundary_snapshot
-        await asyncio.to_thread(command.downgrade, peer_config, "core_295")
-        # pinned-revision: this peer also leaves own295 for its exact public295 predecessor
-        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_295"
+        await asyncio.to_thread(command.downgrade, peer_config, "core_296")
+        # pinned-revision: this peer also leaves own297 for its exact public296 predecessor
+        assert await pool.fetchval("SELECT version_num FROM general.alembic_version") == "core_296"
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_health') IS NULL")
         assert await pool.fetchval("SELECT to_regclass('public.dashboard_job_transitions') IS NULL")
         assert await pool.fetchval("SELECT to_regclass('public.model_served_usage') IS NOT NULL")

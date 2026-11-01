@@ -16,6 +16,7 @@ Verifies the acceptance criteria for bu-ojiij.5:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -24,6 +25,7 @@ import pytest
 from butlers.core.failover_classifier import (
     FailoverContext,
     classify_failover_eligibility,
+    usage_limit_signal,
 )
 from butlers.core.runtimes._codex_auth_sync import CodexAuthSyncResult
 from butlers.core.runtimes.claude_code import ClaudeCodeAdapter
@@ -517,3 +519,60 @@ class TestAdapterInternalRetryNotConflatedWithFailover:
         # must not treat this as 3 cross-model failover attempts.
         assert process_info["retry_attempted"] is True
         assert process_info["is_pre_tool_call"] is True
+
+
+# ---------------------------------------------------------------------------
+# Structured terminal error text for usage-limit detection (bu-s11n0s.34)
+# ---------------------------------------------------------------------------
+
+
+class TestTerminalErrorText:
+    """Adapters expose the provider's terminal error apart from the transcript.
+
+    ``usage_limit_signal`` trusts only this and stderr, so a usage limit hit after
+    tool work still exhausts the account while tool output quoting "usage limit"
+    never does.
+    """
+
+    _TOOL_OUTPUT = (
+        '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1",'
+        '"name":"Bash","input":{}}]}}\n'
+        '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1",'
+        '"content":"log: You\'ve hit your usage limit"}]}}\n'
+    )
+
+    @pytest.mark.parametrize(
+        ("result_text", "expected"),
+        [("Claude AI usage limit reached|4102444800", True), (None, False)],
+    )
+    async def test_claude_failed_result_envelope_is_the_terminal_error(
+        self, result_text: str | None, expected: bool
+    ) -> None:
+        envelope = {"type": "result", "subtype": "error_during_execution", "is_error": True}
+        if result_text is not None:
+            envelope["result"] = result_text
+        stdout = (self._TOOL_OUTPUT + json.dumps(envelope)).encode()
+        with patch(_CLAUDE_EXEC, return_value=_make_proc(1, stdout=stdout)):
+            adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+            with pytest.raises(RuntimeError):
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        info = adapter.last_process_info
+        assert info is not None
+        assert info["is_pre_tool_call"] is False
+        assert info.get("terminal_error_text") == result_text
+        assert (usage_limit_signal(info) is not None) is expected
+
+    async def test_codex_turn_failed_message_is_the_terminal_error(self) -> None:
+        stdout = (
+            b'{"type":"item.completed","item":{"type":"command_execution",'
+            b'"aggregated_output":"usage limit docs"}}\n'
+            b'{"type":"turn.failed","error":{"message":"You\'ve hit your usage limit."}}\n'
+        )
+        with patch(_CODEX_EXEC, return_value=_make_proc(1, stdout=stdout)):
+            adapter = CodexAdapter(codex_binary="/usr/bin/codex")
+            with pytest.raises(RuntimeError):
+                await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
+        info = adapter.last_process_info
+        assert info is not None
+        assert info["terminal_error_text"] == "You've hit your usage limit."
+        assert usage_limit_signal(info) is not None
