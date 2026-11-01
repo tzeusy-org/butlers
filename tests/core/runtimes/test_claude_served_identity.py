@@ -334,3 +334,39 @@ async def test_claude_served_identity_conformance(tmp_path):
         await adapter.invoke(prompt="synthetic", system_prompt="", mcp_servers={}, env={})
     cancelled = adapter.last_process_info["served"]["executions"][0]
     assert cancelled["completion_state"] == "cancelled" and cancelled["model_usage"] == []
+
+
+def test_model_usage_evidence_states_equal_the_served_usage_check():
+    """bounded() admits exactly the model_served_usage CHECK set, so a stray state never
+    reaches the atomic attempt+usage insert and loses the attempt row."""
+    import re
+
+    from butlers.core.runtimes.served_identity import USAGE_EVIDENCE_STATES, bounded
+
+    migration = (
+        Path(__file__).parents[3] / "alembic/versions/core/core_290_served_identity_evidence.py"
+    ).read_text()
+    check = re.search(r"evidence_state IN\s*\(([^)]*)\)", migration)
+    assert check is not None
+    assert USAGE_EVIDENCE_STATES == frozenset(re.findall(r"'([a-z_]+)'", check.group(1)))
+
+    def projected(state: str) -> str:
+        record = {
+            "runtime_type": "claude",
+            "executions": [
+                {
+                    "model_usage": [
+                        {
+                            "model_id": "claude-sonnet-4-6",
+                            "identity_authority": "cli_usage_breakdown",
+                            "provenance": "cli_reported_unproven",
+                            "evidence_state": state,
+                        }
+                    ]
+                }
+            ],
+        }
+        return bounded(record)["executions"][0]["model_usage"][0]["evidence_state"]
+
+    assert projected("cumulative_unknown") == "cumulative_unknown"
+    assert projected("not_invoked") == "unknown"

@@ -199,19 +199,52 @@ async def test_success_without_measurable_usage_records_unmeasurable_evidence(us
     assert evidence.input_tokens is None
 
 
-async def test_cancelled_attempt_records_owner_cancelled_with_its_own_evidence() -> None:
+async def _raise_cancelled(_adapter, _candidate):
+    raise asyncio.CancelledError
+
+
+@pytest.mark.parametrize(
+    ("owner_cancelled", "outcome", "reason"),
+    [
+        # The caller proves an owner Stop that cancelled the attempt's own work.
+        (lambda: True, "owner_cancelled", "owner_cancelled"),
+        # No owner proof: a cancellation the kernel cannot attribute is not an owner act.
+        (None, "suppressed", "runtime_cancelled"),
+        (lambda: False, "suppressed", "runtime_cancelled"),
+    ],
+)
+async def test_cancelled_attempt_is_owner_cancelled_only_on_owner_proof(
+    owner_cancelled, outcome, reason
+) -> None:
     sink = _Sink()
-
-    async def cancelled(_adapter, _candidate):
-        raise asyncio.CancelledError
-
     with _Catalog(), pytest.raises(asyncio.CancelledError):
-        await _call(_spec(), cancelled, sink)
+        await _call(_spec(owner_cancelled=owner_cancelled), _raise_cancelled, sink)
 
-    assert sink.outcomes == ["owner_cancelled"]
+    assert sink.outcomes == [outcome]
     row = sink.events[0][1]
+    assert row.get("failure_reason") == reason
     assert isinstance(row["attempt_key"], uuid.UUID)
     assert row["usage_evidence"].usage_source == "unmeasurable"
+
+
+async def test_drain_cancel_of_the_calling_task_is_never_owner_cancelled() -> None:
+    """A shutdown/drain cancels the calling task itself; that wins over a concurrent owner Stop."""
+    sink = _Sink()
+    started = asyncio.Event()
+
+    async def hangs(_adapter, _candidate):
+        started.set()
+        await asyncio.Event().wait()
+
+    with _Catalog():
+        task = asyncio.create_task(_call(_spec(owner_cancelled=lambda: True), hangs, sink))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert sink.outcomes == ["suppressed"]
+    assert sink.events[0][1]["failure_reason"] == "drain_cancelled"
 
 
 async def test_empty_tier_raises_no_model_configured_without_attempting() -> None:
