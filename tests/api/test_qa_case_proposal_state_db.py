@@ -17,7 +17,8 @@ import json
 import shutil
 import uuid
 from datetime import UTC, datetime
-from unittest.mock import MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import asyncpg
 import httpx
@@ -27,6 +28,7 @@ from fastapi import FastAPI
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
+from butlers.core.qa.publication.publisher import PoolLedger, PublicationStatus, QaPublisher
 from butlers.core.qa.publication.state import (
     Observation,
     Outcome,
@@ -35,8 +37,10 @@ from butlers.core.qa.publication.state import (
     record_outcome,
     record_reconciliation,
 )
+from butlers.core.qa.publication.transport import ProviderRejected
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
+from tests.core.qa.publication_fakes import FakeProvider, binding_for, synthetic_export
 
 pytestmark = [
     pytest.mark.integration,
@@ -166,6 +170,41 @@ async def test_unpublished_requires_ledger_proof_of_no_pr(
         for kind, outcome, reconciliation in ledger:
             await _record(qa, attempt_id, kind, outcome, reconciliation)
 
+    assert await _proposal_state(admin, attempt_id) == expected
+
+
+async def test_pr_already_exists_rejection_never_reads_unpublished(
+    pools: tuple[asyncpg.Pool, asyncpg.Pool],
+) -> None:
+    """GitHub's 422 "a pull request already exists" may front a live PR (bu-mc01y5.23)."""
+    admin, qa = pools
+    attempt_id = await _attempt_with_retained_diff(admin)
+    export = synthetic_export()
+    publisher = QaPublisher(
+        provider=FakeProvider(raise_on_create=ProviderRejected("validation_failed")),
+        ledger=PoolLedger(qa),
+        repo_root=Path("/r"),
+    )
+    whitelist = MagicMock()
+    whitelist.ensure_loaded = AsyncMock()
+    whitelist.is_allowed = MagicMock(return_value=(True, "ok"))
+
+    result = await publisher.publish(
+        attempt_id=attempt_id,
+        binding=binding_for(export),
+        export=export,
+        title="fix(qa): ValueError in module:1",
+        body="## Root Cause\nA missing guard.",
+        labels=["self-healing"],
+        whitelist=whitelist,
+    )
+
+    assert result.status is PublicationStatus.AMBIGUOUS
+    assert await _proposal_state(admin, attempt_id) == "ambiguous"
+
+
+async def _proposal_state(admin: asyncpg.Pool, attempt_id: uuid.UUID) -> str:
+    """Read the dossier through the real API and SELECT; the case has no PR metadata."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = admin
     app: FastAPI = create_app()
@@ -178,4 +217,4 @@ async def test_unpublished_requires_ledger_proof_of_no_pr(
     data = response.json()["data"]
     assert data["pr"] is None
     assert data["proposal_diff_snapshot"] == _DIFF
-    assert data["proposal_state"] == expected
+    return data["proposal_state"]

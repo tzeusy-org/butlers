@@ -46,6 +46,14 @@ APPROVED_REJECTION_CODES = frozenset(
 )
 #: Stands in for any code outside :data:`APPROVED_REJECTION_CODES`.
 UNRECOGNIZED_REJECTION = "unrecognized"
+#: The only PR-create refusals that prove no PR exists for the bound head: an
+#: access refusal precedes any existence check.  Every other code may front a live
+#: PR, so the transport reports it ambiguous: a ``failed`` ``pr_create`` row is the
+#: ledger's proof of PR absence.  GitHub answers "a pull request already exists for
+#: <head>" with 422 ``validation_failed``, and ``rate_limited`` is excluded because a
+#: retrying or throttled client can be refused after an earlier try already created
+#: the PR behind a lost response.
+PR_CREATE_ABSENCE_CODES = frozenset({"forbidden", "not_found"})
 
 
 def approved_rejection_code(code: object) -> str:
@@ -206,7 +214,8 @@ class ClosedTransport:
 
         Returns the PR number for a create, else ``None``.  Provider exceptions
         (:class:`StaleExpectedHead`, :class:`ProviderRejected`,
-        :class:`AmbiguousOutcome`) propagate unchanged for the caller to record.
+        :class:`AmbiguousOutcome`) propagate for the caller to record, except that a
+        PR-create rejection outside :data:`PR_CREATE_ABSENCE_CODES` becomes ambiguous.
         """
         self.authorize(request)
         self._export.verify()
@@ -220,9 +229,15 @@ class ClosedTransport:
             )
             return None
         if isinstance(request, PullRequestCreate):
-            number = await provider.create_pull_request(
-                head=request.head, base=request.base, title=request.title, body=request.body
-            )
+            try:
+                number = await provider.create_pull_request(
+                    head=request.head, base=request.base, title=request.title, body=request.body
+                )
+            except ProviderRejected as exc:
+                # Re-narrow: a provider subclass could replace ``code`` after construction.
+                if approved_rejection_code(exc.code) not in PR_CREATE_ABSENCE_CODES:
+                    raise AmbiguousOutcome("pr_create rejection does not prove absence") from None
+                raise
             if not isinstance(number, int) or isinstance(number, bool) or number < 1:
                 raise AmbiguousOutcome("provider returned no PR number")
             self._bound_pr = number

@@ -175,6 +175,34 @@ async def test_provider_rejection_reports_only_an_approved_code(rejection, categ
     assert ledger.row(attempt_id, OperationKind.BRANCH_PUSH).stage == "failed"
 
 
+@pytest.mark.parametrize(
+    ("code", "status", "stage"),
+    [
+        # GitHub answers "a pull request already exists for <head>" with 422
+        # validation_failed: a live PR may exist, so it must not prove absence.
+        ("validation_failed", PublicationStatus.AMBIGUOUS, "ambiguous"),
+        ("conflict", PublicationStatus.AMBIGUOUS, "ambiguous"),
+        ("raw provider text", PublicationStatus.AMBIGUOUS, "ambiguous"),
+        # A retrying client can be throttled after an earlier try created the PR.
+        ("rate_limited", PublicationStatus.AMBIGUOUS, "ambiguous"),
+        # Access refusals precede any existence check, so they stay definite.
+        ("forbidden", PublicationStatus.FAILED, "failed"),
+        ("not_found", PublicationStatus.FAILED, "failed"),
+    ],
+)
+async def test_pr_create_rejection_proves_absence_only_for_access_refusals(
+    code, status, stage
+) -> None:
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+    provider = FakeProvider(raise_on_create=ProviderRejected(code))
+
+    result = await _publish(_publisher(provider, ledger), attempt_id)
+
+    assert result.status is status
+    assert ledger.row(attempt_id, OperationKind.PR_CREATE).stage == stage
+    assert result.pr_number is None
+
+
 async def test_unknown_error_after_egress_logs_no_content(caplog) -> None:
     ledger, attempt_id = FakeLedger(), uuid.uuid4()
     provider = FakeProvider(raise_on_push=ValueError("body leaked: secret-token-123"))
