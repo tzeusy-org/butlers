@@ -317,11 +317,12 @@ def cluster_points(
     max_gap: timedelta,
     prior_carryover: dict | None = None,
 ) -> tuple[list[ClusterSpan], dict]:
-    """Deterministic radius/dwell clustering over points sorted by ``ts``.
+    """Deterministic radius/dwell clustering over endpoint-contiguous trails.
 
-    ``rows`` must already be sorted by ``ts`` ascending (as returned by
-    ``_fetch_points``) and each must carry ``ts`` (tz-aware datetime),
-    ``lat``, ``lon``, ``endpoint_identity``.
+    ``rows`` must group each endpoint's fixes in canonical effective timestamp
+    and source-UUID order. The caller groups accepted globally ordered evidence
+    after plausibility classification. Each row carries ``ts`` (tz-aware
+    datetime), ``lat``, ``lon`` and ``endpoint_identity``.
 
     Returns ``(spans, new_carryover)``. ``spans`` includes every cluster
     formed in this batch, whether or not it has yet reached the dwell
@@ -807,8 +808,13 @@ class OwnTracksPlaceClusterAdapter(ProjectionAdapter):
                 prior_carryover.pop(endpoint, None)
 
             accepted = [row for i, row in enumerate(valid_rows) if i not in outliers]
+            # Plausibility and source watermarks use global canonical order;
+            # clustering needs each endpoint's contiguous trail in that order.
+            cluster_rows = sorted(
+                accepted, key=lambda row: (row["endpoint_identity"], *trail_order_key(row))
+            )
             spans, new_carryover = cluster_points(
-                accepted,
+                cluster_rows,
                 radius_m=self.radius_m,
                 max_gap=self.max_gap,
                 prior_carryover=prior_carryover,

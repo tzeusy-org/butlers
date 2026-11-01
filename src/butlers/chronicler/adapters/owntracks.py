@@ -230,6 +230,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             valid_rows.sort(key=trail_order_key)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
             state = load_trail_state(prior_carryover)
+            # Classification may reset this bounded state during replay. Keep
+            # its historical identities before that mutation: a fetched overlap
+            # is still a revision, never permission to resurrect expired data.
+            historical_ids = {
+                identity
+                for entry in state.values()
+                for identity in (entry["seed_id"], entry.get("anchor_id"), *entry["pending_ids"])
+                if identity is not None
+            }
             retained = await retained_owntracks_rows(pool, state)
             recovered = {}
             for raw in retained:
@@ -289,7 +298,10 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     chronicler_pool,
                     normalized_row,
                     outlier=outlier,
-                    existing_only=str(normalized_row["id"]) not in current_ids,
+                    existing_only=(
+                        str(normalized_row["id"]) in historical_ids
+                        or str(normalized_row["id"]) not in current_ids
+                    ),
                 )
                 if event is not None and outlier is None:
                     accepted_rows.append(normalized_row)

@@ -372,6 +372,85 @@ async def test_bootstrap_consensus_is_durable_atomic_and_serialized(
             await insert(15)
             await insert(25)
 
+            # Replay overlaps BOTH the checkpoint-known seed and pending fix.
+            # Expiration must not become fresh evidence creation just because
+            # those source UUIDs appear in the current full/bounded fetch.
+            # Roll back each control to retain the original later obligations.
+            for replay_since in (None, _NOW - timedelta(seconds=1)):
+                pending_before = dict(
+                    await pool.fetchrow(
+                        "SELECT * FROM point_events WHERE payload->>'endpoint_identity'=$1 AND occurred_at=$2",
+                        endpoints[1],
+                        _NOW + timedelta(minutes=5),
+                    )
+                )
+                async with pool.acquire() as conn:
+                    replay_control = conn.transaction()
+                    await replay_control.start()
+                    try:
+                        await conn.execute(
+                            "DELETE FROM point_events WHERE id=$1", pending_before["id"]
+                        )
+                        replayed = await point_adapter.project(
+                            conn, chronicler_pool=conn, since=replay_since
+                        )
+                        assert replayed.error is None
+                        assert (
+                            await conn.fetchval(
+                                "SELECT count(*) FROM point_events WHERE payload->>'endpoint_identity'=$1 AND occurred_at=ANY($2::timestamptz[])",
+                                endpoints[1],
+                                [_NOW, _NOW + timedelta(minutes=5)],
+                            )
+                            == 0
+                        )
+                        retained_after = dict(
+                            await conn.fetchrow(
+                                "SELECT * FROM point_events WHERE id=$1", seed["id"]
+                            )
+                        )
+                        assert {k: v for k, v in retained_after.items() if k != "payload"} == {
+                            k: v for k, v in before.items() if k != "payload"
+                        }
+                        assert {
+                            k: v
+                            for k, v in retained_after["payload"].items()
+                            if k != "trail_outlier"
+                        } == before["payload"]
+                        assert (
+                            retained_after["payload"]["trail_outlier"]["reason"] == "implied_speed"
+                        )
+                        assert (
+                            await conn.fetchval(
+                                "SELECT count(*) FROM point_events WHERE payload->>'endpoint_identity'=$1 AND occurred_at=$2 AND tombstone_at IS NOT NULL AND NOT(payload ? 'trail_outlier')",
+                                endpoints[2],
+                                _NOW,
+                            )
+                            == 1
+                        )
+                        assert (
+                            await conn.fetchval(
+                                "SELECT count(*) FROM point_events WHERE occurred_at=$1 AND tombstone_at IS NULL",
+                                _NOW + timedelta(minutes=25),
+                            )
+                            == 3
+                        )
+                    finally:
+                        await replay_control.rollback()
+                assert (
+                    dict(
+                        await pool.fetchrow(
+                            "SELECT * FROM point_events WHERE id=$1", pending_before["id"]
+                        )
+                    )
+                    == pending_before
+                )
+                assert (
+                    await pool.fetchval(
+                        "SELECT watermark FROM projection_checkpoints WHERE source_name='owntracks.points'"
+                    )
+                    == checkpoint
+                )
+
             async def fail_save(*args, **kwargs):
                 raise asyncpg.PostgresError("controlled bootstrap state refusal")
 

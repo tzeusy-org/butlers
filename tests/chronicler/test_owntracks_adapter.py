@@ -754,6 +754,127 @@ async def test_impossible_jump_kept_as_flagged_evidence_and_excluded_from_moveme
     assert movements[0].start_at == _NOW + timedelta(minutes=5)
     assert movements[0].payload["point_count"] == 3
 
+    # A fetched replay may overlap checkpoint-known identities after their
+    # projections expired. Classification can reset/mutate that state, but
+    # must not turn those historical revisions into fresh default inserts.
+    from copy import deepcopy
+
+    for known_kind in ("seed", "pending", "anchor"):
+        known = (
+            cold[1] if known_kind == "pending" else cold[-1] if known_kind == "anchor" else cold[0]
+        )
+        anchor = cold[-1] if known_kind == "anchor" else cold[0]
+        entry = {
+            "seed_id": None if known_kind == "anchor" else str(cold[0]["id"]),
+            "anchor_id": str(anchor["id"]),
+            "pending_ids": [str(known["id"])] if known_kind == "pending" else [],
+        }
+        historical = {value for value in (entry["seed_id"], entry["anchor_id"]) if value}
+        historical.update(entry["pending_ids"])
+        prior = {
+            "_trail_anchors": {
+                _ENDPOINT: {
+                    "ts": anchor["ts"].isoformat(),
+                    "lat": anchor["lat"],
+                    "lon": anchor["lon"],
+                }
+            },
+            "_trail_state": {"version": 1, "endpoints": {_ENDPOINT: entry}},
+        }
+        for overlap in (False, True):
+            current = cold if overlap else cold[2:]
+            for disposition in ("expired", "live", "tombstoned"):
+                inserted = []
+                revisions = []
+                existing = PointEvent(
+                    id=_event_id("retained"),
+                    source_name=SOURCE_NAME,
+                    source_ref=f"connectors.owntracks_points:{known['idempotency_key']}",
+                    event_type="location",
+                    occurred_at=known["ts"],
+                    precision=Precision.EXACT,
+                    title="Preserved title",
+                    payload={"preserved": True},
+                    privacy=Privacy.RESTRICTED,
+                    retention_days=91,
+                    tombstone_at=_NOW if disposition == "tombstoned" else None,
+                )
+
+                async def lookup(_conn, ref, existing=existing, disposition=disposition):
+                    if disposition != "expired" and ref == existing.source_ref:
+                        return existing
+                    return None
+
+                async def insert(_conn, event, inserted=inserted):
+                    inserted.append(event)
+                    return replace(event, id=_event_id(event.source_ref))
+
+                async def revise(
+                    _conn,
+                    ref,
+                    marker,
+                    revisions=revisions,
+                    existing=existing,
+                    disposition=disposition,
+                ):
+                    # Model the actual marker-only SQL's live-row predicate;
+                    # a missing/tombstoned row has no update/returned UUID.
+                    if disposition != "live" or ref != existing.source_ref:
+                        return None
+                    revisions.append((ref, marker))
+                    return existing.id
+
+                with (
+                    patch(
+                        "butlers.chronicler.adapters.owntracks.get_carryover",
+                        return_value=deepcopy(prior),
+                    ),
+                    patch(
+                        "butlers.chronicler.adapters.owntracks.retained_owntracks_rows",
+                        return_value=[cold[0], known],
+                    ),
+                    patch(
+                        "butlers.chronicler.adapters.owntracks.get_owntracks_point",
+                        side_effect=lookup,
+                    ),
+                    patch(
+                        "butlers.chronicler.adapters.owntracks.upsert_point_event",
+                        side_effect=insert,
+                    ),
+                    patch(
+                        "butlers.chronicler.adapters.owntracks.revise_owntracks_point",
+                        side_effect=revise,
+                    ),
+                    patch(
+                        "butlers.chronicler.adapters.owntracks.upsert_episode",
+                        side_effect=lambda _conn, ep: ep,
+                    ),
+                    patch("butlers.chronicler.adapters.owntracks.save_carryover"),
+                ):
+                    await OwnTracksPointAdapter().project(
+                        _pool_returning(*current), chronicler_pool=_chronicler_pool(), since=None
+                    )
+                assert not any(
+                    event.source_ref == f"connectors.owntracks_points:{row['idempotency_key']}"
+                    for event in inserted
+                    for row in cold
+                    if str(row["id"]) in historical
+                ), (known_kind, overlap, disposition, "historical projection resurrected")
+                unseen = {
+                    row["idempotency_key"] for row in current if str(row["id"]) not in historical
+                }
+                assert {event.payload["idempotency_key"] for event in inserted} == unseen
+                if disposition == "live" and (overlap or known_kind == "pending"):
+                    assert any(ref == existing.source_ref for ref, _ in revisions)
+                if disposition == "tombstoned":
+                    assert not any(ref == existing.source_ref for ref, _ in revisions)
+                assert existing.payload == {"preserved": True}
+                assert (existing.privacy, existing.retention_days, existing.title) == (
+                    Privacy.RESTRICTED,
+                    91,
+                    "Preserved title",
+                )
+
 
 @pytest.mark.asyncio
 async def test_carryover_extension_counts_the_whole_episode() -> None:
@@ -902,3 +1023,80 @@ async def test_tied_fixes_have_identical_order_and_verdicts_in_both_adapters() -
         assert seen[0][0] == [str(UUID(int=i)) for i in (1, 2, 3)]
         assert seen[0][1] == {str(UUID(int=2))}
         assert len(events) == 3
+
+    # Three globally interleaved endpoint trails remain three eligible places.
+    # This is the native carrier's accepted 5/15/25-minute pattern after
+    # isolated seeds are rejected; neither input order may fragment places.
+    endpoints = ("owntracks:retained", "owntracks:expired", "owntracks:tombstoned")
+    seeds = [
+        _make_row(lat=52.12, lon=22.06, endpoint_identity=e, idempotency_key=f"{e}:seed")
+        for e in endpoints
+    ]
+    candidates = [
+        _make_row(
+            ts=_NOW + timedelta(minutes=minute),
+            endpoint_identity=e,
+            idempotency_key=f"{e}:{minute}",
+        )
+        for minute in (5, 15, 25)
+        for e in endpoints
+    ]
+    prior = {
+        "_trail_anchors": {
+            e: {"ts": _NOW.isoformat(), "lat": 52.12, "lon": 22.06} for e in endpoints
+        },
+        "_trail_state": {
+            "version": 1,
+            "endpoints": {
+                e: {"seed_id": str(seed["id"]), "anchor_id": str(seed["id"]), "pending_ids": []}
+                for e, seed in zip(endpoints, seeds, strict=True)
+            },
+        },
+    }
+    for ordered in (candidates, list(reversed(candidates))):
+        places = []
+        verdicts = []
+
+        def capture_places(rows, verdicts=verdicts, **kwargs):
+            outliers, anchors = classify_trail(rows, **kwargs)
+            verdicts.append((len(rows) - len(outliers), set(kwargs["rejected_seeds"])))
+            return outliers, anchors
+
+        async def persist_place(_conn, episode, places=places):
+            places.append(episode)
+            return episode
+
+        with (
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.get_carryover",
+                return_value=prior,
+            ),
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.retained_owntracks_rows",
+                return_value=seeds,
+            ),
+            patch("butlers.chronicler.adapters.owntracks_place_cluster.save_carryover"),
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.classify_trail",
+                side_effect=capture_places,
+            ),
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.resolve_owner_entity_id",
+                return_value=None,
+            ),
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.upsert_episode",
+                side_effect=persist_place,
+            ),
+        ):
+            result = await OwnTracksPlaceClusterAdapter().project(
+                _pool_returning(*ordered), chronicler_pool=_chronicler_pool(), since=None
+            )
+        assert verdicts == [(9, set(endpoints))]
+        assert len(places) == result.episodes_closed == 3
+        assert {episode.payload["endpoint_identity"] for episode in places} == set(endpoints)
+        assert all(episode.payload["point_count"] == 3 for episode in places)
+        assert all(
+            (episode.end_at - episode.start_at) == timedelta(minutes=20) for episode in places
+        )
+        assert all(episode.start_at == _NOW + timedelta(minutes=5) for episode in places)
