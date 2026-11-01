@@ -1,27 +1,32 @@
 ## ADDED Requirements
 
-### Requirement: Durable ordinary ingestion target handoff
+### Requirement: Receipted reasoning ingress and legacy route drain
 
-The Switchboard SHALL dispatch non-dashboard ingestion-to-domain `route.execute` only from a committed target-delivery intent and SHALL pass its stable delivery identity to the target's atomic acceptance boundary. It SHALL preserve the existing contracts for dashboard routing, Messenger notification delivery, domain-event subscribers, explicit misroute correction, and connector ingress replay.
+In ISOLATED_CANDIDATE and SWITCHED_RELEASE, Switchboard SHALL submit each accepted envelope that needs reasoning to goal admission exactly once, keyed by its durable source key, and SHALL return that admission's durable receipt to every duplicate submission, buffer restart and recovery request. It SHALL NOT classify, decompose, fan out or route the envelope to a target butler. Deterministic ingestion SHALL stay on the service plane and receive no admission receipt. In KEY_ABSENT_STAGE, the frozen classify-and-route lane SHALL keep its legacy target receipts readable and SHALL gain no per-target delivery outbox, classifier or retry worker. Before the switch, Switchboard SHALL stop accepting new routes, let in-flight legacy route work drain, and record unresolved legacy work as visible residue that is never re-routed.
 
 ID: REQ-butler-switchboard-003
-Source: heart-and-soul/vision.md Rule 3; RFC 0003 §route.execute Envelope; design.md Decision 2
+Source: RFC 0038 D1, D5 and Hard cutover; generalist-lead-focused-delegation Ingest Envelopes Feed Goal Admission; design.md Decisions 1 and 4
 Scope: v1-mandatory
 
-#### Scenario: Ordinary route carries durable identity
+#### Scenario: A duplicate envelope returns the original receipt
 
-- **WHEN** Switchboard routes a classified non-dashboard ingestion segment to a domain butler
-- **THEN** the call SHALL carry the committed event, target, and segment delivery identity
-- **AND** a confirmed result SHALL be associated with the target's stable acceptance receipt
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, a connector resubmits an envelope whose source key already has an admission decision
+- **THEN** Switchboard SHALL return the original admission receipt
+- **AND** no second goal SHALL be admitted and no classifier or route dispatch SHALL run
 
-#### Scenario: Other routing lanes keep their own contracts
+#### Scenario: A batch envelope is one goal
 
-- **WHEN** a dashboard turn, Messenger delivery, domain-event subscriber call, or explicit misroute correction routes through Switchboard
-- **THEN** its existing admission, acknowledgement, retry, and authorization policy SHALL remain authoritative
-- **AND** the ordinary ingestion delivery worker SHALL NOT claim or replay that work
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, a conversation-history batch that mentions several domains is accepted
+- **THEN** Switchboard SHALL admit one goal with one admission receipt for the batch
+- **AND** it SHALL NOT create per-target segments, decomposition output or delivery intents
 
-#### Scenario: Target policy is checked on each attempt
+#### Scenario: Deterministic ingestion creates no admission
 
-- **WHEN** a committed intent becomes due after its target's route policy or eligibility changed
-- **THEN** Switchboard SHALL re-evaluate current route authority before transport
-- **AND** policy refusal SHALL be recorded as terminal rather than silently converted to a transient retry
+- **WHEN** an envelope is withheld by a deterministic ingestion rule or bound to a domain's deterministic channel ingest
+- **THEN** it SHALL follow its service-plane path and create neither a goal nor an admission receipt
+
+#### Scenario: Legacy routes drain before the switch
+
+- **WHEN** the switch is prepared while legacy route-inbox work is in flight
+- **THEN** Switchboard SHALL stop accepting new routes and let in-flight legacy work finish
+- **AND** legacy work it cannot prove accepted SHALL remain visible as content-blind residue and SHALL NOT be re-routed or admitted except through owner-gated historical admission

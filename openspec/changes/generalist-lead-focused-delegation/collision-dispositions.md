@@ -63,7 +63,7 @@ the change, the owner is the M6 epic `bu-u5euwb`.
 | `models-exact-path-vision-proof` | model-catalog | re-scope | Vision probes are D18 model functions. The RFC 0036 amendment makes the executor one tool-less, single-turn call. | `bu-o7lumy` (draft PR #4757) |
 | `provider-allowance-windows` | catalog-token-limits, core-scheduler, core-spawner, model-failover | re-scope | Allowance gates obligation deferral and invocation selection within a goal. Fallback follows D14. | `bu-q7vx1q.90` |
 | `reconcile-dashboard-conversation-contracts` | ingestion-event-registry | re-scope | A dashboard message admits a goal instead of routing to a target session. Dashboard bodies belong to D19. | `bu-85bqeq` |
-| `recover-ingestion-target-deliveries` | butler-switchboard, conversation-decomposition, ingestion-event-registry, module-pipeline | re-scope | Reasoning ingress becomes one deduplicated goal admission. Legacy target receipts stay readable and drain before the switch. | `bu-mmax8j` |
+| `recover-ingestion-target-deliveries` | butler-switchboard, conversation-decomposition, ingestion-event-registry, module-pipeline | re-scope | Reasoning ingress becomes one deduplicated goal admission. Legacy target receipts stay readable and drain before the switch. Amended by `bu-mmax8j.10`: its `conversation-decomposition` and `module-pipeline` deltas are withdrawn, so only butler-switchboard and ingestion-event-registry still carry ADDED blocks, none sharing a name with this change. | `bu-mmax8j` |
 | `relationship-fact-effective-time` | butler-relationship, relationship-facts | fold-in | Its temporal fact tools join this change's Relationship tool-surface block. The bitemporal writer contract is unchanged. | `bu-u5euwb`; implementation `bu-h3b7t` |
 | `repair-condensation-request-observation` | testing | withdraw | The owner chose to retire the condensation ledger it observes (`bu-lm2b4v` = B); the change is deleted unarchived. | `bu-28av8x.2` |
 | `repair-notification-metadata-read` | core-notify | archive-first | Legacy metadata normalization and bounded repair are deterministic. | `bu-u5euwb` |
@@ -104,8 +104,8 @@ surviving scenarios unless this change removes the requirement.
 | `durable-dashboard-terminal-action-recovery` | staffer-qa | Pluggable Discovery Source Architecture | modifies |
 | `durable-dashboard-terminal-action-recovery` | staffer-qa | V1 Discovery Sources | modifies |
 | `memory-honesty-last-mile` | module-memory | LLM-driven memory consolidation pipeline | modifies |
-| `recover-ingestion-target-deliveries` | conversation-decomposition | Decomposition Output Storage | removes |
-| `recover-ingestion-target-deliveries` | module-pipeline | Decomposition-to-Routing Fan-Out | removes |
+| `recover-ingestion-target-deliveries` | conversation-decomposition | Decomposition Output Storage | removes; settled, source delta withdrawn (`bu-mmax8j.10`) |
+| `recover-ingestion-target-deliveries` | module-pipeline | Decomposition-to-Routing Fan-Out | removes; settled, source delta withdrawn (`bu-mmax8j.10`) |
 | `relationship-fact-effective-time` | butler-relationship | Relationship Butler Registered Tool Surface | modifies |
 | `repair-whatsapp-identity-reconciliation` | conversation-decomposition | Cherry-Picked Message Excerpts | removes |
 | `repair-whatsapp-identity-reconciliation` | conversation-decomposition | Multi-Butler Fan-Out from Single Ingestion | removes |

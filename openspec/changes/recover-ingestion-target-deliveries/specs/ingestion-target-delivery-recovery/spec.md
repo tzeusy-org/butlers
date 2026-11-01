@@ -1,288 +1,255 @@
 ## ADDED Requirements
 
-### Requirement: Durable classified target plan before delivery
+### Requirement: One deduplicated goal admission per reasoning envelope
 
-For non-dashboard ingestion-to-domain `route.execute`, Switchboard SHALL durably commit the completed classification or decomposition plan and one immutable intent for each target segment before calling any target. A duplicate ingress SHALL reuse the committed plan and its intent identities rather than classify or decompose again.
+In ISOLATED_CANDIDATE and SWITCHED_RELEASE, each accepted envelope that needs reasoning SHALL produce exactly one immutable admission decision, keyed by its durable source key, and its admission receipt SHALL commit in the same transaction as the decision and any goal row. A duplicate ingress SHALL return the committed receipt rather than admit again. No per-target classifier, decomposition plan, fan-out or delivery intent SHALL precede or replace admission.
 
 ID: REQ-ingestion-target-delivery-recovery-001
-Source: heart-and-soul/vision.md Rules 3 and 4; RFC 0003 §Pre-Classification Triage Pipeline; design.md Decision 1
+Source: heart-and-soul/vision.md Rules 3 and 4; RFC 0038 D1 and D5; design.md Decision 1
 Scope: v1-mandatory
 
-#### Scenario: Classification and intents commit before dispatch
+#### Scenario: Decision and receipt commit together
 
-- **WHEN** classification selects one or more ordinary domain `route.execute` targets
-- **THEN** the already accepted source event's completed classification result, immutable target plan, and every per-target delivery intent SHALL commit atomically before the first target call
-- **AND** a failure before that commit SHALL make no target call and SHALL leave no partial plan or intent
+- **WHEN** admission accepts, records without a goal, or refuses a reasoning envelope
+- **THEN** the decision, its receipt and any goal row SHALL commit atomically
+- **AND** a failure before that commit SHALL leave no decision, receipt or goal
 
-#### Scenario: Decomposition preserves distinct segments
+#### Scenario: A batch envelope is one admission
 
-- **WHEN** one conversation produces two concepts for the same target butler
-- **THEN** the committed plan SHALL give the concepts distinct stable segment identities and intents
-- **AND** retrying either intent SHALL preserve its original conceptual payload and segment identity
+- **WHEN** one conversation-history batch carries signals for several domains
+- **THEN** admission SHALL create one decision and at most one goal for the batch
+- **AND** no per-domain segment identity or delivery intent SHALL be created
 
 #### Scenario: Duplicate ingress keeps its first decision
 
-- **WHEN** a duplicate event arrives after its target plan committed
-- **THEN** Switchboard SHALL return the original ingestion identity and resume the existing intents
-- **AND** it SHALL NOT run a new classifier or silently change the target set
+- **WHEN** a duplicate envelope arrives after its decision committed
+- **THEN** Switchboard SHALL return the original receipt and goal identity
+- **AND** it SHALL NOT admit a second goal or change the original outcome
 
-#### Scenario: No target means no delivery intent
+#### Scenario: Deterministic ingestion needs no admission
 
-- **WHEN** the governed triage outcome is skip, metadata-only, empty decomposition, or another decision with no ordinary domain `route.execute` target
-- **THEN** no target-delivery intent SHALL be created
-- **AND** that outcome SHALL remain distinguishable from a failed attempt to deliver a selected target
+- **WHEN** the deterministic outcome is skip, metadata-only, a channel-bound service-plane ingest, or bulk backfill or sync
+- **THEN** no admission decision or receipt SHALL be created
+- **AND** that outcome SHALL remain distinguishable from a failed admission
 
-### Requirement: Stable atomic target acceptance
+### Requirement: Stable admission receipt identity
 
-Each intent SHALL carry a stable `(ingestion_event_id, target_butler, segment_id)` delivery identity and canonical immutable payload digest. The target SHALL atomically associate that identity, target binding, and digest with one accepted route-inbox row and return the same acceptance receipt on matching duplicate calls, including concurrent calls and recovery after a lost response. The acceptance-key/target/digest/receipt ledger SHALL be append-only and content-blind in v1: payload and processing rows MAY be pruned, but acceptance identities and receipts SHALL NOT be deleted or rewritten. A duplicate SHALL be resolved against that durable ledger even if its source event or inbox payload has aged out. A future bounded-retention design requires a separate database-enforced non-reacceptance fence before any acceptance key may be pruned; mutable source timestamps, UUID age, and tombstone absence are not such proof.
+Each admission receipt SHALL bind the durable source key, a canonical envelope digest, the decision identity and its outcome. A matching duplicate SHALL receive the same receipt, including under concurrent submissions and after a lost response. The source-key, digest, decision and outcome ledger SHALL be append-only and content-blind in v1: message bodies MAY be pruned, but receipts SHALL NOT be deleted or rewritten, and a duplicate SHALL be resolved against the ledger even after its inbox or buffer row has aged out. A future bounded-retention design requires a separate database-enforced non-readmission fence before any receipt may be pruned; mutable source timestamps, UUID age and tombstone absence are not such proof.
 
 ID: REQ-ingestion-target-delivery-recovery-002
-Source: heart-and-soul/vision.md Rules 3 and 4; RFC 0003 §route.execute Envelope; design.md Decision 2
+Source: heart-and-soul/vision.md Rules 3 and 4; RFC 0038 D5; design.md Decision 2
 Scope: v1-mandatory
 
-#### Scenario: Concurrent duplicate acceptance
+#### Scenario: Concurrent duplicate admission
 
-- **WHEN** two calls for the same delivery identity reach the target concurrently
-- **THEN** both SHALL receive the same accepted receipt
-- **AND** the target SHALL create one route-inbox row and at most one downstream session for that identity
-
-#### Scenario: Distinct concepts remain distinct work
-
-- **WHEN** the same event routes two segments to one target
-- **THEN** each segment SHALL have its own acceptance receipt and route-inbox row
-- **AND** acceptance of one segment SHALL NOT deduplicate the other
+- **WHEN** two submissions with the same source key and digest reach admission concurrently
+- **THEN** both SHALL receive the same receipt
+- **AND** at most one goal SHALL be admitted and at most one lead SHALL start
 
 #### Scenario: Receipt survives response loss
 
-- **WHEN** the target commits acceptance but the response is lost before Switchboard records it
-- **THEN** a lookup carrying the same delivery identity, receiving target, and canonical immutable payload digest SHALL return the committed receipt without creating another row or session
+- **WHEN** admission commits but the response is lost before the caller records it
+- **THEN** a resubmission with the same source key and digest SHALL return the committed receipt without admitting again
 
-#### Scenario: Receipt lookup rejects changed work
+#### Scenario: Same key with a changed envelope is refused
 
-- **WHEN** a receipt lookup reuses an accepted identity with a different receiving target or canonical immutable payload digest
-- **THEN** the target SHALL return a conflict and SHALL NOT return the old receipt as proof that the changed work was accepted
-- **AND** the original accepted row, digest, and receipt SHALL remain unchanged
+- **WHEN** a submission reuses an admitted source key with a different canonical envelope digest
+- **THEN** admission SHALL return a conflict and SHALL NOT return the earlier receipt as proof that the changed envelope was admitted
+- **AND** the original decision, digest and receipt SHALL remain unchanged
 
-#### Scenario: Same key with different payload is refused
+#### Scenario: Retention cannot reopen admission
 
-- **WHEN** a second call reuses an accepted delivery identity with a different canonical payload or target binding
-- **THEN** the target SHALL return a conflict without creating another inbox row or returning the earlier receipt as acceptance of the changed work
-- **AND** the original receipt and payload SHALL remain unchanged
+- **WHEN** an inbox or buffer retention job runs, a migration is replayed, or the service rolls back after admitting a source key
+- **THEN** the key, digest, decision and receipt SHALL remain in the ledger and cannot be deleted or rewritten by that operation
+- **AND** a same-key duplicate SHALL find the retained receipt, and no missing source row, changed source timestamp or owner historical approval SHALL authorize a second admission for that key
 
-#### Scenario: Pruning cannot reopen an accepted key
+### Requirement: Closed admission state and ownership
 
-- **WHEN** a target inbox payload, processing row, or source event is pruned after acceptance
-- **THEN** a same-key duplicate SHALL find the retained content-blind acceptance receipt and SHALL NOT create another inbox row or session
-- **AND** a changed target binding or digest SHALL still conflict
-
-#### Scenario: Retention cannot weaken uniqueness
-
-- **WHEN** an inbox or source retention job runs, a migration is replayed, or the service rolls back after accepting a delivery key
-- **THEN** the accepted key, receiving target, immutable digest, and receipt remain in the unique ledger and cannot be deleted or rewritten by that operation
-- **AND** no missing source row, changed source timestamp, or owner historical approval authorizes a second acceptance for that key
-
-### Requirement: Closed delivery state and ownership
-
-Switchboard SHALL represent each intent as `pending`, `attempting`, `accepted`, `retry_wait`, `ambiguous`, or `terminal_failed`, with fenced attempts and content-blind reason codes. `accepted` SHALL mean target acceptance only; subsequent target processing and crash recovery SHALL remain owned by that target route inbox.
+Switchboard SHALL represent each in-scope envelope's admission as `buffered`, `admitted`, `recorded_without_goal`, `refused`, or `admission_failed`, with content-blind reason codes. `admitted` SHALL mean admission only; goal execution, effects and their receipts SHALL remain owned by the goal ledger.
 
 ID: REQ-ingestion-target-delivery-recovery-003
-Source: RFC 0003 §route.execute Envelope; design.md Decision 3
+Source: RFC 0038 D5, D11 and D12; design.md Decision 3
 Scope: v1-mandatory
 
-#### Scenario: Worker succession is fenced
+#### Scenario: Admitted is terminal for ingress
 
-- **WHEN** a stale worker writes after a successor has claimed an intent
-- **THEN** its transition SHALL be rejected without changing the successor's state or receipt
+- **WHEN** admission returns a receipt with an admitted goal
+- **THEN** ingress SHALL NOT resubmit the envelope because the goal later waits, fails or is stopped
+- **AND** the owner-visible projection SHALL distinguish admission from goal completion
 
-#### Scenario: Accepted is terminal for Switchboard
+#### Scenario: Effects are not replayed by ingress
 
-- **WHEN** a target returns a valid stable acceptance receipt
-- **THEN** Switchboard SHALL mark that intent `accepted` and SHALL NOT resend it because a later target session is slow or fails
-- **AND** the owner-visible projection SHALL distinguish target acceptance from session completion
+- **WHEN** an admitted goal has committed or unknown effects
+- **THEN** no ingress retry, recovery request or historical admission SHALL re-dispatch those effects
+- **AND** their settlement SHALL follow the goal ledger's effect rules
 
-#### Scenario: Crash during an attempt preserves uncertainty
+### Requirement: Bounded safe admission retry and legacy ambiguity
 
-- **WHEN** a worker stops after target transport may have begun and before it records a confirmed receipt
-- **THEN** recovery SHALL query the same acceptance identity with the original target and canonical immutable payload digest and SHALL keep the intent `ambiguous` unless a matching receipt is found
-- **AND** it SHALL NOT infer `not_attempted` from the worker lease expiring
-
-### Requirement: Bounded safe retry and ambiguity resolution
-
-Switchboard SHALL use the existing `confirmed | rejected | uncertain | not_attempted` route transport taxonomy. It SHALL retry only transient outcomes proven `not_attempted` before target acceptance, with a bounded attempt and age budget plus backoff; policy refusal, rejection, uncertainty, and exhausted budgets SHALL not trigger automatic resend.
+Buffer-to-admission retry SHALL be bounded by attempt and age budgets with jittered backoff, and SHALL resolve an interrupted attempt by reading the decision for its source key before retrying. Exhausted budgets SHALL leave the envelope visible as `admission_failed`. Legacy route work draining before the switch SHALL keep the `confirmed | rejected | uncertain | not_attempted` transport taxonomy: rejection, uncertainty and policy refusal SHALL NOT trigger automatic resend.
 
 ID: REQ-ingestion-target-delivery-recovery-004
-Source: design.md Decision 3; [Observed] roster/switchboard/tools/routing/transport.py
+Source: RFC 0038 D5 and Hard cutover; design.md Decisions 3 and 4; [Observed] roster/switchboard/tools/routing/transport.py
 Scope: v1-mandatory
 
-#### Scenario: Target temporarily unavailable before any call
+#### Scenario: Interrupted admission resolves by source key
 
-- **WHEN** a target is unreachable with canonical `not_attempted` evidence and the retry budget remains
-- **THEN** the same intent SHALL enter `retry_wait` and retry after bounded backoff with its original identity and payload
-- **AND** renewed target availability SHALL resume delivery without reclassification or source replay
+- **WHEN** an admission attempt is interrupted and the buffer retries it
+- **THEN** a committed decision for that source key SHALL be returned unchanged
+- **AND** only an absent decision SHALL permit another attempt with the original envelope
 
-#### Scenario: Policy denial and rejection stop retries
+#### Scenario: Control-plane restart admits once
 
-- **WHEN** route policy refuses the target or a target explicitly rejects the call
-- **THEN** the intent SHALL enter `terminal_failed` with a safe reason
-- **AND** the system SHALL NOT treat the transport envelope's generic retryable field as authority to override policy or rejection
-
-#### Scenario: Unknown handoff is not an automatic retry
-
-- **WHEN** transport is `uncertain` or an attempt loses its worker after transport may have begun
-- **THEN** the intent SHALL remain `ambiguous` and SHALL NOT be sent again automatically
-- **AND** only an affirmative same-identity, same-target, same-payload-digest receipt SHALL promote it to `accepted`; a missing or conflicting receipt SHALL NOT prove non-acceptance
+- **WHEN** the control plane restarts with accepted envelopes in the durable buffer
+- **THEN** each SHALL be admitted exactly once after the restart, and none SHALL be lost or classified
 
 #### Scenario: Retry budget expires
 
-- **WHEN** the configured attempt or age budget expires without acceptance
-- **THEN** the intent SHALL enter `terminal_failed` with a bounded reason
+- **WHEN** the configured attempt or age budget expires without a decision
+- **THEN** the envelope SHALL be `admission_failed` with a bounded reason
 - **AND** it SHALL remain visible for owner review rather than disappear from the event ledger
 
-### Requirement: Partial fan-out and truthful event projection
+#### Scenario: Uncertain legacy handoff is not resent
 
-Switchboard SHALL recover each target intent independently and expose per-target state and a derived event-level delivery summary. A successful target SHALL never be re-sent because another target failed; an event SHALL not be shown as fully delivered while any selected target remains waiting, ambiguous, or terminally failed. The coarse `public.ingestion_events.status = 'ingested'` records source acceptance or processing and SHALL NOT by itself assert universal target acceptance.
+- **WHEN** draining legacy route work returns `uncertain`, `rejected` or a policy refusal
+- **THEN** that legacy work SHALL NOT be sent again automatically
+- **AND** it SHALL be recorded as unresolved residue unless an affirmative legacy receipt proves acceptance
+
+### Requirement: Truthful admission and legacy projection
+
+Switchboard SHALL expose each event's admission state, or for a pre-switch event its legacy target evidence, and a derived event summary. An event SHALL NOT be shown as complete while its admission is buffered, failed or unavailable, or while any legacy target remains unresolved. The coarse `public.ingestion_events.status = 'ingested'` SHALL NOT by itself assert admission or target acceptance.
 
 ID: REQ-ingestion-target-delivery-recovery-005
-Source: RFC 0003 §Conversation-History Decomposition and Fan-Out; design.md Decision 4
+Source: RFC 0038 D5 and D17; design.md Decisions 3 and 4
 Scope: v1-mandatory
 
-#### Scenario: One fan-out target fails
+#### Scenario: Summary follows the receipt
 
-- **WHEN** target A has accepted its segment and target B has a proven pre-accept transient failure
-- **THEN** only B's intent SHALL retry
-- **AND** event and target projections SHALL retain A's accepted receipt and show B as waiting
+- **WHEN** an event has an admission receipt
+- **THEN** the event MAY report its admission outcome while showing goal progress separately
+- **AND** an event with `buffered` or `admission_failed` state SHALL NOT report completion
 
-#### Scenario: Summary follows intent state
+#### Scenario: Partial legacy fan-out stays non-complete
 
-- **WHEN** every selected target intent has an accepted receipt
-- **THEN** the event MAY report delivery accepted, while still showing downstream sessions separately
-- **AND** an event with any `ambiguous` or `terminal_failed` intent SHALL NOT report complete delivery
+- **WHEN** a pre-switch event has one accepted legacy target and another unresolved
+- **THEN** its projection SHALL retain the accepted receipt, show the unresolved target, and report a non-complete summary
 
 #### Scenario: Projection source unavailable
 
-- **WHEN** the intent or receipt store cannot be read
-- **THEN** the ingestion API SHALL report delivery availability as unavailable
-- **AND** it SHALL NOT synthesize an empty or all-accepted target set
-
-#### Scenario: Source accepted while target delivery is unresolved
-
-- **WHEN** an event has `public.ingestion_events.status = 'ingested'` and one selected target has no acceptance receipt
-- **THEN** its source status SHALL remain distinguishable from the separate non-complete target-delivery summary
-- **AND** no API or UI SHALL infer full target acceptance from the coarse source status alone
+- **WHEN** the admission ledger or legacy evidence cannot be read
+- **THEN** the ingestion API SHALL report evidence unavailable
+- **AND** it SHALL NOT synthesize an empty or successful summary
 
 ### Requirement: Failed-event recovery is executable and honest
 
-An owner recovery request for a non-dashboard ingestion event SHALL use its immutable classified plan and existing unaccepted target intents only when policy and evidence permit, or return a specific non-success result. The `failed`, `ingested`, `replay_failed`, and `replay_pending` source-status branches SHALL never reset `message_inbox` for reclassification or resend an accepted target. A recovery transition SHALL never report pending or clear failure solely by changing an ingestion status column.
+An owner recovery request for a non-dashboard ingestion event SHALL return the original admission receipt, a single admission when retained evidence proves no decision was made, or a specific non-success result. In KEY_ABSENT_STAGE it SHALL return a specific non-success result. The `failed`, `ingested`, `replay_failed`, and `replay_pending` branches SHALL never reset `message_inbox` for reclassification, re-route a legacy target, or report pending or clear failure solely by changing an ingestion status column.
 
 ID: REQ-ingestion-target-delivery-recovery-006
-Source: [Observed] src/butlers/core/ingestion_events.py:1107; design.md Decision 5
+Source: [Observed] src/butlers/core/ingestion_events.py:1107; RFC 0038 D5 and Hard cutover; design.md Decision 5
 Scope: v1-mandatory
 
-#### Scenario: Eligible failed intent is queued
+#### Scenario: Recovery returns the existing decision
 
-- **WHEN** the owner requests recovery for an event with a durable eligible `not_attempted` target intent
-- **THEN** the request SHALL durably queue that same intent and return its target identity and waiting state
-- **AND** accepted targets SHALL remain accepted and SHALL not be replayed
+- **WHEN** after the switch the owner requests recovery for an event whose source key has an admission decision
+- **THEN** the request SHALL return that receipt and goal identity
+- **AND** it SHALL NOT admit a second goal
 
-#### Scenario: Ingested or replay-failed row has eligible outstanding work
+#### Scenario: Recovery admits once when no decision exists
 
-- **WHEN** the owner requests recovery of an `ingested` or `replay_failed` event with an original classified plan and a safely retryable unaccepted target intent
-- **THEN** only that original intent SHALL be queued with its unchanged target, segment, payload, and delivery identity
-- **AND** the terminal `message_inbox` SHALL not be reset to `accepted`, and the event SHALL not be classified or decomposed again
+- **WHEN** after the switch the owner requests recovery for a `failed` or `replay_failed` event whose retained envelope has no admission decision
+- **THEN** the request SHALL submit the original envelope identity to admission once and return its receipt
+- **AND** origin and exposure SHALL come from stored evidence, never upgrading authorship or reducing exposure
 
-#### Scenario: Accepted event has no recoverable target
+#### Scenario: Frozen lane refuses rather than relabels
 
-- **WHEN** the owner requests recovery of an `ingested` or `replay_failed` event whose targets are all accepted, terminally refused, ambiguous, or otherwise ineligible
-- **THEN** the request SHALL return a specific non-success or conflict result without creating a new intent or sending another target call
+- **WHEN** in KEY_ABSENT_STAGE the owner requests recovery of a `failed`, `ingested` or `replay_failed` event
+- **THEN** the request SHALL return a specific non-success result with a content-blind reason
+- **AND** it SHALL NOT relabel the event `ingested`, reset `message_inbox` to `accepted`, or classify it again
 
-#### Scenario: Legacy failed row has no proven intent
+#### Scenario: Legacy failed row has no proven evidence
 
-- **WHEN** a failed pre-cutover event lacks a retained classified plan, target payload, or trustworthy no-acceptance evidence
+- **WHEN** a failed pre-switch event lacks a retained envelope or trustworthy evidence
 - **THEN** the request SHALL return a non-success explanation and leave the event failed
-- **AND** it SHALL NOT reset a terminal message inbox or invoke connector ingress replay as a substitute
-
-#### Scenario: Ambiguous or rejected target is refused
-
-- **WHEN** a requested target has `ambiguous`, canonical `rejected`, or policy-denied evidence
-- **THEN** the recovery request SHALL preserve that state and return a conflict with a safe reason
-- **AND** no new target call SHALL be queued
+- **AND** it SHALL NOT invoke connector ingress replay as a substitute
 
 #### Scenario: Already pending request is idempotent
 
-- **WHEN** an event is `replay_pending` and an eligible original target intent is already durably queued
-- **THEN** another recovery request SHALL return the existing queued intent identity without adding work or resetting `message_inbox`
+- **WHEN** an event is `replay_pending` and its recovery work is already durably queued
+- **THEN** another recovery request SHALL return the existing pending identity without adding work
 
 #### Scenario: Orphan pending marker is not proof of queued work
 
-- **WHEN** a legacy `replay_pending` event has no corresponding durable queued intent
-- **THEN** its API projection and recovery response SHALL report unavailable or conflicting delivery evidence rather than pending success
-- **AND** no target call or status-only success transition SHALL result
+- **WHEN** a legacy `replay_pending` event has no corresponding durable queued work
+- **THEN** its API projection and recovery response SHALL report unavailable or conflicting evidence rather than pending success
+- **AND** no admission, route or status-only success transition SHALL result
 
 #### Scenario: Other source statuses remain non-replayable
 
 - **WHEN** a `public.ingestion_events` row has any status outside the governed recovery branches
-- **THEN** the recovery request SHALL return a non-success status conflict without mutating the event, inbox, or target intents
+- **THEN** the recovery request SHALL return a non-success status conflict without mutating the event, inbox or admission ledger
 
 #### Scenario: Connector filtered events retain their replay contract
 
 - **WHEN** the requested ID belongs to `connectors.filtered_events` rather than `public.ingestion_events`
 - **THEN** the connector's existing server-derived replay-safe policy and drain transition SHALL govern it independently
-- **AND** the target-delivery worker SHALL NOT claim that connector row or rewind its provider cursor
+- **AND** recovery SHALL NOT claim that connector row or rewind its provider cursor
 
-### Requirement: Exact owner-gated historical late delivery
+### Requirement: Exact owner-gated historical late admission
 
-Historical recovery SHALL begin with a content-blind dry run identifying only retained, provably pre-acceptance failed target deliveries. Target acceptance evidence SHALL come from bounded, target-owned same-key/same-target/same-digest receipt lookup through the existing internal route surface, not cross-schema SELECT; an unavailable, conflicting, or unsupported lookup SHALL exclude the candidate as unprovable. No historical delivery SHALL be queued until the owner approves the exact event-target-segment set and bounded age/channel policy in an immutable server-side owner-authenticated approval record with preview evidence version, canonical set/policy digest, expiry, and revocation. The admission operation SHALL accept only that record's opaque ID, SHALL derive its exact keys/policy from server storage, and SHALL refuse before approval or after expiry/revocation. Consumption SHALL be atomic with safe intent admission and idempotent on repeats. A Beads decision or owner session alone SHALL NOT authorize an arbitrary replay set.
+Historical recovery SHALL begin with a content-blind dry run identifying only retained events that have no admission receipt and either no legacy route or independently proven no-effect legacy outcome. Legacy acceptance evidence SHALL come from receipts retained before the switch, not cross-schema SELECT; missing, conflicting or unsupported evidence SHALL exclude the event as unprovable. No historical event SHALL be admitted until the owner approves the exact source-key set and bounded age/channel policy in an immutable server-side owner-authenticated approval record with preview evidence version, canonical set/policy digest, expiry, and revocation. The admission operation SHALL accept only that record's opaque ID, SHALL derive its exact keys and policy from server storage, and SHALL refuse before approval or after expiry or revocation. Consumption SHALL be atomic with one deduplicated admission per eligible key and idempotent on repeats. A Beads decision or owner session alone SHALL NOT authorize an arbitrary set.
 
 ID: REQ-ingestion-target-delivery-recovery-007
-Source: heart-and-soul/vision.md Rule 1; design.md Decision 6
+Source: heart-and-soul/vision.md Rule 1; RFC 0038 D5 and D6; design.md Decision 6
 Scope: v1-mandatory
 
 #### Scenario: Dry run inventories recoverable evidence
 
 - **WHEN** an operator runs a historical eligibility preview
-- **THEN** it SHALL group counts by time bucket, channel, target, and safe failure class and identify the exact eligible delivery keys for private owner review
-- **AND** it SHALL exclude missing payloads, acknowledged targets, pruned rows, canonical `rejected`, `uncertain` attempts, and rows lacking both a receipt and independent proof of pre-accept no-effect; absence of a receipt alone SHALL NOT prove eligibility
-- **AND** an unavailable or conflicting target-owned receipt lookup SHALL classify the candidate as unprovable without cross-schema read authority
+- **THEN** it SHALL group counts by time bucket, channel and safe failure class and identify the exact eligible source keys for private owner review
+- **AND** it SHALL exclude missing envelopes, admitted events, legacy-accepted events, pruned rows, canonical `rejected`, `uncertain` legacy attempts, and rows lacking independent proof of no effect; absence of a receipt alone SHALL NOT prove eligibility
 
 #### Scenario: Exact approval admits only selected work
 
-- **WHEN** the owner approves a bounded age and channel policy and an exact set of eligible delivery keys
-- **THEN** the owner-authenticated approval record SHALL bind that exact set, policy, preview version, digest, and expiry; only its opaque ID may be consumed to admit intents after rechecking current evidence, policy, and bounded target-owned receipts
-- **AND** changed, missing, or newly ambiguous keys SHALL remain unqueued and be reported as exclusions
+- **WHEN** the owner approves a bounded age and channel policy and an exact set of eligible source keys
+- **THEN** the approval record SHALL bind that set, policy, preview version, digest and expiry, and only its opaque ID may be consumed after rechecking current evidence
+- **AND** changed, missing or newly admitted keys SHALL remain unadmitted and be reported as exclusions
+
+#### Scenario: Late admission keeps stored origin and exposure
+
+- **WHEN** an approved historical key is admitted
+- **THEN** its origin and exposure SHALL come from the stored envelope evidence
+- **AND** third-party material SHALL stay third-party and exposed
 
 #### Scenario: Approval cannot be forged or broadened by an operator
 
 - **WHEN** an admission request supplies no approval, a revoked or expired approval, a changed set or policy, or only a Beads signoff
-- **THEN** no target intent SHALL be queued and no generic owner-authenticated replay path SHALL be opened
-- **AND** only the owner-authenticated creation of the immutable server record may establish the exact admission authority
+- **THEN** no historical admission SHALL occur and no generic owner-authenticated replay path SHALL be opened
 
 #### Scenario: Approval consumption is idempotent
 
-- **WHEN** an approved exact set is admitted and the same approval ID is submitted again after a timeout or retry
-- **THEN** the server SHALL return the first consumed result without creating new intents, widening the set, or resetting a target
-- **AND** unused approval revocation or expiry SHALL prevent later consumption
+- **WHEN** an approved set is admitted and the same approval ID is submitted again after a timeout or retry
+- **THEN** the server SHALL return the first consumed result without admitting again or widening the set
 
-#### Scenario: No approval means no historical delivery
+#### Scenario: No approval means no historical admission
 
 - **WHEN** a historical dry run completes without owner approval
-- **THEN** no target delivery SHALL be queued
-- **AND** no provider cursor, connector replay queue, or source event shall be rewound or reclassified
+- **THEN** no historical event SHALL be admitted or routed
+- **AND** no provider cursor, connector replay queue or source event SHALL be rewound or reclassified
 
-### Requirement: Content-blind delivery evidence
+### Requirement: Content-blind recovery evidence
 
-Delivery intents, attempt summaries, APIs, logs, metrics, and historical previews SHALL expose only fixed state and reason vocabularies plus bounded identifiers needed for correlation. They SHALL NOT publish message content, raw exception text, sender identity, provider payload, or credentials through recovery evidence.
+Admission receipts, legacy residue, APIs, logs, metrics and historical previews SHALL expose only fixed state and reason vocabularies plus bounded identifiers needed for correlation. They SHALL NOT publish message content, raw exception text, sender identity, provider payload or credentials through recovery evidence.
 
 ID: REQ-ingestion-target-delivery-recovery-008
-Source: heart-and-soul/vision.md Rule 1; design.md Decision 7
+Source: heart-and-soul/vision.md Rule 1; RFC 0038 D17; design.md Decision 7
 Scope: v1-mandatory
 
 #### Scenario: Failure evidence is projected
 
-- **WHEN** an attempt fails or a dry run excludes a historical target
-- **THEN** the owner-facing and telemetry projection SHALL carry only a safe normalized reason and its delivery identity
-- **AND** raw transport messages, message payloads, and sender identity SHALL remain absent
+- **WHEN** an admission fails, legacy work is left as residue, or a dry run excludes a historical event
+- **THEN** the owner-facing and telemetry projection SHALL carry only a safe normalized reason and bounded identifiers
+- **AND** raw messages, payloads and sender identity SHALL remain absent
 
 #### Scenario: Invalid state or reason is rejected
 
-- **WHEN** a writer supplies a delivery state, transport outcome, or reason outside the closed vocabulary
+- **WHEN** a writer supplies an admission state, transport outcome or reason outside the closed vocabulary
 - **THEN** persistence SHALL reject it without converting it into a success or retryable state
