@@ -881,6 +881,7 @@ async def test_ambiguous_publication_holds_lineage_past_watchdog_restart_and_coo
         create_or_join_attempt,
         get_active_attempt,
         get_attempt,
+        get_publication_hold,
         get_recent_attempt,
         recover_stale_attempts,
     )
@@ -910,8 +911,8 @@ async def test_ambiguous_publication_holds_lineage_past_watchdog_restart_and_coo
     assert await get_active_attempt(healing_pool, fingerprint) is None
 
     # Cooldown expiry (a zero-minute window matches nothing) does not release it.
-    held = await get_recent_attempt(healing_pool, fingerprint, 0)
-    assert held is not None and held["publication_held"] is True
+    assert await get_recent_attempt(healing_pool, fingerprint, 0) is None
+    assert await get_publication_hold(healing_pool, fingerprint) is True
     with pytest.raises(PublicationLineageHeld):
         await create_or_join_attempt(
             healing_pool,
