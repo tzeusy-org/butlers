@@ -1,7 +1,8 @@
 """Ambient projection grants and the glance payload at the real ASGI seam.
 
 REQ-ambient-projections-001 (owner-minted grants), REQ-ambient-projections-002
-(route-scoped grant boundary), REQ-ambient-projections-003 (deterministic glance).
+(route-scoped grant boundary), REQ-ambient-projections-003 (deterministic glance),
+REQ-ambient-projections-004 (consumer liveness).
 The real ``create_app()`` owner-auth middleware runs; only its persistence
 (owner-auth service, grant store) and the dashboard state sources are synthetic.
 """
@@ -72,6 +73,16 @@ class MemoryGrantStore:
 
     async def record_fetch(self, projection_id, status):
         self.fetches.append((projection_id, status))
+        grant = self.grants[projection_id]
+        self.grants[projection_id] = replace(
+            grant, last_fetch_at=datetime.now(UTC), last_fetch_status=status
+        )
+
+    async def liveness_rows(self, sql, *args):
+        """Answer the briefing's liveness read from this store, as the table would."""
+        if "ambient_projections" not in sql:
+            return []
+        return [vars(g) for g in self.grants.values() if g.revoked_at is None]
 
 
 def _item(severity: str, kind: str, description: str) -> dict:
@@ -79,7 +90,7 @@ def _item(severity: str, kind: str, description: str) -> dict:
 
 
 def _seed(*, items=(), failed=(), statuses=()):
-    """Patch the five dashboard state sources; the real composition and classify run."""
+    """Patch five dashboard state sources; projection liveness reads the grant store."""
     failed = set(failed)
     stack = ExitStack()
     sources = {
@@ -104,6 +115,11 @@ def _harness(monkeypatch):
     app.state.projection_grant_store = store
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value={"id": "owner-entity"})
+
+    async def _fetch(sql, *args):
+        return await store.liveness_rows(sql, *args)
+
+    pool.fetch = AsyncMock(side_effect=_fetch)
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     db.credential_shared_pool.side_effect = KeyError("no shared pool")
@@ -255,6 +271,40 @@ async def test_glance_matches_briefing_class_without_a_model_call(harness, items
         assert llm.await_count == (expected != "degraded")
     assert glance.json()["data"]["state_class"] == expected
     assert briefing.json()["data"]["state_class"] == expected
+
+
+async def test_lapsed_surface_opens_one_clause_until_its_next_fetch(harness):
+    client, store = harness
+    lapsed, fresh = await _mint(client), await _mint(client)
+    lapsed_id = uuid.UUID(lapsed["id"])
+    # Minted 11 minutes ago with a 5-minute interval: past its own valid_until.
+    store.grants[lapsed_id] = replace(
+        store.grants[lapsed_id], created_at=datetime.now(UTC) - timedelta(minutes=11)
+    )
+    preview = {"x-api-key": KEY}  # an owner preview never stamps a fetch
+    with _seed()[0]:
+        before = (await client.get(fresh["path"], headers=preview)).json()["data"]
+        again = (await client.get(fresh["path"], headers=preview)).json()["data"]
+        briefing = await client.get("/api/dashboard/briefing", headers=preview)
+        # The lapsed surface's own fetch does not report itself, and it stamps.
+        own = await client.get(lapsed["path"], headers={"x-projection-token": lapsed["token"]})
+        after = (await client.get(fresh["path"], headers=preview)).json()["data"]
+    assert (before["needs_you"], again["needs_you"]) == (1, 1)
+    assert before["top_item"]["kind"] == "projection"
+    assert before["top_item"]["label"].startswith("Hall display has not fetched")
+    assert (before["state_class"], briefing.json()["data"]["state_class"]) == ("mild", "mild")
+    assert own.json()["data"]["needs_you"] == 0
+    assert (after["needs_you"], after["state_class"]) == (0, "quiet")
+
+
+async def test_unreadable_projection_store_is_a_failed_source(harness):
+    client, store = harness
+    minted = await _mint(client)
+    store.liveness_rows = AsyncMock(side_effect=ConnectionError("down"))
+    with _seed()[0]:
+        resp = await client.get(minted["path"], headers={"x-api-key": KEY})
+    assert resp.json()["data"]["coverage"]["failed"] == ["projections"]
+    assert resp.json()["data"]["state_class"] == "degraded"
 
 
 def test_classifier_failure_composes_degraded_not_quiet():

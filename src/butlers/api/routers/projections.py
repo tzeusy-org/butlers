@@ -193,6 +193,11 @@ async def get_glance(
     state = await dashboard_briefing._fetch_dashboard_state(
         sw_pool, as_of, db=db, configs=configs, mgr=mgr, pricing=pricing
     )
+    if via_grant:
+        # This surface is fetching right now, so its own lapse is already over.
+        state["attention_items"] = [
+            item for item in state["attention_items"] if item.get("projection_id") != str(grant.id)
+        ]
     glance = compose_glance(
         state,
         audience_class=grant.audience_class,

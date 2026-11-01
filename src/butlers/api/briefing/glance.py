@@ -17,7 +17,7 @@ from butlers.api.briefing.classify import StateClass, classify
 logger = logging.getLogger(__name__)
 
 # Every state source _fetch_dashboard_state reads, in its degraded_sources vocabulary.
-GLANCE_SOURCES = ("audit", "board", "approvals", "notifications", "qa")
+GLANCE_SOURCES = ("audit", "board", "approvals", "notifications", "qa", "projections")
 LINE_MAX = 48
 
 _SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
@@ -31,6 +31,7 @@ _HOUSEHOLD_LABELS = {
     "runtime": "A butler needs a look",
     "scheduled_task_failure": "A scheduled task failed",
     "audit_error_group": "A butler reported an error",
+    "projection": "A display stopped updating",
 }
 _HOUSEHOLD_FALLBACK_LABEL = "Something needs a look"
 
