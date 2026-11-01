@@ -852,9 +852,9 @@ class TestContextProducersIntegration:
                      'confirmed', '{"transparency": "transparent"}'::jsonb)
                 """,
                 source_id,
-                json.dumps(
-                    {"attendees": [{"self": True, "response_status": "declined"}]},
-                ),
+                # The pool's jsonb codec encodes the dict; pre-dumping would store a
+                # JSON string instead of the object shape production writes.
+                {"attendees": [{"self": True, "response_status": "declined"}]},
             )
             result = await run_calendar_context_producer(pool)
             assert result["signal"] == "meeting"
