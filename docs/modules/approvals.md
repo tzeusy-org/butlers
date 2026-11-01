@@ -141,7 +141,9 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   `src="relationship"`.
 - Butlers that cannot read `relationship.entity_facts` recognise the owner through
   `public.resolve_owner_triple` (SECURITY DEFINER), called by
-  `identity.resolve_owner_channel_via_definer()` when normal resolution returns None.
+  `identity.resolve_owner_channel_via_definer()` when normal resolution returns None. An actively
+  held endpoint (core_293, see [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds))
+  never resolves to owner there.
 - Every channel gate delegates to `identity.resolve_channel_contact_with_owner_corroboration()`,
   which tests ambiguity across all live matching entities before filtering to the owner. The bypass
   goes only to exactly one active identifier on one live, non-merged, non-deleted owner entity;
