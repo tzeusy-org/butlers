@@ -122,7 +122,13 @@ Use `/opsx:ff` to fast-forward artifact creation:
 /opsx:ff <service>-integration
 ```
 
-This creates: proposal → design → specs (one per capability) → tasks.
+This creates proposal, specs (one per capability), and tasks, plus a design
+when required or chosen. Follow `about/heart-and-soul/development.md`: design
+is required if the integration alters a cross-butler contract, a schema shared
+across butlers, or a security boundary. An eligible single-butler change can
+use the `single-butler` schema without a design; integrations that introduce
+shared account, credential or ingestion contracts must use `spec-driven` and
+include one. Existing designs and all spec/review/verification gates remain.
 
 ## Codex Adapter
 

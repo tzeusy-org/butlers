@@ -5,8 +5,18 @@ context: |
   Domain: AI agent framework — personal butler daemons with MCP-based communication
   Doctrine: about/heart-and-soul/ (vision.md defines 7 non-negotiable rules)
   Design contracts: about/legends-and-lore/rfcs/ (numbered RFCs; each carries its own status)
+  Change artifacts: follow about/heart-and-soul/development.md, "Spec Before Code, RFC Before Exception".
+  For a single-butler change that alters no cross-butler contract, shared-across-butlers schema,
+  or security boundary, proposal + delta specs + tasks suffice; design.md is optional.
+  Use the project-local single-butler schema for that eligible no-design workflow.
+  Keep spec-driven for required or voluntarily included designs; do not delete existing designs.
 
 rules:
+  proposal:
+    - >
+      Classify whether the change alters a cross-butler contract, a schema shared
+      across butlers, or a security boundary. Any of those requires design.md;
+      directory placement alone does not establish single-butler eligibility.
   specs:
     - >
       Include a "## Source References" section at the end of each spec listing

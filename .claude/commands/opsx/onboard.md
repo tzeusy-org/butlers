@@ -37,7 +37,7 @@ I'll walk you through a complete change cycle—from idea to implementation—us
 1. Pick a small, real task in your codebase
 2. Explore the problem briefly
 3. Create a change (the container for our work)
-4. Build the artifacts: proposal → specs → design → tasks
+4. Build proposal → specs → tasks, adding design when required or chosen
 5. Implement the tasks
 6. Archive the completed change
 
@@ -157,12 +157,16 @@ Now let's create a change to hold our work.
 ```
 ## Creating a Change
 
-A "change" in OpenSpec is a container for all the thinking and planning around a piece of work. It lives in `openspec/changes/<name>/` and holds your artifacts—proposal, specs, design, tasks.
+A "change" in OpenSpec holds the proposal, delta specs and tasks. A single-butler change needs no design unless it alters a cross-butler contract, a schema shared across butlers, or a security boundary; existing designs are kept and read. The rule lives in `about/heart-and-soul/development.md`.
 
 Let me create one for our task.
 ```
 
 **DO:** Create the change with a derived kebab-case name:
+Classify the actual scope first. Add `--schema single-butler` for an eligible
+single-butler exercise omitting design; use the default `spec-driven` schema
+when design is required or chosen. Existing spec/review/verification and
+owner-approval gates remain; schema readiness alone does not authorize work.
 ```bash
 openspec new change "<derived-name>"
 ```
@@ -175,7 +179,7 @@ The folder structure:
 ```
 openspec/changes/<name>/
 ├── proposal.md    ← Why we're doing this (empty, we'll fill it)
-├── design.md      ← How we'll build it (empty)
+├── design.md      ← How we'll build it (only when required or chosen)
 ├── specs/         ← Detailed requirements (empty)
 └── tasks.md       ← Implementation checklist (empty)
 ```
@@ -290,6 +294,12 @@ Save to `openspec/changes/<name>/specs/<capability>/spec.md`.
 ---
 
 ## Phase 7: Design
+
+For an eligible single-butler change with no design, explain the scope evidence
+and proceed to Phase 8 without creating a placeholder. If the change alters
+a cross-butler contract, shared-across-butlers schema or security boundary,
+complete this phase using `spec-driven`. Read any existing design in either
+case. This omits only the document, not technical judgment or verification.
 
 **EXPLAIN:**
 ```
