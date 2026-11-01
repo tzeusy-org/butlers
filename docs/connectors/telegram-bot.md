@@ -56,6 +56,28 @@ The connector extracts normalized text from Telegram messages using a tiered str
    - `[Photo]`, `[Sticker: emoji]`, `[Voice message]`, `[Video]`, `[GIF]`, `[Document]`, `[Audio]`, `[Location]`, `[Contact: Name]`, `[Poll: Question]`, `[Dice]`
 4. **None** -- Service messages with no user content (e.g., `new_chat_members`).
 
+## Voice-Note Transcription
+
+Off by default. With `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED=true`, a caption-less voice
+note from the verified owner becomes its transcript in `payload.normalized_text` instead of
+`[Voice message]` (spec: `openspec/specs/telegram-voice-transcription/spec.md`).
+
+- **Pipeline.** Owner check (`resolve_owner_channel_via_definer`) and forward check, then the size
+  (20 MB) and duration (`CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S`) bounds, all before any Telegram
+  file call. Then `getFile` plus a capped download (one retry), an `ffmpeg` transcode to 16 kHz mono
+  PCM (`src/butlers/connectors/telegram_voice.py`), and one call on the shared
+  `TranscriptionClient` from `connectors/live_listener/transcription.py`.
+- **Fallback.** Disabled, non-owner, forwarded, oversize, overlong, download, transcode, STT or
+  empty/low-confidence outcomes keep `[Voice message]`; the message is still ingested.
+- **Outcome.** Every caption-less voice note carries `payload.transcription`
+  (`source_media`, `status`, `confidence`, `language`, `stt_backend`), which Switchboard stores with
+  the message so the responding session can tell the owner a note was not transcribed. The counter
+  `connector_telegram_voice_transcription_total{status}` counts outcomes.
+- **Privacy.** Audio stays in memory for one note and is never written to disk, attached, logged or
+  put in a metric label. Logs never carry transcript text.
+- **Deployment.** No STT service is deployed today. Enabling needs a reachable Wyoming, WebSocket
+  or HTTP endpoint in `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL`; the runtime image ships `ffmpeg`.
+
 ## Update Retrieval Modes
 
 ### Polling (Development)
@@ -124,6 +146,10 @@ identity environment variables cannot relabel emitted envelopes.
 | `CONNECTOR_HEALTH_PORT` | No (default: 40081) | HTTP port for health endpoint |
 | `CONNECTOR_BUTLER_DB_NAME` | No | Local butler DB for per-butler secret overrides |
 | `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credential DB name |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED` | No (default: false) | Transcribe owner voice notes |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL` | When enabled | STT service URL (no default) |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_PROTOCOL` | No (default: `wyoming`) | `wyoming`, `websocket` or `http` |
+| `CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S` | No (default: 120) | Longest voice note transcribed, in seconds |
 
 ## Health Endpoint
 

@@ -10,7 +10,14 @@ This field is independent of, and never derived from, a provider's own raw paylo
 for outcome metadata the provider itself does not report. This requirement is additive: the existing
 `ingest.v1 Envelope Schema` requirement and its scenarios (including `payload.raw`, `payload.
 normalized_text`, and `payload.attachments`) are unchanged, and `payload.transcription` is absent for
-every message no connector-side transcription attempt was made against.
+every message no connector-side transcription attempt was made against. Switchboard validates the
+field (`IngestTranscriptionV1`) and stores it with the accepted message's payload so the responding
+session can see why a voice message carries no transcript. It is outcome metadata, never
+authorization (RFC 0038 D18).
+
+ID: REQ-connector-base-spec-012
+Source: bu-r0dsz; [Observed] `roster/switchboard/tools/contracts.py` `IngestTranscriptionV1`
+Scope: v1-mandatory
 
 #### Scenario: Field absent by default
 
