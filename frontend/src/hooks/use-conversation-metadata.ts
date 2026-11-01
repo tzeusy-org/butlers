@@ -275,9 +275,17 @@ async function changeConversationMetadata(
 const NOT_CONFIRMED =
   "The change was not confirmed. Showing the last confirmed state while it refreshes.";
 
+/** Another PATCH for the same conversation was still in flight. */
+const STILL_SAVING =
+  "Another change to this conversation is still saving. Save again once it finishes.";
+
 export interface RenameOptions {
-  /** Called with the submitted title when the rename is not confirmed. */
-  onFailed?: (title: string) => void;
+  /**
+   * Called with the submitted title and an inline error when the rename was
+   * not confirmed or was dropped by the duplicate-submission guard, so the
+   * editor can reopen with the typed title instead of losing it.
+   */
+  onFailed?: (title: string, error: string) => void;
 }
 
 export interface ConversationMetadataActions {
@@ -303,7 +311,9 @@ export function useConversationMetadata(): ConversationMetadataActions {
         toast.error(`Couldn't rename "${conversationTitle(conversation)}"`, {
           description: NOT_CONFIRMED,
         });
-        options?.onFailed?.(title);
+        options?.onFailed?.(title, "Rename not confirmed. Edit and save to retry.");
+      } else if (outcome.kind === "duplicate") {
+        options?.onFailed?.(title, STILL_SAVING);
       }
       return outcome;
     }

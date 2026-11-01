@@ -125,11 +125,7 @@ function ConversationItem({
             returnFocus.current = true;
             setEditor(null);
             void rename(conversation, nextTitle, {
-              onFailed: (failedTitle) =>
-                setEditor({
-                  initialTitle: failedTitle,
-                  error: "Rename not confirmed. Edit and save to retry.",
-                }),
+              onFailed: (failedTitle, error) => setEditor({ initialTitle: failedTitle, error }),
             });
           }}
         />
