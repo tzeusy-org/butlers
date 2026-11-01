@@ -261,6 +261,7 @@ async def test_actual_core_catalog_respects_group_name_and_type_gates(
             {
                 "ha_get_entity_state",
                 "ha_get_history",
+                "ha_get_recorded_history",
                 "ha_get_statistics",
                 "ha_list_areas",
                 "ha_list_entities",

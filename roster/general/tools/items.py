@@ -39,7 +39,10 @@ def _not_found(item_id: uuid.UUID) -> ValueError:
 
 
 async def resolve_ordinary_collection(
-    conn: asyncpg.Connection, collection_name: str, *, create: bool
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    collection_name: str,
+    *,
+    create: bool,
 ) -> asyncpg.Record | None:
     """Resolve a name in the ordinary namespace and share-lock its parent.
 
@@ -88,7 +91,7 @@ async def resolve_ordinary_collection(
 
 
 async def item_create_versioned(
-    pool_or_conn: asyncpg.Pool | asyncpg.Connection,
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     collection_name: str,
     data: dict[str, Any],
     tags: list[str] | None = None,

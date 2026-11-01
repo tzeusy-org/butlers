@@ -25,10 +25,12 @@ import asyncio
 import logging
 import uuid
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
@@ -61,6 +63,7 @@ EXPECTED_HA_TOOLS = {
     "ha_list_areas",
     "ha_list_services",
     "ha_get_history",
+    "ha_get_recorded_history",
     "ha_get_statistics",
     "ha_render_template",
     "ha_call_service",
@@ -77,10 +80,166 @@ EXPECTED_HA_READ_ONLY_TOOLS = {
     "ha_list_areas",
     "ha_list_services",
     "ha_get_history",
+    "ha_get_recorded_history",
     "ha_get_statistics",
     "ha_render_template",
     "ha_maintenance_list",
 }
+
+
+class TestRecordedHistory:
+    async def test_named_ordered_durable_history_and_source_freshness(self, mock_mcp) -> None:
+        start = datetime(2026, 10, 1, tzinfo=UTC)
+        rows = [
+            {"entity_id": "sensor.room", "state": "20", "recorded_at": start},
+            {"entity_id": "sensor.room", "state": "21", "recorded_at": start + timedelta(hours=1)},
+        ]
+        pool = SimpleNamespace(
+            fetch=AsyncMock(return_value=rows),
+            fetchrow=AsyncMock(
+                return_value={
+                    "status": "healthy",
+                    "last_success_at": start,
+                    "lease_current": True,
+                }
+            ),
+        )
+        module = HomeAssistantModule()
+        await module.register_tools(mock_mcp, {}, SimpleNamespace(pool=pool), butler_name="home")
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        module._client = MagicMock()
+        module._client.get = AsyncMock(side_effect=AssertionError("must not contact HA"))
+        result = await tool(
+            ["sensor.room"], start.isoformat(), (start + timedelta(days=1)).isoformat()
+        )
+        assert result == {
+            "status": "ok",
+            "transitions": rows,
+            "truncated": False,
+            "source": {"status": "healthy", "last_success_at": start},
+        }
+        sql, entities, lower, upper, count = pool.fetch.await_args.args
+        assert entities == ["sensor.room"] and lower == start and upper == start + timedelta(days=1)
+        assert count == 501
+        assert "entity_id = ANY($1::text[])" in sql
+        assert "recorded_at >= $2 AND recorded_at < $3" in sql
+        assert "ORDER BY recorded_at ASC, id ASC" in sql and "LIMIT $4" in sql
+        assert "attributes" not in sql
+        assert "now()" in pool.fetchrow.await_args.args[0]
+        pool.fetch.return_value = [{**rows[0], "attributes": {"unit": "C"}}]
+        with_attributes = await tool(
+            ["sensor.room"],
+            start.isoformat(),
+            (start + timedelta(days=31)).isoformat(),
+            limit=2000,
+            include_attributes=True,
+        )
+        assert with_attributes["transitions"][0]["attributes"] == {"unit": "C"}
+        assert "attributes" in pool.fetch.await_args.args[0]
+        assert pool.fetch.await_args.args[-1] == 2001
+        module._client.get.assert_not_awaited()
+
+    async def test_stored_history_survives_outage_and_missing_or_expired_health(
+        self, mock_mcp
+    ) -> None:
+        last = datetime(2026, 10, 1, tzinfo=UTC)
+        rows = [{"entity_id": "person.owner", "state": "home", "recorded_at": last}]
+        pool = SimpleNamespace(fetch=AsyncMock(return_value=rows), fetchrow=AsyncMock())
+        module = HomeAssistantModule()
+        await module.register_tools(
+            mock_mcp, {"read_only": True}, SimpleNamespace(pool=pool), butler_name="home"
+        )
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        for health, expected in [
+            ({"status": "error", "last_success_at": last, "lease_current": False}, "error"),
+            ({"status": "healthy", "last_success_at": last, "lease_current": False}, "stale"),
+            ({"status": "healthy", "last_success_at": None, "lease_current": False}, "unknown"),
+            (None, "unknown"),
+        ]:
+            pool.fetchrow.return_value = health
+            result = await tool(
+                ["person.owner"], last.isoformat(), (last + timedelta(days=1)).isoformat()
+            )
+            assert result["status"] == "ok" and result["transitions"] == rows
+            assert result["source"] == {
+                "status": expected,
+                "last_success_at": health["last_success_at"] if health else None,
+            }
+        pool.fetch.return_value = []
+        empty = await tool(
+            ["person.owner"], last.isoformat(), (last + timedelta(days=1)).isoformat()
+        )
+        assert empty["status"] == "ok" and empty["transitions"] == []
+        assert empty["source"]["status"] == "unknown"
+
+    @pytest.mark.parametrize(
+        "change,refused",
+        [
+            ({"entity_ids": []}, True),
+            ({"entity_ids": [""]}, True),
+            ({"start": "not-a-date"}, True),
+            ({"start": "2026-10-01T00:00:00"}, True),
+            ({"end": "2026-10-01T00:00:00Z"}, True),
+            ({"end": "2026-11-02T00:00:00Z"}, True),
+            ({"limit": 2001}, True),
+            ({"limit": 0}, True),
+            ({"limit": True}, True),
+            ({"limit": 1}, False),
+        ],
+    )
+    async def test_recorded_history_bounds_and_truncation(self, mock_mcp, change, refused) -> None:
+        pool = SimpleNamespace(
+            fetch=AsyncMock(
+                return_value=[
+                    {
+                        "entity_id": "sensor.room",
+                        "state": str(i),
+                        "recorded_at": datetime(2026, 10, 1, i, tzinfo=UTC),
+                    }
+                    for i in range(2)
+                ]
+            ),
+            fetchrow=AsyncMock(return_value=None),
+        )
+        module = HomeAssistantModule()
+        await module.register_tools(mock_mcp, {}, SimpleNamespace(pool=pool), butler_name="home")
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        args = {
+            "entity_ids": ["sensor.room"],
+            "start": "2026-10-01T00:00:00Z",
+            "end": "2026-10-02T00:00:00Z",
+            **change,
+        }
+        if refused:
+            with pytest.raises(ValueError):
+                await tool(**args)
+            pool.fetch.assert_not_awaited()
+            pool.fetchrow.assert_not_awaited()
+        else:
+            result = await tool(**args)
+            assert result["truncated"] is True
+            assert result["transitions"] == pool.fetch.return_value[:1]
+            assert pool.fetch.await_args.args[-1] == 2
+
+    async def test_missing_storage_or_grant_is_typed_unavailable(self, mock_mcp) -> None:
+        module = HomeAssistantModule()
+        pool = SimpleNamespace(fetch=AsyncMock(), fetchrow=AsyncMock(return_value=None))
+        await module.register_tools(mock_mcp, {}, SimpleNamespace(pool=pool), butler_name="home")
+        tool = (await registered_tools(mock_mcp))["ha_get_recorded_history"]
+        args = (["sensor.room"], "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z")
+        for error, reason in [
+            (asyncpg.UndefinedTableError("private SQL details"), "missing_table"),
+            (asyncpg.InsufficientPrivilegeError("private SQL details"), "permission_denied"),
+            (asyncpg.PostgresConnectionError("private endpoint"), "database_unavailable"),
+        ]:
+            for phase in ("health", "history"):
+                pool.fetchrow.side_effect = error if phase == "health" else None
+                pool.fetch.side_effect = error if phase == "history" else None
+                result = await tool(*args)
+                assert result == {"status": "unavailable", "reason": reason}
+                assert "transitions" not in result
+        module._db = None
+        assert await tool(*args) == {"status": "unavailable", "reason": "database_unavailable"}
 
 
 # ---------------------------------------------------------------------------

@@ -25,9 +25,10 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal, NotRequired, TypedDict
 from urllib.parse import quote
 
+import asyncpg
 from pydantic import BaseModel, ConfigDict
 
 from butlers.connectors.home_assistant_statistics import (
@@ -72,6 +73,30 @@ _WS_RECONNECT_INITIAL = 1.0  # seconds
 _WS_RECONNECT_MAX = 60.0  # seconds
 _WS_RECONNECT_JITTER = 0.5  # fraction of delay added as random jitter
 _WS_PONG_TIMEOUT = 10.0  # seconds to wait for pong before treating as missed
+
+
+class RecordedHomeTransition(TypedDict):
+    entity_id: str
+    state: str | None
+    recorded_at: datetime
+    attributes: NotRequired[dict[str, Any] | None]
+
+
+class RecordedHomeSource(TypedDict):
+    status: Literal["healthy", "error", "stale", "unknown"]
+    last_success_at: datetime | None
+
+
+class RecordedHomeHistory(TypedDict):
+    status: Literal["ok"]
+    transitions: list[RecordedHomeTransition]
+    source: RecordedHomeSource
+    truncated: bool
+
+
+class RecordedHomeHistoryUnavailable(TypedDict):
+    status: Literal["unavailable"]
+    reason: Literal["missing_table", "permission_denied", "database_unavailable"]
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +618,31 @@ class HomeAssistantModule(Module):
             """
             return await module._get_history(entity_ids=entity_ids, start=start, end=end)
 
+        async def ha_get_recorded_history(
+            entity_ids: list[str],
+            start: str,
+            end: str | None = None,
+            limit: int = 500,
+            include_attributes: bool = False,
+        ) -> RecordedHomeHistory | RecordedHomeHistoryUnavailable:
+            """Read stored HA transitions without contacting Home Assistant.
+
+            Name the entities explicitly and provide timezone-aware ISO 8601
+            timestamps. The window is start-inclusive, end-exclusive, at most
+            31 days; omitted end means now. Limit is 1..2000. Attributes are
+            sensitive source data and are omitted unless requested. Source
+            freshness describes last confirmed HA contact, not completeness of
+            the stored event stream. Outages never suppress stored transitions.
+            Storage/grant failures return unavailable, not an empty history.
+            """
+            return await module._get_recorded_history(
+                entity_ids=entity_ids,
+                start=start,
+                end=end,
+                limit=limit,
+                include_attributes=include_attributes,
+            )
+
         async def ha_get_statistics(
             statistic_ids: list[str],
             start: str,
@@ -740,6 +790,7 @@ class HomeAssistantModule(Module):
         _tool("core")(ha_list_areas)
         _tool("core")(ha_list_services)
         _tool("history")(ha_get_history)
+        _tool("history")(ha_get_recorded_history)
         _tool("history")(ha_get_statistics)
         _tool("history")(ha_render_template)
         _tool("maintenance")(ha_maintenance_list)
@@ -2369,6 +2420,77 @@ class HomeAssistantModule(Module):
             raw = [entry for entry in raw if entry.get("domain") == domain]
 
         return raw
+
+    async def _get_recorded_history(
+        self,
+        entity_ids: list[str],
+        start: str,
+        end: str | None = None,
+        limit: int = 500,
+        include_attributes: bool = False,
+    ) -> RecordedHomeHistory | RecordedHomeHistoryUnavailable:
+        """Bounded, parameterized read of the connector's durable evidence."""
+        if not entity_ids or any(not _ENTITY_ID_RE.fullmatch(e) for e in entity_ids):
+            raise ValueError("Provide at least one valid Home Assistant entity_id")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 2000:
+            raise ValueError("limit must be between 1 and 2000")
+        lower = datetime.fromisoformat(start)
+        upper = datetime.fromisoformat(end) if end is not None else datetime.now(UTC)
+        if lower.tzinfo is None or upper.tzinfo is None:
+            raise ValueError("History timestamps must include a timezone")
+        if not timedelta(0) < upper - lower <= timedelta(days=31):
+            raise ValueError("History window must be positive and at most 31 days")
+        pool = getattr(self._db, "pool", None) if self._db is not None else None
+        if pool is None:
+            return {"status": "unavailable", "reason": "database_unavailable"}
+        try:
+            health = await pool.fetchrow(
+                "SELECT status, last_success_at, last_success_at IS NOT NULL "
+                "AND last_success_at >= now() - interval '5 minutes' AS lease_current "
+                "FROM ha_source_health WHERE source = $1",
+                "home_assistant",
+            )
+            columns = "entity_id, state, recorded_at"
+            if include_attributes:
+                columns += ", attributes"
+            rows = await pool.fetch(
+                f"SELECT {columns} FROM connectors.home_assistant_history "
+                "WHERE entity_id = ANY($1::text[]) "
+                "AND recorded_at >= $2 AND recorded_at < $3 "
+                "ORDER BY recorded_at ASC, id ASC LIMIT $4",
+                list(dict.fromkeys(entity_ids)),
+                lower,
+                upper,
+                limit + 1,
+            )
+        except asyncpg.UndefinedTableError:
+            return {"status": "unavailable", "reason": "missing_table"}
+        except asyncpg.InsufficientPrivilegeError:
+            return {"status": "unavailable", "reason": "permission_denied"}
+        except (asyncpg.PostgresConnectionError, OSError, TimeoutError):
+            return {"status": "unavailable", "reason": "database_unavailable"}
+        last_success = health["last_success_at"] if health else None
+        status: Literal["healthy", "error", "stale", "unknown"] = "unknown"
+        if health and health["status"] == "error":
+            status = "error"
+        elif health and health["status"] == "healthy" and last_success is not None:
+            status = "healthy" if health["lease_current"] else "stale"
+        transitions: list[RecordedHomeTransition] = []
+        for row in rows[:limit]:
+            transition: RecordedHomeTransition = {
+                "entity_id": row["entity_id"],
+                "state": row["state"],
+                "recorded_at": row["recorded_at"],
+            }
+            if include_attributes:
+                transition["attributes"] = row["attributes"]
+            transitions.append(transition)
+        return {
+            "status": "ok",
+            "transitions": transitions,
+            "source": {"status": status, "last_success_at": last_success},
+            "truncated": len(rows) > limit,
+        }
 
     async def _get_history(
         self,

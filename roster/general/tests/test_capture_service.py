@@ -8,11 +8,16 @@ import uuid
 import asyncpg
 import pytest
 
+from butlers.roster_imports import roster_module
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from butlers.tools.general import capture_service as implementation
-from butlers.tools.general.items import item_delete, item_get, item_update
-from butlers.tools.general.vocabulary import collection_declare
 from tests.integration import test_general_capture_ledger as capture_fixtures
+
+implementation = roster_module("general", "tools/capture_service")
+_general = roster_module("general", "tools")
+item_delete = _general.item_delete
+item_get = _general.item_get
+item_update = _general.item_update
+collection_declare = _general.collection_declare
 
 capture_pool = capture_fixtures.capture_pool
 service = capture_fixtures.service
@@ -199,7 +204,9 @@ async def test_rollback_unknown_lineage_and_unsupported_owner(service, capture_p
         async def interrupt_after_write(*args, _error_type=error_type, **kwargs):
             await original(*args, **kwargs)
             if _error_type is asyncio.CancelledError:
-                asyncio.current_task().cancel()
+                task = asyncio.current_task()
+                assert task is not None
+                task.cancel()
                 await asyncio.sleep(0)
             raise _error_type("synthetic post-write interruption")
 

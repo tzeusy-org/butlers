@@ -25,8 +25,9 @@ from butlers.core.capture import (
     load_epoch,
     project_receipt,
 )
-from butlers.tools.general.items import item_create_versioned
-from butlers.tools.general.source_authority import (
+
+from .items import item_create_versioned
+from .source_authority import (
     GeneralSourceUnavailable,
     lock_ordinary_item,
     lock_ordinary_parent,
@@ -45,7 +46,9 @@ class CaptureService:
         self.pool = pool
         self.epoch_path = epoch_path
 
-    async def _control(self, conn: asyncpg.Connection, *, dispatch: bool) -> ServiceEpoch:
+    async def _control(
+        self, conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, *, dispatch: bool
+    ) -> ServiceEpoch:
         epoch = load_epoch(self.epoch_path)
         row = await conn.fetchrow(
             "SELECT * FROM public.capture_service_control WHERE singleton FOR SHARE"
