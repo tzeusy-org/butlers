@@ -35,6 +35,15 @@ Scope: v1-mandatory
 - **THEN** the stored episode SHALL be widened to cover both spans
 - **AND** no second overlapping movement episode SHALL be emitted
 
+#### Scenario: Stored overlapping movement episodes are repaired
+
+- **WHEN** live movement episodes stored before this rule overlap for the same endpoint, directly or through a chain of overlaps
+- **THEN** a one-time repair SHALL keep the earliest of them, widened to the group's full span with its distinct linked fixes and `point_count`
+- **AND** the others SHALL be tombstoned with a reason naming the kept episode, and their evidence links SHALL also be linked to it
+- **AND** projection carryover pointing at any of them SHALL point at the kept episode
+- **AND** a group holding a user correction SHALL be left unchanged
+- **AND** running the repair again SHALL change nothing
+
 #### Scenario: Place labels name only justified places
 
 - **WHEN** a place cluster is emitted
