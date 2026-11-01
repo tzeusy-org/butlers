@@ -524,9 +524,7 @@ For a failed transport delivery, or an unexpected error after a complete message
 The runtime SHALL treat the shared/public Tier 1 `cli-auth/codex` value as the
 authoritative Codex device-auth state when its adapter is supplied a credential
 store with a shared fallback; only flat topology SHALL use its local store as
-authority. Before a new device-auth Codex subprocess is launched (one not
-running on a stored OpenAI API key; see Codex OpenAI API Key Preference), it
-SHALL reconcile that
+authority. Before a new Codex subprocess is launched, it SHALL reconcile that
 DB-backed value to the canonical local `~/.codex/auth.json` path when the
 contents differ. The reconciliation SHALL never log credential content, SHALL
 write a replacement atomically with mode `0600`, and SHALL refresh the local
@@ -593,7 +591,10 @@ rotation baseline after a DB-originated write.
 An OpenAI API key stored as the store-only `cli-auth/openai` credential SHALL
 take precedence over the `cli-auth/codex` device-auth authority for Codex
 invocations. The device-auth authority SHALL remain the fallback, and the
-API-key path SHALL never read, write, rotate, or record health against it.
+API-key path SHALL never read, write, rotate, or record health against it. A
+subprocess launched on the API key does not consume the device-auth
+credential, so the Live Codex Device-Auth Reconciliation that precedes a Codex
+launch SHALL apply only to launches that use the device-auth authority.
 
 #### Scenario: Stored key is used first
 - **WHEN** `cli-auth/openai` holds a non-empty key at invocation time
