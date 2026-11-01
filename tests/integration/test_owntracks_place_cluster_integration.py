@@ -13,6 +13,7 @@ against real Postgres.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
 
@@ -223,3 +224,296 @@ async def test_movement_gap_boundary_matches_max_gap_constant() -> None:
     (regression guard against silent drift between docstring and code)."""
     adapter = OwnTracksPlaceClusterAdapter()
     assert adapter.max_gap == timedelta(minutes=DEFAULT_MAX_GAP_MINUTES)
+
+
+async def test_bootstrap_consensus_is_durable_atomic_and_serialized(
+    pool: asyncpg.Pool,
+    migrated_db_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real run/checkpoint/JSONB/marker transactions, not mocked SQL success.
+
+    Split each endpoint's four fixes 1+1+2; run both adapter orders. A failed
+    commit, concurrent duplicate, cancelled writer and retry must converge.
+    """
+    import butlers.chronicler.adapters._owner_entity as owners
+    import butlers.chronicler.adapters.owntracks as points
+    import butlers.chronicler.adapters.owntracks_place_cluster as places
+
+    parallel_pool = pool
+    # The regular fixture seeds the migrated database; use a fresh one-slot
+    # pool outside the explicit parallel-writer check to expose nested acquires.
+    async with asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=1, init=register_jsonb_codec
+    ) as pool:
+        point_adapter = OwnTracksPointAdapter()
+        place_adapter = OwnTracksPlaceClusterAdapter()
+        real_save = points.save_carryover
+        endpoints = ("owntracks:retained", "owntracks:expired", "owntracks:tombstoned")
+        for reverse in (False, True):
+            await pool.execute(
+                "TRUNCATE connectors.owntracks_points, episodes, point_events, projection_checkpoints CASCADE"
+            )
+            adapters = (place_adapter, point_adapter) if reverse else (point_adapter, place_adapter)
+
+            async def insert(minutes: int) -> None:
+                for endpoint in endpoints:
+                    await _insert_point(
+                        pool,
+                        ts=_NOW + timedelta(minutes=minutes),
+                        lat=52.12 if minutes == 0 else _HOME_LAT,
+                        lon=22.06 if minutes == 0 else _HOME_LON,
+                        endpoint_identity=endpoint,
+                    )
+
+            async def run_both(adapters=adapters) -> None:
+                for adapter in adapters:
+                    result = await asyncio.wait_for(
+                        adapter.run(pool=pool, chronicler_pool=pool), timeout=10
+                    )
+                    assert result.error is None
+
+            # Both a genuinely absent optional source and a read-time SQL error
+            # must leave the outer transaction usable for inactive-status writes.
+            await pool.execute(
+                "ALTER TABLE connectors.owntracks_points RENAME TO owntracks_missing_fixture"
+            )
+            try:
+                for adapter in adapters:
+                    missing = await asyncio.wait_for(
+                        adapter.run(pool=pool, chronicler_pool=pool), timeout=10
+                    )
+                    assert missing.skipped and missing.error is None
+                    assert await pool.fetchval("SELECT 42") == 42
+            finally:
+                await pool.execute(
+                    "ALTER TABLE connectors.owntracks_missing_fixture RENAME TO owntracks_points"
+                )
+            for module, adapter in ((points, point_adapter), (places, place_adapter)):
+                original_table = module._EVIDENCE_TABLE
+                monkeypatch.setattr(
+                    module, "_EVIDENCE_TABLE", "connectors.owntracks_missing_fixture"
+                )
+                try:
+                    # The ordinary metadata probe is true; the actual SELECT raises
+                    # UndefinedTable inside the new savepoint (not a mock exception).
+                    unreadable = await asyncio.wait_for(
+                        adapter.run(pool=pool, chronicler_pool=pool), timeout=10
+                    )
+                    assert unreadable.skipped and unreadable.error is None
+                    assert await pool.fetchval("SELECT 42") == 42
+                    assert (
+                        await pool.fetchval(
+                            "SELECT watermark FROM projection_checkpoints WHERE source_name=$1",
+                            adapter.source_name,
+                        )
+                        is None
+                    )
+                finally:
+                    monkeypatch.setattr(module, "_EVIDENCE_TABLE", original_table)
+
+            await insert(0)
+            real_owner_fetch = owners._fetch_owner_row
+
+            async def unreadable_owner(conn):
+                return await conn.fetchrow("SELECT 1 / 0")
+
+            monkeypatch.setattr(owners, "_fetch_owner_row", unreadable_owner)
+            try:
+                # The optional owner query really fails in PostgreSQL. A one-slot
+                # source/target pool must still project and commit its checkpoint.
+                await run_both()
+                assert await pool.fetchval("SELECT 42") == 42
+                for adapter in adapters:
+                    assert (
+                        await pool.fetchval(
+                            "SELECT watermark FROM projection_checkpoints WHERE source_name=$1",
+                            adapter.source_name,
+                        )
+                        == _NOW
+                    )
+            finally:
+                monkeypatch.setattr(owners, "_fetch_owner_row", real_owner_fetch)
+            seed = await pool.fetchrow(
+                "SELECT * FROM point_events WHERE payload->>'endpoint_identity'=$1", endpoints[0]
+            )
+            assert seed is not None
+            await pool.execute(
+                "UPDATE point_events SET title='Preserved title', privacy='restricted', retention_days=91, payload=payload || $2::jsonb WHERE id=$1",
+                seed["id"],
+                {"preserved": True},
+            )
+            before = dict(await pool.fetchrow("SELECT * FROM point_events WHERE id=$1", seed["id"]))
+            await pool.execute(
+                "DELETE FROM point_events WHERE payload->>'endpoint_identity'=$1", endpoints[1]
+            )
+            await pool.execute(
+                "UPDATE point_events SET tombstone_at=now(), tombstone_reason='fixture' WHERE payload->>'endpoint_identity'=$1",
+                endpoints[2],
+            )
+            raw = [
+                dict(row)
+                for row in await pool.fetch("SELECT * FROM connectors.owntracks_points ORDER BY id")
+            ]
+            await insert(5)
+            await run_both()
+            checkpoint = await pool.fetchval(
+                "SELECT watermark FROM projection_checkpoints WHERE source_name='owntracks.points'"
+            )
+            assert checkpoint == _NOW + timedelta(minutes=5)
+            await insert(15)
+            await insert(25)
+
+            async def fail_save(*args, **kwargs):
+                raise asyncpg.PostgresError("controlled bootstrap state refusal")
+
+            monkeypatch.setattr(points, "save_carryover", fail_save)
+            refused = await point_adapter.run(pool=pool, chronicler_pool=pool)
+            assert refused.error is not None
+            assert (
+                await pool.fetchval(
+                    "SELECT watermark FROM projection_checkpoints WHERE source_name='owntracks.points'"
+                )
+                == checkpoint
+            )
+            unchanged = await pool.fetchval(
+                "SELECT payload FROM point_events WHERE id=$1", seed["id"]
+            )
+            assert "trail_outlier" not in unchanged
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM episodes WHERE source_name='owntracks.points'"
+                )
+                == 0
+            )
+            monkeypatch.setattr(points, "save_carryover", real_save)
+
+            # Use DISTINCT connections here: a one-slot pool alone would hide
+            # a missing advisory lock. Hold the first writer at real persistence,
+            # then positively observe the second writer waiting in PostgreSQL.
+            holding = asyncio.Event()
+            release_writer = asyncio.Event()
+
+            async def hold_first_save(
+                *args, holding=holding, release_writer=release_writer, **kwargs
+            ):
+                holding.set()
+                await release_writer.wait()
+                return await real_save(*args, **kwargs)
+
+            monkeypatch.setattr(points, "save_carryover", hold_first_save)
+            first = asyncio.create_task(
+                point_adapter.run(pool=parallel_pool, chronicler_pool=parallel_pool)
+            )
+            second = None
+            try:
+                await asyncio.wait_for(holding.wait(), timeout=5)
+                second = asyncio.create_task(
+                    point_adapter.run(pool=parallel_pool, chronicler_pool=parallel_pool)
+                )
+
+                async def observe_lock_waiter() -> bool:
+                    for _ in range(500):
+                        if await parallel_pool.fetchval(
+                            "SELECT EXISTS (SELECT 1 FROM pg_locks "
+                            "WHERE locktype='advisory' AND NOT granted "
+                            "AND database=(SELECT oid FROM pg_database "
+                            "WHERE datname=current_database()))"
+                        ):
+                            return True
+                        await asyncio.sleep(0.01)
+                    return False
+
+                assert await observe_lock_waiter(), "second source writer never waited on its lock"
+            finally:
+                release_writer.set()
+                tasks = [first] if second is None else [first, second]
+                try:
+                    results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    monkeypatch.setattr(points, "save_carryover", real_save)
+            assert all(result.error is None for result in results)
+            assert (await place_adapter.run(pool=pool, chronicler_pool=pool)).error is None
+            after = dict(await pool.fetchrow("SELECT * FROM point_events WHERE id=$1", seed["id"]))
+            assert after["payload"]["trail_outlier"]["reason"] == "implied_speed"
+            assert {k: v for k, v in after.items() if k != "payload"} == {
+                k: v for k, v in before.items() if k != "payload"
+            }
+            assert {k: v for k, v in after["payload"].items() if k != "trail_outlier"} == before[
+                "payload"
+            ]
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM point_events WHERE payload->>'endpoint_identity'=$1 AND occurred_at=$2",
+                    endpoints[1],
+                    _NOW,
+                )
+                == 0
+            )
+            tombstoned = await pool.fetchrow(
+                "SELECT tombstone_at,payload FROM point_events WHERE payload->>'endpoint_identity'=$1 AND occurred_at=$2",
+                endpoints[2],
+                _NOW,
+            )
+            assert (
+                tombstoned["tombstone_at"] is not None
+                and "trail_outlier" not in tombstoned["payload"]
+            )
+            for endpoint in endpoints:
+                movement = await pool.fetchrow(
+                    "SELECT * FROM episodes WHERE source_name='owntracks.points' AND payload->>'endpoint_identity'=$1",
+                    endpoint,
+                )
+                place = await pool.fetchrow(
+                    "SELECT * FROM episodes WHERE source_name=$1 AND payload->>'endpoint_identity'=$2",
+                    SOURCE_NAME,
+                    endpoint,
+                )
+                assert movement["start_at"] == place["start_at"] == _NOW + timedelta(minutes=5)
+                assert movement["payload"]["point_count"] == place["payload"]["point_count"] == 3
+            for row in raw:
+                assert (
+                    dict(
+                        await pool.fetchrow(
+                            "SELECT * FROM connectors.owntracks_points WHERE id=$1", row["id"]
+                        )
+                    )
+                    == row
+                )
+
+            await insert(35)
+            entered = asyncio.Event()
+
+            async def suspend_save(*args, entered=entered, **kwargs):
+                entered.set()
+                await asyncio.Event().wait()
+
+            monkeypatch.setattr(points, "save_carryover", suspend_save)
+            cancelled = asyncio.create_task(point_adapter.run(pool=pool, chronicler_pool=pool))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+            finally:
+                cancelled.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancelled
+            assert await pool.fetchval(
+                "SELECT watermark FROM projection_checkpoints WHERE source_name='owntracks.points'"
+            ) == _NOW + timedelta(minutes=25)
+            monkeypatch.setattr(points, "save_carryover", real_save)
+            resumed = await asyncio.wait_for(
+                point_adapter.run(pool=pool, chronicler_pool=pool), timeout=5
+            )
+            assert resumed.error is None
+            assert await pool.fetchval(
+                "SELECT watermark FROM projection_checkpoints WHERE source_name='owntracks.points'"
+            ) == _NOW + timedelta(minutes=35)
+            assert (
+                await pool.fetchval(
+                    "SELECT count(*) FROM episodes WHERE source_name='owntracks.points'"
+                )
+                == 3
+            )

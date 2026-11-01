@@ -88,9 +88,19 @@ The point and place-cluster projections share one plausibility policy
   It is excluded from movement, place and away episodes and from the dashboard
   Map trail. Three consecutive fixes that agree with each other re-anchor the
   trail, so one bad fix cannot hide a real one.
+- Tied effective device timestamps use the source UUID as the same stable
+  tie-break in the point, place and movement paths. This does not change the
+  existing timestamp-only cursor or recover fixes omitted at a batch split.
+- A first fix is provisional until a plausible companion confirms it. Three
+  mutually consistent candidates can reject an isolated bad seed even when
+  they arrive across batches. Only retained, explicitly identified projections
+  are revised; mature or unidentified legacy anchors are not retracted.
+  Candidate identities are bounded checkpoint state, not duplicate raw payloads.
 - A `movement_episode` needs at least two accepted fixes. Its point count
   covers the whole episode across batches. A new movement that overlaps a
   stored one for the same endpoint widens it rather than adding a second chunk.
+  Terminal coordinates come from the same fix as the widened end time;
+  a later legacy end without a valid coordinate pair stays unknown.
   Migration `chronicler_027` applied the same rule once to episodes stored
   before it: each overlapping group keeps its earliest episode, widened, and
   tombstones the rest. Groups holding a user correction are left alone.
@@ -121,3 +131,12 @@ access accordingly and use SSID/region names that reveal no more than intended.
   UUIDs, `watermark_id` is BIGINT) and pages by `(ts, id)`.
   A malformed or mismatched cursor triggers a bounded replay. One `run()` transaction under a
   source-keyed advisory lock holds every write and the checkpoint.
+
+- The point/place trail adapters serialize each source from checkpoint read
+  through outcome under a transaction-scoped advisory lock. Marker-only
+  revisions and bounded bootstrap/carryover state commit with the success
+  watermark; database errors and cancellation cannot acknowledge partial state.
+  Revisions keep existing point identities, privacy, retention and tombstones.
+  Missing evidence is not recreated. Pending retained candidates are reread by
+  exact UUID only; unavailable seed evidence leaves the prior anchor trusted
+  with an explicit warning rather than fabricating a historical correction.

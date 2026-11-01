@@ -24,13 +24,12 @@ Impossible-jump rule (deterministic, per endpoint, in device-``ts`` order):
   projected, carrying :data:`OUTLIER_PAYLOAD_KEY` with the reason and implied
   speed, so retention and provenance keep the original observation.
 
-Anchors persist across batches in each adapter's projection carryover under
-:data:`TRAIL_ANCHORS_CARRYOVER_KEY`. Candidate runs do not: a run that spans a
-batch boundary restarts in the next batch (its already-projected fixes stay
-flagged), which is acceptable because batches are 1000 fixes, roughly days.
-A batch whose first fix for an endpoint predates that endpoint's anchor is a
-replay, so the anchor is dropped and the batch is judged from scratch:
-replaying a batch reproduces its verdicts.
+Anchors and bounded candidate identities persist across batches. A new first
+fix is provisional until a plausible companion confirms it. Three mutually
+consistent candidates reject an isolated provisional seed, but never retract
+an established earlier trail. Retained candidate rows are read again by exact
+source identity, so their verdicts and derived contributions can be revised.
+Replay from before an anchor resets its bootstrap state deterministically.
 
 Pure functions only: no I/O, no LLM, no external geocoding.
 """
@@ -64,6 +63,7 @@ REANCHOR_RUN = 3
 OUTLIER_PAYLOAD_KEY = "trail_outlier"
 OUTLIER_REASON_IMPLIED_SPEED = "implied_speed"
 TRAIL_ANCHORS_CARRYOVER_KEY = "_trail_anchors"
+TRAIL_STATE_CARRYOVER_KEY = "_trail_state"
 
 _EARTH_RADIUS_METERS = 6_371_000.0
 
@@ -155,71 +155,111 @@ def _plausible(distance_m: float, speed_kmh: float, max_speed_kmh: float) -> boo
     return distance_m < MIN_JUMP_METERS or speed_kmh <= max_speed_kmh
 
 
+def trail_order_key(row: dict[str, Any]) -> tuple[datetime, str]:
+    """One effective-device-time/source-UUID ordering for every trail consumer."""
+    return row["ts"], str(row["id"])
+
+
+def load_trail_state(carryover: dict) -> dict[str, dict[str, Any]]:
+    """Read only the bounded, versioned identity state; old anchors stay trusted."""
+    raw = carryover.get(TRAIL_STATE_CARRYOVER_KEY)
+    if not isinstance(raw, dict) or type(raw.get("version")) is not int or raw["version"] != 1:
+        return {}
+    endpoints = raw.get("endpoints")
+    if not isinstance(endpoints, dict):
+        return {}
+    result = {}
+    for endpoint, entry in endpoints.items():
+        if not isinstance(endpoint, str) or not isinstance(entry, dict):
+            continue
+        seed = entry.get("seed_id")
+        pending = entry.get("pending_ids", [])
+        if (seed is not None and not isinstance(seed, str)) or not isinstance(pending, list):
+            continue
+        if len(pending) > REANCHOR_RUN - 1 or not all(isinstance(i, str) for i in pending):
+            continue
+        result[endpoint] = {"seed_id": seed, "pending_ids": list(pending)}
+    return result
+
+
 def classify_trail(
     rows: list[dict[str, Any]],
     *,
     prior_anchors: dict[str, TrailAnchor] | None = None,
     max_speed_kmh: float = MAX_PLAUSIBLE_SPEED_KMH,
     reanchor_run: int = REANCHOR_RUN,
+    state: dict[str, dict[str, Any]] | None = None,
+    changes: dict[str, TrailOutlier | None] | None = None,
+    rejected_seeds: set[str] | None = None,
 ) -> tuple[dict[int, TrailOutlier], dict[str, TrailAnchor]]:
-    """Flag impossible jumps in ``rows`` (sorted by ``ts``).
+    """Classify canonically ordered rows, including retained pending candidates.
 
-    Each row needs ``ts`` (tz-aware), ``lat``, ``lon`` and
-    ``endpoint_identity``. Returns ``(outliers, anchors)``: ``outliers`` maps
-    a row's index in ``rows`` to why it was rejected, and ``anchors`` is the
-    per-endpoint last accepted fix to persist for the next batch (endpoints
-    absent from this batch keep their prior anchor).
+    Optional mutable outputs carry bounded bootstrap identities and revisions
+    to earlier retained point events. No source payload is copied into state.
+    Rows without identities remain supported by the pure policy API.
     """
-    anchors: dict[str, TrailAnchor] = dict(prior_anchors or {})
+    anchors = dict(prior_anchors or {})
+    state = state if state is not None else {}
+    changes = changes if changes is not None else {}
+    rejected_seeds = rejected_seeds if rejected_seeds is not None else set()
     pending: dict[str, list[int]] = {}
+    seeds: dict[str, int] = {}
     outliers: dict[int, TrailOutlier] = {}
-
-    # A batch whose first fix predates the endpoint's anchor is a replay
-    # (unsaved watermark, reset or backfill): the anchor came from these very
-    # rows or later ones, so judging against it would wave every fix through.
-    # Judge the batch from scratch instead, so the verdicts do not depend on
-    # how many times it was projected.
     first_ts: dict[str, datetime] = {}
     for row in rows:
         first_ts.setdefault(row["endpoint_identity"], row["ts"])
     for endpoint, ts in first_ts.items():
-        prior = anchors.get(endpoint)
-        if prior is not None and ts < prior.ts:
+        if endpoint in anchors and ts < anchors[endpoint].ts:
             del anchors[endpoint]
-
+            state.pop(endpoint, None)
     for index, row in enumerate(rows):
         endpoint = row["endpoint_identity"]
+        identity = str(row["id"]) if "id" in row else None
+        entry = state.setdefault(endpoint, {"seed_id": None, "pending_ids": []})
         anchor = anchors.get(endpoint)
         if anchor is None:
-            # No history yet: nothing trustworthy to judge the first fix against.
-            anchors[endpoint] = TrailAnchor(ts=row["ts"], lat=row["lat"], lon=row["lon"])
+            anchors[endpoint] = TrailAnchor(row["ts"], row["lat"], row["lon"])
+            entry["seed_id"] = identity
+            seeds[endpoint] = index
             continue
-
-        distance_m, speed_kmh = _jump(anchor.ts, anchor.lat, anchor.lon, row)
-        if _plausible(distance_m, speed_kmh, max_speed_kmh):
-            anchors[endpoint] = TrailAnchor(ts=row["ts"], lat=row["lat"], lon=row["lon"])
+        if identity is not None and identity == entry["seed_id"]:
+            seeds[endpoint] = index
+            continue
+        distance, speed = _jump(anchor.ts, anchor.lat, anchor.lon, row)
+        if _plausible(distance, speed, max_speed_kmh):
+            anchors[endpoint] = TrailAnchor(row["ts"], row["lat"], row["lon"])
+            entry["seed_id"] = None
+            seeds.pop(endpoint, None)
             pending.pop(endpoint, None)
             continue
-
         run = pending.setdefault(endpoint, [])
         if run:
-            prev = rows[run[-1]]
-            prev_distance, prev_speed = _jump(prev["ts"], prev["lat"], prev["lon"], row)
-            if not _plausible(prev_distance, prev_speed, max_speed_kmh):
+            previous = rows[run[-1]]
+            d, v = _jump(previous["ts"], previous["lat"], previous["lon"], row)
+            if not _plausible(d, v, max_speed_kmh):
                 run.clear()
         run.append(index)
-        outliers[index] = TrailOutlier(
-            implied_speed_kmh=speed_kmh,
-            distance_km=distance_m / 1000.0,
-        )
-
+        verdict = TrailOutlier(speed, distance / 1000)
+        outliers[index] = verdict
         if len(run) >= reanchor_run:
-            # The candidates agree with each other: the anchor was stale.
+            if endpoint in seeds or entry["seed_id"] is not None:
+                if endpoint in seeds:
+                    outliers[seeds[endpoint]] = verdict
+                if entry["seed_id"] is not None:
+                    changes[entry["seed_id"]] = verdict
+                rejected_seeds.add(endpoint)
             for accepted in run:
                 outliers.pop(accepted, None)
-            anchors[endpoint] = TrailAnchor(ts=row["ts"], lat=row["lat"], lon=row["lon"])
+                if "id" in rows[accepted]:
+                    changes[str(rows[accepted]["id"])] = None
+            anchors[endpoint] = TrailAnchor(row["ts"], row["lat"], row["lon"])
+            entry["seed_id"] = None
+            seeds.pop(endpoint, None)
             pending.pop(endpoint, None)
-
+    for endpoint, entry in state.items():
+        entry["pending_ids"] = [
+            str(rows[i]["id"]) for i in pending.get(endpoint, []) if "id" in rows[i]
+        ]
     return outliers, anchors
 
 
@@ -230,10 +270,13 @@ __all__ = [
     "OUTLIER_REASON_IMPLIED_SPEED",
     "REANCHOR_RUN",
     "TRAIL_ANCHORS_CARRYOVER_KEY",
+    "TRAIL_STATE_CARRYOVER_KEY",
     "TrailAnchor",
     "TrailOutlier",
     "classify_trail",
     "dump_anchors",
     "haversine_meters",
     "load_anchors",
+    "load_trail_state",
+    "trail_order_key",
 ]

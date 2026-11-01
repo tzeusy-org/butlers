@@ -53,7 +53,7 @@ def _make_row(
 ) -> dict:
     ikey = idempotency_key or f"owntracks:{endpoint_identity}:{int(ts.timestamp())}:location"
     return {
-        "id": "some-uuid",
+        "id": uuid5(NAMESPACE_URL, ikey),
         "idempotency_key": ikey,
         "ts": ts,
         "lat": lat,
@@ -74,10 +74,11 @@ def _make_mock_row(r: dict) -> MagicMock:
 
 def _pool_returning(*rows: dict) -> AsyncMock:
     """Build a mock asyncpg pool that returns the given row dicts for fetch()."""
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
@@ -96,21 +97,23 @@ def _tie_boundary_pool(*rows: dict) -> AsyncMock:
         assert isinstance(limit, int)
         return [_make_mock_row(row) for row in candidates[:limit]]
 
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = _fetch
     conn.fetchrow = AsyncMock(return_value=None)
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
 
 def _pool_table_missing() -> AsyncMock:
     """Build a pool whose table-existence check returns False."""
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
@@ -130,11 +133,11 @@ class _AsyncCtx:
 
 def _chronicler_pool() -> AsyncMock:
     """Build a minimal mock chronicler pool for upsert calls."""
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchrow = AsyncMock(return_value=None)
 
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
@@ -413,13 +416,14 @@ async def test_missing_evidence_table_returns_skipped_result() -> None:
 
 @pytest.mark.asyncio
 async def test_undefined_table_exception_returns_skipped_result() -> None:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
     conn.fetchval = AsyncMock(
         side_effect=asyncpg.exceptions.UndefinedTableError(
             'relation "connectors.owntracks_points" does not exist'
         )
     )
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
 
     adapter = OwnTracksPointAdapter()
@@ -701,6 +705,7 @@ async def _project_capturing(
         conn.fetchrow = AsyncMock(return_value=stored)
 
     with (
+        patch("butlers.chronicler.adapters.owntracks.get_owntracks_point", return_value=None),
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event", side_effect=_fake_pe),
         patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_ep),
         patch(
@@ -737,6 +742,18 @@ async def test_impossible_jump_kept_as_flagged_evidence_and_excluded_from_moveme
     ]
     assert saved["_trail_anchors"][_ENDPOINT]["ts"] == (_NOW + timedelta(minutes=10)).isoformat()
 
+    cold = [_make_row(ts=_NOW, lat=52.12, lon=22.06, idempotency_key="seed")]
+    cold += [
+        _make_row(ts=_NOW + timedelta(minutes=m), idempotency_key=f"good-{m}") for m in (5, 15, 25)
+    ]
+    _, projected, movements, _ = await _project_capturing(cold)
+    assert {e.payload["idempotency_key"] for e in projected if "trail_outlier" in e.payload} == {
+        "seed"
+    }
+    assert len(projected) == 4
+    assert movements[0].start_at == _NOW + timedelta(minutes=5)
+    assert movements[0].payload["point_count"] == 3
+
 
 @pytest.mark.asyncio
 async def test_carryover_extension_counts_the_whole_episode() -> None:
@@ -767,7 +784,13 @@ async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates
         "source_ref": "connectors.owntracks_points:movement:stored",
         "start_at": _NOW - timedelta(minutes=11),
         "end_at": _NOW + timedelta(hours=3),
-        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+        "payload": {
+            "start_lat": 1.0,
+            "start_lon": 103.0,
+            "point_count": 40,
+            "end_lat": 2.0,
+            "end_lon": 104.0,
+        },
         "linked_event_ids": [],  # legacy episode: no linked evidence yet
     }
     rows = [
@@ -782,6 +805,15 @@ async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates
     assert (ep.start_at, ep.end_at) == (stored["start_at"], stored["end_at"])
     assert ep.payload["point_count"] == 42
     assert saved[_ENDPOINT]["source_ref"] == stored["source_ref"]
+    assert (ep.payload["end_lat"], ep.payload["end_lon"]) == (2.0, 104.0)
+    assert (saved[_ENDPOINT]["end_lat"], saved[_ENDPOINT]["end_lon"]) == (2.0, 104.0)
+    # A genuinely later current end uses its own location; ties keep the stored pair.
+    for end in (rows[-1]["ts"] - timedelta(minutes=1), rows[-1]["ts"]):
+        _, _, values, _ = await _project_capturing(rows, stored={**stored, "end_at": end})
+        expected = (1.2345, 103.8765) if end < rows[-1]["ts"] else (2.0, 104.0)
+        assert (values[0].payload["end_lat"], values[0].payload["end_lon"]) == expected
+    _, _, legacy, _ = await _project_capturing(rows, stored={**stored, "payload": {}})
+    assert "end_lat" not in legacy[0].payload and "end_lon" not in legacy[0].payload
 
 
 @pytest.mark.asyncio
@@ -792,7 +824,13 @@ async def test_replaying_a_merged_batch_keeps_the_point_count_stable() -> None:
         "source_ref": "connectors.owntracks_points:movement:stored",
         "start_at": _NOW - timedelta(minutes=11),
         "end_at": _NOW + timedelta(hours=3),
-        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+        "payload": {
+            "start_lat": 1.0,
+            "start_lon": 103.0,
+            "point_count": 40,
+            "end_lat": 2.0,
+            "end_lon": 104.0,
+        },
         "linked_event_ids": others,
     }
     rows = [
@@ -811,3 +849,56 @@ async def test_replaying_a_merged_batch_keeps_the_point_count_stable() -> None:
     _, _, replayed, saved = await _project_capturing(rows, stored=replay_stored)
     assert replayed[0].payload["point_count"] == 42
     assert saved[_ENDPOINT]["point_count"] == 42
+    assert (replayed[0].payload["end_lat"], replayed[0].payload["end_lon"]) == (
+        first[0].payload["end_lat"],
+        first[0].payload["end_lon"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_tied_fixes_have_identical_order_and_verdicts_in_both_adapters() -> None:
+    from butlers.chronicler.adapters.owntracks_place_cluster import OwnTracksPlaceClusterAdapter
+    from butlers.chronicler.adapters.owntracks_trail import classify_trail
+
+    early = {
+        **_make_row(lat=40.08, lon=116.58, idempotency_key="early"),
+        "id": UUID(int=1),
+        "recorded_at": _NOW + timedelta(minutes=2),
+    }
+    late = {
+        **_make_row(lat=52.12, lon=22.06, idempotency_key="late"),
+        "id": UUID(int=2),
+        "recorded_at": _NOW + timedelta(minutes=1),
+    }
+    other = {**_make_row(endpoint_identity="other", idempotency_key="other"), "id": UUID(int=3)}
+    for rows in ([late, early, other], [other, early, late]):
+        seen: list[tuple[list[str], set[str]]] = []
+
+        def capture(rows, seen=seen, **kwargs):
+            outliers, anchors = classify_trail(rows, **kwargs)
+            seen.append(([str(r["id"]) for r in rows], {str(rows[i]["id"]) for i in outliers}))
+            return outliers, anchors
+
+        with patch("butlers.chronicler.adapters.owntracks.classify_trail", side_effect=capture):
+            _, events, _, _ = await _project_capturing(rows)
+        with (
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.get_carryover", return_value={}
+            ),
+            patch("butlers.chronicler.adapters.owntracks_place_cluster.save_carryover"),
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.classify_trail",
+                side_effect=capture,
+            ),
+            patch(
+                "butlers.chronicler.adapters.owntracks_place_cluster.resolve_owner_entity_id",
+                return_value=None,
+            ),
+        ):
+            await OwnTracksPlaceClusterAdapter().project(
+                _pool_returning(*rows), chronicler_pool=_chronicler_pool(), since=None
+            )
+        assert seen[0] == seen[1]
+        assert seen[0][0] == [str(UUID(int=i)) for i in (1, 2, 3)]
+        assert seen[0][1] == {str(UUID(int=2))}
+        assert len(events) == 3
