@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import NAMESPACE_URL, uuid5
 
+import asyncpg
 import pytest
 
 from butlers.chronicler.adapters.home_assistant import (
@@ -86,7 +88,7 @@ def _make_ot_row(
 ) -> dict:
     ikey = idempotency_key or f"owntracks:{endpoint_identity}:{int(ts.timestamp())}:location"
     return {
-        "id": row_id,
+        "id": uuid5(NAMESPACE_URL, f"{ikey}:{row_id}"),
         "idempotency_key": ikey,
         "ts": ts,
         "lat": lat,
@@ -121,30 +123,32 @@ def _pool_returning(*rows: dict) -> AsyncMock:
             return False  # mapping table absent → all episodes degrade to entity_id=NULL
         return True  # evidence table exists
 
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchval = _fetchval
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
 
 def _pool_empty() -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
+    conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 
 
 def _chronicler_pool() -> AsyncMock:
-    conn = AsyncMock()
+    conn = AsyncMock(spec=asyncpg.Connection)
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchrow = AsyncMock(return_value=None)
     conn.fetchval = AsyncMock(return_value=None)  # carryover fetch returns None
     conn.execute = AsyncMock()
-    pool = AsyncMock()
+    pool = AsyncMock(spec=asyncpg.Pool)
     pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
     return pool
 

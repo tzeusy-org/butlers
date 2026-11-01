@@ -67,10 +67,13 @@ from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.adapters.owntracks_trail import (
     OUTLIER_PAYLOAD_KEY,
     TRAIL_ANCHORS_CARRYOVER_KEY,
+    TRAIL_STATE_CARRYOVER_KEY,
     TrailOutlier,
     classify_trail,
     dump_anchors,
     load_anchors,
+    load_trail_state,
+    trail_order_key,
 )
 from butlers.chronicler.confidence import (
     EvidenceKind,
@@ -86,11 +89,21 @@ from butlers.chronicler.models import (
     Privacy,
 )
 from butlers.chronicler.storage import (
-    get_carryover,
+    get_owntracks_carryover as get_carryover,
+)
+from butlers.chronicler.storage import (
+    get_owntracks_point,
     link_event_to_episode,
-    save_carryover,
+    owntracks_connection,
+    owntracks_transaction,
+    retained_owntracks_rows,
+    revise_owntracks_point,
+    run_owntracks_projection,
     upsert_episode,
     upsert_point_event,
+)
+from butlers.chronicler.storage import (
+    save_owntracks_carryover as save_carryover,
 )
 
 logger = logging.getLogger(__name__)
@@ -140,13 +153,47 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             )
         self.clock_skew_threshold = timedelta(hours=clock_skew_threshold_hours)
 
+    async def run(self, *, pool: asyncpg.Pool, chronicler_pool: asyncpg.Pool) -> AdapterResult:
+        # Optional owner lookup keeps its original pool/error isolation.
+        entity_id = await resolve_owner_entity_id(pool)
+
+        async def project(
+            conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+            since: datetime | None,
+            since_id: int | None,
+        ) -> AdapterResult:
+            source = conn if pool is chronicler_pool else pool
+            return await self._project(
+                source, chronicler_pool=conn, since=since, since_id=since_id, entity_id=entity_id
+            )
+
+        return await run_owntracks_projection(
+            chronicler_pool, self.source_name, project, self._llm_probe
+        )
+
     async def project(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         *,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
         since_id: int | None = None,
+    ) -> AdapterResult:
+        entity_id = await resolve_owner_entity_id(pool)
+        async with owntracks_transaction(chronicler_pool, self.source_name) as conn:
+            source = conn if pool is chronicler_pool else pool
+            return await self._project(
+                source, chronicler_pool=conn, since=since, since_id=since_id, entity_id=entity_id
+            )
+
+    async def _project(
+        self,
+        pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        *,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        since: datetime | None,
+        since_id: int | None = None,
+        entity_id: UUID | None,
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
@@ -180,11 +227,59 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         if valid_rows:
             # Judge plausibility in device-time order with the shared trail
             # policy (owntracks_trail.py); anchors persist across batches.
-            valid_rows.sort(key=lambda r: (r["ts"], r["recorded_at"] or r["ts"]))
+            valid_rows.sort(key=trail_order_key)
             prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+            state = load_trail_state(prior_carryover)
+            # Classification may reset this bounded state during replay. Keep
+            # its historical identities before that mutation: a fetched overlap
+            # is still a revision, never permission to resurrect expired data.
+            historical_ids = {
+                identity
+                for entry in state.values()
+                for identity in (entry["seed_id"], entry.get("anchor_id"), *entry["pending_ids"])
+                if identity is not None
+            }
+            retained = await retained_owntracks_rows(pool, state)
+            recovered = {}
+            for raw in retained:
+                normalized, _ = self._normalize_row(raw)
+                if normalized is not None:
+                    recovered[str(normalized["id"])] = normalized
+            current_ids = {str(row["id"]) for row in valid_rows}
+            pending_ids = {
+                identity for entry in state.values() for identity in entry["pending_ids"]
+            }
+            if pending_ids - recovered.keys() - current_ids:
+                result.warnings.append(
+                    "OwnTracks candidate evidence unavailable; pending consensus restarts."
+                )
+            for entry in state.values():
+                if (
+                    entry["seed_id"] is not None
+                    and entry["seed_id"] not in recovered
+                    and entry["seed_id"] not in current_ids
+                ):
+                    entry["seed_id"] = None
+                    result.warnings.append(
+                        "OwnTracks bootstrap evidence unavailable; legacy anchor retained."
+                    )
+            pending_rows = [
+                row
+                for identity, row in recovered.items()
+                if identity in pending_ids and identity not in current_ids
+            ]
+            valid_rows = sorted([*pending_rows, *valid_rows], key=trail_order_key)
+            changes = {}
+            rejected_seeds: set[str] = set()
             outliers, anchors = classify_trail(
-                valid_rows, prior_anchors=load_anchors(prior_carryover)
+                valid_rows,
+                prior_anchors=load_anchors(prior_carryover),
+                state=state,
+                changes=changes,
+                rejected_seeds=rejected_seeds,
             )
+            for endpoint in rejected_seeds:
+                prior_carryover.pop(endpoint, None)
 
             # Map each location point event's idempotency_key → its chronicler
             # point-event id, so movement episodes can record their corroborating
@@ -199,21 +294,35 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         f"impossible jump (~{outlier.implied_speed_kmh:.0f} km/h); kept as "
                         "flagged evidence, excluded from episodes."
                     )
-                else:
-                    accepted_rows.append(normalized_row)
                 event = await self._project_point_event(
-                    chronicler_pool, normalized_row, outlier=outlier
+                    chronicler_pool,
+                    normalized_row,
+                    outlier=outlier,
+                    existing_only=(
+                        str(normalized_row["id"]) in historical_ids
+                        or str(normalized_row["id"]) not in current_ids
+                    ),
                 )
+                if event is not None and outlier is None:
+                    accepted_rows.append(normalized_row)
                 if event is not None and event.id is not None:
                     event_id_by_key[normalized_row["idempotency_key"]] = event.id
                 result.rows_projected += 1
                 result.point_events += 1
 
-            new_carryover: dict = {}
+            for identity, verdict in changes.items():
+                previous = recovered.get(identity)
+                if previous is not None and identity not in current_ids:
+                    await revise_owntracks_point(
+                        chronicler_pool,
+                        f"{_EVIDENCE_TABLE}:{previous['idempotency_key']}",
+                        verdict.to_payload() if verdict else None,
+                    )
+            new_carryover: dict = {
+                key: value for key, value in prior_carryover.items() if not key.startswith("_")
+            }
             if accepted_rows:
-                # Resolve owner entity_id once per adapter run (not per row).
-                entity_id = await resolve_owner_entity_id(pool)
-                episodes_closed, new_carryover = await self._project_movement_episodes(
+                episodes_closed, movement_carryover = await self._project_movement_episodes(
                     chronicler_pool,
                     accepted_rows,
                     prior_carryover,
@@ -221,7 +330,9 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     entity_id=entity_id,
                 )
                 result.episodes_closed += episodes_closed
+                new_carryover.update(movement_carryover)
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
+            new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
             await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
@@ -340,7 +451,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
     async def _fetch_points(
         self,
-        pool: asyncpg.Pool,
+        pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
         since_id: int | None = None,
     ) -> list[asyncpg.Record] | None:
@@ -356,45 +467,47 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         """
         del since_id
         try:
-            async with pool.acquire() as conn:
-                exists = await conn.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = 'connectors'
-                          AND table_name = 'owntracks_points'
+            async with owntracks_connection(pool) as conn:
+                # Roll back a caught read error before updating projection status.
+                async with conn.transaction():
+                    exists = await conn.fetchval(
+                        """
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.tables
+                            WHERE table_schema = 'connectors'
+                              AND table_name = 'owntracks_points'
+                        )
+                        """
                     )
-                    """
-                )
-                if not exists:
-                    return None
+                    if not exists:
+                        return None
 
-                if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, ts, lat, lon,
-                               accuracy, trigger, event, endpoint_identity,
-                               raw_payload, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
-                    )
-                else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, ts, lat, lon,
-                               accuracy, trigger, event, endpoint_identity,
-                               raw_payload, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE ts > $1
-                        ORDER BY ts ASC, id ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
-                    )
+                    if since is None:
+                        rows = await conn.fetch(
+                            f"""
+                            SELECT id, idempotency_key, ts, lat, lon,
+                                   accuracy, trigger, event, endpoint_identity,
+                                   raw_payload, recorded_at
+                            FROM {_EVIDENCE_TABLE}
+                            ORDER BY ts ASC, id ASC
+                            LIMIT $1
+                            """,
+                            self.batch_limit,
+                        )
+                    else:
+                        rows = await conn.fetch(
+                            f"""
+                            SELECT id, idempotency_key, ts, lat, lon,
+                                   accuracy, trigger, event, endpoint_identity,
+                                   raw_payload, recorded_at
+                            FROM {_EVIDENCE_TABLE}
+                            WHERE ts > $1
+                            ORDER BY ts ASC, id ASC
+                            LIMIT $2
+                            """,
+                            since,
+                            self.batch_limit,
+                        )
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None
@@ -403,13 +516,24 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
     async def _project_point_event(
         self,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         row: dict[str, Any],
         *,
         outlier: TrailOutlier | None = None,
-    ) -> PointEvent:
+        existing_only: bool = False,
+    ) -> PointEvent | None:
         idempotency_key = row["idempotency_key"]
         source_ref = f"{_EVIDENCE_TABLE}:{idempotency_key}"
+        existing = await get_owntracks_point(chronicler_pool, source_ref)
+        if existing is not None:
+            if existing.tombstone_at is not None:
+                return None
+            revised = await revise_owntracks_point(
+                chronicler_pool, source_ref, outlier.to_payload() if outlier else None
+            )
+            return existing if revised is not None else None
+        if existing_only:
+            return None
         endpoint_identity = row["endpoint_identity"]
 
         lat = row["lat"]
@@ -437,7 +561,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             payload[OUTLIER_PAYLOAD_KEY] = outlier.to_payload()
             title += " (rejected: impossible jump)"
 
-        async with chronicler_pool.acquire() as conn:
+        async with owntracks_connection(chronicler_pool) as conn:
             event = await upsert_point_event(
                 conn,
                 PointEvent(
@@ -456,7 +580,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
     async def _project_movement_episodes(
         self,
-        chronicler_pool: asyncpg.Pool,
+        chronicler_pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         rows: list[dict[str, Any]],
         prior_carryover: dict,
         *,
@@ -496,9 +620,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         # and merge fixes taken hours (and airports) apart (bu-8r9q06).
         # Group by endpoint first so interleaved devices cannot fragment each
         # other's movement into single-fix segments.
-        rows = sorted(
-            rows, key=lambda r: (r["endpoint_identity"], r["ts"], r["recorded_at"] or r["ts"])
-        )
+        rows = sorted(rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r)))
 
         gap = timedelta(minutes=self.movement_gap_minutes)
         episodes_upserted = 0
@@ -668,15 +790,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             if seg["source_ref"] is None:
                 # Only a segment that starts fresh this batch can duplicate a
                 # stored episode; a carryover extension already targets one.
-                async with chronicler_pool.acquire() as pooled:
+                async with owntracks_connection(chronicler_pool) as pooled:
                     merged = await self._merge_overlapping_episode(
                         cast(asyncpg.Connection, pooled),
                         endpoint_identity=endpoint_identity,
-                        source_ref=seg_source_ref,
                         start_at=effective_start_at,
                         end_at=end_at,
                     )
+            terminal = (float(last["lat"]), float(last["lon"]))
             if merged is not None:
+                stored_terminal = (merged["end_lat"], merged["end_lon"])
+                valid_stored = all(value is not None for value in stored_terminal)
+                if merged["end_at"] > end_at:
+                    terminal = stored_terminal if valid_stored else None
+                elif merged["end_at"] == end_at and valid_stored:
+                    terminal = stored_terminal
                 # Never emit a second chunk over the same span: widen the
                 # already-stored episode instead (late or replayed fixes).
                 seg_source_ref = cast(str, merged["source_ref"])
@@ -709,9 +837,13 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "point_count": point_count,
                 "start_lat": effective_start_lat,
                 "start_lon": effective_start_lon,
-                "end_lat": float(last["lat"]),
-                "end_lon": float(last["lon"]),
             }
+            if terminal is not None:
+                payload.update(end_lat=terminal[0], end_lon=terminal[1])
+            new_carryover[endpoint_identity].update(
+                end_lat=terminal[0] if terminal is not None else None,
+                end_lon=terminal[1] if terminal is not None else None,
+            )
 
             evidence_refs = evidence_refs_from_event_ids(seg_event_ids)
 
@@ -721,7 +853,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             # re-reconciliation).
             confidence = derive_confidence([EvidenceKind(name="gps")])
 
-            async with chronicler_pool.acquire() as conn:
+            async with owntracks_connection(chronicler_pool) as conn:
                 async with owner_episode_transaction(conn):
                     episode = await upsert_episode(
                         conn,
@@ -758,19 +890,17 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
     async def _merge_overlapping_episode(
         self,
-        conn: asyncpg.Connection,
+        conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         *,
         endpoint_identity: str,
-        source_ref: str,
         start_at: datetime,
         end_at: datetime,
     ) -> dict[str, Any] | None:
         """Return a stored movement episode overlapping this span, if any.
 
-        Only a *different* episode (another ``source_ref``) for the same
-        endpoint counts: re-projecting the same segment is an ordinary
-        idempotent upsert. The earliest overlapping episode wins so repeated
-        merges converge on one row.
+        Include the same canonical source reference: a shorter replay must
+        not shrink its terminal time/location. The earliest overlapping
+        episode wins so repeated merges converge on one row.
         """
         row = await conn.fetchrow(
             """
@@ -784,16 +914,14 @@ class OwnTracksPointAdapter(ProjectionAdapter):
               AND episode_type = $2
               AND tombstone_at IS NULL
               AND payload ->> 'endpoint_identity' = $3
-              AND source_ref <> $4
-              AND start_at <= $6
-              AND end_at >= $5
+              AND start_at <= $5
+              AND end_at >= $4
             ORDER BY start_at ASC, source_ref ASC
             LIMIT 1
             """,
             self.source_name,
             EPISODE_TYPE_MOVEMENT,
             endpoint_identity,
-            source_ref,
             start_at,
             end_at,
         )
@@ -815,6 +943,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "source_ref": row["source_ref"],
             "start_at": row["start_at"],
             "end_at": stored_end,
+            "end_lat": self._coerce_finite_float(payload.get("end_lat")),
+            "end_lon": self._coerce_finite_float(payload.get("end_lon")),
             "start_lat": start_lat if start_lat is not None else 0.0,
             "start_lon": start_lon if start_lon is not None else 0.0,
             "point_count": stored_count,
