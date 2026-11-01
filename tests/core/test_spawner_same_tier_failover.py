@@ -24,10 +24,10 @@ Also covers:
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, override
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
 
@@ -1463,6 +1463,57 @@ class TestUsageLimitAllowanceExhaustion:
         assert clear.await_args.args[1] == _FALLBACK_CATALOG_ID
         # The breaker counts only runtime_failure/success, so nothing here feeds it.
         assert all(c.kwargs["outcome"] != "runtime_failure" for c in write_attempt.await_args_list)
+
+    @pytest.mark.parametrize("trusted", [True, False])
+    async def test_suppressed_usage_limit_marks_account_from_trusted_text_only(
+        self, tmp_path: Path, trusted: bool
+    ) -> None:
+        """A limit hit after tool work is not failed over but still exhausts the account.
+
+        Transcript-derived ``error_detail`` alone never marks it (bu-s11n0s.34).
+        """
+        reset = datetime.now(UTC) + timedelta(hours=2)
+        limit_text = f"Claude AI usage limit reached|{int(reset.timestamp())}"
+        process_info = {"is_pre_tool_call": False, "stderr": "", "error_detail": limit_text}
+        if trusted:
+            process_info["terminal_error_text"] = limit_text
+        with (
+            patch.object(
+                _FailThenSuccessAdapter,
+                "last_process_info",
+                new_callable=PropertyMock,
+                return_value=process_info,
+            ),
+            patch(
+                "butlers.core.spawner.classify_failover_eligibility",
+                return_value=FailoverDecision(
+                    eligible=False, reason="adapter_reported_tool_work: tools ran"
+                ),
+            ),
+        ):
+            result, adapter, write_attempt, mark, _clear = await self._run(
+                tmp_path, RuntimeError(f"Claude CLI exited with code 1: {limit_text}")
+            )
+
+        assert result.success is False
+        assert adapter.invoke_calls == 1
+        failed = next(
+            c
+            for c in write_attempt.await_args_list
+            if c.kwargs["catalog_entry_id"] == _PRIMARY_CATALOG_ID
+        )
+        assert failed.kwargs["failure_reason"].startswith("adapter_reported_tool_work")
+        if trusted:
+            assert failed.kwargs["outcome"] == "allowance_exhausted"
+            mark.assert_awaited_once()
+            assert mark.await_args.args[1] == _PRIMARY_CATALOG_ID
+            assert mark.await_args.kwargs == {
+                "reset_at": reset.replace(microsecond=0),
+                "attempt_id": 42,
+            }
+        else:
+            assert failed.kwargs["outcome"] == "suppressed"
+            mark.assert_not_awaited()
 
     async def test_ordinary_failure_does_not_touch_allowance(self, tmp_path: Path) -> None:
         result, _adapter, write_attempt, mark, _clear = await self._run(

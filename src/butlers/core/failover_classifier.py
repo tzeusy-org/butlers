@@ -670,6 +670,40 @@ def _usage_limit_decision(text: str, *, source: str = "exception message") -> Fa
     )
 
 
+@dataclasses.dataclass(frozen=True)
+class UsageLimitSignal:
+    """Evidence that the provider account is out of plan allowance.
+
+    ``reset_at`` follows :func:`parse_usage_limit_reset`: ``None`` means no
+    reset was stated, never "available now".
+    """
+
+    reset_at: datetime | None
+    source: str
+
+
+# Usage-limit exhaustion is account state, independent of whether the failed
+# attempt may be retried (bu-s11n0s.34). A limit hit after tool work is still
+# suppressed (Gate 1 / Gate 6a), but the account must be marked exhausted so the
+# next session does not retry it. Only text the adapter attributes to the
+# provider counts: its structured terminal error (``terminal_error_text``, the
+# failed result envelope / ``turn.failed`` message) and raw stderr. The
+# exception message and ``error_detail`` fall back to the stdout transcript,
+# where tool output can quote "usage limit" verbatim.
+_USAGE_LIMIT_TRUSTED_SOURCES: tuple[str, ...] = ("terminal_error_text", "stderr")
+
+
+def usage_limit_signal(process_info: dict[str, Any] | None) -> UsageLimitSignal | None:
+    """Return a usage-limit signal from trusted adapter text, else ``None``."""
+    if not isinstance(process_info, dict):
+        return None
+    for key in _USAGE_LIMIT_TRUSTED_SOURCES:
+        value = process_info.get(key)
+        if isinstance(value, str) and _matches_any(value.lower(), _USAGE_LIMIT_MARKERS):
+            return UsageLimitSignal(reset_at=parse_usage_limit_reset(value), source=key)
+    return None
+
+
 def _matches_any(text: str, markers: tuple[str, ...]) -> bool:
     """Return True when any marker substring appears in text (already lowercased)."""
     return any(marker in text for marker in markers)

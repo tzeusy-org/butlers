@@ -2609,6 +2609,19 @@ class CodexAdapter(RuntimeAdapter):
                 "stderr": stderr,
                 "runtime_type": "codex",
             }
+            # The terminal turn.failed / error event message, never tool output:
+            # usage-limit detection trusts it where error_detail may fall back to
+            # the stdout transcript (bu-s11n0s.34).
+            terminal_text = (
+                _extract_structured_stdout_error(stdout)
+                if returncode != 0
+                or any(item["error"]["is_error"] is True for item in served["executions"])
+                else None
+            )
+            if terminal_text:
+                self._last_process_info["terminal_error_text"] = (
+                    _redact_sensitive_runtime_diagnostic(terminal_text)
+                )
 
             if returncode != 0:
                 recovered = _recover_completed_nonzero_exit(stdout, stderr)
