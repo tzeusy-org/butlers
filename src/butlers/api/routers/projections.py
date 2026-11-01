@@ -6,7 +6,8 @@ Owner session only (the central owner-authentication boundary):
     DELETE /api/projections/{id}         revoke a grant
 
 Owner session or a grant scoped to this exact route (``OwnerAuthMiddleware``):
-    GET    /api/projections/{id}/glance  deterministic glance payload, no LLM call
+    GET    /api/projections/{id}/glance  deterministic glance payload, no LLM call;
+                                         ?format=text|png renders it for dumb surfaces
 
 Spec: openspec/changes/add-ambient-projection-grants (REQ-ambient-projections-001..003).
 """
@@ -16,12 +17,13 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel, Field
 
-from butlers.api.briefing.glance import compose_glance
+from butlers.api.briefing.glance import GlanceCache, compose_glance, glance_png, glance_text
 from butlers.api.deps import (
     ButlerConnectionInfo,
     Db,
@@ -160,20 +162,43 @@ async def revoke_projection(
     return ApiResponse(data=_view(grant))
 
 
-@router.get("/{projection_id}/glance", response_model=ApiResponse[Glance])
+def get_glance_cache(request: Request) -> GlanceCache:
+    cache = getattr(request.app.state, "glance_cache", None)
+    if cache is None:
+        cache = request.app.state.glance_cache = GlanceCache()
+    return cache
+
+
+@router.get(
+    "/{projection_id}/glance",
+    response_model=ApiResponse[Glance],
+    responses={
+        200: {
+            "content": {"text/plain": {}, "image/png": {}},
+            "description": "JSON envelope, or the text or 1-bit PNG rendering",
+        }
+    },
+)
 async def get_glance(
     projection_id: uuid.UUID,
     request: Request,
     db: Db,
+    format: Literal["json", "text", "png"] = "json",
+    width: int = Query(default=400, ge=128, le=1600),
+    height: int = Query(default=300, ge=128, le=1600),
     store: ProjectionGrantStore = Depends(get_projection_store),
+    cache: GlanceCache = Depends(get_glance_cache),
     configs: list[ButlerConnectionInfo] = Depends(get_butler_configs),
     mgr: MCPClientManager = Depends(get_mcp_manager),
     pricing: PricingConfig = Depends(get_pricing),
-) -> ApiResponse[Glance]:
+) -> ApiResponse[Glance] | Response:
     """Return the glance for one projection, under its grant or an owner session.
 
     Reads the same composed attention model and classifier as
-    ``GET /api/dashboard/briefing`` and never calls a model.
+    ``GET /api/dashboard/briefing`` and never calls a model. ``format=text`` and
+    ``format=png`` (``width`` x ``height``, 1-bit) render the same payload and
+    print its ``valid_until``. Grant fetches share one composition per grant for
+    ``GLANCE_CACHE_SECONDS``; an owner preview always recomposes.
     """
     grant: ProjectionGrant | None = getattr(request.state, "projection_grant", None)
     via_grant = grant is not None
@@ -182,6 +207,33 @@ async def get_glance(
         grant = await store.get_active(projection_id)
     if grant is None or grant.id != projection_id:
         raise _not_found()
+
+    glance = cache.get(grant.id) if via_grant else None
+    if glance is None:
+        glance = await _compose(grant, via_grant, db, configs, mgr, pricing)
+        if via_grant:
+            cache.put(grant.id, glance)
+    if via_grant:
+        status = "degraded" if glance["coverage"]["failed"] else "ok"
+        try:
+            await store.record_fetch(grant.id, status)
+        except Exception as exc:
+            logger.warning("Could not stamp projection fetch for %s: %s", grant.id, exc)
+    if format == "text":
+        return PlainTextResponse(glance_text(glance))
+    if format == "png":
+        return Response(glance_png(glance, width, height), media_type="image/png")
+    return ApiResponse(data=Glance(**glance))
+
+
+async def _compose(
+    grant: ProjectionGrant,
+    via_grant: bool,
+    db: Any,
+    configs: list[ButlerConnectionInfo],
+    mgr: MCPClientManager,
+    pricing: PricingConfig,
+) -> dict:
     try:
         sw_pool = db.pool("switchboard")
     except KeyError as exc:
@@ -198,16 +250,9 @@ async def get_glance(
         state["attention_items"] = [
             item for item in state["attention_items"] if item.get("projection_id") != str(grant.id)
         ]
-    glance = compose_glance(
+    return compose_glance(
         state,
         audience_class=grant.audience_class,
         as_of=as_of,
         refresh=grant.expected_fetch_interval,
     )
-    if via_grant:
-        status = "degraded" if glance["coverage"]["failed"] else "ok"
-        try:
-            await store.record_fetch(grant.id, status)
-        except Exception as exc:
-            logger.warning("Could not stamp projection fetch for %s: %s", grant.id, exc)
-    return ApiResponse(data=Glance(**glance))
