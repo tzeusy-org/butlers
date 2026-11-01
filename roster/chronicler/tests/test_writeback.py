@@ -23,6 +23,8 @@ from unittest.mock import AsyncMock
 
 from butlers.chronicler.balance import LaneBalance
 from butlers.chronicler.writeback import (
+    INSIGHT_CONFIDENCE_CEILING,
+    INSIGHT_CONFIDENCE_FLOOR,
     PREDICATE_LANE_SKEW,
     PREDICATE_RECURRING_COMPANION,
     PREDICATE_SELF_REMINDER,
@@ -32,6 +34,7 @@ from butlers.chronicler.writeback import (
     EnrichmentProposal,
     InsightFact,
     build_chronicler_fact_writer,
+    evidence_confidence,
     execute_writeback,
     synthesize_enrichment_proposals,
     synthesize_lane_skew_insights,
@@ -94,6 +97,16 @@ def test_lane_skew_insight_fires_on_anomaly():
     assert "work" in insight.tags
 
 
+def test_lane_skew_confidence_tracks_baseline_coverage():
+    def skew(sample_days: int) -> float:
+        balance = LaneBalance("work", 0, 8 * 3600, -8 * 3600, sample_days)
+        return synthesize_lane_skew_insights(_DAY, [balance], window_days=28)[0].confidence
+
+    thin, full = skew(7), skew(28)
+    assert INSIGHT_CONFIDENCE_FLOOR < thin < full == INSIGHT_CONFIDENCE_CEILING < 1.0
+    assert evidence_confidence(0, 28) == INSIGHT_CONFIDENCE_FLOOR
+
+
 def test_lane_skew_no_insight_within_baseline():
     balances = [LaneBalance("work", 8 * 3600, 8 * 3600, 0, 14)]
     assert synthesize_lane_skew_insights(_DAY, balances) == []
@@ -108,6 +121,19 @@ def test_sleep_debt_insight_accumulates_over_shortfall():
     assert insight is not None
     assert insight.predicate == PREDICATE_SLEEP_DEBT
     assert insight.metadata["shortfall_days"] == 3
+
+
+def test_sleep_debt_not_claimed_when_closed_night_was_not_short():
+    # Short nights earlier in the window, but the closed night ran long: the
+    # skew says "more than usual", so debt must not also claim to be building.
+    assert (
+        synthesize_sleep_debt_insight(
+            _DAY,
+            sleep_daily_seconds=[14400, 14400, 14400, 24480],
+            sleep_baseline_seconds=21600,
+        )
+        is None
+    )
 
 
 def test_sleep_debt_none_when_rested_or_no_baseline():
@@ -133,7 +159,7 @@ def test_self_reminders_only_for_pending_backfill_flags():
     kinds = {r.metadata["flag_type"] for r in reminders}
     assert kinds == {"feeder_dark", "sleep_missing"}  # routine_break excluded
     assert all(r.predicate == PREDICATE_SELF_REMINDER for r in reminders)
-    assert all(r.confidence < 0.5 for r in reminders)  # low-confidence markers
+    assert all(r.confidence == INSIGHT_CONFIDENCE_FLOOR for r in reminders)
 
 
 def test_enrichment_proposals_respect_distinct_day_threshold():
@@ -286,10 +312,12 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
         content="debt",
         permanence="volatile",
         importance=6.0,
+        confidence=0.65,
         tags=["chronicler-insight"],
-        metadata={"confidence": 0.7},
+        metadata={"confidence": 0.65},
     )
     assert captured["pool"] is sentinel_pool
+    assert captured["confidence"] == 0.65
     assert captured["source_butler"] == SOURCE_BUTLER
     assert captured["source_schema"] == SOURCE_BUTLER
 
@@ -422,6 +450,11 @@ async def test_actual_writeback_binds_historical_availability_to_each_baseline_d
     assert skew["metadata"]["baseline_seconds"] == sum(row.seconds for row in baseline[1:]) / len(
         baseline[1:]
     )
+    # The unavailable date is not a sample, so it lowers the stored confidence.
+    assert skew["confidence"] == evidence_confidence(
+        len(baseline[1:]), DEFAULT_BASELINE_LOOKBACK_DAYS
+    )
+    assert skew["confidence"] < INSIGHT_CONFIDENCE_CEILING
 
     history_flags.side_effect = OSError("synthetic historical availability read unavailable")
     store = _StoreSpy()

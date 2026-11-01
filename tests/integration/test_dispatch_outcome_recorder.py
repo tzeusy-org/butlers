@@ -734,7 +734,7 @@ async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pai
         import httpx
         from fastapi import FastAPI
 
-        from butlers.api.deps import get_butler_configs, get_pricing
+        from butlers.api.deps import get_butler_configs, get_db_optional, get_pricing
         from butlers.api.routers import spend as spend_router
         from butlers.core.pricing import ModelPricing, PricingConfig
 
@@ -743,7 +743,7 @@ async def test_attempt_usage_pair_rolls_back_atomically_and_retry_writes_one_pai
         manager = SimpleNamespace(
             pool=lambda _name: observer, credential_shared_pool=lambda: observer
         )
-        app.dependency_overrides[spend_router._get_db_manager] = lambda: manager
+        app.dependency_overrides[get_db_optional] = lambda: manager
         app.dependency_overrides[get_butler_configs] = lambda: []
         app.dependency_overrides[get_pricing] = lambda: PricingConfig(
             models={

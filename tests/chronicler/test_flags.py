@@ -36,6 +36,7 @@ from butlers.chronicler.flags import (
     compute_routine_breaks,
     compute_sleep_missing,
     evaluate_and_write_daily_flags,
+    is_source_configured_absent,
     is_source_dark,
 )
 from butlers.chronicler.models import (
@@ -110,6 +111,39 @@ def test_active_source_exactly_at_threshold_is_not_dark() -> None:
 def test_falls_back_to_last_run_at_when_no_success_timestamp() -> None:
     checkpoint = _checkpoint(last_run_at=_NOW - timedelta(minutes=61))
     assert is_source_dark(_state(active=True), checkpoint, cron_minutes=30, now=_NOW) is True
+
+
+def _skipped_state(*, optional_schema: bool) -> SourceAdapterState:
+    return SourceAdapterState(
+        source_name="health.meals",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        optional_schema=optional_schema,
+        active=False,
+        inactive_reason="health.meals not found; health meals evidence surface unavailable",
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "checkpoint", "expected"),
+    [
+        # Optional evidence surface that never existed: configuration, not outage.
+        (_skipped_state(optional_schema=True), None, True),
+        # It fed us once, then disappeared: a real outage.
+        (
+            _skipped_state(optional_schema=True),
+            _checkpoint(last_success_at=_NOW - timedelta(days=3)),
+            False,
+        ),
+        # A required source is always expected.
+        (_skipped_state(optional_schema=False), None, False),
+        # Registered but never run records no reason: still an outage.
+        (_state(active=False), None, False),
+        (None, None, False),
+    ],
+    ids=["never-present-optional", "previously-fed", "required", "never-ran", "unregistered"],
+)
+def test_configured_absent_classification(state, checkpoint, expected) -> None:
+    assert is_source_configured_absent(state, checkpoint) is expected
 
 
 # ---------------------------------------------------------------------------
@@ -308,9 +342,12 @@ class _FakeStorage:
         dark_source_names: set[str] | None = None,
         routines: list[Routine] | None = None,
         occupation_blocks_exist: bool = False,
+        source_overrides: dict[str, tuple[SourceAdapterState, ProjectionCheckpoint | None]]
+        | None = None,
     ) -> None:
         self.rollups_by_date = rollups_by_date or {}
         self.dark_source_names = dark_source_names or set()
+        self.source_overrides = source_overrides or {}
         self.routines = routines or []
         self.occupation_blocks_exist = occupation_blocks_exist
         self.upserted: list[dict[str, Any]] = []
@@ -324,9 +361,13 @@ class _FakeStorage:
         ]
 
     async def get_source_state(self, pool, source_name):
+        if source_name in self.source_overrides:
+            return self.source_overrides[source_name][0]
         return _state(active=source_name not in self.dark_source_names)
 
     async def get_checkpoint(self, pool, source_name):
+        if source_name in self.source_overrides:
+            return self.source_overrides[source_name][1]
         if source_name in self.dark_source_names:
             return None
         return _checkpoint(last_success_at=_NOW - timedelta(minutes=1))
@@ -484,6 +525,67 @@ async def test_no_managed_flags_fire_on_a_fully_healthy_normal_day(monkeypatch) 
         FLAG_ROUTINE_BREAK,
         FLAG_LANE_SHARE_OUTLIER,
     }
+
+
+async def test_configured_absent_source_does_not_raise_feeder_dark(monkeypatch) -> None:
+    """An optional evidence surface absent by configuration is not an outage,
+    but a source that fed the chronicler before and then vanished still is."""
+    local_date = date(2026, 7, 4)
+    never_present = (_skipped_state(optional_schema=True), None)
+    fake = _FakeStorage(
+        rollups_by_date={local_date: {"sleep": 1800, "work": 100}},
+        source_overrides={"health.meals": never_present},
+    )
+    _patch_storage(monkeypatch, fake)
+
+    result = await evaluate_and_write_daily_flags(
+        AsyncMock(), local_date=local_date, timezone="Asia/Singapore", now=_NOW
+    )
+
+    assert result["flags"][FLAG_FEEDER_DARK] is False
+    assert result["configured_absent_sources"] == ["health.meals"]
+    assert FLAG_FEEDER_DARK not in {u["flag_type"] for u in fake.upserted}
+
+    previously_fed = (
+        _skipped_state(optional_schema=True),
+        _checkpoint(last_success_at=_NOW - timedelta(days=3)),
+    )
+    fake = _FakeStorage(
+        rollups_by_date={local_date: {"sleep": 1800, "work": 100}},
+        source_overrides={"health.meals": previously_fed},
+    )
+    _patch_storage(monkeypatch, fake)
+
+    result = await evaluate_and_write_daily_flags(
+        AsyncMock(), local_date=local_date, timezone="Asia/Singapore", now=_NOW
+    )
+
+    assert result["flags"][FLAG_FEEDER_DARK] is True
+    assert result["dark_sources"] == ["health.meals"]
+
+
+async def test_configured_absent_sleep_source_still_suppresses_sleep_missing(monkeypatch) -> None:
+    """No sleep feeder in this deployment means zero sleep is not a finding."""
+    local_date = date(2026, 7, 4)
+    absent = SourceAdapterState(
+        source_name="google_health.measurements",
+        chronicler_compatibility=Compatibility.SUPPORTED,
+        optional_schema=True,
+        active=False,
+        inactive_reason="health.facts not found",
+    )
+    fake = _FakeStorage(
+        rollups_by_date={local_date: {"sleep": 0, "work": 100}},
+        source_overrides={"google_health.measurements": (absent, None)},
+    )
+    _patch_storage(monkeypatch, fake)
+
+    result = await evaluate_and_write_daily_flags(
+        AsyncMock(), local_date=local_date, timezone="Asia/Singapore", now=_NOW
+    )
+
+    assert result["flags"][FLAG_FEEDER_DARK] is False
+    assert result["flags"][FLAG_SLEEP_MISSING] is False
 
 
 # ---------------------------------------------------------------------------

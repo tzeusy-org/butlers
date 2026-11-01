@@ -1340,6 +1340,7 @@ async def _insert_fact_record(
     sensitivity: str,
     embedding_model_version: str = "unknown",
     authority: ContentAuthority | None = None,
+    confidence: float = 1.0,
 ) -> None:
     """Insert a single fact row into the ``facts`` table.
 
@@ -1377,6 +1378,7 @@ async def _insert_fact_record(
         sensitivity: Data sensitivity classification string.
         embedding_model_version: Model name used to produce the embedding vector.
         authority: Server-derived content authority to stamp, or ``None`` (legacy).
+        confidence: Base confidence in ``[0, 1]`` (default 1.0).
     """
     sql = f"""
         INSERT INTO facts (
@@ -1407,7 +1409,7 @@ async def _insert_fact_record(
         str(embedding),
         search_text,
         importance,
-        1.0,  # confidence
+        confidence,
         decay_rate,
         permanence,
         source_butler,
@@ -1440,6 +1442,7 @@ async def store_fact(
     embedding_engine: EmbeddingEngine,
     *,
     importance: float = 5.0,
+    confidence: float = 1.0,
     permanence: str = "standard",
     scope: str = "global",
     tags: list[str] | None = None,
@@ -1533,6 +1536,9 @@ async def store_fact(
         consolidation_edge_classification: The executor's local classification
             for a consolidation edge. A missing or mismatched classification
             is rejected before any storage work begins.
+        confidence: Base confidence in ``[0, 1]`` for the fact (and any inverse
+            edge it creates). Defaults to 1.0; deterministic writers with an
+            evidence-derived confidence pass it here so decay starts from it.
 
     Returns:
         A dict with:
@@ -1544,6 +1550,8 @@ async def store_fact(
     """
     if enforce_consolidation_edge_allowlist and object_entity_id is not None:
         _validate_consolidation_narrative_edge(predicate, consolidation_edge_classification)
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError(f"confidence must be within [0, 1], got {confidence!r}")
 
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
@@ -1949,6 +1957,7 @@ async def store_fact(
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
                 authority=authority,
+                confidence=confidence,
             )
 
             # An owner question this fact answers moves to `answerable` in this same
@@ -2088,6 +2097,7 @@ async def store_fact(
                             sensitivity=sensitivity,
                             embedding_model_version=embedding_engine.model_name,
                             authority=authority,
+                            confidence=confidence,
                         )
                         # Cite the newly active inverse itself, with its swapped
                         # value and the original server stamp. A temporal skip
@@ -2207,7 +2217,7 @@ async def store_fact(
                 predicate=predicate,
                 scope=scope,
                 valid_at=valid_at,
-                confidence=1.0,
+                confidence=confidence,
                 importance=importance,
                 retention_class=retention_class,
                 sensitivity=sensitivity,

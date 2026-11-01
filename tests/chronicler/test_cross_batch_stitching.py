@@ -571,7 +571,8 @@ async def test_ot_movement_span_crossing_batch_boundary_is_single_episode() -> N
         mock_pe.return_value = MagicMock()
         result1 = await adapter.project(pool1, chronicler_pool=cp1, since=None)
 
-    assert result1.episodes_closed == 1
+    # One fix is not yet a movement (bu-2tsgqb.6), but it is carried over.
+    assert result1.episodes_closed == 0
     assert len(saved_carryovers) == 1
     co = saved_carryovers[0]
     assert _ENDPOINT in co
@@ -598,7 +599,7 @@ async def test_ot_movement_span_crossing_batch_boundary_is_single_episode() -> N
     assert result2.episodes_closed == 1
 
     # The second batch's episode must use the same source_ref as the first.
-    batch2_episode_refs = source_refs_per_call[1:]
+    batch2_episode_refs = source_refs_per_call
     assert batch1_source_ref in batch2_episode_refs, (
         f"Expected batch 2 to reuse source_ref {batch1_source_ref!r}, got {batch2_episode_refs!r}"
     )
@@ -607,6 +608,7 @@ async def test_ot_movement_span_crossing_batch_boundary_is_single_episode() -> N
     stitched_ep = upserted[-1]
     assert stitched_ep.start_at == t1
     assert stitched_ep.end_at == t2
+    assert stitched_ep.payload["point_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -616,8 +618,14 @@ async def test_ot_gap_beyond_threshold_between_batches_produces_two_episodes() -
     t1 = _NOW
     t2 = _NOW + timedelta(minutes=MOVEMENT_GAP_MINUTES + 5)  # beyond threshold
 
-    batch1_row = _make_ot_row(ts=t1, idempotency_key="k1", row_id=1)
-    batch2_row = _make_ot_row(ts=t2, idempotency_key="k2", row_id=2)
+    batch1_rows = [
+        _make_ot_row(ts=t1 - timedelta(minutes=5), idempotency_key="k0", row_id=0),
+        _make_ot_row(ts=t1, idempotency_key="k1", row_id=1),
+    ]
+    batch2_rows = [
+        _make_ot_row(ts=t2, idempotency_key="k2", row_id=2),
+        _make_ot_row(ts=t2 + timedelta(minutes=5), idempotency_key="k3", row_id=3),
+    ]
 
     adapter = OwnTracksPointAdapter()
     source_refs: list[str] = []
@@ -631,7 +639,7 @@ async def test_ot_gap_beyond_threshold_between_batches_produces_two_episodes() -
     async def _capture_save1(conn_or_pool, source_name, carryover):
         saved_carryovers1.append(carryover)
 
-    pool1 = _pool_returning(batch1_row)
+    pool1 = _pool_returning(*batch1_rows)
     cp1 = _chronicler_pool()
 
     with (
@@ -645,7 +653,7 @@ async def test_ot_gap_beyond_threshold_between_batches_produces_two_episodes() -
 
     co_after_batch1 = saved_carryovers1[0]
 
-    pool2 = _pool_returning(batch2_row)
+    pool2 = _pool_returning(*batch2_rows)
     cp2 = _chronicler_pool()
 
     with (
@@ -724,6 +732,7 @@ async def test_ot_span_ends_within_batch_unchanged_behavior() -> None:
         _make_ot_row(ts=t1, idempotency_key="k1", row_id=1),
         _make_ot_row(ts=t2, idempotency_key="k2", row_id=2),
         _make_ot_row(ts=t3, idempotency_key="k3", row_id=3),  # starts new episode
+        _make_ot_row(ts=t3 + timedelta(minutes=5), idempotency_key="k4", row_id=4),
     ]
 
     adapter = OwnTracksPointAdapter()
@@ -777,7 +786,12 @@ async def test_ot_no_valid_rows_does_not_overwrite_carryover() -> None:
 @pytest.mark.asyncio
 async def test_ot_carryover_written_for_open_movement_episode() -> None:
     """A movement episode open at end of batch has carryover saved with correct fields."""
-    row = _make_ot_row(ts=_NOW, lat=1.0, lon=2.0, idempotency_key="k1", row_id=1)
+    rows = [
+        _make_ot_row(ts=_NOW, lat=1.0, lon=2.0, idempotency_key="k1", row_id=1),
+        _make_ot_row(
+            ts=_NOW + timedelta(minutes=5), lat=1.0, lon=2.0, idempotency_key="k2", row_id=2
+        ),
+    ]
 
     adapter = OwnTracksPointAdapter()
     upserted: list[Episode] = []
@@ -790,7 +804,7 @@ async def test_ot_carryover_written_for_open_movement_episode() -> None:
     async def _capture_save(conn_or_pool, source_name, carryover):
         saved_carryovers.append(carryover)
 
-    pool = _pool_returning(row)
+    pool = _pool_returning(*rows)
     cp = _chronicler_pool()
 
     with (
@@ -821,7 +835,10 @@ async def test_ot_corrupt_carryover_discarded_and_new_episode_started() -> None:
         _ENDPOINT: {"source_ref": "ref:x", "start_at": _NOW.isoformat()}
     }  # missing end_at
 
-    row = _make_ot_row(ts=_NOW + timedelta(minutes=5), idempotency_key="k1", row_id=1)
+    rows = [
+        _make_ot_row(ts=_NOW + timedelta(minutes=5), idempotency_key="k1", row_id=1),
+        _make_ot_row(ts=_NOW + timedelta(minutes=10), idempotency_key="k2", row_id=2),
+    ]
     adapter = OwnTracksPointAdapter()
     upserted: list[Episode] = []
 
@@ -829,7 +846,7 @@ async def test_ot_corrupt_carryover_discarded_and_new_episode_started() -> None:
         upserted.append(episode)
         return episode
 
-    pool = _pool_returning(row)
+    pool = _pool_returning(*rows)
     cp = _chronicler_pool()
 
     with (

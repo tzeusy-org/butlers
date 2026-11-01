@@ -1347,7 +1347,8 @@ async def test_dispatch_pr_review_followup_fails_before_worktree_when_ref_fetch_
 
 
 @pytest.mark.asyncio
-async def test_review_followup_persists_content_blind_git_auth_failure(tmp_path: Path) -> None:
+async def test_review_followup_persists_publication_unavailable(tmp_path: Path) -> None:
+    """A successful follow-up agent run pushes nothing and records the fixed reason."""
     pool = _make_pool()
     attempt_id = uuid.uuid4()
     session_id = uuid.uuid4()
@@ -1355,23 +1356,9 @@ async def test_review_followup_persists_content_blind_git_auth_failure(tmp_path:
     spawner.trigger = AsyncMock(
         return_value=MagicMock(success=True, session_id=session_id, error=None)
     )
-    raw_error = (
-        "git_auth_failed: remote: Permission to tzeusy-org/butlers.git denied to Tzeusy. "
-        "token=secret-shaped-value"
-    )
 
     with (
         patch("butlers.core.qa.dispatch._prepare_agent_workspace", return_value=tmp_path),
-        patch(
-            "butlers.core.qa.dispatch._get_remote_owner_repo",
-            new_callable=AsyncMock,
-            return_value="tzeusy-org/butlers",
-        ),
-        patch(
-            "butlers.core.qa.dispatch._push_branch_with_gh_auth",
-            new_callable=AsyncMock,
-            return_value=raw_error,
-        ) as push,
         patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
     ):
         await _run_review_followup_session(
@@ -1387,11 +1374,8 @@ async def test_review_followup_persists_content_blind_git_auth_failure(tmp_path:
             sandbox_env={"PATH": "/usr/bin", "GH_TOKEN": "not-logged"},
         )
 
-    push.assert_not_awaited()
     persisted_error = pool.execute.await_args.args[3]
     assert persisted_error.startswith("publication_unavailable:")
-    assert "Tzeusy" not in persisted_error
-    assert "secret-shaped-value" not in persisted_error
 
 
 _AGENT_TOKEN = "ghp_unit_test_token_value"
@@ -1422,8 +1406,6 @@ async def test_investigation_agent_has_no_credential_and_publication_fails_close
             new_callable=AsyncMock,
             return_value=[],
         ),
-        patch("butlers.core.qa.dispatch._create_qa_pr", new_callable=AsyncMock) as create_pr,
-        patch("butlers.core.qa.dispatch._push_branch_with_gh_auth", new_callable=AsyncMock) as push,
         patch("butlers.core.qa.dispatch.update_attempt_status", new_callable=AsyncMock) as update,
         patch(
             "butlers.core.qa.dispatch._persist_notes_and_remove_worktree", new_callable=AsyncMock
@@ -1443,8 +1425,6 @@ async def test_investigation_agent_has_no_credential_and_publication_fails_close
         )
 
     _assert_no_credential(spawner.trigger.await_args.kwargs["env_override"])
-    create_pr.assert_not_awaited()
-    push.assert_not_awaited()
     assert update.await_args.args[2] == "failed"
     assert update.await_args.kwargs["error_detail"].startswith("publication_unavailable:")
 
