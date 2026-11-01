@@ -137,7 +137,10 @@ def _readiness(
         _Jobs(  # type: ignore[arg-type]
             jobs
             if jobs is not None
-            else {"jobs_available": True, "jobs": [{"name": "fleet_shadow_observer", "state": "ok"}]}
+            else {
+                "jobs_available": True,
+                "jobs": [{"name": "fleet_shadow_observer", "state": "ok"}],
+            }
         ),
         clock=clock,
         client_factory=client_factory,
