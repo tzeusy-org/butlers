@@ -264,15 +264,27 @@ async def test_inactive_attempt_cannot_enter_egress(pool, attempt, terminal_stat
     assert not await get_publication_hold(pool, fingerprint)
 
 
-async def test_lost_pr_create_reconciles_by_adopting_the_only_pr(pool, attempt) -> None:
-    """A pr_create binds no PR number, so the reconciler adopts the head/base match."""
-    from butlers.core.qa.publication.reconcile import (
-        PoolReconciliationLedger,
-        reconcile_operation,
-    )
+async def test_sweep_adopts_the_only_pr_for_a_lost_pr_create(pool, attempt) -> None:
+    """The sweep rebuilds the binding from the attempt and export, then adopts the match."""
+    from butlers.core.qa.publication.reconcile import sweep_held_operations
 
     attempt_id, fingerprint = attempt
     binding = _binding()
+    await pool.execute(
+        "UPDATE public.healing_attempts SET branch_name = $2 WHERE id = $1",
+        attempt_id,
+        binding.branch,
+    )
+    await pool.execute(
+        "INSERT INTO public.qa_publication_exports "
+        "(attempt_id, base_sha, head_sha, commits, objects, digest) "
+        "VALUES ($1, $2, $3, $4, ''::bytea, $5)",
+        attempt_id,
+        "a" * 40,
+        binding.head_sha,
+        [binding.head_sha],
+        "d" * 64,
+    )
     operation = await begin_operation(
         pool,
         attempt_id=attempt_id,
@@ -297,15 +309,12 @@ async def test_lost_pr_create_reconciles_by_adopting_the_only_pr(pool, attempt) 
             assert (head, base) == (binding.branch, binding.base_ref)
             return (17,)
 
-    result = await reconcile_operation(
-        PoolReconciliationLedger(pool),
-        Reader(),
-        attempt_id=attempt_id,
-        kind=OperationKind.PR_CREATE,
-        binding=binding,
-    )
+    entries = await sweep_held_operations(pool, Reader(), limit=1000)
 
-    assert (result.status, result.object_id) == ("reconciled", "17")
+    mine = [e for e in entries if e.attempt_id == attempt_id]
+    assert [(e.kind, e.status, e.category) for e in mine] == [
+        ("pr_create", "reconciled", "resource_found")
+    ]
     assert not await get_publication_hold(pool, fingerprint)
     row = await pool.fetchrow(
         "SELECT stage, reconciliation, new_object_id FROM public.qa_publication_operations "

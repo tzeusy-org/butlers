@@ -130,9 +130,29 @@ adopted, none is absent, and more than one stays held (`multiple_candidates`). `
 `pr_labels` bind no observable object and stay held (`unsupported_kind`). A reader error, a foreign
 reader origin or a lost ledger write also keeps the hold. A rerun of the publisher treats a
 `resource_found` reconciliation as success: it adopts the PR and continues to the labels, while a
-`resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create. No caller
-drives the reconciler yet: it needs a concrete read-only provider, which ships with the real GitHub
-provider.
+`resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create. Absence
+is believed only once it has settled: a `resource_absent` observation stays held (`absence_settling`)
+until the operation's last ledger write (`ended_at`, else `started_at`) is at least `ABSENCE_SETTLE`
+(15 minutes) old, so a create or push that timed out but still lands cannot free the lineage and let a
+fresh attempt open a duplicate PR.
+
+`butlers.core.qa.publication.github_reader.GithubPublicationReader` is the concrete reader. It is
+fixed to one `owner/name` origin, sends only `GET`s, never follows a redirect, and raises
+`PublicationReadError` (closed code, no provider text) on anything it cannot prove, which keeps the
+hold. A ref 404 counts as absent only after `GET /repos/{origin}` answers with the origin's own name
+(GitHub also answers 404 for a repository the token cannot see), and every PR it lists must run from
+the bound head branch in the origin onto the bound base in the origin.
+
+`reconcile.sweep_held_operations` is the batch entry point. It visits held `branch_push` and
+`pr_create` operations oldest first and rebuilds each binding from dispatcher records: the reader's
+origin, the attempt's `branch_name`, `QA_BASE_REF` and the retained export's `head_sha`. The stored
+digest still decides, so a rebuilt binding that differs is refused (`binding_mismatch`), and a row whose
+records cannot form a binding is reported `unbound_attempt` without a read. `pr_update` and `pr_labels`
+holds are not swept. Operators run it with `scripts/qa_reconcile_publications.py --repository
+<owner/name>`: the connection string is read from stdin, the token from `BUTLERS_QA_GH_TOKEN` in the
+environment (`bws run -- ...` or a pod `secretKeyRef`), the pool assumes `butler_qa_rw`, and the report
+is identifiers and categories only (exit 2 while anything stays held). Nothing schedules the sweep yet;
+the patrol wiring lands with the production publisher, which owns the fixed origin.
 
 An operation in `egress_started` or `ambiguous` holds its fingerprint lineage. While it does, a fresh
 QA attempt is refused (`create_or_join_attempt(..., enforce_publication_hold=True)` raises

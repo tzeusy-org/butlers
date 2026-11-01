@@ -9,6 +9,7 @@ instead of wedging forever.  No live provider is contacted.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,7 +17,11 @@ import pytest
 
 from butlers.core.qa.publication.binding import OperationKind
 from butlers.core.qa.publication.publisher import PublicationStatus, QaPublisher
-from butlers.core.qa.publication.reconcile import reconcile_operation
+from butlers.core.qa.publication.reconcile import (
+    ABSENCE_SETTLE,
+    reconcile_operation,
+    sweep_held_operations,
+)
 from butlers.core.qa.publication.transport import AmbiguousOutcome
 from tests.core.qa.publication_fakes import FakeLedger, FakeProvider, binding_for, synthetic_export
 
@@ -42,9 +47,13 @@ async def _publish(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.
     )
 
 
-async def _reconcile(provider, ledger, attempt_id, kind, binding=_BINDING):
+def _settled() -> datetime:
+    return datetime.now(UTC) + ABSENCE_SETTLE + timedelta(seconds=1)
+
+
+async def _reconcile(provider, ledger, attempt_id, kind, binding=_BINDING, now=_settled):
     return await reconcile_operation(
-        ledger, provider, attempt_id=attempt_id, kind=kind, binding=binding
+        ledger, provider, attempt_id=attempt_id, kind=kind, binding=binding, now=now
     )
 
 
@@ -78,10 +87,17 @@ async def test_found_resource_releases_the_hold_and_a_rerun_finishes(lost, kind)
     assert provider.prs[pr_number]["labels"] == ("self-healing", "automated")
 
 
-async def test_absent_pr_releases_the_hold_without_a_fresh_create() -> None:
+async def test_absent_pr_releases_the_hold_only_after_settling_and_never_recreates() -> None:
     provider = FakeProvider(raise_on_create=AmbiguousOutcome("timed out before the remote"))
     ledger, attempt_id = FakeLedger(), uuid.uuid4()
     await _publish(provider, ledger, attempt_id)
+
+    # A create that timed out may still land: absence is not trusted until it settles.
+    early = await _reconcile(
+        provider, ledger, attempt_id, OperationKind.PR_CREATE, now=lambda: datetime.now(UTC)
+    )
+    assert (early.status, early.category) == ("held", "absence_settling")
+    assert ledger.row(attempt_id, OperationKind.PR_CREATE).holds_lineage
 
     result = await _reconcile(provider, ledger, attempt_id, OperationKind.PR_CREATE)
 
@@ -171,3 +187,46 @@ async def test_operation_that_holds_nothing_is_left_alone() -> None:
     assert (done.status, done.category) == ("not_held", "succeeded")
     assert (missing.status, missing.category) == ("not_held", "no_operation")
     assert ledger.row(attempt_id, OperationKind.PR_CREATE).stage == "succeeded"
+
+
+async def test_sweep_rebuilds_each_binding_from_dispatcher_records_and_reconciles() -> None:
+    provider, ledger = FakeProvider(lose_response_on="create_pull_request"), FakeLedger()
+    adopted, foreign = uuid.uuid4(), uuid.uuid4()
+    await _publish(provider, ledger, adopted)
+    provider.lose_response_on = "update_ref"
+    provider.refs.clear()
+    await _publish(provider, ledger, foreign)
+    effects = list(provider.calls)
+
+    def row(attempt_id, kind, branch):
+        op = ledger.row(attempt_id, kind)
+        return {
+            "operation_id": op.id,
+            "attempt_id": attempt_id,
+            "kind": kind.value,
+            "branch_name": branch,
+            "head_sha": _EXPORT.head_sha,
+        }
+
+    pool = MagicMock()
+    pool.fetch = AsyncMock(
+        return_value=[
+            row(adopted, OperationKind.PR_CREATE, _BINDING.branch),
+            # The dispatcher records disagree with the stored digest: never observed.
+            row(foreign, OperationKind.BRANCH_PUSH, "qa/finance/somebody-else"),
+            {**row(foreign, OperationKind.BRANCH_PUSH, None), "operation_id": uuid.uuid4()},
+        ]
+    )
+
+    entries = await sweep_held_operations(pool, provider, ledger=ledger, now=_settled)
+
+    assert [(e.kind, e.status, e.category) for e in entries] == [
+        ("pr_create", "reconciled", "resource_found"),
+        ("branch_push", "held", "binding_mismatch"),
+        ("branch_push", "held", "unbound_attempt"),
+    ]
+    assert not ledger.row(adopted, OperationKind.PR_CREATE).holds_lineage
+    assert ledger.row(foreign, OperationKind.BRANCH_PUSH).holds_lineage
+    assert provider.calls == effects
+    (sql, limit) = pool.fetch.await_args.args
+    assert "stage IN ('egress_started', 'ambiguous')" in sql and limit == 50
