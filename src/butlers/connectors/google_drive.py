@@ -50,7 +50,6 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
 from butlers.connectors.catalog import connector_descriptor
@@ -2100,7 +2099,7 @@ class GDriveConnectorManager:
         @app.get("/metrics")
         async def metrics() -> Response:
             """Prometheus metrics endpoint."""
-            return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+            return prometheus_metrics_response()
 
         @app.post("/reload")
         async def reload() -> dict[str, Any]:
@@ -2113,7 +2112,10 @@ class GDriveConnectorManager:
             return {"status": "reload_triggered"}
 
         try:
-            from butlers.connectors.health_socket import make_health_socket
+            from butlers.connectors.health_socket import (
+                make_health_socket,
+                prometheus_metrics_response,
+            )
 
             sock = make_health_socket("127.0.0.1", self._health_port)
             config = uvicorn.Config(

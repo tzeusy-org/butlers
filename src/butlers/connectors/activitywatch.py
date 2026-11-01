@@ -103,13 +103,13 @@ from urllib.parse import urlsplit
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import Counter, generate_latest
+from prometheus_client import Counter
 
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
@@ -1540,8 +1540,8 @@ class ActivityWatchConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics():
+            return prometheus_metrics_response()
 
         return app
 

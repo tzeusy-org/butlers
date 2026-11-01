@@ -53,8 +53,7 @@ if TYPE_CHECKING:
     import asyncpg
 
 import uvicorn
-from fastapi import FastAPI
-from prometheus_client import REGISTRY, generate_latest
+from fastapi import FastAPI, Response
 
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.discretion import (
@@ -65,6 +64,7 @@ from butlers.connectors.discretion import (
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
 from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
+from butlers.connectors.health_socket import prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
     load_voice_checkpoint,
@@ -865,8 +865,8 @@ class LiveListenerConnector:
             return body
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest(REGISTRY)
+        async def metrics() -> Response:
+            return prometheus_metrics_response()
 
         from butlers.connectors.health_socket import make_health_socket
 
