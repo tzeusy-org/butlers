@@ -69,6 +69,23 @@ def is_rule_admitted(authority: str | None, endorsed_at: Any) -> bool:
     return is_owner_class(authority) or endorsed_at is not None
 
 
+def catalog_attribution(authority: str | None) -> str | None:
+    """Label a cross-butler catalog item the owner did not author.
+
+    The catalog stores only the authority class (no sender entity), so the
+    label names the class: ``from a third party`` / ``partly from a third
+    party``, or ``source unverified`` for a legacy row with no stamp.  Owner
+    and ``system`` content carries no label.
+    """
+    if is_owner_class(authority) or authority == SYSTEM:
+        return None
+    if authority is None:
+        return "source unverified"
+    if authority == MIXED:
+        return "partly from a third party"
+    return "from a third party"
+
+
 def _parse_uuid(value: object) -> uuid.UUID | None:
     if not isinstance(value, str) or not value.strip():
         return None

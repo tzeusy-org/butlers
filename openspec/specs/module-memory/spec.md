@@ -616,6 +616,14 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   sender (or marked unverified when the authority is NULL). Legacy rows are never
   backfilled by guessing; the migration SHALL report how many legacy rules and
   facts it left unclassified.
+- Every `public.memory_catalog` row SHALL carry the `content_authority` class of
+  its source fact or rule (never the sender entity, which stays in the owning
+  schema), written in the same statement as the rest of the row and re-copied by
+  the catalog backfill when it drifts; a legacy NULL source stays NULL. Every
+  cross-butler catalog reader (catalog search, `memory_catalog_search`, Fleet
+  Knowledge, `GET /api/memory/catalog/search`) SHALL return it, and the memory
+  tools SHALL attribute a non-owner item as from a third party (or mark it
+  unverified when the authority is NULL).
 - The owner SHALL be able to endorse a held rule. Endorsement sets `endorsed_at`
   and `endorsed_by`, makes the rule visible to recall and to the catalog in the
   same transaction, records an audit event, and is a no-op returning the same
@@ -675,6 +683,15 @@ Scope: v1-mandatory
 
 - **WHEN** an episode is stored with no routing context
 - **THEN** it SHALL be stamped `system`
+
+#### Scenario: Catalog readers attribute non-owner content
+
+- **WHEN** an owner fact and a third-party fact are cataloged and a legacy fact
+  with NULL authority is backfilled
+- **THEN** their catalog rows SHALL carry `owner`, `third_party` and NULL
+- **AND** `memory_catalog_search` SHALL return each row's authority, with no
+  attribution on the owner fact, a third-party attribution on the third-party
+  fact and an unverified mark on the legacy fact
 
 ### Requirement: Lazy Canonical Embedding Construction
 Memory module and storage/tool imports SHALL defer sentence_transformers, torch and transformers until first actual EmbeddingEngine construction. The engine SHALL preserve the configured/default model,384-dimensional output, normalization and batch behavior, public tools and synchronized per-model cache. Sibling memory modules SHALL use canonical package identities with one body execution per process and the helper construction fake seam SHALL remain usable. Async callers SHALL acquire a first engine without newly blocking their event loop with dependency/model construction.

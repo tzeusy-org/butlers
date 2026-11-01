@@ -384,6 +384,7 @@ async def _upsert_catalog(
     retention_class: str | None = None,
     sensitivity: str | None = None,
     object_entity_id: uuid.UUID | None = None,
+    content_authority: str | None = None,
 ) -> None:
     """Upsert a row into public.memory_catalog (best-effort, fire-and-forget).
 
@@ -394,6 +395,10 @@ async def _upsert_catalog(
     importance, retention_class, sensitivity, object_entity_id) map directly
     to the spec-required columns added in core_024.  They are all nullable so
     the call remains backward-compatible before that migration is applied.
+
+    ``content_authority`` copies the source row's authority class (core_298,
+    REQ-module-memory-013) so cross-butler readers can attribute non-owner
+    content; an upsert overwrites it, so a re-stamped source re-syncs here.
 
     Write-time sensitivity exclusion (defense-in-depth): confidential/pii
     rows are never written to the catalog at all -- see
@@ -416,7 +421,7 @@ async def _upsert_catalog(
             summary, embedding, search_vector, memory_type,
             title, predicate, scope, valid_at,
             confidence, importance, retention_class, sensitivity,
-            object_entity_id,
+            object_entity_id, content_authority,
             updated_at
         )
         VALUES (
@@ -425,7 +430,7 @@ async def _upsert_catalog(
             $7, $8, {tsvector_sql("$9")}, $10,
             $11, $12, $13, $14,
             $15, $16, $17, $18,
-            $19,
+            $19, $20,
             now()
         )
         ON CONFLICT (source_schema, source_table, source_id)
@@ -444,6 +449,7 @@ async def _upsert_catalog(
             retention_class  = EXCLUDED.retention_class,
             sensitivity      = EXCLUDED.sensitivity,
             object_entity_id = EXCLUDED.object_entity_id,
+            content_authority = EXCLUDED.content_authority,
             updated_at       = now()
     """
     # When the caller is already persisting a canonical artifact in an outer
@@ -474,6 +480,7 @@ async def _upsert_catalog(
                 retention_class,
                 sensitivity,
                 object_entity_id,
+                content_authority,
             )
 
 
@@ -622,7 +629,7 @@ async def _backfill_facts_to_catalog(
             SELECT f.id, f.subject, f.predicate, f.content, f.embedding,
                    f.entity_id, f.object_entity_id, f.scope, f.valid_at,
                    f.confidence, f.importance, f.retention_class, f.sensitivity,
-                   f.source_butler, f.tenant_id
+                   f.source_butler, f.tenant_id, f.content_authority
             FROM facts f
             WHERE f.validity IN ('active', 'fading')
               AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($3))
@@ -640,7 +647,8 @@ async def _backfill_facts_to_catalog(
                 source_schema, source_table, source_id, source_butler, tenant_id,
                 entity_id, summary, embedding, search_vector, memory_type,
                 title, predicate, scope, valid_at, confidence, importance,
-                retention_class, sensitivity, object_entity_id, updated_at
+                retention_class, sensitivity, object_entity_id, content_authority,
+                updated_at
             )
             SELECT
                 $1, 'facts', c.id, c.source_butler, c.tenant_id,
@@ -651,7 +659,8 @@ async def _backfill_facts_to_catalog(
                 'fact',
                 c.subject || ' ' || c.predicate,
                 c.predicate, c.scope, c.valid_at, c.confidence, c.importance,
-                c.retention_class, c.sensitivity, c.object_entity_id, now()
+                c.retention_class, c.sensitivity, c.object_entity_id, c.content_authority,
+                now()
             FROM candidates c
             ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
             RETURNING 1
@@ -682,7 +691,8 @@ async def _backfill_rules_to_catalog(
     sql = f"""
         WITH candidates AS (
             SELECT r.id, r.content, r.embedding, r.scope, r.confidence,
-                   r.retention_class, r.sensitivity, r.tenant_id, r.source_butler
+                   r.retention_class, r.sensitivity, r.tenant_id, r.source_butler,
+                   r.content_authority
             FROM rules r
             WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
               AND (r.content_authority IN ('owner', 'owner_device') OR r.endorsed_at IS NOT NULL)
@@ -700,7 +710,8 @@ async def _backfill_rules_to_catalog(
             INSERT INTO public.memory_catalog (
                 source_schema, source_table, source_id, source_butler, tenant_id,
                 entity_id, summary, embedding, search_vector, memory_type,
-                title, scope, confidence, retention_class, sensitivity, updated_at
+                title, scope, confidence, retention_class, sensitivity, content_authority,
+                updated_at
             )
             SELECT
                 $1, 'rules', c.id, c.source_butler, c.tenant_id,
@@ -710,7 +721,7 @@ async def _backfill_rules_to_catalog(
                 {tsvector_sql("c.content")},
                 'rule',
                 LEFT(c.content, 100), c.scope, c.confidence,
-                c.retention_class, c.sensitivity, now()
+                c.retention_class, c.sensitivity, c.content_authority, now()
             FROM candidates c
             ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
             RETURNING 1
@@ -821,6 +832,46 @@ async def _reconcile_rules_catalog_disownment(
     return len(rows)
 
 
+async def _sync_catalog_authority(
+    pool: Pool,
+    *,
+    source_schema: str,
+    source_table: str,
+    limit: int,
+) -> int:
+    """Copy the source row's ``content_authority`` onto up to *limit* drifted catalog rows.
+
+    Rows cataloged before core_298 start NULL even when their source fact or
+    rule is stamped; this brings them in line (REQ-module-memory-013).  Only
+    rows whose authority differs are touched (``IS DISTINCT FROM``), so a
+    legacy NULL source stays NULL and a re-run is a no-op.  Stale rows are
+    synced too: the column describes provenance, not liveness.
+    """
+    if source_table not in ("facts", "rules"):
+        raise ValueError(f"unsupported catalog source table: {source_table!r}")
+    sql = f"""
+        WITH candidates AS (
+            SELECT mc.source_id, s.content_authority
+            FROM public.memory_catalog mc
+            JOIN {source_table} s ON s.id = mc.source_id
+            WHERE mc.source_schema = $1
+              AND mc.source_table = '{source_table}'
+              AND mc.content_authority IS DISTINCT FROM s.content_authority
+            LIMIT $2
+        )
+        UPDATE public.memory_catalog mc
+        SET content_authority = c.content_authority,
+            updated_at = now()
+        FROM candidates c
+        WHERE mc.source_schema = $1
+          AND mc.source_table = '{source_table}'
+          AND mc.source_id = c.source_id
+        RETURNING 1
+    """
+    rows = await pool.fetch(sql, source_schema, limit)
+    return len(rows)
+
+
 async def run_memory_catalog_backfill(
     pool: Pool,
     *,
@@ -844,6 +895,10 @@ async def run_memory_catalog_backfill(
     for drift that predates or bypasses the atomic disownment cascade
     (``_cascade_catalog_disownment``).
 
+    Finally copies each source row's ``content_authority`` onto catalog rows
+    whose copy has drifted (``_sync_catalog_authority``), so rows cataloged
+    before the column existed gain their authority without guessing.
+
     Deliberately does NOT open one giant transaction across the full backlog —
     each phase's batch is a single bounded statement, so a run never holds
     locks across thousands of rows.
@@ -860,7 +915,8 @@ async def run_memory_catalog_backfill(
 
     Returns:
         Dict with ``facts_backfilled``, ``rules_backfilled``,
-        ``facts_reconciled``, ``rules_reconciled``, and ``source_schema``.
+        ``facts_reconciled``, ``rules_reconciled``, ``authority_synced``, and
+        ``source_schema``.
     """
     facts_backfilled = await _backfill_facts_to_catalog(
         pool, source_schema=source_schema, limit=batch_size
@@ -874,12 +930,18 @@ async def run_memory_catalog_backfill(
     rules_reconciled = await _reconcile_rules_catalog_disownment(
         pool, source_schema=source_schema, limit=batch_size
     )
+    authority_synced = 0
+    for source_table in ("facts", "rules"):
+        authority_synced += await _sync_catalog_authority(
+            pool, source_schema=source_schema, source_table=source_table, limit=batch_size
+        )
     return {
         "source_schema": source_schema,
         "facts_backfilled": facts_backfilled,
         "rules_backfilled": rules_backfilled,
         "facts_reconciled": facts_reconciled,
         "rules_reconciled": rules_reconciled,
+        "authority_synced": authority_synced,
     }
 
 
@@ -2222,6 +2284,7 @@ async def store_fact(
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 object_entity_id=object_entity_id,
+                content_authority=authority.authority,
             )
         except Exception:
             logger.warning(
@@ -2398,6 +2461,7 @@ async def store_rule(
                 scope=scope,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
+                content_authority=authority.authority,
             )
         except Exception:
             logger.warning(
@@ -3207,17 +3271,20 @@ async def endorse_rule(
                     INSERT INTO public.memory_catalog (
                         source_schema, source_table, source_id, source_butler, tenant_id,
                         entity_id, summary, embedding, search_vector, memory_type,
-                        title, scope, confidence, retention_class, sensitivity, updated_at
+                        title, scope, confidence, retention_class, sensitivity,
+                        content_authority, updated_at
                     )
                     SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
                            r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
-                           r.scope, r.confidence, r.retention_class, r.sensitivity, now()
+                           r.scope, r.confidence, r.retention_class, r.sensitivity,
+                           r.content_authority, now()
                     FROM {table} r WHERE r.id = $2
                     ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
                         summary = EXCLUDED.summary,
                         embedding = EXCLUDED.embedding,
                         search_vector = EXCLUDED.search_vector,
                         confidence = EXCLUDED.confidence,
+                        content_authority = EXCLUDED.content_authority,
                         invalid_at = NULL,
                         updated_at = now()
                     """,

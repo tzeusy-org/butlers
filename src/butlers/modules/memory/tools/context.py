@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.core.owner import fetch_owner_entity_id
-from butlers.modules.memory.content_authority import is_owner_class
+from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
 
@@ -316,7 +316,9 @@ def _format_rule_line(r: dict[str, Any]) -> str:
 def _format_fleet_knowledge_line(r: dict[str, Any]) -> str:
     source_butler = r.get("source_butler") or "?"
     title = r.get("title") or (r.get("summary") or "")[:80]
-    return f"- [{source_butler}] {title}\n"
+    attribution = catalog_attribution(r.get("content_authority"))
+    attributed = f" ({attribution})" if attribution else ""
+    return f"- [{source_butler}] {title}{attributed}\n"
 
 
 def _format_episode_line(ep: dict[str, Any]) -> str:
