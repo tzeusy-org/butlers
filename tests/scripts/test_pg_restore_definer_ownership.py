@@ -409,6 +409,8 @@ def _docker_client(
 
     The password crosses only as the value of an environment variable forwarded
     *by name*, so it is never in this process' argv nor in the container's.
+    Match the host caller's UID/GID so its private rotated epoch remains readable
+    after the container exits; the epoch writer deliberately uses mktemp mode 0600.
     """
     mounts = ["-v", f"{backup}:/backup.sql.gz:ro", "-v", f"{backup.parent}:/capture-host"]
     if mount_script:
@@ -419,6 +421,8 @@ def _docker_client(
             "run",
             "--rm",
             "--add-host=host.docker.internal:host-gateway",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
             *mounts,
             "-e",
             "PGPASSWORD_FOR_TEST",
