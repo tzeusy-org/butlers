@@ -1,4 +1,4 @@
-"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145/core_233).
+"""Integration test: public.resolve_owner_triple SECURITY DEFINER (core_145/core_233/core_293).
 
 Closes the gap identified in bu-6ui2o: the mocked-pool unit tests in
 ``test_gate.py`` and ``test_identity_resolution.py`` cover the Python layer
@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import uuid
 from urllib.parse import urlparse
 
 import asyncpg
@@ -839,6 +840,255 @@ async def test_core_233_downgrade_and_reapply_restores_function_behavior(
                 ["collision@example.test"],
             )
             is None
+        )
+    finally:
+        await pool.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Endpoint custody holds (core_293, bu-s11n0s.1)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_HOLD_INSERT = """
+INSERT INTO public.custody_holds
+    (owner_entity_id, target_kind, target_digest, generation, episode_id, reason,
+     source_command_id)
+VALUES ($1, $2, public.custody_target_digest($2, $3), $4, gen_random_uuid(), 'lost',
+        gen_random_uuid())
+RETURNING id
+"""
+
+
+async def _release(pool: asyncpg.Pool, hold_id) -> None:
+    await pool.execute("UPDATE public.custody_holds SET released_at = now() WHERE id = $1", hold_id)
+
+
+class TestEndpointCustodyHolds:
+    """REQ-endpoint-custody-holds-006: active holds refuse owner resolution.
+
+    REQ-endpoint-custody-holds-002: runtime roles cannot forge hold lifecycle.
+    """
+
+    async def test_held_owner_endpoints_stop_resolving_until_release(
+        self,
+        migration_pool: asyncpg.Pool,
+        isolated_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Email, Telegram and WhatsApp-by-phone holds refuse owner; release restores."""
+        from butlers.identity import resolve_owner_channel_via_definer
+
+        owner_id = seeded_data["owner_id"]
+        await migration_pool.executemany(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", validity)
+            VALUES ($1, $2, $3, 'literal', 'test', true, 'active')
+            """,
+            [
+                (owner_id, "has-email", "Held.Owner@Example.Test"),
+                (owner_id, "has-handle", "telegram:900100200"),
+            ],
+        )
+        targets = (
+            ("email", "held.owner@example.test", "has-email", "held.owner@example.test"),
+            ("telegram_bot", "900100200", "has-handle", "telegram:900100200"),
+            ("whatsapp_jid", "15551112222@s.whatsapp.net", "has-phone", "15551112222"),
+        )
+
+        async def resolves(channel: str, value: str) -> bool:
+            result = await resolve_owner_channel_via_definer(
+                isolated_role_pool, channel, value, raise_on_error=True
+            )
+            return result is not None and result[0].entity_id == owner_id
+
+        for channel, value, _, _ in targets:
+            assert await resolves(channel, value), channel
+
+        holds = [
+            await migration_pool.fetchval(_HOLD_INSERT, owner_id, kind, key, 1)
+            for _, _, kind, key in targets
+        ]
+        try:
+            for channel, value, _, _ in targets:
+                assert not await resolves(channel, value), channel
+            # An unheld sibling endpoint of the same owner keeps resolving.
+            assert await resolves("email", seeded_data["owner_primary_email"])
+            # Held means not owner, not ambiguous: the content-blind read agrees.
+            assert await isolated_role_pool.fetchval(
+                "SELECT public.custody_target_held('has-email', $1)",
+                "Held.Owner@Example.Test",
+            )
+        finally:
+            for hold_id in holds:
+                await _release(migration_pool, hold_id)
+
+        for channel, value, _, _ in targets:
+            assert await resolves(channel, value), channel
+
+        # Generations are monotonic per target and never reset on rehold.
+        with pytest.raises(asyncpg.PostgresError, match="next generation"):
+            await migration_pool.fetchval(
+                _HOLD_INSERT, owner_id, "has-email", "held.owner@example.test", 1
+            )
+        rehold = await migration_pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-email", "held.owner@example.test", 2
+        )
+        assert not await resolves("email", "held.owner@example.test")
+        await _release(migration_pool, rehold)
+
+    async def test_hold_history_is_owner_maintained_and_immutable(
+        self,
+        migration_pool: asyncpg.Pool,
+        messenger_role_pool: asyncpg.Pool,
+        seeded_data: dict,
+    ) -> None:
+        """Runtime roles cannot read, forge, release or delete; history never rewinds."""
+        owner_id = seeded_data["owner_id"]
+        hold_id = await migration_pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-handle", "telegram:immutable-hold-1", 1
+        )
+        try:
+            # Denied outright, or (after a bootstrap DML regrant) zero rows under RLS.
+            try:
+                visible = await messenger_role_pool.fetchval(
+                    "SELECT count(*) FROM public.custody_holds"
+                )
+            except asyncpg.PostgresError:
+                visible = 0
+            assert visible == 0
+            with pytest.raises(asyncpg.PostgresError):
+                await messenger_role_pool.fetchval(
+                    _HOLD_INSERT, owner_id, "has-handle", "telegram:forged-hold-1", 1
+                )
+            for statement in (
+                "UPDATE public.custody_holds SET released_at = now() WHERE id = $1",
+                "DELETE FROM public.custody_holds WHERE id = $1",
+            ):
+                try:
+                    await messenger_role_pool.execute(statement, hold_id)
+                except asyncpg.PostgresError:
+                    pass
+            row = await migration_pool.fetchrow(
+                "SELECT generation, released_at FROM public.custody_holds WHERE id = $1",
+                hold_id,
+            )
+            assert row is not None and row["released_at"] is None
+            assert (
+                await migration_pool.fetchval(
+                    "SELECT count(*) FROM public.custody_holds "
+                    "WHERE target_digest = "
+                    "public.custody_target_digest('has-handle', 'telegram:forged-hold-1')"
+                )
+                == 0
+            )
+
+            for statement in (
+                "DELETE FROM public.custody_holds WHERE id = $1",
+                "UPDATE public.custody_holds SET generation = 9 WHERE id = $1",
+            ):
+                with pytest.raises(asyncpg.PostgresError):
+                    await migration_pool.execute(statement, hold_id)
+            with pytest.raises(asyncpg.PostgresError):
+                await migration_pool.execute("TRUNCATE public.custody_holds")
+            # TRUNCATE ... CASCADE follows foreign keys only, so an entity
+            # reset can never reach hold history; the guard checks the owner.
+            assert (
+                await migration_pool.fetchval(
+                    "SELECT count(*) FROM pg_constraint "
+                    "WHERE contype = 'f' AND (conrelid = 'public.custody_holds'::regclass "
+                    "OR confrelid = 'public.custody_holds'::regclass)"
+                )
+                == 0
+            )
+            with pytest.raises(asyncpg.PostgresError, match="existing owner entity"):
+                await migration_pool.fetchval(
+                    _HOLD_INSERT, uuid.uuid4(), "has-handle", "telegram:orphan-hold-1", 1
+                )
+        finally:
+            await _release(migration_pool, hold_id)
+        with pytest.raises(asyncpg.PostgresError, match="released once"):
+            await migration_pool.execute(
+                "UPDATE public.custody_holds SET released_at = NULL WHERE id = $1",
+                hold_id,
+            )
+
+
+async def test_core_293_downgrade_refuses_active_hold_and_reapplies(postgres_container) -> None:
+    """A rollback never silently restores trust in a held endpoint."""
+    db_url = await asyncio.to_thread(
+        create_migrated_test_db,
+        postgres_container,
+        migration_db_name(),
+        ["core", "relationship"],
+        {"relationship": "relationship"},
+        {"core": "core_293"},
+    )
+    config = _build_alembic_config(db_url, chains=["core"])
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        owner_id = await pool.fetchval(
+            "INSERT INTO public.entities (canonical_name, roles) VALUES ($1, $2) RETURNING id",
+            "Custody Owner",
+            ["owner"],
+        )
+        await pool.execute(
+            """
+            INSERT INTO relationship.entity_facts
+                (subject, predicate, object, object_kind, src, "primary", validity)
+            VALUES ($1, 'has-email', 'custody@example.test', 'literal', 'test', true, 'active')
+            """,
+            owner_id,
+        )
+        hold_id = await pool.fetchval(
+            _HOLD_INSERT, owner_id, "has-email", "custody@example.test", 1
+        )
+    finally:
+        await pool.close()
+
+    with pytest.raises(Exception, match="hold is active"):
+        await asyncio.to_thread(command.downgrade, config, "core_291")
+
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        assert (
+            await pool.fetchrow(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                ["has-email:custody@example.test"],
+            )
+            is None
+        )
+        await _release(pool, hold_id)
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(command.downgrade, config, "core_291")
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        assert await pool.fetchval("SELECT to_regclass('public.custody_holds')") is None
+        assert (
+            await pool.fetchval(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                ["has-email:custody@example.test"],
+            )
+            == owner_id
+        )
+    finally:
+        await pool.close()
+
+    await asyncio.to_thread(command.upgrade, config, "core@core_293")
+    pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
+    try:
+        assert await pool.fetchval("SELECT count(*) FROM public.custody_holds") == 0
+        assert (
+            await pool.fetchval(
+                "SELECT entity_id FROM public.resolve_owner_triple($1, $2)",
+                "owner-channel",
+                ["has-email:custody@example.test"],
+            )
+            == owner_id
         )
     finally:
         await pool.close()

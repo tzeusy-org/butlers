@@ -113,6 +113,14 @@ the original accepted location payload in
 including `SSID` and `inregions` when the phone sends them. Restrict database
 access accordingly and use SSID/region names that reveal no more than intended.
 
+The raw-fix retention horizon is declared in Chronicler at
+`GET`/`PUT /api/chronicler/location-retention`. It defaults to 30 days, and the
+owner may shorten it to as little as 1 day; the PUT is owner-only and versioned.
+Raw expiry is **not yet enforced**: the response reports `status: not_enforced`
+until deletion is gated on per-row projection coverage (bu-s11n0s.7). Until
+then, raw fixes are still retained indefinitely. `OWNTRACKS_RETENTION_DAYS`
+governs only the `public.ingestion_events` audit rows.
+
 ## Implementation Notes
 
 - The Chronicler `owntracks.ssid_presence` adapter keeps its cursor as `{watermark, uuid}` under the

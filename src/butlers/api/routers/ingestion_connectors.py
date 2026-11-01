@@ -91,11 +91,10 @@ _SWITCHBOARD_BUTLER = "switchboard"
 
 PeriodLiteral = Literal["24h", "7d", "30d"]
 _DB_TRUNC: dict[PeriodLiteral, str] = {"24h": "hour", "7d": "day", "30d": "day"}
-_DB_INTERVAL: dict[PeriodLiteral, str] = {
-    "24h": "24 hours",
-    "7d": "7 days",
-    "30d": "30 days",
-}
+# Dense bucket count per period. The window ends at the bucket holding NOW()
+# and every bucket in it is returned, so a quiet bucket is a measured zero at
+# its real time instead of an absent row a client must guess the position of.
+_DB_BUCKETS: dict[PeriodLiteral, int] = {"24h": 24, "7d": 7, "30d": 30}
 
 
 class ConnectorSummaryToday(BaseModel):
@@ -604,18 +603,34 @@ async def _connector_stats_from_db(
     *,
     connection: Any | None = None,
 ) -> ApiResponse[list[ConnectorStatsHourly] | list[ConnectorStatsDaily]]:
-    """Build a skip-aware connector histogram from durable event tables."""
+    """Build a dense, time-keyed, skip-aware connector histogram.
+
+    Returns exactly ``_DB_BUCKETS[period]`` rows, oldest first, keyed by bucket
+    start. The last bucket is the UTC hour/day containing ``NOW()`` — the same
+    window the roster summary's ``hourly_events`` uses — so the detail histogram
+    and the roster sparkline place one event in the same bucket. A bucket with
+    no events is a measured zero; it says nothing about connector liveness.
+    """
     executor = connection if connection is not None else _pool(db)
     trunc = _DB_TRUNC[period]
-    interval = _DB_INTERVAL[period]
     try:
         rows = await executor.fetch(
             f"""
-            SELECT bucket,
-                   SUM(ingested)::bigint  AS messages_ingested,
-                   SUM(failed)::bigint    AS messages_failed,
-                   SUM(filtered)::bigint  AS messages_filtered
-            FROM (
+            WITH buckets AS (
+                -- Step over UTC-naive ``timestamp`` and convert afterwards:
+                -- stepping a ``timestamptz`` by a day follows the session
+                -- TimeZone, so a DST change would shift buckets off UTC days.
+                SELECT bucket_utc AT TIME ZONE 'UTC' AS bucket
+                FROM (
+                    SELECT date_trunc('{trunc}', NOW() AT TIME ZONE 'UTC') AS last_bucket
+                ) bounds,
+                LATERAL generate_series(
+                    last_bucket - ($3::int - 1) * INTERVAL '1 {trunc}',
+                    last_bucket,
+                    INTERVAL '1 {trunc}'
+                ) AS bucket_utc
+            ),
+            combined AS (
                 SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
                            AT TIME ZONE 'UTC' AS bucket,
                        COUNT(*) FILTER (WHERE status = 'ingested') AS ingested,
@@ -624,7 +639,7 @@ async def _connector_stats_from_db(
                 FROM public.ingestion_events
                 WHERE COALESCE(source_provider, source_channel) = $1
                   AND source_endpoint_identity = $2
-                  AND received_at >= NOW() - INTERVAL '{interval}'
+                  AND received_at >= (SELECT MIN(bucket) FROM buckets)
                 GROUP BY 1
                 UNION ALL
                 SELECT date_trunc('{trunc}', received_at AT TIME ZONE 'UTC')
@@ -634,13 +649,20 @@ async def _connector_stats_from_db(
                 FROM connectors.filtered_events
                 WHERE connector_type = $1
                   AND endpoint_identity = $2
-                  AND received_at >= NOW() - INTERVAL '{interval}'
+                  AND received_at >= (SELECT MIN(bucket) FROM buckets)
                 GROUP BY 1
-            ) combined
-            GROUP BY bucket ORDER BY bucket
+            )
+            SELECT b.bucket,
+                   COALESCE(SUM(c.ingested), 0)::bigint AS messages_ingested,
+                   COALESCE(SUM(c.failed), 0)::bigint   AS messages_failed,
+                   COALESCE(SUM(c.filtered), 0)::bigint AS messages_filtered
+            FROM buckets b
+            LEFT JOIN combined c ON c.bucket = b.bucket
+            GROUP BY b.bucket ORDER BY b.bucket
             """,
             connector_type,
             endpoint_identity,
+            _DB_BUCKETS[period],
         )
     except Exception:
         logger.warning("connector stats DB query failed", exc_info=True)

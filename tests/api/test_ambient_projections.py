@@ -483,6 +483,15 @@ async def test_projection_tokens_never_reach_traces_on_any_path(monkeypatch):
     monkeypatch.setattr("butlers.core.metrics.init_metrics", lambda *args: None)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1")
     monkeypatch.setenv("OTEL_SEMCONV_STABILITY_OPT_IN", "http/dup")
+    # OpenTelemetry reads the opt-in once per process; any earlier instrumented
+    # test in this worker would otherwise freeze the old-only attribute set and
+    # drop url.query. monkeypatch restores the cached mode afterwards.
+    from opentelemetry.instrumentation._semconv import (
+        _OpenTelemetrySemanticConventionStability as _Stability,
+    )
+
+    monkeypatch.setattr(_Stability, "_initialized", False)
+    monkeypatch.setattr(_Stability, "_OTEL_SEMCONV_STABILITY_SIGNAL_MAPPING", {})
     client, _store, app = _harness(monkeypatch)
     try:
         minted = await _mint(client)
