@@ -13,12 +13,19 @@ reachable artifact sanitization) and `-006` (durable ambiguous outcome recovery)
 The package `butlers.core.qa.publication` has four parts. The dispatcher calls
 `proposal.publish_investigation` only when `QaDispatchConfig.publisher` is set.
 
-1. Sealed export (`export.py`). The dispatcher reads the QA branch head once with hardened git and
-   binds it. `build_sealed_export` then reads raw objects with `git cat-file --batch`. It runs against
-   a fresh, empty, publisher-owned repository whose `GIT_OBJECT_DIRECTORY` is the agent's object
+1. Sealed export (`export.py`). The dispatcher reads the QA branch head once from the ref files
+   (no git process, no symlinks) and binds it. `build_sealed_export` then parses raw loose and
+   packed objects in-process (`object_store.py`); no git process runs against the agent's object
    store, so no agent hook, config, `core.hooksPath`, fsmonitor, filter, driver, include or
-   credential helper is ever consulted. Every object is re-hashed against its id, so a rewritten
-   loose object is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
+   credential helper is ever consulted. Every object-store file is opened relative to a directory
+   descriptor with `O_NOFOLLOW | O_NONBLOCK` and must be a bounded regular file. A planted
+   `objects/info/alternates` or `http-alternates`, or a symlinked object, fan-out directory, pack or
+   object directory, or a FIFO, refuses (`object_store_unsafe`) instead of widening which files the
+   reader opens or hanging it. Delta chains (including `REF_DELTA` cycles) resolve
+   iteratively under a depth cap and one per-read byte budget, and pack offsets and delta opcodes
+   are bounds-checked, so hostile pack bytes refuse (`malformed_object`) instead of exhausting
+   memory or escaping as an uncaught error. Every object is re-hashed against its id, so a rewritten loose object
+   is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
    accepts only single-parent commits with plain `tree`/`parent`/`author`/`committer` headers. Author
    and committer must equal the configured QA identity (`BUTLERS_QA_GIT_AUTHOR_*`). The message,
    every new path and every added line of every new blob must pass `validate_anonymized()`. Git
