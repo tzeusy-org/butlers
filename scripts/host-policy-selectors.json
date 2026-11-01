@@ -1,0 +1,3973 @@
+{
+  "version": 1,
+  "roster_names": [
+    "chronicler",
+    "concierge",
+    "education",
+    "finance",
+    "general",
+    "health",
+    "home",
+    "lifestyle",
+    "messenger",
+    "qa",
+    "relationship",
+    "switchboard",
+    "travel"
+  ],
+  "baseline": {
+    "ref": "d223c4f28012220bdfbfa805857b81fd6dc0388b",
+    "legacy_tsv_sha256": "5772327e04dce19ae15768a599be6e1e8d22d961d0dc1dc9f96bf0274fc8da62",
+    "counts": {
+      "direct": 59,
+      "direct_files": 30,
+      "container": 63,
+      "supplementary": 28,
+      "all_categories": {
+        "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 31,
+        "NON_NAME_ENUM_OR_MODULE": 19,
+        "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
+        "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 20,
+        "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
+        "SCHEMA_OWNERSHIP": 7
+      },
+      "direct_categories": {
+        "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 21,
+        "NON_NAME_ENUM_OR_MODULE": 5,
+        "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
+        "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 16,
+        "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 7,
+        "SCHEMA_OWNERSHIP": 7
+      }
+    },
+    "selectors": [
+      {
+        "id": "6e419285739bacaee23cfd0a5854eaa4cc8e00c7b6e7ed2dc643d4050d08503a",
+        "path": "src/butlers/api/approval_review.py",
+        "symbol": "resolve_messenger_reviews",
+        "line": 41,
+        "expression": "'messenger' not in names",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "970f195a22ac1b925c179da91423d0630b38492a5bb306751278b184cd54f75a",
+        "path": "src/butlers/api/approval_review.py",
+        "symbol": "resolve_messenger_reviews",
+        "line": 82,
+        "expression": "sources[0][0] == 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "d77017dab981ada7af4aee8bb50fd9240f79592b9187522ac7705920e2e7d1c5",
+        "path": "src/butlers/api/dashboard_audit_middleware.py",
+        "symbol": "_infer_butler",
+        "line": 87,
+        "expression": "candidate not in _INFRA",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "6a4f57f62112552c9543dd32fbfd0af323699374af6bf2c498b753b6fab2d726",
+        "path": "src/butlers/api/deps.py",
+        "symbol": "discover_butlers_with_diagnostics",
+        "line": 322,
+        "expression": "'qa' in config.modules",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "7525d2bea509711160b84e9a408917eb3c3cc65ab8de418ffbbb0365e55ed6a9",
+        "path": "src/butlers/api/deps.py",
+        "symbol": "discover_butlers_with_diagnostics",
+        "line": 324,
+        "expression": "config.modules['qa']",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "lookup"
+      },
+      {
+        "id": "a48de3e01158f0dc34925ddbaacc5135cc8e5b85df8538d14ca0d228b2f1eab5",
+        "path": "src/butlers/api/routers/approvals.py",
+        "symbol": "get_approval_detail",
+        "line": 3009,
+        "expression": "owner not in {'messenger', 'relationship'}",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "28137f2c5a7c1c8b3f393962a3049b05909de69d1d62069182139abb9d13ea0e",
+        "path": "src/butlers/api/routers/approvals.py",
+        "symbol": "get_approval_detail",
+        "line": 3018,
+        "expression": "review_source != 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "33b3b09b4c501eeef7a334e358c1a52a49be3b96d28722d28deb0a510ec71dc1",
+        "path": "src/butlers/api/routers/butlers.py",
+        "symbol": "_get_module_health_via_mcp",
+        "line": 1351,
+        "expression": "status_data.get('health', 'unknown')",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "lookup"
+      },
+      {
+        "id": "ec15534e234ea561e823b6646ec84675c8c0f35cca9c3c0ce9ae4bf34adcbfc8",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "_stream_conversation_response",
+        "line": 519,
+        "expression": "butler_name == _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "0e2d25e3540ef8f71c6dcdde1428ba900af642be91a9cb81592deca501424191",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "_stream_conversation_response",
+        "line": 704,
+        "expression": "butler_name == _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "a590e557579d81e4f20feabecc4ad371f6063ec7b0629818339c14270021f803",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "_stream_conversation_response",
+        "line": 727,
+        "expression": "butler_name == _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "dcfa20d4f1636bbbdb72f66a9c4a0a0afd2c479ae2f66e61e9cf13f717275bff",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "_refresh_active_turn_routed_butler",
+        "line": 1179,
+        "expression": "routed_butler != _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "4995dcf00a05bf270e49d7b85f34a273e5dd146fd3b18f044f1216b7325e7537",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "create_conversation",
+        "line": 1848,
+        "expression": "name == _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "f68228670e2499d828ce387b49bcb236ddf6e0a4eb8dd7d3194e98ff8b082097",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "send_message",
+        "line": 1990,
+        "expression": "name == _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "b8697c36f950dc333fd5d08da62bdd630696cd2d0cf5ae6d27db588eb570da56",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "cancel_conversation_turn",
+        "line": 2141,
+        "expression": "routed_butler != _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "3fa7ff4718db0d5528ad5b51a3a69f959f879ccf409fb45a49accce15eddeaab",
+        "path": "src/butlers/api/routers/conversations.py",
+        "symbol": "cancel_conversation_turn",
+        "line": 2152,
+        "expression": "handoff_target == _SWITCHBOARD_BUTLER",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "26b6ec191affd7d616a4e2ffb0eda66a23e486dbf25ef0560cd3b1d7343e87e0",
+        "path": "src/butlers/api/routers/identity.py",
+        "symbol": "get_email_match_rate",
+        "line": 74,
+        "expression": "'relationship' not in db_mgr.butler_names",
+        "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "46b1609455fc6820195a27aeffe4e51838928669da81882d06baf67b5cb7da7f",
+        "path": "src/butlers/api/routers/modules.py",
+        "symbol": "_get_module_states_via_mcp",
+        "line": 128,
+        "expression": "info.get('health', 'active')",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "lookup"
+      },
+      {
+        "id": "cef63ab86e8023b77aa3b852c1069690285b39b0582ca989ba40d45ecc097519",
+        "path": "src/butlers/api/routers/qa.py",
+        "symbol": "_read_staffer_info_from_toml",
+        "line": 1307,
+        "expression": "config.modules.get('qa', {})",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "lookup"
+      },
+      {
+        "id": "67bf64e4ed60a8af491a96f8af1487976f59a5b56cc02cd13d3647995b662aab",
+        "path": "src/butlers/api/routers/qa.py",
+        "symbol": "_force_patrol_via_daemon",
+        "line": 2802,
+        "expression": "n != _QA_BUTLER_NAME",
+        "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "5f6cb36e9f706cb42d31063c486ec96e286484b1cea149422cf222dcfbb51f99",
+        "path": "src/butlers/api/routers/secrets_v2.py",
+        "symbol": "_capability_name",
+        "line": 335,
+        "expression": "capability in CAPABILITY_VOCABULARY",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "269a6dcc0a50a7fba852ed1df87ea2d28ee67989824a2a09f9751fdb79566419",
+        "path": "src/butlers/api/routers/secrets_v2.py",
+        "symbol": "_google_capability_probe_params",
+        "line": 4765,
+        "expression": "capability != 'health'",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "f1d1bc67cd62db14cb52b73475e2249a266dab2173c8783b50a14060e5a47eb3",
+        "path": "src/butlers/api/routers/secrets_v2.py",
+        "symbol": "_verify_google_capabilities._probe_one",
+        "line": 4996,
+        "expression": "capability == 'health'",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "825237f1e795a57c6d643dd969c09794568537f57ffcf9a4e8499a37ef50263f",
+        "path": "src/butlers/background.py",
+        "symbol": "scheduler_loop._scheduler_notify_fn",
+        "line": 295,
+        "expression": "butler_name != 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "f8490028396ab12ad992a93f7aaa4dc924ca23f5e84fe55ce639e09c64a38b08",
+        "path": "src/butlers/background.py",
+        "symbol": "scheduler_loop._scheduler_notify_fn",
+        "line": 303,
+        "expression": "butler_name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "9207b087c7a92b96986311435d68b38346e406ba772a7bf5fab3212de090ffe2",
+        "path": "src/butlers/chronicler/adapters/home_assistant.py",
+        "symbol": "HomeAssistantHistoryAdapter._rollup_entity_episodes",
+        "line": 417,
+        "expression": "state == _STATE_HOME",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "01876eb5ac3a44554e0952e7b40f2d419037ea2900bd139e14a963545730504f",
+        "path": "src/butlers/chronicler/day_close_recovery.py",
+        "symbol": "_candidate",
+        "line": 169,
+        "expression": "deferred['butler_name'] != 'chronicler'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "fe7c529283b135169cf76a39fefbffbf2e45ad29adff4ab2c321d2864956e002",
+        "path": "src/butlers/chronicler/day_close_recovery.py",
+        "symbol": "_candidate",
+        "line": 175,
+        "expression": "envelope.get('origin_butler') != 'chronicler'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "b8d8528fe92b777acecb0c222a274f01603642d90c8173bca484878320668d2f",
+        "path": "src/butlers/chronicler/day_close_recovery.py",
+        "symbol": "_candidate",
+        "line": 180,
+        "expression": "attention['origin_butler'] != 'chronicler'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "b86f21a1ae078a4e49e1e447b0b8e0ed7e1e7fb39188cefaf47adf9b92829541",
+        "path": "src/butlers/cli.py",
+        "symbol": "_ordered_configs",
+        "line": 650,
+        "expression": "n not in _PRIORITY_BUTLERS",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "57d8a4428f6c8dfd6b542f6f1efe16ee7682a1a6913f40390cf4402a4a02458f",
+        "path": "src/butlers/config.py",
+        "symbol": "_validate_messenger_requirements",
+        "line": 677,
+        "expression": "name != 'messenger'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "9d6d4f70061153f12e98116dca6aa3e96b43f984fc3ca2ad7646e8e6ed72b6a1",
+        "path": "src/butlers/config.py",
+        "symbol": "load_config",
+        "line": 932,
+        "expression": "name != 'switchboard'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "dc062692ade6b7ba898fbf8a8c20c0fe7473ef60a2be185245f5b1f7d1fe7b9f",
+        "path": "src/butlers/connectors/steam.py",
+        "symbol": "SteamAccountPoller._poll_friends",
+        "line": 1457,
+        "expression": "f.get('relationship', 'friend')",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "lookup"
+      },
+      {
+        "id": "1884d239c6dbd897599d6feda10c394e382130ed2e6e91d6b98f0249b4dba1f2",
+        "path": "src/butlers/core/approval_delivery_authority.py",
+        "symbol": "SourceApprovalAdmission.verifier_mcp.verify_approval_admission",
+        "line": 397,
+        "expression": "protected_approval_principal(audience=f'{self._schema}:approval-verifier') != 'switchboard'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "0ee289d91988130b9bf727ebbd98a485df3b96b89b5936013c61044895be57a1",
+        "path": "src/butlers/core/approval_review.py",
+        "symbol": "ApprovalReview.parse",
+        "line": 30,
+        "expression": "value['butler'] != 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "ac054362310d5628c29f6683ca228be09ce0ae8d32c9bc7a7961a9bd768460f6",
+        "path": "src/butlers/core/approval_review.py",
+        "symbol": "ParkedApprovalRefusal.__init__",
+        "line": 46,
+        "expression": "butler == 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "f3b13654840eab4e5e788eeef0c7628b2b73e3b523e45a0141aba82de2e18d56",
+        "path": "src/butlers/core/fleet_conditions.py",
+        "symbol": "controller_after_cycle",
+        "line": 497,
+        "expression": "config.name == 'qa'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "457e672407b82df51a4cf7c4bd1e5925c7d2f1284209759b166672fe36b71115",
+        "path": "src/butlers/core/goal_admission.py",
+        "symbol": "derive_admission",
+        "line": 311,
+        "expression": "contract.staffer == 'qa'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "b061cddd5cfbeb142785a4e120f273b2b4b6f1c752b8937b4931848043fbb9e7",
+        "path": "src/butlers/core/qa/dispatch.py",
+        "symbol": "dispatch_qa_investigation",
+        "line": 3403,
+        "expression": "finding.source_butler == 'qa'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "2f79f18b38617787ee992b9e9df02e65c968304b83ec299ab062a2765e1d1102",
+        "path": "src/butlers/core/qa/dispatch.py",
+        "symbol": "dispatch_qa_investigation",
+        "line": 3405,
+        "expression": "trigger_src in {'healing', 'qa'}",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "6d94d1762530fa780a07f18334ffebaf937d3c85845156b05fec40a4da4fcd72",
+        "path": "src/butlers/core/qa/sources/log_scanner.py",
+        "symbol": "_is_switchboard_classification_timeout",
+        "line": 341,
+        "expression": "entry.butler_name != 'switchboard'",
+        "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "2f132334b6626002039c1608d8310a781a524f9f9392a3417139e7f0d2ba18fa",
+        "path": "src/butlers/core/qa/sources/session_records.py",
+        "symbol": "_is_switchboard_classification_timeout",
+        "line": 352,
+        "expression": "source_butler != 'switchboard'",
+        "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
+        "path": "src/butlers/core/scheduler.py",
+        "symbol": "tick",
+        "line": 2335,
+        "expression": "butler_name == _QA_BUTLER_NAME",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "4cce104826373fca4d13a02c19615671d37eeed35859cb3d4a746456890a78b8",
+        "path": "src/butlers/core/spawner.py",
+        "symbol": "Spawner._fire_speculative_prewarm._prewarm",
+        "line": 1511,
+        "expression": "trigger_source not in ('healing', 'qa')",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "8a00eedddfee34d4bc2572928a244c22b1fa4dd6c22115055aee49d08a02d0d0",
+        "path": "src/butlers/core/spawner.py",
+        "symbol": "Spawner._run",
+        "line": 2360,
+        "expression": "self._config.name == 'switchboard'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "1153f2b21b90e2833bb77931d21fcab7daf81bb485da090621c3319a2eec03e9",
+        "path": "src/butlers/core/spawner.py",
+        "symbol": "Spawner._run",
+        "line": 2465,
+        "expression": "self._config.name == 'switchboard'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "d6a36547d425ca334e58c2ed46c3d07835e6f3d28c0a6d2acca63aa3061f9818",
+        "path": "src/butlers/core/spawner.py",
+        "symbol": "Spawner._run",
+        "line": 2529,
+        "expression": "trigger_source in ('healing', 'qa')",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "a70b295beff17a38eaf6637475d8760200e50d35cda39192d9d40761af76b9d9",
+        "path": "src/butlers/core_tools/_chronicler.py",
+        "symbol": "register_chronicler_tools",
+        "line": 207,
+        "expression": "ctx.butler_name != 'chronicler'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "856ae8e6b3c8cab6879f7deb7fafc57a7ad156adbecf40cfee4c9e7a62bf5ef9",
+        "path": "src/butlers/core_tools/_notifications.py",
+        "symbol": "register_notification_tools.notify",
+        "line": 1234,
+        "expression": "butler_name != 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "e2931fd808af537484cc7f2715adb44dfb6f5d8db576ce5a6bf93354e2b7199e",
+        "path": "src/butlers/core_tools/_notifications.py",
+        "symbol": "register_notification_tools.notify",
+        "line": 1318,
+        "expression": "butler_name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "2e3f225fff7cbf6dc6f51af9af4978933ea3c9bdbca66e619b23b7856a1b2ca0",
+        "path": "src/butlers/core_tools/_routing.py",
+        "symbol": "_preauthenticate_messenger_recovery",
+        "line": 132,
+        "expression": "switchboard_principal != 'switchboard'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "b45caa93b045a654a0a5aad28a2f69ecd631280ba7ab5f7e5b6ce7214d9ae266",
+        "path": "src/butlers/core_tools/_routing.py",
+        "symbol": "_preauthenticate_messenger_recovery",
+        "line": 151,
+        "expression": "parsed_route.request_context.source_endpoint_identity != 'switchboard'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "51fc30b5024c7030816ce736afa5bb8d3923d8550892b036fa16754890e17f77",
+        "path": "src/butlers/core_tools/_routing.py",
+        "symbol": "_preauthenticate_messenger_recovery",
+        "line": 152,
+        "expression": "'switchboard' not in trusted_route_callers",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "4741cc55af532cac94cc8723c6f2137b634b33253bf25b36b12ee840c1f16826",
+        "path": "src/butlers/core_tools/_routing.py",
+        "symbol": "register_routing_tools.preauthorize_route",
+        "line": 692,
+        "expression": "butler_name != 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "2e23b4c1285fc20aa1a4ebe1285c868950b203c39b20bd0c7d9fbba4de5dc6a9",
+        "path": "src/butlers/core_tools/_routing.py",
+        "symbol": "register_routing_tools.route_execute",
+        "line": 721,
+        "expression": "butler_name == 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "23420f2581d8488a09934fe12c919095941c3d2952da329c5ed1346052026da9",
+        "path": "src/butlers/core_tools/_routing.py",
+        "symbol": "register_routing_tools._route_execute_inner",
+        "line": 983,
+        "expression": "daemon.config.name != 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "97b13fd18d8c5dca64e0e632f0cc36958742af5ca89cd4b9a45dd6e7469f7141",
+        "path": "src/butlers/core_tools/_switchboard_route_dispatch.py",
+        "symbol": "dispatch_via_switchboard_route",
+        "line": 161,
+        "expression": "butler_name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "71708e1ea1ff35efb94afa37da8c657cc87c249cee174d34dfc0c26e0e7f2c2d",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._register_boot_epoch",
+        "line": 534,
+        "expression": "self.config.name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "98c3bed35fef2d72dd7e0f3e9df017c3ea3b6a69c075c5444a92eb3e45839d8e",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._build_runtime_probe_coordinator",
+        "line": 683,
+        "expression": "self.config.name != 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "7f9527481cbcbe5a1c38d91aed1b637f881e59e9bba233f30f8f7a75c8fab190",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._build_route_preflight",
+        "line": 698,
+        "expression": "self.config.name != 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "dd53d627798e98dd382a0f92db125aab38ff03b98ae3de6d20f37dbab1d06973",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._build_mcp_http_app",
+        "line": 770,
+        "expression": "butler_name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "ed02310285e1dc48fe7999a1ff991a9aa8e02138bffcea863e8d4084b70d645a",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._create_audit_pool",
+        "line": 826,
+        "expression": "self.config.name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "65e2fc9daeed11e6fbb775354a1b0e8f5e2b9681de24894ba9e36e7e1bc4bd7b",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._build_scheduler_runtime_context",
+        "line": 1130,
+        "expression": "self.config.name == 'chronicler'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "9278060ae5b6e27df8559b7fae9f47e68597bfe54395d05444187ad84e38c54d",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._register_core_tools",
+        "line": 1389,
+        "expression": "butler_name != required_name",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": false,
+        "container": false,
+        "kind": "dynamic_compare"
+      },
+      {
+        "id": "00c3405f0daf7e715f27b83fab13fefb0d539a7d806ca6f6d1d206844536e13e",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._register_core_tools",
+        "line": 1420,
+        "expression": "butler_name == 'switchboard'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "425b5d69f29ca065ecf01f81620f0375862238d26bcacf2076bae3875e747b9f",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._register_core_tools",
+        "line": 1421,
+        "expression": "butler_name == 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "f4afa37ebdb3459fdfe5dcc715ab19449513a40ced61bfca8eb69df20cd81eb9",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._register_module_tools",
+        "line": 1625,
+        "expression": "self.config.name == 'messenger'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "ba716f5aa96060b6acbb538591dfbf056f6f64559eae272d6e4dd881abfa719b",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._build_approval_push_runtime._dispatch",
+        "line": 1880,
+        "expression": "self.config.name != 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "05677eda47b71df0d2399374244dacd8f52b2e97ec9edb6381bbc841ddb69244",
+        "path": "src/butlers/daemon.py",
+        "symbol": "ButlerDaemon._wire_module_runtime",
+        "line": 2097,
+        "expression": "self.config.name == 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "c6f365c2d67f603dd82504b582c912cc12d917a611c0a2a83a2d6d2bfac84d59",
+        "path": "src/butlers/jobs/context_producers.py",
+        "symbol": "resolve_owner_presence",
+        "line": 288,
+        "expression": "(row['state'] or '').strip().lower() == 'home'",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "cce9f03c2570dc9ca19a978a7fa057ff987d83eb4c567d1bdb9f7e705ca557f7",
+        "path": "src/butlers/jobs/context_producers.py",
+        "symbol": "_load_home_place_reference",
+        "line": 652,
+        "expression": "reference.label.strip().lower() == _HOME_PLACE_LABEL",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "9151c57f04f3bc592c8c997e83c194f4bf7f64a05ece532fc967cc18c6723a9d",
+        "path": "src/butlers/lifecycle.py",
+        "symbol": "_startup_config",
+        "line": 124,
+        "expression": "daemon.config.name != 'switchboard'",
+        "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "9ee2138cd93cfce1fe66c2bb7b994e70595a06bfafcc96cf4c3450f059291b74",
+        "path": "src/butlers/mcp_wrappers.py",
+        "symbol": "_manual_day_close_tool_policy",
+        "line": 51,
+        "expression": "butler_name != 'chronicler'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "a57d1df7b6d32c6b84cf4250fdde04d053e95e8a7196cf71b75f9171a0d967a4",
+        "path": "src/butlers/modules/calendar_response_fence.py",
+        "symbol": "CalendarResponseFence._check_inventory",
+        "line": 98,
+        "expression": "self.module._butler_name not in RESPONSE_FENCE_OWNERS",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "e102119ad8e10f1eedcb6e71f73696eff9d5385c86edf323874c3bfa0cb4fe43",
+        "path": "src/butlers/modules/calendar_response_fence.py",
+        "symbol": "CalendarResponseFence._check_inventory",
+        "line": 108,
+        "expression": "name in RESPONSE_FENCE_OWNERS",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "3471c7582906114c0ae6ee51796434b7b5b849f35108013e285a92377818f070",
+        "path": "src/butlers/modules/calendar_response_fence.py",
+        "symbol": "CalendarResponseFence._check_inventory",
+        "line": 116,
+        "expression": "name not in RESPONSE_FENCE_OWNERS",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "498ba41c16aa28fb019065e674eef0486840d0d185970239067fb9e721532c51",
+        "path": "src/butlers/modules/memory/__init__.py",
+        "symbol": "MemoryModule.on_startup",
+        "line": 382,
+        "expression": "getattr(self._db, 'schema', None) == 'chronicler'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "cbc773c1caecc805169176ec488bed65ba7256c55f4714e167d67101e51580fc",
+        "path": "src/butlers/modules/memory/__init__.py",
+        "symbol": "MemoryModule.on_startup",
+        "line": 382,
+        "expression": "target_schema != 'chronicler'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "6fc8e47a1b23ee163dc4a94add1c4c83be7e28c68473a233aa6d76dee80b9a9d",
+        "path": "src/butlers/modules/memory/__init__.py",
+        "symbol": "MemoryModule.register_tools",
+        "line": 1437,
+        "expression": "butler_name == 'relationship'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "3a887a7543fcae9f0e866ab5a77de46de8fea3d0ef3f0ffe6e267a88ab0ce7a1",
+        "path": "src/butlers/modules/memory/__init__.py",
+        "symbol": "MemoryModule.register_tools.memory_entity_merge",
+        "line": 1858,
+        "expression": "getattr(module._db, 'schema', None) == 'relationship'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "406389751b09490122542044609876d31eadb31d6b7c09c3b1a357c8203d7668",
+        "path": "src/butlers/modules/memory/ann_observability.py",
+        "symbol": "run_ann_observability",
+        "line": 507,
+        "expression": "entry['health']",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "lookup"
+      },
+      {
+        "id": "237e374d47e131f26c4faccff6576ac0c031e4ff4f88147339cb0b0d5d3a6503",
+        "path": "src/butlers/modules/memory/knowledge_gaps.py",
+        "symbol": "_validate_predicate",
+        "line": 225,
+        "expression": "schema == 'relationship'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "fd2b1a8d17ceaf15ee36f9b1b0717e18c5791dd50b94a07ff4e4ac8b04620b5b",
+        "path": "src/butlers/modules/memory/knowledge_gaps.py",
+        "symbol": "_existing_answer",
+        "line": 254,
+        "expression": "schema != 'relationship'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "6e4f221dca4fbebab59de4842787704f43bf28df8db08091fd26f272b3545410",
+        "path": "src/butlers/modules/memory/knowledge_gaps.py",
+        "symbol": "_open_gap_coverage",
+        "line": 415,
+        "expression": "schema != 'relationship'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "6cea77d9e52fb98e071be778f7d62a0bcb0233b995c63510a89a3e04202b550c",
+        "path": "src/butlers/modules/memory/storage.py",
+        "symbol": "store_fact",
+        "line": 1753,
+        "expression": "scope == 'lifestyle'",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "b23eac71ba0d78371564821fd741ebf341abf0cca1e51a91943f906ea3b254b6",
+        "path": "src/butlers/modules/memory/tools/preferences.py",
+        "symbol": "_derive_scope",
+        "line": 69,
+        "expression": "domain == PREFERENCE_GENERAL_DOMAIN",
+        "category": "NON_NAME_ENUM_OR_MODULE",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "d597103477ce05c45fc65248b1704f44e5ef5b829f6e3a221e580e4a50dc0409",
+        "path": "src/butlers/modules/self_healing/__init__.py",
+        "symbol": "SelfHealingModule._is_qa_available",
+        "line": 324,
+        "expression": "agent.get('name') == _QA_BUTLER_NAME",
+        "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "40cb745d5c84e4ea27342c64c07e52ff500ff3ff63f5c5f044500242003ea1d1",
+        "path": "src/butlers/modules/self_healing/__init__.py",
+        "symbol": "SelfHealingModule._is_qa_available",
+        "line": 326,
+        "expression": "agent == _QA_BUTLER_NAME",
+        "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+        "direct": false,
+        "container": false,
+        "kind": "alias_compare"
+      },
+      {
+        "id": "3bd5bede439cd72ec0c80d36a0ea784a4c2b5ee2dc41b9f47035d8a1e08ff439",
+        "path": "src/butlers/owner_bootstrap.py",
+        "symbol": "_seed_owner_telegram_handle",
+        "line": 118,
+        "expression": "await conn.fetchval('SELECT current_schema()') != 'relationship'",
+        "category": "SCHEMA_OWNERSHIP",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "1fd9368fe459cd0681375c20ec9cc2f8b32115cffda89483465c15297cb17c28",
+        "path": "src/butlers/scheduled_jobs.py",
+        "symbol": "_retention_pruner_job_handlers",
+        "line": 2121,
+        "expression": "butler_name == 'general'",
+        "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      },
+      {
+        "id": "0767d2bc8126fe5cf6c3a129183daa0276b9bb49898f098b0fb2f8cddfb9d547",
+        "path": "src/butlers/switchboard_wiring.py",
+        "symbol": "wire_pipelines",
+        "line": 178,
+        "expression": "daemon.config.name != 'switchboard'",
+        "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+        "direct": true,
+        "container": true,
+        "kind": "compare"
+      }
+    ]
+  },
+  "current_public": "0f5586470df5342a85dcc10280c28f7548b69403",
+  "counts": {
+    "direct": 75,
+    "direct_files": 34,
+    "container": 84,
+    "supplementary": 30,
+    "all_categories": {
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 48,
+      "NON_NAME_ENUM_OR_MODULE": 20,
+      "HISTORICAL_RECORD_OR_AVAILABILITY": 6,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 24,
+      "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 8,
+      "SCHEMA_OWNERSHIP": 8
+    },
+    "direct_categories": {
+      "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE": 34,
+      "NON_NAME_ENUM_OR_MODULE": 5,
+      "HISTORICAL_RECORD_OR_AVAILABILITY": 3,
+      "PROTECTED_HOST_OR_DOMAIN_SELECTOR": 19,
+      "HOST_POLICY_CANDIDATE_NEEDS_SHAPING": 7,
+      "SCHEMA_OWNERSHIP": 7
+    }
+  },
+  "selectors": [
+    {
+      "id": "6e419285739bacaee23cfd0a5854eaa4cc8e00c7b6e7ed2dc643d4050d08503a",
+      "path": "src/butlers/api/approval_review.py",
+      "symbol": "resolve_messenger_reviews",
+      "kind": "compare",
+      "expression": "'messenger' not in names",
+      "occurrence": 1,
+      "line": 41,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind review availability/source and approval ownership to canonical Messenger, not caller-shaped policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "6e419285739bacaee23cfd0a5854eaa4cc8e00c7b6e7ed2dc643d4050d08503a"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "9d630b98c2a7838640fd0828f03cb5bde13b0066"
+    },
+    {
+      "id": "970f195a22ac1b925c179da91423d0630b38492a5bb306751278b184cd54f75a",
+      "path": "src/butlers/api/approval_review.py",
+      "symbol": "resolve_messenger_reviews",
+      "kind": "compare",
+      "expression": "sources[0][0] == 'messenger'",
+      "occurrence": 1,
+      "line": 82,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind review availability/source and approval ownership to canonical Messenger, not caller-shaped policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "970f195a22ac1b925c179da91423d0630b38492a5bb306751278b184cd54f75a"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "9d630b98c2a7838640fd0828f03cb5bde13b0066"
+    },
+    {
+      "id": "d77017dab981ada7af4aee8bb50fd9240f79592b9187522ac7705920e2e7d1c5",
+      "path": "src/butlers/api/dashboard_audit_middleware.py",
+      "symbol": "_infer_butler",
+      "kind": "alias_compare",
+      "expression": "candidate not in _INFRA",
+      "occurrence": 1,
+      "line": 87,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Exclude infrastructure URL path components (health), not a roster identity, from inferred audit butler.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-telemetry/spec.md",
+          "requirement": "Structured Logging with Butler Context"
+        }
+      ],
+      "baseline_ids": [
+        "d77017dab981ada7af4aee8bb50fd9240f79592b9187522ac7705920e2e7d1c5"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "e6221099e800774cbbc7a63d56b16d9d69dd417a"
+    },
+    {
+      "id": "6a4f57f62112552c9543dd32fbfd0af323699374af6bf2c498b753b6fab2d726",
+      "path": "src/butlers/api/deps.py",
+      "symbol": "discover_butlers_with_diagnostics",
+      "kind": "compare",
+      "expression": "'qa' in config.modules",
+      "occurrence": 1,
+      "line": 323,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Inspect the QA module declaration, separately from the QA roster identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Registry with Auto-Discovery"
+        }
+      ],
+      "baseline_ids": [
+        "6a4f57f62112552c9543dd32fbfd0af323699374af6bf2c498b753b6fab2d726"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cf9d0f00aa8c6ebccf4467c039e579a2c5c05a46"
+    },
+    {
+      "id": "7525d2bea509711160b84e9a408917eb3c3cc65ab8de418ffbbb0365e55ed6a9",
+      "path": "src/butlers/api/deps.py",
+      "symbol": "discover_butlers_with_diagnostics",
+      "kind": "lookup",
+      "expression": "config.modules['qa']",
+      "occurrence": 1,
+      "line": 325,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Inspect the QA module declaration, separately from the QA roster identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Registry with Auto-Discovery"
+        }
+      ],
+      "baseline_ids": [
+        "7525d2bea509711160b84e9a408917eb3c3cc65ab8de418ffbbb0365e55ed6a9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cf9d0f00aa8c6ebccf4467c039e579a2c5c05a46"
+    },
+    {
+      "id": "a48de3e01158f0dc34925ddbaacc5135cc8e5b85df8538d14ca0d228b2f1eab5",
+      "path": "src/butlers/api/routers/approvals.py",
+      "symbol": "get_approval_detail",
+      "kind": "compare",
+      "expression": "owner not in {'messenger', 'relationship'}",
+      "occurrence": 1,
+      "line": 3144,
+      "direct": false,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind review availability/source and approval ownership to canonical Messenger, not caller-shaped policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "a48de3e01158f0dc34925ddbaacc5135cc8e5b85df8538d14ca0d228b2f1eab5"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "7a326c4e1da975378c87df61ce8a5bd35217b6c8"
+    },
+    {
+      "id": "28137f2c5a7c1c8b3f393962a3049b05909de69d1d62069182139abb9d13ea0e",
+      "path": "src/butlers/api/routers/approvals.py",
+      "symbol": "get_approval_detail",
+      "kind": "compare",
+      "expression": "review_source != 'messenger'",
+      "occurrence": 1,
+      "line": 3153,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind review availability/source and approval ownership to canonical Messenger, not caller-shaped policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "28137f2c5a7c1c8b3f393962a3049b05909de69d1d62069182139abb9d13ea0e"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "9d630b98c2a7838640fd0828f03cb5bde13b0066"
+    },
+    {
+      "id": "33b3b09b4c501eeef7a334e358c1a52a49be3b96d28722d28deb0a510ec71dc1",
+      "path": "src/butlers/api/routers/butlers.py",
+      "symbol": "_get_module_health_via_mcp",
+      "kind": "lookup",
+      "expression": "status_data.get('health', 'unknown')",
+      "occurrence": 1,
+      "line": 1352,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Read a module/ANN health status field, not the Health daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Abstract Base Class"
+        }
+      ],
+      "baseline_ids": [
+        "33b3b09b4c501eeef7a334e358c1a52a49be3b96d28722d28deb0a510ec71dc1"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "8cfc6539e9468ab442bf0453666b9a94522c3b12"
+    },
+    {
+      "id": "ec15534e234ea561e823b6646ec84675c8c0f35cca9c3c0ce9ae4bf34adcbfc8",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "_stream_conversation_response",
+      "kind": "alias_compare",
+      "expression": "butler_name == _SWITCHBOARD_BUTLER",
+      "occurrence": 1,
+      "line": 510,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "ec15534e234ea561e823b6646ec84675c8c0f35cca9c3c0ce9ae4bf34adcbfc8"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "89d40bc927324ee8635a1170f599ae6413116ecc"
+    },
+    {
+      "id": "0e2d25e3540ef8f71c6dcdde1428ba900af642be91a9cb81592deca501424191",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "_stream_conversation_response",
+      "kind": "alias_compare",
+      "expression": "butler_name == _SWITCHBOARD_BUTLER",
+      "occurrence": 2,
+      "line": 695,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "0e2d25e3540ef8f71c6dcdde1428ba900af642be91a9cb81592deca501424191"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "40b69f05d9691afc653d5dce4308b53cbf14a5de"
+    },
+    {
+      "id": "a590e557579d81e4f20feabecc4ad371f6063ec7b0629818339c14270021f803",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "_stream_conversation_response",
+      "kind": "alias_compare",
+      "expression": "butler_name == _SWITCHBOARD_BUTLER",
+      "occurrence": 3,
+      "line": 718,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "a590e557579d81e4f20feabecc4ad371f6063ec7b0629818339c14270021f803"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "89d40bc927324ee8635a1170f599ae6413116ecc"
+    },
+    {
+      "id": "dcfa20d4f1636bbbdb72f66a9c4a0a0afd2c479ae2f66e61e9cf13f717275bff",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "_refresh_active_turn_routed_butler",
+      "kind": "alias_compare",
+      "expression": "routed_butler != _SWITCHBOARD_BUTLER",
+      "occurrence": 1,
+      "line": 1170,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "dcfa20d4f1636bbbdb72f66a9c4a0a0afd2c479ae2f66e61e9cf13f717275bff"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "2bae41d1070d3b65496ce66b84f5f555dd5f8b79"
+    },
+    {
+      "id": "4995dcf00a05bf270e49d7b85f34a273e5dd146fd3b18f044f1216b7325e7537",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "create_conversation",
+      "kind": "alias_compare",
+      "expression": "name == _SWITCHBOARD_BUTLER",
+      "occurrence": 1,
+      "line": 1849,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "4995dcf00a05bf270e49d7b85f34a273e5dd146fd3b18f044f1216b7325e7537"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "1c736648e73e5ccc9eea9c27609d048067cb6026"
+    },
+    {
+      "id": "f68228670e2499d828ce387b49bcb236ddf6e0a4eb8dd7d3194e98ff8b082097",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "send_message",
+      "kind": "alias_compare",
+      "expression": "name == _SWITCHBOARD_BUTLER",
+      "occurrence": 1,
+      "line": 1993,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "f68228670e2499d828ce387b49bcb236ddf6e0a4eb8dd7d3194e98ff8b082097"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "40b69f05d9691afc653d5dce4308b53cbf14a5de"
+    },
+    {
+      "id": "b8697c36f950dc333fd5d08da62bdd630696cd2d0cf5ae6d27db588eb570da56",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "cancel_conversation_turn",
+      "kind": "alias_compare",
+      "expression": "routed_butler != _SWITCHBOARD_BUTLER",
+      "occurrence": 1,
+      "line": 2146,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "b8697c36f950dc333fd5d08da62bdd630696cd2d0cf5ae6d27db588eb570da56"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "2bae41d1070d3b65496ce66b84f5f555dd5f8b79"
+    },
+    {
+      "id": "3fa7ff4718db0d5528ad5b51a3a69f959f879ccf409fb45a49accce15eddeaab",
+      "path": "src/butlers/api/routers/conversations.py",
+      "symbol": "cancel_conversation_turn",
+      "kind": "alias_compare",
+      "expression": "handoff_target == _SWITCHBOARD_BUTLER",
+      "occurrence": 1,
+      "line": 2157,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind primary Switchboard orchestration versus routed target and durable cancel/continuation identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/dashboard-conversations/spec.md",
+          "requirement": "Durable Dashboard Turn Control"
+        }
+      ],
+      "baseline_ids": [
+        "3fa7ff4718db0d5528ad5b51a3a69f959f879ccf409fb45a49accce15eddeaab"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "2bae41d1070d3b65496ce66b84f5f555dd5f8b79"
+    },
+    {
+      "id": "26b6ec191affd7d616a4e2ffb0eda66a23e486dbf25ef0560cd3b1d7343e87e0",
+      "path": "src/butlers/api/routers/identity.py",
+      "symbol": "get_email_match_rate",
+      "kind": "compare",
+      "expression": "'relationship' not in db_mgr.butler_names",
+      "occurrence": 1,
+      "line": 70,
+      "direct": true,
+      "container": true,
+      "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+      "purpose": "Report Relationship-backed email identity availability honestly.",
+      "citations": [
+        {
+          "path": "openspec/specs/entity-identity/spec.md",
+          "requirement": "Entity-first data model"
+        }
+      ],
+      "baseline_ids": [
+        "26b6ec191affd7d616a4e2ffb0eda66a23e486dbf25ef0560cd3b1d7343e87e0"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "54d21ac1e920a40bbc7b38b109d9249d8bea3f5e"
+    },
+    {
+      "id": "46b1609455fc6820195a27aeffe4e51838928669da81882d06baf67b5cb7da7f",
+      "path": "src/butlers/api/routers/modules.py",
+      "symbol": "_get_module_states_via_mcp",
+      "kind": "lookup",
+      "expression": "info.get('health', 'active')",
+      "occurrence": 1,
+      "line": 128,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Read a module/ANN health status field, not the Health daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Abstract Base Class"
+        }
+      ],
+      "baseline_ids": [
+        "46b1609455fc6820195a27aeffe4e51838928669da81882d06baf67b5cb7da7f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "e5276f5afda739900ec1e52fe32f4a3df48d4599"
+    },
+    {
+      "id": "cef63ab86e8023b77aa3b852c1069690285b39b0582ca989ba40d45ecc097519",
+      "path": "src/butlers/api/routers/qa.py",
+      "symbol": "_read_staffer_info_from_toml",
+      "kind": "lookup",
+      "expression": "config.modules.get('qa', {})",
+      "occurrence": 1,
+      "line": 1303,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Inspect the QA module declaration, separately from the QA roster identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Registry with Auto-Discovery"
+        }
+      ],
+      "baseline_ids": [
+        "cef63ab86e8023b77aa3b852c1069690285b39b0582ca989ba40d45ecc097519"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "418fed4e3d6cc18cf3757c6f4f5cfb385ef44f45"
+    },
+    {
+      "id": "67bf64e4ed60a8af491a96f8af1487976f59a5b56cc02cd13d3647995b662aab",
+      "path": "src/butlers/api/routers/qa.py",
+      "symbol": "_force_patrol_via_daemon",
+      "kind": "alias_compare",
+      "expression": "n != _QA_BUTLER_NAME",
+      "occurrence": 1,
+      "line": 2811,
+      "direct": false,
+      "container": false,
+      "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+      "purpose": "Find canonical QA availability or try its registered daemon first, without authorizing a caller or hiding unavailable peers.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "67bf64e4ed60a8af491a96f8af1487976f59a5b56cc02cd13d3647995b662aab"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "875a2709e7ca6e6e36fbdbab0db07aad4f3276a7"
+    },
+    {
+      "id": "5f6cb36e9f706cb42d31063c486ec96e286484b1cea149422cf222dcfbb51f99",
+      "path": "src/butlers/api/routers/secrets_v2.py",
+      "symbol": "_capability_name",
+      "kind": "alias_compare",
+      "expression": "capability in CAPABILITY_VOCABULARY",
+      "occurrence": 1,
+      "line": 331,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Select the Google health capability enum, not a Health butler identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Abstract Base Class"
+        }
+      ],
+      "baseline_ids": [
+        "5f6cb36e9f706cb42d31063c486ec96e286484b1cea149422cf222dcfbb51f99"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "094f38c93b1e334ef341d19443c03c75ced045fe"
+    },
+    {
+      "id": "269a6dcc0a50a7fba852ed1df87ea2d28ee67989824a2a09f9751fdb79566419",
+      "path": "src/butlers/api/routers/secrets_v2.py",
+      "symbol": "_google_capability_probe_params",
+      "kind": "compare",
+      "expression": "capability != 'health'",
+      "occurrence": 1,
+      "line": 4817,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Select the Google health capability enum, not a Health butler identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Abstract Base Class"
+        }
+      ],
+      "baseline_ids": [
+        "269a6dcc0a50a7fba852ed1df87ea2d28ee67989824a2a09f9751fdb79566419"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "1c79ff91c965b74b376b2cad993a3538b61ca475"
+    },
+    {
+      "id": "f1d1bc67cd62db14cb52b73475e2249a266dab2173c8783b50a14060e5a47eb3",
+      "path": "src/butlers/api/routers/secrets_v2.py",
+      "symbol": "_verify_google_capabilities._probe_one",
+      "kind": "compare",
+      "expression": "capability == 'health'",
+      "occurrence": 1,
+      "line": 5048,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Select the Google health capability enum, not a Health butler identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Abstract Base Class"
+        }
+      ],
+      "baseline_ids": [
+        "f1d1bc67cd62db14cb52b73475e2249a266dab2173c8783b50a14060e5a47eb3"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "c9b8da54ae2364a6dbcc111352c78d5e43e20bec"
+    },
+    {
+      "id": "bfcb291a0dc20b85fcd469dfbc85007c50077272c05ccd163b687e183147322a",
+      "path": "src/butlers/background.py",
+      "symbol": "dispatch_scheduled_task",
+      "kind": "compare",
+      "expression": "butler_name == 'chronicler'",
+      "occurrence": 1,
+      "line": 176,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind fixed Chronicler continuation registry identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "3f32ef0172649260359a96c1304fc20556377abd"
+    },
+    {
+      "id": "d75c3185a079c39a9fdd69782438f4c0522e9a8543ec89e1b32e88e8b2937edf",
+      "path": "src/butlers/background.py",
+      "symbol": "dispatch_scheduled_task",
+      "kind": "lookup",
+      "expression": "get_deterministic_schedule_job_registry().get('chronicler', {})",
+      "occurrence": 1,
+      "line": 178,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind fixed Chronicler continuation registry identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "3f32ef0172649260359a96c1304fc20556377abd"
+    },
+    {
+      "id": "825237f1e795a57c6d643dd969c09794568537f57ffcf9a4e8499a37ef50263f",
+      "path": "src/butlers/background.py",
+      "symbol": "scheduler_loop._scheduler_notify_fn",
+      "kind": "compare",
+      "expression": "butler_name != 'switchboard'",
+      "occurrence": 1,
+      "line": 326,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Use Switchboard local delivery only for the canonical host; other butlers require the authenticated client.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "825237f1e795a57c6d643dd969c09794568537f57ffcf9a4e8499a37ef50263f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "09fa550000f73607da8dbed71b2e99262137a286"
+    },
+    {
+      "id": "f8490028396ab12ad992a93f7aaa4dc924ca23f5e84fe55ce639e09c64a38b08",
+      "path": "src/butlers/background.py",
+      "symbol": "scheduler_loop._scheduler_notify_fn",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 1,
+      "line": 334,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Use Switchboard local delivery only for the canonical host; other butlers require the authenticated client.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "f8490028396ab12ad992a93f7aaa4dc924ca23f5e84fe55ce639e09c64a38b08"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "09fa550000f73607da8dbed71b2e99262137a286"
+    },
+    {
+      "id": "9207b087c7a92b96986311435d68b38346e406ba772a7bf5fab3212de090ffe2",
+      "path": "src/butlers/chronicler/adapters/home_assistant.py",
+      "symbol": "HomeAssistantHistoryAdapter._rollup_entity_episodes",
+      "kind": "alias_compare",
+      "expression": "state == _STATE_HOME",
+      "occurrence": 1,
+      "line": 417,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare a presence state/place label home; this spelling does not select the Home daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Home Assistant Presence Person Attribution"
+        }
+      ],
+      "baseline_ids": [
+        "9207b087c7a92b96986311435d68b38346e406ba772a7bf5fab3212de090ffe2"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "de298564e29174ef6a7a39d2a039ddde7b49b147"
+    },
+    {
+      "id": "1278b6e3e52e16eceaeeaeed4e6141bf6d35cda5204924f6765437f083d14c46",
+      "path": "src/butlers/chronicler/adapters/owntracks_place_cluster.py",
+      "symbol": "OwnTracksPlaceClusterAdapter.__init__",
+      "kind": "alias_compare",
+      "expression": "ref.label.strip().lower() == HOME_LABEL",
+      "occurrence": 1,
+      "line": 668,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare a presence state/place label home; this spelling does not select the Home daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Home Assistant Presence Person Attribution"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "0f5586470df5342a85dcc10280c28f7548b69403"
+    },
+    {
+      "id": "01876eb5ac3a44554e0952e7b40f2d419037ea2900bd139e14a963545730504f",
+      "path": "src/butlers/chronicler/day_close_recovery.py",
+      "symbol": "_candidate",
+      "kind": "compare",
+      "expression": "deferred['butler_name'] != 'chronicler'",
+      "occurrence": 1,
+      "line": 173,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Require persisted deferred notification, envelope and attention provenance to agree on Chronicler before recovery.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "01876eb5ac3a44554e0952e7b40f2d419037ea2900bd139e14a963545730504f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "a3b103445f406405402ff3a9c5dec8ab4075354e"
+    },
+    {
+      "id": "fe7c529283b135169cf76a39fefbffbf2e45ad29adff4ab2c321d2864956e002",
+      "path": "src/butlers/chronicler/day_close_recovery.py",
+      "symbol": "_candidate",
+      "kind": "compare",
+      "expression": "envelope.get('origin_butler') != 'chronicler'",
+      "occurrence": 1,
+      "line": 179,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Require persisted deferred notification, envelope and attention provenance to agree on Chronicler before recovery.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "fe7c529283b135169cf76a39fefbffbf2e45ad29adff4ab2c321d2864956e002"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "a3b103445f406405402ff3a9c5dec8ab4075354e"
+    },
+    {
+      "id": "b8d8528fe92b777acecb0c222a274f01603642d90c8173bca484878320668d2f",
+      "path": "src/butlers/chronicler/day_close_recovery.py",
+      "symbol": "_candidate",
+      "kind": "compare",
+      "expression": "attention['origin_butler'] != 'chronicler'",
+      "occurrence": 1,
+      "line": 184,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Require persisted deferred notification, envelope and attention provenance to agree on Chronicler before recovery.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "b8d8528fe92b777acecb0c222a274f01603642d90c8173bca484878320668d2f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "a3b103445f406405402ff3a9c5dec8ab4075354e"
+    },
+    {
+      "id": "b86f21a1ae078a4e49e1e447b0b8e0ed7e1e7fb39188cefaf47adf9b92829541",
+      "path": "src/butlers/cli.py",
+      "symbol": "_ordered_configs",
+      "kind": "alias_compare",
+      "expression": "n not in _PRIORITY_BUTLERS",
+      "occurrence": 1,
+      "line": 707,
+      "direct": false,
+      "container": false,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Switchboard-first deployment startup ordering feeds deployment-boot recording; safe configurability of this dependency has not been established.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Boot sequence seeds and reads runtime config from DB"
+        },
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        }
+      ],
+      "baseline_ids": [
+        "b86f21a1ae078a4e49e1e447b0b8e0ed7e1e7fb39188cefaf47adf9b92829541"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "2bfb6e1d18634f94b69e5cfd2c7b60cae9dc6d6c"
+    },
+    {
+      "id": "57d8a4428f6c8dfd6b542f6f1efe16ee7682a1a6913f40390cf4402a4a02458f",
+      "path": "src/butlers/config.py",
+      "symbol": "_validate_messenger_requirements",
+      "kind": "compare",
+      "expression": "name != 'messenger'",
+      "occurrence": 1,
+      "line": 677,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Enforce minimum Messenger delivery-module requirements, preserving channel egress ownership.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "57d8a4428f6c8dfd6b542f6f1efe16ee7682a1a6913f40390cf4402a4a02458f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "b829e5c3d821c6761e5712cf4dc676444b81e926"
+    },
+    {
+      "id": "9d6d4f70061153f12e98116dca6aa3e96b43f984fc3ca2ad7646e8e6ed72b6a1",
+      "path": "src/butlers/config.py",
+      "symbol": "load_config",
+      "kind": "compare",
+      "expression": "name != 'switchboard'",
+      "occurrence": 1,
+      "line": 932,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Resolve default Switchboard URL for other butlers; missing/invalid/default equivalence of a replacement is unproven.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "9d6d4f70061153f12e98116dca6aa3e96b43f984fc3ca2ad7646e8e6ed72b6a1"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cfcff0ee54d8f8ae76ed41d36c28a7a81cc1102f"
+    },
+    {
+      "id": "dc062692ade6b7ba898fbf8a8c20c0fe7473ef60a2be185245f5b1f7d1fe7b9f",
+      "path": "src/butlers/connectors/steam.py",
+      "symbol": "SteamAccountPoller._poll_friends",
+      "kind": "lookup",
+      "expression": "f.get('relationship', 'friend')",
+      "occurrence": 1,
+      "line": 1458,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Read the Steam friend relationship field, not the Relationship daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/connector-steam/spec.md",
+          "requirement": "Delta Detection via State Diffing"
+        }
+      ],
+      "baseline_ids": [
+        "dc062692ade6b7ba898fbf8a8c20c0fe7473ef60a2be185245f5b1f7d1fe7b9f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "e5eb344d75a9a1cb4830d5298e98723cc65a318f"
+    },
+    {
+      "id": "fc6b0b3115438cc0a1166227fafa4f1de0b804c2d2d231a93175c9fe30b07b12",
+      "path": "src/butlers/context_bus.py",
+      "symbol": "set_context",
+      "kind": "compare",
+      "expression": "butler_name != 'general'",
+      "occurrence": 1,
+      "line": 547,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Admit and render the exact server-held General calendar producer proof; copied signal values cannot confer provenance.",
+      "citations": [
+        {
+          "path": "openspec/specs/context-bus/spec.md",
+          "requirement": "Write Permissions"
+        },
+        {
+          "path": "openspec/specs/module-calendar/spec.md",
+          "requirement": "Projection Provenance Truth and Source-Ledger Hygiene"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "74896a6afed2061919ad4a80a726d0d3d4fcb470"
+    },
+    {
+      "id": "bc20b55741b2dbf37c47203e42e8f3bc13c393baa4581f0e6f45d8502a83efe6",
+      "path": "src/butlers/context_bus.py",
+      "symbol": "set_context",
+      "kind": "compare",
+      "expression": "entry.set_by_butler != 'general'",
+      "occurrence": 1,
+      "line": 564,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Admit and render the exact server-held General calendar producer proof; copied signal values cannot confer provenance.",
+      "citations": [
+        {
+          "path": "openspec/specs/context-bus/spec.md",
+          "requirement": "Write Permissions"
+        },
+        {
+          "path": "openspec/specs/module-calendar/spec.md",
+          "requirement": "Projection Provenance Truth and Source-Ledger Hygiene"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "74896a6afed2061919ad4a80a726d0d3d4fcb470"
+    },
+    {
+      "id": "e39c11ffd0584551faf0b2e62727c80bd163399e00f44cd455d30db1e00880b1",
+      "path": "src/butlers/context_bus.py",
+      "symbol": "format_context_preamble",
+      "kind": "compare",
+      "expression": "entry.set_by_butler == 'general'",
+      "occurrence": 1,
+      "line": 681,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Admit and render the exact server-held General calendar producer proof; copied signal values cannot confer provenance.",
+      "citations": [
+        {
+          "path": "openspec/specs/context-bus/spec.md",
+          "requirement": "Write Permissions"
+        },
+        {
+          "path": "openspec/specs/module-calendar/spec.md",
+          "requirement": "Projection Provenance Truth and Source-Ledger Hygiene"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "74896a6afed2061919ad4a80a726d0d3d4fcb470"
+    },
+    {
+      "id": "1884d239c6dbd897599d6feda10c394e382130ed2e6e91d6b98f0249b4dba1f2",
+      "path": "src/butlers/core/approval_delivery_authority.py",
+      "symbol": "SourceApprovalAdmission.verifier_mcp.verify_approval_admission",
+      "kind": "compare",
+      "expression": "protected_approval_principal(audience=f'{self._schema}:approval-verifier') != 'switchboard'",
+      "occurrence": 1,
+      "line": 397,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Authenticate the protected Switchboard principal before source approval/confirm read or apply.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "1884d239c6dbd897599d6feda10c394e382130ed2e6e91d6b98f0249b4dba1f2"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "004cee33baf7a443c4b861e721e36c0cc0b31625"
+    },
+    {
+      "id": "0ee289d91988130b9bf727ebbd98a485df3b96b89b5936013c61044895be57a1",
+      "path": "src/butlers/core/approval_review.py",
+      "symbol": "ApprovalReview.parse",
+      "kind": "compare",
+      "expression": "value['butler'] != 'messenger'",
+      "occurrence": 1,
+      "line": 30,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind review availability/source and approval ownership to canonical Messenger, not caller-shaped policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "0ee289d91988130b9bf727ebbd98a485df3b96b89b5936013c61044895be57a1"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "9d630b98c2a7838640fd0828f03cb5bde13b0066"
+    },
+    {
+      "id": "ac054362310d5628c29f6683ca228be09ce0ae8d32c9bc7a7961a9bd768460f6",
+      "path": "src/butlers/core/approval_review.py",
+      "symbol": "ParkedApprovalRefusal.__init__",
+      "kind": "compare",
+      "expression": "butler == 'messenger'",
+      "occurrence": 1,
+      "line": 46,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind review availability/source and approval ownership to canonical Messenger, not caller-shaped policy.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "ac054362310d5628c29f6683ca228be09ce0ae8d32c9bc7a7961a9bd768460f6"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "9d630b98c2a7838640fd0828f03cb5bde13b0066"
+    },
+    {
+      "id": "1e5b58af0a53fbb8a7781042a0fb730505ceb5428e7ca33c9271546a40b042e9",
+      "path": "src/butlers/core/confirm_authority.py",
+      "symbol": "ConfirmAuthorityTopology._register.apply",
+      "kind": "compare",
+      "expression": "protected_approval_principal(audience=audience) != 'switchboard'",
+      "occurrence": 1,
+      "line": 136,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Authenticate the protected Switchboard principal before source approval/confirm read or apply.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "b4df6d030f3c97c2905257c74c7170f41830dc82"
+    },
+    {
+      "id": "fcf9774af6fea69949af4db07caa61e74ef9ccdd1fac8700a20030fce7978785",
+      "path": "src/butlers/core/confirm_authority.py",
+      "symbol": "ConfirmAuthorityTopology._register_messenger.stored",
+      "kind": "compare",
+      "expression": "protected_approval_principal(audience='messenger:confirm') != 'switchboard'",
+      "occurrence": 1,
+      "line": 190,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Authenticate the protected Switchboard principal before source approval/confirm read or apply.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "b4df6d030f3c97c2905257c74c7170f41830dc82"
+    },
+    {
+      "id": "786d9269107e034496754359287776de3a032e0f4fe176d8df6ca52fb0e7929e",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "_HeldCall.headers",
+      "kind": "compare",
+      "expression": "target != 'finance'",
+      "occurrence": 1,
+      "line": 126,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "740b0d180799a3d7b94c1f9471f02defbf9bce7ed6c181ea44000a66657a49d2",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.identity",
+      "kind": "compare",
+      "expression": "self.name == 'finance'",
+      "occurrence": 1,
+      "line": 226,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "df6ebd1afe23e5cd36e226b894d6d2a47fe463a1752348d30ba5c2678e01f820",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.identity",
+      "kind": "compare",
+      "expression": "descriptor.module_name != 'finance'",
+      "occurrence": 1,
+      "line": 229,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "4347dd29128c423ebeda3dea113625d00584c0d23b1677cabc04b584b72ab177",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.registrations",
+      "kind": "compare",
+      "expression": "set(boots) != {'switchboard', 'finance'}",
+      "occurrence": 1,
+      "line": 328,
+      "direct": false,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "7f025de8d3044e244d4ea50e47b7a29e92f1959bd6b1b5731ba9cd95cd01015a",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.read",
+      "kind": "compare",
+      "expression": "self.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 395,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "9f0dabca150578e6e30d87d5350fd9a606c0cebb19837562e43a557d9b2b4492",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.verify_consume",
+      "kind": "compare",
+      "expression": "_registration_binding(snapshot, 'finance') != receiver",
+      "occurrence": 1,
+      "line": 454,
+      "direct": false,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "0d46dd601a866b677f3ddc5b26d0ea61fc8c908d9f716afbcf9eabd7920c97c7",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.verify_consume",
+      "kind": "compare",
+      "expression": "_registration_binding(snapshot, 'switchboard') != identity",
+      "occurrence": 1,
+      "line": 455,
+      "direct": false,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "56ea958f6c3fd1bfb51d4d4963c20d41691ac41de6bd2d71f8609cd578d26068",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.route.endpoint",
+      "kind": "compare",
+      "expression": "self.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 478,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "35168cc950bc4c203a06e507f2986f77e29cbb1a3e298a66a835776856ba18fe",
+      "path": "src/butlers/core/finance_warning_control.py",
+      "symbol": "FinanceWarningControlOwner.consume_and_read",
+      "kind": "compare",
+      "expression": "self.name != 'finance'",
+      "occurrence": 1,
+      "line": 562,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Bind held Finance warning read/consume, catalog descriptor and live registration to fixed Finance/Switchboard identities before effects.",
+      "citations": [
+        {
+          "path": "openspec/specs/finance-alerts/spec.md",
+          "requirement": "Subscription Price Change Detection"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "f3b13654840eab4e5e788eeef0c7628b2b73e3b523e45a0141aba82de2e18d56",
+      "path": "src/butlers/core/fleet_conditions.py",
+      "symbol": "controller_after_cycle",
+      "kind": "compare",
+      "expression": "config.name == 'qa'",
+      "occurrence": 1,
+      "line": 497,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Select QA patrol contract for the fleet controller; identity/policy dependencies remain unresolved.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "f3b13654840eab4e5e788eeef0c7628b2b73e3b523e45a0141aba82de2e18d56"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cf9d0f00aa8c6ebccf4467c039e579a2c5c05a46"
+    },
+    {
+      "id": "457e672407b82df51a4cf7c4bd1e5925c7d2f1284209759b166672fe36b71115",
+      "path": "src/butlers/core/goal_admission.py",
+      "symbol": "derive_admission",
+      "kind": "compare",
+      "expression": "contract.staffer == 'qa'",
+      "occurrence": 1,
+      "line": 317,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Retain canonical QA goal/dispatch provenance; source identity is not a configurable host flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "457e672407b82df51a4cf7c4bd1e5925c7d2f1284209759b166672fe36b71115"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "b158fc713f3d92f0b14acd24b384da5d67d5fc8a"
+    },
+    {
+      "id": "b061cddd5cfbeb142785a4e120f273b2b4b6f1c752b8937b4931848043fbb9e7",
+      "path": "src/butlers/core/qa/dispatch.py",
+      "symbol": "dispatch_qa_investigation",
+      "kind": "compare",
+      "expression": "finding.source_butler == 'qa'",
+      "occurrence": 1,
+      "line": 2373,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Retain canonical QA goal/dispatch provenance; source identity is not a configurable host flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "b061cddd5cfbeb142785a4e120f273b2b4b6f1c752b8937b4931848043fbb9e7"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "07876e7919a2d961e98339a5c6acf7a320d46e9c"
+    },
+    {
+      "id": "2f79f18b38617787ee992b9e9df02e65c968304b83ec299ab062a2765e1d1102",
+      "path": "src/butlers/core/qa/dispatch.py",
+      "symbol": "dispatch_qa_investigation",
+      "kind": "compare",
+      "expression": "trigger_src in {'healing', 'qa'}",
+      "occurrence": 1,
+      "line": 2375,
+      "direct": false,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "QA/healing trigger-source enum controls dispatch admission rather than selecting a butler.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "2f79f18b38617787ee992b9e9df02e65c968304b83ec299ab062a2765e1d1102"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "07876e7919a2d961e98339a5c6acf7a320d46e9c"
+    },
+    {
+      "id": "df3fabff5b09219757542529298c76beed5d5a57912bba22f301b6e34bac9e31",
+      "path": "src/butlers/core/qa/relay.py",
+      "symbol": "QaRelay._is_qa_available",
+      "kind": "alias_compare",
+      "expression": "agent.get('name') == _QA_BUTLER_NAME",
+      "occurrence": 1,
+      "line": 217,
+      "direct": false,
+      "container": false,
+      "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+      "purpose": "Find canonical QA availability or try its registered daemon first, without authorizing a caller or hiding unavailable peers.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "d597103477ce05c45fc65248b1704f44e5ef5b829f6e3a221e580e4a50dc0409"
+      ],
+      "reason": "30b376895 (#5017) retires per-butler self-healing and moves retained canonical QA availability into the core relay; not eliminated authority.",
+      "public_source_commit": "623aeaa6029b6b8dcfb7d6d0d5149326bc955d0c"
+    },
+    {
+      "id": "de130ecc8d2257f20d65673b72f211126f7790fdf647e791b9de11f42bb40638",
+      "path": "src/butlers/core/qa/relay.py",
+      "symbol": "QaRelay._is_qa_available",
+      "kind": "alias_compare",
+      "expression": "agent == _QA_BUTLER_NAME",
+      "occurrence": 1,
+      "line": 219,
+      "direct": false,
+      "container": false,
+      "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+      "purpose": "Find canonical QA availability or try its registered daemon first, without authorizing a caller or hiding unavailable peers.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "40cb745d5c84e4ea27342c64c07e52ff500ff3ff63f5c5f044500242003ea1d1"
+      ],
+      "reason": "30b376895 (#5017) retires per-butler self-healing and moves retained canonical QA availability into the core relay; not eliminated authority.",
+      "public_source_commit": "623aeaa6029b6b8dcfb7d6d0d5149326bc955d0c"
+    },
+    {
+      "id": "6d94d1762530fa780a07f18334ffebaf937d3c85845156b05fec40a4da4fcd72",
+      "path": "src/butlers/core/qa/sources/log_scanner.py",
+      "symbol": "_is_switchboard_classification_timeout",
+      "kind": "compare",
+      "expression": "entry.butler_name != 'switchboard'",
+      "occurrence": 1,
+      "line": 341,
+      "direct": true,
+      "container": true,
+      "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+      "purpose": "Classify existing Switchboard timeout records for QA; historical source spelling is not configurable ownership.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "6d94d1762530fa780a07f18334ffebaf937d3c85845156b05fec40a4da4fcd72"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "2e1d528296b368d4adfa8f65f594468d75263404"
+    },
+    {
+      "id": "2f132334b6626002039c1608d8310a781a524f9f9392a3417139e7f0d2ba18fa",
+      "path": "src/butlers/core/qa/sources/session_records.py",
+      "symbol": "_is_switchboard_classification_timeout",
+      "kind": "compare",
+      "expression": "source_butler != 'switchboard'",
+      "occurrence": 1,
+      "line": 352,
+      "direct": true,
+      "container": true,
+      "category": "HISTORICAL_RECORD_OR_AVAILABILITY",
+      "purpose": "Classify existing Switchboard timeout records for QA; historical source spelling is not configurable ownership.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "2f132334b6626002039c1608d8310a781a524f9f9392a3417139e7f0d2ba18fa"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "4ed774826b3e498f68bea7ef154bd27249d8b868"
+    },
+    {
+      "id": "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680",
+      "path": "src/butlers/core/scheduler.py",
+      "symbol": "tick",
+      "kind": "alias_compare",
+      "expression": "butler_name == _QA_BUTLER_NAME",
+      "occurrence": 1,
+      "line": 2183,
+      "direct": false,
+      "container": false,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "QA reads its own operator policy using its runtime pool and rechecks admissions; other butlers retain ordinary dispatch gating.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        },
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        }
+      ],
+      "baseline_ids": [
+        "69ec3fefef743053f7e4d3e12c73460a89cd1a28ebb466c98bbfe4e11ac9e680"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "08d517e5e35b61f811bec061c68420af39671715"
+    },
+    {
+      "id": "4cce104826373fca4d13a02c19615671d37eeed35859cb3d4a746456890a78b8",
+      "path": "src/butlers/core/spawner.py",
+      "symbol": "Spawner._fire_speculative_prewarm._prewarm",
+      "kind": "compare",
+      "expression": "trigger_source not in ('healing', 'qa')",
+      "occurrence": 1,
+      "line": 1507,
+      "direct": false,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "QA/healing trigger-source enum controls runtime accounting/prewarm, not the QA daemon identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "4cce104826373fca4d13a02c19615671d37eeed35859cb3d4a746456890a78b8"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cfc2454808d2c775871c8eee109bc5cc283fb575"
+    },
+    {
+      "id": "8a00eedddfee34d4bc2572928a244c22b1fa4dd6c22115055aee49d08a02d0d0",
+      "path": "src/butlers/core/spawner.py",
+      "symbol": "Spawner._run",
+      "kind": "compare",
+      "expression": "self._config.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 2356,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Switchboard-specific spawner prompt/runtime path; caller, effect and privacy preservation for configurability remain unresolved.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "8a00eedddfee34d4bc2572928a244c22b1fa4dd6c22115055aee49d08a02d0d0"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "356f23855ed4667081ed3d5bf9f474bd3e94b531"
+    },
+    {
+      "id": "1153f2b21b90e2833bb77931d21fcab7daf81bb485da090621c3319a2eec03e9",
+      "path": "src/butlers/core/spawner.py",
+      "symbol": "Spawner._run",
+      "kind": "compare",
+      "expression": "self._config.name == 'switchboard'",
+      "occurrence": 2,
+      "line": 2461,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Switchboard-specific spawner prompt/runtime path; caller, effect and privacy preservation for configurability remain unresolved.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "1153f2b21b90e2833bb77931d21fcab7daf81bb485da090621c3319a2eec03e9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "135e3ffb60823e47b08d9bfaafebe82092df430f"
+    },
+    {
+      "id": "d6a36547d425ca334e58c2ed46c3d07835e6f3d28c0a6d2acca63aa3061f9818",
+      "path": "src/butlers/core/spawner.py",
+      "symbol": "Spawner._run",
+      "kind": "compare",
+      "expression": "trigger_source in ('healing', 'qa')",
+      "occurrence": 1,
+      "line": 2523,
+      "direct": false,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "QA/healing trigger-source enum controls runtime accounting/prewarm, not the QA daemon identity.",
+      "citations": [
+        {
+          "path": "openspec/specs/staffer-qa/spec.md",
+          "requirement": "QA Staffer Identity"
+        }
+      ],
+      "baseline_ids": [
+        "d6a36547d425ca334e58c2ed46c3d07835e6f3d28c0a6d2acca63aa3061f9818"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "867349c7268ae1ecf10c16c6cb768fb4b6576f69"
+    },
+    {
+      "id": "a70b295beff17a38eaf6637475d8760200e50d35cda39192d9d40761af76b9d9",
+      "path": "src/butlers/core_tools/_chronicler.py",
+      "symbol": "register_chronicler_tools",
+      "kind": "compare",
+      "expression": "ctx.butler_name != 'chronicler'",
+      "occurrence": 1,
+      "line": 56,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Expose dashboard-only day-close controls only on canonical Chronicler.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        }
+      ],
+      "baseline_ids": [
+        "a70b295beff17a38eaf6637475d8760200e50d35cda39192d9d40761af76b9d9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "c94033e9deb79b2ab8f1d0421158a3602cf3d377"
+    },
+    {
+      "id": "856ae8e6b3c8cab6879f7deb7fafc57a7ad156adbecf40cfee4c9e7a62bf5ef9",
+      "path": "src/butlers/core_tools/_notifications.py",
+      "symbol": "register_notification_tools.notify",
+      "kind": "compare",
+      "expression": "butler_name != 'switchboard'",
+      "occurrence": 1,
+      "line": 1364,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Use fixed Switchboard local notification delivery only on its canonical host, preserving identity and authenticated handoff.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "856ae8e6b3c8cab6879f7deb7fafc57a7ad156adbecf40cfee4c9e7a62bf5ef9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "0f7f90ea36d0b7736df4a31a8bc957ef749a0fac"
+    },
+    {
+      "id": "e2931fd808af537484cc7f2715adb44dfb6f5d8db576ce5a6bf93354e2b7199e",
+      "path": "src/butlers/core_tools/_notifications.py",
+      "symbol": "register_notification_tools.notify",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 1,
+      "line": 1471,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Use fixed Switchboard local notification delivery only on its canonical host, preserving identity and authenticated handoff.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        }
+      ],
+      "baseline_ids": [
+        "e2931fd808af537484cc7f2715adb44dfb6f5d8db576ce5a6bf93354e2b7199e"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "6d588dab4a6b6ba6f78aa43425b96509f9d009e0"
+    },
+    {
+      "id": "2e3f225fff7cbf6dc6f51af9af4978933ea3c9bdbca66e619b23b7856a1b2ca0",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "_preauthenticate_messenger_recovery",
+      "kind": "compare",
+      "expression": "switchboard_principal != 'switchboard'",
+      "occurrence": 1,
+      "line": 138,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep authenticated Switchboard issuer/context and canonical Messenger recovery admission fences.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "2e3f225fff7cbf6dc6f51af9af4978933ea3c9bdbca66e619b23b7856a1b2ca0"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "18acd466103665f53bf9e4fb2a49f1238ec0ccd0"
+    },
+    {
+      "id": "b45caa93b045a654a0a5aad28a2f69ecd631280ba7ab5f7e5b6ce7214d9ae266",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "_preauthenticate_messenger_recovery",
+      "kind": "compare",
+      "expression": "parsed_route.request_context.source_endpoint_identity != 'switchboard'",
+      "occurrence": 1,
+      "line": 157,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep authenticated Switchboard issuer/context and canonical Messenger recovery admission fences.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "b45caa93b045a654a0a5aad28a2f69ecd631280ba7ab5f7e5b6ce7214d9ae266"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "18acd466103665f53bf9e4fb2a49f1238ec0ccd0"
+    },
+    {
+      "id": "51fc30b5024c7030816ce736afa5bb8d3923d8550892b036fa16754890e17f77",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "_preauthenticate_messenger_recovery",
+      "kind": "compare",
+      "expression": "'switchboard' not in trusted_route_callers",
+      "occurrence": 1,
+      "line": 158,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep authenticated Switchboard issuer/context and canonical Messenger recovery admission fences.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "51fc30b5024c7030816ce736afa5bb8d3923d8550892b036fa16754890e17f77"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "18acd466103665f53bf9e4fb2a49f1238ec0ccd0"
+    },
+    {
+      "id": "4741cc55af532cac94cc8723c6f2137b634b33253bf25b36b12ee840c1f16826",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "register_routing_tools.preauthorize_route",
+      "kind": "compare",
+      "expression": "butler_name != 'messenger'",
+      "occurrence": 1,
+      "line": 800,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep authenticated Switchboard issuer/context and canonical Messenger recovery admission fences.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "4741cc55af532cac94cc8723c6f2137b634b33253bf25b36b12ee840c1f16826"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "004cee33baf7a443c4b861e721e36c0cc0b31625"
+    },
+    {
+      "id": "2e23b4c1285fc20aa1a4ebe1285c868950b203c39b20bd0c7d9fbba4de5dc6a9",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "register_routing_tools.route_execute",
+      "kind": "compare",
+      "expression": "butler_name == 'messenger'",
+      "occurrence": 1,
+      "line": 829,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep authenticated Switchboard issuer/context and canonical Messenger recovery admission fences.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "2e23b4c1285fc20aa1a4ebe1285c868950b203c39b20bd0c7d9fbba4de5dc6a9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "18acd466103665f53bf9e4fb2a49f1238ec0ccd0"
+    },
+    {
+      "id": "23420f2581d8488a09934fe12c919095941c3d2952da329c5ed1346052026da9",
+      "path": "src/butlers/core_tools/_routing.py",
+      "symbol": "register_routing_tools._route_execute_inner",
+      "kind": "compare",
+      "expression": "daemon.config.name != 'messenger'",
+      "occurrence": 1,
+      "line": 1113,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep authenticated Switchboard issuer/context and canonical Messenger recovery admission fences.",
+      "citations": [
+        {
+          "path": "openspec/specs/approval-delivery-intent-recovery/spec.md",
+          "requirement": "Idempotent, authenticated, and ambiguous provider handoff"
+        },
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "23420f2581d8488a09934fe12c919095941c3d2952da329c5ed1346052026da9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "6d588dab4a6b6ba6f78aa43425b96509f9d009e0"
+    },
+    {
+      "id": "97b13fd18d8c5dca64e0e632f0cc36958742af5ca89cd4b9a45dd6e7469f7141",
+      "path": "src/butlers/core_tools/_switchboard_route_dispatch.py",
+      "symbol": "dispatch_via_switchboard_route",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 1,
+      "line": 161,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Keep canonical Switchboard host/transport/pipeline identity independent of optional capability groups.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "97b13fd18d8c5dca64e0e632f0cc36958742af5ca89cd4b9a45dd6e7469f7141"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "73323f96d3bc45591ace8ffbd015b217b975617d"
+    },
+    {
+      "id": "71708e1ea1ff35efb94afa37da8c657cc87c249cee174d34dfc0c26e0e7f2c2d",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._register_boot_epoch",
+      "kind": "compare",
+      "expression": "self.config.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 524,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _register_boot_epoch; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "71708e1ea1ff35efb94afa37da8c657cc87c249cee174d34dfc0c26e0e7f2c2d"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "1b0c8636400e15c4383ddddaea9deb010e9b20eb"
+    },
+    {
+      "id": "73d4c904575d69574f99ad84d9480522b37962bd79d27782806a53ead2388221",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._start_mcp_server",
+      "kind": "compare",
+      "expression": "self.config.name in {'finance', 'switchboard'}",
+      "occurrence": 1,
+      "line": 577,
+      "direct": false,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _start_mcp_server; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "47876fee904429549123138729f601d987d8c7dc9c6c72286090101912317d62",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._start_mcp_server",
+      "kind": "compare",
+      "expression": "target.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 586,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _start_mcp_server; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "3fe05723e53ebb6c3166bb43d6b79f944024b6b1b5e19ffb2bbfa9bdf54d7c5e",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._start_mcp_server",
+      "kind": "compare",
+      "expression": "self.config.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 594,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _start_mcp_server; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "98c3bed35fef2d72dd7e0f3e9df017c3ea3b6a69c075c5444a92eb3e45839d8e",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_runtime_probe_coordinator",
+      "kind": "compare",
+      "expression": "self.config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 708,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_runtime_probe_coordinator; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "98c3bed35fef2d72dd7e0f3e9df017c3ea3b6a69c075c5444a92eb3e45839d8e"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "707070785be4e088ab990e51f5c38cee62cac694"
+    },
+    {
+      "id": "7f9527481cbcbe5a1c38d91aed1b637f881e59e9bba233f30f8f7a75c8fab190",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_route_preflight",
+      "kind": "compare",
+      "expression": "self.config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 723,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_route_preflight; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "7f9527481cbcbe5a1c38d91aed1b637f881e59e9bba233f30f8f7a75c8fab190"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "31d74ef1dddf69f81d96f334bdb7310f92ee6e7f"
+    },
+    {
+      "id": "dd53d627798e98dd382a0f92db125aab38ff03b98ae3de6d20f37dbab1d06973",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_mcp_http_app",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 1,
+      "line": 796,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_mcp_http_app; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "dd53d627798e98dd382a0f92db125aab38ff03b98ae3de6d20f37dbab1d06973"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "31d74ef1dddf69f81d96f334bdb7310f92ee6e7f"
+    },
+    {
+      "id": "d49a306b478fa1397ec9511a91ab7d17e63067c49a1662f976ad3328dd74f43e",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_mcp_http_app",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 2,
+      "line": 835,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _build_mcp_http_app; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "a8e9d91a92445d37cc631042af5427ba36041b15"
+    },
+    {
+      "id": "65e2fc9daeed11e6fbb775354a1b0e8f5e2b9681de24894ba9e36e7e1bc4bd7b",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_scheduler_runtime_context",
+      "kind": "compare",
+      "expression": "self.config.name == 'chronicler'",
+      "occurrence": 1,
+      "line": 1132,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Bind Chronicler day-close prompt and completion hooks, including schema-local write-back; safe configuration is unresolved.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        }
+      ],
+      "baseline_ids": [
+        "65e2fc9daeed11e6fbb775354a1b0e8f5e2b9681de24894ba9e36e7e1bc4bd7b"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "b5125e7ff39235c73e966c53b7966f4e5fccf311"
+    },
+    {
+      "id": "66aab40e469a638d15d571ca535f742f85fbc9f1c4249bf55ddc54d64f85df12",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._scheduler_loop",
+      "kind": "compare",
+      "expression": "self.config.name == 'switchboard'",
+      "occurrence": 1,
+      "line": 1213,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _scheduler_loop; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "7156078027ea8a5690b059f37bc4c1e38e3dfca5"
+    },
+    {
+      "id": "9278060ae5b6e27df8559b7fae9f47e68597bfe54395d05444187ad84e38c54d",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._register_core_tools",
+      "kind": "dynamic_compare",
+      "expression": "butler_name != required_name",
+      "occurrence": 1,
+      "line": 1407,
+      "direct": false,
+      "container": false,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Retain canonical daemon identity for _register_core_tools; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "9278060ae5b6e27df8559b7fae9f47e68597bfe54395d05444187ad84e38c54d"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "2bfb6e1d18634f94b69e5cfd2c7b60cae9dc6d6c"
+    },
+    {
+      "id": "00c3405f0daf7e715f27b83fab13fefb0d539a7d806ca6f6d1d206844536e13e",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._register_core_tools",
+      "kind": "compare",
+      "expression": "butler_name == 'switchboard'",
+      "occurrence": 1,
+      "line": 1438,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Retain canonical daemon identity for _register_core_tools; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "00c3405f0daf7e715f27b83fab13fefb0d539a7d806ca6f6d1d206844536e13e"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "6d588dab4a6b6ba6f78aa43425b96509f9d009e0"
+    },
+    {
+      "id": "425b5d69f29ca065ecf01f81620f0375862238d26bcacf2076bae3875e747b9f",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._register_core_tools",
+      "kind": "compare",
+      "expression": "butler_name == 'messenger'",
+      "occurrence": 1,
+      "line": 1439,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Retain canonical daemon identity for _register_core_tools; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "425b5d69f29ca065ecf01f81620f0375862238d26bcacf2076bae3875e747b9f"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "6d588dab4a6b6ba6f78aa43425b96509f9d009e0"
+    },
+    {
+      "id": "9d768cab7daf43711c5a0f57431c98d91c9a9c08eb425dfc575d2cd370cff888",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._qa_switchboard_client",
+      "kind": "compare",
+      "expression": "self.config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 1454,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _qa_switchboard_client; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "05677eda47b71df0d2399374244dacd8f52b2e97ec9edb6381bbc841ddb69244"
+      ],
+      "reason": "30b376895 (#5017) retires per-butler healing and retains canonical QA relay; the fixed Switchboard selection now early-returns in this dedicated client owner.",
+      "public_source_commit": "30b376895e1108977bf1b80bf54fcbdaaa3d64ad"
+    },
+    {
+      "id": "f4afa37ebdb3459fdfe5dcc715ab19449513a40ced61bfca8eb69df20cd81eb9",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._register_module_tools",
+      "kind": "compare",
+      "expression": "self.config.name == 'messenger'",
+      "occurrence": 1,
+      "line": 1674,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Retain canonical daemon identity for _register_module_tools; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "f4afa37ebdb3459fdfe5dcc715ab19449513a40ced61bfca8eb69df20cd81eb9"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "4e1a0c1ccacd0b25382061c6067dc7156ebbb6a1"
+    },
+    {
+      "id": "ba716f5aa96060b6acbb538591dfbf056f6f64559eae272d6e4dd881abfa719b",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._build_approval_push_runtime._dispatch",
+      "kind": "compare",
+      "expression": "self.config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 1927,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain canonical daemon identity for _dispatch; group flags do not grant identity/transport/ownership authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        },
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Channel Egress Ownership Enforcement"
+        }
+      ],
+      "baseline_ids": [
+        "ba716f5aa96060b6acbb538591dfbf056f6f64559eae272d6e4dd881abfa719b"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "43febf8db6117a3c9f16c883354d31a091429aa5"
+    },
+    {
+      "id": "63c63762be1b320881b7519e968ecda7016381fab7e76a186e1569977b7de8b3",
+      "path": "src/butlers/db.py",
+      "symbol": "Database._owner_may_delegate",
+      "kind": "compare",
+      "expression": "(owner_schema, target) == ('chronicler', 'chronicler_mem')",
+      "occurrence": 1,
+      "line": 395,
+      "direct": false,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Permit only the verified primary owner or its explicitly owned Chronicler memory schema delegation; not arbitrary cross-schema authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "497b58aaa1943961f44543dd81ff62c0392a2494"
+    },
+    {
+      "id": "c6f365c2d67f603dd82504b582c912cc12d917a611c0a2a83a2d6d2bfac84d59",
+      "path": "src/butlers/jobs/context_producers.py",
+      "symbol": "resolve_owner_presence",
+      "kind": "compare",
+      "expression": "(row['state'] or '').strip().lower() == 'home'",
+      "occurrence": 1,
+      "line": 285,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare a presence state/place label home; this spelling does not select the Home daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Home Assistant Presence Person Attribution"
+        }
+      ],
+      "baseline_ids": [
+        "c6f365c2d67f603dd82504b582c912cc12d917a611c0a2a83a2d6d2bfac84d59"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "3ab0663ae571a1f26e63755cf9b12894f554a877"
+    },
+    {
+      "id": "cce9f03c2570dc9ca19a978a7fa057ff987d83eb4c567d1bdb9f7e705ca557f7",
+      "path": "src/butlers/jobs/context_producers.py",
+      "symbol": "_load_home_place_reference",
+      "kind": "alias_compare",
+      "expression": "reference.label.strip().lower() == _HOME_PLACE_LABEL",
+      "occurrence": 1,
+      "line": 649,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Compare a presence state/place label home; this spelling does not select the Home daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Home Assistant Presence Person Attribution"
+        }
+      ],
+      "baseline_ids": [
+        "cce9f03c2570dc9ca19a978a7fa057ff987d83eb4c567d1bdb9f7e705ca557f7"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "5757e209b1a9dc859b9b92d956ce44b0a75959c2"
+    },
+    {
+      "id": "9151c57f04f3bc592c8c997e83c194f4bf7f64a05ece532fc967cc18c6723a9d",
+      "path": "src/butlers/lifecycle.py",
+      "symbol": "_startup_config",
+      "kind": "compare",
+      "expression": "daemon.config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 130,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Keep canonical Switchboard host/transport/pipeline identity independent of optional capability groups.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "9151c57f04f3bc592c8c997e83c194f4bf7f64a05ece532fc967cc18c6723a9d"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "d223c4f28012220bdfbfa805857b81fd6dc0388b"
+    },
+    {
+      "id": "9ee2138cd93cfce1fe66c2bb7b994e70595a06bfafcc96cf4c3450f059291b74",
+      "path": "src/butlers/mcp_wrappers.py",
+      "symbol": "_manual_day_close_tool_policy",
+      "kind": "compare",
+      "expression": "butler_name != 'chronicler'",
+      "occurrence": 1,
+      "line": 51,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Manual day-close suppresses other Chronicler tools to protect no-write/no-send behavior; safe typed replacement is unproven.",
+      "citations": [
+        {
+          "path": "openspec/specs/butler-chronicler/spec.md",
+          "requirement": "Retrospective-Only Scope"
+        }
+      ],
+      "baseline_ids": [
+        "9ee2138cd93cfce1fe66c2bb7b994e70595a06bfafcc96cf4c3450f059291b74"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "c94033e9deb79b2ab8f1d0421158a3602cf3d377"
+    },
+    {
+      "id": "a57d1df7b6d32c6b84cf4250fdde04d053e95e8a7196cf71b75f9171a0d967a4",
+      "path": "src/butlers/modules/calendar_response_fence.py",
+      "symbol": "CalendarResponseFence._check_inventory",
+      "kind": "alias_compare",
+      "expression": "self.module._butler_name not in RESPONSE_FENCE_OWNERS",
+      "occurrence": 1,
+      "line": 98,
+      "direct": false,
+      "container": false,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Require exact declared Home/General calendar response owners and roster capability agreement before response authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-calendar/spec.md",
+          "requirement": "Approval-Bound Self Invitation Response"
+        }
+      ],
+      "baseline_ids": [
+        "a57d1df7b6d32c6b84cf4250fdde04d053e95e8a7196cf71b75f9171a0d967a4"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "7cfd3b30160b84728d65aed46f2d10c90a1b29a9"
+    },
+    {
+      "id": "e102119ad8e10f1eedcb6e71f73696eff9d5385c86edf323874c3bfa0cb4fe43",
+      "path": "src/butlers/modules/calendar_response_fence.py",
+      "symbol": "CalendarResponseFence._check_inventory",
+      "kind": "alias_compare",
+      "expression": "name in RESPONSE_FENCE_OWNERS",
+      "occurrence": 1,
+      "line": 108,
+      "direct": false,
+      "container": false,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Require exact declared Home/General calendar response owners and roster capability agreement before response authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-calendar/spec.md",
+          "requirement": "Approval-Bound Self Invitation Response"
+        }
+      ],
+      "baseline_ids": [
+        "e102119ad8e10f1eedcb6e71f73696eff9d5385c86edf323874c3bfa0cb4fe43"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "7cfd3b30160b84728d65aed46f2d10c90a1b29a9"
+    },
+    {
+      "id": "3471c7582906114c0ae6ee51796434b7b5b849f35108013e285a92377818f070",
+      "path": "src/butlers/modules/calendar_response_fence.py",
+      "symbol": "CalendarResponseFence._check_inventory",
+      "kind": "alias_compare",
+      "expression": "name not in RESPONSE_FENCE_OWNERS",
+      "occurrence": 1,
+      "line": 116,
+      "direct": false,
+      "container": false,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Require exact declared Home/General calendar response owners and roster capability agreement before response authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/module-calendar/spec.md",
+          "requirement": "Approval-Bound Self Invitation Response"
+        }
+      ],
+      "baseline_ids": [
+        "3471c7582906114c0ae6ee51796434b7b5b849f35108013e285a92377818f070"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "7cfd3b30160b84728d65aed46f2d10c90a1b29a9"
+    },
+    {
+      "id": "498ba41c16aa28fb019065e674eef0486840d0d185970239067fb9e721532c51",
+      "path": "src/butlers/modules/memory/__init__.py",
+      "symbol": "MemoryModule.on_startup",
+      "kind": "compare",
+      "expression": "getattr(self._db, 'schema', None) == 'chronicler'",
+      "occurrence": 1,
+      "line": 376,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "498ba41c16aa28fb019065e674eef0486840d0d185970239067fb9e721532c51"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "8d39b487e1971fd26ebb75f9c699f3ccb5da08bd"
+    },
+    {
+      "id": "cbc773c1caecc805169176ec488bed65ba7256c55f4714e167d67101e51580fc",
+      "path": "src/butlers/modules/memory/__init__.py",
+      "symbol": "MemoryModule.on_startup",
+      "kind": "compare",
+      "expression": "target_schema != 'chronicler'",
+      "occurrence": 1,
+      "line": 376,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "cbc773c1caecc805169176ec488bed65ba7256c55f4714e167d67101e51580fc"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "8d39b487e1971fd26ebb75f9c699f3ccb5da08bd"
+    },
+    {
+      "id": "6fc8e47a1b23ee163dc4a94add1c4c83be7e28c68473a233aa6d76dee80b9a9d",
+      "path": "src/butlers/modules/memory/__init__.py",
+      "symbol": "MemoryModule.register_tools",
+      "kind": "compare",
+      "expression": "butler_name == 'relationship'",
+      "occurrence": 1,
+      "line": 1398,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "6fc8e47a1b23ee163dc4a94add1c4c83be7e28c68473a233aa6d76dee80b9a9d"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "fbd3a067d5d7d97e2ada40d763b875859b32b778"
+    },
+    {
+      "id": "3a887a7543fcae9f0e866ab5a77de46de8fea3d0ef3f0ffe6e267a88ab0ce7a1",
+      "path": "src/butlers/modules/memory/__init__.py",
+      "symbol": "MemoryModule.register_tools.memory_entity_merge",
+      "kind": "compare",
+      "expression": "getattr(module._db, 'schema', None) == 'relationship'",
+      "occurrence": 1,
+      "line": 1819,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "3a887a7543fcae9f0e866ab5a77de46de8fea3d0ef3f0ffe6e267a88ab0ce7a1"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "8d39b487e1971fd26ebb75f9c699f3ccb5da08bd"
+    },
+    {
+      "id": "406389751b09490122542044609876d31eadb31d6b7c09c3b1a357c8203d7668",
+      "path": "src/butlers/modules/memory/ann_observability.py",
+      "symbol": "run_ann_observability",
+      "kind": "lookup",
+      "expression": "entry['health']",
+      "occurrence": 1,
+      "line": 507,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Read a module/ANN health status field, not the Health daemon.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Abstract Base Class"
+        }
+      ],
+      "baseline_ids": [
+        "406389751b09490122542044609876d31eadb31d6b7c09c3b1a357c8203d7668"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "19423c17e01786faee03a12451cc40802231ffe6"
+    },
+    {
+      "id": "237e374d47e131f26c4faccff6576ac0c031e4ff4f88147339cb0b0d5d3a6503",
+      "path": "src/butlers/modules/memory/knowledge_gaps.py",
+      "symbol": "_validate_predicate",
+      "kind": "compare",
+      "expression": "schema == 'relationship'",
+      "occurrence": 1,
+      "line": 225,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "237e374d47e131f26c4faccff6576ac0c031e4ff4f88147339cb0b0d5d3a6503"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cd1cbc81ef0be9d152f5d2713e4cad1e2e2d3532"
+    },
+    {
+      "id": "fd2b1a8d17ceaf15ee36f9b1b0717e18c5791dd50b94a07ff4e4ac8b04620b5b",
+      "path": "src/butlers/modules/memory/knowledge_gaps.py",
+      "symbol": "_existing_answer",
+      "kind": "compare",
+      "expression": "schema != 'relationship'",
+      "occurrence": 1,
+      "line": 254,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "fd2b1a8d17ceaf15ee36f9b1b0717e18c5791dd50b94a07ff4e4ac8b04620b5b"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cd1cbc81ef0be9d152f5d2713e4cad1e2e2d3532"
+    },
+    {
+      "id": "6e4f221dca4fbebab59de4842787704f43bf28df8db08091fd26f272b3545410",
+      "path": "src/butlers/modules/memory/knowledge_gaps.py",
+      "symbol": "_open_gap_coverage",
+      "kind": "compare",
+      "expression": "schema != 'relationship'",
+      "occurrence": 1,
+      "line": 415,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "6e4f221dca4fbebab59de4842787704f43bf28df8db08091fd26f272b3545410"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "cd1cbc81ef0be9d152f5d2713e4cad1e2e2d3532"
+    },
+    {
+      "id": "6cea77d9e52fb98e071be778f7d62a0bcb0233b995c63510a89a3e04202b550c",
+      "path": "src/butlers/modules/memory/storage.py",
+      "symbol": "store_fact",
+      "kind": "compare",
+      "expression": "scope == 'lifestyle'",
+      "occurrence": 1,
+      "line": 1753,
+      "direct": true,
+      "container": true,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Retain schema-local memory/predicate/merge ownership or domain scope; do not replace an ownership boundary with a flag.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/module-memory/spec.md",
+          "requirement": "Storage layer CRUD operations"
+        }
+      ],
+      "baseline_ids": [
+        "6cea77d9e52fb98e071be778f7d62a0bcb0233b995c63510a89a3e04202b550c"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "eb0fa884ff09a378fb2be936e11f0b059ff3c7a8"
+    },
+    {
+      "id": "b23eac71ba0d78371564821fd741ebf341abf0cca1e51a91943f906ea3b254b6",
+      "path": "src/butlers/modules/memory/tools/preferences.py",
+      "symbol": "_derive_scope",
+      "kind": "alias_compare",
+      "expression": "domain == PREFERENCE_GENERAL_DOMAIN",
+      "occurrence": 1,
+      "line": 69,
+      "direct": false,
+      "container": false,
+      "category": "NON_NAME_ENUM_OR_MODULE",
+      "purpose": "Classify the general preference domain enum rather than General daemon authority.",
+      "citations": [
+        {
+          "path": "openspec/specs/user-preferences/spec.md",
+          "requirement": "Preference predicate namespace convention"
+        }
+      ],
+      "baseline_ids": [
+        "b23eac71ba0d78371564821fd741ebf341abf0cca1e51a91943f906ea3b254b6"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "217ea857c56a8f718c97c9ed313d15a506586505"
+    },
+    {
+      "id": "3bd5bede439cd72ec0c80d36a0ea784a4c2b5ee2dc41b9f47035d8a1e08ff439",
+      "path": "src/butlers/owner_bootstrap.py",
+      "symbol": "_seed_owner_telegram_handle",
+      "kind": "compare",
+      "expression": "await conn.fetchval('SELECT current_schema()') != 'relationship'",
+      "occurrence": 1,
+      "line": 118,
+      "direct": true,
+      "container": true,
+      "category": "SCHEMA_OWNERSHIP",
+      "purpose": "Seed owner Telegram handles only in the verified Relationship-owned schema.",
+      "citations": [
+        {
+          "path": "openspec/specs/database-security/spec.md",
+          "requirement": "Runtime Role Enforcement via SET ROLE"
+        },
+        {
+          "path": "openspec/specs/entity-identity/spec.md",
+          "requirement": "Entity-first owner bootstrap"
+        }
+      ],
+      "baseline_ids": [
+        "3bd5bede439cd72ec0c80d36a0ea784a4c2b5ee2dc41b9f47035d8a1e08ff439"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "397da5c25710d423a1fb9b10452105a3f7403765"
+    },
+    {
+      "id": "e55e99e1e33cd3fedd864c871d8dbb3be574dececd1866f512fe3a0c35632175",
+      "path": "src/butlers/roster_imports.py",
+      "symbol": "roster_module",
+      "kind": "compare",
+      "expression": "butler == 'relationship'",
+      "occurrence": 1,
+      "line": 97,
+      "direct": true,
+      "container": true,
+      "category": "CANONICAL_IDENTITY_AUTHORITY_OR_PROVENANCE",
+      "purpose": "Preserve canonical Relationship model import identity and prevent split model/router namespaces.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-modules/spec.md",
+          "requirement": "Module Registry with Auto-Discovery"
+        }
+      ],
+      "baseline_ids": [],
+      "reason": "Existing public source addition or expanded static coverage, not a conversion by this PR.",
+      "public_source_commit": "b65d6c5ba554465b3463f6dcfd58657e474f0d08"
+    },
+    {
+      "id": "1fd9368fe459cd0681375c20ec9cc2f8b32115cffda89483465c15297cb17c28",
+      "path": "src/butlers/scheduled_jobs.py",
+      "symbol": "_retention_pruner_job_handlers",
+      "kind": "compare",
+      "expression": "butler_name == 'general'",
+      "occurrence": 1,
+      "line": 2082,
+      "direct": true,
+      "container": true,
+      "category": "HOST_POLICY_CANDIDATE_NEEDS_SHAPING",
+      "purpose": "Select General-only retention-pruner handlers; typed representation and behavior preservation remain unresolved.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Boot sequence seeds and reads runtime config from DB"
+        }
+      ],
+      "baseline_ids": [
+        "1fd9368fe459cd0681375c20ec9cc2f8b32115cffda89483465c15297cb17c28"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "980841872ef034160290906e26652410b69188ef"
+    },
+    {
+      "id": "0767d2bc8126fe5cf6c3a129183daa0276b9bb49898f098b0fb2f8cddfb9d547",
+      "path": "src/butlers/switchboard_wiring.py",
+      "symbol": "wire_pipelines",
+      "kind": "compare",
+      "expression": "daemon.config.name != 'switchboard'",
+      "occurrence": 1,
+      "line": 179,
+      "direct": true,
+      "container": true,
+      "category": "PROTECTED_HOST_OR_DOMAIN_SELECTOR",
+      "purpose": "Keep canonical Switchboard host/transport/pipeline identity independent of optional capability groups.",
+      "citations": [
+        {
+          "path": "openspec/specs/core-daemon/spec.md",
+          "requirement": "Core Tool Surface"
+        }
+      ],
+      "baseline_ids": [
+        "0767d2bc8126fe5cf6c3a129183daa0276b9bb49898f098b0fb2f8cddfb9d547"
+      ],
+      "reason": "Retained selector and category; line offsets are informational and do not change identity.",
+      "public_source_commit": "21d1bd6949ee01576657123236185c71277884eb"
+    }
+  ],
+  "retired": [
+    {
+      "id": "ed02310285e1dc48fe7999a1ff991a9aa8e02138bffcea863e8d4084b70d645a",
+      "path": "src/butlers/daemon.py",
+      "symbol": "ButlerDaemon._create_audit_pool",
+      "reason": "04a9edf85 (#5050): audit uses the butler own verified-role pool; the separate Switchboard-schema pool/name branch was removed upstream. Not a conversion or deletion in this S3 PR."
+    }
+  ],
+  "review_changes": []
+}
