@@ -11,6 +11,9 @@
 - [x] 1.5 Hardening (core_295): every custody function belongs to the database owner; a held phone
       demotes every suffix-equivalent spelling of that owner; legacy exact-predicate mode matches
       only holdable predicates.
+- [x] 1.6 Transitive phone hold coverage (core_296): a held phone demotes every same-entity phone
+      fact sharing its trailing eight digits, so a 12-digit held spelling covers an unheld 8-digit
+      one.
 
 ## 2. Remaining slices
 
