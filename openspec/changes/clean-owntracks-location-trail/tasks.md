@@ -11,6 +11,7 @@
 - [x] 2.2 Point count spans the whole episode across batches.
 - [x] 2.3 A fresh segment overlapping a stored same-endpoint episode widens it instead of duplicating it.
 - [x] 2.4 Segment per endpoint so interleaved devices cannot fragment each other.
+- [x] 2.5 Migration `chronicler_027` merges movement episodes that already overlapped before 2.3 (bu-2tsgqb.11).
 
 ## 3. Place naming and away spans
 

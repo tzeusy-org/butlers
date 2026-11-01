@@ -91,6 +91,9 @@ The point and place-cluster projections share one plausibility policy
 - A `movement_episode` needs at least two accepted fixes. Its point count
   covers the whole episode across batches. A new movement that overlaps a
   stored one for the same endpoint widens it rather than adding a second chunk.
+  Migration `chronicler_027` applied the same rule once to episodes stored
+  before it: each overlapping group keeps its earliest episode, widened, and
+  tombstones the rest. Groups holding a user correction are left alone.
 - Place clusters are named, in order, from an `OWNTRACKS_PLACE_REFERENCES`
   entry, from an OwnTracks region (`inregions`) seen on at least half the
   cluster's fixes, or else stay explicitly `place_unknown`
