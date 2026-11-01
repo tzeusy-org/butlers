@@ -20,7 +20,7 @@ from butlers.core.qa.publication.export import (
     SealedExport,
     build_sealed_export,
 )
-from tests.core.qa.publication_fakes import QA_IDENTITY, commit_file, git, init_repo
+from tests.core.qa.publication_fakes import QA_IDENTITY, commit_file, git, init_repo, write_raw_tree
 
 
 class FunctionEgress(NamedTuple):
@@ -151,6 +151,29 @@ async def test_leak_anywhere_in_reachable_history_refuses(
         await _export(repo, base, head)
 
     assert refused.value.code == code
+
+
+async def test_tree_with_duplicate_entry_name_refuses(tmp_path: Path) -> None:
+    # A hand-written tree lists "notes.txt" twice: a leaking blob, then a clean one.
+    # A last-wins parse would validate only the clean blob while the sealed tree
+    # still references the leak, so the export must refuse the tree outright.
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    leak = git(repo, "hash-object", "-w", "--stdin", input="token = 'sk-ant-abcdefghijklmnop'\n")
+    clean = git(repo, "hash-object", "-w", "--stdin", input="value = 2\n")
+    src_tree = git(repo, "rev-parse", f"{base}:src")
+    tree = write_raw_tree(
+        repo,
+        [
+            (b"100644", b"notes.txt", leak),
+            (b"100644", b"notes.txt", clean),
+            (b"40000", b"src", src_tree),
+        ],
+    )
+    head = git(repo, "commit-tree", tree, "-p", base, "-m", "fix")
+
+    with pytest.raises(ExportRefused, match="malformed_tree"):
+        await _export(repo, base, head)
 
 
 async def test_bytes_swapped_after_validation_or_in_the_store_refuse(tmp_path: Path) -> None:

@@ -42,6 +42,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _ALLOWED_COMMIT_HEADERS = frozenset({b"tree", b"parent", b"author", b"committer"})
 _SUBMODULE_MODE = b"160000"
 _TREE_MODE = b"40000"
+_TREE_ENTRY_MODES = frozenset({b"100644", b"100755", b"120000", _TREE_MODE, _SUBMODULE_MODE})
 
 #: Bounds that keep a single export small enough to validate and retain.
 MAX_COMMITS = 50
@@ -150,6 +151,12 @@ class _TreeEntry:
 
 
 def _parse_tree(data: bytes) -> dict[bytes, _TreeEntry]:
+    """Parse a raw tree, refusing any entry git itself would not write.
+
+    Fails closed: a duplicate name would let the sealed tree reference a blob the
+    walk never validated, so every name must be unique, a single path component,
+    not ``.``/``..``/``.git`` (any case), and carry a known mode.
+    """
     entries: dict[bytes, _TreeEntry] = {}
     position = 0
     while position < len(data):
@@ -157,7 +164,11 @@ def _parse_tree(data: bytes) -> dict[bytes, _TreeEntry]:
         nul = data.index(b"\0", space)
         mode, name = data[position:space], data[space + 1 : nul]
         oid = data[nul + 1 : nul + 21]
-        if len(oid) != 20:
+        if len(oid) != 20 or mode not in _TREE_ENTRY_MODES:
+            raise ExportRefused("malformed_tree")
+        if not name or b"/" in name or name in (b".", b"..") or name.lower() == b".git":
+            raise ExportRefused("malformed_tree")
+        if name in entries:
             raise ExportRefused("malformed_tree")
         entries[name] = _TreeEntry(mode, oid.hex())
         position = nul + 21

@@ -153,10 +153,35 @@ def _git_env(identity: GitIdentity = QA_IDENTITY) -> dict[str, str]:
     return env
 
 
-def git(repo: Path, *args: str, identity: GitIdentity = QA_IDENTITY) -> str:
+def git(
+    repo: Path, *args: str, identity: GitIdentity = QA_IDENTITY, input: str | None = None
+) -> str:
     return subprocess.run(
-        ["git", *args], cwd=repo, env=_git_env(identity), check=True, capture_output=True, text=True
+        ["git", *args],
+        cwd=repo,
+        env=_git_env(identity),
+        input=input,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
+
+
+def write_raw_tree(repo: Path, entries: list[tuple[bytes, bytes, str]]) -> str:
+    """Write ``(mode, name, oid)`` entries verbatim as a tree object, bypassing git's checks."""
+    raw = b"".join(mode + b" " + name + b"\0" + bytes.fromhex(oid) for mode, name, oid in entries)
+    return (
+        subprocess.run(
+            ["git", "hash-object", "-t", "tree", "-w", "--literally", "--stdin"],
+            cwd=repo,
+            env=_git_env(QA_IDENTITY),
+            input=raw,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
 
 
 def commit_file(
