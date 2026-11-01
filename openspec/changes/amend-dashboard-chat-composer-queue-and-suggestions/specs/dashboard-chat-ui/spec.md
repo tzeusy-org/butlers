@@ -169,7 +169,7 @@ Scope: v1-mandatory
 
 ### Requirement: Queued Text Draft Retention
 
-When browser-local chat drafts are available under REQ-dashboard-chat-ui-004 and the shared browser-draft contract, the text of a queued item SHALL be retained in the same identity's draft record while it is queued, with the same origin scope, sliding expiry, size limit, and discard semantics. After a reload it SHALL restore as editable unsent text and SHALL NOT be dispatched automatically. The auto-send intent, the queued `message_id`, and the captured context SHALL NOT be persisted. This retention choice is the owner's decision of 2026-10-09 (Option A in this change's design).
+When browser-local chat drafts are available under REQ-dashboard-chat-ui-014 and the shared browser-draft contract, the text of a queued item SHALL be retained in the same identity's draft record while it is queued, with the same origin scope, sliding expiry, size limit, and discard semantics. After a reload it SHALL restore as editable unsent text and SHALL NOT be dispatched automatically. The auto-send intent, the queued `message_id`, and the captured context SHALL NOT be persisted. This retention choice is the owner's decision of 2026-10-09 (Option A in this change's design).
 
 ID: REQ-dashboard-chat-ui-010
 Source: persist-safe-dashboard-unsent-drafts (owner-adopted 2026-09-12); heart-and-soul/vision.md § What Success Looks Like; design.md § Owner decision (Option A, decided 2026-10-09)
@@ -185,7 +185,7 @@ Scope: v1-mandatory
 #### Scenario: Dispatch hands the text to the adopted submission contract
 
 - **WHEN** a queued item is dispatched
-- **THEN** its text and `message_id` are bound as a submitted content revision under REQ-dashboard-chat-ui-005 before the request is issued
+- **THEN** its text and `message_id` are bound as a submitted content revision under REQ-dashboard-chat-ui-015 before the request is issued
 - **AND** the queued-text portion of the draft record is cleared only under that requirement's proven-acceptance rules
 
 #### Scenario: Unavailable storage keeps the queue working

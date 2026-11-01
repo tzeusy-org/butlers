@@ -30,7 +30,7 @@ It is proposed future behavior only. The owner answered the queued-text retentio
 
 ### Relationship to the adopted draft contract
 
-The owner adopted `persist-safe-dashboard-unsent-drafts` on 2026-09-12 (PR #4056 at `d2dc32ff`, recorded in `bu-2jtfw.15` as `[owner-adoption bu-qqb2kw]`). That contract already governs browser-local chat drafts per `{butler, conversation | new}`: transactional IndexedDB, 24-hour sliding expiry, a 64 KiB limit, compare-and-swap cross-tab ordering, and clear-on-proven-acceptance (REQ-dashboard-chat-ui-004 and -005). `bu-2jtfw.15` owns implementing it.
+The owner adopted `persist-safe-dashboard-unsent-drafts` on 2026-09-12 (PR #4056 at `d2dc32ff`, recorded in `bu-2jtfw.15` as `[owner-adoption bu-qqb2kw]`). That contract already governs browser-local chat drafts per `{butler, conversation | new}`: transactional IndexedDB, 24-hour sliding expiry, a 64 KiB limit, compare-and-swap cross-tab ordering, and clear-on-proven-acceptance (REQ-dashboard-chat-ui-014 and -015). `bu-2jtfw.15` owns implementing it.
 
 This change does not re-specify, fork, or weaken that contract. Earlier `bu-0ynlk.14` drafts proposed a local key with timestamp last-write-wins; that conflicts with the adopted contract and is withdrawn. The one narrower retention question, whether a queued, not-yet-dispatched message belongs to that same draft record, was answered by the owner on 2026-10-09: it does (Option A, `design.md` § Owner decision).
 
