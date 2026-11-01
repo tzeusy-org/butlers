@@ -2,7 +2,8 @@
 
 One envelope per sample, keyed on the sample's physical time; weight is converted from grams to
 kilograms at the connector. Polls use the ``:reconcile`` operation, consume every page, and only
-advance the checkpoint after every required submission succeeds.
+advance the checkpoint after every required submission succeeds. The sleep and workout session
+bundles share that paging contract (bu-u5euwb.29).
 """
 
 from __future__ import annotations
@@ -162,22 +163,26 @@ def _keys(submit: AsyncMock) -> list[str]:
     return [c.args[0]["control"]["idempotency_key"] for c in submit.await_args_list]
 
 
-async def test_poll_consumes_every_page_before_committing() -> None:
-    page1 = {"dataPoints": [_weight_point(sample=_SAMPLE)], "nextPageToken": "t1"}
-    page2 = {"dataPoints": [_weight_point(sample=_LATER)]}
-    connector, acct, state, api = _poll_harness([page1, page2])
+def _point(resource: str, record_id: str) -> dict:
+    """A minimal provider point whose record identity is ``record_id``."""
+    return _weight_point(sample=record_id) if resource == "weight" else {"session_id": record_id}
+
+
+@pytest.mark.parametrize("resource", ["weight", "sleep", "workout"])
+async def test_poll_consumes_every_page_before_committing(resource) -> None:
+    page1 = {"dataPoints": [_point(resource, _SAMPLE)], "nextPageToken": "t1"}
+    page2 = {"dataPoints": [_point(resource, _LATER)]}
+    connector, acct, state, api = _poll_harness([page1, page2], resource)
     connector._submit_envelope = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
     await connector._poll_resource(acct, state)
 
     first, second = (c.kwargs["params"] for c in api.get_json.await_args_list)
-    assert api.get_json.await_args_list[0].args[0].endswith("weight/dataPoints:reconcile")
+    assert api.get_json.await_args_list[0].args[0] == _bundle(resource).endpoint_path
     assert "pageToken" not in first
     assert second == {**first, "pageToken": "t1"}
-    assert _keys(connector._submit_envelope) == [
-        f"google_health:{_EMAIL}:weight:{_SAMPLE}",
-        f"google_health:{_EMAIL}:weight:{_LATER}",
-    ]
+    first_key, second_key = _keys(connector._submit_envelope)
+    assert first_key.endswith(f":{_SAMPLE}") and second_key.endswith(f":{_LATER}")
     connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
     assert state.backfill_done and state.last_poll_at is not None
 
@@ -214,24 +219,32 @@ async def test_failed_submission_keeps_checkpoint_and_replays_same_keys() -> Non
     connector._save_cursor.assert_awaited_once_with(acct, state, _LATER)
 
 
+@pytest.mark.parametrize("resource", ["weight", "sleep", "workout"])
 @pytest.mark.parametrize(
-    "pages",
+    ("pages", "error"),
     [
         pytest.param(
             [{"dataPoints": [_weight_point()], "nextPageToken": "t1"}, RuntimeError("503")],
+            "RuntimeError",
             id="page-fetch-fails",
         ),
         pytest.param(
-            [{"dataPoints": [_weight_point()], "nextPageToken": "t"}] * gh._MAX_MEASUREMENT_PAGES,
+            [{"dataPoints": [_weight_point()], "nextPageToken": "t"}] * gh._MAX_WINDOW_PAGES,
+            "GoogleHealthPollIncompleteError",
             id="page-bound-exceeded",
         ),
     ],
 )
-async def test_incomplete_window_submits_nothing_and_keeps_checkpoint(pages) -> None:
-    connector, acct, state, _api = _poll_harness(pages)
+async def test_incomplete_window_submits_nothing_and_keeps_checkpoint(
+    resource, pages, error
+) -> None:
+    connector, acct, state, _api = _poll_harness(pages, resource)
     connector._submit_envelope = AsyncMock(return_value=True)  # type: ignore[method-assign]
 
-    with pytest.raises((RuntimeError, gh.GoogleHealthPollIncompleteError)):
+    # Resolve the class at run time: another test reloads ``google_health``, so a class
+    # captured at collection time would not match the one the reloaded module raises.
+    expected = RuntimeError if error == "RuntimeError" else getattr(gh, error)
+    with pytest.raises(expected):
         await connector._poll_resource(acct, state)
 
     connector._submit_envelope.assert_not_awaited()
