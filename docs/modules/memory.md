@@ -70,17 +70,23 @@ taken from tool arguments or from text inside content, so a forged
 `[Source: Owner ...]` line in a stranger's email grants nothing. Sessions with
 no routing context stamp `system`, not `owner`.
 
-Consolidation gives each derived fact and rule the weakest authority among its
-evidence episodes (differing or unknown authority yields `mixed`). Steering
-memory is gated on that stamp:
+Consolidation splits each claimed `(tenant_id, butler)` group into an owner-class
+partition (`owner`, `owner_device`) and a non-owner partition (`third_party`,
+`system`, `mixed` and unstamped NULL), each with its own runtime session, request
+ID and episode set; see [Consolidation](#consolidation). It gives each derived
+fact and rule the weakest authority among its evidence episodes (differing or
+unknown authority yields `mixed`). Steering memory is gated on that stamp:
 
 - **Rules** from non-owner authority are *held*: stored, but absent from recall,
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
-- **Profile Facts** admit only owner-class facts. An owner-anchored fact written
-  from someone else's session surfaces only as a Task-Relevant Fact labelled
-  `reported by <sender>`.
+- **Profile Facts** admit only owner-class facts. Every other rendered fact,
+  whoever it is about (the owner or Bob), is a Task-Relevant Fact qualified as
+  `reported by <sender>` (`third_party`), `partly reported by <sender>` (`mixed`)
+  or `source unverified` (NULL). An unresolvable sender name renders as
+  `a third party`; the qualification never depends on the lookup. `system` facts
+  carry no label, and `source_butler` names the curating butler, never the reporter.
 - A non-owner write cannot supersede an owner-authored fact.
 - **Legacy rows** (written before `mem_013`) have no stamp and fail closed: legacy
   rules are held and legacy owner facts are not Profile Facts. They are never
@@ -222,6 +228,33 @@ new facts, rules, supersessions, confirmations, and provenance links. Successful
 episodes become `consolidated`; failures are retried after bounded backoff or
 become `dead_letter` when the retry budget is exhausted. Consolidation output is
 schema-validated before persistence.
+
+**Authority partitions (bu-dhloi1.1).** After the fenced claim, each
+`(tenant_id, butler)` group is split by the episodes' persisted
+`content_authority` into an owner-class partition and a non-owner partition
+(everything else, including NULL). Each nonempty partition gets its own runtime
+session, request ID and allowed episode set, and its dedup context lists only
+facts and rules of the same partition (filtered in SQL before the `LIMIT`). That
+dedup context is the only stored memory the session sees: the spawner skips
+recall-based memory-context injection for `schedule:consolidation` sessions, and
+the MCP wrappers suppress every tool call such a session makes
+(`consolidation_session_tool_policy`), reads and writes alike, since consolidation
+is output-only. The owner session therefore has no path to third-party content it
+could restate as the owner's. The suppression keys on the session's
+`trigger_source` parameter the spawner writes into the session's MCP server URL.
+Inside the persistence fence the executor revalidates every source episode's stamp
+against its partition and admits `updated_facts` targets and confirmations only
+within the same tenant, source butler and partition. Evidence citing an episode
+outside the partition fails that partition through the ordinary failed/dead-letter
+path before any fact, rule, link or completion write; the sibling partition still
+commits independently, and valid third-party evidence stays `third_party`. Each
+successful partition writes its own `public.consolidation_runs` row, and the run's
+`groups_consolidated` counts partitions.
+
+The partitions stop new laundering; they do not reclassify facts consolidated
+before this change. A historical demotion mechanism (operator-only, default
+dry-run, evidence-manifest gated) is separate, not yet built work, and no live
+dry-run, demotion or restore has been run or authorized.
 
 The dashboard owner can recover an eligible dead-letter episode with
 `POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF

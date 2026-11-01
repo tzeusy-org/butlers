@@ -201,6 +201,22 @@ Scope: v1-mandatory
 - **AND** episodes MUST be grouped by the composite key `(tenant_id, butler)`, not by `butler` alone
 - **AND** existing active facts (up to 100) and rules (up to 50) for each butler MUST be fetched for dedup context, scoped to the same `tenant_id`
 
+#### Scenario: Each group consolidates in authority partitions
+
+- **WHEN** a claimed `(tenant_id, butler)` group holds episodes whose persisted `content_authority` is owner-class (`owner`, `owner_device`) and episodes of any other authority (`third_party`, `system`, `mixed` or NULL)
+- **THEN** the group MUST be split into an owner-class partition and a non-owner partition, preserving claim order within each
+- **AND** each nonempty partition MUST get its own runtime session, its own allowed episode set and its own request ID
+- **AND** each partition's dedup context MUST list only facts and rules of the same partition, filtered in SQL before the fact (100) and rule (50) limits
+- **AND** a consolidation session MUST NOT receive recall-based memory-context injection, and every MCP tool call it makes (memory reads such as `memory_recall` and `memory_search`, other modules' reads, and writes) MUST be suppressed with a `consolidation_session_tool_policy` result, so the partition-filtered dedup context is the only stored memory the owner session sees
+- **AND** a failure of one partition MUST NOT prevent the other partition of the same group from finishing, and each successful partition MUST record its own consolidation run
+
+#### Scenario: Out-of-partition evidence fails the emitting partition before persistence
+
+- **WHEN** a partition's session emits a fact or rule whose `evidence_episode_ids` names an episode of the other partition
+- **THEN** that whole partition MUST use the existing failed/dead-letter retry path
+- **AND** no fact, rule, `memory_links` row, completion state or terminal lifecycle event from that partition MAY be persisted
+- **AND** a valid artifact of the other partition MUST keep its derived authority, so valid third-party evidence remains `third_party`
+
 #### Scenario: Consolidation with LLM spawner
 
 - **WHEN** a `cc_spawner` is provided to `run_consolidation`
@@ -246,7 +262,7 @@ Scope: v1-mandatory
 
 - **WHEN** the consolidation throughput decision recorded in `docs/decisions/consolidation-throughput-2026-10-15.md` is applied
 - **THEN** additional batching changes SHALL be recorded as deliberately not needed for the evidenced current state
-- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source group SHALL remain unchanged
+- **AND** existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source authority partition (at most two per group, the security split adopted by bu-dhloi1.1) SHALL remain unchanged
 - **AND** this decision SHALL NOT reinterpret the ordinary default100 or existing scheduled backfill500 as a new universal cap
 
 #### Scenario: Throughput decision declines an additional per-run cap
@@ -304,6 +320,14 @@ ID: REQ-module-memory-006
 - **AND** a missing, stale, cross-tenant, cross-source, temporal, or entity-edge target MUST be rejected without preventing later consolidation actions
 - **AND** exactly one `derived_from` link MUST be created from the new fact to each UUID in that entry's validated `evidence_episode_ids`, and none to another claimed episode
 - **AND** the updated fact write and all of those links MUST commit atomically
+
+#### Scenario: Partitioned executions revalidate authority inside the persistence fence
+
+- **WHEN** `run_consolidation` executes one authority partition
+- **THEN** inside the claim-fenced persistence transaction and before any artifact write, every source episode's persisted `content_authority` MUST still belong to that partition, or the whole partition MUST fail through the failed/dead-letter path with nothing persisted
+- **AND** an `updated_facts` target MUST be a live fact of the same tenant, source butler and partition, or be rejected without preventing later actions
+- **AND** a confirmation MUST target a fact of the same tenant, source butler and partition, or be rejected and reported without calling `confirm_memory`
+- **AND** a stale claimant MUST still be unable to write any artifact, confirmation or terminal state for either partition
 
 #### Scenario: Temporal observations are not updated facts
 
@@ -612,8 +636,14 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   `memory_context` Active Rules, and the discovery catalog (they are not written
   to it, and any existing catalog row is staled). Profile Facts SHALL admit only
   owner-class facts; an owner-anchored fact of any other authority SHALL be
-  eligible only for Task-Relevant Facts, rendered with an attribution naming its
-  sender (or marked unverified when the authority is NULL). Legacy rows are never
+  eligible only for Task-Relevant Facts. Every rendered local fact whose authority
+  is `third_party`, `mixed` or NULL SHALL carry an attribution regardless of its
+  subject: naming its sender (`reported by` / `partly reported by`) when the
+  sender's canonical name resolves, an honest generic `a third party` when it
+  does not, and marked unverified when the authority is NULL. A failed name
+  lookup SHALL NOT remove the qualification, `source_butler` SHALL NOT stand in
+  for the reporter, and section budgets SHALL drop whole lines rather than a
+  line's attribution or memory reference. Legacy rows are never
   backfilled by guessing; the migration SHALL report how many legacy rules and
   facts it left unclassified.
 - Every `public.memory_catalog` row SHALL carry the `content_authority` class of
@@ -683,6 +713,13 @@ Scope: v1-mandatory
 
 - **WHEN** an episode is stored with no routing context
 - **THEN** it SHALL be stamped `system`
+
+#### Scenario: Non-owner facts about anyone are qualified in context
+
+- **WHEN** `memory_context` renders a third-party fact about the owner, a third-party fact about Bob, a mixed-evidence fact and a legacy NULL fact
+- **THEN** each SHALL render with `reported by <sender>`, `partly reported by <sender>` or `source unverified`
+- **AND** a sender whose name cannot be resolved, or whose lookup fails, SHALL render as `a third party` rather than losing the label
+- **AND** owner-class and `system` facts SHALL carry no label
 
 #### Scenario: Catalog readers attribute non-owner content
 

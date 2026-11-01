@@ -107,6 +107,22 @@ Scope: v1-mandatory
 - **THEN** the consolidation group MUST use the existing failed/dead-letter retry path
 - **AND** no fact, rule, `memory_links` row, or consolidated episode state from that group MAY be persisted before the failure
 
+#### Scenario: Each group consolidates in authority partitions
+
+- **WHEN** a claimed `(tenant_id, butler)` group holds episodes whose persisted `content_authority` is owner-class (`owner`, `owner_device`) and episodes of any other authority (`third_party`, `system`, `mixed` or NULL)
+- **THEN** the group MUST be split into an owner-class partition and a non-owner partition, preserving claim order within each
+- **AND** each nonempty partition MUST get its own runtime session, its own allowed episode set and its own request ID
+- **AND** each partition's dedup context MUST list only facts and rules of the same partition, filtered in SQL before the fact (100) and rule (50) limits
+- **AND** a consolidation session MUST NOT receive recall-based memory-context injection, and every MCP tool call it makes (memory reads such as `memory_recall` and `memory_search`, other modules' reads, and writes) MUST be suppressed with a `consolidation_session_tool_policy` result, so the partition-filtered dedup context is the only stored memory the owner session sees
+- **AND** a failure of one partition MUST NOT prevent the other partition of the same group from finishing, and each successful partition MUST record its own consolidation run
+
+#### Scenario: Out-of-partition evidence fails the emitting partition before persistence
+
+- **WHEN** a partition's session emits a fact or rule whose `evidence_episode_ids` names an episode of the other partition
+- **THEN** that whole partition MUST use the existing failed/dead-letter retry path
+- **AND** no fact, rule, `memory_links` row, completion state or terminal lifecycle event from that partition MAY be persisted
+- **AND** a valid artifact of the other partition MUST keep its derived authority, so valid third-party evidence remains `third_party`
+
 #### Scenario: Group artifacts are applied through one capability call
 
 - **WHEN** the consolidation goal submits a group's `new_facts`, `updated_facts`,
@@ -143,6 +159,7 @@ Scope: v1-mandatory
 - **AND** existing bounded episode claims and deterministic tenant/source grouping
   SHALL remain, with one obligation goal per non-empty tenant/source/taint
   partition under RFC 0038 rather than a directly spawned session
+- **AND** until that cutover, existing bounded episode claims, deterministic grouping and one session per non-empty tenant/source authority partition (at most two per group, the security split adopted by bu-dhloi1.1) SHALL remain unchanged
 - **AND** this decision SHALL NOT reinterpret the ordinary default100 or existing scheduled backfill500 as a new universal cap
 
 #### Scenario: Throughput decision declines an additional per-run cap

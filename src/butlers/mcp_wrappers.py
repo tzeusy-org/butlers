@@ -60,6 +60,33 @@ def _manual_day_close_tool_policy(*, butler_name: str, tool_name: str) -> dict[s
     }
 
 
+_CONSOLIDATION_TRIGGER_SOURCE = "schedule:consolidation"
+
+
+def _consolidation_tool_policy() -> dict[str, Any] | None:
+    """Suppress every tool call made from a memory consolidation session.
+
+    Consolidation is output-only: the hook parses the session's JSON and the
+    executor revalidates it against the session's content-authority partition.
+    A read tool would show an owner-partition session other partitions'
+    content; a write tool would bypass that revalidation.
+    """
+    if get_current_runtime_trigger_source() != _CONSOLIDATION_TRIGGER_SOURCE:
+        return None
+    return {
+        "status": "suppressed",
+        "reason": "consolidation_session_tool_policy",
+        "retryable": False,
+    }
+
+
+def _session_tool_policy(*, butler_name: str, tool_name: str) -> dict[str, Any] | None:
+    """Return a suppression result when the session's trigger source forbids the tool."""
+    return _consolidation_tool_policy() or _manual_day_close_tool_policy(
+        butler_name=butler_name, tool_name=tool_name
+    )
+
+
 def _visible_capture_input(
     kwargs: dict[str, Any],
     *,
@@ -239,7 +266,7 @@ class _SpanWrappingMCP:
                     args=args,
                 )
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
-                policy_result = _manual_day_close_tool_policy(
+                policy_result = _session_tool_policy(
                     butler_name=self._butler_name,
                     tool_name=resolved_tool_name,
                 )
@@ -358,7 +385,7 @@ class _ToolCallLoggingMCP:
                 self._log_tool_call(resolved_tool_name)
                 capture_input = _visible_capture_input(kwargs)
                 input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
-                policy_result = _manual_day_close_tool_policy(
+                policy_result = _session_tool_policy(
                     butler_name=self._butler_name,
                     tool_name=resolved_tool_name,
                 )
