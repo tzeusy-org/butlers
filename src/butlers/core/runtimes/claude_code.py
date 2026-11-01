@@ -83,6 +83,30 @@ def _open_stderr_log(stderr_dir: Path, butler_name: str) -> TextIO:
     return stderr_log_file
 
 
+def _collect_content(content: Any, text_parts: list[str], tool_calls: list[dict[str, Any]]) -> None:
+    """Append a message's text and ``tool_use`` blocks (string or block-list content)."""
+    if isinstance(content, str):
+        if content:
+            text_parts.append(content)
+        return
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text" and block.get("text"):
+            text_parts.append(block["text"])
+        elif block_type == "tool_use":
+            tool_calls.append(
+                {
+                    "id": block.get("id", ""),
+                    "name": block.get("name", ""),
+                    "input": block.get("input", {}),
+                }
+            )
+
+
 def _parse_claude_output(
     stdout: str, stderr: str, returncode: int
 ) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
@@ -128,6 +152,8 @@ def _parse_claude_output(
     lines = stdout.strip().splitlines()
     parsed_any_json = False
     fallback_text_parts: list[str] = []
+    native_text_parts: list[str] = []
+    saw_result_text = False
 
     for line in lines:
         line = line.strip()
@@ -154,6 +180,7 @@ def _parse_claude_output(
             result_content = obj.get("result", "")
             if result_content:
                 text_parts.append(str(result_content))
+                saw_result_text = True
             raw_usage = obj.get("usage")
             if isinstance(raw_usage, dict):
                 input_tokens = token(raw_usage.get("input_tokens"))
@@ -171,27 +198,13 @@ def _parse_claude_output(
                         usage["cache_creation_input_tokens"] = cache_creation
 
         elif obj_type in ("assistant", "message"):
-            # Assistant or message events — extract text and tool_use from content blocks
-            content = obj.get("content", "")
-            if isinstance(content, str) and content:
-                text_parts.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    block_type = block.get("type")
-                    if block_type == "text":
-                        text_val = block.get("text", "")
-                        if text_val:
-                            text_parts.append(text_val)
-                    elif block_type == "tool_use":
-                        tool_calls.append(
-                            {
-                                "id": block.get("id", ""),
-                                "name": block.get("name", ""),
-                                "input": block.get("input", {}),
-                            }
-                        )
+            message = obj.get("message")
+            if isinstance(message, dict):
+                # The CLI's native shape nests content under ``message``; its final
+                # text repeats as the result text, so it only answers without one.
+                _collect_content(message.get("content"), native_text_parts, tool_calls)
+            else:
+                _collect_content(obj.get("content", ""), text_parts, tool_calls)
 
         elif obj_type == "tool_use":
             # Standalone tool_use event
@@ -210,6 +223,9 @@ def _parse_claude_output(
             elif "content" in obj and isinstance(obj["content"], str):
                 text_parts.append(obj["content"])
 
+    if not saw_result_text:
+        text_parts.extend(native_text_parts)
+
     # If we couldn't parse any JSON, treat entire stdout as result text
     if not parsed_any_json and not text_parts:
         text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
@@ -221,10 +237,9 @@ def _parse_claude_output(
 def _claude_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
     """Return whether the stream proves a tool ran, for ``is_pre_tool_call``.
 
-    Evidence is any parsed tool call, a ``tool_use`` block in the CLI's native
-    assistant shape (``{"type": "assistant", "message": {"content": [...]}}``),
-    or a terminal result with ``num_turns > 1``: in ``claude -p`` a further
-    turn only follows a tool result.
+    Evidence is any parsed tool call (``_parse_claude_output`` reads the CLI's
+    native nested assistant shape) or a terminal result with ``num_turns > 1``:
+    in ``claude -p`` a further turn only follows a tool result.
     """
     if tool_calls:
         return True
@@ -238,13 +253,6 @@ def _claude_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
         if obj.get("type") == "result":
             turns = obj.get("num_turns")
             if type(turns) is int and turns > 1:
-                return True
-        message = obj.get("message")
-        if obj.get("type") == "assistant" and isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, list) and any(
-                isinstance(block, dict) and block.get("type") == "tool_use" for block in content
-            ):
                 return True
     return False
 
