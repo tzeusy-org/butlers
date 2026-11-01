@@ -119,6 +119,13 @@ def test_clones_are_independent_migrated_databases_with_the_template_privileges(
                 return {("<login>" if g == login else g, p, o) for g, p, o in acl}
 
             assert shape(first) == shape(fresh)
+            # Per-database role settings (core_001's butler search_path) are not
+            # copied by CREATE DATABASE either.
+            settings = [
+                migration._database_role_settings(conn, urlparse(url).path.lstrip("/"))
+                for url in (first, second, fresh)
+            ]
+            assert settings[0] and settings[0] == settings[1] == settings[2]
             template = conn.execute(
                 text(
                     "SELECT datallowconn FROM pg_database "

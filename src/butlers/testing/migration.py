@@ -36,8 +36,9 @@ revisions)`` request into a template database, and every call returns a fresh
 ``CREATE DATABASE ... TEMPLATE`` clone of it. A clone is still a separate
 database with the real migrated schema; it reuses the template's NOCREATEDB
 login, which owns every object in it. ``CREATE DATABASE`` does not copy
-database-level privileges, so the template's ``datacl`` is replayed onto each
-clone and checked. Set ``BUTLERS_TEST_DB_TEMPLATES=0`` to migrate every
+database-level privileges or per-database role settings (``core_001`` sets each
+butler role's ``search_path`` with ``ALTER ROLE ... IN DATABASE``), so both are
+replayed onto each clone and checked. Set ``BUTLERS_TEST_DB_TEMPLATES=0`` to migrate every
 database from scratch instead.
 """
 
@@ -530,6 +531,43 @@ def _database_acl(conn: Connection, db_name: str) -> set[tuple[str, str, bool]]:
     return {(grantee, privilege, grantable) for grantee, privilege, grantable in rows}
 
 
+def _database_role_settings(conn: Connection, db_name: str) -> set[tuple[str, str]]:
+    """Each ``(role, name=value)`` stored for a database; every-role settings use ``""``."""
+    rows = conn.execute(
+        text(
+            "SELECT coalesce(r.rolname, ''), unnest(s.setconfig) "
+            "FROM pg_db_role_setting s JOIN pg_database d ON d.oid = s.setdatabase "
+            "LEFT JOIN pg_roles r ON r.oid = s.setrole WHERE d.datname = :name"
+        ),
+        {"name": db_name},
+    )
+    return {(role, setting) for role, setting in rows}
+
+
+def _replay_role_settings(conn: Connection, *, template: str, clone: str) -> None:
+    """Copy ``ALTER ROLE ... IN DATABASE`` / ``ALTER DATABASE ... SET`` onto *clone*."""
+    safe_clone = clone.replace('"', '""')
+    for role, setting in sorted(_database_role_settings(conn, template)):
+        name, _, value = setting.partition("=")
+        if not name.replace("_", "").replace(".", "").isalnum():
+            raise RuntimeError(f"unexpected database setting {setting!r} on {template}")
+        # search_path is stored as the list it was set to; other values are literals.
+        rendered = value if name == "search_path" else "'" + value.replace("'", "''") + "'"
+        target = (
+            f'DATABASE "{safe_clone}"'
+            if role == ""
+            else f'ROLE "{role.replace(chr(34), chr(34) * 2)}" IN DATABASE "{safe_clone}"'
+        )
+        conn.execute(text(f"ALTER {target} SET {name} = {rendered}"))
+    actual = _database_role_settings(conn, clone)
+    expected = _database_role_settings(conn, template)
+    if actual != expected:
+        raise RuntimeError(
+            f"clone {clone} role settings {sorted(actual)} differ from "
+            f"template {template} {sorted(expected)}"
+        )
+
+
 def _clone_template(postgres_container: object, template: _Template, db_name: str) -> str:
     """Create *db_name* as a copy of *template* with the same database privileges."""
     owner = urlparse(template.db_url).username or ""
@@ -554,6 +592,7 @@ def _clone_template(postgres_container: object, template: _Template, db_name: st
                     conn.execute(
                         text(f'GRANT {privilege} ON DATABASE "{safe_db}" TO {target}{option}')
                     )
+            _replay_role_settings(conn, template=template.name, clone=db_name)
             actual = _database_acl(conn, db_name)
             if actual != expected:
                 raise RuntimeError(
