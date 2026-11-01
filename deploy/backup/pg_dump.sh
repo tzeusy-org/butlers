@@ -103,6 +103,10 @@
 #         reconciliation is recorded, and a restore from this dump has no such
 #         row. The restore-time fence that closes that gap is owned by
 #         bu-mc01y5.7; until it lands, publication stays disabled (slice 1).
+#   - public.qa_publication_exports            retained sealed QA export bytes
+#         (core_294). Same forced-RLS fence as the ledger above. A restore comes
+#         back without retained exports, so an unpublished proposal from before
+#         the dump is recoverable only from the remote, never from this file.
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
@@ -166,7 +170,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations public.qa_publication_exports"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events public.captures public.capture_operations public.capture_service_control public.fleet_cases public.fleet_case_links"

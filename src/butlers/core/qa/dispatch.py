@@ -1410,6 +1410,8 @@ async def _run_investigation_session(
                 metrics=metrics,
                 elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
             )
+            # Teardown is safe for an unpublished proposal: the publisher retained the sealed
+            # export bytes outside agent control before its first egress (core_294).
             await _persist_notes_and_remove_worktree(
                 pool,
                 attempt_id,

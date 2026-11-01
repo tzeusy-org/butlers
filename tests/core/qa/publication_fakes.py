@@ -60,6 +60,15 @@ class FakeLedger:
 
     attempt_status: str = "investigating"
     rows: dict[tuple[uuid.UUID, str], PublicationOperation] = field(default_factory=dict)
+    exports: dict[uuid.UUID, SealedExport] = field(default_factory=dict)
+    retain_refusal: str | None = None
+
+    async def retain(self, attempt_id, export) -> None:
+        if self.retain_refusal is not None:
+            raise PublicationRefused(self.retain_refusal)
+        stored = self.exports.setdefault(attempt_id, export)
+        if stored.digest != export.digest:
+            raise PublicationRefused("export_changed")
 
     async def begin(self, *, attempt_id, kind, binding, request_digest, expected_object_id):
         key = (attempt_id, kind.value)

@@ -1,13 +1,13 @@
 """Persist value-free dashboard supervised-job health.
 
 Revision ID: core_295
-Revises: core_293 (published endpoint custody, following core_291).
+Revises: core_294 (published QA exports, following core_293).
 """
 
 from alembic import op
 
 revision = "core_295"
-down_revision = "core_293"
+down_revision = "core_294"
 branch_labels = None
 depends_on = None
 _LOCK = "butlers:core_295:dashboard-job-health"

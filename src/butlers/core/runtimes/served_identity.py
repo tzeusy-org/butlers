@@ -638,10 +638,21 @@ def api_evidence(response: Any, usage: dict | None, *, configured: object) -> di
 
 
 class TerminalResultError(RuntimeError):
-    """Exit zero with a failed terminal result; no raw provider error text."""
+    """A failed terminal result that still carries the attempt's usage and tool evidence.
 
-    def __init__(self, served: dict, usage: dict | None, tool_calls: list[dict]):
-        super().__init__("Runtime reported a failed terminal result")
+    Exit-zero failures carry no raw provider error text. A non-zero exit passes its
+    existing exit-detail ``message`` so failover classification sees the same text a
+    plain exit ``RuntimeError`` would have carried.
+    """
+
+    def __init__(
+        self,
+        served: dict,
+        usage: dict | None,
+        tool_calls: list[dict],
+        message: str = "Runtime reported a failed terminal result",
+    ):
+        super().__init__(message)
         self.served = bounded(served)
         self.usage = deepcopy(usage)
         self.tool_calls = deepcopy(tool_calls)

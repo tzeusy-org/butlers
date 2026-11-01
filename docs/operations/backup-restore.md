@@ -89,7 +89,8 @@ export and verifies the exact sole owner-conditional policy, refusing an extra,
 restrictive, PUBLIC or drifted policy rather than silently filtering rows.
 
 The job-health migration is `core_295`, directly after applied
-`core_293` (endpoint custody), following `core_291` (ambient projections) and
+`core_294` (QA exports), following `core_293` (endpoint custody),
+`core_291` (ambient projections) and
 `core_290` (serving evidence). Its number stays above the applied predecessor because shared core
 downgrades use numeric revision thresholds to retain public objects for other
 schema-local chains. The health tables and their rows/policies remain while
@@ -100,7 +101,7 @@ login for real full-chain replay, positively verifying the already finalized
 fixed authority interface instead of reinstalling it as bootstrap. The later
 replay after both genuine `core_287` downgrades uses bootstrap for both schemas,
 matching the public objects just recreated by that same bootstrap authority.
-An additional immediate `core_295` to `core_293` roundtrip checks first-schema
+An additional immediate `core_295` to `core_294` roundtrip checks first-schema
 retention and last-schema removal without replacing the older serving-evidence
 controls. No genuine older migration target is advanced.
 
@@ -150,6 +151,7 @@ plane by name:
 | `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
 | `public.runtime_probe_control_receipts` | Fenced runtime probe control receipts |
 | `public.qa_publication_operations` | Fenced QA publication operation control |
+| `public.qa_publication_exports` | Retained sealed QA export bytes (fenced like the ledger) |
 | `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing
