@@ -77,6 +77,62 @@ an older deployment and a first-ever run both look like, and neither is evidence
 that a backup ran. The QA infra-state patrol raises a failed run as its own
 finding (`BackupRunFailed`) on the night it happens.
 
+### Supervised-job health history
+
+`public.dashboard_job_health` and `public.dashboard_job_transitions` remain in
+the backup, including their bounded transition history. Their FORCE RLS policy
+allows only the configured ordinary migration/API identity. The ordinary
+`row_security=off` dump carries schema/owner/policy but omits direct table-data
+COPY; a separate hex-wrapped JSON block exports all rows under that exact owner
+in the same exported snapshot. The snapshot holder locks both relations through
+export and verifies the exact sole owner-conditional policy, refusing an extra,
+restrictive, PUBLIC or drifted policy rather than silently filtering rows.
+
+The job-health migration is `core_297`, directly after applied
+`core_296` (transitive custody holds), following `core_295` (custody hardening),
+`core_294` (QA exports),
+`core_293` (endpoint custody),
+`core_291` (ambient projections) and
+`core_290` (serving evidence). Its number stays above the applied predecessor because shared core
+downgrades use numeric revision thresholds to retain public objects for other
+schema-local chains. The health tables and their rows/policies remain while
+another schema is at `core_297` or later; only the last schema leaving that
+revision removes them. Upgrade and downgrade serialize on the same migration
+advisory lock. Native multi-schema fixtures first use the ordinary migration
+login for real full-chain replay, positively verifying the already finalized
+fixed authority interface instead of reinstalling it as bootstrap. The later
+replay after both genuine `core_287` downgrades uses bootstrap for both schemas,
+matching the public objects just recreated by that same bootstrap authority.
+An additional immediate `core_297` to `core_296` roundtrip checks first-schema
+retention and last-schema removal without replacing the older serving-evidence
+controls. No genuine older migration target is advanced.
+
+Genuine pre-health schemas (including `core_282` and `core_287`) may contain
+neither relation. Only a successful catalogue query in the exported snapshot
+that positively proves both names absent may omit the health-only projection
+and replay. An autocommit existence hint selects the lock path before BEGIN;
+it is not absence evidence. Installed relations are locked before the snapshot
+is established, and then require the same exact two-table policy proof. If a
+relation appears between an absent hint and snapshot establishment, the proof
+refuses publication. Partial installation, wrong kind/owner/policy, query error
+and missing or malformed proof never become absence. No historical migration
+target is advanced and no missing health table is created for a backup.
+
+Restore requires membership in the source table owner, switches only to that
+identity and inserts the parent current-state rows before transition children.
+It preserves UUIDs, counters, timestamps, nulls and reason codes without a PUBLIC
+read grant or wider runtime privilege. An unavailable source owner refuses
+populated replay; no empty history is certified as a recovered populated one.
+A new API process does not treat a restored prior process's success as current;
+existing process fencing and starting/unknown semantics remain mandatory.
+
+For snapshots containing Capture, ordinary health-history restore follows the
+public persistent-epoch protocol too: supply a fresh absolute
+`--capture-epoch-file` outside the database/repository and writable host storage
+for that file. Disposable native tests mount their own temporary host directory
+at `/capture-host`; they do not reuse the source/dumped epoch or bypass Capture
+recovery admission. A health-only replay does not waive that restore boundary.
+
 ### What the backup does not contain
 
 The dump runs as the shared `POSTGRES_USER` migration/runtime login. That login

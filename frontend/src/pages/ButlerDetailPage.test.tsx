@@ -63,6 +63,7 @@ vi.mock("@/hooks/use-contacts", () => ({
 
 vi.mock("@/hooks/use-system", () => ({
   useButlerHeartbeats: vi.fn(() => ({ data: null, isLoading: false, error: null })),
+  useBackgroundJobs: vi.fn(() => ({ data: undefined, isPending: true, isError: false, error: null })),
   useInstanceFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
   useDatabaseFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),
   useBackupFacts: vi.fn(() => ({ data: null, isLoading: false, error: null })),

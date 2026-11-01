@@ -104,6 +104,12 @@ together. Operators read it via `GET /api/dispatch/attempts` and
 - **THEN** the failed invocation SHALL use `outcome='resume_failure'` and SHALL carry its own token-usage evidence
 - **AND** that outcome SHALL NOT count as a same-tier failover slot or a model circuit-breaker failure
 
+#### Scenario: Usage limit on a provider resume exhausts the account instead of retrying cold
+- **WHEN** a provider-native resume attempt fails with a failover-eligible `usage_limit` classification
+- **THEN** the spawner SHALL NOT retry the same candidate cold or record `resume_failure`
+- **AND** it SHALL record `outcome='allowance_exhausted'`, mark the provider account exhausted, and
+  continue to the next admissible same-tier candidate
+
 #### Scenario: Failover suppressed by side effects
 - **WHEN** failover is suppressed because captured tool calls are present
 - **THEN** operator-visible provenance SHALL identify the failed `catalog_entry_id`,
@@ -215,6 +221,17 @@ config/MCP/empty-response buckets). No marker may appear in more than one bucket
   provider account exhausted until the stated reset, or the default window, without retrying
 - **AND** a usage-limit marker found only in the exception message or `error_detail` SHALL NOT
   mark the account, because both can carry the stdout transcript
+
+#### Scenario: Eligible usage limit requires trusted adapter evidence
+- **WHEN** a failover-eligible `RuntimeError` matches a usage-limit marker in its exception message
+  or, through the opt-in stderr gate, in `process_info["error_detail"]`
+- **AND** neither `process_info["terminal_error_text"]` nor `process_info["stderr"]` matches a
+  usage-limit marker
+- **THEN** the classifier SHALL return a reason prefixed `rate_limit_before_work`, not
+  `usage_limit`, so the spawner records `runtime_failure` and SHALL NOT mark the provider account
+  exhausted, because both texts can carry a pre-tool stdout transcript quoting "usage limit"
+- **AND** when a trusted source does match, the decision SHALL be `usage_limit` with its reset
+  window parsed from that trusted text
 
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)

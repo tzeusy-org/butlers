@@ -152,6 +152,8 @@ No local gate command matches CI's scope; check which command produced a number.
 - Skip counts are per scope (the `tests/` vs `tests/ roster/` gap is `tests/e2e`, not `roster/`).
   Exit 0 is the only acceptance criterion; no skip count is pass/fail.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
+  The CI lane groups pass `-rs`, so every skip reason (for example a real-PG node's
+  "Docker not available") appears in the group log; the group's junit evidence records it too.
 
 ## Removing or weakening tests
 

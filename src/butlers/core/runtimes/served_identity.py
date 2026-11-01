@@ -54,6 +54,11 @@ _GEMINI_ERROR_TYPES = {
     "FatalAuthenticationError": "provider_auth",
 }
 _STATES = {"observed", "partial", "unknown", "malformed", "truncated", "not_invoked"}
+# Exactly the public.model_served_usage evidence_state CHECK set (core_290). A projected
+# state outside it would fail the atomic attempt+usage insert and lose the attempt row.
+USAGE_EVIDENCE_STATES = frozenset(
+    {"observed", "partial", "cumulative_unknown", "unknown", "malformed", "truncated"}
+)
 _AUTHORITIES = {"provider_response", "cli_usage_breakdown", "configured_only", "unavailable"}
 _PROVENANCE = {"provider_response", "provider_or_request_fallback", "cli_reported_unproven"}
 _FINDINGS = {
@@ -452,7 +457,7 @@ def bounded(record: dict) -> dict:
                     in {"invocation", "conversation_cumulative", "unknown"}
                     else "unknown",
                     "evidence_state": model.get("evidence_state")
-                    if model.get("evidence_state") in _STATES | {"cumulative_unknown"}
+                    if model.get("evidence_state") in USAGE_EVIDENCE_STATES
                     else "unknown",
                 }
             )

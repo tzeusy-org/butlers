@@ -157,6 +157,13 @@ class CallSpec:
     """Runtime-failure relaunches allowed; ``None`` leaves only ``MAX_ATTEMPTS``."""
     caller: str = "model_call"
     """Label that prefixes this call's log lines."""
+    owner_cancelled: Callable[[], bool] | None = None
+    """Proof that a cancellation was an owner Stop of the attempt's own work.
+
+    Without it (or when it answers ``False``) a cancelled attempt is recorded ``suppressed``,
+    never ``owner_cancelled``. An owner Stop must cancel the attempt's inner work, not the
+    calling task: a direct cancel of the calling task is a drain/shutdown and wins.
+    """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -326,6 +333,20 @@ def _usage_evidence(spec: CallSpec, usage: Mapping[str, Any] | None) -> Dispatch
     )
 
 
+def _cancel_classification(spec: CallSpec) -> tuple[str, str]:
+    """Label a cancelled attempt as the spawner does (drain wins over an owner Stop).
+
+    ``Task.cancelling()`` counts ``.cancel()`` calls made against the calling task itself,
+    which is how a connector shutdown or daemon drain ends a call.
+    """
+    current = asyncio.current_task()
+    if current is not None and current.cancelling() > 0:
+        return "suppressed", "drain_cancelled"
+    if spec.owner_cancelled is not None and spec.owner_cancelled():
+        return "owner_cancelled", "owner_cancelled"
+    return "suppressed", "runtime_cancelled"
+
+
 async def call_model(
     pool: asyncpg.Pool,
     spec: CallSpec,
@@ -455,11 +476,13 @@ async def call_model(
         except asyncio.CancelledError:
             # Snapshot before the persistence await: the worker is ours alone, but the
             # recorder must see exactly what this invocation observed.
+            cancel_outcome, cancel_reason = _cancel_classification(spec)
             await sink.attempt(
                 catalog_entry_id=candidate.catalog_entry_id,
                 butler=spec.butler_name,
-                outcome="owner_cancelled",
+                outcome=cancel_outcome,
                 attempt_index=attempt_count - 1,
+                failure_reason=cancel_reason,
                 duration_ms=int((time.monotonic() - started) * 1000),
                 purpose_lane=spec.purpose_lane,
                 resolution_receipt=receipt,
