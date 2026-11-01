@@ -47,6 +47,7 @@ import os
 import re
 import signal
 import time
+import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.message import Message
@@ -1444,6 +1445,10 @@ class GmailConnectorRuntime:
         """
         rows_processed = 0
         rows_skipped = 0
+        # Switchboard adds each report's counters, so reports carry only the
+        # rows since the previous report (cost is reset to a delta likewise).
+        reported_processed = 0
+        reported_skipped = 0
         cost_spent_cents = 0
         progress_counter = 0
 
@@ -1607,12 +1612,13 @@ class GmailConnectorRuntime:
                         cursor_payload: dict[str, Any] | None = {"page_token": page_token or ""}
                         status = await self._report_backfill_progress(
                             job_id=job.job_id,
-                            rows_processed=rows_processed,
-                            rows_skipped=rows_skipped,
+                            rows_processed=rows_processed - reported_processed,
+                            rows_skipped=rows_skipped - reported_skipped,
                             cost_spent_cents=cost_spent_cents,
                             cursor=cursor_payload,
                         )
                         progress_counter = 0
+                        reported_processed, reported_skipped = rows_processed, rows_skipped
                         cost_spent_cents = 0  # reset delta after reporting
 
                         if status in ("paused", "cancelled", "cost_capped"):
@@ -1637,8 +1643,8 @@ class GmailConnectorRuntime:
             )
             await self._report_backfill_progress(
                 job_id=job.job_id,
-                rows_processed=rows_processed,
-                rows_skipped=rows_skipped,
+                rows_processed=rows_processed - reported_processed,
+                rows_skipped=rows_skipped - reported_skipped,
                 cost_spent_cents=cost_spent_cents,
                 cursor=None,
                 status="completed",
@@ -1655,8 +1661,8 @@ class GmailConnectorRuntime:
             try:
                 await self._report_backfill_progress(
                     job_id=job.job_id,
-                    rows_processed=rows_processed,
-                    rows_skipped=rows_skipped,
+                    rows_processed=rows_processed - reported_processed,
+                    rows_skipped=rows_skipped - reported_skipped,
                     cost_spent_cents=cost_spent_cents,
                     cursor={"page_token": page_token or ""},
                 )
@@ -1673,8 +1679,8 @@ class GmailConnectorRuntime:
             try:
                 await self._report_backfill_progress(
                     job_id=job.job_id,
-                    rows_processed=rows_processed,
-                    rows_skipped=rows_skipped,
+                    rows_processed=rows_processed - reported_processed,
+                    rows_skipped=rows_skipped - reported_skipped,
                     cost_spent_cents=cost_spent_cents,
                     cursor={"page_token": page_token or ""},
                     status="error",
@@ -1773,11 +1779,18 @@ class GmailConnectorRuntime:
         Returns the authoritative status from Switchboard ('ack', 'paused',
         'cancelled', 'cost_capped'). Connector must stop if status is not 'ack'.
 
+        Counters are per-report deltas. Each report carries a fresh
+        ``progress_token``; CachedMCPClient resends the same args after a
+        transport drop, so Switchboard applies a retried report only once.
+
         Per openspec/specs/connector-base-spec (backfill.progress) and docs/connectors/gmail.md,
         "Backfill".
         """
         args: dict[str, Any] = {
             "job_id": job_id,
+            "connector_type": self._config.connector_provider,
+            "endpoint_identity": self._config.connector_endpoint_identity,
+            "progress_token": uuid.uuid4().hex,
             "rows_processed": rows_processed,
             "rows_skipped": rows_skipped,
             "cost_spent_cents_delta": cost_spent_cents,
