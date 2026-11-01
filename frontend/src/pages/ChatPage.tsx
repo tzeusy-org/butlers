@@ -54,6 +54,7 @@ import {
 } from "@/hooks/use-conversations.ts";
 import { usePricingMap } from "@/hooks/use-pricing-map.ts";
 import { useConversationTurn } from "@/hooks/use-conversation-turn.ts";
+import { freshestConversation } from "@/hooks/use-conversation-metadata.ts";
 
 export default function ChatPage() {
   const { conversationId: routeConversationId } = useParams<{
@@ -223,10 +224,12 @@ export default function ChatPage() {
     if (activeConversationId) void refetchMessages();
   }
 
-  const activeConversation =
-    conversationDetail ??
-    recentConversations.find((c) => c.id === activeConversationId) ??
-    null;
+  // The fresher copy wins: a send reactivates an archived conversation, and
+  // the refreshed recent list reflects that before the identity lookup does.
+  const activeConversation = freshestConversation(
+    conversationDetail,
+    recentConversations.find((c) => c.id === activeConversationId),
+  );
 
   const visibleDispatchReceipt =
     streaming &&
