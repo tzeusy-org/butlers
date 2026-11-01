@@ -223,6 +223,32 @@ class TestCheckDegenerateToolLoop:
             f"Expected 'initial_tool' (the first call) NOT in message, got: {result!r}"
         )
 
+    @pytest.mark.parametrize(
+        ("threads", "expect_loop"),
+        [
+            # A subagent loops while its parent's calls interleave in the stream.
+            (["sub", None], True),
+            # Two parallel subagents each repeat a call under the threshold; the
+            # interleaved stream alone shows a threshold-long identical run.
+            (["sub-a", "sub-b"], False),
+        ],
+        ids=["subagent-loop-interleaved-with-parent", "parallel-subagents-under-threshold"],
+    )
+    def test_streaks_are_counted_per_subagent_thread(
+        self, threads: list[str | None], expect_loop: bool
+    ) -> None:
+        """Adjacency is judged within one ``parent_tool_use_id`` thread, not across them."""
+        threshold = _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD
+        calls = []
+        for _ in range(threshold if expect_loop else threshold // 2):
+            for thread in threads:
+                is_parent_noise = expect_loop and thread is None
+                call = _tool_call(f"parent_{len(calls)}" if is_parent_noise else "fetch")
+                if thread is not None:
+                    call["parent_tool_use_id"] = thread
+                calls.append(call)
+        assert (_check_degenerate_tool_loop(calls) is not None) is expect_loop
+
 
 # ---------------------------------------------------------------------------
 # _check_tool_call_budget — unit tests
