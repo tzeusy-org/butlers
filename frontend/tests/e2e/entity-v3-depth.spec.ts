@@ -717,8 +717,9 @@ test.describe("entity-v3: detail quick-refresh blocks", () => {
     await expect(page.getByTestId("sparkline-stick")).toHaveCount(90);
 
     // The full stream uses the same page -> hook -> client transport and keeps
-    // Chronicle activity alongside exact Relationship summaries.
-    await expect(page.getByText("Lunch with Alice")).toBeVisible();
+    // Chronicle activity alongside exact Relationship summaries. The same episode
+    // also appears as a Shared Chronicles door; that duplication is intentional.
+    await expect(page.locator("p", { hasText: "Lunch with Alice" })).toBeVisible();
     await expect(page.getByText("Coffee catch-up").first()).toBeVisible();
 
     // Core dates block + at least one row.
