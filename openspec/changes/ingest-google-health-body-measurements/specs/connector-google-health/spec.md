@@ -72,10 +72,10 @@ Scope: v1-mandatory
 
 #### Scenario: A repeatedly rejected envelope is quarantined with a receipt
 
-- **WHEN** the Switchboard replies refusing the same envelope (an ingest error status or an MCP tool error) on 5 consecutive submission attempts
+- **WHEN** the Switchboard replies refusing the same envelope with an ingest error status (its envelope-validation refusal) on 5 consecutive submission attempts
 - **THEN** the connector SHALL quarantine that envelope: it SHALL record a `connectors.filtered_events` row with `status="error"`, `filter_reason="poison_quarantine"` and the full envelope, which is the receipt an operator replays from
 - **AND** it SHALL count the quarantine on `connector_google_health_quarantined_envelopes_total` and treat the sample as consumed, so the rest of the window can commit
-- **AND** a transport failure (no reply from the Switchboard) SHALL NOT count toward quarantine and SHALL keep holding the checkpoint; a handled submission of that envelope resets its count
+- **AND** a submission exception (a transport failure, dropped session or MCP tool error, any of which may be transient) SHALL NOT count toward quarantine and SHALL keep holding the checkpoint; a handled submission of that envelope resets its count
 - **AND** the count is held in memory, so a restart can grant a poison envelope at most one further run of attempts
 
 #### Scenario: Persistent poll failures are alertable

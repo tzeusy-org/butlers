@@ -2316,9 +2316,10 @@ class GoogleHealthConnector:
         Submission errors land in the same buffer (status=error).
 
         Returns ``HANDLED`` for an accepted, queued or duplicate envelope or a recorded policy
-        drop. A refusal the Switchboard replied with (an error status, or an MCP tool error
-        surfaced as ``RuntimeError``) is ``REJECTED``; any other exception is a transport
-        ``FAILED``. Neither counts the sample as consumed; only rejections can quarantine it.
+        drop. An ingest reply with an error status (the Switchboard's envelope-validation
+        refusal) is ``REJECTED``; any exception, including an MCP tool error, is ``FAILED``
+        because it may be transient. Neither counts the sample as consumed; only rejections can
+        quarantine it.
         """
         source = envelope.get("source", {})
         event = envelope.get("event", {})
@@ -2411,9 +2412,9 @@ class GoogleHealthConnector:
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
                 record_error(str(exc))
-                # CachedMCPClient raises RuntimeError only for a tool-level error reply.
-                if isinstance(exc, RuntimeError):
-                    return SubmissionOutcome.REJECTED
+                # Never a rejection: fastmcp raises RuntimeError for dropped sessions, and the
+                # ingest tool raises for transient persistence failures. Only the explicit
+                # ``status: error`` reply (envelope validation) is a durable refusal.
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
