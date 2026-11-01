@@ -17,6 +17,14 @@ and connectors. `scripts/k8s/site-helm-args.sh` supplies its site-specific value
 from `BUTLERS_OTLP_ENDPOINT`; the checked-in `http://otel.invalid:4318` is a
 placeholder, not a usable collector.
 
+Connector `prometheus_client` metrics are pulled, not pushed. The chart's
+`connectorMetrics` block gives each connector with a `healthPort` a
+`metrics-proxy` sidecar that republishes only `GET /metrics` on pod port
+`metrics` (9464), with `k8s.grafana.com/*` and `prometheus.io/*` scrape
+annotations and an opt-in `PodMonitor` (`connectorMetrics.podMonitor.enabled`).
+The connector-alert rules below need one of those discovery paths enabled on the
+cluster scraper; see the [chart README](../../deploy/helm/butlers/README.md).
+
 Use the site's existing Grafana endpoint and access policy. Compose's
 The Compose `--observability` flag and its local Grafana settings do not configure the cluster LGTM
 stack. See [Kubernetes Deployment](kubernetes-deployment.md#deploy) for the
@@ -253,7 +261,8 @@ dashboard source so Grafana never mistakes the alert rule for a dashboard.
 `observability/grafana-alerting/connector-google-health.json` provisions one
 rule group, `butlers-connector-google-health`, over the connector's own
 `prometheus_client` metrics (scraped by the `connector-google-health` job in
-`observability/prometheus/prometheus.yml`). Each rule keeps the
+`observability/prometheus/prometheus.yml`, or in Kubernetes through the chart's
+`connectorMetrics` sidecar). Each rule keeps the
 `endpoint_identity` and `resource` labels, so Grafana raises one instance per
 account and resource:
 

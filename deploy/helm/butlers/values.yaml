@@ -171,6 +171,31 @@ connectorDefaults:
     requests: {cpu: 25m, memory: 192Mi}
     limits: {memory: 1Gi}
 
+# Cluster scraping of connector prometheus_client metrics. Connector health
+# servers bind 127.0.0.1 and also serve POST /reload, so each connector with a
+# healthPort gets a sidecar (scripts/connector_metrics_proxy.py) that republishes
+# only GET /metrics on the pod network as the named port `metrics`.
+connectorMetrics:
+  enabled: true
+  port: 9464
+  # Pod annotations for annotation-driven discovery: Grafana k8s-monitoring
+  # (k8s.grafana.com/*) and the prometheus.io/* convention.
+  annotations: true
+  # Prometheus Operator PodMonitor, for a cluster whose Prometheus/Alloy
+  # selects PodMonitors. `labels` must match its podMonitorSelector.
+  podMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+  # NetworkPolicy peers admitted to the metrics port on pods the chart already
+  # isolates (hostIngress.restrict covers connector-owntracks). Empty admits
+  # any source to that port only; set a namespaceSelector for the LGTM namespace
+  # to narrow it.
+  allowFrom: []
+  resources:
+    requests: {cpu: 5m, memory: 24Mi}
+    limits: {memory: 64Mi}
+
 # One Deployment per enabled connector.
 #   module:     python -m butlers.connectors.<module>
 #   logSubdir:  connectors/<logSubdir> under the shared logs volume

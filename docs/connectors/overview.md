@@ -50,6 +50,8 @@ Connectors submit envelopes via **MCP tool call** (`ingest`) to the Switchboard 
 
 The Switchboard responds with `202 Accepted` semantics: ingest is accepted for async processing, and the response includes a canonical request reference. Duplicate submissions for the same dedupe identity return the same canonical request reference and are treated as success, not error.
 
+Refusals are typed replies. An invalid envelope returns `status: "error"` with `retryable: false`; resubmitting it cannot succeed. So does a valid envelope the database deterministically refuses (SQLSTATE class 22 data, 23 integrity, 42, or any other non-transport error), so a connector logs it and moves on instead of holding its checkpoint on a poison envelope. Only a transport-class persistence failure (connection loss, timeout, serialization failure, deadlock, too many connections, admin shutdown; SQLSTATE classes 08, 40, 53, 57P, and 57014) returns `status: "transient_error"` with `retryable: true`, which `CachedMCPClient` raises as `TransientToolError` (a `ConnectionError`), so a connector holds its checkpoint and retries. A `RuntimeError` from the client is an unexpected tool error, not either refusal kind.
+
 ### Submission Flow
 
 ```

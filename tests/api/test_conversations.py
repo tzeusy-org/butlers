@@ -427,6 +427,22 @@ async def test_submit_to_switchboard_raises_on_deterministic_rejection():
         await _submit_to_switchboard("ghost", envelope, mcp_mgr=mgr)
 
 
+async def test_submit_to_switchboard_transient_persistence_failure_returns_none():
+    """A transient ingest reply is the retryable unreachable path, not a rejection."""
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {"status": "transient_error", "retryable": True, "error": "retry the submission"}
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi"
+    )
+
+    assert await _submit_to_switchboard("finance", envelope, mcp_mgr=mgr) is None
+
+
 # ---------------------------------------------------------------------------
 # conversations.py DB layer — conversation_reply_create / conversation_set_routed_butler
 # / message_find_reply_since (mocked pool; see tests/integration/test_conversation_reply_db.py

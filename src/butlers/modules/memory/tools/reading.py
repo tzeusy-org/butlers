@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
+from butlers.modules.memory.content_authority import catalog_attribution
 from butlers.modules.memory.tools._helpers import (
     _search,
     _serialize_row,
@@ -144,6 +145,9 @@ async def memory_catalog_search(
     """Search the shared memory catalog for cross-butler memory discovery.
 
     Delegates to _search.search_catalog() and serializes results for JSON output.
+    Each item carries ``content_authority`` and an ``attribution`` label (None
+    for owner/system content) so a non-owner fact is never read as the owner's
+    (REQ-module-memory-013).
 
     MCP callers supply ``read_policy`` loaded from DB-backed runtime config.
     """
@@ -156,7 +160,13 @@ async def memory_catalog_search(
         mode=mode,
         read_policy=read_policy,
     )
-    return [_serialize_row(r) for r in results]
+    return [
+        {
+            **_serialize_row(r),
+            "attribution": catalog_attribution(r.get("content_authority")),
+        }
+        for r in results
+    ]
 
 
 _PREDICATE_RESULT_COLUMNS = (

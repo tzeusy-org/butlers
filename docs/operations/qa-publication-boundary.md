@@ -116,7 +116,23 @@ The trusted dispatcher drives `butlers.core.qa.publication.state`:
 2. `mark_egress_started` is won by exactly one caller and is persisted before the provider call.
 3. `record_outcome` stores `succeeded`, `failed` or `ambiguous` (for example a lost response).
 4. `record_reconciliation` releases a hold only for an exact, read-only observation: `resource_found`
-   must name the bound `expected_object_id`, or `resource_absent` confirms nothing exists.
+   must name the bound `expected_object_id`, or `resource_absent` confirms nothing exists. A
+   `pr_create` binds no PR number before egress, so its `resource_found` adopts the observed PR
+   number instead (core_298).
+
+`butlers.core.qa.publication.reconcile.reconcile_operation` is the read-only reconciler. It takes the
+dispatcher-held binding (refused with `binding_mismatch` unless its digest matches the stored one) and
+a `PublicationReader`, whose protocol has only two reads: `read_ref` and `find_pull_requests`. For
+`branch_push`, the bound `qa/` branch at exactly the bound head is found and a missing branch is
+absent; any other head stays held (`unexpected_head`). For `pr_create`, the adoption rule is a
+head/base match: exactly one PR, open or closed, from the bound head branch onto the bound base is
+adopted, none is absent, and more than one stays held (`multiple_candidates`). `pr_update` and
+`pr_labels` bind no observable object and stay held (`unsupported_kind`). A reader error, a foreign
+reader origin or a lost ledger write also keeps the hold. A rerun of the publisher treats a
+`resource_found` reconciliation as success: it adopts the PR and continues to the labels, while a
+`resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create. No caller
+drives the reconciler yet: it needs a concrete read-only provider, which ships with the real GitHub
+provider.
 
 An operation in `egress_started` or `ambiguous` holds its fingerprint lineage. While it does, a fresh
 QA attempt is refused (`create_or_join_attempt(..., enforce_publication_hold=True)` raises
@@ -155,6 +171,12 @@ stage regression or same-order rewrite (for example `ambiguous` to `succeeded`),
 reconciled row, and any change to a frozen column: `id`, `attempt_id`, `kind`, `binding_digest`,
 `request_digest`, `expected_object_id` and `started_at`. It fires for every role. As for `core_266`, only the last schema to leave
 `core_267` removes the shared trigger, function and constraint.
+
+Migration `core_298` replaces that CHECK under the same name, keeping every `core_267` rule, and adds
+one adoption arm: a `pr_create` that bound no expected object and recorded no new object may reconcile
+`resource_found` naming a PR number, and its `new_object_id` must equal that number. The database
+checks the shape; the reconciler supplies the head/base proof. Only the last schema to leave
+`core_298` restores the `core_267` CHECK, `NOT VALID` while an adopted row exists.
 
 Migration `core_268` extends that guard without replacing it. `new_object_id` and `result` are
 set-once: the writer may fill either (NULL to a value) or repeat the same value, but a recorded value is

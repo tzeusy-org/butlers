@@ -68,11 +68,11 @@ from threading import Thread
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 from urllib.parse import urlparse
 
-from prometheus_client import Counter, Gauge, Histogram, generate_latest
+from prometheus_client import Counter, Gauge, Histogram
 
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.db_role import connector_setup_role
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.home_assistant_envelope import parse_time_fired
 from butlers.connectors.home_assistant_scrub import (
@@ -1629,8 +1629,8 @@ class HAConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics():
+            return prometheus_metrics_response()
 
         port = self._config.health_port
         try:

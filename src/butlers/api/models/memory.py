@@ -503,6 +503,8 @@ class MemoryCatalogSearchResult(BaseModel):
     importance: float | None = None
     retention_class: str | None = None
     sensitivity: str | None = None
+    content_authority: str | None = None
+    """Authority class of the source fact/rule (REQ-module-memory-013); NULL is unverified."""
     score: float | None = None
     """Relevance score: similarity (semantic), rank (keyword), or rrf_score (hybrid)."""
     graph_coverage: EntityGraphCoverage | None = None

@@ -62,7 +62,6 @@ if TYPE_CHECKING:
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
-from prometheus_client import REGISTRY, generate_latest
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from butlers.connectors.catalog import connector_descriptor
@@ -929,9 +928,9 @@ class GmailConnectorRuntime:
             return await self.get_health_status()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
+        async def metrics():
             """Prometheus metrics endpoint."""
-            return generate_latest(REGISTRY)
+            return prometheus_metrics_response()
 
         port = self._config.connector_health_port
         if port == 0:
@@ -939,7 +938,7 @@ class GmailConnectorRuntime:
             # health endpoint that nothing can discover.  Skip silently.
             return
 
-        from butlers.connectors.health_socket import make_health_socket
+        from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 
         sock = make_health_socket("127.0.0.1", port)
         config = uvicorn.Config(
@@ -4097,8 +4096,8 @@ class GmailConnectorManager:
             return self._get_multi_account_health()
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest(REGISTRY)
+        async def metrics():
+            return prometheus_metrics_response()
 
         @app.post("/reload")
         async def reload_accounts() -> dict[str, Any]:
@@ -4111,7 +4110,7 @@ class GmailConnectorManager:
                 self._main_loop.call_soon_threadsafe(self._reload_event.set)
             return {"status": "reload_triggered"}
 
-        from butlers.connectors.health_socket import make_health_socket
+        from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 
         port = self._process_config.connector_health_port
         sock = make_health_socket("127.0.0.1", port)

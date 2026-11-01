@@ -259,7 +259,11 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     from butlers.ingestion_bearer_scrub import scrub_message_text
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
-    from butlers.tools.switchboard.ingestion.ingest import ingest_v1
+    from butlers.tools.switchboard.ingestion.ingest import (
+        IngestPersistenceError,
+        IngestStoreRefusedError,
+        ingest_v1,
+    )
     from butlers.tools.switchboard.routing.route import route as _switchboard_route
 
     daemon = ctx.daemon
@@ -460,7 +464,15 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         payload: dict[str, Any],
         control: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Accept an ingest.v1 envelope from a connector."""
+        """Accept an ingest.v1 envelope from a connector.
+
+        Refusals are typed replies, never string-only tool errors: an invalid envelope,
+        or one the store deterministically refuses (data or integrity errors), returns
+        ``status="error"`` with ``retryable=False`` (resubmitting the same envelope cannot
+        succeed), and a transport-class persistence failure returns
+        ``status="transient_error"`` with ``retryable=True``. Any other raised error is
+        unexpected (bu-u5euwb.33).
+        """
         envelope: dict[str, Any] = {
             "schema_version": schema_version,
             "source": source,
@@ -473,7 +485,23 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
         try:
             result = await ingest_v1(pool, envelope, policy_evaluator=_global_policy_evaluator)
         except ValueError as exc:
-            return {"status": "error", "error": str(exc)}
+            return {"status": "error", "retryable": False, "error": str(exc)}
+        except IngestPersistenceError:
+            # Fixed text: the driver's message can quote bound envelope values, and
+            # connectors re-log the reply. ingest_v1 already logged the cause.
+            return {
+                "status": "transient_error",
+                "retryable": True,
+                "error": "Switchboard could not persist the envelope; retry the submission",
+            }
+        except IngestStoreRefusedError:
+            # Same fixed-text rule. Non-retryable so connectors log and move on instead
+            # of holding their checkpoint on a poison envelope.
+            return {
+                "status": "error",
+                "retryable": False,
+                "error": "Switchboard refused to store the envelope; resubmitting cannot succeed",
+            }
 
         # Propagate control.addressed into source dict so it flows
         # through the buffer/pipeline into the route request_context.
