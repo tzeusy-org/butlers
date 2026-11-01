@@ -4069,6 +4069,54 @@
       "excerpt": "- **AND** cancels background tasks (scheduler, heartbeat, liveness) in reverse startup order",
       "kind": "clause",
       "scenario": "Graceful shutdown"
+    },
+    {
+      "digest": "df3eaf99c7de",
+      "excerpt": "A butler SHALL be a long-lived MCP server daemon backed by a dedicated PostgreSQL schema. When triggered, it SHALL sp...",
+      "kind": "prose",
+      "scenario": null
+    },
+    {
+      "digest": "3cfc71aea9df",
+      "excerpt": "- **AND** each incoming MCP connection is wrapped with a session guard that binds a runtime session context",
+      "kind": "clause",
+      "scenario": "Butler as MCP server"
+    },
+    {
+      "digest": "0d335ed03c45",
+      "excerpt": "- **WHEN** a trigger arrives (scheduled task, routed message, manual trigger)",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "58ee59ab3cee",
+      "excerpt": "- **THEN** the spawner generates an ephemeral MCP config pointing exclusively to the butler's own MCP server",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "74ae978b6309",
+      "excerpt": "- **AND** it composes a system prompt from `roster/{butler-name}/CLAUDE.md`, optionally appending memory context",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "3d34603f196f",
+      "excerpt": "- **AND** it invokes an LLM CLI runtime (Claude Code, Codex, or Gemini) as a subprocess with the MCP config and syste...",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "17dee3f751ae",
+      "excerpt": "- **AND** the runtime session is short-lived — it runs, calls tools, and exits",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
+    },
+    {
+      "digest": "db2b7c913262",
+      "excerpt": "- **AND** the session is logged with prompt, output, success/error, token counts, cost, tool calls, duration, and tra...",
+      "kind": "clause",
+      "scenario": "Ephemeral LLM CLI sessions"
     }
   ],
   "restore-butler-control-plane-liveness/butler-base-spec/Instance Facts Internal Interface": [
@@ -4095,6 +4143,18 @@
       "excerpt": "- **AND** if the heartbeat task fails, the butler logs the failure but does not shut down -- liveness degradation is ...",
       "kind": "clause",
       "scenario": "Heartbeat registration is kept current"
+    },
+    {
+      "digest": "70b04fe9f3ec",
+      "excerpt": "- **AND** this row is the source of truth for `last_session_at` in the System page heartbeat endpoint",
+      "kind": "clause",
+      "scenario": "Session completion updates the per-butler session record"
+    },
+    {
+      "digest": "944ca823536f",
+      "excerpt": "- **WHEN** the System page queries active sessions for a butler",
+      "kind": "clause",
+      "scenario": "Active session count is derivable from the sessions table"
     }
   ],
   "restore-butler-control-plane-liveness/butler-base-spec/Staffers vs Domain Butlers": [
@@ -4103,6 +4163,18 @@
       "excerpt": "- **AND** it launches a heartbeat task and liveness reporter to maintain its registration",
       "kind": "clause",
       "scenario": "Domain butlers (extensible roster)"
+    },
+    {
+      "digest": "1dda708923c7",
+      "excerpt": "- **THEN** the Switchboard staffer (port 41100) must be present as the sole entry point for all inbound messages",
+      "kind": "clause",
+      "scenario": "Staffer — Switchboard"
+    },
+    {
+      "digest": "8991c6ec248b",
+      "excerpt": "- **AND** it classifies incoming messages and routes them to the appropriate domain butler (never to other staffers f...",
+      "kind": "clause",
+      "scenario": "Staffer — Switchboard"
     }
   ],
   "restore-butler-control-plane-liveness/dashboard-butler-management/Butler List Page": [

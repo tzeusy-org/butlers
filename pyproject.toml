@@ -77,6 +77,7 @@ dev = [
     "pytest-timeout>=2.4.0",
     "import-linter>=2.15",
     "pytest-split>=0.11.0",
+    "pyright==1.1.414",
 ]
 
 [project.scripts]
@@ -257,3 +258,14 @@ type = "forbidden"
 source_modules = ["butlers.modules"]
 forbidden_modules = ["butlers.core.spawner"]
 allow_indirect_imports = true
+
+[tool.pyright]
+# No whole-file retirement or generated-Python exclusion has been established.
+# Historical mixed RFC0038 paths and their surviving successors stay checked.
+typeCheckingMode = "basic"
+include = ["src", "roster"]
+exclude = []
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+extraPaths = ["src"]

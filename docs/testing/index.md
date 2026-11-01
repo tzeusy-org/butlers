@@ -29,3 +29,5 @@ Unit and integration are **marker selections**, not directories: both span `test
 (the CI selections are `CI_UNIT_PYTEST_ARGS` and `CI_INTEGRATION_PYTEST_ARGS` in the `Makefile`).
 `pyproject.toml` defaults pytest to `-n 3 --dist loadfile`; E2E must override it with `-n 0`. The
 exact agent test ladder and CI-shaped final commands are in [CI and test scope policy](ci.md).
+
+Python typing: [`make typecheck` and its shrinking baseline](typechecking.md).

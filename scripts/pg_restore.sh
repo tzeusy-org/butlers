@@ -476,6 +476,80 @@ if [[ "$ATTENTION_INTACT" != "t" ]]; then
  exit 1
 fi
 
+# Fleet has two artifact shapes: old ordinary evidence COPY (parents excluded),
+# and complete three-table scoped history. Counts are from fixed COPY headers,
+# never from an observed target catalogue promoted to recovery authority.
+FLEET_METADATA=$(gunzip -c "$BACKUP_FILE" | awk '
+ /^CREATE TABLE public\.fleet_cases \(/ { dc=1 }
+ /^CREATE TABLE public\.fleet_case_evidence \(/ { de=1 }
+ /^CREATE TABLE public\.fleet_case_links \(/ { dl=1 }
+ /^COPY public\.fleet_case_evidence \(.*\) FROM stdin;$/ { copies++; ordinary=1; next }
+ /^COPY butlers_fleet_restore_rows \(ordinal,relation_name,payload_hex\) FROM stdin;$/ { stages++; staged=1; next }
+ (ordinary || staged) && $0=="\\." { ordinary=0; staged=0; next }
+ ordinary { evidence++ }
+ staged {
+   n=split($0,a,"\t");
+   if(n!=3 || a[3]!~/^[0-9a-f]+$/ || length(a[3])%2) bad++;
+   if(a[1]==1 && a[2]=="fleet_cases") cases++;
+   else if(a[1]==2 && a[2]=="fleet_case_evidence") evidence++;
+   else if(a[1]==3 && a[2]=="fleet_case_links") links++;
+   else bad++;
+ }
+ END { if(ordinary || staged || stages>1 || copies>1 || (stages && copies)) bad++;
+       print dc+0,de+0,dl+0,cases+0,evidence+0,links+0,stages+0,bad+0 }')
+read -r FDC FDE FDL FCR FER FLR FST FBAD <<< "$FLEET_METADATA"
+if [[ "$FBAD" != "0" ]]; then
+  echo "[restore] ERROR: unsupported Fleet dump framing; do NOT promote." >&2
+  exit 1
+fi
+PGPASSWORD="$PG_PASSWORD" psql \
+ --host="$PG_HOST" --port="$PG_PORT" --username="$PG_USER" --dbname="$TARGET_DB" \
+ --no-password --no-align --tuples-only --set=ON_ERROR_STOP=1 --quiet -c "
+DO \$fleet_integrity\$
+DECLARE item record; actual bigint; parent regclass; child regclass;
+BEGIN
+ parent:=to_regclass('public.fleet_cases');
+ IF parent IS NULL OR to_regclass('public.fleet_case_evidence') IS NULL
+     OR to_regclass('public.fleet_case_links') IS NULL THEN
+   -- Authentic old zero-history dumps contain only the evidence relation.
+   -- This is legacy compatibility, NOT complete Fleet recovery/serving proof.
+   IF $FDC<>0 OR $FDL<>0 OR $FST<>0 OR $FCR<>0 OR $FER<>0 OR $FLR<>0
+      OR parent IS NOT NULL OR to_regclass('public.fleet_case_links') IS NOT NULL
+      OR ($FDE=1 AND to_regclass('public.fleet_case_evidence') IS NULL) THEN
+     RAISE EXCEPTION 'Fleet history requires its complete relation family';
+   END IF;
+   IF to_regclass('public.fleet_case_evidence') IS NOT NULL THEN
+     SELECT count(*) INTO actual FROM public.fleet_case_evidence;
+     IF actual<>0 THEN RAISE EXCEPTION 'orphan Fleet evidence cannot be certified'; END IF;
+   END IF;
+   RETURN;
+ END IF;
+ IF $FDC<>1 OR $FDE<>1 OR $FDL<>1 OR $FST<>1 THEN
+   RAISE EXCEPTION 'Fleet target is not the declared complete history artifact';
+ END IF;
+ FOR item IN SELECT * FROM (VALUES
+    ('fleet_cases',$FCR),('fleet_case_evidence',$FER),('fleet_case_links',$FLR)
+ ) AS t(relation,expected_rows) LOOP
+   EXECUTE format('SELECT count(*) FROM public.%I',item.relation) INTO actual;
+   IF actual<>item.expected_rows THEN RAISE EXCEPTION 'Fleet dump population differs'; END IF;
+ END LOOP;
+ FOR item IN SELECT unnest(ARRAY['fleet_case_evidence','fleet_case_links']) AS relation LOOP
+   child:=to_regclass('public.'||item.relation);
+   IF NOT EXISTS(SELECT FROM pg_constraint f
+      WHERE f.conrelid=child AND f.conname=item.relation||'_case_id_fkey'
+       AND f.contype='f' AND f.confrelid=parent AND f.convalidated
+       AND NOT f.condeferrable AND f.confdeltype='c'
+       AND f.conkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=child AND attname='case_id')]
+       AND f.confkey=ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid=parent AND attname='id')]
+       AND 4=(SELECT count(*) FROM pg_trigger t WHERE t.tgconstraint=f.oid)
+       AND NOT EXISTS(SELECT FROM pg_trigger t WHERE t.tgconstraint=f.oid AND t.tgenabled NOT IN ('O','A'))
+   ) THEN RAISE EXCEPTION 'Fleet foreign key is missing, unvalidated or disabled'; END IF;
+   EXECUTE format('SELECT count(*) FROM public.%I child LEFT JOIN public.fleet_cases parent '
+                  'ON parent.id=child.case_id WHERE parent.id IS NULL',item.relation) INTO actual;
+   IF actual<>0 THEN RAISE EXCEPTION 'orphan Fleet history cannot be certified'; END IF;
+ END LOOP;
+END \$fleet_integrity\$;"
+
 echo "[restore] done — '${TARGET_DB}' is populated"
 echo ""
 echo "Next step: verify integrity with:"
