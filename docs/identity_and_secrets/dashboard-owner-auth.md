@@ -298,8 +298,10 @@ an unknown or revoked grant is 404. Revoke with `DELETE /api/projections/{id}`;
 revoking every grant is the rollback. A surface that misses two expected fetch
 intervals shows up as one low-severity "last fetched ... ago" item in the
 briefing's attention model until it fetches again; the item is derived on read,
-so nothing is written or scheduled. Contract: `ambient-projections`
-(REQ-ambient-projections-001 to -004).
+so nothing is written or scheduled. `?format=text` and `?format=png` render the
+same glance for dumb panels; wiring and a Home Assistant package live in
+[Ambient Projections](../operations/ambient-projections-home-assistant.md).
+Contract: `ambient-projections` (REQ-ambient-projections-001 to -005).
 
 ## Failure, restore and rollback
 
