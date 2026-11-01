@@ -113,12 +113,14 @@ The trusted dispatcher drives `butlers.core.qa.publication.state`:
    binding returns the existing row (the caller egresses only from `bound`); a changed binding or
    payload is refused with `binding_changed` or `payload_changed` and the stored row is not touched.
    A datastore failure raises `PublicationRefused("datastore_unavailable")`: publication fails closed.
-2. `mark_egress_started` is won by exactly one caller and is persisted before the provider call.
+2. `mark_egress_started` is won by exactly one caller and is persisted before the provider call. It
+   stamps `egress_started_at` with database time (core_300); `started_at` is the bind time.
 3. `record_outcome` stores `succeeded`, `failed` or `ambiguous` (for example a lost response).
 4. `record_reconciliation` releases a hold only for an exact, read-only observation: `resource_found`
    must name the bound `expected_object_id`, or `resource_absent` confirms nothing exists. A
    `pr_create` binds no PR number before egress, so its `resource_found` adopts the observed PR
-   number instead (core_298).
+   number instead (core_298). It also takes the stage the caller observed (`expected_stage`): an
+   outcome recorded between the read and the write moves the row off that stage, and the outcome wins.
 
 `butlers.core.qa.publication.reconcile.reconcile_operation` is the read-only reconciler. It takes the
 dispatcher-held binding (refused with `binding_mismatch` unless its digest matches the stored one) and
@@ -132,16 +134,22 @@ reader origin or a lost ledger write also keeps the hold. A rerun of the publish
 `resource_found` reconciliation as success: it adopts the PR and continues to the labels, while a
 `resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create. Absence
 is believed only once it has settled: a `resource_absent` observation stays held (`absence_settling`)
-until the operation's last ledger write (`ended_at`, else `started_at`) is at least `ABSENCE_SETTLE`
-(15 minutes) old, so a create or push that timed out but still lands cannot free the lineage and let a
-fresh attempt open a duplicate PR.
+until the operation's outcome (`ended_at`) or, while still in flight, its egress (`egress_started_at`)
+is at least `ABSENCE_SETTLE` (15 minutes) old, so a create or push that timed out but still lands
+cannot free the lineage and let a fresh attempt open a duplicate PR. The bind time never counts: a bind
+resumed long after it was written egresses fresh. A row with neither timestamp never settles
+(`absence_unanchored`). The reconciler's own clock is only a pre-filter; `record_reconciliation`
+enforces the settle against database `now()` inside its guarded UPDATE, so a skewed host clock cannot
+release a hold (`not_recorded`).
 
 `butlers.core.qa.publication.github_reader.GithubPublicationReader` is the concrete reader. It is
 fixed to one `owner/name` origin, sends only `GET`s, never follows a redirect, and raises
 `PublicationReadError` (closed code, no provider text) on anything it cannot prove, which keeps the
 hold. A ref 404 counts as absent only after `GET /repos/{origin}` answers with the origin's own name
 (GitHub also answers 404 for a repository the token cannot see), and every PR it lists must run from
-the bound head branch in the origin onto the bound base in the origin.
+the bound head branch in the origin onto the bound base in the origin. It ignores environment proxy,
+netrc and CA settings (`trust_env=False`), and streams every body under a 2 MiB cap (checked against
+`Content-Length` first), raising `response_too_large` past it.
 
 `reconcile.sweep_held_operations` is the batch entry point. It visits held `branch_push` and
 `pr_create` operations oldest first and rebuilds each binding from dispatcher records: the reader's
@@ -212,6 +220,14 @@ the hold predicate's stages (`egress_started`, `ambiguous`), including from a pr
 any other stage can still be deleted by a role that can reach them. Only the last schema to leave
 `core_268` removes the delete trigger, its function and the CHECK, and restores the `core_267` guard
 body.
+
+Migration `core_300` adds `egress_started_at` and extends the guard again, keeping every earlier rule.
+A row leaving `bound` without the stamp gets database time (so a writer that predates the column still
+anchors the settle), and the stamp is set-once afterwards. A CHECK
+(`ck_qa_publication_operations_stage_stamp`) keeps it NULL on a `bound` row. Rows already in
+`egress_started` are backfilled with the migration's time, the latest moment their egress can have
+begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
+guard body.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
 restore therefore comes back without holds; the restore-time fence is owned by bu-mc01y5.7 and

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import uuid
+from datetime import timedelta
 
 import asyncpg
 import pytest
@@ -17,6 +18,7 @@ import pytest
 from butlers.core.healing.tracking import get_publication_hold
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
 from butlers.core.qa.publication.state import (
+    ABSENCE_SETTLE,
     PublicationRefused,
     begin_operation,
     mark_egress_started,
@@ -322,3 +324,115 @@ async def test_sweep_adopts_the_only_pr_for_a_lost_pr_create(pool, attempt) -> N
         operation.id,
     )
     assert tuple(row) == ("reconciled", "resource_found", "17")
+
+
+# --- core_300: absence settles from egress, judged by database time in the write ---
+
+
+async def _insert_backdated_operation(
+    postgres_container, migrated_db_url: str, attempt_id: uuid.UUID, *, stage_sql: str
+) -> uuid.UUID:
+    """Insert a ``pr_create`` row with backdated timestamps.
+
+    The container's privileged login bypasses row security, and the guard only
+    fires on UPDATE, so this is the one way to make a row look old.
+    """
+    from butlers.testing.migration import migration_bootstrap_db_url
+
+    operation_id = uuid.uuid4()
+    connection = await asyncpg.connect(
+        migration_bootstrap_db_url(postgres_container, migrated_db_url.rsplit("/", 1)[1])
+    )
+    try:
+        await connection.execute(
+            f"""
+            INSERT INTO public.qa_publication_operations
+                (id, attempt_id, kind, binding_digest, request_digest,
+                 stage, stage_order, started_at, egress_started_at)
+            VALUES ($1, $2, 'pr_create', $3, $4, {stage_sql})
+            """,
+            operation_id,
+            attempt_id,
+            "a" * 64,
+            _PAYLOAD,
+        )
+    finally:
+        await connection.close()
+    return operation_id
+
+
+async def test_resumed_late_egress_stays_held_while_in_flight(
+    pool, attempt, postgres_container, migrated_db_url
+) -> None:
+    """Bound an hour ago, egress resumed now: the bind time must not settle the absence."""
+    attempt_id, fingerprint = attempt
+    operation_id = await _insert_backdated_operation(
+        postgres_container,
+        migrated_db_url,
+        attempt_id,
+        stage_sql="'bound', 1, now() - interval '1 hour', NULL",
+    )
+    assert await mark_egress_started(pool, operation_id)
+    started_at, egress_started_at, db_now = await pool.fetchrow(
+        "SELECT started_at, egress_started_at, now() FROM public.qa_publication_operations "
+        "WHERE id = $1",
+        operation_id,
+    )
+    assert db_now - started_at > ABSENCE_SETTLE  # settled by the bind-time rule
+    assert db_now - egress_started_at < ABSENCE_SETTLE  # egress just began
+
+    assert not await record_reconciliation(
+        pool, operation_id, "resource_absent", expected_stage="egress_started"
+    )
+    assert not await record_reconciliation(pool, operation_id, "resource_absent")
+
+    assert await get_publication_hold(pool, fingerprint)
+    assert (
+        await pool.fetchval(
+            "SELECT stage FROM public.qa_publication_operations WHERE id = $1", operation_id
+        )
+        == "egress_started"
+    )
+
+
+async def test_outcome_recorded_between_read_and_write_is_not_overwritten(
+    pool, attempt, postgres_container, migrated_db_url
+) -> None:
+    """The sweep read ``egress_started`` (long settled); the dispatcher then records ``ambiguous``."""
+    attempt_id, fingerprint = attempt
+    old = "now() - interval '1 hour'"
+    operation_id = await _insert_backdated_operation(
+        postgres_container,
+        migrated_db_url,
+        attempt_id,
+        stage_sql=f"'egress_started', 2, {old}, {old}",
+    )
+    assert await record_outcome(pool, operation_id, "ambiguous")
+
+    # Stage guard alone: the observed stage is gone even with no settle required.
+    assert not await record_reconciliation(
+        pool,
+        operation_id,
+        "resource_absent",
+        expected_stage="egress_started",
+        absence_settle=timedelta(0),
+    )
+    # Settle alone: the fresh ended_at is what counts, not the old egress stamp.
+    assert not await record_reconciliation(pool, operation_id, "resource_absent")
+
+    row = await pool.fetchrow(
+        "SELECT stage, result, reconciliation FROM public.qa_publication_operations WHERE id = $1",
+        operation_id,
+    )
+    assert tuple(row) == ("ambiguous", "ambiguous", None)
+    assert await get_publication_hold(pool, fingerprint)
+
+    # Control: a reconciler that observed the outcome may record once it has settled.
+    assert await record_reconciliation(
+        pool,
+        operation_id,
+        "resource_absent",
+        expected_stage="ambiguous",
+        absence_settle=timedelta(0),
+    )
+    assert not await get_publication_hold(pool, fingerprint)

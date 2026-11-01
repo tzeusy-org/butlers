@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -76,6 +77,8 @@ class FakeLedger:
     rows: dict[tuple[uuid.UUID, str], PublicationOperation] = field(default_factory=dict)
     exports: dict[uuid.UUID, SealedExport] = field(default_factory=dict)
     retain_refusal: str | None = None
+    #: Stands in for database ``now()``: stamps egress/outcome and judges the settle.
+    clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
     async def retain(self, attempt_id, export) -> None:
         if self.retain_refusal is not None:
@@ -99,7 +102,8 @@ class FakeLedger:
                 new_object_id=None,
                 result=None,
                 reconciliation=None,
-                started_at=datetime.now(UTC),
+                started_at=self.clock(),
+                egress_started_at=None,
                 ended_at=None,
                 reconciled_at=None,
             )
@@ -125,21 +129,29 @@ class FakeLedger:
             raise PublicationRefused("attempt_not_active")
         if self._get(operation_id).stage != "bound":
             return False
-        return self._replace(operation_id, stage="egress_started")
+        return self._replace(operation_id, stage="egress_started", egress_started_at=self.clock())
 
     async def record(self, operation_id, outcome, *, new_object_id) -> bool:
         if self._get(operation_id).stage != "egress_started":
             return False
-        return self._replace(operation_id, stage=outcome, new_object_id=new_object_id)
+        return self._replace(
+            operation_id, stage=outcome, new_object_id=new_object_id, ended_at=self.clock()
+        )
 
     async def get(self, attempt_id, kind) -> PublicationOperation | None:
         return self.rows.get((attempt_id, kind.value))
 
-    async def reconcile(self, operation_id, observation, *, observed_object_id) -> bool:
+    async def reconcile(
+        self, operation_id, observation, *, observed_object_id, expected_stage, absence_settle
+    ) -> bool:
         """Mirror ``state.record_reconciliation`` and the core_298 adoption CHECK."""
         row = self._get(operation_id)
-        if not row.holds_lineage:
+        if not row.holds_lineage or row.stage != expected_stage:
             return False
+        if observation == "resource_absent":
+            anchor = row.ended_at or row.egress_started_at
+            if anchor is None or anchor > self.clock() - absence_settle:
+                return False
         exact = observed_object_id is not None and observed_object_id == row.expected_object_id
         adopted = (
             row.kind == "pr_create"

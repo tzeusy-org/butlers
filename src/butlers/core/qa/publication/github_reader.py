@@ -16,6 +16,11 @@ reconciler keeps the hold on any error:
   the bound base in this repository.  Anything else means the filter did not
   hold and the listing proves nothing.
 
+Every response body is streamed under :data:`_MAX_RESPONSE_BYTES` (checked
+against ``Content-Length`` first when present); a larger one raises
+``response_too_large`` before it is buffered, so a misbehaving endpoint cannot
+make the operator script hold arbitrary memory.
+
 The token is supplied by the caller from existing secret plumbing and is only
 ever placed in the ``Authorization`` header.  Errors carry a closed, content-free
 ``code`` and suppress the underlying exception, whose text can echo the URL or
@@ -24,6 +29,7 @@ provider content.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, TypeGuard
 from urllib.parse import quote
@@ -34,6 +40,8 @@ _GITHUB_API_BASE = "https://api.github.com"
 _REQUEST_TIMEOUT_SECONDS = 10.0
 _PAGE_SIZE = 100
 _MAX_PAGES = 10
+#: A full page of 100 PR objects is a few hundred KiB; anything past this is refused.
+_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -79,19 +87,24 @@ class GithubPublicationReader:
         # Injectable for tests (httpx.MockTransport); production uses the default.
         self._transport = transport
 
+    def _client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self._base_url,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+            follow_redirects=False,
+            # No proxy, netrc or CA overrides from the environment: the token
+            # goes only to the fixed API origin over the default trust store.
+            trust_env=False,
+            transport=self._transport,
+        )
+
     async def _get(self, path: str, params: dict[str, str] | None = None) -> tuple[int, Any]:
         """GET ``path``; return ``(status, json)`` for 200 or 404 and raise for anything else."""
         try:
-            async with httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=_REQUEST_TIMEOUT_SECONDS,
-                follow_redirects=False,
-                # No proxy, netrc or CA overrides from the environment: the token
-                # goes only to the fixed API origin over the default trust store.
-                trust_env=False,
-                transport=self._transport,
-            ) as client:
-                response = await client.get(
+            async with (
+                self._client() as client,
+                client.stream(
+                    "GET",
                     path,
                     params=params,
                     headers={
@@ -99,17 +112,19 @@ class GithubPublicationReader:
                         "Authorization": f"Bearer {self._token}",
                         "X-GitHub-Api-Version": "2022-11-28",
                     },
-                )
+                ) as response,
+            ):
+                if response.status_code == 404:
+                    return 404, None
+                if response.status_code in (403, 429):
+                    raise PublicationReadError("rate_limited_or_forbidden")
+                if response.status_code != 200:
+                    raise PublicationReadError("unexpected_status")
+                body = await _read_capped(response)
         except httpx.HTTPError:
             raise PublicationReadError("transport_error") from None
-        if response.status_code == 404:
-            return 404, None
-        if response.status_code in (403, 429):
-            raise PublicationReadError("rate_limited_or_forbidden")
-        if response.status_code != 200:
-            raise PublicationReadError("unexpected_status")
         try:
-            return 200, response.json()
+            return 200, json.loads(body)
         except ValueError:
             raise PublicationReadError("invalid_response") from None
 
@@ -181,3 +196,19 @@ class GithubPublicationReader:
         ):
             raise PublicationReadError("unexpected_pull_request")
         return number
+
+
+async def _read_capped(response: httpx.Response) -> bytes:
+    """The decoded body, refused with ``response_too_large`` past :data:`_MAX_RESPONSE_BYTES`."""
+    declared = response.headers.get("content-length")
+    if declared is not None:
+        if not declared.isdigit():
+            raise PublicationReadError("invalid_response")
+        if int(declared) > _MAX_RESPONSE_BYTES:
+            raise PublicationReadError("response_too_large")
+    body = bytearray()
+    async for chunk in response.aiter_bytes():
+        body += chunk
+        if len(body) > _MAX_RESPONSE_BYTES:
+            raise PublicationReadError("response_too_large")
+    return bytes(body)

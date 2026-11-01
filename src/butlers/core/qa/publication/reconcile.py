@@ -18,9 +18,14 @@ remote resource, and any doubt leaves the hold in place:
 
 Absence is trusted only once it has settled: a create or push that timed out
 can still land remotely, so a ``resource_absent`` observation is recorded only
-when the operation's last ledger timestamp is at least :data:`ABSENCE_SETTLE`
-old.  Otherwise a late-landing PR would arrive after its lineage was freed and a
-fresh attempt could open a duplicate.
+when the operation's outcome (``ended_at``) or, while still in flight, its egress
+(``egress_started_at``) is at least :data:`ABSENCE_SETTLE` old.  Otherwise a
+late-landing PR would arrive after its lineage was freed and a fresh attempt
+could open a duplicate.  The bind time (``started_at``) never counts: a resumed
+bind can egress long after it.  The database enforces the settle with its own
+clock inside the guarded write and requires the row to still be at the stage
+this module observed, so an outcome recorded mid-sweep wins; the check here is
+only a cheap pre-filter.
 
 :func:`sweep_held_operations` is the batch entry point: it rebuilds each held
 ``branch_push``/``pr_create`` binding from the dispatcher's own records (the
@@ -51,17 +56,17 @@ from butlers.core.qa.publication.binding import (
     OperationKind,
     PublicationBinding,
 )
-from butlers.core.qa.publication.state import Observation, PublicationOperation, PublicationRefused
+from butlers.core.qa.publication.state import (
+    ABSENCE_SETTLE,
+    Observation,
+    PublicationOperation,
+    PublicationRefused,
+)
 
 logger = logging.getLogger(__name__)
 
 _QA_BRANCH_PREFIX = "qa/"
 _DATASTORE_ERRORS = (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError)
-
-#: How long an operation's last ledger write must be in the past before an absent
-#: resource is believed.  It must exceed the longest a provider call can stay in
-#: flight (client timeout plus GitHub's own processing of an accepted request).
-ABSENCE_SETTLE = timedelta(minutes=15)
 
 
 def _utcnow() -> datetime:
@@ -95,6 +100,8 @@ class ReconciliationLedger(Protocol):
         observation: Observation,
         *,
         observed_object_id: str | None,
+        expected_stage: str,
+        absence_settle: timedelta,
     ) -> bool: ...
 
 
@@ -113,9 +120,16 @@ class PoolReconciliationLedger:
         observation: Observation,
         *,
         observed_object_id: str | None,
+        expected_stage: str,
+        absence_settle: timedelta,
     ) -> bool:
         return await state.record_reconciliation(
-            self._pool, operation_id, observation, observed_object_id=observed_object_id
+            self._pool,
+            operation_id,
+            observation,
+            observed_object_id=observed_object_id,
+            expected_stage=expected_stage,
+            absence_settle=absence_settle,
         )
 
 
@@ -214,11 +228,20 @@ async def reconcile_operation(
 
     observation, object_id = observed
     if observation == "resource_absent":
-        last_write = operation.ended_at or operation.started_at
-        if now() - last_write < settle:
+        # Pre-filter only; record_reconciliation re-checks against database time.
+        anchor = operation.ended_at or operation.egress_started_at
+        if anchor is None:
+            return _held("absence_unanchored")
+        if now() - anchor < settle:
             return _held("absence_settling")
     try:
-        recorded = await ledger.reconcile(operation.id, observation, observed_object_id=object_id)
+        recorded = await ledger.reconcile(
+            operation.id,
+            observation,
+            observed_object_id=object_id,
+            expected_stage=operation.stage,
+            absence_settle=settle,
+        )
     except PublicationRefused as exc:
         return _held(exc.code)
     if not recorded:

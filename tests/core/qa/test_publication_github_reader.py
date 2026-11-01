@@ -9,6 +9,8 @@ GitHub is contacted: every response comes from an ``httpx.MockTransport``.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -184,3 +186,59 @@ async def test_transport_failure_raises_without_its_message() -> None:
 def test_reader_refuses_an_unbound_origin_or_missing_token(repository: str, token: str) -> None:
     with pytest.raises(ValueError):
         GithubPublicationReader(repository, token=token)
+
+
+class _Chunks(httpx.AsyncByteStream):
+    """A body with no ``Content-Length`` that records how much of it was pulled."""
+
+    def __init__(self, chunk: bytes, count: int) -> None:
+        self.chunk, self.count, self.sent = chunk, count, 0
+
+    async def __aiter__(self):
+        for _ in range(self.count):
+            self.sent += 1
+            yield self.chunk
+
+
+_MIB = 1024 * 1024
+
+
+async def test_declared_oversized_body_raises_before_it_is_read() -> None:
+    body = _Chunks(b"x" * _MIB, 3)
+    github = _GitHub(
+        {_REF_PATH: httpx.Response(200, headers={"Content-Length": str(3 * _MIB)}, stream=body)}
+    )
+
+    with pytest.raises(PublicationReadError) as exc:
+        await github.reader().read_ref(branch=_BRANCH)
+
+    assert exc.value.code == "response_too_large"
+    assert body.sent == 0
+
+
+async def test_undeclared_oversized_body_raises_once_the_cap_is_passed() -> None:
+    body = _Chunks(b"[" + b" " * (_MIB - 1), 100)
+    github = _GitHub({_PULLS_PATH: httpx.Response(200, stream=body)})
+
+    with pytest.raises(PublicationReadError) as exc:
+        await github.reader().find_pull_requests(head=_BRANCH, base="main")
+
+    assert exc.value.code == "response_too_large"
+    assert body.sent == 3  # stopped just past 2 MiB, never buffered the remaining 97 MiB
+
+
+async def test_body_within_the_cap_is_still_parsed_from_the_stream() -> None:
+    payload = json.dumps(_ref()).encode()
+    github = _GitHub({_REF_PATH: httpx.Response(200, stream=_Chunks(payload, 1))})
+
+    assert await github.reader().read_ref(branch=_BRANCH) == _SHA
+
+
+def test_environment_proxy_and_trust_settings_are_ignored(monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:3128")
+    # No injected transport: the production client, which would mount env proxies if trusted.
+    client = GithubPublicationReader(_REPO, token=_TOKEN)._client()
+
+    assert client.trust_env is False
+    assert not client._mounts  # no proxy route for api.github.com

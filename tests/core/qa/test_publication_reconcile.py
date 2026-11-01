@@ -99,6 +99,7 @@ async def test_absent_pr_releases_the_hold_only_after_settling_and_never_recreat
     assert (early.status, early.category) == ("held", "absence_settling")
     assert ledger.row(attempt_id, OperationKind.PR_CREATE).holds_lineage
 
+    ledger.clock = _settled  # the database clock has moved on too
     result = await _reconcile(provider, ledger, attempt_id, OperationKind.PR_CREATE)
 
     assert (result.status, result.observation, result.object_id) == (
@@ -110,6 +111,79 @@ async def test_absent_pr_releases_the_hold_only_after_settling_and_never_recreat
     again = await _publish(provider, ledger, attempt_id)
     assert (again.status, again.category) == (PublicationStatus.FAILED, "pr_create_reconciled")
     assert [name for name, _ in provider.calls].count("create_pull_request") == 1
+
+
+async def _in_flight_create(
+    ledger: FakeLedger, attempt_id: uuid.UUID, *, bound_at: datetime, egress_at: datetime | None
+) -> None:
+    """A ``pr_create`` bound at ``bound_at`` whose egress began at ``egress_at``, no outcome."""
+    provider = FakeProvider(raise_on_create=AmbiguousOutcome("timed out before the remote"))
+    await _publish(provider, ledger, attempt_id)
+    op = ledger.row(attempt_id, OperationKind.PR_CREATE)
+    ledger._replace(
+        op.id,
+        stage="egress_started",
+        started_at=bound_at,
+        egress_started_at=egress_at,
+        ended_at=None,
+    )
+
+
+async def test_resumed_bind_measures_the_settle_from_egress_not_from_the_bind() -> None:
+    # Bound long ago, interrupted, resumed: the push/create is in flight right now.
+    ledger, attempt_id, now = FakeLedger(), uuid.uuid4(), datetime.now(UTC)
+    await _in_flight_create(ledger, attempt_id, bound_at=now - 2 * ABSENCE_SETTLE, egress_at=now)
+
+    result = await _reconcile(
+        FakeProvider(), ledger, attempt_id, OperationKind.PR_CREATE, now=lambda: now
+    )
+
+    assert (result.status, result.category) == ("held", "absence_settling")
+    assert ledger.row(attempt_id, OperationKind.PR_CREATE).holds_lineage
+
+
+async def test_absence_without_an_egress_timestamp_never_settles() -> None:
+    ledger, attempt_id, now = FakeLedger(), uuid.uuid4(), datetime.now(UTC)
+    await _in_flight_create(ledger, attempt_id, bound_at=now - 2 * ABSENCE_SETTLE, egress_at=None)
+
+    result = await _reconcile(FakeProvider(), ledger, attempt_id, OperationKind.PR_CREATE)
+
+    assert (result.status, result.category) == ("held", "absence_unanchored")
+    assert ledger.row(attempt_id, OperationKind.PR_CREATE).holds_lineage
+
+
+async def test_ledger_settle_decides_even_when_the_reconciler_clock_runs_ahead() -> None:
+    provider = FakeProvider(raise_on_create=AmbiguousOutcome("timed out before the remote"))
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+    await _publish(provider, ledger, attempt_id)
+
+    # The host clock says settled; the ledger's (database) clock does not.
+    result = await _reconcile(provider, ledger, attempt_id, OperationKind.PR_CREATE)
+
+    assert (result.status, result.category) == ("held", "not_recorded")
+    assert ledger.row(attempt_id, OperationKind.PR_CREATE).holds_lineage
+
+
+class _OutcomeRacesTheSweep(FakeLedger):
+    """The dispatcher records ``ambiguous`` between the sweep's read and its write."""
+
+    async def reconcile(self, operation_id, observation, **kwargs) -> bool:
+        assert await self.record(operation_id, "ambiguous", new_object_id=None)
+        return await super().reconcile(operation_id, observation, **kwargs)
+
+
+async def test_outcome_recorded_mid_sweep_wins_over_the_absence() -> None:
+    ledger, attempt_id, now = _OutcomeRacesTheSweep(), uuid.uuid4(), datetime.now(UTC)
+    old = now - 2 * ABSENCE_SETTLE
+    await _in_flight_create(ledger, attempt_id, bound_at=old, egress_at=old)
+
+    result = await _reconcile(
+        FakeProvider(), ledger, attempt_id, OperationKind.PR_CREATE, now=lambda: now
+    )
+
+    assert (result.status, result.category) == ("held", "not_recorded")
+    row = ledger.row(attempt_id, OperationKind.PR_CREATE)
+    assert (row.stage, row.holds_lineage) == ("ambiguous", True)
 
 
 def _second_pr(provider: FakeProvider) -> None:
