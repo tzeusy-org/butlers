@@ -18,6 +18,7 @@ The provider registry at `src/butlers/cli_auth/registry.py` defines:
 | `codex` | Codex (OpenAI) | device_code | codex | `codex` |
 | `opencode-go` | OpenCode Go | api_key | opencode | `opencode` |
 | `claude` | Claude (Anthropic) | api_key | claude | `claude` |
+| `openai` | OpenAI API key (Codex) | api_key | codex | `codex` |
 
 ### Provider Definition
 
@@ -75,6 +76,24 @@ The `claude` provider is **store-only**: it has no `token_path`, so the key live
   so the first key has somewhere to be pasted.
 - `POST /api/cli-auth/claude/test` runs the health probe. That probe checks key presence and
   format only; it does not call the Anthropic API.
+
+The `openai` provider is store-only in the same way (`cli-auth/openai`), and the same save,
+placeholder and test behavior applies. It is an alternative credential for the Codex runtime, and
+`CodexAdapter` resolves it per invocation:
+
+1. **Key stored** -- Codex runs with `CODEX_API_KEY` set and no ChatGPT `auth.json` in its isolated
+   HOME. Every device-code step is skipped: authority reconciliation, pre-warm, refresh lock and
+   finalization. Other inherited auth env vars (`OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`) are
+   removed, because Codex refuses to choose between several.
+2. **Key rejected** -- When that run fails before any tool call with an auth marker (the failover
+   classifier's vocabulary) or OpenAI quota exhaustion (`insufficient_quota`), the session is re-run
+   on the `cli-auth/codex` device-code authority, unchanged. The fallback is logged value-free,
+   recorded as a failed test of `cli-auth/openai`, and tagged in session process info as
+   `auth_fallback=openai_api_key_rejected`. Saving a new key clears that failed test.
+3. **No key, or the lookup fails** -- the device-code authority is used exactly as before.
+
+Timeouts, cancellations, MCP discovery failures and other errors never trigger the fallback. The
+API-key path never reads, writes or rotates the Codex device-code authority.
 
 ## Health Probes
 
@@ -148,7 +167,7 @@ for name, p in PROVIDERS.items():
     print(name, p.auth_mode, p.binary)
 "
 # Expected: codex (device_code, codex), opencode-openai (device_code, opencode),
-# opencode-go (api_key, opencode), claude (api_key, claude)
+# opencode-go (api_key, opencode), claude (api_key, claude), openai (api_key, codex)
 
 # 2. Confirm tokens are stored in butler_secrets under the cli-auth/ namespace
 psql -h localhost -U butlers -d butlers -c \

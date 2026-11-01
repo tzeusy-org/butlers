@@ -28,6 +28,16 @@ The daemon follows a deterministic multi-phase startup. Each phase depends on th
 
 `butlers.lifecycle.STARTUP_PHASES` declares the execution order. Its 22 named async functions implement the 17 RFC 0001 stages, splitting phase 8 into module migrations, credential-store setup, blob storage, CLI-auth restoration, shared bootstrap and orphan recovery. Each receives the daemon and a fresh per-run `StartupState` carrying shared prerequisites such as the pool, credential store and migration inputs. Fatal exceptions stop the sequence; module phases retain their existing failure isolation.
 
+An escaping ordinary startup exception emits a best-effort `Startup phase failed` record through
+the configured structured logger before the identical exception propagates. `startup_phase` is a
+fixed declared phase label (without `_startup_`), and `error_category` is one of `timeout`,
+`connection`, `os`, `validation`, `type`, `runtime` or `unknown`. Unknown callables and custom
+exception types use `unknown`; exception text, arbitrary names and tracebacks are not included.
+Cancellation and other `BaseException` signals pass through without this record. Logging failure
+cannot replace the primary exception. Persistence still requires configured, working logging and
+storage: early configuration failures may have no file record. This diagnostic identifies a future
+failing stage; it does not establish an earlier incident's cause or prove recovery.
+
 ### Phase 1: Load and Validate Config
 
 The daemon reads `butler.toml` from the config directory, parses it into a `ButlerConfig` through strict pydantic models (`ButlerToml` in `config.py`; an unknown key or an invalid schedule is a `ConfigError` at load, and each `[[butler.schedule]]` entry becomes a validated `ScheduleSpec` that `sync_schedules()` consumes as-is), and configures structured logging. Required fields (`name`, `port`) are validated. Environment variable references (`${VAR_NAME}`) in config values are resolved; unresolved required references are startup-blocking errors.

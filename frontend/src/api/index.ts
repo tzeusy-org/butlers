@@ -852,6 +852,7 @@ export {
   createConversation,
   sendMessage,
   cancelConversationMessageTurn,
+  updateConversation,
 } from "./client.ts";
 
 export type {
@@ -889,6 +890,7 @@ export type {
   MessageSearchResult,
   MessageSearchParams,
   CreateConversationRequest,
+  ConversationUpdateRequest,
   SendMessageRequest,
   ConversationSseEventType,
   ConversationSseEvent,

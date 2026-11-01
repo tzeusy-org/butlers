@@ -110,8 +110,8 @@ def is_unavailable_error(exc: BaseException) -> bool:
 
 @asynccontextmanager
 async def ordinary_transaction(
-    pool_or_conn: asyncpg.Pool | asyncpg.Connection,
-) -> AsyncIterator[asyncpg.Connection]:
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+) -> AsyncIterator[asyncpg.Connection | asyncpg.pool.PoolConnectionProxy]:
     """Yield a connection inside a transaction (a savepoint when nested).
 
     Accepts a pool or an already-acquired connection so a caller such as the
@@ -120,6 +120,7 @@ async def ordinary_transaction(
     """
     try:
         if isinstance(pool_or_conn, asyncpg.Connection) or not hasattr(pool_or_conn, "acquire"):
+            assert not isinstance(pool_or_conn, asyncpg.Pool)
             async with pool_or_conn.transaction():
                 yield pool_or_conn
         else:
@@ -131,7 +132,9 @@ async def ordinary_transaction(
         raise
 
 
-async def require_ordinary_namespace(conn: asyncpg.Connection) -> None:
+async def require_ordinary_namespace(
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+) -> None:
     """Refuse ALL name-based admission unless the ordinary namespace is sound.
 
     Must run before any name is resolved.  The incompatible state -- any
@@ -154,7 +157,10 @@ def reject_reserved_fields(data: Mapping[str, Any]) -> None:
 
 
 async def lock_ordinary_parent(
-    conn: asyncpg.Connection, collection_id: uuid.UUID, *, exclusive: bool = False
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+    collection_id: uuid.UUID,
+    *,
+    exclusive: bool = False,
 ) -> asyncpg.Record | None:
     """Lock an ordinary parent (share by default) and return it, else None.
 
@@ -174,7 +180,7 @@ async def lock_ordinary_parent(
 
 
 async def lock_ordinary_item(
-    conn: asyncpg.Connection, item_id: uuid.UUID
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, item_id: uuid.UUID
 ) -> tuple[asyncpg.Record, asyncpg.Record] | None:
     """Lock an ordinary item's parent, then the item; None if not ordinary.
 
@@ -230,7 +236,7 @@ def source_digest(item_id: uuid.UUID, operation: str, content: Mapping[str, Any]
 
 
 async def record_source_version(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     parent: asyncpg.Record,
     item_id: uuid.UUID,
     operation: str,
@@ -270,6 +276,7 @@ async def record_source_version(
         digest,
         content,
     )
+    assert isinstance(version, int)
     return SourceVersion(
         item_id=item_id,
         version=version,
@@ -282,7 +289,7 @@ async def record_source_version(
 
 
 async def read_source_version(
-    pool_or_conn: asyncpg.Pool | asyncpg.Connection,
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     item_id: uuid.UUID,
     version: int | None = None,
 ) -> SourceVersion | None:

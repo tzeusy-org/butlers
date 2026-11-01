@@ -5820,6 +5820,16 @@ export interface PageContext {
   truncated?: boolean;
 }
 
+/**
+ * Body for PATCH /api/butlers/{name}/conversations/{id} — owner-authenticated
+ * metadata change (REQ-dashboard-chat-ui-017). Send exactly the field being
+ * changed: a title-only rename or a status-only archive/unarchive.
+ */
+export interface ConversationUpdateRequest {
+  title?: string;
+  status?: "active" | "archived";
+}
+
 /** Request body for POST /api/butlers/{name}/conversations. */
 export interface CreateConversationRequest {
   message: string;
