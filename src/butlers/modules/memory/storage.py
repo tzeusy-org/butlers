@@ -832,6 +832,53 @@ async def _reconcile_rules_catalog_disownment(
     return len(rows)
 
 
+# Literal per-table statements (no dynamic relation names; tests/contracts/test_schema_reach.py).
+_SYNC_CATALOG_AUTHORITY_SQL_FACTS = """
+    WITH candidates AS (
+        SELECT mc.source_id, s.content_authority
+        FROM public.memory_catalog mc
+        JOIN facts s ON s.id = mc.source_id
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'facts'
+          AND mc.content_authority IS DISTINCT FROM s.content_authority
+        LIMIT $2
+    )
+    UPDATE public.memory_catalog mc
+    SET content_authority = c.content_authority,
+        updated_at = now()
+    FROM candidates c
+    WHERE mc.source_schema = $1
+      AND mc.source_table = 'facts'
+      AND mc.source_id = c.source_id
+    RETURNING 1
+"""
+
+_SYNC_CATALOG_AUTHORITY_SQL_RULES = """
+    WITH candidates AS (
+        SELECT mc.source_id, s.content_authority
+        FROM public.memory_catalog mc
+        JOIN rules s ON s.id = mc.source_id
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'rules'
+          AND mc.content_authority IS DISTINCT FROM s.content_authority
+        LIMIT $2
+    )
+    UPDATE public.memory_catalog mc
+    SET content_authority = c.content_authority,
+        updated_at = now()
+    FROM candidates c
+    WHERE mc.source_schema = $1
+      AND mc.source_table = 'rules'
+      AND mc.source_id = c.source_id
+    RETURNING 1
+"""
+
+_SYNC_CATALOG_AUTHORITY_SQL = {
+    "facts": _SYNC_CATALOG_AUTHORITY_SQL_FACTS,
+    "rules": _SYNC_CATALOG_AUTHORITY_SQL_RULES,
+}
+
+
 async def _sync_catalog_authority(
     pool: Pool,
     *,
@@ -847,27 +894,9 @@ async def _sync_catalog_authority(
     legacy NULL source stays NULL and a re-run is a no-op.  Stale rows are
     synced too: the column describes provenance, not liveness.
     """
-    if source_table not in ("facts", "rules"):
+    sql = _SYNC_CATALOG_AUTHORITY_SQL.get(source_table)
+    if sql is None:
         raise ValueError(f"unsupported catalog source table: {source_table!r}")
-    sql = f"""
-        WITH candidates AS (
-            SELECT mc.source_id, s.content_authority
-            FROM public.memory_catalog mc
-            JOIN {source_table} s ON s.id = mc.source_id
-            WHERE mc.source_schema = $1
-              AND mc.source_table = '{source_table}'
-              AND mc.content_authority IS DISTINCT FROM s.content_authority
-            LIMIT $2
-        )
-        UPDATE public.memory_catalog mc
-        SET content_authority = c.content_authority,
-            updated_at = now()
-        FROM candidates c
-        WHERE mc.source_schema = $1
-          AND mc.source_table = '{source_table}'
-          AND mc.source_id = c.source_id
-        RETURNING 1
-    """
     rows = await pool.fetch(sql, source_schema, limit)
     return len(rows)
 
