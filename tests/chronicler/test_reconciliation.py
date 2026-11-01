@@ -15,7 +15,7 @@ no I/O. Aggregate correctness must not depend on LLM output (spec:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -451,3 +451,136 @@ def test_reconciliation_is_pure_no_llm_module() -> None:
             module = node.module or ""
             assert module.split(".")[0] not in forbidden_roots
             assert module != "butlers.chronicler.interpretation"
+
+
+# ---------------------------------------------------------------------------
+# Travel location check and plan provenance (bu-2tsgqb.7)
+# ---------------------------------------------------------------------------
+
+_SGT = timezone(timedelta(hours=8))
+_CHANGI = (1.3644, 103.9915)
+_PEK = (40.08, 116.61)
+_CENTRAL_BEIJING = (39.91, 116.40)
+
+
+def _fix(at: datetime, where: tuple[float, float], **payload: object) -> dict:
+    return {
+        "source_name": "owntracks.points",
+        "event_type": "location",
+        "occurred_at": at,
+        "payload": {"lat": where[0], "lon": where[1], **payload},
+    }
+
+
+def _travel_intent(title: str, start_at: datetime, end_at: datetime, **payload: object) -> dict:
+    return _episode(
+        layer="intent",
+        source_name="google_calendar.completed",
+        episode_type="scheduled_block",
+        source_ref="calendar:travel-1",
+        start_at=start_at,
+        end_at=end_at,
+        title=title,
+        payload=dict(payload),
+    )
+
+
+_SQ800_START = datetime(2026, 10, 16, 1, 10, tzinfo=_SGT)
+_SQ800_END = datetime(2026, 10, 16, 7, 15, tzinfo=_SGT)
+_SQ800 = _travel_intent("Flight to Beijing (SQ 800)", _SQ800_START, _SQ800_END)
+
+
+def _sq800_fixes(**post_payload: object) -> list[dict]:
+    """Oct 16 trail: Changi until 01:33 (delayed), Beijing airport from 08:14."""
+    return [
+        _fix(datetime(2026, 10, 16, 0, 40, tzinfo=_SGT), _CHANGI),
+        _fix(datetime(2026, 10, 16, 1, 33, tzinfo=_SGT), _CHANGI),
+        _fix(datetime(2026, 10, 16, 8, 14, tzinfo=_SGT), _PEK, **post_payload),
+        _fix(datetime(2026, 10, 16, 8, 40, tzinfo=_SGT), _PEK, **post_payload),
+    ]
+
+
+def test_flight_with_origin_then_destination_fixes_is_location_consistent_only() -> None:
+    result = reconcile_day([_SQ800], location_fixes=_sq800_fixes())
+
+    [kept] = result.kept_intents
+    location = kept["reconciliation"]["location"]
+    assert location["verdict"] == "consistent"
+    assert 4000 < location["displacement_km"] < 5000
+    # The only claim is displacement; nothing marks the flight as taken.
+    assert "does not confirm the planned trip" in location["reason"]
+    assert kept["reconciliation"]["plan_producer"] == "calendar"
+    assert result.dropped_intents == []
+
+
+def test_butler_route_plan_contradicted_by_same_place_before_and_after() -> None:
+    """Oct 21: a butler-written 'SIN -> Aomori' block while the owner stayed in Beijing."""
+    start = datetime(2026, 10, 21, 0, 30, tzinfo=_SGT)
+    end = datetime(2026, 10, 21, 17, 0, tzinfo=_SGT)
+    intent = _travel_intent("BUTLER: Japan Trip: SIN -> Aomori", start, end)
+    fixes = [
+        _fix(datetime(2026, 10, 20, 22, 0, tzinfo=_SGT), _CENTRAL_BEIJING),
+        _fix(datetime(2026, 10, 20, 23, 30, tzinfo=_SGT), _CENTRAL_BEIJING),
+        _fix(datetime(2026, 10, 21, 17, 30, tzinfo=_SGT), _CENTRAL_BEIJING),
+        _fix(datetime(2026, 10, 21, 18, 5, tzinfo=_SGT), _CENTRAL_BEIJING),
+    ]
+
+    result = reconcile_day([intent], location_fixes=fixes)
+
+    assert result.kept_intents == []
+    [dropped] = result.dropped_intents
+    assert dropped.evidence_kind == "location"
+    assert dropped.contradicting_activity["verdict"] == "contradicted"
+    assert dropped.intent["reconciliation"]["plan_producer"] == "butler"
+
+
+@pytest.mark.parametrize(
+    "fixes",
+    [
+        pytest.param([], id="no-location"),
+        pytest.param(_sq800_fixes(trail_outlier={"reason": "implied_speed"}), id="outliers"),
+        pytest.param(_sq800_fixes(accuracy=5000.0), id="poor-accuracy"),
+        pytest.param(_sq800_fixes()[1:3], id="one-fix-each-side"),
+        pytest.param(
+            # The SGT wall-clock trail stamped as UTC: the same clock times are
+            # eight hours later, so no fix sits before the departure.
+            [
+                {**row, "occurred_at": row["occurred_at"].replace(tzinfo=UTC)}
+                for row in _sq800_fixes()
+            ],
+            id="timezone-shifted",
+        ),
+        pytest.param(
+            [
+                {**row, "occurred_at": row["occurred_at"].replace(tzinfo=None)}
+                for row in _sq800_fixes()
+            ],
+            id="naive-timestamps",
+        ),
+    ],
+)
+def test_missing_or_unreliable_location_leaves_travel_unknown(fixes: list[dict]) -> None:
+    result = reconcile_day([_SQ800], location_fixes=fixes)
+
+    [kept] = result.kept_intents
+    assert kept["reconciliation"]["location"]["verdict"] == "unknown"
+
+
+def test_non_travel_intent_gets_provenance_but_no_location_check() -> None:
+    gym = _calendar_intent(
+        start_at=datetime(2026, 10, 16, 1, 10, tzinfo=_SGT),
+        end_at=datetime(2026, 10, 16, 7, 15, tzinfo=_SGT),
+    )
+
+    result = reconcile_day([gym], location_fixes=_sq800_fixes())
+
+    [kept] = result.kept_intents
+    assert kept["reconciliation"] == {"plan_producer": "calendar"}
+
+
+def test_butler_plan_producer_read_from_calendar_flag() -> None:
+    intent = _travel_intent("Japan Trip", _SQ800_START, _SQ800_END, butler_generated=True)
+
+    [kept] = reconcile_day([intent]).kept_intents
+
+    assert kept["reconciliation"]["plan_producer"] == "butler"

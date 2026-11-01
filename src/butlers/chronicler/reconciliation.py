@@ -28,6 +28,18 @@ Two rules, matching design.md's worked examples exactly:
    the contradiction without asserting attendance either way
    (butler-chronicler/spec.md §4.15 — calendar is never an attendance
    assertion).
+3. **Travel location check** (bu-2tsgqb.7) — a one-way travel intent (a
+   flight, or a route block such as ``SIN -> Aomori``) is weighed against the
+   OwnTracks fixes passed as ``location_fixes``
+   (:mod:`butlers.chronicler.travel_location`). Same place before and after
+   the window drops it as contradicted; a long, plausible displacement keeps it
+   with a ``consistent`` location note, which never asserts the trip itself;
+   anything else stays ``unknown``.
+
+Every kept or dropped intent carries a ``reconciliation`` mapping with its
+``plan_producer`` (``butler`` for butler-written plans, else ``calendar``) and,
+for travel intents, the ``location`` check summary, so the narration can tell a
+butler's plan from the owner's calendar and cite only the claim made here.
 
 Everything else (``evidence``-layer rows, or a row with no recognized
 ``layer``) passes through untouched — this function only ever adjudicates
@@ -57,6 +69,13 @@ from datetime import datetime
 from typing import Any
 
 from butlers.chronicler.aggregations import lane_for_activity
+from butlers.chronicler.travel_location import (
+    LOCATION_CONTRADICTED,
+    accepted_fixes,
+    check_travel_intent,
+    is_travel_intent,
+    plan_producer,
+)
 
 # Lane whose presence during a calendar window is treated as direct
 # contradicting evidence. A rest/idle-presence activity spanning most of an
@@ -131,6 +150,10 @@ class DroppedIntent:
     contradicting_activity: Mapping[str, Any]
     overlap_fraction: float
     reason: str = "activity evidence contradicts the scheduled window"
+    # ``activity`` (rest-lane presence) or ``location`` (OwnTracks fixes
+    # bracketing a travel window); ``contradicting_activity`` then holds the
+    # location check summary instead of an episode.
+    evidence_kind: str = "activity"
 
 
 @dataclass(frozen=True)
@@ -263,6 +286,7 @@ def reconcile_day(
     episodes: Sequence[Mapping[str, Any]],
     *,
     contradiction_overlap_fraction: float = DEFAULT_CONTRADICTION_OVERLAP_FRACTION,
+    location_fixes: Sequence[Mapping[str, Any]] = (),
 ) -> ReconciliationResult:
     """Deterministically reconcile one day's candidate episodes.
 
@@ -270,8 +294,11 @@ def reconcile_day(
     "Tier 2 — day-close reconciliation"). Callers pass every episode row for
     the closed day, of any ``layer``; the result is what the once-daily
     ``chronicler_day_close`` LLM narrates over. See the module docstring for
-    the two rules applied (duplicate merge, conflict drop) and the expected
-    episode-mapping shape.
+    the rules applied (duplicate merge, conflict drop, travel location check)
+    and the expected episode-mapping shape. ``location_fixes`` are OwnTracks
+    ``location`` point-event rows covering the travel windows plus
+    :data:`~butlers.chronicler.travel_location.ANCHOR_LOOKBACK` on each side;
+    without them every travel intent's location stays ``unknown``.
     """
     activities_by_lane: dict[str | None, list[dict[str, Any]]] = {}
     intents: list[dict[str, Any]] = []
@@ -304,12 +331,28 @@ def reconcile_day(
 
     rest_activities = [ep for ep in reconciled_activities if _lane(ep) == CONTRADICTING_LANE]
 
+    fixes = accepted_fixes(location_fixes)
     kept_intents: list[dict[str, Any]] = []
     dropped_intents: list[DroppedIntent] = []
     for intent in intents:
+        notes: dict[str, Any] = {"plan_producer": plan_producer(intent)}
+        intent["reconciliation"] = notes
         dropped = _find_contradiction(
             intent, rest_activities, overlap_fraction=contradiction_overlap_fraction
         )
+        start, end = _window(intent)
+        if dropped is None and is_travel_intent(intent, start, end):
+            check = check_travel_intent(start, end, fixes)
+            notes["location"] = check.to_payload()
+            if check.verdict == LOCATION_CONTRADICTED:
+                dropped = DroppedIntent(
+                    intent=intent,
+                    contradicting_activity=check.to_payload(),
+                    # The two anchors bracket the whole scheduled window.
+                    overlap_fraction=1.0,
+                    reason=check.reason,
+                    evidence_kind="location",
+                )
         if dropped is not None:
             dropped_intents.append(dropped)
         else:

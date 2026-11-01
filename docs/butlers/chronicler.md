@@ -61,3 +61,14 @@ cleanup closes them once settlement completes. It never reports success while a
 release is incomplete or closes the shared pool underneath retained work.
 Local software controls do not establish real PostgreSQL, model/provider or
 owner-delivery outcomes; those require their source-bound hosted evidence.
+
+### Travel intents and location (bu-2tsgqb.7)
+
+`reconcile_day` checks one-way travel intents (a flight, or a route block `A -> B`, 30 min to 24 h)
+against accepted OwnTracks fixes (`src/butlers/chronicler/travel_location.py`). Same place before
+and after the window drops the intent with `evidence="location"`; 300 km or more at a plausible
+speed keeps it with a `consistent` note that states only the displacement, never that the trip was
+taken; anything else is `unknown`. Each anchor needs two fixes; `trail_outlier`, coarse (>1 km) and
+naive-timestamp fixes are ignored. There is no geocoding, so an event's stated place is never
+checked. Every intent also carries `reconciliation.plan_producer`: `butler` for events the calendar
+module marked `butler_generated` (or titled `BUTLER:`), else `calendar`.

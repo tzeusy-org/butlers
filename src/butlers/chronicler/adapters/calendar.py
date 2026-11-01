@@ -80,6 +80,7 @@ Multi-entity participant resolution (bu-3zve1):
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -449,7 +450,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                i.metadata, i.updated_at,
                                e.title AS event_title,
                                e.description AS event_description,
-                               e.location AS event_location
+                               e.location AS event_location,
+                               e.metadata AS event_metadata
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -470,7 +472,8 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                                i.metadata, i.updated_at,
                                e.title AS event_title,
                                e.description AS event_description,
-                               e.location AS event_location
+                               e.location AS event_location,
+                               e.metadata AS event_metadata
                         FROM {quoted}.calendar_event_instances AS i
                         LEFT JOIN {quoted}.calendar_events AS e ON e.id = i.event_id
                         INNER JOIN {quoted}.calendar_sources AS cs ON cs.id = i.source_id
@@ -576,6 +579,7 @@ class CalendarCompletedAdapter(ProjectionAdapter):
         event_title = self._maybe(row, "event_title")
         event_description = self._maybe(row, "event_description")
         event_location = self._maybe(row, "event_location")
+        event_metadata = self._maybe(row, "event_metadata")
 
         payload = {
             "schema": schema,
@@ -588,6 +592,10 @@ class CalendarCompletedAdapter(ProjectionAdapter):
             "title": event_title,
             "description": event_description,
             "location": event_location,
+            # Producer provenance (bu-2tsgqb.7): the calendar module's own
+            # butler-written marker, so reconciliation can tell a butler's plan
+            # from the owner's schedule (travel_location.plan_producer).
+            **self._butler_provenance(event_metadata),
         }
 
         resolved_title = (
@@ -627,6 +635,24 @@ class CalendarCompletedAdapter(ProjectionAdapter):
                 participant_ids=participant_ids or [],
             )
         return episode
+
+    @staticmethod
+    def _butler_provenance(event_metadata: Any) -> dict[str, Any]:
+        """``butler_generated``/``butler_name`` from ``calendar_events.metadata``."""
+        if isinstance(event_metadata, str):
+            try:
+                event_metadata = json.loads(event_metadata)
+            except ValueError:
+                return {"butler_generated": False}
+        if (
+            not isinstance(event_metadata, dict)
+            or event_metadata.get("butler_generated") is not True
+        ):
+            return {"butler_generated": False}
+        provenance: dict[str, Any] = {"butler_generated": True}
+        if isinstance(event_metadata.get("butler_name"), str):
+            provenance["butler_name"] = event_metadata["butler_name"]
+        return provenance
 
     @staticmethod
     def _maybe(row: asyncpg.Record, key: str) -> Any:

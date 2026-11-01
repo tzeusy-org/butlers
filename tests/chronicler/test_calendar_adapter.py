@@ -63,6 +63,7 @@ def _make_row(
     event_title: str | None = None,
     event_description: str | None = None,
     event_location: str | None = None,
+    event_metadata: dict | str | None = None,
     starts_at: datetime | None = None,
     ends_at: datetime | None = None,
 ) -> _Row:
@@ -83,6 +84,7 @@ def _make_row(
             "event_title": event_title,
             "event_description": event_description,
             "event_location": event_location,
+            "event_metadata": event_metadata,
         }
     )
 
@@ -250,6 +252,26 @@ async def test_title_final_fallback_when_no_richer_context() -> None:
     )
     ep = await _project_one(row)
     assert ep.title == "butler_test: calendar block"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("event_metadata", "expected"),
+    [
+        (
+            {"butler_generated": True, "butler_name": "travel"},
+            {"butler_generated": True, "butler_name": "travel"},
+        ),
+        ('{"butler_generated": true}', {"butler_generated": True}),
+        ({"butler_generated": False, "butler_name": "travel"}, {"butler_generated": False}),
+        (None, {"butler_generated": False}),
+    ],
+)
+async def test_payload_carries_butler_provenance(event_metadata, expected) -> None:
+    """bu-2tsgqb.7: butler-written plans keep the calendar module's producer marker."""
+    ep = await _project_one(_make_row(event_title="Trip", event_metadata=event_metadata))
+    provenance = {k: v for k, v in ep.payload.items() if k.startswith("butler_")}
+    assert provenance == expected
 
 
 @pytest.mark.unit

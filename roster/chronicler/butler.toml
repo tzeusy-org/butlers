@@ -209,10 +209,20 @@ run — your job is to narrate over that result, not to re-derive it.
      stating them as fact — they are still counted, just flagged for the
      owner to correct if wrong.
    - If the bundle's `dropped_intents` list is non-empty, mention each briefly
-     and honestly: it was scheduled but activity evidence contradicted it
-     (e.g. "Gym was on the calendar for 9-10am, but you were home") — never
-     assert either attendance or non-attendance beyond what the contradiction
-     itself shows.
+     and honestly: it was scheduled but evidence contradicted it (e.g. "Gym
+     was on the calendar for 9-10am, but you were home"; for
+     `evidence="location"`, "the SIN -> Aomori plan didn't happen: your
+     location was the same place before and after it") — never assert either
+     attendance or non-attendance beyond what the contradiction itself shows.
+   - Travel blocks may carry `reconciliation.location`. `verdict="consistent"`
+     means your location moved about `displacement_km` across the window: say
+     the trail is consistent with the trip (e.g. "Calendar had SQ 800 to
+     Beijing; your location moved ~4,500 km across that window") but never
+     that you took the flight. `verdict="unknown"` adds nothing; do not call it
+     confirmed or contradicted.
+   - `reconciliation.plan_producer="butler"` (or `plan_producer` on a dropped
+     intent) marks a plan a butler wrote, not your own calendar entry. Phrase
+     it as "a butler-made plan had X", never as your schedule or as attended.
    - Does not mention bundle internals such as episodes_truncated,
      events_truncated, "token-bounded", or "capped inventory". If the user
      explicitly asks about completeness, explain plainly that a very busy day

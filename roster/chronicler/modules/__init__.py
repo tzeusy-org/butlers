@@ -51,9 +51,43 @@ def _serialise_dropped_intents(dropped_intents: Any) -> list[dict[str, Any]]:
             ),
             "reason": dropped.reason,
             "overlap_fraction": round(dropped.overlap_fraction, 2),
+            "evidence": dropped.evidence_kind,
+            **(
+                {"plan_producer": dropped.intent["reconciliation"]["plan_producer"]}
+                if "plan_producer" in (dropped.intent.get("reconciliation") or {})
+                else {}
+            ),
         }
         for dropped in dropped_intents
     ]
+
+
+def _travel_fix_window(episodes: list[dict[str, Any]]) -> tuple[Any, Any] | None:
+    """UTC span of OwnTracks fixes the travel location check needs, or None.
+
+    Covers every travel ``intent`` episode's window plus the anchor lookback on each side,
+    so a flight that crosses the closed day's local midnight still sees its
+    origin and destination fixes from the neighbouring day.
+    """
+    from butlers.chronicler.travel_location import ANCHOR_LOOKBACK, is_travel_intent
+
+    spans = []
+    for intent in episodes:
+        if str(getattr(intent.get("layer"), "value", intent.get("layer"))) != "intent":
+            continue
+        start = intent.get("canonical_start_at") or intent.get("start_at")
+        end = intent.get("canonical_end_at") or intent.get("end_at")
+        if start is None or end is None or not is_travel_intent(intent, start, end):
+            continue
+        spans.append((start - ANCHOR_LOOKBACK, end + ANCHOR_LOOKBACK))
+    if not spans:
+        return None
+    return min(s for s, _ in spans), max(e for _, e in spans)
+
+
+# Cap on OwnTracks fixes read for travel location checks: a busy trail is
+# ~1,000 fixes a day and the window spans at most 24 h plus 12 h of lookback.
+_TRAVEL_FIX_LIMIT = 5000
 
 
 class ChroniclerModuleConfig(BaseModel):
@@ -546,6 +580,7 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         from datetime import UTC, datetime
         from zoneinfo import ZoneInfo
 
+        from butlers.chronicler.adapters.owntracks import EVENT_TYPE_LOCATION
         from butlers.chronicler.bundle_assembler import (
             BundleConfig,
             assemble_day_close_bundle,
@@ -591,12 +626,27 @@ def _register_tools(mcp: Any, module: ChroniclerModule) -> None:
         normal_episodes, sensitive_episodes = partition_day_close_rows(episode_dicts)
         normal_events, sensitive_events = partition_day_close_rows(event_dicts)
 
+        # Travel intents are checked against the owner's OwnTracks fixes
+        # (bu-2tsgqb.7). Fetch them only when a travel block exists, over its
+        # window plus lookback, and only normal-privacy rows.
+        location_fixes: list[dict[str, Any]] = []
+        fix_window = _travel_fix_window(normal_episodes)
+        if fix_window is not None:
+            fix_rows = await list_point_events(
+                pool,
+                occurred_from=fix_window[0],
+                occurred_to=fix_window[1],
+                event_type=EVENT_TYPE_LOCATION,
+                limit=_TRAVEL_FIX_LIMIT,
+            )
+            location_fixes, _ = partition_day_close_rows([asdict(row) for row in fix_rows])
+
         # Deterministic reconciliation core (tasks.md §7): merge duplicate
         # same-lane activity candidates and drop calendar intents contradicted
         # by activity evidence, BEFORE the LLM ever sees this bundle. Aggregate
         # correctness (what counts, what's dropped) is decided entirely here;
         # the day-close LLM only narrates over the result.
-        reconciled = reconcile_day(normal_episodes)
+        reconciled = reconcile_day(normal_episodes, location_fixes=location_fixes)
         reconciled_episodes = [
             *reconciled.activities,
             *reconciled.kept_intents,

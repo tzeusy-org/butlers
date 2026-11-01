@@ -12,7 +12,7 @@ objects that JSON serialization of the tool result would reject.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastmcp import FastMCP
@@ -66,6 +66,7 @@ def test_serialise_dropped_intents_passes_through_non_datetime_values() -> None:
         "end_at": "2026-06-01T10:00:00+00:00",
         "reason": "custom reason",
         "overlap_fraction": 0.75,
+        "evidence": "activity",
     }
 
 
@@ -254,3 +255,82 @@ async def test_registered_envelope_only_bundle_matches_prompt_contract(monkeypat
     schedule = next(s for s in config["butler"]["schedule"] if s["name"] == "chronicler_day_close")
     assert "no episodes, no events, and no sensitive_envelopes" in schedule["prompt"]
     assert "CANARY" not in json.dumps(result)
+
+
+async def test_registered_day_close_checks_travel_intent_against_location_fixes(
+    monkeypatch,
+) -> None:
+    """bu-2tsgqb.7: a flight crossing local midnight reads fixes beyond the day."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import UUID
+
+    from butlers.chronicler import storage
+    from butlers.chronicler.models import CorrectedPointEvent, Layer, Precision, Privacy
+    from roster.chronicler.modules import ChroniclerModule
+
+    start = datetime(2026, 6, 1, 15, 30, tzinfo=UTC)  # 23:30 SGT
+    end = datetime(2026, 6, 1, 21, 30, tzinfo=UTC)  # 05:30 SGT next day
+    flight = _corrected_episode(
+        privacy=Privacy.NORMAL,
+        layer=Layer.INTENT,
+        source_ref="calendar:flight",
+        source_name="google_calendar.completed",
+        episode_type="scheduled_block",
+        title="Flight to Beijing (SQ 800)",
+        canonical_title="Flight to Beijing (SQ 800)",
+        start_at=start,
+        end_at=end,
+        canonical_start_at=start,
+        canonical_end_at=end,
+        payload={"butler_generated": False},
+    )
+
+    def _fix(at: datetime, lat: float, lon: float) -> CorrectedPointEvent:
+        return CorrectedPointEvent(
+            id=UUID(int=int(at.timestamp())),
+            source_name="owntracks.points",
+            source_ref=f"owntracks:{at.isoformat()}",
+            event_type="location",
+            occurred_at=at,
+            precision=Precision.EXACT,
+            title="Location",
+            payload={"lat": lat, "lon": lon},
+            privacy=Privacy.NORMAL,
+            retention_days=None,
+            tombstone_at=None,
+            canonical_occurred_at=at,
+            canonical_title="Location",
+            canonical_privacy=Privacy.NORMAL,
+            corrected_at=at,
+            correction_note=None,
+            created_at=at,
+            updated_at=at,
+        )
+
+    fixes = [
+        _fix(start - timedelta(minutes=50), 1.3644, 103.9915),
+        _fix(start - timedelta(minutes=20), 1.3644, 103.9915),
+        _fix(end + timedelta(minutes=40), 40.08, 116.61),
+        _fix(end + timedelta(minutes=70), 40.08, 116.61),
+    ]
+
+    mcp = FastMCP("chronicler-bundle-test")
+    event_reader = AsyncMock(side_effect=[[], fixes])
+    monkeypatch.setattr(storage, "list_episodes", AsyncMock(return_value=[flight]))
+    monkeypatch.setattr(storage, "list_point_events", event_reader)
+    pool = object()
+    await ChroniclerModule().register_tools(mcp, None, SimpleNamespace(pool=pool), "chronicler")
+    tools = await registered_tools(mcp)
+    result = await tools["chronicler_day_close_bundle"]("2026-06-01", "Asia/Singapore")
+
+    assert event_reader.await_args_list[1].kwargs == {
+        "occurred_from": start - timedelta(hours=6),
+        "occurred_to": end + timedelta(hours=6),
+        "event_type": "location",
+        "limit": 5000,
+    }
+    [row] = result["episodes"]
+    assert row["reconciliation"]["plan_producer"] == "calendar"
+    assert row["reconciliation"]["location"]["verdict"] == "consistent"
+    json.dumps(result)
