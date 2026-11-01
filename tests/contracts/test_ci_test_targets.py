@@ -1415,7 +1415,7 @@ def test_ci_workflow_shards_full_lanes_without_coverage_or_privacy_drift(
     for lane, children in (("unit", unit_jobs), ("integration", integration_jobs)):
         for index, job in enumerate(children, 1):
             artifact = _artifact_step(job=job, artifact_name=f"ci-{lane}-{index}-test-evidence")
-            filenames = ["junit.xml", "top-durations.txt", "collected.json"]
+            filenames = ["junit.xml", "top-durations.txt", "collected.json", "durations.json"]
             if lane == "unit":
                 filenames.append("condensation-refusal-*.json")
             assert artifact["if"] == "always()"

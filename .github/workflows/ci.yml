@@ -616,6 +616,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/durations.json
             ${{ runner.temp }}/ci-artifacts/unit-${{ matrix.group }}/condensation-refusal-*.json
           retention-days: 14
           if-no-files-found: error
@@ -697,6 +698,7 @@ jobs:
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/junit.xml
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/top-durations.txt
             ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/collected.json
+            ${{ runner.temp }}/ci-artifacts/integration-${{ matrix.group }}/durations.json
           retention-days: 14
           if-no-files-found: error
           overwrite: true

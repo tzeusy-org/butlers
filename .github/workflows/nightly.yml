@@ -778,8 +778,11 @@ jobs:
           message: ${{ steps.coverage.outputs.percentage }}%
           color: ${{ steps.coverage.outputs.color }}
   durations-refresh:
-    # Merges every covered group's measured durations into the committed
-    # .test_durations that pytest-split balances the CI lane groups with. The
+    # Merges the measured durations of every lane group of the latest successful
+    # merge-group CI run into the committed .test_durations that pytest-split
+    # balances the CI lane groups with. Those groups run untraced, exactly as the
+    # groups being balanced do; the covered groups here pay coverage tracing,
+    # which skewed group balance by up to 1.8x (bu-q1hzqn.13). The
     # merged file is always uploaded; Monday's scheduled run on main, or a manual
     # dispatch on main, also opens a PR with it. It never pushes to main. A stale
     # file only skews group balance: which tests run stays exact, because
@@ -789,10 +792,9 @@ jobs:
     # with GITHUB_TOKEN would not trigger pull_request CI (bu-29wkwj.9).
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [coverage-shards]
-    if: ${{ !cancelled() }}
     permissions:
       contents: read
+      actions: read
     steps:
       - name: Mint the butlers-ci-bot token
         id: ci-bot
@@ -804,11 +806,26 @@ jobs:
       - uses: actions/checkout@v6
         with:
           token: ${{ steps.ci-bot.outputs.token || github.token }}
+      - name: Find the latest successful merge-group CI run
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event merge_group \
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+          if [ -z "$run_id" ] || [ "$run_id" = null ]; then
+            echo "::error::no successful merge-group CI run to measure durations from"
+            exit 1
+          fi
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
       - name: Download every lane group's evidence
         uses: actions/download-artifact@v4
         with:
           pattern: ci-*-test-evidence
           path: ${{ runner.temp }}/ci-test-evidence
+          run-id: ${{ steps.source.outputs.run_id }}
+          github-token: ${{ github.token }}
       - name: Merge the measured durations
         run: python3 scripts/ci_lanes.py durations --evidence "${RUNNER_TEMP}/ci-test-evidence"
       - name: Upload the merged durations
@@ -824,6 +841,7 @@ jobs:
         if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') }}
         env:
           GH_TOKEN: ${{ steps.ci-bot.outputs.token }}
+          SOURCE_RUN_ID: ${{ steps.source.outputs.run_id }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = schedule ] && [ "$(date -u +%u)" != 1 ]; then
@@ -840,8 +858,8 @@ jobs:
           git config user.email "$(gh api "/users/${bot}" --jq .id)+${bot}@users.noreply.github.com"
           git switch -c "$branch"
           git add .test_durations
-          git commit -m "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}"
+          git commit -m "ci: refresh .test_durations from merge-group run ${SOURCE_RUN_ID}"
           git push origin "$branch"
           gh pr create --base main --head "$branch" \
-            --title "ci: refresh .test_durations from nightly run ${GITHUB_RUN_ID}" \
-            --body "Measured by the covered lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."
+            --title "ci: refresh .test_durations from merge-group run ${SOURCE_RUN_ID}" \
+            --body "Measured by the untraced lane groups of ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}. Durations only rebalance the pytest-split groups; the lane totals check keeps test selection exact."
