@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_approval_callback_route(request: Request) -> bool:
-    """Return whether the request is one of the connector's three callback routes.
+    """Return whether the request is one of the connector's callback routes.
 
     The connector credential is deliberately narrower than the dashboard API
     key: it can read one approval detail or transition it through the established

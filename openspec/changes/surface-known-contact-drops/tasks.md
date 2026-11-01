@@ -14,8 +14,8 @@
 
 ## 4. Deferred
 
-- [ ] 4.1 Narrowed filtered list, replay verb, and attention episode from the clause.
-- [ ] 4.2 Opt-in "except known contacts" rule-editor option.
+- [ ] 4.1 Narrowed filtered list and replay verb. (Attention episode: done, `bu-q7vx1q.88.2`, REQ-ingestion-policy-003.)
+- [x] 4.2 Opt-in "except known contacts" rule-editor option (bu-q7vx1q.88.3, REQ-ingestion-policy-004).
 - [ ] 4.3 WhatsApp and Drive drop sites.
 
 

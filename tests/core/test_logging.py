@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,31 @@ def test_configure_logging_formats_and_log_root(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("BUTLERS_LOG_ROOT", "none")
     monkeypatch.setenv("BUTLERS_DISABLE_FILE_LOGGING", "0")
     assert resolve_log_root("/tmp/ignored") is None
+
+
+def test_console_traceback_omits_frame_locals():
+    """A logged exception must not render frame locals such as connection kwargs."""
+    configure_logging(fmt="text")
+    console = next(
+        h
+        for h in logging.getLogger().handlers
+        if isinstance(h.formatter, structlog.stdlib.ProcessorFormatter)
+    )
+
+    def connect():
+        pool_kwargs = {"user": "butlers", "password": "frame-local-sentinel"}
+        raise RuntimeError(f"cannot connect as {pool_kwargs['user']}")
+
+    try:
+        connect()
+    except RuntimeError:
+        record = logging.LogRecord(
+            "test", logging.WARNING, "", 0, "connect failed", (), sys.exc_info()
+        )
+
+    rendered = console.formatter.format(record)
+    assert "cannot connect as butlers" in rendered
+    assert "frame-local-sentinel" not in rendered
 
 
 def test_log_directory_structure_and_credential_redaction(tmp_path: Path):

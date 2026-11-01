@@ -31,3 +31,19 @@ dashboardAuth:
 
 commonEnv:
   BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER: "1"
+  BUTLERS_FLEET_CONDITION_HANDOFF: "1"
+  # Decision Desk prompts send real Telegram messages to the owner; stays off
+  # until the owner consents to live prompts (bu-ckkpz.3).
+  BUTLERS_DECISION_ROUTING_ENABLED: "0"
+  # The weekly decision-review digest and the P1/deploy escalation check also
+  # message the owner; on in dev by owner decision 2026-10-08 (bu-ckkpz). The
+  # export and /api/decisions do not depend on this flag.
+  BUTLERS_DECISION_REVIEW_ENABLED: "1"
+
+# Bridge retired; keep every runtime pod isolated from the engineering tracker.
+trackerEgress:
+  enabled: true
+
+# Current service traffic moves to its own process; session health refuses (503).
+butlersControl:
+  enabled: true

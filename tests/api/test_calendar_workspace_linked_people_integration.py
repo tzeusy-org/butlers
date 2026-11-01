@@ -3,7 +3,7 @@
 The workspace read hydrates ``UnifiedCalendarEntry.linked_people`` for existing
 events by batch-joining the per-schema ``calendar_event_entities`` junction to
 the shared ``public.entities`` table (``_ENTRY_PEOPLE_SQL`` in
-``api/read_models/calendar_workspace_v1.py``).
+``api/read_models/calendar_workspace.py``).
 
 The mocked-pool unit tests in ``tests/api/test_calendar_workspace.py`` stub
 ``fan_out``/``fan_out_with_status`` and never round-trip through asyncpg, so they
@@ -27,7 +27,7 @@ import uuid
 
 import pytest
 
-from butlers.api.read_models.calendar_workspace_v1 import _ENTRY_PEOPLE_SQL
+from butlers.api.read_models.calendar_workspace import _ENTRY_PEOPLE_SQL
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [

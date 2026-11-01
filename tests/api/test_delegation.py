@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from butlers.api.routers.delegation import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -77,7 +77,7 @@ class _MockDB:
 
 def _wire_db(app, *, rows: list[dict], total: int | None = None) -> _MockDB:
     mock_db = _MockDB(rows=rows, total=total)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -220,7 +220,7 @@ async def test_get_ledger_entry_invalid_uuid(app):
 async def test_no_pools_available_returns_503(app):
     mock_db = MagicMock()
     mock_db.butler_names = []
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

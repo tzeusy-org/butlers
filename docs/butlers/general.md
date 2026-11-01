@@ -79,7 +79,64 @@ global name constraint and drops the passive representation. The `source_version
 tables are dropped only when empty; if they hold rows, they stay in place unused, and a later
 re-upgrade picks them up again.
 
+## Explicit Context and Prompt Values
+
+The context tools follow the adopted [context-security contract](../concepts/context-security.md).
+`check_context` remains a data read; model-mediated `set_context` and `clear_context`
+require the server-verified invocation bound to the actual owner or authenticated
+owner device. A session locator, tool argument or claimed source label is not
+that binding. Canonical DND mutation identity, replay and receipt rules still apply.
+
+General's deterministic Calendar job emits only `meeting/busy` or `focused/focused`.
+It never publishes an event title in the context value, metadata or result. An
+exact returned row witnessed by that producer in the same process/pool can render
+the typed value in the prompt preamble. Legacy rows, foreign pools, restarts,
+expiry, changes and finite cache eviction fall back to type/confidence only;
+matching stored labels do not confer provenance. No new signal or authority is
+introduced.
+
 ## Related Pages
 
 - [Switchboard Butler](switchboard.md) -- routes messages here as the default fallback
 - [Relationship Butler](relationship.md) -- owns contact data beyond General's freeform model
+
+## Internal Capture Ledger
+
+`core_287` installs `public.captures`, `public.capture_operations`, and the fixed
+`public.capture_service_control` singleton. FORCE RLS admits only effective
+`current_user = butler_general_rw`; inherited membership and replayed public grants
+cannot admit another runtime or a role-less API/migration pool. All three reject
+TRUNCATE and deletion, and routed/refused capture receipts cannot be rewritten.
+
+`roster/general/tools/capture_service.py` is an internal service. Admission commits
+held state before returning its opaque receipt. Identical principal/source/mutation
+keys reuse it; changed payload refuses. The ingress owner must supply a server-verified
+source binding, exact digest, original occurrence time and current external epoch;
+constructing `VerifiedAuthority` does not authenticate a caller. Text is bounded to
+32 KiB UTF-8, normalized owning-source UUID reference pairs to eight, canonical
+admission to 64 KiB, and an optional nonblank mutation key to 128 UTF-8 bytes.
+
+Normalized reference intake can remain held; processing does not fetch attachments
+or route a referenced intake without a separately implemented source-eligibility
+adapter. Retained handles cannot authorize a newly private source.
+
+Only General is supported. Fixed note/fact/preference kinds require already declared
+ordinary notes/facts/preferences collections. No vocabulary is seeded. A single
+General transaction writes the item, immutable source version and exact routed
+operation receipt. The item's UUID is the server-generated capture operation UUID;
+the public item writer accepts no caller-selected capture identity. Deferred commit
+checks require both ledger rows and the matching immutable first create version,
+original input and digest before terminal finalization. Normal finalization also
+checks current ordinary eligibility. Verification locks the current ordinary parent/item and recomputes
+the live digest; stored history does not authorize private, stale, deleted or legacy
+unversioned contents. Unsupported specialist ownership refuses before any writer;
+unknown lineages retain their operation and cannot be retried into a fresh target.
+
+Admission and dispatch default **false**, independently. No capture MCP registration,
+HTTP/chat intake, classifier or processing loop is enabled. These remain later units.
+The nonsecret epoch manifest lives outside the repository and database; missing,
+malformed or mismatched epoch/control refuses admission and dispatch. Restore rotates
+its generation and original-occurrence cutoff while keeping both flags disabled.
+Exact read-only outcome verification is available during recovery, but does not
+rebase old operations or re-enable delivery. Rollback removes an empty boundary only;
+stored inputs/operations/control authority require forward remediation.

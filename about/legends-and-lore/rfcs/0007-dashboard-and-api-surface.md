@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (session, trigger and per-butler conversation endpoints and butler-unit views, D7 and D19; the API envelope, route discovery and domain surfaces remain).
+Governing doctrine: [v1.md, Dashboard](../../heart-and-soul/v1.md#dashboard) and [v1.md, Success Criteria](../../heart-and-soul/v1.md#success-criteria) item 6 (the dashboard shows goals, domain data, contacts and ingestion flow), with [vision.md rule 5, operational tuning is edited via the dashboard](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 
@@ -26,7 +28,7 @@ A personal AI agent system with multiple specialist butlers, connectors, schedul
 Butler-specific API routes are auto-discovered by `src/butlers/api/router_discovery.py`:
 
 1. Scan `roster/*/api/router.py` for Python files.
-2. Load each module via `importlib.util.spec_from_file_location`.
+2. Load each module through `butlers.roster_imports`, preserving its existing execution name, one module object per file, source-path checks and failed-load cleanup. The `butlers.api._roster` namespace aliases those actual router and model objects.
 3. Validate that the module exports a `router` variable of type `APIRouter`.
 4. Register discovered routers with the FastAPI application, prefixed with `/api/<butler_name>`.
 
@@ -34,7 +36,10 @@ Conventions:
 
 - Each `router.py` MUST export a module-level `router` variable (APIRouter instance).
 - No `__init__.py` needed in the `api/` directory.
-- DB dependencies are auto-wired via `wire_db_dependencies()`.
+- Core and discovered routers import the public `Db` dependency (or
+  `Depends(get_db)`) from `src/butlers/api/deps.py`. The `src/butlers/api/app.py`
+  lifespan initializes and shuts down its shared DatabaseManager singleton;
+  existing optional reads use `OptionalDb`/`get_db_optional()`.
 - Pydantic models SHOULD be co-located in `models.py` alongside `router.py`.
 - Butlers without `api/` directories are silently skipped.
 - Invalid router exports (missing `router` variable, wrong type) are logged as warnings and skipped.
@@ -353,46 +358,16 @@ Conformance with RFC 0005 (observability and telemetry):
 
 ---
 
-## Amendment 2: Snapshot-backed Bead Detail
+## Amendment 2: Snapshot-backed Bead Detail (withdrawn)
 
-**Date:** 2026-08-13
-**Status:** Accepted
-**Implementing change:** `openspec/changes/add-dashboard-bead-detail/` (bu-7a74e)
+**Date:** 2026-08-13; withdrawn by owner decision bu-g2zuv2 = A (2026-10-21).
 
-The dashboard adds a single read-only Bead drill-down without expanding its
-tracker trust boundary.
-
-### API Surface
-
-`GET /api/beads/{id}` returns `ApiResponse<BeadDetail>` only from the existing
-read-only Beads JSONL export bind mount. There is no live `bd`, Dolt, GitHub,
-database, credential, external-network, or tracker-mutation bridge. Successful
-responses include `meta.export_as_of`, the source file mtime.
-
-`BeadDetail` is an explicit allowlist: `id`, `title`, `status`, `priority`,
-`type`, `description`, `design`, `acceptance_criteria`, `labels`,
-`created_at`, `updated_at`, `started_at`, `closed_at`, `due_at`, bounded direct
-`dependencies`, and `external_ref`. A dependency summary is limited to 20
-source-order records and contains only `id`, `title`, `status`, `priority`, and
-`type`. Notes, metadata, comments, identities, credentials, raw records, raw
-edges, and arbitrary href values are never materialized.
-
-The endpoint fully verifies bounded source readability before looking up the
-ID. Only a readable, sufficiently fresh snapshot with no matching ID returns
-`404 ErrorResponse{code: "BEAD_NOT_FOUND"}`. A missing, stale, oversized,
-unreadable, or malformed snapshot returns `503
-ErrorResponse{code: "BEAD_SNAPSHOT_UNAVAILABLE"}` with
-`error.details.export_as_of`, including `null` when no mtime is known. This
-prevents an unavailable source from becoming a fabricated not-found claim.
-
-### Frontend Route and Navigation
-
-`/beads/:id` is a same-origin, read-only detail route. It uses the standard
-detail shell and semantic, rule-separated content; it exposes source freshness
-and distinct loading, not-found, and unavailable states. It has no tracker
-mutation affordance. Decisions and escalation blockers build their targets
-only as `/beads/${encodeURIComponent(id)}`. `external_ref` is inert displayed
-text, never a link or fetched target.
+The former bead-detail API and frontend destination are retired in source under
+bu-99t5s3.6. Their historical contract is available in Git history. No runtime
+snapshot mount, tracker reader or mutation interface remains authorized by this
+amendment. Approvals, QA and dashboard owner authentication retain their
+existing contracts. Retained decision tables require a separately reviewed
+drop only after code removal is deployed and all old readers and writers stop.
 
 ---
 

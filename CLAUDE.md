@@ -20,6 +20,7 @@ Detail belongs in the destinations below — add it there, not here.
 | Identity & entity resolution (`public.entities`, `relationship.entity_facts`, `notify()`) | `docs/concepts/identity-model.md` |
 | Butler daemon internals, runtime config seeding | `docs/architecture/butler-daemon.md`, `docs/concepts/butler-lifecycle.md` |
 | Memory subsystem design | `docs/modules/memory.md` |
+| Goal runtime and capability grants (hard cutover pending; classify-and-route is frozen to fixes) | `about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md` |
 | Debugging a dev-stack session/routing failure | `butlers-tooling` skill → `butler-dev-debug` subskill |
 
 ## Repo Root Discipline (NON-NEGOTIABLE)
@@ -56,11 +57,12 @@ asyncio. Butler config is git-based under `roster/{butler}/`.
 
 ```bash
 uv sync --dev                                          # Install dependencies
-make lint | make format | make test | make check       # ruff / ruff / pytest / lint+test
+make install-lint-tools                                # Pinned gitleaks + actionlint (once per worktree)
+make lint | make format | make test | make check       # ruff+secrets+workflows / ruff / pytest / lint+test
 uv run pytest tests/test_foo.py -q --tb=short          # Single file (quiet)
 uv run pytest tests/test_foo.py::test_bar -n 0         # Single test (avoid inherited xdist)
 make test-plan                                         # Dirty-worktree plan only; does not run pytest
-uv run ruff check src/ tests/ --output-format concise  # Lint only (quiet)
+uv run ruff check src/ tests/ roster/ scripts/ --output-format concise  # Ruff only (quiet)
 uv run ruff format src/ tests/                         # Format only
 ```
 
@@ -68,13 +70,13 @@ uv run ruff format src/ tests/                         # Format only
 committed, staged, unstaged, and untracked changes but does **not** execute tests. `make test-qg`
 is a local `tests/` gate, not universal coverage: it omits roster, root DB/migration suites, and
 the CI-shaped selection. The exact agent ladder and final CI-shaped commands live in
-`AGENTS.md` (§ Test Scope Policy). `pytest_gate.py` receipts require a positive terminator before a
-run is called green; `UNKNOWN` is never a pass.
+`docs/testing/ci.md` (summary in `AGENTS.md` § Test Scope Policy). `pytest_gate.py` receipts
+require a positive terminator before a run is called green; `UNKNOWN` is never a pass.
 
 ## Key Conventions
 
 - **uv**, not pip. Hatchling build backend, `src/butlers/` layout.
-- **Ruff:** target py312, line-length 100, rules E, F, I, UP.
+- **Ruff:** target py312, line-length 100, rules E, F, I, UP, B, ASYNC.
 - **pytest** with pytest-asyncio (`asyncio_mode = "auto"`); write the failing test first.
 - **Modules only add tools** — they never touch core infrastructure. Implement the `Module` ABC
   (`src/butlers/modules/base.py`): `register_tools`, `migrations`, `on_startup`, `on_shutdown`.
@@ -84,7 +86,8 @@ run is called green; `UNKNOWN` is never a pass.
   unclear.
 - **Butler API routes** live in `roster/{butler}/api/router.py` (module-level `router` variable, no
   `__init__.py`, Pydantic models co-located in `models.py`) and are auto-discovered by
-  `src/butlers/api/router_discovery.py`, with DB deps auto-wired by `wire_db_dependencies()`.
+  `src/butlers/api/router_discovery.py`. Routers import the shared `Db` dependency from
+  `src/butlers/api/deps.py`; `src/butlers/api/app.py` manages its singleton's lifespan.
 - **Development is spec-driven:** requirements in `openspec/`, doctrine in `about/heart-and-soul/`,
   work items in beads.
 

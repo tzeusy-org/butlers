@@ -20,14 +20,18 @@ import {
   resetModelUsage,
   getModelUsageDetail,
   verifyAllModels,
+  getModelAllowance,
   getModelAttention,
   reissueModelAttention,
+  ApiError,
 } from "@/api/index.ts";
+import { POLL_BUS_RECONCILE_MS } from "@/lib/poll-policy.ts";
 import type {
   ModelCatalogCreate,
   ModelCatalogUpdate,
   ModelPriorityDelta,
-  ButlerModelOverrideUpsert,
+  ButlerModelOverridesWrite,
+  ButlerModelOverrideReason,
   TokenLimitsRequest,
   ResetUsageRequest,
 } from "@/api/types.ts";
@@ -49,6 +53,21 @@ export function useModelAttention() {
     queryKey: ["model-catalog", "runtime-attention"],
     queryFn: getModelAttention,
   });
+}
+
+/** Provider allowance state per account (owner-only; a 403 is not retried). */
+export function useModelAllowance() {
+  const query = useQuery({
+    queryKey: ["model-catalog", "allowance"],
+    queryFn: getModelAllowance,
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 403) return false;
+      return failureCount < 3;
+    },
+    refetchInterval: POLL_BUS_RECONCILE_MS,
+  });
+  const isForbidden = query.error instanceof ApiError && query.error.status === 403;
+  return { ...query, isForbidden };
 }
 
 export function useReissueModelAttention() {
@@ -131,7 +150,7 @@ export function useButlerModelOverrides(butlerName: string) {
 export function useUpsertButlerModelOverrides(butlerName: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: ButlerModelOverrideUpsert[]) =>
+    mutationFn: (body: ButlerModelOverridesWrite) =>
       upsertButlerModelOverrides(butlerName, body),
     onSuccess: () => {
       queryClient.invalidateQueries({
@@ -145,8 +164,8 @@ export function useUpsertButlerModelOverrides(butlerName: string) {
 export function useDeleteButlerModelOverride(butlerName: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (overrideId: string) =>
-      deleteButlerModelOverride(butlerName, overrideId),
+    mutationFn: ({ overrideId, ...body }: ButlerModelOverrideReason & { overrideId: string }) =>
+      deleteButlerModelOverride(butlerName, overrideId, body),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: ["butler-model-overrides", butlerName],

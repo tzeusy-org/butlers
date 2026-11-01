@@ -41,7 +41,7 @@ stripped from text fields first, because PostgreSQL text columns reject them. An
 
 ## Healing Fingerprint
 
-After a session fails and the self-healing module computes an error fingerprint, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.
+When an error is fingerprinted for centralized QA tracking, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.
 
 ## Active Sessions
 

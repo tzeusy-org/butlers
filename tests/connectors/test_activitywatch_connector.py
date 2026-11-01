@@ -35,6 +35,7 @@ from butlers.connectors.activitywatch import (
     persist_activity_event,
 )
 from butlers.ingestion_policy import PolicyDecision
+from butlers.testing.fake_pool import AsyncCtx
 
 _MACHINE_ID = "desktop"
 _ENDPOINT = f"activitywatch:{_MACHINE_ID}"
@@ -239,7 +240,7 @@ def test_activity_idempotency_key_deterministic() -> None:
 def test_activity_envelope_passes_parse_ingest_envelope() -> None:
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     env = build_activity_envelope(
         machine_id=_MACHINE_ID,
@@ -604,23 +605,12 @@ class _PurgeConnection:
         return outcome
 
 
-class _PurgeAcquire:
-    def __init__(self, connection: _PurgeConnection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _PurgeConnection:
-        return self._connection
-
-    async def __aexit__(self, *_args: object) -> None:
-        return None
-
-
 class _PurgePool:
     def __init__(self, outcomes: list[str | Exception]) -> None:
         self.connection = _PurgeConnection(outcomes)
 
-    def acquire(self) -> _PurgeAcquire:
-        return _PurgeAcquire(self.connection)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self.connection)
 
 
 def _make_retention(*outcomes: str | Exception, retention_days: int = 14) -> ActivityWatchRetention:
@@ -717,3 +707,71 @@ async def test_retention_health_diagnostic_does_not_leak_exception_details() -> 
     assert diagnostic is not None
     assert "swordfish" not in diagnostic
     assert "traceback" not in diagnostic
+
+
+async def test_persist_activity_event_withholds_code_in_window_title() -> None:
+    """A code in the window title is replaced; an ordinary title is stored unchanged."""
+    pool = AsyncMock()
+    pool.fetchval.return_value = "event-id"
+
+    async def persist(title: str) -> None:
+        await persist_activity_event(
+            pool,
+            machine_id=_MACHINE_ID,
+            endpoint_identity=_ENDPOINT,
+            bucket_id=_BUCKET_ID,
+            ts=_TS,
+            duration_seconds=42,
+            app="Google Chrome",
+            window_title=title,
+            app_class="browser",
+            browser_domain=None,
+            is_afk=False,
+            raw_payload={},
+        )
+
+    await persist("Your verification code is 482913 - Mail")
+    assert "482913" not in pool.fetchval.await_args.args[8]
+    assert "[auth-code withheld" in pool.fetchval.await_args.args[8]
+
+    await persist("Q3 roadmap 482913 draft")
+    assert pool.fetchval.await_args.args[8] == "Q3 roadmap 482913 draft"
+
+
+async def test_persist_activity_event_skips_write_when_detector_fails(caplog) -> None:
+    from unittest.mock import patch
+
+    pool = AsyncMock()
+    with patch("butlers.connectors.activitywatch.scrub_text", side_effect=RuntimeError("482913")):
+        inserted = await persist_activity_event(
+            pool,
+            machine_id=_MACHINE_ID,
+            endpoint_identity=_ENDPOINT,
+            bucket_id=_BUCKET_ID,
+            ts=_TS,
+            duration_seconds=42,
+            app="Google Chrome",
+            window_title="Your verification code is 482913",
+            app_class="browser",
+            browser_domain=None,
+            is_afk=False,
+            raw_payload={},
+        )
+
+    assert inserted is False
+    pool.fetchval.assert_not_awaited()
+    assert "bearer scrub failed" in caplog.text
+    assert "482913" not in caplog.text and "verification code" not in caplog.text
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import activitywatch as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("ACTIVITYWATCH_MACHINE_ID", "synthetic-machine")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = module.ActivityWatchConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("activitywatch", "activitywatch")
+    assert config.health_port == 40123

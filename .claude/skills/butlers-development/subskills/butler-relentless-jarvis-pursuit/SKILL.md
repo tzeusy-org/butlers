@@ -17,8 +17,9 @@ metadata:
   authors:
     - tze
     - Claude Fable 5
+    - OpenAI Codex
   status: active
-  last_reviewed: "2026-09-02"
+  last_reviewed: "2026-10-23"
 compatibility: >
   Needs repo-root access, bd (beads) against the shared Dolt server, and the Workflow tool
   for the fan-out. The dev stack being up is optional (auditors work statically; live
@@ -43,9 +44,18 @@ as the supporting half, not the headline. Concretely: Phase 2 (ecosystem lenses)
 primary fan-out and gets the larger share of agent-hours; Phase 1 groups surfaces more
 coarsely; the ranked move list leads with feature/ecosystem moves (see Phase 3).
 
-**Precedent:** the 2026-07-03 run (`docs/redesigns/2026-07-03-jarvis-audit.md` + `-data.json`,
-epic `bu-86c4c`, 28 subagents). Reuse its shape; treat its dossier as the canonical example of
-the deliverable and the primary dedup source.
+**Precedent:** the 2026-07-03 run (`docs/redesigns/2026-07-03-jarvis-audit.md`,
+epic `bu-86c4c`, 28 subagents). Its historical structured output remains available through
+the dossier's pinned Git-history pointer. Reuse the dossier shape and dedup findings,
+with the current output policy below.
+
+## Reasoning Architecture
+
+Ground reasoning-topology ideas in `about/heart-and-soul/architecture.md` and
+RFC 0038: one whole-goal lead, optional focused children at depth one, durable
+domain responsibilities, and grants derived from goal origin. Judge moves by
+whole-goal outcomes and useful proactive care, not by adding reasoning agents
+per domain. Do not propose features on the frozen classify-and-route path.
 
 ## Routing: pursuit vs. QC
 
@@ -160,23 +170,35 @@ or session context was lost (see Execution discipline §3).
 
 ## Phase 4 — Deliverables
 
-1. **Durable dossier (size-capped)** — land via the worktree + PR flow:
-   `docs/redesigns/YYYY-MM-DD-jarvis-pursuit.md` and `-data.json`.
+1. **Durable dossier (size-capped)** — land only
+   `docs/redesigns/YYYY-MM-DD-jarvis-pursuit.md` via the worktree + PR flow.
    - The md stays under **25 KB**: north star, tier board + movement, themes, and at most
-     **15 ranked moves**, one short paragraph each. Per-move detail belongs in the bead's
-     structured fields and the JSON, not the md.
-   - The JSON holds per-agent structured output only (no transcripts, prompts or raw tool
-     output) and stays under **500 KB**. Document the
-     `jq '.audits[] | select(.page=="<key>")'` access pattern in the md.
-   - **Retention:** only the two newest runs keep their `-data.json` in the tree. The PR that
-     adds a new pair `git rm`s older JSONs and repoints each pruned run's md to
-     `git show <sha>:docs/redesigns/<file>`, pinned to the last commit that held it. Git
-     history is the archive; the tree is not.
-2. **Index-append (same commit as the dossier pair)** — append one row for the new run to the
+     **15 ranked moves**, one short paragraph each. Per-move detail and structured observations
+     belong in the bead's `design`, `acceptance_criteria` and evidence notes, not the md.
+   - **No tracked dossier data JSON**, including the newest run. Keep per-agent structured
+     output in the gitignored harvest and state files (Execution discipline §3), preserving
+     their schemas and atomic resume writes. These local files are not durable reader links.
+   - The dossier records bead IDs and the artifact report URL or identifier. If the report
+     publishes a structured attachment, name its stable reference and access pattern; keep it
+     under **500 KB**, with structured observations only, no transcripts, prompts or raw tool
+     output. If artifact publication is unavailable, say so; the Markdown dossier and complete
+     Beads fields remain the durable deliverables. Do not pretend a local harvest is published.
+   - Preserve existing historical JSON evidence citations as `git show <sha>:<path>` pointers
+     to commits that actually contain the files. Do not commit new JSON to manufacture an
+     archive pointer. See the [dossier policy](../../../../../docs/redesigns/README.md#pursuit--audit-dossiers).
+   - **Retention of md bodies:** a dated dossier body that nothing cites (recount at the PR base:
+     `git grep -l -F <basename> -- . ':!docs/redesigns/README.md' ':!docs/redesigns/pursuit-ledger.md'
+     ':!<file>'`) and that is older than the three newest runs leaves the tree once its Dropped
+     section is folded into `about/legends-and-lore/ideas-ledger.md`. Repoint its README and
+     pursuit-ledger rows to `git show <sha>:docs/redesigns/<file>`; open and blocked beads that
+     cite the body count as citers to name in the PR body. A body that backs a live program
+     (an active held graph or an active openspec change, such as the 2026-10-14 QA remediation
+     run) stays even with zero citers until that program closes.
+2. **Index-append (same commit as the Markdown dossier)** — append one row for the new run to the
    "Pursuit / audit dossiers" table in `docs/redesigns/README.md` (newest run first, numbered
    sequentially from the prior top row): `| N (YYYY-MM-DD) | [YYYY-MM-DD-jarvis-pursuit.md](YYYY-MM-DD-jarvis-pursuit.md) |`,
    with a trailing `— <lens>` note only for a non-standard-lens run (cf. the 2026-09-02
-   dashboard-chat and 2026-07-28 talk-to-butlers rows). Do this for every dated dossier pair
+   dashboard-chat and 2026-07-28 talk-to-butlers rows). Do this for every dated dossier
    this skill writes, so the index cannot rot again.
 3. **Artifact report** for the owner (load `artifact-design` skill first) — the readable
    version of the dossier.
@@ -194,8 +216,10 @@ run is *planning*, not execution. Always:
 2. Create the epic + one child per move; make every child depend on the gate so all are
    blocked. bd rejects a task blocking an epic ("epics can only block other epics") — so also
    **assign the epic itself to the owner** to keep it off `bd ready`.
-3. Every bead description cites its evidence and points at the dossier JSON by pinned commit
-   (`<sha>:docs/redesigns/<file>`), so retention pruning never breaks the pointer.
+3. Every bead description cites source evidence and the Markdown dossier, pinned to its commit
+   once committed (`git show <sha>:docs/redesigns/<file>.md`), plus the relevant published artifact
+   reference when available. Keep historical JSON citations pinned to their existing commits;
+   no new bead depends on a dossier data JSON being tracked or on a local harvest path.
 4. **Every child is created with a full Dispatch Readiness Packet in its structured fields** —
    `bd create --design "…" --acceptance "…"` (or `bd update <id> --design/--acceptance` after
    the fact). Normative shape:
@@ -204,8 +228,8 @@ run is *planning*, not execution. Always:
    (doctrine/spec citation), surface map, behavior matrix, and documentation impact;
    `--acceptance` carries named behavior-executing checks at the real seam (plus any
    source-scan/completeness gate). **Prose in `description` does not count** — the fleet reads
-   the structured fields. The dossier md/`-data.json` is the evidence *pointer*, never a
-   substitute for these fields; a worker must not have to open the dossier to learn what to build.
+   the structured fields. The Markdown dossier and published artifact are evidence *pointers*,
+   never a substitute for these fields; a worker must not have to open the dossier to learn what to build.
    *Why:* the coordinator's dispatch-readiness gate
    (`~/.dotfiles/ai-bootstrap/skills/personal/beads-orchestration/subskills/beads-coordinator/references/coordinator-loop.md`
    § Dispatch readiness gate) silently skips any bead with a blank structured

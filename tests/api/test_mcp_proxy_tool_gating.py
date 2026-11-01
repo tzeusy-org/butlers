@@ -29,8 +29,8 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
+from butlers.api.deps import get_db as _state_get_db
 from butlers.api.routers.modules import _get_roster_dir
-from butlers.api.routers.state import _get_db_manager as _state_get_db
 
 pytestmark = pytest.mark.unit
 

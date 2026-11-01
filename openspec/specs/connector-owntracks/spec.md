@@ -215,7 +215,10 @@ Every successfully persisted OwnTracks location evidence write SHALL preserve
 the accepted webhook payload in `connectors.owntracks_points` without deleting,
 renaming, normalizing, or synthesizing optional fields. Evidence persistence is
 a non-fatal side write after successful ingestion, so a failed evidence write
-is logged without changing webhook success. This evidence store is distinct
+is logged without changing webhook success. The only exception to payload
+fidelity is bearer material in free-text string fields, which the connector-base
+placeholder replaces before the write; a detector failure skips the evidence
+write. This evidence store is distinct
 from the `ingest.v1` envelope's privacy tier: metadata-tier envelopes still omit
 `payload.raw`, while the restricted durable evidence row retains the accepted
 location payload required by deterministic adapters.

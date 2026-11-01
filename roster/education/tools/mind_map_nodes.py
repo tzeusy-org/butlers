@@ -312,4 +312,8 @@ async def mind_map_node_update(
                 mind_map_id,
             )
             if node_count > 0:
-                await mind_map_update_status(pool, mind_map_id, "completed")
+                map_status = await pool.fetchval(
+                    "SELECT status FROM education.mind_maps WHERE id = $1", mind_map_id
+                )
+                if map_status == "active":
+                    await mind_map_update_status(pool, mind_map_id, "completed")

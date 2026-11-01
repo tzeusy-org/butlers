@@ -68,6 +68,7 @@ witness/
 .beads/interaction.jsonl
 .beads/interactions.jsonl
 .beads/.bv.lock
+.beads.gate.lock
 .beads/issues.jsonl
 .beads/issues.export.jsonl
 .beads/dolt-config.log
@@ -87,6 +88,7 @@ node_modules/
 # Gas Town runtime artifacts
 .beads/backup/
 .runtime/
+.claude/settings.local.json
 .claude/commands/
 .claude/worktrees
 .claude/scheduled_tasks.lock
@@ -111,6 +113,7 @@ docs/reports/
 .verification/
 bu-*/
 
-# Pursuit working files (dossier retention policy)
+# Dossier data stays outside Git; harvest/state JSON remains local resume state.
+docs/redesigns/*-data.json
 docs/redesigns/*-harvest.json
 docs/redesigns/*-state.json

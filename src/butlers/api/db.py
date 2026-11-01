@@ -60,6 +60,7 @@ class DatabaseManager:
         self._pools: dict[str, asyncpg.Pool] = {}
         self._shared_pool: asyncpg.Pool | None = None
         self._butler_modules: dict[str, frozenset[str]] = {}
+        self._configured_butler_modules: dict[str, frozenset[str] | None] = {}
         # The explicit target schema for each butler pool.  Query paths that
         # own per-butler tables must use this rather than falling through to
         # ``public`` via the pool's search_path after local schema loss.
@@ -141,6 +142,7 @@ class DatabaseManager:
             ``frozenset({"calendar", "email"})``). Used by
             ``butlers_with_module()`` to filter fan_out targets.
         """
+        self.register_configured_modules(butler_name, modules)
         if butler_name in self._pools:
             logger.warning("Butler %s already has a pool; skipping", butler_name)
             return
@@ -329,6 +331,31 @@ class DatabaseManager:
     def butler_names(self) -> list[str]:
         """Return list of all registered butler names."""
         return list(self._pools.keys())
+
+    def register_configured_modules(self, butler_name: str, modules: frozenset[str] | None) -> None:
+        """Retain intended sources before provisioning/pool creation can fail."""
+        self._configured_butler_modules[butler_name] = modules
+
+    @property
+    def configured_butler_names(self) -> list[str]:
+        """Configured sources, including those without an available pool."""
+        return list(self._configured_butler_modules)
+
+    def configured_butlers_with_module(self, module_name: str) -> list[str] | None:
+        """Complete configured module census, or None when metadata is unknown.
+
+        Unlike butlers_with_module, this preserves unavailable sources so a
+        uniqueness/security admission cannot silently ignore a failed pool.
+        """
+        if not self._configured_butler_modules or any(
+            modules is None for modules in self._configured_butler_modules.values()
+        ):
+            return None
+        return sorted(
+            name
+            for name, modules in self._configured_butler_modules.items()
+            if module_name in modules
+        )
 
     def butlers_with_module(self, module_name: str) -> list[str] | None:
         """Return butler names that have *module_name* enabled, or None if unknown.

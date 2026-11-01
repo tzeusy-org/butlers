@@ -8,15 +8,18 @@ Covers:
 - Nonfinite coordinate handling (skip + warn).
 - Missing evidence surface graceful degradation.
 - Checkpoint advance / resume (watermark advances by ts).
-- Clock-skew clamping: implausible device timestamps clamped to recorded_at.
+- Clock-skew clamping: future-dated device timestamps clamped to recorded_at;
+  late-delivered (buffered offline) points keep their device timestamp.
 - Source-scan guardrail: no LLM imports in adapters/owntracks.py.
 """
 
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import asyncpg
 import pytest
@@ -279,7 +282,8 @@ async def test_nonfinite_lat_skips_row_and_advances_watermark() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_point_produces_one_movement_episode() -> None:
+async def test_single_point_emits_no_movement_episode_but_carries_over() -> None:
+    """One fix is a location, not a movement (bu-2tsgqb.6)."""
     row = _make_row()
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -297,27 +301,28 @@ async def test_single_point_produces_one_movement_episode() -> None:
             "butlers.chronicler.adapters.owntracks.upsert_episode",
             side_effect=_fake_upsert_ep,
         ),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover") as mock_save,
     ):
         mock_pe.return_value = MagicMock()
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
-    assert result.episodes_closed == 1
-    assert len(upserted_episodes) == 1
-    ep = upserted_episodes[0]
-    assert ep.episode_type == EPISODE_TYPE_MOVEMENT
-    assert ep.start_at == _NOW
-    assert ep.end_at == _NOW
-    assert ep.precision == Precision.EXACT
-    assert ep.privacy == Privacy.NORMAL
+    assert result.episodes_closed == 0
+    assert upserted_episodes == []
+    # The pending segment is still carried so the next batch can extend it.
+    saved = mock_save.call_args.args[2]
+    assert saved[_ENDPOINT]["point_count"] == 1
+    assert saved[_ENDPOINT]["start_at"] == _NOW.isoformat()
 
 
 @pytest.mark.asyncio
 async def test_gap_beyond_threshold_produces_two_episodes() -> None:
     t1 = _NOW
-    t2 = _NOW + timedelta(minutes=MOVEMENT_GAP_MINUTES + 1)
+    t2 = _NOW + timedelta(minutes=5 + MOVEMENT_GAP_MINUTES + 1)
     rows = [
         _make_row(ts=t1, idempotency_key="k1"),
+        _make_row(ts=t1 + timedelta(minutes=5), idempotency_key="k1b"),
         _make_row(ts=t2, idempotency_key="k2"),
+        _make_row(ts=t2 + timedelta(minutes=5), idempotency_key="k2b"),
     ]
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -349,7 +354,9 @@ async def test_endpoint_identity_change_splits_episode() -> None:
     t2 = _NOW + timedelta(minutes=5)
     rows = [
         _make_row(ts=t1, endpoint_identity="owntracks:alice", idempotency_key="k1"),
-        _make_row(ts=t2, endpoint_identity="owntracks:bob", idempotency_key="k2"),
+        _make_row(ts=t1, endpoint_identity="owntracks:bob", idempotency_key="k1b"),
+        _make_row(ts=t2, endpoint_identity="owntracks:alice", idempotency_key="k2"),
+        _make_row(ts=t2, endpoint_identity="owntracks:bob", idempotency_key="k2b"),
     ]
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -371,9 +378,12 @@ async def test_endpoint_identity_change_splits_episode() -> None:
         mock_pe.return_value = MagicMock()
         result = await adapter.project(pool, chronicler_pool=cp, since=None)
 
+    # Interleaved endpoints neither merge nor fragment each other's movement.
     assert result.episodes_closed == 2
-    assert upserted_episodes[0].payload["endpoint_identity"] == "owntracks:alice"
-    assert upserted_episodes[1].payload["endpoint_identity"] == "owntracks:bob"
+    assert {ep.payload["endpoint_identity"] for ep in upserted_episodes} == {
+        "owntracks:alice",
+        "owntracks:bob",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -511,15 +521,16 @@ def test_owntracks_adapter_exported_from_package() -> None:
 
 @pytest.mark.asyncio
 async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> None:
-    """A point whose device timestamp deviates from recorded_at by more than the
+    """A point whose device timestamp runs ahead of recorded_at by more than the
     threshold must be clamped to recorded_at BEFORE episode projection, preventing
     an inverted episode without ever invoking the swap-bounds guard.
     """
     server_time = _NOW + timedelta(hours=2)  # 12:00 UTC relative to _NOW baseline
 
-    # Point A: device clock is skewed by 4h + 5min backward
-    skewed_ts = server_time - timedelta(hours=4, minutes=5)  # 07:55
-    recorded_at_a = server_time + timedelta(minutes=5)  # 12:05 (server time)
+    # Point A: device clock is skewed by 4h + 5min forward (a fix cannot be
+    # recorded before it was taken, so a future-dated ts is a broken clock).
+    skewed_ts = server_time + timedelta(hours=4, minutes=5)  # 16:05
+    recorded_at_a = server_time  # 12:00 (server time)
 
     # Point B: device clock is accurate
     good_ts = server_time + timedelta(minutes=10)  # 12:10
@@ -570,9 +581,233 @@ async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> No
             f"start_at={ep.start_at.isoformat()}, end_at={ep.end_at.isoformat()}"
         )
 
-    # The clamped point A ts should be recorded_at_a (12:05), not skewed_ts (07:55).
+    # The clamped point A ts should be recorded_at_a (12:00), not skewed_ts (16:05).
     for ep in upserted_episodes:
         assert ep.start_at >= recorded_at_a, (
             f"Episode start_at {ep.start_at.isoformat()} predates clamped ts "
             f"{recorded_at_a.isoformat()} — skewed timestamp leaked into projection"
         )
+        assert ep.end_at < skewed_ts, (
+            f"Episode end_at {ep.end_at.isoformat()} reaches the future-dated device ts "
+            f"{skewed_ts.isoformat()} — skewed timestamp leaked into projection"
+        )
+
+
+@pytest.mark.asyncio
+async def test_buffered_offline_points_keep_device_ts_and_split_by_ts() -> None:
+    """Points buffered offline and uploaded hours later keep their device ts.
+
+    Regression for bu-8r9q06: the phone was offline on a TPE -> NRT flight and
+    uploaded its queued Taoyuan fixes together with the first Narita fix after
+    landing.  One Taoyuan fix arrived 4h18m late; clamping it to recorded_at
+    placed the owner back in Taiwan 39 minutes after the Narita fix.  Upload
+    order also differed from device order, which merged both airports into one
+    movement episode when segmenting by recorded_at.
+    """
+    upload = datetime(2026, 10, 26, 2, 43, 50, tzinfo=UTC)
+    taoyuan_late = datetime(2026, 10, 25, 22, 25, 39, tzinfo=UTC)
+    taoyuan_b = datetime(2026, 10, 25, 23, 3, 43, tzinfo=UTC)
+    taoyuan_c = datetime(2026, 10, 25, 23, 8, 38, tzinfo=UTC)
+    narita = datetime(2026, 10, 26, 2, 4, 34, tzinfo=UTC)
+    assert upload - taoyuan_late > timedelta(hours=CLOCK_SKEW_THRESHOLD_HOURS)
+
+    # Fetched in ts order (as the SQL does), but recorded_at order differs.
+    rows = [
+        {
+            **_make_row(ts=taoyuan_late, lat=25.077, lon=121.236, idempotency_key="tpe-a"),
+            "recorded_at": upload,
+        },
+        {
+            **_make_row(ts=taoyuan_b, lat=25.071, lon=121.224, idempotency_key="tpe-b"),
+            "recorded_at": upload + timedelta(seconds=2),
+        },
+        {
+            **_make_row(ts=taoyuan_c, lat=25.053, lon=121.223, idempotency_key="tpe-c"),
+            "recorded_at": upload + timedelta(seconds=1),
+        },
+        {
+            **_make_row(ts=narita, lat=35.762, lon=140.385, idempotency_key="nrt-a"),
+            "recorded_at": upload + timedelta(seconds=3),
+        },
+    ]
+
+    adapter = OwnTracksPointAdapter()
+    upserted_events: list[PointEvent] = []
+    upserted_episodes: list[Episode] = []
+
+    async def _fake_upsert_pe(conn: object, event: PointEvent) -> PointEvent:
+        upserted_events.append(event)
+        return event
+
+    async def _fake_upsert_ep(conn: object, episode: Episode) -> Episode:
+        upserted_episodes.append(episode)
+        return episode
+
+    with (
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_point_event",
+            side_effect=_fake_upsert_pe,
+        ),
+        patch(
+            "butlers.chronicler.adapters.owntracks.upsert_episode",
+            side_effect=_fake_upsert_ep,
+        ),
+    ):
+        result = await adapter.project(
+            _pool_returning(*rows), chronicler_pool=_chronicler_pool(), since=None
+        )
+
+    assert not any("implausible" in w for w in result.warnings), result.warnings
+    occurred = {e.payload["idempotency_key"]: e.occurred_at for e in upserted_events}
+    assert occurred == {
+        "tpe-a": taoyuan_late,
+        "tpe-b": taoyuan_b,
+        "tpe-c": taoyuan_c,
+        "nrt-a": narita,
+    }
+
+    # The lone Taoyuan and Narita fixes are locations, not movements.
+    spans = sorted((ep.start_at, ep.end_at) for ep in upserted_episodes)
+    assert spans == [(taoyuan_b, taoyuan_c)]
+
+
+# ---------------------------------------------------------------------------
+# Trail quality (bu-2tsgqb.6): outliers, minimum evidence, duplicate chunks
+# ---------------------------------------------------------------------------
+
+
+def _event_id(idempotency_key: str) -> UUID:
+    return uuid5(NAMESPACE_URL, idempotency_key)
+
+
+async def _project_capturing(
+    rows: list[dict], *, carryover: dict | None = None, stored: dict | None = None
+) -> tuple[object, list[PointEvent], list[Episode], dict]:
+    """Run the adapter, capturing point events, episodes and saved carryover."""
+    events: list[PointEvent] = []
+    episodes: list[Episode] = []
+
+    async def _fake_pe(conn: object, event: PointEvent) -> PointEvent:
+        events.append(event)
+        return replace(event, id=_event_id(event.payload["idempotency_key"]))
+
+    async def _fake_ep(conn: object, episode: Episode) -> Episode:
+        episodes.append(episode)
+        return episode
+
+    cp = _chronicler_pool()
+    if stored is not None:
+        conn = await cp.acquire().__aenter__()
+        conn.fetchrow = AsyncMock(return_value=stored)
+
+    with (
+        patch("butlers.chronicler.adapters.owntracks.upsert_point_event", side_effect=_fake_pe),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_ep),
+        patch(
+            "butlers.chronicler.adapters.owntracks.get_carryover",
+            AsyncMock(return_value=carryover or {}),
+        ),
+        patch("butlers.chronicler.adapters.owntracks.save_carryover") as mock_save,
+    ):
+        result = await OwnTracksPointAdapter().project(
+            _pool_returning(*rows), chronicler_pool=cp, since=None
+        )
+    return result, events, episodes, mock_save.call_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_impossible_jump_kept_as_flagged_evidence_and_excluded_from_movement() -> None:
+    """The Oct 16 landing-time eastern-Poland fix must not become a movement."""
+    beijing = (40.08, 116.58)
+    rows = [
+        _make_row(ts=_NOW, lat=beijing[0], lon=beijing[1], idempotency_key="b1"),
+        _make_row(ts=_NOW + timedelta(minutes=4), lat=52.12, lon=22.06, idempotency_key="poland"),
+        _make_row(
+            ts=_NOW + timedelta(minutes=10), lat=beijing[0], lon=beijing[1], idempotency_key="b2"
+        ),
+    ]
+    result, events, episodes, saved = await _project_capturing(rows)
+
+    flagged = {e.payload["idempotency_key"] for e in events if "trail_outlier" in e.payload}
+    assert flagged == {"poland"}
+    assert len(events) == 3  # the evidence is kept, only flagged
+    assert any("impossible jump" in w for w in result.warnings)
+    assert [(ep.episode_type, ep.start_at, ep.payload["point_count"]) for ep in episodes] == [
+        (EPISODE_TYPE_MOVEMENT, _NOW, 2)
+    ]
+    assert saved["_trail_anchors"][_ENDPOINT]["ts"] == (_NOW + timedelta(minutes=10)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_carryover_extension_counts_the_whole_episode() -> None:
+    """One new fix extending an open episode is not a "1 points" movement."""
+    start = _NOW - timedelta(minutes=50)
+    carry = {
+        _ENDPOINT: {
+            "source_ref": "connectors.owntracks_points:movement:x:1",
+            "start_at": start.isoformat(),
+            "end_at": (_NOW - timedelta(minutes=5)).isoformat(),
+            "start_lat": 1.2345,
+            "start_lon": 103.8765,
+            "point_count": 6,
+        }
+    }
+    _, _, episodes, saved = await _project_capturing([_make_row(ts=_NOW)], carryover=carry)
+
+    assert len(episodes) == 1
+    assert episodes[0].start_at == start
+    assert episodes[0].title == "Movement (7 points)"
+    assert saved[_ENDPOINT]["point_count"] == 7
+
+
+@pytest.mark.asyncio
+async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates() -> None:
+    """Regression for the Oct 16 08:14-12:01 / 08:25-09:26 duplicate chunks."""
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:stored",
+        "start_at": _NOW - timedelta(minutes=11),
+        "end_at": _NOW + timedelta(hours=3),
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+        "linked_event_ids": [],  # legacy episode: no linked evidence yet
+    }
+    rows = [
+        _make_row(ts=_NOW, idempotency_key="a"),
+        _make_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+    ]
+    _, _, episodes, saved = await _project_capturing(rows, stored=stored)
+
+    assert len(episodes) == 1
+    ep = episodes[0]
+    assert ep.source_ref == stored["source_ref"]
+    assert (ep.start_at, ep.end_at) == (stored["start_at"], stored["end_at"])
+    assert ep.payload["point_count"] == 42
+    assert saved[_ENDPOINT]["source_ref"] == stored["source_ref"]
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_merged_batch_keeps_the_point_count_stable() -> None:
+    """point_count counts distinct linked evidence, so a replay never re-adds it."""
+    others = [_event_id(f"earlier-{i}") for i in range(40)]
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:stored",
+        "start_at": _NOW - timedelta(minutes=11),
+        "end_at": _NOW + timedelta(hours=3),
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+        "linked_event_ids": others,
+    }
+    rows = [
+        _make_row(ts=_NOW, idempotency_key="a"),
+        _make_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+    ]
+    _, _, first, _ = await _project_capturing(rows, stored=stored)
+    assert first[0].payload["point_count"] == 42
+
+    # Replay: the stored episode now carries this batch's fixes as evidence.
+    replay_stored = {
+        **stored,
+        "payload": {**stored["payload"], "point_count": 42},
+        "linked_event_ids": [*others, _event_id("a"), _event_id("b")],
+    }
+    _, _, replayed, saved = await _project_capturing(rows, stored=replay_stored)
+    assert replayed[0].payload["point_count"] == 42
+    assert saved[_ENDPOINT]["point_count"] == 42

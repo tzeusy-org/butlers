@@ -45,7 +45,7 @@ sender identity and attach the resulting entity anchor to each speaker's message
 extraction and fan-out.
 
 ID: REQ-switchboard-identity-002
-Source: docs/superpowers/specs/2026-08-24-whatsapp-identity-reconciliation-design.md §3
+Source: docs/plans/2026-08-24-whatsapp-identity-reconciliation-design.md §3
 Scope: v1-mandatory
 
 #### Scenario: Multi-speaker batch resolves each speaker once

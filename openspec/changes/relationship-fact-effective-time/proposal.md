@@ -69,3 +69,13 @@ None.
 This artifact resolves routine representation choices so implementation can be reviewed against an
 executable contract. It is still a proposal. Drafting, validation, or CI does not constitute owner
 acceptance, implementation authority, archive authority, or approval of any database effect.
+
+
+## Preserving Contacts composition — private preparation
+
+This single active carrier also modifies existing module-contacts CRM Backfill Pipeline and Identity Resolution Pipeline, with permanently ROOT-reserved existing metadata001/002. Its existing central REQ-relationship-facts-002 contains the complete temporal/authority body plus four Contacts report/read scenarios, without a second active MODIFIED002 or a duplicate009. The original temporal proposal above is retained verbatim as dated history. bu-h3b7t remains temporal implementation owner; its owner acceptance, cutover, real-Postgres and separately owned follow-ups remain unchecked and unauthorized here. This composition authorizes no runtime, schema, role, privilege, deployment, archive or source implementation. All P1seven/P2six remain mandatory and open.
+
+
+## Preserving existing Registered Tool Surface bookkeeping
+
+One current butler-relationship restatement now governs the actual legacy63 and selected-Contacts65 populations. It includes ROOT-reserved existing metadata REQ-butler-relationship-002, not a new capability or User Fact001. Baseline58/59, meeting60/61 and held Entity64/65 are dated populations that omitted existing identity handlers. Duplicate MODIFIED operations move verbatim into their existing design histories. Meeting substantive requirements and the full held read-only Entity ADDED requirement, original Source References and all existing tasks remain unchanged. This private proposal does not adopt native baselines, archive, activate Entity, earn owner/temporal/SQL approval, or change source.

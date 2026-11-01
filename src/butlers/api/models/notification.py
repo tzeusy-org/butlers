@@ -7,6 +7,7 @@ model for dashboard statistics.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -29,6 +30,8 @@ class NotificationSummary(BaseModel):
     session_id: UUID | None = None
     trace_id: str | None = None
     created_at: datetime
+    approval_review: dict[str, str] | None = None
+    approval_review_state: Literal["available", "none", "unavailable"] = "none"
 
 
 class NotificationListResponse(PaginatedResponse[NotificationSummary]):

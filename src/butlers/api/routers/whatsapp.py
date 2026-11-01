@@ -36,6 +36,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models.whatsapp import (
     WhatsAppDisconnectResponse,
     WhatsAppHealthResponse,
@@ -84,11 +85,6 @@ def _get_bridge_socket_path() -> str:
     Override via app.dependency_overrides[_get_bridge_socket_path] in tests.
     """
     return os.environ.get("WHATSAPP_BRIDGE_SOCKET", _DEFAULT_BRIDGE_SOCKET)
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
@@ -339,7 +335,8 @@ async def get_whatsapp_status(
 @router.post("/pair/start", response_model=WhatsAppPairStartResponse)
 async def start_whatsapp_pairing(
     socket_path: str = Depends(_get_bridge_socket_path),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> WhatsAppPairStartResponse:
     """Instruct the bridge to generate a new QR code for pairing.
 

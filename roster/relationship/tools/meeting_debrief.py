@@ -28,7 +28,12 @@ from butlers.core.commitments import (
     create_commitment,
     validate_commitment_creation,
 )
-from butlers.jobs.meeting_debrief import active_entity_ids, decode_attendees
+from butlers.jobs.meeting_debrief import (
+    # The snapshot's own resolver, so read time and snapshot time agree on who an email is.
+    _resolve_people,
+    active_entity_ids,
+    decode_attendees,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +54,18 @@ DEBRIEF_CONFIDENCE = 0.9
 
 _ANSWERABLE_STATES = ("pending", "expired")
 
+#: Fixed, content-blind refusal when a named counterparty is no longer ``active``.
+_COUNTERPARTY_UNAVAILABLE = "counterparty is not available for commitments"
+
 
 async def meeting_debrief_pending(pool: asyncpg.Pool) -> dict[str, Any]:
     """List prompted, unanswered debriefs in the order the owner was shown them.
 
-    Attendees who are no longer ``active`` are left out, so the session never names them.
+    Attendees who are no longer ``active`` are left out, so the session never names them. That
+    includes an attendee the snapshot kept by raw name/email because nothing resolved then (no
+    entity id): their email is resolved again here, and one that now belongs to an inactive
+    entity (or to the owner) is withheld. One that still resolves to nothing is shown as before.
+    The snapshot itself is never rewritten.
     """
     rows = await pool.fetch(
         """
@@ -67,9 +79,23 @@ async def meeting_debrief_pending(pool: asyncpg.Pool) -> dict[str, Any]:
     active = await active_entity_ids(
         pool, {a["entity_id"] for _, atts in decoded for a in atts if a["entity_id"]}
     )
+    unresolved_emails = {
+        str(a["email"]).strip().lower()
+        for _, atts in decoded
+        for a in atts
+        if a["entity_id"] is None and a.get("email")
+    }
+    resolved_now = await _resolve_people(pool, unresolved_emails)
+
+    def _shown(att: dict[str, Any]) -> bool:
+        if att["entity_id"] is not None:
+            return att["entity_id"] in active
+        person = resolved_now.get(str(att.get("email") or "").strip().lower())
+        return person is None or (person["posture"] == "active" and not person["is_owner"])
+
     debriefs = []
     for row, atts in decoded:
-        kept = [a for a in atts if a["entity_id"] is None or a["entity_id"] in active]
+        kept = [a for a in atts if _shown(a)]
         if not kept:
             continue
         debriefs.append(
@@ -146,6 +172,8 @@ async def meeting_debrief_answer(
     (``summary`` plus optional ``kind``, ``direction``, ``counterparty_entity_id``,
     ``deadline``, ``sphere``) opens a commitment whose evidence names the meeting.
     Returns ``{"status": "none_agreed"|"captured"|"already_answered"|"not_found"|"invalid"}``.
+    A counterparty whose posture is no longer ``active`` refuses the whole answer as ``invalid``;
+    the debrief stays answerable and the reason never states the posture.
     """
     try:
         debrief_uuid = uuid.UUID(str(debrief_id))
@@ -193,6 +221,13 @@ async def meeting_debrief_answer(
             ]
             for creation in creations:
                 validate_commitment_creation(**creation)
+
+            # Posture may have changed since the prompt. Read it on this transaction's
+            # connection, under the debrief row lock, through the prompt path's predicate.
+            # The reason is fixed and never states the posture.
+            named = {c["counterparty_entity_id"] for c in creations if c["counterparty_entity_id"]}
+            if named and named - await active_entity_ids(conn, named):
+                raise ValueError(_COUNTERPARTY_UNAVAILABLE)
 
             opened = []
             for creation in creations:

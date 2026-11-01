@@ -257,6 +257,22 @@ async def _persist_artifact_with_evidence(
     return artifact_id
 
 
+def _bind_persist(
+    store: Callable[..., Awaitable[uuid.UUID]], *args: Any, **kwargs: Any
+) -> Callable[[Any], Awaitable[uuid.UUID]]:
+    """Bind one artifact's store arguments now; the evidence transaction supplies the pool."""
+
+    async def persist(connection_pool: Any) -> uuid.UUID:
+        return await store(connection_pool, *args, **kwargs)
+
+    return persist
+
+
+async def _store_fact_id(connection_pool: Any, *args: Any, **kwargs: Any) -> uuid.UUID:
+    store_result = await store_fact(connection_pool, *args, **kwargs)
+    return store_result["id"]
+
+
 async def _load_episode_authorities(
     pool: Any, source_episode_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, tuple[str | None, uuid.UUID | None]]:
@@ -456,31 +472,29 @@ async def execute_consolidation(
                 new_fact_evidence[fact_index] if source_episode_ids else [], episode_authorities
             )
 
-            async def persist_new_fact(connection_pool: Any) -> uuid.UUID:
-                store_result = await store_fact(
-                    connection_pool,
-                    fact.subject,
-                    fact.predicate,
-                    fact.content,
-                    embedding_engine,
-                    importance=fact.importance,
-                    permanence=fact.permanence,
-                    scope=effective_scope,
-                    tags=fact.tags,
-                    source_butler=butler_name,
-                    entity_id=fact_entity_id,
-                    object_entity_id=fact_object_entity_id,
-                    valid_at=fact.valid_at,
-                    tenant_id=tenant_id,
-                    request_id=request_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
-                    enforce_consolidation_edge_allowlist=fact_object_entity_id is not None,
-                    consolidation_edge_classification=consolidation_edge_classification,
-                    content_authority=fact_authority,
-                    authority_entity_id=fact_authority_entity,
-                )
-                return store_result["id"]
+            persist_new_fact = _bind_persist(
+                _store_fact_id,
+                fact.subject,
+                fact.predicate,
+                fact.content,
+                embedding_engine,
+                importance=fact.importance,
+                permanence=fact.permanence,
+                scope=effective_scope,
+                tags=fact.tags,
+                source_butler=butler_name,
+                entity_id=fact_entity_id,
+                object_entity_id=fact_object_entity_id,
+                valid_at=fact.valid_at,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
+                enforce_consolidation_edge_allowlist=fact_object_entity_id is not None,
+                consolidation_edge_classification=consolidation_edge_classification,
+                content_authority=fact_authority,
+                authority_entity_id=fact_authority_entity,
+            )
 
             await _persist_artifact_with_evidence(
                 pool,
@@ -569,27 +583,24 @@ async def execute_consolidation(
                 episode_authorities,
             )
             try:
-
-                async def persist_updated_fact(connection_pool: Any) -> uuid.UUID:
-                    store_result = await store_fact(
-                        connection_pool,
-                        target["subject"],
-                        target["predicate"],
-                        fact.content,
-                        embedding_engine,
-                        permanence=fact.permanence,
-                        scope=target["scope"],
-                        source_butler=butler_name,
-                        entity_id=fact_entity_id,
-                        tenant_id=tenant_id,
-                        request_id=request_id,
-                        expected_supersedes_id=target_id,
-                        enable_shared_catalog=enable_shared_catalog,
-                        source_schema=source_schema,
-                        content_authority=update_authority,
-                        authority_entity_id=update_authority_entity,
-                    )
-                    return store_result["id"]
+                persist_updated_fact = _bind_persist(
+                    _store_fact_id,
+                    target["subject"],
+                    target["predicate"],
+                    fact.content,
+                    embedding_engine,
+                    permanence=fact.permanence,
+                    scope=target["scope"],
+                    source_butler=butler_name,
+                    entity_id=fact_entity_id,
+                    tenant_id=tenant_id,
+                    request_id=request_id,
+                    expected_supersedes_id=target_id,
+                    enable_shared_catalog=enable_shared_catalog,
+                    source_schema=source_schema,
+                    content_authority=update_authority,
+                    authority_entity_id=update_authority_entity,
+                )
 
                 await _persist_artifact_with_evidence(
                     pool,
@@ -622,21 +633,20 @@ async def execute_consolidation(
                 new_rule_evidence[rule_index] if source_episode_ids else [], episode_authorities
             )
 
-            async def persist_new_rule(connection_pool: Any) -> uuid.UUID:
-                return await store_rule(
-                    connection_pool,
-                    rule.content,
-                    embedding_engine,
-                    scope=effective_scope,
-                    tags=rule.tags,
-                    source_butler=butler_name,
-                    tenant_id=tenant_id,
-                    request_id=request_id,
-                    enable_shared_catalog=enable_shared_catalog,
-                    source_schema=source_schema,
-                    content_authority=rule_authority,
-                    authority_entity_id=rule_authority_entity,
-                )
+            persist_new_rule = _bind_persist(
+                store_rule,
+                rule.content,
+                embedding_engine,
+                scope=effective_scope,
+                tags=rule.tags,
+                source_butler=butler_name,
+                tenant_id=tenant_id,
+                request_id=request_id,
+                enable_shared_catalog=enable_shared_catalog,
+                source_schema=source_schema,
+                content_authority=rule_authority,
+                authority_entity_id=rule_authority_entity,
+            )
 
             await _persist_artifact_with_evidence(
                 pool,

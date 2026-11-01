@@ -585,3 +585,355 @@ def test_high_volume_all_sensitive_stays_within_budget() -> None:
     bundle.assert_within_budget(max_bytes=MAX_TIER_2_INPUT_BYTES)
     assert bundle.bundle["episodes"] == []
     assert bundle.bundle["events"] == []
+
+
+@pytest.mark.parametrize("privacy", ["sensitive", "restricted", None, "unrecognized"])
+def test_effective_privacy_cannot_fall_back_to_normal_payload(privacy) -> None:
+    row = _episode(
+        source_name="google_health.measurements",
+        source_ref="PRIVATE_REF_CANARY",
+        title="PRIVATE_TITLE_CANARY",
+        payload={"context_name": "PRIVATE_CONTEXT_CANARY", "category": "PRIVATE_CATEGORY_CANARY"},
+    )
+    row.update(privacy=privacy, episode_type="workout_episode", lat=1, lon=2)
+    bundle = assemble_day_close_bundle(date_label="2026-04-25", episodes=[row], events=[])
+    assert bundle.bundle["episodes"] == []
+    assert bundle.citations == []
+    if privacy == "sensitive":
+        assert bundle.bundle["sensitive_envelopes"] == [
+            {
+                "start_at": "2026-04-25T09:00:00+00:00",
+                "end_at": "2026-04-25T10:00:00+00:00",
+                "category": "workout",
+                "duration": 3600.0,
+            }
+        ]
+    else:
+        assert bundle.bundle["sensitive_envelopes"] == []
+    assert "CANARY" not in json.dumps(bundle.bundle)
+
+
+def test_sensitive_envelope_uses_corrected_window_and_elapsed_dst_duration() -> None:
+    from zoneinfo import ZoneInfo
+
+    zone = ZoneInfo("America/New_York")
+    row = _episode(privacy="sensitive")
+    row.update(
+        start_at=datetime(2026, 3, 8, 1, 30, tzinfo=zone),
+        end_at=datetime(2026, 3, 8, 3, 30, tzinfo=zone),
+    )
+    bundle = assemble_day_close_bundle(
+        date_label="2026-03-08", timezone="America/New_York", episodes=[row], events=[]
+    )
+    assert bundle.bundle["sensitive_envelopes"] == [
+        {
+            "start_at": "2026-03-08T01:30:00-05:00",
+            "end_at": "2026-03-08T03:30:00-04:00",
+            "category": "tasks",
+            "duration": 3600.0,
+        }
+    ]
+    assert bundle.citations == []
+
+
+@pytest.mark.parametrize("invalid", ["open", "reversed", "naive", "missing", "string"])
+def test_sensitive_envelope_never_invents_an_unknown_window(invalid) -> None:
+    row = _episode(privacy="sensitive")
+    if invalid == "open":
+        row["end_at"] = None
+    elif invalid == "reversed":
+        row["end_at"] = row["start_at"] - timedelta(seconds=1)
+    elif invalid == "naive":
+        row["start_at"] = row["start_at"].replace(tzinfo=None)
+    elif invalid == "missing":
+        del row["start_at"]
+    else:
+        row["start_at"] = row["start_at"].isoformat()
+    bundle = assemble_day_close_bundle(date_label="2026-04-25", episodes=[row], events=[])
+    assert bundle.bundle["sensitive_envelopes"] == []
+    assert bundle.bundle["episodes"] == []
+    assert bundle.citations == []
+
+
+def test_sensitive_envelopes_share_existing_caps_and_complete_tier_two_budget() -> None:
+    from butlers.chronicler.interpretation import MAX_TIER_2_INPUT_BYTES
+
+    episodes = [_episode()] + [_episode(privacy="sensitive") for _ in range(20)]
+    events = [_event()] + [_event(privacy="sensitive") for _ in range(20)]
+    bundle = assemble_day_close_bundle(
+        date_label="2026-04-25",
+        episodes=episodes,
+        events=events,
+        config=BundleConfig(max_episodes=2, max_events=3),
+    )
+    assert len(bundle.bundle["episodes"]) == 1
+    assert len(bundle.bundle["events"]) == 1
+    assert len(bundle.bundle["sensitive_envelopes"]) == 3
+    assert bundle.bundle["sensitive_envelopes_truncated"] is True
+    assert bundle.citations == ["core.sessions:ep-1", "owntracks.points:pt-1"]
+    oversized = assemble_day_close_bundle(
+        date_label="2026-04-25",
+        episodes=[_episode(privacy="sensitive") for _ in range(200)],
+        events=[_event(privacy="sensitive") for _ in range(500)],
+    )
+    assert 0 < len(oversized.bundle["sensitive_envelopes"]) < 150
+    assert oversized.bundle["sensitive_envelopes_truncated"] is True
+    assert len(json.dumps(oversized.bundle)) <= BundleConfig().max_total_chars
+    oversized.assert_within_budget(max_bytes=MAX_TIER_2_INPUT_BYTES)
+    assert oversized.citations == []
+
+
+def test_impossible_day_close_budget_refuses_instead_of_exceeding_the_bound() -> None:
+    with pytest.raises(ValueError, match="configured input budget"):
+        assemble_day_close_bundle(
+            date_label="2026-04-25",
+            episodes=[_episode(privacy="sensitive")],
+            events=[],
+            config=BundleConfig(max_total_chars=1),
+        )
+
+
+def _owner_day_fixture():
+    """Synthetic local day: no owner data, geocoder, model or provider."""
+    from zoneinfo import ZoneInfo
+
+    day = datetime(2026, 10, 15, tzinfo=ZoneInfo("Asia/Singapore"))
+    specs = [
+        ("google_health.measurements", "sleep_episode", 1, 7, "Sleep", {}, "medium"),
+        ("spotify.session_summary", "listening_episode", 0, 8, "Overnight playlist", {}, "medium"),
+        (
+            "owntracks.ssid_presence",
+            "presence_episode",
+            7,
+            9,
+            "At home",
+            {"place": "home"},
+            "medium",
+        ),
+        ("owntracks.points", "movement_episode", 9, 9.5, "Movement (71 points)", {}, "low"),
+        (
+            "owntracks.place_cluster",
+            "place_episode",
+            9.5,
+            12,
+            "Place: place_unknown",
+            {"label": "place_unknown"},
+            "low",
+        ),
+        (
+            "comms.message_bursts",
+            "social_episode",
+            13,
+            14,
+            "Messages with Mail Sender",
+            {"channel": "email", "participant_status": "resolved"},
+            "medium",
+        ),
+        (
+            "comms.message_bursts",
+            "social_episode",
+            17,
+            17.1,
+            "Messages via WhatsApp",
+            {"channel": "whatsapp_user_client"},
+            "low",
+        ),
+    ]
+    episodes = []
+    for index, (source, kind, start, end, title, payload, confidence) in enumerate(specs):
+        row = _episode(
+            source_name=source,
+            source_ref=f"fixture:episode:{index}",
+            title=title,
+            start_at=day + timedelta(hours=start),
+            payload=payload,
+        )
+        row.update(
+            episode_type=kind,
+            end_at=day + timedelta(hours=end),
+            canonical_end_at=day + timedelta(hours=end),
+            layer="activity",
+            confidence=confidence,
+        )
+        episodes.append(row)
+    for index in range(19):
+        episodes.append(
+            _episode(
+                source_ref=f"fixture:automation:{index}",
+                title="Conversation with Mail Sender",
+                start_at=day + timedelta(hours=13),
+                payload={"trigger_source": "route", "schema": "mail"},
+            )
+        )
+    outgoing = _event(
+        source_name="owner_outbound.messages",
+        source_ref="fixture:outbound:1",
+        occurred_at=day + timedelta(hours=17, minutes=2),
+        title="Outbound message via WhatsApp",
+        payload={"channel": "whatsapp_user_client"},
+    )
+    outgoing["event_type"] = "owner_outbound_message"
+    return episodes, [outgoing]
+
+
+async def test_synthetic_day_composes_supported_owner_activity_not_source_inventory() -> None:
+    from butlers.chronicler.interpretation import TierTwoOutput, interpret
+
+    episodes, events = _owner_day_fixture()
+    bundle = assemble_day_close_bundle(
+        date_label="2026-10-15", timezone="Asia/Singapore", episodes=episodes, events=events
+    )
+    observations = bundle.bundle["owner_day"]["observations"]
+    kinds = {row["kind"] for row in observations}
+    assert {"sleep", "place", "movement", "outbound_message", "playback"} <= kinds
+    text = "\n".join(row["text"] for row in observations)
+    assert "Conversation with Mail Sender" not in text
+    assert "Mail Sender" not in text
+    assert "71 points" not in text
+    assert "background" in text and "unknown" in text
+    assert any("home" in row["text"] for row in observations if row["kind"] == "place")
+    assert bundle.bundle["diagnostics"]["automated_session_records"] == 19
+    assert bundle.bundle["diagnostics"]["inbound_email_records"] == 1
+    assert any(row.get("episode_count") == 19 for row in bundle.bundle["episodes"])
+    assert bundle.bundle["owner_day"]["unknowns"]
+    assert all("+08:00" in row["start_at"] for row in observations)
+    observed_refs = {ref for row in observations for ref in row["source_refs"]}
+    assert observed_refs <= set(bundle.citations)
+    assert "fixture:episode:5" not in observed_refs  # Inbound email is not owner exchange.
+    assert "fixture:outbound:1" in observed_refs  # Actual owner action remains expressible.
+    assert next(row for row in observations if row["kind"] == "movement")["confidence"] == "low"
+
+    calls = []
+
+    async def synthetic_narrator(actual_bundle):
+        calls.append(actual_bundle)
+        # Exercise the deterministic narrative seed, not a fabricated model-quality verdict.
+        return TierTwoOutput(
+            path=actual_bundle.path,
+            summary="\n".join(
+                row["text"] for row in actual_bundle.bundle["owner_day"]["observations"]
+            ),
+        )
+
+    result = await interpret(synthetic_narrator, bundle)
+    assert calls == [bundle]
+    assert result.summary == text
+    assert observed_refs <= set(result.cited_source_refs)
+    bundle.assert_within_budget()
+
+    processing_only = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        timezone="Asia/Singapore",
+        episodes=[row for row in episodes if row["source_name"] == "core.sessions"] + [episodes[5]],
+        events=[],
+    )
+    assert processing_only.bundle["episodes"]  # Real records remain diagnostic evidence.
+    assert processing_only.bundle["owner_day"]["observations"] == []
+    assert processing_only.bundle["owner_day"]["unknowns"]
+    assert processing_only.bundle["diagnostics"] == {
+        "automated_session_records": 19,
+        "inbound_email_records": 1,
+    }
+
+
+def test_owner_day_projection_cannot_derive_private_payload_or_sleep() -> None:
+    for privacy in ("sensitive", "restricted", "invalid"):
+        episodes, events = _owner_day_fixture()
+        private = episodes[0]
+        private.update(privacy=privacy, title="PRIVATE SECRET", canonical_title="PRIVATE SECRET")
+        bundle = assemble_day_close_bundle(
+            date_label="2026-10-15",
+            timezone="Asia/Singapore",
+            episodes=[private, episodes[1]],
+            events=[],
+        )
+        observations = bundle.bundle["owner_day"]["observations"]
+        assert not any(row["kind"] == "sleep" for row in observations)
+        assert "PRIVATE SECRET" not in json.dumps(bundle.bundle["owner_day"])
+        playback = next(row for row in observations if row["kind"] == "playback")
+        assert playback["sleep_overlap_seconds"] == 0
+        assert "not established" in playback["text"]
+        assert "fixture:episode:0" not in bundle.citations
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "overlap"),
+    [(1, 7, 21600), (7, 9, 3600), (8, 9, 0), (10, 11, 0)],
+    ids=["overnight", "partial", "touching-boundary", "awake-window"],
+)
+def test_playback_sleep_overlap_is_background_not_attentive_listening(start, end, overlap) -> None:
+    episodes, _ = _owner_day_fixture()
+    sleep, playback = episodes[:2]
+    midnight = playback["start_at"]
+    sleep.update(start_at=midnight + timedelta(hours=start), end_at=midnight + timedelta(hours=end))
+    bundle = assemble_day_close_bundle(
+        date_label="2026-10-15", timezone="Asia/Singapore", episodes=[sleep, playback], events=[]
+    )
+    actual = next(
+        row for row in bundle.bundle["owner_day"]["observations"] if row["kind"] == "playback"
+    )
+    assert actual["sleep_overlap_seconds"] == overlap
+    assert ("background" in actual["text"]) == bool(overlap)
+    assert "not established" in actual["text"] or "not confirmed" in actual["text"]
+
+
+def test_owner_day_projection_shares_budget_and_never_invents_sources() -> None:
+    episodes, events = _owner_day_fixture()
+    bundle = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        timezone="Asia/Singapore",
+        episodes=episodes * 20,
+        events=events * 20,
+        config=BundleConfig(max_total_chars=1400),
+    )
+    assert len(json.dumps(bundle.bundle)) <= 1400
+    bundle.assert_within_budget()
+    observations = bundle.bundle["owner_day"]["observations"]
+    assert len(observations) <= 12
+    # Derived observations never turn an empty canonical capture into evidence.
+    assert not observations or bundle.bundle["episodes"] or bundle.bundle["events"]
+    assert {ref for row in observations for ref in row["source_refs"]} <= set(bundle.citations)
+    zero = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        episodes=episodes,
+        events=events,
+        config=BundleConfig(max_episodes=0, max_events=0),
+    )
+    assert zero.bundle["owner_day"]["observations"] == []
+    assert zero.citations == []
+
+
+def test_owner_day_clips_effective_windows_and_keeps_missing_evidence_unknown() -> None:
+    episodes, events = _owner_day_fixture()
+    sleep, playback, place = episodes[:3]
+    midnight = playback["start_at"]
+    sleep.update(start_at=midnight - timedelta(hours=1))
+    duplicate = dict(sleep, source_ref="fixture:sleep-duplicate")
+    place.update(
+        start_at=midnight + timedelta(hours=9),
+        end_at=None,
+        canonical_start_at=midnight - timedelta(days=1),
+        confidence="malformed",
+    )
+    # A malformed channel is unresolved, never a fabricated exchange or crash.
+    events[0]["payload"] = {"channel": ["invalid"]}
+    outside = dict(place, source_ref="fixture:outside", start_at=midnight + timedelta(days=1))
+    invalid = dict(place, source_ref="fixture:naive", start_at=datetime(2026, 10, 15, 12))
+    bundle = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        timezone="Asia/Singapore",
+        episodes=[sleep, duplicate, playback, place, outside, invalid],
+        events=events,
+    )
+    observations = bundle.bundle["owner_day"]["observations"]
+    actual_playback = next(row for row in observations if row["kind"] == "playback")
+    assert actual_playback["sleep_overlap_seconds"] == 7 * 3600  # Union, not duplicate sum.
+    assert {"fixture:episode:0", "fixture:sleep-duplicate"} <= set(actual_playback["source_refs"])
+    actual_place = next(row for row in observations if row["kind"] == "place")
+    assert actual_place["start_at"].startswith("2026-10-15T09:00")
+    assert actual_place["confidence"] == "low" and "Duration is unknown" in actual_place["text"]
+    assert "unresolved channel" in next(
+        row["text"] for row in observations if row["kind"] == "outbound_message"
+    )
+    refs = {ref for row in observations for ref in row["source_refs"]}
+    assert "fixture:outside" not in refs and "fixture:naive" not in refs

@@ -17,9 +17,12 @@ login with ``SET ROLE``.
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
+import uuid
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
@@ -683,3 +686,181 @@ def test_upgrade_is_idempotent_when_applied_a_second_time(fresh_core_only_db_url
     assert _columns(fresh_core_only_db_url, "fleet_cases") == _EXPECTED_CASE_COLUMNS
     assert _columns(fresh_core_only_db_url, "fleet_case_evidence") == _EXPECTED_EVIDENCE_COLUMNS
     assert _columns(fresh_core_only_db_url, "fleet_case_links") == _EXPECTED_LINK_COLUMNS
+
+
+# Spec: REQ-fleet-case-file-006
+@_asyncio_session
+async def test_offline_restore_importer_is_owner_only_after_bootstrap(
+    fresh_core_only_db_url: str,
+    fresh_core_only_bootstrap_url: str,
+) -> None:
+    """Actual ordinary/privileged installers, real bootstrap and effective roles."""
+    from butlers.testing.migration import _bootstrap_migration_prerequisites
+
+    path = _MIGRATION_PATH.with_name("core_288_fleet_case_restore.py")
+    spec = importlib.util.spec_from_file_location("core_288", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    admin = await asyncpg.connect(fresh_core_only_bootstrap_url)
+    ordinary = await asyncpg.connect(fresh_core_only_db_url)
+    key = "test:offline-restore:" + uuid.uuid4().hex
+    case_id = uuid.uuid4()
+    try:
+        owner = await admin.fetchval(
+            "SELECT pg_get_userbyid(relowner) FROM pg_class "
+            "WHERE oid='public.fleet_cases'::regclass"
+        )
+        role_flags = await admin.fetchrow(
+            "SELECT rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls "
+            "FROM pg_roles WHERE rolname=$1",
+            owner,
+        )
+        # Both real installer identities must converge on the existing owner.
+        for installer_url in (fresh_core_only_db_url, fresh_core_only_bootstrap_url):
+            engine = create_engine(installer_url)
+            try:
+                with engine.begin() as conn:
+                    with patch.object(module, "op", Operations(MigrationContext.configure(conn))):
+                        module.upgrade()
+            finally:
+                engine.dispose()
+            assert await admin.fetchrow(
+                "SELECT pg_get_userbyid(proowner),prosecdef,proconfig "
+                "FROM pg_proc WHERE oid='public.fleet_case_restore_row(text,jsonb)'::regprocedure"
+            ) == (owner, True, ["search_path=pg_catalog, pg_temp", "row_security=on"])
+            assert (
+                await admin.fetchrow(
+                    "SELECT rolcanlogin,rolsuper,rolcreaterole,rolcreatedb,rolbypassrls "
+                    "FROM pg_roles WHERE rolname=$1",
+                    owner,
+                )
+                == role_flags
+            )
+        _bootstrap_migration_prerequisites(
+            fresh_core_only_bootstrap_url, urlparse(fresh_core_only_db_url).username
+        )
+        payload = json.dumps(
+            {
+                "id": str(case_id),
+                "correlation_key": key,
+                "state": "open",
+                "posture": "silent",
+                "outcome": None,
+                "opened_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-02T00:00:00Z",
+                "closed_at": None,
+            }
+        )
+        await ordinary.execute(
+            "SELECT public.fleet_case_restore_row('fleet_cases',$1::jsonb)", payload
+        )
+        row = await ordinary.fetchval(
+            "SELECT to_jsonb(t)::text FROM public.fleet_cases t WHERE id=$1", case_id
+        )
+        assert json.loads(row)["correlation_key"] == key
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await ordinary.execute(
+                "SELECT public.fleet_case_restore_row('fleet_cases',$1::jsonb)", payload
+            )
+        for selector in ("fleet_case_evidence", "public.fleet_cases", "entities"):
+            with pytest.raises(asyncpg.RaiseError, match="unsupported Fleet restore relation"):
+                await ordinary.execute(
+                    "SELECT public.fleet_case_restore_row($1,'{}'::jsonb)", selector
+                )
+        link_id = uuid.uuid4()
+        await ordinary.execute(
+            "SELECT public.fleet_case_restore_row('fleet_case_links',$1::jsonb)",
+            json.dumps(
+                {
+                    "id": str(link_id),
+                    "case_id": str(case_id),
+                    "link_kind": "case",
+                    "ref": "restore-link",
+                    "metadata": {"zero": 0, "flag": False},
+                    "linked_at": "2026-01-01T00:00:00Z",
+                }
+            ),
+        )
+        assert (
+            await ordinary.fetchval(
+                "SELECT metadata::text FROM public.fleet_case_links WHERE id=$1", link_id
+            )
+            == '{"flag": false, "zero": 0}'
+        )
+        for role in (*_load_migration()._ALL_RUNTIME_ROLES, "connector_writer"):
+            await ordinary.execute(f'SET ROLE "{role}"')
+            assert (
+                await ordinary.fetchval(
+                    "SELECT count(*) FROM public.fleet_cases WHERE id=$1", case_id
+                )
+                == 1
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await ordinary.execute(
+                    "SELECT public.fleet_case_restore_row('fleet_cases',$1::jsonb)", payload
+                )
+            if role != "butler_switchboard_rw":
+                for table, sql in (
+                    (
+                        "fleet_cases",
+                        "INSERT INTO public.fleet_cases(correlation_key) VALUES('forbidden-offline')",
+                    ),
+                    (
+                        "fleet_case_links",
+                        "INSERT INTO public.fleet_case_links(case_id,link_kind,ref) VALUES($1,'case','forbidden')",
+                    ),
+                ):
+                    with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                        if table == "fleet_cases":
+                            await ordinary.execute(sql)
+                        else:
+                            await ordinary.execute(sql, case_id)
+                assert (
+                    await ordinary.execute(
+                        "UPDATE public.fleet_cases SET posture='urgent' WHERE id=$1", case_id
+                    )
+                    == "UPDATE 0"
+                )
+                assert (
+                    await ordinary.execute(
+                        "UPDATE public.fleet_case_links SET metadata='{}' WHERE id=$1", link_id
+                    )
+                    == "UPDATE 0"
+                )
+            evidence_id = await ordinary.fetchval(
+                "INSERT INTO public.fleet_case_evidence(case_id,contributor,kind,ref) "
+                "VALUES($1,$2,'restore-role-check',$2) RETURNING id",
+                case_id,
+                role,
+            )
+            assert evidence_id is not None
+            await ordinary.execute("RESET ROLE")
+        # Removing only this offline interface must preserve every historical row.
+        engine = create_engine(fresh_core_only_db_url)
+        try:
+            with engine.begin() as conn:
+                with patch.object(module, "op", Operations(MigrationContext.configure(conn))):
+                    module.downgrade()
+            assert (
+                await ordinary.fetchval(
+                    "SELECT to_jsonb(t)::text FROM public.fleet_cases t WHERE id=$1", case_id
+                )
+                == row
+            )
+            assert (
+                await ordinary.fetchval(
+                    "SELECT to_regprocedure('public.fleet_case_restore_row(text,jsonb)')"
+                )
+                is None
+            )
+            with engine.begin() as conn:
+                with patch.object(module, "op", Operations(MigrationContext.configure(conn))):
+                    module.upgrade()
+        finally:
+            engine.dispose()
+    finally:
+        await ordinary.execute("RESET ROLE")
+        await admin.execute("DELETE FROM public.fleet_cases WHERE id=$1", case_id)
+        await ordinary.close()
+        await admin.close()

@@ -1,7 +1,9 @@
 """Butler configuration loading and validation.
 
-Reads butler.toml from a config directory, parses all sections, and returns
-a validated ButlerConfig dataclass.
+Reads butler.toml from a config directory, validates it once through the strict
+pydantic models below (``extra="forbid"``: an unknown key is an error), and
+returns a ButlerConfig dataclass whose sections and schedules are those typed
+models. Nothing downstream re-validates or re-shapes them.
 """
 
 from __future__ import annotations
@@ -11,8 +13,26 @@ import os
 import re
 import tomllib
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
+from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from croniter import croniter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PositiveInt,
+    StrictBool,
+    StrictInt,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 
 # Default trusted callers for route.execute authz.
 DEFAULT_TRUSTED_ROUTE_CALLERS: tuple[str, ...] = ("switchboard",)
@@ -43,8 +63,32 @@ class ScheduleDispatchMode(enum.StrEnum):
     JOB = "job"
 
 
-@dataclass
-class PermissionsConfig:
+class _StrictModel(BaseModel):
+    """Base for every butler.toml section: unknown keys are errors, not silently dropped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# Keys the core-daemon spec says a butler.toml may still carry: they are accepted and ignored,
+# never surfaced as config. Everything else unknown stays an error.
+_IGNORED_LEGACY_BLOB_KEYS = ("blob_dir", "blob_storage_dir")
+_IGNORED_LEGACY_BUTLER_KEYS = ("runtime", "seed_configs", *_IGNORED_LEGACY_BLOB_KEYS)
+
+
+def _drop_keys(data: Any, keys: tuple[str, ...]) -> Any:
+    if not isinstance(data, dict):
+        return data
+    return {key: value for key, value in data.items() if key not in keys}
+
+
+def _non_empty_stripped(value: str, what: str) -> str:
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError(f"{what} must be a non-empty string")
+    return stripped
+
+
+class PermissionsConfig(_StrictModel):
     """Cross-butler permissions from [butler.permissions] section.
 
     Declares which other agents this agent may connect to or act on behalf of.
@@ -52,16 +96,30 @@ class PermissionsConfig:
     Butlers default to an empty list (no cross-butler access).
     """
 
-    cross_butler_access: list[str] = field(default_factory=list)
+    cross_butler_access: list[str] = Field(default_factory=list)
+
+    @field_validator("cross_butler_access")
+    @classmethod
+    def _strip_entries(cls, value: list[str]) -> list[str]:
+        return [_non_empty_stripped(entry, "cross_butler_access entry") for entry in value]
 
 
-@dataclass
-class LoggingConfig:
+class LoggingConfig(_StrictModel):
     """Logging configuration from [butler.logging] section."""
 
     level: str = "INFO"
-    format: str = "text"  # "text" or "json"
+    format: Literal["text", "json"] = "text"
     log_root: str | None = None
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _upper_level(cls, value: Any) -> Any:
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("format", mode="before")
+    @classmethod
+    def _lower_format(cls, value: Any) -> Any:
+        return value.lower() if isinstance(value, str) else value
 
 
 _ALLOWED_SCHEDULE_COMPLEXITIES: frozenset[str] = frozenset(
@@ -69,23 +127,123 @@ _ALLOWED_SCHEDULE_COMPLEXITIES: frozenset[str] = frozenset(
 )
 
 
-@dataclass
-class ScheduleConfig:
-    """A single scheduled task entry from [[butler.schedule]]."""
+class ScheduleSpec(_StrictModel):
+    """A single scheduled task entry from [[butler.schedule]].
+
+    The one place a schedule is validated: ``load_config`` builds these from TOML and
+    ``sync_schedules`` consumes them as-is. ``task_type='deadline'`` carries the
+    deadline-specific fields; a ``cron`` task must not set them.
+    """
 
     name: str
     cron: str
+    task_type: Literal["cron", "deadline"] = "cron"
     prompt: str | None = None
     dispatch_mode: ScheduleDispatchMode = ScheduleDispatchMode.PROMPT
     job_name: str | None = None
     job_args: dict[str, Any] | None = None
-    max_token_budget: int | None = None
+    max_token_budget: StrictInt | None = Field(default=None, gt=0)
     complexity: str | None = None
-    continuity: bool = False
+    continuity: StrictBool = False
+    # Explicit IANA zone for this schedule's cron. None follows the owner timezone. The literal
+    # "UTC" is the owner-timezone sentinel (see scheduler._effective_schedule_timezone), so pin
+    # real UTC with the alias "Etc/UTC".
+    timezone: str | None = None
+    target_date: date | None = None
+    lead_time_days: StrictInt | None = None
+    alert_thresholds: list[dict[str, Any]] | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name_non_empty(cls, value: str) -> str:
+        _non_empty_stripped(value, "name")
+        return value
+
+    @field_validator("cron")
+    @classmethod
+    def _cron_valid(cls, value: str) -> str:
+        _non_empty_stripped(value, "cron")
+        if not croniter.is_valid(value):
+            raise ValueError(f"{value!r} is not a valid cron expression")
+        return value
+
+    @field_validator("dispatch_mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("complexity", mode="before")
+    @classmethod
+    def _normalize_complexity(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
+        if normalized not in _ALLOWED_SCHEDULE_COMPLEXITIES:
+            raise ValueError(
+                f"{value!r} is not valid. Expected one of {sorted(_ALLOWED_SCHEDULE_COMPLEXITIES)}."
+            )
+        return normalized
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone_is_iana(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        zone = value.strip()
+        if not zone or zone.upper() == "UTC":
+            raise ValueError(
+                f"{value!r} is the follow-the-owner sentinel and would be silently re-resolved "
+                'to the owner timezone; use "Etc/UTC" to pin UTC or omit the key'
+            )
+        try:
+            ZoneInfo(zone)
+        except (ZoneInfoNotFoundError, KeyError, ValueError) as exc:
+            raise ValueError(f"{value!r} is not an IANA zone name") from exc
+        return zone
+
+    @model_validator(mode="after")
+    def _mode_specific_fields(self) -> Self:
+        if self.dispatch_mode == ScheduleDispatchMode.PROMPT:
+            if self.prompt is None or not self.prompt.strip():
+                raise ValueError("dispatch_mode='prompt' requires non-empty prompt")
+            if self.job_name is not None:
+                raise ValueError("job_name is only valid when dispatch_mode='job'")
+            if self.job_args is not None:
+                raise ValueError("job_args is only valid when dispatch_mode='job'")
+        else:
+            if self.prompt is not None:
+                raise ValueError("prompt is not allowed when dispatch_mode='job'")
+            if self.job_name is None or not self.job_name.strip():
+                raise ValueError("dispatch_mode='job' requires non-empty job_name")
+            if self.continuity:
+                raise ValueError("continuity is only valid when dispatch_mode='prompt'")
+            self.job_name = self.job_name.strip()
+        return self
+
+    @model_validator(mode="after")
+    def _task_type_fields(self) -> Self:
+        deadline_fields = {
+            "target_date": self.target_date,
+            "lead_time_days": self.lead_time_days,
+            "alert_thresholds": self.alert_thresholds,
+        }
+        if self.task_type == "cron":
+            stray = sorted(key for key, value in deadline_fields.items() if value is not None)
+            if stray:
+                raise ValueError(f"{', '.join(stray)} only valid when task_type='deadline'")
+            return self
+        if self.target_date is None:
+            raise ValueError("target_date is required when task_type='deadline'")
+        if self.lead_time_days is None or self.lead_time_days <= 0:
+            raise ValueError(
+                f"lead_time_days must be a positive integer (got {self.lead_time_days!r})"
+            )
+        if not self.alert_thresholds:
+            raise ValueError("alert_thresholds must be a non-empty list of threshold tables")
+        return self
 
 
-@dataclass
-class RuntimeSeedConfig:
+class RuntimeSeedConfig(_StrictModel):
     """Sole butler-scoped runtime configuration from ``[butler.runtime_seed]``.
 
     Used on first boot to seed the per-schema ``runtime_config`` DB table and,
@@ -116,12 +274,38 @@ class RuntimeSeedConfig:
 
     core_groups: tuple[str, ...] | None = None
     catalog_read_sensitivity: Literal["normal", "internal", "confidential"] = "normal"
-    max_concurrent_sessions: int = 3
-    max_queued_sessions: int = 10
+    max_concurrent_sessions: PositiveInt = 3
+    max_queued_sessions: PositiveInt = 10
     liveness_ttl_seconds: int = 300
     route_contract_min: int = 1
     route_contract_max: int = 1
     tool_exposure_policy: Literal["eager_filtered", "auto"] = "eager_filtered"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_retired_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for key, destination in _RETIRED_RUNTIME_SEED_KEYS.items():
+                if key in data:
+                    raise ValueError(
+                        f"runtime_seed.{key} is no longer supported. Move it to {destination}."
+                    )
+        return data
+
+    @field_validator("core_groups")
+    @classmethod
+    def _strip_groups(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        return tuple(_non_empty_stripped(entry, "core_groups entry") for entry in value)
+
+
+_RETIRED_RUNTIME_SEED_KEYS: dict[str, str] = {
+    "model": "the model catalog",
+    "runtime_type": "DEFAULT_RUNTIME_TYPE in butlers.core.runtimes (fixed for the whole roster)",
+    "args": "the model catalog",
+    "session_timeout_s": "the model catalog",
+}
 
 
 @dataclass
@@ -199,8 +383,7 @@ class ApprovalConfig:
         return self.default_risk_tier
 
 
-@dataclass
-class BufferConfig:
+class BufferConfig(_StrictModel):
     """Durable buffer configuration from [buffer] section.
 
     Controls the in-memory queue, worker pool, and cold-path scanner for the
@@ -217,8 +400,7 @@ class BufferConfig:
     scanner_lock_timeout_s: int = 300
 
 
-@dataclass
-class SchedulerConfig:
+class SchedulerConfig(_StrictModel):
     """Scheduler loop configuration from [butler.scheduler] section.
 
     Controls the internal asyncio scheduler loop that calls tick() periodically
@@ -228,22 +410,25 @@ class SchedulerConfig:
     to the Switchboard's /api/switchboard/heartbeat endpoint.
     """
 
-    tick_interval_seconds: int = 60
-    heartbeat_interval_seconds: int = 120
+    tick_interval_seconds: PositiveInt = 60
+    heartbeat_interval_seconds: PositiveInt = 120
     switchboard_url: str = "http://localhost:41200"
 
 
-@dataclass
-class StorageConfig:
+class StorageConfig(_StrictModel):
     """S3-compatible blob storage marker.
 
     All blob storage parameters (endpoint_url, bucket, region, credentials)
     are resolved at runtime from the CredentialStore (managed via the
-    dashboard secrets UI at /secrets).  This dataclass is kept as a
-    placeholder for potential future non-secret storage settings.
+    dashboard secrets UI at /secrets).  This model is kept as a
+    placeholder for potential future non-secret storage settings. The legacy
+    ``blob_dir`` / ``blob_storage_dir`` keys are ignored; any other key is an error.
     """
 
-    pass
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_legacy_blob_keys(cls, data: Any) -> Any:
+        return _drop_keys(data, _IGNORED_LEGACY_BLOB_KEYS)
 
 
 @dataclass
@@ -259,7 +444,7 @@ class ButlerConfig:
     db_schema: str | None = None
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     runtime_seed: RuntimeSeedConfig = field(default_factory=RuntimeSeedConfig)
-    schedules: list[ScheduleConfig] = field(default_factory=list)
+    schedules: list[ScheduleSpec] = field(default_factory=list)
     modules: dict[str, dict] = field(default_factory=dict)
     env_required: list[str] = field(default_factory=list)
     env_optional: list[str] = field(default_factory=list)
@@ -348,194 +533,6 @@ def _resolve_string(s: str) -> str:
         )
 
     return result
-
-
-def _parse_runtime_seed(butler_section: dict) -> RuntimeSeedConfig:
-    """Parse the optional [butler.runtime_seed] sub-section.
-
-    Returns a RuntimeSeedConfig using dataclass defaults for any absent fields.
-    This section is operational-only; model selection lives in the model
-    catalog, while runtime adapter type is fixed for the whole roster in
-    butlers.core.runtimes.DEFAULT_RUNTIME_TYPE.
-    """
-    seed_section = butler_section.get("runtime_seed", {})
-
-    # --- core_groups ---
-    raw_core_groups = seed_section.get("core_groups")
-    core_groups: tuple[str, ...] | None = None
-    if raw_core_groups is not None:
-        if not isinstance(raw_core_groups, list):
-            raise ConfigError(
-                "Invalid butler.runtime_seed.core_groups: expected an array of strings"
-            )
-        validated_groups: list[str] = []
-        for i, entry in enumerate(raw_core_groups):
-            if not isinstance(entry, str) or not entry.strip():
-                raise ConfigError(
-                    f"Invalid butler.runtime_seed.core_groups[{i}]: expected a non-empty string"
-                )
-            validated_groups.append(entry.strip())
-        core_groups = tuple(validated_groups)
-
-    # Reject retired runtime-selection fields that now belong elsewhere.
-    retired_keys = {
-        "model": "the model catalog",
-        "runtime_type": (
-            "DEFAULT_RUNTIME_TYPE in butlers.core.runtimes (fixed for the whole roster)"
-        ),
-        "args": "the model catalog",
-        "session_timeout_s": "the model catalog",
-    }
-    for key, destination in retired_keys.items():
-        if key in seed_section:
-            raise ConfigError(
-                f"Invalid butler.runtime_seed.{key}: this field is no longer supported. "
-                f"Move it to {destination}."
-            )
-
-    # --- numeric fields with validation ---
-    catalog_read_sensitivity = seed_section.get("catalog_read_sensitivity", "normal")
-    if catalog_read_sensitivity not in {"normal", "internal", "confidential"}:
-        raise ConfigError(
-            "Invalid butler.runtime_seed.catalog_read_sensitivity: "
-            f"{catalog_read_sensitivity!r}. Expected normal, internal, or confidential."
-        )
-
-    max_concurrent_sessions = int(seed_section.get("max_concurrent_sessions", 3))
-    if max_concurrent_sessions <= 0:
-        raise ConfigError(
-            f"Invalid butler.runtime_seed.max_concurrent_sessions: {max_concurrent_sessions!r}. "
-            "Must be a positive integer."
-        )
-
-    max_queued_sessions = int(seed_section.get("max_queued_sessions", 10))
-    if max_queued_sessions <= 0:
-        raise ConfigError(
-            f"Invalid butler.runtime_seed.max_queued_sessions: {max_queued_sessions!r}. "
-            "Must be a positive integer."
-        )
-
-    liveness_ttl_seconds = int(seed_section.get("liveness_ttl_seconds", 300))
-    route_contract_min = int(seed_section.get("route_contract_min", 1))
-    route_contract_max = int(seed_section.get("route_contract_max", 1))
-
-    tool_exposure_policy = seed_section.get("tool_exposure_policy", "eager_filtered")
-    if tool_exposure_policy not in {"eager_filtered", "auto"}:
-        raise ConfigError(
-            "Invalid butler.runtime_seed.tool_exposure_policy: "
-            f"{tool_exposure_policy!r}. Expected eager_filtered or auto."
-        )
-
-    return RuntimeSeedConfig(
-        core_groups=core_groups,
-        catalog_read_sensitivity=catalog_read_sensitivity,
-        max_concurrent_sessions=max_concurrent_sessions,
-        max_queued_sessions=max_queued_sessions,
-        liveness_ttl_seconds=liveness_ttl_seconds,
-        route_contract_min=route_contract_min,
-        route_contract_max=route_contract_max,
-        tool_exposure_policy=tool_exposure_policy,
-    )
-
-
-def _parse_schedule_entry(entry: Any, index: int) -> ScheduleConfig:
-    """Parse and validate one ``[[butler.schedule]]`` entry."""
-    entry_path = f"butler.schedule[{index}]"
-    if not isinstance(entry, dict):
-        raise ConfigError(f"{entry_path} must be a TOML table")
-
-    name = entry.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise ConfigError(f"{entry_path}.name must be a non-empty string")
-
-    cron = entry.get("cron")
-    if not isinstance(cron, str) or not cron.strip():
-        raise ConfigError(f"{entry_path}.cron must be a non-empty string")
-
-    raw_mode = entry.get("dispatch_mode", ScheduleDispatchMode.PROMPT.value)
-    if not isinstance(raw_mode, str):
-        raise ConfigError(
-            f"{entry_path}.dispatch_mode must be a string: "
-            f"{ScheduleDispatchMode.PROMPT.value!r} or {ScheduleDispatchMode.JOB.value!r}"
-        )
-    normalized_mode = raw_mode.strip().lower()
-    try:
-        dispatch_mode = ScheduleDispatchMode(normalized_mode)
-    except ValueError as exc:
-        raise ConfigError(
-            f"Invalid {entry_path}.dispatch_mode: {raw_mode!r}. "
-            f"Expected {ScheduleDispatchMode.PROMPT.value!r} or {ScheduleDispatchMode.JOB.value!r}."
-        ) from exc
-
-    prompt = entry.get("prompt")
-    if prompt is not None and not isinstance(prompt, str):
-        raise ConfigError(f"{entry_path}.prompt must be a string when set")
-
-    job_name = entry.get("job_name")
-    if job_name is not None and not isinstance(job_name, str):
-        raise ConfigError(f"{entry_path}.job_name must be a string when set")
-
-    job_args = entry.get("job_args")
-    if job_args is not None and not isinstance(job_args, dict):
-        raise ConfigError(f"{entry_path}.job_args must be a table/object when set")
-
-    raw_budget = entry.get("max_token_budget")
-    max_token_budget: int | None = None
-    if raw_budget is not None:
-        if not isinstance(raw_budget, int) or raw_budget <= 0:
-            raise ConfigError(f"{entry_path}.max_token_budget must be a positive integer")
-        max_token_budget = raw_budget
-
-    raw_complexity = entry.get("complexity")
-    complexity: str | None = None
-    if raw_complexity is not None:
-        if not isinstance(raw_complexity, str):
-            raise ConfigError(f"{entry_path}.complexity must be a string when set")
-        normalized_complexity = raw_complexity.strip().lower()
-        if normalized_complexity not in _ALLOWED_SCHEDULE_COMPLEXITIES:
-            raise ConfigError(
-                f"Invalid {entry_path}.complexity: {raw_complexity!r}. "
-                f"Expected one of {sorted(_ALLOWED_SCHEDULE_COMPLEXITIES)}."
-            )
-        complexity = normalized_complexity
-
-    raw_continuity = entry.get("continuity", False)
-    if not isinstance(raw_continuity, bool):
-        raise ConfigError(f"{entry_path}.continuity must be a boolean when set")
-
-    if dispatch_mode == ScheduleDispatchMode.PROMPT:
-        if prompt is None or not prompt.strip():
-            raise ConfigError(f"{entry_path} with dispatch_mode='prompt' requires non-empty prompt")
-        if job_name is not None:
-            raise ConfigError(f"{entry_path}.job_name is only valid when dispatch_mode='job'")
-        if job_args is not None:
-            raise ConfigError(f"{entry_path}.job_args is only valid when dispatch_mode='job'")
-        return ScheduleConfig(
-            name=name,
-            cron=cron,
-            prompt=prompt,
-            dispatch_mode=dispatch_mode,
-            max_token_budget=max_token_budget,
-            complexity=complexity,
-            continuity=raw_continuity,
-        )
-
-    if prompt is not None:
-        raise ConfigError(f"{entry_path}.prompt is not allowed when dispatch_mode='job'")
-    if job_name is None or not job_name.strip():
-        raise ConfigError(f"{entry_path} with dispatch_mode='job' requires non-empty job_name")
-    if raw_continuity:
-        raise ConfigError(f"{entry_path}.continuity is only valid when dispatch_mode='prompt'")
-
-    return ScheduleConfig(
-        name=name,
-        cron=cron,
-        dispatch_mode=dispatch_mode,
-        job_name=job_name.strip(),
-        job_args=dict(job_args) if job_args is not None else None,
-        max_token_budget=max_token_budget,
-        complexity=complexity,
-    )
 
 
 def parse_approval_config(raw: dict[str, Any] | None) -> ApprovalConfig | None:
@@ -732,6 +729,157 @@ def list_butlers(roster_dir: Path | None = None) -> list[ButlerConfig]:
     return configs
 
 
+class _DbSection(_StrictModel):
+    """``[butler.db]``."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    name: str = CONSOLIDATED_DB_NAME
+    # ``schema`` shadows a BaseModel attribute, so the field is spelled db_schema.
+    db_schema: str | None = Field(default=None, alias="schema")
+
+    @field_validator("name")
+    @classmethod
+    def _name_non_empty(cls, value: str) -> str:
+        return _non_empty_stripped(value, "name")
+
+    @field_validator("db_schema")
+    @classmethod
+    def _schema_is_identifier(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = _non_empty_stripped(value, "schema")
+        if _DB_SCHEMA_PATTERN.fullmatch(stripped) is None:
+            raise ValueError(f"{value!r}. Expected a valid SQL identifier-style value.")
+        return stripped
+
+
+class _EnvSection(_StrictModel):
+    """``[butler.env]``: names of required and optional environment variables."""
+
+    required: list[str] = Field(default_factory=list)
+    optional: list[str] = Field(default_factory=list)
+
+
+class _ShutdownSection(_StrictModel):
+    """``[butler.shutdown]``."""
+
+    timeout_s: float = 30.0
+
+
+class _SwitchboardSection(_StrictModel):
+    """``[butler.switchboard]``."""
+
+    url: str | None = None
+
+
+class _SecuritySection(_StrictModel):
+    """``[butler.security]``."""
+
+    trusted_route_callers: list[str] | None = None
+
+    @field_validator("trusted_route_callers")
+    @classmethod
+    def _strip_callers(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else [c.strip() for c in value if c.strip()]
+
+
+class _ButlerSection(_StrictModel):
+    """The ``[butler]`` table."""
+
+    name: str
+    port: int
+    description: str | None = None
+    type: ButlerType = ButlerType.BUTLER
+    permissions: PermissionsConfig = Field(default_factory=PermissionsConfig)
+    db: _DbSection = Field(default_factory=_DbSection)
+    env: _EnvSection = Field(default_factory=_EnvSection)
+    shutdown: _ShutdownSection = Field(default_factory=_ShutdownSection)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    switchboard: _SwitchboardSection = Field(default_factory=_SwitchboardSection)
+    security: _SecuritySection = Field(default_factory=_SecuritySection)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    runtime_seed: RuntimeSeedConfig = Field(default_factory=RuntimeSeedConfig)
+    schedule: list[ScheduleSpec] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_legacy_keys(cls, data: Any) -> Any:
+        # The obsolete [butler.runtime] and [butler.seed_configs] tables and the blob keys are
+        # accepted and ignored (core-daemon spec); they never alter RuntimeSeedConfig.
+        return _drop_keys(data, _IGNORED_LEGACY_BUTLER_KEYS)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _normalize_type(cls, value: Any) -> Any:
+        return value.strip().lower() if isinstance(value, str) else value
+
+
+class _OAuthProvider(_StrictModel):
+    """``[oauth.<provider>]``: the scopes this butler needs from the provider."""
+
+    scopes: list[str] = Field(default_factory=list)
+
+    @field_validator("scopes")
+    @classmethod
+    def _strip_scopes(cls, value: list[str]) -> list[str]:
+        return [_non_empty_stripped(scope, "scope") for scope in value]
+
+
+class ButlerToml(_StrictModel):
+    """The whole ``butler.toml`` file. Module sections stay free-form tables.
+
+    Each module validates its own table against its own schema at startup
+    (``Module.config_schema``); this model only guarantees they are tables.
+    """
+
+    butler: _ButlerSection
+    modules: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    oauth: dict[str, _OAuthProvider] = Field(default_factory=dict)
+    buffer: BufferConfig = Field(default_factory=BufferConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_runtime_section(cls, data: Any) -> Any:
+        # The runtime adapter type is fixed for the entire roster; keeping a
+        # per-butler toggle in git invites silent drift and offers no consumer
+        # differentiation. See DEFAULT_RUNTIME_TYPE in butlers.core.runtimes.
+        if isinstance(data, dict) and "runtime" in data:
+            raise ValueError(
+                "Top-level [runtime] section is no longer supported. "
+                "The runtime adapter type is fixed to DEFAULT_RUNTIME_TYPE in "
+                "butlers.core.runtimes. Delete the [runtime] section from "
+                "butler.toml."
+            )
+        return data
+
+
+def _loc_path(loc: tuple[int | str, ...]) -> str:
+    path = ""
+    for part in loc:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        else:
+            path += f".{part}" if path else part
+    return path
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    """Render pydantic errors as ``Invalid butler.schedule[0].cron: ...`` lines."""
+    lines: list[str] = []
+    for err in exc.errors():
+        path = _loc_path(err["loc"])
+        if err["type"] == "missing":
+            lines.append(f"Missing required field: {path}")
+        elif err["type"] == "extra_forbidden":
+            lines.append(f"Unknown key: {path}")
+        else:
+            message = err["msg"].removeprefix("Value error, ")
+            lines.append(f"Invalid {path}: {message}" if path else message)
+    return "; ".join(lines)
+
+
 def load_config(config_dir: Path) -> ButlerConfig:
     """Load and validate a butler.toml from *config_dir*.
 
@@ -748,7 +896,8 @@ def load_config(config_dir: Path) -> ButlerConfig:
     Raises
     ------
     ConfigError
-        If the file is missing, contains invalid TOML, or lacks required fields.
+        If the file is missing, contains invalid TOML, has an unknown key, or
+        lacks required fields.
     """
     toml_path = config_dir / "butler.toml"
 
@@ -764,242 +913,69 @@ def load_config(config_dir: Path) -> ButlerConfig:
     # --- Resolve env var references before any validation ---
     data = resolve_env_vars(data)
 
-    # --- [butler] section (required) ---
-    butler_section = data.get("butler")
-    if not isinstance(butler_section, dict):
-        raise ConfigError("Missing [butler] section in config")
-
-    name = butler_section.get("name")
-    if name is None:
-        raise ConfigError("Missing required field: butler.name")
-
-    port = butler_section.get("port")
-    if port is None:
-        raise ConfigError("Missing required field: butler.port")
-
-    description = butler_section.get("description")
-
-    # --- [butler].type field ---
-    raw_type = butler_section.get("type", ButlerType.BUTLER.value)
-    if not isinstance(raw_type, str):
-        raise ConfigError("butler.type must be a string when set")
     try:
-        butler_type = ButlerType(raw_type.strip().lower())
-    except ValueError as exc:
-        valid = ", ".join(t.value for t in ButlerType)
-        raise ConfigError(f"Invalid butler.type: {raw_type!r}. Expected one of: {valid}") from exc
+        parsed = ButlerToml.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(_format_validation_error(exc)) from exc
 
-    # --- [butler.permissions] sub-section ---
-    permissions_section = butler_section.get("permissions", {})
-    if permissions_section is None:
-        permissions_section = {}
-    if not isinstance(permissions_section, dict):
-        raise ConfigError("butler.permissions must be a table")
-    raw_cross_butler = permissions_section.get("cross_butler_access", [])
-    if not isinstance(raw_cross_butler, list):
-        raise ConfigError("butler.permissions.cross_butler_access must be a list of strings")
-    cross_butler_access: list[str] = []
-    for i, entry in enumerate(raw_cross_butler):
-        if not isinstance(entry, str):
-            raise ConfigError(f"butler.permissions.cross_butler_access[{i}] must be a string")
-        normalized_entry = entry.strip()
-        if not normalized_entry:
-            raise ConfigError(
-                f"butler.permissions.cross_butler_access[{i}] must be a non-empty string"
-            )
-        cross_butler_access.append(normalized_entry)
-    permissions_config = PermissionsConfig(cross_butler_access=cross_butler_access)
+    section = parsed.butler
+    name = section.name
 
-    # --- [butler.db] sub-section ---
-    db_section = butler_section.get("db", {})
-    db_name = str(db_section.get("name", "butlers")).strip()
-    if not db_name:
-        raise ConfigError("butler.db.name must be a non-empty string")
-
-    db_schema_raw = db_section.get("schema")
-    db_schema: str | None = None
-    if db_schema_raw is not None:
-        if not isinstance(db_schema_raw, str):
-            raise ConfigError("butler.db.schema must be a string when set")
-        normalized_schema = db_schema_raw.strip()
-        if not normalized_schema:
-            raise ConfigError("butler.db.schema must be a non-empty string when set")
-        if _DB_SCHEMA_PATTERN.fullmatch(normalized_schema) is None:
-            raise ConfigError(
-                "Invalid butler.db.schema: "
-                f"{db_schema_raw!r}. Expected a valid SQL identifier-style value."
-            )
-        db_schema = normalized_schema
-
-    if db_name == _CONSOLIDATED_DB_NAME and db_schema is None:
+    db_schema = section.db.db_schema
+    if section.db.name == CONSOLIDATED_DB_NAME and db_schema is None:
         # Default schema to butler name for one-db topology
         db_schema = name
 
-    # --- [butler.env] sub-section ---
-    env_section = butler_section.get("env", {})
-    env_required = list(env_section.get("required", []))
-    env_optional = list(env_section.get("optional", []))
-
-    # --- [butler.shutdown] sub-section ---
-    shutdown_section = butler_section.get("shutdown", {})
-    shutdown_timeout_s = float(shutdown_section.get("timeout_s", 30.0))
-
-    # --- [butler.logging] sub-section ---
-    logging_section = butler_section.get("logging", {})
-    log_level = str(logging_section.get("level", "INFO")).upper()
-    log_format = str(logging_section.get("format", "text")).lower()
-    if log_format not in ("text", "json"):
-        raise ConfigError(
-            f"Invalid butler.logging.format: {log_format!r}. Expected 'text' or 'json'."
-        )
-    log_root = logging_section.get("log_root")
-    logging_config = LoggingConfig(
-        level=log_level,
-        format=log_format,
-        log_root=log_root,
-    )
-
-    # --- [butler.switchboard] sub-section ---
-    switchboard_section = butler_section.get("switchboard", {})
-    switchboard_url: str | None = switchboard_section.get("url")
     # Default: derive from the Switchboard butler's known port (41100)
     # unless this butler IS the switchboard.
+    switchboard_url = section.switchboard.url
     if switchboard_url is None and name != "switchboard":
         switchboard_url = os.environ.get("SWITCHBOARD_MCP_URL", "http://localhost:41100/sse")
+    if switchboard_url is not None:
+        # Roster TOMLs explicitly describe the colocated canonical endpoint.
+        # Resolve it once before notify, reconnect and fact-authority consumers
+        # receive the config. Explicit remote/custom endpoints remain literal.
+        endpoint = urlparse(switchboard_url)
+        if (endpoint.hostname or "").lower() == "localhost" and endpoint.port == 41100:
+            switchboard_url = resolve_cross_container_mcp_url(switchboard_url)
 
-    # --- [butler.security] sub-section ---
-    security_section = butler_section.get("security", {})
-    raw_trusted = security_section.get("trusted_route_callers")
-    if raw_trusted is not None:
-        if isinstance(raw_trusted, list):
-            trusted_route_callers = tuple(
-                str(c).strip() for c in raw_trusted if isinstance(c, str) and c.strip()
-            )
-        else:
-            raise ConfigError("butler.security.trusted_route_callers must be a list of strings")
-    else:
-        trusted_route_callers = DEFAULT_TRUSTED_ROUTE_CALLERS
-
-    # --- [butler.storage] ---
-    # All blob storage parameters (endpoint_url, bucket, region, credentials)
-    # are resolved at runtime from the CredentialStore (dashboard secrets UI).
-    # No TOML or env-var config needed.
-    storage_config = StorageConfig()
-
-    # --- [butler.scheduler] sub-section ---
-    scheduler_section = butler_section.get("scheduler", {})
-    raw_tick_interval = scheduler_section.get("tick_interval_seconds", 60)
-    tick_interval_seconds = int(raw_tick_interval)
-    if tick_interval_seconds <= 0:
-        raise ConfigError(
-            f"Invalid butler.scheduler.tick_interval_seconds: {tick_interval_seconds!r}. "
-            "Must be a positive integer."
-        )
-    raw_heartbeat_interval = scheduler_section.get("heartbeat_interval_seconds", 120)
-    heartbeat_interval_seconds = int(raw_heartbeat_interval)
-    if heartbeat_interval_seconds <= 0:
-        raise ConfigError(
-            f"Invalid butler.scheduler.heartbeat_interval_seconds: {heartbeat_interval_seconds!r}. "
-            "Must be a positive integer."
-        )
-    # Switchboard URL for liveness reporter: env var > toml > default
-    _default_sb_url = os.environ.get("BUTLERS_SWITCHBOARD_URL", "http://localhost:41200")
-    switchboard_liveness_url = scheduler_section.get("switchboard_url", _default_sb_url)
-    scheduler_config = SchedulerConfig(
-        tick_interval_seconds=tick_interval_seconds,
-        heartbeat_interval_seconds=heartbeat_interval_seconds,
-        switchboard_url=switchboard_liveness_url,
-    )
-
-    # --- [buffer] top-level section ---
-    buffer_section = data.get("buffer", {})
-    buffer_config = BufferConfig(
-        queue_capacity=int(buffer_section.get("queue_capacity", 100)),
-        worker_count=int(buffer_section.get("worker_count", 1)),
-        scanner_interval_s=int(buffer_section.get("scanner_interval_s", 30)),
-        scanner_grace_s=int(buffer_section.get("scanner_grace_s", 10)),
-        scanner_batch_size=int(buffer_section.get("scanner_batch_size", 50)),
-        max_consecutive_same_tier=int(buffer_section.get("max_consecutive_same_tier", 10)),
-    )
-
-    # --- [[butler.schedule]] array ---
-    raw_schedules = butler_section.get("schedule", [])
-    schedules: list[ScheduleConfig] = []
-    for i, entry in enumerate(raw_schedules):
-        schedules.append(_parse_schedule_entry(entry, i))
-
-    # --- [modules.*] sections ---
-    modules: dict[str, dict] = {}
-    raw_modules = data.get("modules", {})
-    for mod_name, mod_cfg in raw_modules.items():
-        modules[mod_name] = dict(mod_cfg) if isinstance(mod_cfg, dict) else {}
-    _validate_messenger_requirements(name, modules)
-
-    # --- [oauth.<provider>] top-level sections ---
-    # Each [oauth.<provider>] table declares the OAuth scopes this butler
-    # requires from the named provider.  Consumers (e.g. the dashboard OAuth
-    # router) union all butler declarations to build the authorization URL.
-    oauth: dict[str, list[str]] = {}
-    raw_oauth = data.get("oauth", {})
-    if raw_oauth and not isinstance(raw_oauth, dict):
-        raise ConfigError(
-            f"[oauth] must be a table of provider sections, got {type(raw_oauth).__name__}"
-        )
-    if isinstance(raw_oauth, dict):
-        for provider_name, provider_cfg in raw_oauth.items():
-            if not isinstance(provider_cfg, dict):
-                raise ConfigError(
-                    f"[oauth.{provider_name}] must be a table, got {type(provider_cfg).__name__}"
+    # Switchboard URL for the liveness reporter: toml > env var > default
+    scheduler = section.scheduler
+    if "switchboard_url" not in scheduler.model_fields_set:
+        scheduler = scheduler.model_copy(
+            update={
+                "switchboard_url": os.environ.get(
+                    "BUTLERS_SWITCHBOARD_URL", scheduler.switchboard_url
                 )
-            raw_scopes = provider_cfg.get("scopes", [])
-            if not isinstance(raw_scopes, list):
-                raise ConfigError(f"[oauth.{provider_name}].scopes must be a list of strings")
-            validated: list[str] = []
-            for i, scope in enumerate(raw_scopes):
-                if not isinstance(scope, str):
-                    raise ConfigError(f"[oauth.{provider_name}].scopes[{i}] must be a string")
-                stripped = scope.strip()
-                if not stripped:
-                    raise ConfigError(
-                        f"[oauth.{provider_name}].scopes[{i}] must be a non-empty string"
-                    )
-                validated.append(stripped)
-            oauth[provider_name] = validated
-
-    # --- Reject top-level [runtime] section ---
-    # The runtime adapter type is fixed for the entire roster; keeping a
-    # per-butler toggle in git invites silent drift and offers no consumer
-    # differentiation. See DEFAULT_RUNTIME_TYPE in butlers.core.runtimes.
-    if "runtime" in data:
-        raise ConfigError(
-            "Top-level [runtime] section is no longer supported. "
-            "The runtime adapter type is fixed to DEFAULT_RUNTIME_TYPE in "
-            "butlers.core.runtimes. Delete the [runtime] section from "
-            "butler.toml."
+            }
         )
 
-    # --- [butler.runtime_seed] sub-section (new canonical name) ---
-    runtime_seed = _parse_runtime_seed(butler_section)
+    raw_trusted = section.security.trusted_route_callers
+    trusted_route_callers = (
+        DEFAULT_TRUSTED_ROUTE_CALLERS if raw_trusted is None else tuple(raw_trusted)
+    )
+
+    _validate_messenger_requirements(name, parsed.modules)
 
     return ButlerConfig(
         name=name,
-        port=port,
-        description=description,
-        type=butler_type,
-        permissions=permissions_config,
-        db_name=db_name,
+        port=section.port,
+        description=section.description,
+        type=section.type,
+        permissions=section.permissions,
+        db_name=section.db.name,
         db_schema=db_schema,
-        logging=logging_config,
-        runtime_seed=runtime_seed,
-        schedules=schedules,
-        modules=modules,
-        env_required=env_required,
-        env_optional=env_optional,
-        shutdown_timeout_s=shutdown_timeout_s,
+        logging=section.logging,
+        runtime_seed=section.runtime_seed,
+        schedules=section.schedule,
+        modules=parsed.modules,
+        env_required=section.env.required,
+        env_optional=section.env.optional,
+        shutdown_timeout_s=section.shutdown.timeout_s,
         switchboard_url=switchboard_url,
         trusted_route_callers=trusted_route_callers,
-        storage=storage_config,
-        buffer=buffer_config,
-        scheduler=scheduler_config,
-        oauth=oauth,
+        storage=section.storage,
+        buffer=parsed.buffer,
+        scheduler=scheduler,
+        oauth={provider: cfg.scopes for provider, cfg in parsed.oauth.items()},
     )

@@ -125,13 +125,19 @@ async def test_enabled_home_roster_injects_metadata_and_applies_gates(
 
     assert result == {}
     assert approvals.received_tool_metadata == {
-        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False}),
+        "report_error": ToolMeta(
+            arg_sensitivities={"error_message": True, "traceback": True, "context": True}
+        ),
     }
     assert approvals.tool_executor is not None
     apply_gates.assert_awaited_once()
     assert apply_gates.await_args.args[1].enabled is True
     assert apply_gates.await_args.kwargs["tool_metadata"] == {
-        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False})
+        "email_send_message": ToolMeta(arg_sensitivities={"to": True, "body": False}),
+        "report_error": ToolMeta(
+            arg_sensitivities={"error_message": True, "traceback": True, "context": True}
+        ),
     }
 
 
@@ -324,6 +330,10 @@ async def test_relationship_registration_dispatches_legacy_merge_via_memory_call
     event.
     """
     config = load_config(_REPO_ROOT / "roster" / "relationship")
+    # This focused registry contains Memory and Approvals, not Calendar. Keep
+    # its original curation-only gate scope; the actual Calendar installation
+    # and missing-gate refusal are exercised at the real response startup seam.
+    config.modules["approvals"]["gated_tools"].pop("calendar_respond")
     db = MockDB()
     db.schema = "relationship"
     memory = MemoryModule()

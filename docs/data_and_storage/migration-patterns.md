@@ -98,8 +98,8 @@ Alembic's `version_locations` setting is always configured with ALL known chain 
 The butler daemon startup sequence runs migrations in this order:
 
 1. Core migrations (`chain="core"`)
-2. Module migrations (for each enabled module that returns a non-None `migration_revisions()`)
-3. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
 Each chain is upgraded to its head independently. Alembic tracks which revisions have been applied per-chain in the `alembic_version` table within the target schema.
 
@@ -118,7 +118,7 @@ To create a new module migration chain:
 1. Create `src/butlers/modules/<name>/migrations/` directory.
 2. Create `__init__.py` (empty).
 3. Create the first migration with `branch_labels = ("<name>",)` and `down_revision = None`.
-4. Return the branch label from the module's `migration_revisions()` method.
+4. CLI and daemon discover the non-empty directory through `get_module_migration_chains()`; no hook override is needed.
 
 ### Database-global protected public boundaries
 
@@ -323,7 +323,62 @@ and actual role execution. Source inspection, mock results and collection are no
 SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
 `openspec/specs/proactive-insight-engine/spec.md` for the bounded contract.
 
+### Managed amendment-owner convergence
+
+The diagnostic narrative above records the bootstrap-owned state before this follow-up. The
+managed privileged `scripts/init-db.sql` producer now classifies the exact
+`public.insight_amendments` relation before any durable DDL/DCL. It requires the existing
+configured ordinary LOGIN identity, refuses a runtime/connector/recovery target or third owner,
+and treats absence as a first-install no-op. Catalog snapshots are session-local, initialized by
+the initial preflight on every invocation and independently revalidated by the later block; they
+confer no caller authority. A refused preflight stops the client before any ownership
+transition. The owner block sits after the existing role/schema/ACL block and before the restore
+interface boundary. Only the current bootstrap owner may transfer the fixed table under `ACCESS
+EXCLUSIVE MODE NOWAIT`; the block rechecks its OID, ordinary persistent kind, owner and target
+under the lock. Already-target ownership performs no ownership DDL.
+
+This is an explicit privileged managed-bootstrap step before ordinary canonical replay, not an
+automatic runtime elevation or a repair by DROP/recreation. PostgreSQL changes owner references
+in table/column ACL grantor and grantee fields and may consolidate duplicates. Index, TOAST and
+owned-sequence ownership follows the table. These expected effects are measured separately from
+unchanged row values, logical definitions, FK, runtime effective privileges/grant options,
+policies and RLS flags. The trusted migration owner bypasses the current non-FORCE RLS as an
+owner; actual runtime `SET ROLE` acquisitions must retain their own row and write restrictions.
+Table ownership does not converge the separately installed function owners or caller authority.
+
+The existing real-PG node preserves its 43-row/45-role/six-variant/two-replay historical failure
+by neutralizing only the uniquely delimited owner block in a complete source-bound fixture. Its
+original DBAPI helper is unchanged: one `cursor.execute(whole_source)` in autocommit uses a
+multi-statement implicit transaction. That historical species cannot prove the documented
+psql-file prefix commits. Separate controls invoke the unmodified regular file with `psql -X -v
+ON_ERROR_STOP=1 -f`, then ordinary dynamic-head migrations and different-connection data/version
+readback. A byte-identical, two-chunk `-f -` scheduling control delivers the complete legacy
+prefix, observes its planted schema grant committed, acquires an external lock and supplies the
+unchanged suffix. It must reach the late NOWAIT error, release the external lock before target
+readback, and retain the earlier committed grant while the owner block stays atomic. Precisely
+bound source-copy identity/rollback diagnostics are labelled separately from both unmodified
+producer species. Child deadlines include bounded kill, concurrent pipe draining and reap; no
+raw client diagnostics or credentials become receipts.
+
+A passing source/static/collection check is not SQL proof. Hosted normal run
+[37869001709](https://github.com/tzeusy-org/butlers/actions/runs/37869001709) at source
+`6ab2c0255650753cb915f1e40168ec36d0c061a7` passed all five owning PostgreSQL cases without
+skips. Its populated-state node reached both Health and General dynamic heads, the separate
+readbacks, all historical controls, unmodified regular-file psql success, staged late NOWAIT,
+identity/race/rollback refusals and released-lock restored positives. Independent SOURCE and
+preparation review qualified these controls for normal own native sync/archive. Fresh final-head
+normal and independent review, protected validation and actual landing remain required before
+this follow-up is called delivered. Applied core_255, the historical q34 assertions and
+function/caller/FK/FORCE-RLS hardening scopes remain unchanged; this evidence does not establish
+their separate authority contract or equate the trusted migration owner with runtime roles.
+
 ## Implementation Notes
+
+- Supported online entrypoints first verify the reviewed bootstrap profile before
+  extension, target-schema or version/revision mutations. Ordinary dev is included;
+  direct runtime fallback does not waive migration admission. See
+  [reviewed bootstrap](reviewed-bootstrap.md) for separate privileged/normal
+  identities, genuine core195 repair and finalized repeat/downgrade boundaries.
 
 - Alembic loads every `*.py` in a versions directory, so a stray file with a duplicate `revision`
   breaks the chain even when chain tests only check expected filenames.
@@ -331,8 +386,8 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
   once both minted `core_164` and merged green. Before publishing a migration, take the next number
   from every live branch (`git ls-remote --heads origin`, then `git ls-tree -r --name-only
   origin/<branch> -- alembic/versions/core/`), not just `origin/main`, and re-run
-  `tests/config/test_migration_chain_head.py` against the merge result. The
-  `migration-chain-main.yml` workflow re-runs that guard on every `main` push.
+  `tests/config/test_migration_chain_head.py` against the merge result. The merge queue runs that
+  guard on the exact merged tree before anything lands on `main`.
 - Head-pinned assertions derive the head: use `butlers.testing.migration.assert_at_chain_head()` or
   `butlers.migrations.get_chain_head(chain)`. An AST guard in `test_migration_chain_head.py` fails a
   literal revision compared with an `alembic_version` read; a deliberate pin carries
@@ -366,8 +421,19 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
   otherwise raise `configparser` interpolation errors.
 - Compare `timestamptz` with a `DATE` UTC-explicitly: `ts >= (v_month::timestamp AT TIME ZONE
   'UTC')`. A bare `ts >= v_month` promotes through the session `TimeZone`.
-- The `test_core_chain_serializes_global_runtime_attention_*` tests contend on a global
-  cross-process lock and fail spuriously beside another run on the same Postgres.
+- Diagnose cross-process migration failures from the actual child exception. A
+  `pg_proc_proname_args_nsp_index` violation in `core_272` is a shared-function
+  first-create race, even when observed by a runtime-attention concurrency test.
+  Earlier transaction locks are released by intervening autocommit revisions.
+  `core_272` therefore acquires its own fixed, `pg_catalog`-qualified transaction
+  advisory lock on the migration connection for both upgrade and downgrade,
+  retaining it through function DDL, ACL changes and the outer commit or rollback.
+  Lock waits are bounded to five seconds, preserving any shorter existing
+  `lock_timeout` and restoring it after successful statements. SQL errors retain
+  their original class and the outer rollback clears the local timeout. The
+  dedicated real-Postgres concurrency owner observes actual waiting backends,
+  repeats first-create contention, removes only the serializer as a negative
+  control, and checks lifecycle ordering, rollback, bounded refusal and cleanup.
 - CLI migration entrypoints (`butlers db migrate`, compose's `migrations` service) apply the same
   module schema override as daemon startup: memory chains honour `[modules.memory].memory_schema`
   (e.g. chronicler's `chronicler_mem`), not the owning butler schema.
@@ -378,7 +444,71 @@ SQL proof. See the new `Premise Amendment Migration Evidence` requirement in
   the next number, repoint `down_revision`, update chain-head literals in tests, and push with
   `--force-with-lease`. Renumber before review so the reviewed head is final.
 
+### SQL and database traps
+
+Moved verbatim from `AGENTS.md` (Database and migrations).
+
+- `tests/contracts/test_schema_reach.py` fences foreign-butler SQL literals across `src/` and
+  `roster/`. Its single reasoned allowlist must shrink when reads disappear; stale entries fail.
+  Unresolved dynamic relation slots require explicit justification, and the Chronicler router
+  retains its stricter zero-foreign-relation rule.
+
+- Public-table GRANTs are not an authority boundary: `scripts/init-db.sql` deliberately re-widens
+  them. Tables such as `public.cost_claims` rely on enabled and forced RLS keyed to the runtime role,
+  so migration tests must replay bootstrap and write under real `SET ROLE` identities.
+- In partitioned-index migrations a blocking `pg_advisory_lock()` waiter can hold a snapshot that
+  `CREATE INDEX CONCURRENTLY` waits on. Poll `pg_try_advisory_lock()` in autocommit with the waits
+  outside PostgreSQL (see `core_231`).
+- Core-chain migrations must tolerate core-only databases: guard cross-schema
+  `ALTER/UPDATE/GRANT` with `to_regclass(...)` or `information_schema` checks.
+- At runtime under `SET ROLE`, `to_regclass('other_schema.tbl')` raises
+  `InsufficientPrivilegeError` instead of returning NULL. Probe reachability first with
+  `SELECT COALESCE((SELECT has_schema_privilege(oid,'USAGE') FROM pg_namespace WHERE nspname='<s>'), false)`
+  (a subquery: Postgres does not guarantee `AND` short-circuits).
+- `src/butlers/db.py` parses `sslmode` from `DATABASE_URL` / `POSTGRES_SSLMODE` for both daemon and
+  API pools. With it unset, a STARTTLS `unexpected connection_lost()` retries once with
+  `ssl="disable"`.
+- asyncpg type traps: bind `datetime.date`/`datetime` objects, never ISO strings, even with a `::date`
+  cast (the codec encodes before the cast runs); pass explicit bound values rather than
+  `$2 ± interval '1 day'`, which asyncpg can infer as `interval`.
+- `ON CONFLICT (cols) DO UPDATE` against a partial unique index must repeat the index's `WHERE`
+  predicate.
+- Core revisions replay per schema against shared `public.*` data; see migration-patterns for the
+  cumulative-CHECK rule.
+- The asyncpg JSONB codec encodes write parameters: pass dicts/lists straight to `$N::jsonb`.
+  `json.dumps(...)` double-encodes into a JSONB string, and under
+  `COALESCE(col, '{}'::jsonb) || $N::jsonb` that corrupts the row into an array. Reads need no
+  `json.loads` either.
+- Never add a second advisory lock inside `dispatch_outcomes` producers: the `ON CONFLICT DO NOTHING`
+  insert already waits on the conflicting transaction.
+- Converge a stored-function literal by re-running its installer (the `finalize_interface`
+  pattern), never by backfilling rows.
+- Never string-match `"does not exist"` to detect a missing table: a missing column matches too.
+  Catch `asyncpg.exceptions.UndefinedTableError` for the silent path and log everything else.
+- JSONB `||` is right-biased: for creation-wins merges write `new || existing`, not the reverse.
+- Any raised exception aborts the whole Postgres transaction, so "catch and continue" inside one
+  needs a savepoint (a nested `connection.transaction()` in asyncpg). Absorb one error class only
+  (e.g. `InsufficientPrivilegeError` from a best-effort call beside the primary write), and prove the
+  commit by reading back from a separate pool acquisition. Do not wrap a gated call that is the
+  transaction's purpose (`_routing.py` durable dashboard acceptance).
+- A savepoint does not make DDL durable: a partition created inside a transaction is dropped by its
+  rollback. Call ensure-partition functions on the pool, outside the transaction (see
+  `roster/switchboard/tools/ingestion/ingest.py`), and test by forcing the rollback then checking
+  from a separate acquisition.
+
 ## Related Pages
 
 - [Schema Topology](schema-topology.md) -- Database layout and search path
 - [State Store](state-store.md) -- The `state` table created by core migrations
+
+### Ordinary owner-held goal ledger
+
+The dark RFC0038 ledger (`sw_047`) follows the existing `sw_035` enabled,
+non-FORCE RLS pattern. The trusted migration login owns the six tables and can
+use ordinary `row_security=off` backup; only the exact Switchboard runtime passes
+the command policies. Replay `init-db.sql` and test real runtime identities,
+including denied connector/Chronicler identities and owner memberships. Verify
+the existing complete backup and restore scripts retain every ledger row, owner,
+policy and constraint. No backup exclusion or new privileged owner is needed.
+Downgrade refuses durable goals/admission history. `core_273` likewise refuses
+to discard configured admission limits. These migrations do not activate callers.

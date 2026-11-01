@@ -9,7 +9,8 @@ Encapsulates all Gemini CLI-specific logic:
 The Gemini CLI is invoked with ``--prompt`` to pass the user prompt
 and ``--sandbox=false`` to disable sandboxing. The system prompt
 (from GEMINI.md or AGENTS.md) is passed inline via ``--system-prompt``.
-MCP server configs are written to a temporary config file.
+MCP server configs are written to a per-invocation temporary settings file
+that the CLI reads as its system settings.
 
 Runtime authentication is handled by CLI-level OAuth tokens
 (device-code flow via the dashboard).
@@ -23,10 +24,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
@@ -74,6 +77,23 @@ def _filter_env(env: dict[str, str]) -> dict[str, str]:
         Environment variables for Gemini.
     """
     return without_owner_auth(env)
+
+
+def _to_gemini_server(server: Mapping[str, Any]) -> dict[str, Any]:
+    """Map a butler MCP server entry onto Gemini's settings schema.
+
+    Gemini's ``url`` selects the SSE transport and ``httpUrl`` the streamable-HTTP one; the
+    butler endpoint is streamable HTTP. ``headers`` carries the invocation binding header.
+
+    ``trust`` is set because headless ``--prompt`` runs treat a confirmation prompt as a denial and
+    Gemini defaults MCP servers to untrusted; this is scoped to the butler's own allow-listed
+    server.
+    """
+    entry = {key: value for key, value in server.items() if key != "url"}
+    entry["trust"] = True
+    if "url" in server:
+        entry["httpUrl"] = server["url"]
+    return entry
 
 
 def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dict[str, Any]]]:
@@ -241,6 +261,7 @@ class GeminiAdapter(RuntimeAdapter):
             return self._gemini_binary
         return _find_gemini_binary()
 
+    @override
     async def invoke(
         self,
         prompt: str,
@@ -256,8 +277,16 @@ class GeminiAdapter(RuntimeAdapter):
         """Invoke the Gemini CLI with the given prompt and configuration.
 
         Builds the command line, passes the system prompt via
-        ``--system-prompt``, writes MCP config if servers are provided,
-        and parses the output.
+        ``--system-prompt``, and parses the output. When ``mcp_servers`` is
+        non-empty it is written through :meth:`build_config_file` into a
+        per-invocation temporary directory that the CLI is pointed at as its
+        system settings file (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini
+        ranks above user and project settings), and ``--allowed-mcp-server-names``
+        limits the session to the configured servers so user- or project-level
+        MCP servers are not reachable. That confinement covers MCP servers
+        only: Gemini's built-in shell, file and web tools are not confined
+        (``--sandbox=false``). The user home is left alone so the CLI's
+        OAuth credentials keep working.
 
         Parameters
         ----------
@@ -291,7 +320,7 @@ class GeminiAdapter(RuntimeAdapter):
         effective_timeout = timeout or _DEFAULT_TIMEOUT_SECONDS
 
         # Filter environment variables
-        filtered_env = _filter_env(env) if env else None
+        filtered_env = None if env is None else _filter_env(env)
 
         # Build command
         cmd = [
@@ -305,6 +334,18 @@ class GeminiAdapter(RuntimeAdapter):
 
         # Pass prompt via --prompt flag
         cmd.extend(["--prompt", prompt])
+
+        config_dir = tempfile.TemporaryDirectory(prefix="butlers-gemini-")
+        if mcp_servers:
+            # Gemini's ``url`` key is SSE; the butler endpoint is streamable HTTP, which
+            # Gemini names ``httpUrl``.
+            gemini_servers = {name: _to_gemini_server(cfg) for name, cfg in mcp_servers.items()}
+            config_path = self.build_config_file(gemini_servers, Path(config_dir.name))
+            filtered_env = {
+                **(filtered_env if filtered_env is not None else os.environ),
+                "GEMINI_CLI_SYSTEM_SETTINGS_PATH": str(config_path),
+            }
+            cmd.extend(["--allowed-mcp-server-names", ",".join(gemini_servers)])
 
         logger.debug("Invoking Gemini CLI: %s", " ".join(cmd[:3]) + " ...")
 
@@ -393,6 +434,9 @@ class GeminiAdapter(RuntimeAdapter):
                 proc.kill()
                 await proc.wait()
             raise
+
+        finally:
+            config_dir.cleanup()
 
     def build_config_file(
         self,

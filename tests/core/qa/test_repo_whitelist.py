@@ -18,6 +18,7 @@ from butlers.core.qa.repo_whitelist import (
     normalise_owner_repo,
     parse_repo_url,
 )
+from butlers.testing.records import records
 
 pytestmark = pytest.mark.unit
 
@@ -101,11 +102,7 @@ def _make_mock_pool(rows: list[dict]) -> MagicMock:
     """Build a mock asyncpg pool returning the given rows."""
     mock_pool = MagicMock()
 
-    class _Row(dict):
-        def __getattr__(self, name):
-            return self[name]
-
-    mock_pool.fetch = AsyncMock(return_value=[_Row(r) for r in rows])
+    mock_pool.fetch = AsyncMock(return_value=records(rows))
     return mock_pool
 
 

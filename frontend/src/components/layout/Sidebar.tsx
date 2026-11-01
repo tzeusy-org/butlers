@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { RotateCw } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { NavLink, useLocation } from 'react-router'
 import { useButlers } from '@/hooks/use-butlers'
 import { useSpendSummary } from '@/hooks/use-spend'
 import { type AvailabilityBadgeState, useBadgeCounts } from '@/hooks/use-qa-badge'
-import { usePrefetchOnIntent } from '@/hooks/use-prefetch-on-intent'
-import { useRouteChunkPrefetchOnIntent } from '@/hooks/use-route-chunk-prefetch-on-intent'
+import { useNavIntent } from '@/hooks/use-nav-intent'
 import { ButlerMark } from '@/components/ui/ButlerMark'
 import { KbMono } from '@/components/ui/KbMono'
 import { StateDot } from '@/components/ui/StateDot'
@@ -16,7 +17,6 @@ import {
 } from '@/components/ui/tooltip'
 import { navSections, type NavItem, type NavFlatItem, type NavGroupItem, type NavSection } from './nav-config'
 import { NavIcon } from './NavIcon'
-import { composeHandlers } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // Type guard
@@ -130,13 +130,11 @@ function resolveSidebarBadge(
     count: value.kind === 'count' ? value.count : 0,
     unavailableLabel:
       value.kind === 'unavailable'
-        ? item.badgeKey === 'decisions-open'
-          ? 'Decisions digest unavailable'
-          : item.badgeKey === 'approvals-pending'
-            ? 'Pending approvals unavailable'
-            : item.badgeKey === 'qa-escalations'
-              ? 'QA escalations unavailable'
-              : 'Badge unavailable'
+        ? item.badgeKey === 'approvals-pending'
+          ? 'Pending approvals unavailable'
+          : item.badgeKey === 'qa-escalations'
+            ? 'QA escalations unavailable'
+            : 'Badge unavailable'
         : undefined,
   }
 }
@@ -155,6 +153,54 @@ function UnavailableBadgeMarker({
       className={className}
       aria-label={label}
     />
+  )
+}
+
+function QaBadgeFeedback({
+  item,
+  badgeCounts,
+  compact = false,
+  linkRef,
+}: {
+  item: NavFlatItem
+  badgeCounts?: SidebarBadgeCounts
+  compact?: boolean
+  linkRef: { current: HTMLAnchorElement | null }
+}) {
+  const value = item.badgeKey === 'qa-escalations' ? badgeCounts?.[item.badgeKey] : undefined
+  const feedback = typeof value === 'object' ? value.qaSource : undefined
+  if (!feedback) return null
+  const label = `QA ${feedback.source} unavailable${feedback.stale ? '; cached data is stale' : ''}`
+  const retryLabel = `Retry QA ${feedback.source}`
+  return (
+    <div
+      role="alert"
+      className={compact
+        ? 'flex justify-center px-1 pb-1 text-[var(--amber-text)]'
+        : 'mx-3 mb-1 flex items-center gap-2 rounded-sm border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-2 py-1 text-xs text-[var(--amber-text)]'}
+    >
+      <span className={compact ? 'sr-only' : 'min-w-0'}>{label}</span>
+      <Button
+        type="button"
+        variant="ghost"
+        size={compact ? 'icon' : 'sm'}
+        className={compact ? 'size-7' : 'ml-auto h-7 shrink-0 px-2 text-xs'}
+        aria-label={retryLabel}
+        title={compact ? label : undefined}
+        disabled={feedback.retrying}
+        onClick={async (event) => {
+          const button = event.currentTarget
+          const recovered = await feedback.retry()
+          // When recovery removes the focused retry, return to its destination.
+          // A deliberate focus move or an auth-unmounted link is left alone.
+          if (recovered && (document.activeElement === button || (!button.isConnected && document.activeElement === document.body))) {
+            linkRef.current?.focus()
+          }
+        }}
+      >
+        {compact ? <RotateCw className="size-3.5" aria-hidden="true" /> : 'Retry'}
+      </Button>
+    </div>
   )
 }
 
@@ -255,48 +301,50 @@ function FlatNavLink({
 }) {
   // Radix TooltipTrigger asChild stringifies a function className via clsx,
   // so we compute isActive here and pass className as a string.
+  const linkRef = useRef<HTMLAnchorElement>(null)
   const location = useLocation()
   const isActive = isPathActive(location.pathname, item.path, item.end)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
-  // Hover/focus intent -> route JS-chunk prefetch (bu-ep4ks.15). A no-op for
-  // any path not in lib/route-chunk-registry.ts's map.
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
-  const dataPrefetch = usePrefetchOnIntent(item.path)
+  // Hover/focus intent -> chunk and query warmup. A no-op for unmapped paths.
+  const navIntent = useNavIntent(item.path)
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <NavLink
-          to={item.path}
-          end={item.end}
-          onClick={() => {
-            chunkPrefetch.onActivate?.()
-            dataPrefetch.onActivate?.()
-            onNavClick?.()
-          }}
-          onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-          onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-          onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-          onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
-          className={railItemClassName(isActive)}
-          aria-label={item.tooltip ?? item.label}
-          data-shortcut={item.chord ? `g ${item.chord}` : undefined}
-        >
-          <ItemGlyph
-            item={item}
-            section={section}
-            butlerStatus={butlerStatus}
-            badgeCounts={badgeCounts}
-          />
-        </NavLink>
-      </TooltipTrigger>
-      <TooltipContent side="right" sideOffset={8}>
-        <span className="flex items-center gap-2">
-          {item.tooltip ?? item.label}
-          <DestinationChord chord={item.chord} />
-        </span>
-      </TooltipContent>
-    </Tooltip>
+    <div>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <NavLink
+            ref={linkRef}
+            to={item.path}
+            end={item.end}
+            onClick={() => {
+              navIntent.onActivate()
+              onNavClick?.()
+            }}
+            onPointerEnter={navIntent.onPointerEnter}
+            onPointerLeave={navIntent.onPointerLeave}
+            onFocus={navIntent.onFocus}
+            onBlur={navIntent.onBlur}
+            className={railItemClassName(isActive)}
+            aria-label={item.tooltip ?? item.label}
+            data-shortcut={item.chord ? `g ${item.chord}` : undefined}
+          >
+            <ItemGlyph
+              item={item}
+              section={section}
+              butlerStatus={butlerStatus}
+              badgeCounts={badgeCounts}
+            />
+          </NavLink>
+        </TooltipTrigger>
+        <TooltipContent side="right" sideOffset={8}>
+          <span className="flex items-center gap-2">
+            {item.tooltip ?? item.label}
+            <DestinationChord chord={item.chord} />
+          </span>
+        </TooltipContent>
+      </Tooltip>
+      <QaBadgeFeedback item={item} badgeCounts={badgeCounts} compact linkRef={linkRef} />
+    </div>
   )
 }
 
@@ -353,7 +401,10 @@ function NavGroup({
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
-              className={`absolute bottom-1.5 right-1.5 shrink-0 text-muted-foreground/60 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`}
+              className={
+                // eslint-disable-next-line no-restricted-syntax -- Named Sidebar chevron: 120ms linear rotation.
+                `absolute bottom-1.5 right-1.5 shrink-0 text-muted-foreground/60 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`
+              }
               aria-hidden="true"
             >
               <path d="m9 18 6-6-6-6" />
@@ -391,7 +442,7 @@ function NavGroup({
 }
 
 // One rail-group child link -- split out from NavGroup's `.map()` so
-// useRouteChunkPrefetchOnIntent (bu-ep4ks.15) can be called once per child
+// useNavIntent (bu-ep4ks.15) can be called once per child
 // path rather than once per group (Rules of Hooks forbids calling a hook
 // inside the `.map()` callback directly).
 function NavGroupChildLink({
@@ -409,8 +460,7 @@ function NavGroupChildLink({
   isActive: boolean
   onNavClick?: () => void
 }) {
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
-  const dataPrefetch = usePrefetchOnIntent(path)
+  const navIntent = useNavIntent(path)
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -418,14 +468,13 @@ function NavGroupChildLink({
           to={path}
           end={end}
           onClick={() => {
-            chunkPrefetch.onActivate?.()
-            dataPrefetch.onActivate?.()
+            navIntent.onActivate()
             onNavClick?.()
           }}
-          onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-          onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-          onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-          onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
+          onPointerEnter={navIntent.onPointerEnter}
+          onPointerLeave={navIntent.onPointerLeave}
+          onFocus={navIntent.onFocus}
+          onBlur={navIntent.onBlur}
           className={[railItemClassName(isActive), 'pl-2'].join(' ')}
           aria-label={label}
           data-shortcut={chord ? `g ${chord}` : undefined}
@@ -582,7 +631,7 @@ export default function Sidebar({
   onNavClick,
 }: SidebarProps) {
   const { sections: filteredSections, butlerStatusMap, isLoading, isError } = useFilteredNavSections(navSections)
-  const badgeCounts = useBadgeCounts()
+  const badgeCounts = useBadgeCounts({ qaSourceDetails: true })
 
   // Mobile sheet variant: render with labels (not icon rail)
   if (mobileExpanded) {
@@ -786,65 +835,68 @@ function MobileFlatLink({
   butlerStatusMap?: ButlerStatusMap
   badgeCounts?: SidebarBadgeCounts
 }) {
+  const linkRef = useRef<HTMLAnchorElement>(null)
   const { count, unavailableLabel } = resolveSidebarBadge(item, badgeCounts)
   const butlerStatus = item.butler ? butlerStatusMap?.[item.butler] : undefined
   const useButlerMark = section.title === 'Dedicated Butlers' && !!item.butler
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(item.path)
-  const dataPrefetch = usePrefetchOnIntent(item.path)
+  const navIntent = useNavIntent(item.path)
 
   return (
-    <NavLink
-      to={item.path}
-      end={item.end}
-      onClick={() => {
-        chunkPrefetch.onActivate?.()
-        dataPrefetch.onActivate?.()
-        onNavClick?.()
-      }}
-      onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-      onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-      onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-      onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
-      className={({ isActive }) =>
-        [
-          'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-          isActive
-            ? 'bg-sidebar-primary text-sidebar-primary-foreground'
-            : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
-        ].join(' ')
-      }
-      title={item.tooltip ?? item.label}
-    >
-      <span className="relative flex size-6 shrink-0 items-center justify-center">
-        {useButlerMark ? (
-          <ButlerMark name={item.butler!} tone="neutral" />
-        ) : item.icon ? (
-          <NavIcon name={item.icon} className="text-muted-foreground" />
-        ) : (
-          <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
-            {item.label[0]}
-          </span>
-        )}
-        <StatusDot status={butlerStatus} />
-      </span>
-      <span className="flex-1">{item.label}</span>
-      <DestinationChord chord={item.chord} />
-      {unavailableLabel ? (
-        <UnavailableBadgeMarker label={unavailableLabel} className="ml-auto" />
-      ) : count > 0 ? (
-        <span
-          className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
-            item.badgeVariant === 'red'
-              ? 'bg-[var(--red)] text-white'
-              : item.badgeVariant === 'amber'
-                ? 'bg-[var(--amber)] text-white'
-                : 'bg-primary text-primary-foreground'
-          }`}
-        >
-          {count > 99 ? '99+' : count}
+    <div>
+      <NavLink
+        ref={linkRef}
+        to={item.path}
+        end={item.end}
+        onClick={() => {
+          navIntent.onActivate()
+          onNavClick?.()
+        }}
+        onPointerEnter={navIntent.onPointerEnter}
+        onPointerLeave={navIntent.onPointerLeave}
+        onFocus={navIntent.onFocus}
+        onBlur={navIntent.onBlur}
+        className={({ isActive }) =>
+          [
+            'flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+            isActive
+              ? 'bg-sidebar-primary text-sidebar-primary-foreground'
+              : 'text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground',
+          ].join(' ')
+        }
+        title={item.tooltip ?? item.label}
+      >
+        <span className="relative flex size-6 shrink-0 items-center justify-center">
+          {useButlerMark ? (
+            <ButlerMark name={item.butler!} tone="neutral" />
+          ) : item.icon ? (
+            <NavIcon name={item.icon} className="text-muted-foreground" />
+          ) : (
+            <span className="flex size-6 items-center justify-center rounded bg-muted text-xs font-semibold">
+              {item.label[0]}
+            </span>
+          )}
+          <StatusDot status={butlerStatus} />
         </span>
-      ) : null}
-    </NavLink>
+        <span className="flex-1">{item.label}</span>
+        <DestinationChord chord={item.chord} />
+        {unavailableLabel ? (
+          <UnavailableBadgeMarker label={unavailableLabel} className="ml-auto" />
+        ) : count > 0 ? (
+          <span
+            className={`ml-auto flex h-5 min-w-5 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+              item.badgeVariant === 'red'
+                ? 'bg-[var(--red)] text-white'
+                : item.badgeVariant === 'amber'
+                  ? 'bg-[var(--amber)] text-white'
+                  : 'bg-primary text-primary-foreground'
+            }`}
+          >
+            {count > 99 ? '99+' : count}
+          </span>
+        ) : null}
+      </NavLink>
+      <QaBadgeFeedback item={item} badgeCounts={badgeCounts} linkRef={linkRef} />
+    </div>
   )
 }
 
@@ -895,7 +947,10 @@ function MobileNavGroup({
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className={`shrink-0 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`}
+          className={
+            // eslint-disable-next-line no-restricted-syntax -- Named Sidebar chevron: 120ms linear rotation.
+            `shrink-0 transition-transform duration-[120ms] ease-linear ${expanded ? 'rotate-90' : ''}`
+          }
           aria-hidden="true"
         >
           <path d="m9 18 6-6-6-6" />
@@ -922,7 +977,7 @@ function MobileNavGroup({
 }
 
 // One mobile-group child link -- split out from MobileNavGroup's `.map()` so
-// useRouteChunkPrefetchOnIntent (bu-ep4ks.15) can be called once per child
+// useNavIntent (bu-ep4ks.15) can be called once per child
 // path rather than once per group (Rules of Hooks forbids calling a hook
 // inside the `.map()` callback directly).
 function MobileNavGroupChildLink({
@@ -938,21 +993,19 @@ function MobileNavGroupChildLink({
   chord?: string
   onNavClick?: () => void
 }) {
-  const chunkPrefetch = useRouteChunkPrefetchOnIntent(path)
-  const dataPrefetch = usePrefetchOnIntent(path)
+  const navIntent = useNavIntent(path)
   return (
     <NavLink
       to={path}
       end={end}
       onClick={() => {
-        chunkPrefetch.onActivate?.()
-        dataPrefetch.onActivate?.()
+        navIntent.onActivate()
         onNavClick?.()
       }}
-      onPointerEnter={composeHandlers(chunkPrefetch.onPointerEnter, dataPrefetch.onPointerEnter)}
-      onPointerLeave={composeHandlers(chunkPrefetch.onPointerLeave, dataPrefetch.onPointerLeave)}
-      onFocus={composeHandlers(chunkPrefetch.onFocus, dataPrefetch.onFocus)}
-      onBlur={composeHandlers(chunkPrefetch.onBlur, dataPrefetch.onBlur)}
+      onPointerEnter={navIntent.onPointerEnter}
+      onPointerLeave={navIntent.onPointerLeave}
+      onFocus={navIntent.onFocus}
+      onBlur={navIntent.onBlur}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 rounded-md pl-9 pr-3 py-2 text-sm font-medium transition-colors',

@@ -24,8 +24,10 @@ from typing import Any
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query
 
+from butlers.api.approval_review import project_notification_reviews
 from butlers.api.briefing.cache import BriefingCache, get_cache, resolve_owner_id
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse, PaginationMeta
 from butlers.api.models.notification import (
     AckFailedResult,
@@ -52,11 +54,6 @@ _OWNER_INFO_TYPE_BY_CHANNEL = {"telegram": "telegram_chat_id", "email": "email"}
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 butler_notifications_router = APIRouter(prefix="/api/butlers", tags=["butlers", "notifications"])
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_switchboard_pool(db: DatabaseManager) -> asyncpg.Pool | None:
@@ -195,6 +192,7 @@ _EFFECTIVE_STATUS_CASE_SQL = (
 async def _query_notifications(
     pool: asyncpg.Pool,
     *,
+    db: DatabaseManager | None = None,
     offset: int,
     limit: int,
     butler: str | None = None,
@@ -265,6 +263,7 @@ async def _query_notifications(
         data_sql = (
             f"SELECT id, source_butler, channel, recipient, message, metadata, "
             f"status, error, session_id, trace_id, created_at, "
+            "to_jsonb(notifications)->'approval_review' AS approval_review, "
             f"{_EFFECTIVE_STATUS_CASE_SQL} AS effective_status "
             f"FROM notifications{where_clause} "
             f"ORDER BY created_at DESC "
@@ -282,6 +281,7 @@ async def _query_notifications(
         )
         return _empty_notification_page(offset=offset, limit=limit, source_available=False)
 
+    review_states = await project_notification_reviews(db, rows)
     notifications = [
         NotificationSummary(
             id=row["id"],
@@ -296,8 +296,10 @@ async def _query_notifications(
             session_id=row["session_id"],
             trace_id=row["trace_id"],
             created_at=row["created_at"],
+            approval_review=review[0],
+            approval_review_state=review[1],
         )
-        for row in rows
+        for row, review in zip(rows, review_states, strict=True)
     ]
 
     return NotificationListResponse(
@@ -323,7 +325,8 @@ async def list_notifications(
     ),
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NotificationListResponse:
     """Return paginated notification history from the Switchboard database.
 
@@ -338,6 +341,7 @@ async def list_notifications(
     try:
         return await _query_notifications(
             pool,
+            db=db,
             offset=offset,
             limit=limit,
             butler=butler,
@@ -373,7 +377,8 @@ async def list_butler_notifications(
     ),
     since: datetime | None = Query(None, description="Only notifications created after this time"),
     until: datetime | None = Query(None, description="Only notifications created before this time"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> NotificationListResponse:
     """Return paginated notifications for a specific butler.
 
@@ -386,6 +391,7 @@ async def list_butler_notifications(
     try:
         return await _query_notifications(
             pool,
+            db=db,
             offset=offset,
             limit=limit,
             butler=name,
@@ -435,7 +441,8 @@ async def notification_stats(
     until: datetime | None = Query(
         None, description="Only count notifications created at/before this timestamp"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[NotificationStats]:
     """Return aggregated notification statistics.
 
@@ -568,7 +575,8 @@ async def notification_stats(
 )
 async def mark_notification_read(
     notification_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[NotificationSummary]:
     """Mark a notification as read.
@@ -593,7 +601,8 @@ async def mark_notification_read(
             WHERE id = $1
               AND {notification_recovery_exclusion_sql()}
             RETURNING id, source_butler, channel, recipient, message, metadata,
-                      status, error, session_id, trace_id, created_at
+                      status, error, session_id, trace_id, created_at,
+                      to_jsonb(notifications)->'approval_review' AS approval_review
             """,
             notification_id,
         )
@@ -602,7 +611,7 @@ async def mark_notification_read(
             raise HTTPException(
                 status_code=503,
                 detail="Notifications table is not yet initialised",
-            )
+            ) from exc
         raise
 
     if row is None:
@@ -619,6 +628,7 @@ async def mark_notification_read(
     else:
         cache.invalidate_all()
 
+    review = (await project_notification_reviews(db, [row]))[0]
     return ApiResponse(
         data=NotificationSummary(
             id=row["id"],
@@ -633,6 +643,8 @@ async def mark_notification_read(
             session_id=row["session_id"],
             trace_id=row["trace_id"],
             created_at=row["created_at"],
+            approval_review=review[0],
+            approval_review_state=review[1],
         )
     )
 
@@ -647,7 +659,8 @@ async def mark_notification_read(
     response_model=ApiResponse[AckFailedResult],
 )
 async def ack_failed_notifications(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[AckFailedResult]:
     """Acknowledge all failed notifications in bulk.
@@ -861,7 +874,8 @@ async def _finalize_manual_action(
 )
 async def retry_notification(
     notification_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[NotificationActionResult]:
     """Manually re-attempt delivery of a failed notification, right now.
@@ -968,7 +982,8 @@ async def retry_notification(
 )
 async def escalate_notification(
     notification_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[NotificationActionResult]:
     """Re-attempt a failed notification on the owner's alternate channel.

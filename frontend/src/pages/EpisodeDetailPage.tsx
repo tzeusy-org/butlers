@@ -11,7 +11,7 @@
 //   - KV band, metadata block
 //   - Provenance section (derived facts; omitted when none)
 //
-// No commit footer — mutations live only on the fact page.
+// Dead-letter recovery queues one future write-up; it never starts one.
 //
 // Binding docs:
 // - (memory house-ledger redesign, graduated) prompts/06-detail-pages.md "Episode" + "Provenance"
@@ -20,6 +20,8 @@
 
 import { useMemo } from "react";
 import { Link, useParams } from "react-router";
+import { ApiError } from "@/api/client";
+import { EpisodeRecoveryControls } from "@/components/memory/EpisodeRecoveryControls";
 
 import {
   DetailEyebrow,
@@ -35,7 +37,7 @@ import { Badge } from "@/components/ui/badge";
 import { Page } from "@/components/ui/page";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { useEpisode, useFactsByEpisode } from "@/hooks/use-memory";
-import { consolidationGlyph, formatDayStamp } from "@/lib/memory-derived";
+import { consolidationGlyph, formatDayStamp, formatEpisodeTime } from "@/lib/memory-derived";
 import { cn } from "@/lib/utils";
 
 /** First 8 chars of an id for inline provenance labels. */
@@ -46,8 +48,9 @@ function shortFragment(id: string): string {
 export default function EpisodeDetailPage() {
   const tz = useTimezone();
   const { episodeId } = useParams<{ episodeId: string }>();
-  const { data, isLoading } = useEpisode(episodeId);
-  const episode = data?.data;
+  const { data, isLoading, error, refetch } = useEpisode(episodeId);
+  const notFound = error instanceof ApiError && error.status === 404;
+  const episode = notFound ? undefined : data?.data;
 
   // Facts derived from this episode (reverse provenance). The endpoint is live;
   // when no facts come back the section is omitted (never a faked chain).
@@ -102,6 +105,8 @@ export default function EpisodeDetailPage() {
         ) : undefined
       }
       loading={isLoading}
+      error={notFound ? null : error}
+      onRetry={() => void refetch()}
       empty={
         !episode && !isLoading
           ? {
@@ -149,10 +154,25 @@ export default function EpisodeDetailPage() {
                 ),
               },
               { key: "references", value: <Mono>{episode.reference_count}</Mono> },
+              { key: "attempts", value: <Mono>{episode.consolidation_attempts}</Mono> },
+              { key: "last write-up error", value: episode.last_consolidation_error },
+              { key: "dead-letter reason", value: episode.dead_letter_reason },
+              { key: "next retry", value: episode.next_consolidation_retry_at ? (
+                <time dateTime={episode.next_consolidation_retry_at}>
+                  {formatDayStamp(episode.next_consolidation_retry_at, tz)} {formatEpisodeTime(episode.next_consolidation_retry_at, tz)} ({tz})
+                </time>
+              ) : null },
               { key: "created", value: <Mono>{formatDayStamp(episode.created_at, tz)}</Mono> },
               { key: "last referenced", value: episode.last_referenced_at ? <Mono>{formatDayStamp(episode.last_referenced_at, tz)}</Mono> : null },
               { key: "expires", value: episode.expires_at ? <Mono>{formatDayStamp(episode.expires_at, tz)}</Mono> : null },
             ]}
+          />
+
+          <EpisodeRecoveryControls
+            key={episode.id}
+            episodeId={episode.id}
+            status={episode.consolidation_status}
+            onRefresh={refetch}
           />
 
           {/* Metadata — raw bag as a mono code block; omitted when empty. */}

@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 // ---------------------------------------------------------------------------
 // ConditionForm — reusable add/edit form for health conditions [bu-a7vw9]
 //
@@ -66,9 +68,11 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
   const [diagnosedAt, setDiagnosedAt] = useState(isoToDateInput(condition?.diagnosed_at));
   const [notes, setNotes] = useState(condition?.notes ?? "");
 
+  const draft = useDraft("health.condition", [isEdit ? "edit" : "create", condition?.id ?? "new"], { name, status, diagnosedAt, notes }, (next) => { setName(next.name as typeof name); setStatus(next.status as typeof status); setDiagnosedAt(next.diagnosedAt as typeof diagnosedAt); setNotes(next.notes as typeof notes); }, true, undefined, condition?.updated_at);
+
   const createMutation = useCreateCondition();
   const updateMutation = useUpdateCondition();
-  const isPending = createMutation.isPending || updateMutation.isPending;
+  const isPending = createMutation.isPending || updateMutation.isPending || !!draft.session?.presentation.cleanup || !!draft.session?.presentation.submitting;
 
   function handleError(err: unknown) {
     const message =
@@ -88,6 +92,9 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
     const trimmedNotes = notes.trim();
     const diagnosedIso = diagnosedAtToIso(diagnosedAt);
 
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
     try {
       if (isEdit) {
         await updateMutation.mutateAsync({
@@ -99,7 +106,7 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
             notes: trimmedNotes === "" ? null : trimmedNotes,
           },
         });
-        toast.success("Condition updated.");
+        if (draft.current(submission)) toast.success("Condition updated.");
       } else {
         await createMutation.mutateAsync({
           name: trimmedName,
@@ -107,16 +114,17 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
           diagnosed_at: diagnosedIso,
           notes: trimmedNotes === "" ? null : trimmedNotes,
         });
-        toast.success("Condition added.");
+        if (draft.current(submission)) toast.success("Condition added.");
       }
-      onDone();
+      await draft.submitted(submission, onDone);
     } catch (err) {
-      handleError(err);
-    }
+      if (draft.current(submission)) handleError(err);
+    } finally { draft.finish(); }
   }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4" data-testid="condition-form">
+      <DraftNotice session={draft.session} />
       <div className="space-y-2">
         <Label htmlFor="cond-name">Name</Label>
         <Input
@@ -167,7 +175,7 @@ export function ConditionForm({ condition, onDone, onCancel }: ConditionFormProp
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
-        <Button type="button" variant="ghost" onClick={onCancel} disabled={isPending}>
+        <Button type="button" variant="ghost" onClick={() => draft.dismiss(onCancel)} disabled={isPending}>
           Cancel
         </Button>
         <Button type="submit" disabled={isPending}>

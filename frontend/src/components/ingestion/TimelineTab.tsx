@@ -2296,7 +2296,7 @@ export function TimelineTab({
   );
 
   const rawEvents = useMemo(
-    () => infiniteData?.pages.flatMap((page) => page.data) ?? [],
+    () => infiniteData?.pages.flatMap((page) => page.items) ?? [],
     [infiniteData?.pages],
   );
 
@@ -2304,7 +2304,7 @@ export function TimelineTab({
   // We use the first page's first event (newest-first ordering) so the badge
   // reflects true pipeline freshness rather than the client-side filter view.
   const latestReceivedAt = headLatestReceivedAt === undefined
-    ? (infiniteData?.pages[0]?.data[0]?.received_at ?? null)
+    ? (infiniteData?.pages[0]?.items[0]?.received_at ?? null)
     : headLatestReceivedAt;
   useEffect(() => {
     if (!isLoading && onFreshnessChange) {

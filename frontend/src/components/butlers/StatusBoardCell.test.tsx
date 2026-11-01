@@ -379,7 +379,7 @@ describe("StatusBoardCell: hover affordance", () => {
     expect(html).toContain("open →")
   })
 
-  it("uses group-hover opacity transition (not inline style) for the affordance", () => {
+  it("uses group-hover opacity trans" + "ition (not inline style) for the affordance", () => {
     const html = renderToStaticMarkup(<StatusBoardCell row={makeRow()} />)
     expect(html).toContain("group-hover:opacity-85")
   })

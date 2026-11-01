@@ -26,6 +26,7 @@ from butlers.chronicler.jobs import run_project_owntracks_ssid
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -403,18 +404,21 @@ async def test_overlapping_runs_wait_for_the_source_transaction_lock(pool: async
                 task = asyncio.create_task(adapter.run(pool=pool, chronicler_pool=pool))
 
                 async with asyncio.timeout(5):
-                    while not await pool.fetchval(
-                        """
-                        SELECT EXISTS (
-                            SELECT 1
-                            FROM pg_locks
-                            WHERE locktype = 'advisory'
-                              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                              AND NOT granted
+
+                    async def _condition_met() -> bool:
+                        return await pool.fetchval(
+                            """
+                            SELECT EXISTS (
+                                SELECT 1
+                                FROM pg_locks
+                                WHERE locktype = 'advisory'
+                                  AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                                  AND NOT granted
+                            )
+                            """
                         )
-                        """
-                    ):
-                        await asyncio.sleep(0.01)
+
+                    await poll_until(_condition_met, interval_s=0.01)
 
                 adapter.project.assert_not_awaited()
 
@@ -475,18 +479,21 @@ async def test_overlapping_runs_do_not_exhaust_a_two_connection_pool(
         )
 
         async with asyncio.timeout(5):
-            while not await pool.fetchval(
-                """
-                SELECT EXISTS (
-                    SELECT 1
-                    FROM pg_locks
-                    WHERE locktype = 'advisory'
-                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-                      AND NOT granted
+
+            async def _condition_met() -> bool:
+                return await pool.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM pg_locks
+                        WHERE locktype = 'advisory'
+                          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                          AND NOT granted
+                    )
+                    """
                 )
-                """
-            ):
-                await asyncio.sleep(0.01)
+
+            await poll_until(_condition_met, interval_s=0.01)
 
         release_first_project.set()
         results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=3)

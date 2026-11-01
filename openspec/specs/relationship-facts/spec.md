@@ -85,10 +85,23 @@ Alembic migration). Predicates MUST be grouped into families:
   `has-address`, `has-birthday`, `has-website`.
 - **Relational predicates** (`object_kind='entity'`): `knows`, `family-of`, `partner-of`,
   `parent-of`, `child-of`, `colleague-of`, `friend-of`, `co-attended`, `purchased-from`,
-  `subscribed-to`, `visited`, `works-at`, `member-of`, `manages-property` (set extensible).
-  `works-at` and `member-of` are person→organization edges. `manages-property` (subject person
-  manages an object place or organization) is an owner-approved catalog predicate seeded by
-  migration `rel_026` (`bu-60pwv6.35`).
+  `subscribed-to`, `visited`, `works-at`, `member-of`, `manages`, `managed-by`,
+  `manages-property`, `rental-agent`, `rental-location` (set extensible).
+  `works-at` and `member-of` are person→organization edges. Owner decision `bu-kgh8g`
+  (2026-06-17) approved `manages` (person manages a person or organization), `managed-by` (its
+  inverse: person is managed by a person), `rental-agent` (person acts as rental agent for an
+  organization or place) and `rental-location` (person rents from, or has a rental relationship
+  with, a place). `manages-property` (person manages a place or organization) was approved
+  separately (owner walkthrough 2026-09-30, item (b), `bu-60pwv6.35`). Migration `rel_026`
+  seeds all five.
+  `participant-of` and `invited-by` are NOT catalog predicates: a participation edge is written
+  as `member-of`, and an invitation or referral stays narrative (owner decision 2026-09-30,
+  `bu-60pwv6.35`; conformance: `bu-eba4tw`, because `rel_026` still seeds both).
+
+  The central writer's alias map collapses `sibling_of` to `family-of` and `married_to` to
+  `partner-of` (implemented by `bu-i0pgi`, commit `c0e99f067`, for
+  `relational-edges-single-home`, recorded here as the chosen option); neither is a separate
+  catalog predicate.
 - **Override predicates** (`object_kind='literal'`, JSON): `dunbar_tier_override` (per
   RFC 0013 weight-at-query decision and Phase 1 Amendment 6).
 
@@ -160,6 +173,10 @@ the daemon self-register owner identity handles and lets structured-data jobs de
 facts without a human approval hop.
 
 This single-ingress contract preserves RFC 0006 schema isolation and RDF integrity.
+
+ID: REQ-relationship-facts-002
+Source: bu-s11n0s.2 original Outcome/S1–S4; heart-and-soul/security.md; Relationship MANIFESTO.md; adopted dashboard-owner-auth and existing capability contract
+Scope: v1-mandatory
 
 #### Scenario: Direct SQL writes are blocked
 - **WHEN** any butler other than relationship attempts `INSERT INTO relationship.entity_facts`

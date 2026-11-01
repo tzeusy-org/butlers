@@ -62,7 +62,10 @@ from uuid import UUID
 
 import asyncpg
 
-from butlers.chronicler.adapters._owner_entity import upsert_owner_episode_entity
+from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
+    upsert_owner_episode_entity,
+)
 from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import get_carryover, save_carryover, upsert_episode
@@ -492,25 +495,26 @@ class HomeAssistantHistoryAdapter(ProjectionAdapter):
         }
 
         async with chronicler_pool.acquire() as conn:
-            episode = await upsert_episode(
-                conn,
-                Episode(
-                    source_name=self.source_name,
-                    source_ref=source_ref,
-                    episode_type=EPISODE_TYPE_PRESENCE,
-                    start_at=start_at,
-                    end_at=end_at,
-                    precision=Precision.EXACT,
-                    title=title,
-                    payload=payload,
-                    privacy=Privacy.SENSITIVE,
-                    layer=Layer.ACTIVITY,
-                ),
-            )
-            # Write the person's entity row into episode_entities (bu-v7hen).
-            # Uses role='owner' because this episode belongs to the person being tracked.
-            # upsert_owner_episode_entity no-ops when entity_id or episode.id is None.
-            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+            async with owner_episode_transaction(conn):
+                episode = await upsert_episode(
+                    conn,
+                    Episode(
+                        source_name=self.source_name,
+                        source_ref=source_ref,
+                        episode_type=EPISODE_TYPE_PRESENCE,
+                        start_at=start_at,
+                        end_at=end_at,
+                        precision=Precision.EXACT,
+                        title=title,
+                        payload=payload,
+                        privacy=Privacy.SENSITIVE,
+                        layer=Layer.ACTIVITY,
+                    ),
+                )
+                # Write the person's entity row into episode_entities (bu-v7hen).
+                # Uses role='owner' because this episode belongs to the person being tracked.
+                # upsert_owner_episode_entity no-ops when entity_id or episode.id is None.
+                await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 

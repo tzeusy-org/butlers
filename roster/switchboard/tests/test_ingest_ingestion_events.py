@@ -28,6 +28,7 @@ from uuid import UUID
 
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
 from butlers.tools.switchboard.ingestion.ingest import IngestAcceptedResponse, ingest_v1
 
 pytestmark = pytest.mark.unit
@@ -50,7 +51,7 @@ class _FakeConn:
         self._inserted_id: UUID | None = None
 
     def transaction(self) -> Any:
-        return _FakeTransaction()
+        return AsyncCtx(None)
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.execute_calls.append((sql, args))
@@ -78,25 +79,6 @@ class _FakeConn:
         return any("public.ingestion_events" in sql for sql, _ in self.execute_calls)
 
 
-class _FakeTransaction:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
-
-
-class _FakeAcquire:
-    def __init__(self, conn: _FakeConn) -> None:
-        self._conn = conn
-
-    async def __aenter__(self) -> _FakeConn:
-        return self._conn
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        return False
-
-
 class _FakePool:
     """Fake asyncpg pool with one shared connection."""
 
@@ -117,8 +99,8 @@ class _FakePool:
         """Make pool.execute() raise exc (simulates ensure_partition failure)."""
         self._pool_execute_raises = exc
 
-    def acquire(self) -> _FakeAcquire:
-        return _FakeAcquire(self.conn)
+    def acquire(self) -> AsyncCtx:
+        return AsyncCtx(self.conn)
 
     async def execute(self, sql: str, *args: Any) -> str:
         """Pool-level execute — used for ensure_partition (outside transaction)."""
@@ -146,6 +128,8 @@ def _telegram_envelope(
     ingestion_tier: str = "full",
     policy_tier: str = "default",
 ) -> dict:
+    reply_target_ref = thread_id or "12345:1"
+    chat_id = reply_target_ref.partition(":")[0]
     return {
         "schema_version": "ingest.v1",
         "source": {
@@ -155,7 +139,8 @@ def _telegram_envelope(
         },
         "event": {
             "external_event_id": update_id,
-            "external_thread_id": thread_id,
+            "external_conversation_id": f"telegram:{chat_id}",
+            "reply_target_ref": reply_target_ref,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {"identity": sender_id},
@@ -321,9 +306,22 @@ class TestIngestionEventsWriteOnAccept:
         # $8 = source_thread_identity
         assert args[7] == "thread-xyz"
 
+    async def test_ingestion_events_source_thread_identity_is_reply_target(self) -> None:
+        # correct_route replays this column as notify's source_thread_identity,
+        # so a split producer stores its reply target, not its conversation key.
+        pool = _FakePool()
+        envelope = _telegram_envelope(update_id="113", thread_id="12345:7")
+
+        await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
+
+        args = pool.conn.ingestion_events_args()
+        assert args is not None
+        # $8 = source_thread_identity
+        assert args[7] == "12345:7"
+
     async def test_ingestion_events_source_thread_identity_null_when_absent(self) -> None:
         pool = _FakePool()
-        envelope = _telegram_envelope(update_id="333", thread_id=None)
+        envelope = _email_envelope(message_id="<no-thread@example.com>", thread_id=None)
 
         await ingest_v1(pool, envelope, policy_evaluator=None, enable_thread_affinity=False)
 

@@ -144,6 +144,7 @@ class tool_span:
         # For context-manager use
         self._span: trace.Span | None = None
         self._token: object | None = None
+        self._butler_token: object | None = None
 
     # -- context manager protocol ------------------------------------------
 
@@ -159,17 +160,23 @@ class tool_span:
         self._span = tracer.start_span(self._span_name, context=get_active_session_context())
         tag_butler_span(self._span, self._butler_name)
         self._token = trace.context_api.attach(trace.set_span_in_context(self._span))
-        # Ensure butler context is correct for multi-butler mode
-        set_butler_context(self._butler_name)
+        # Ensure butler context is correct for multi-butler mode; __exit__
+        # restores the caller's butler so the name does not outlive the span.
+        self._butler_token = set_butler_context(self._butler_name)
         return self._span
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: ANN001
+        from butlers.core.logging import reset_butler_context
+
         if self._span is None:
             return
         if exc_val is not None:
             self._span.set_status(trace.StatusCode.ERROR, str(exc_val))
             self._span.record_exception(exc_val)
         self._span.end()
+        if self._butler_token is not None:
+            reset_butler_context(self._butler_token)
+            self._butler_token = None
         if self._token is not None:
             trace.context_api.detach(self._token)
 

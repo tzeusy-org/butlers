@@ -1,10 +1,11 @@
-"""Priority-aware quiet-hours bypass + context-bus gating for delivery_cycle().
+"""Verified-cause quiet-hours and context-bus gating for delivery_cycle().
 
 Covers bu-qvnce.8 slices 1-2 (the "One attention ledger" move, RFC 0011
 Amendment 1): the insight-delivery-cycle side of the attention policy.
 
-- A candidate at/above URGENT_PRIORITY_THRESHOLD (90) is delivered even
-  during quiet hours or an active context-bus dnd/sleeping signal.
+- A candidate with an actually authenticated, current owner clause can be
+  delivered during quiet hours or an active context-bus dnd/sleeping signal.
+  Numeric priority alone grants no bypass (D7/Q3=A).
 - Routine (sub-threshold) candidates are left untouched (still 'pending')
   rather than delivered or silently dropped — they get another chance on a
   later, non-suppressed cycle.
@@ -14,10 +15,10 @@ Amendment 1): the insight-delivery-cycle side of the attention policy.
 Ledger-row content assertions (the actual INSERT into
 ``public.attention_ledger``) live in
 ``tests/integration/test_attention_ledger_roundtrip.py`` against a fully
-migrated database — the ``insight_pool`` fixture here creates only the four
-insight tables (see ``create_insight_tables``) plus the Owner Attention Policy
-row, so ledger writes fail open silently, which is itself part of the
-degraded-honesty contract this test file does not need to re-verify.
+migrated database. The ``insight_pool`` fixture here also uses the real core
+schema so routine delivery reads a genuine context store. The focused ledger
+controls below capture call shape; durable ledger outcomes remain covered by
+that dedicated roundtrip owner.
 
 The policy row is not optional decoration: it is the difference between a
 quiet-hours assertion that means something and one that is green because the
@@ -26,11 +27,19 @@ table was missing. See ``_DEFAULT_QUIET_START_HOUR`` below.
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
+
+from butlers.core.attention_urgency import AttentionOrigin
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.integration.test_dashboard_stepup import authority as authority
 
 _docker_available = shutil.which("docker") is not None
 
@@ -75,19 +84,32 @@ def _future(days: int = 7) -> datetime:
     return datetime.now(UTC) + timedelta(days=days)
 
 
-@pytest.fixture
-async def insight_pool(provisioned_postgres_pool):
-    """Provision a fresh database with insight tables and the owner policy.
+@pytest.fixture(scope="module")
+def migrated_db_url(postgres_container) -> str:
+    """Migrate the real context schema before entering the async fixture loop."""
+    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
 
-    The Owner Attention Policy is part of the schema every one of these tests
-    runs against in production, so it is seeded here with its production
-    default. A test that is *about* quiet-hours suppression overrides it with
-    :func:`_set_owner_attention_policy`.
-    """
+
+@pytest.fixture
+async def insight_pool(migrated_db_url: str):
+    """Own a fresh pool and reset only this test's ordinary Insight state."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    async with provisioned_postgres_pool() as pool:
+    pool = await asyncpg.create_pool(
+        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    try:
         await create_insight_tables(pool)
+        await pool.execute("""
+            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
+                insight_candidates, insight_cooldowns, insight_settings,
+                attention_daily_rollup
+        """)
+        await pool.execute("""
+            UPDATE public.user_context
+            SET superseded_at = now()
+            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
+        """)
         await _set_owner_attention_policy(
             pool,
             quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
@@ -95,6 +117,8 @@ async def insight_pool(provisioned_postgres_pool):
             timezone=_DEFAULT_QUIET_TIMEZONE,
         )
         yield pool
+    finally:
+        await pool.close()
 
 
 async def _set_owner_attention_policy(
@@ -155,8 +179,26 @@ async def _candidate_id(pool, dedup_key: str) -> str:
     return str(row["id"])
 
 
+async def _owner_authorize_candidate(pool, authority, dedup_key):
+    _, service, _, _, session, _ = authority
+    verified = await service.authorize(
+        session.token, csrf_token=session.data["csrf_token"], unsafe=True
+    )
+    entity = uuid4()
+    result = await service.attention_call(
+        "clause_create", verified, session.data["csrf_token"], entity_id=str(entity), scope="always"
+    )
+    assert set(result) == {"id"}
+    candidate = UUID(await _candidate_id(pool, dedup_key))
+    assert await pool.fetchval(
+        "SELECT dashboard_attention.remember($1,$2::jsonb)",
+        candidate,
+        AttentionOrigin(entity_id=entity).record(),
+    )
+
+
 class TestUrgentBypassesQuietHours:
-    async def test_urgent_delivered_routine_stays_pending(self, insight_pool):
+    async def test_urgent_delivered_routine_stays_pending(self, insight_pool, authority):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         # Canonical policy covers the fixed noon test instant.
@@ -168,6 +210,11 @@ class TestUrgentBypassesQuietHours:
         await _set_owner_attention_policy(insight_pool, quiet_start_hour=0, quiet_end_hour=23)
         await _insert_candidate(insight_pool, dedup_key="health:routine:1:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:1:2026", priority=95)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:1:2026")
+        await insight_pool.execute(
+            "UPDATE insight_candidates SET metadata = jsonb_build_object('existing', 'retained') "
+            "WHERE dedup_key = 'health:routine:1:2026'"
+        )
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
         result = await delivery_cycle(
@@ -188,6 +235,39 @@ class TestUrgentBypassesQuietHours:
         )
         assert urgent_row["status"] == "delivered"
         assert routine_row["status"] == "pending"
+
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        held = await insight_pool.fetchrow(
+            "SELECT id, metadata, expires_at FROM insight_candidates "
+            "WHERE dedup_key = 'health:routine:1:2026'"
+        )
+        authorized_metadata = await insight_pool.fetchval(
+            "SELECT metadata FROM insight_candidates WHERE dedup_key = 'health:urgent:1:2026'"
+        )
+        assert held["metadata"]["blocked_by"] == "held_by"
+        assert held["metadata"]["existing"] == "retained"
+        assert authorized_metadata is None or "blocked_by" not in authorized_metadata
+        expiry_now = held["expires_at"] + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 1
+            expiry_ledger.assert_awaited_once()
+            expiry_kwargs = expiry_ledger.call_args.kwargs
+            assert expiry_kwargs["outcome"] == "expired"
+            assert expiry_kwargs["reason"] == "blocked_by:held_by"
+            assert expiry_kwargs["notification_ref"] == str(held["id"])
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            expiry_ledger.assert_awaited_once()
+        assert (
+            await insight_pool.fetchval(
+                "SELECT status FROM insight_candidates WHERE dedup_key = 'health:urgent:1:2026'"
+            )
+            == "delivered"
+        )
+        notify_mock.assert_awaited_once()
 
     async def test_fully_suppressed_when_no_urgent_candidate_pending(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -254,7 +334,7 @@ class TestContextBusGating:
         notify_mock.assert_not_awaited()
 
     @pytest.mark.pg_clock
-    async def test_dnd_signal_bypassed_for_urgent_candidate(self, insight_pool):
+    async def test_dnd_signal_bypassed_for_urgent_candidate(self, insight_pool, authority):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         await insight_pool.execute("""
@@ -264,11 +344,10 @@ class TestContextBusGating:
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:4:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:4:2026", priority=92)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:4:2026")
 
-        # Hour-independent by construction: an urgent candidate fails open past
-        # quiet hours as well as the context bus (RFC 0011 Amendment 1), so this
-        # outcome holds at every instant. Named anyway so no cycle in this file
-        # reads the wall clock.
+        # The authenticated current owner clause permits both quiet-hours and
+        # context-bus interruption; numeric rank alone cannot grant either.
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with patch(
             "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
@@ -334,7 +413,7 @@ class TestContextBusGating:
         assert result["skipped"] is True
         notify_mock.assert_not_awaited()
 
-    async def test_meeting_signal_bypassed_for_urgent_candidate(self, insight_pool):
+    async def test_meeting_signal_bypassed_for_urgent_candidate(self, insight_pool, authority):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         await insight_pool.execute("""
@@ -344,6 +423,7 @@ class TestContextBusGating:
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:m2:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:m2:2026", priority=93)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:m2:2026")
 
         # Hour-independent for the same reason as the dnd/urgent sibling above.
         notify_mock = AsyncMock(return_value={"status": "ok"})
@@ -395,7 +475,11 @@ class TestContextBusGating:
         _, kwargs = ledger_mock.call_args
         assert kwargs["outcome"] == "suppressed"
         assert kwargs["reason"] == "context_bus:meeting"
-        assert kwargs["metadata"] == {"held_by": "meeting"}
+        assert kwargs["metadata"] == {
+            "held_by": "meeting",
+            "attention_cause": "routine",
+            "downgrade": "unverified_urgency",
+        }
 
     async def test_no_context_signal_and_no_quiet_hours_delivers_normally(self, insight_pool):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
@@ -421,15 +505,12 @@ class TestContextBusGating:
 class TestUrgentOnlySubCycle:
     """bu-o8233 (JARVIS pursuit move 8 slice 4) — hourly urgent sub-cycle.
 
-    Today's single daily cron slot means a priority>=90 candidate proposed
-    minutes after the daily run could otherwise sit 'pending' for nearly 24h.
-    ``delivery_cycle(urgent_only=True)`` is the hourly job's entry point:
-    routine candidates are never touched, urgent ones are never capped by the
-    daily budget, and quiet-hours/context-bus are bypassed without even being
-    queried (urgent always fails open past both, per RFC 0011 Amendment 1).
+    ``delivery_cycle(urgent_only=True)`` is the hourly job's entry point.
+    Only currently verified interruption causes enter it. Routine candidates
+    stay pending; rank never substitutes for a current policy read or cause.
     """
 
-    async def test_selects_only_urgent_leaves_routine_pending(self, insight_pool):
+    async def test_selects_only_urgent_leaves_routine_pending(self, insight_pool, authority):
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
         await insight_pool.execute("""
@@ -439,6 +520,7 @@ class TestUrgentOnlySubCycle:
         """)
         await _insert_candidate(insight_pool, dedup_key="health:routine:u1:2026", priority=70)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u1:2026", priority=95)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:u1:2026")
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
         result = await delivery_cycle(
@@ -458,13 +540,15 @@ class TestUrgentOnlySubCycle:
         assert urgent_row["status"] == "delivered"
         assert routine_row["status"] == "pending"
 
-    async def test_bypasses_quiet_hours_without_querying_context_bus(self, insight_pool):
-        """urgent_only skips the quiet-hours/context-bus consult entirely — it
-        isn't just bypassed after being computed, it is never queried."""
+    @pytest.mark.parametrize("urgent_only", [True, False])
+    async def test_unavailable_policy_never_bypasses_for_model_rank(
+        self, insight_pool, urgent_only
+    ):
+        """D7: unavailable policy refuses both modes before any delivery."""
         from butlers.tools.switchboard.insight.broker import delivery_cycle
 
-        # urgent_only must skip both canonical-policy and context reads, rather
-        # than calculating and then ignoring their answers.
+        # Neither a model-ranked candidate nor urgent_only can suppress the
+        # mandatory current policy read.
         await insight_pool.execute("""
             INSERT INTO insight_settings (id, verbosity)
             VALUES (1, 'normal')
@@ -484,17 +568,20 @@ class TestUrgentOnlySubCycle:
             ),
         ):
             result = await delivery_cycle(
-                insight_pool, notify_fn=notify_mock, urgent_only=True, now=_PINNED_NOW
+                insight_pool, notify_fn=notify_mock, urgent_only=urgent_only, now=_PINNED_NOW
             )
 
-        assert result["skipped"] is False
-        notify_mock.assert_awaited_once()
+        assert result["reason"] == "attention_store_unavailable"
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
         row = await insight_pool.fetchrow(
             "SELECT status FROM insight_candidates WHERE dedup_key = 'health:urgent:u2:2026'"
         )
-        assert row["status"] == "delivered"
+        assert row["status"] == "pending"
 
-    async def test_no_daily_budget_cap_delivers_all_eligible_as_one_digest(self, insight_pool):
+    async def test_no_daily_budget_cap_delivers_all_eligible_as_one_digest(
+        self, insight_pool, authority
+    ):
         """A verbosity budget of 1 would cap a normal cycle to one candidate;
         urgent_only ignores the daily budget and delivers every eligible
         urgent candidate this cycle, folded into one composed digest."""
@@ -509,6 +596,7 @@ class TestUrgentOnlySubCycle:
             await _insert_candidate(
                 insight_pool, dedup_key=f"health:urgent:u3-{i}:2026", priority=90 + i
             )
+            await _owner_authorize_candidate(insight_pool, authority, f"health:urgent:u3-{i}:2026")
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
         result = await delivery_cycle(
@@ -600,7 +688,7 @@ class TestUrgentOnlySubCycle:
         )
         assert row["status"] == "pending"
 
-    async def test_urgent_delivery_not_resent_by_a_later_daily_cycle(self, insight_pool):
+    async def test_urgent_delivery_not_resent_by_a_later_daily_cycle(self, insight_pool, authority):
         """Idempotency: a candidate the hourly urgent sub-cycle already
         delivered must not be re-selected/re-sent by the next daily cycle —
         the row's own status='delivered' transition is the guard."""
@@ -612,6 +700,7 @@ class TestUrgentOnlySubCycle:
             ON CONFLICT (id) DO UPDATE SET verbosity='normal'
         """)
         await _insert_candidate(insight_pool, dedup_key="health:urgent:u6:2026", priority=95)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:u6:2026")
 
         urgent_notify = AsyncMock(return_value={"status": "ok"})
         urgent_result = await delivery_cycle(
@@ -648,8 +737,7 @@ class TestFailedDeliveryLedgerRecording:
     prove silence is chosen. Mirrors the notify() choke point's all-paths
     failed accounting (bu-zcos8/bu-hmdqz.3).
 
-    ``insight_pool`` only creates the four insight tables, so the real ledger
-    write would fail open silently; these tests patch
+    ``insight_pool`` includes the real core schema; these focused tests patch
     ``record_attention_event`` in the broker module to capture the exact call
     shape while still asserting the unchanged bookkeeping (attempt-count bump,
     3-strikes ``filtered`` transition) against the real insight tables.
@@ -892,9 +980,9 @@ class TestDailyHoldMode:
         )
         assert row["status"] == "pending"
 
-    async def test_hard_deadline_bypasses_dnd_suppression(self, insight_pool):
+    async def test_hard_deadline_never_grants_dnd_authority(self, insight_pool):
         """daily_hold_mode=True, at/after the hard fallback hour: a dnd-held
-        routine digest is force-delivered rather than skipped for the day."""
+        routine digest remains held without a genuine owner cause."""
         from butlers.tools.switchboard.insight.broker import (
             _DAILY_HOLD_FALLBACK_UTC_HOUR,
             delivery_cycle,
@@ -913,12 +1001,12 @@ class TestDailyHoldMode:
                 now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR, 0, tzinfo=UTC),
             )
 
-        assert result["skipped"] is False
-        notify_mock.assert_awaited_once()
+        assert result["skipped"] is True
+        notify_mock.assert_not_awaited()
         row = await insight_pool.fetchrow(
             "SELECT status FROM insight_candidates WHERE dedup_key = 'health:routine:dh3:2026'"
         )
-        assert row["status"] == "delivered"
+        assert row["status"] == "pending"
 
     async def test_travel_day_defers_even_past_hard_deadline(self, insight_pool):
         """daily_hold_mode=True with `traveling` as the suppressing signal:
@@ -988,9 +1076,60 @@ class TestDailyHoldMode:
         _, kwargs = ledger_mock.call_args
         assert kwargs["outcome"] == "suppressed"
         assert kwargs["reason"] == "travel_day_defer"
-        assert kwargs["metadata"] == {"held_by": "traveling"}
+        assert kwargs["metadata"] == {
+            "held_by": "traveling",
+            "attention_cause": "routine",
+            "downgrade": "unverified_urgency",
+        }
+        notify_mock.assert_not_awaited()
 
-    async def test_urgent_candidate_still_bypasses_on_travel_day(self, insight_pool):
+        # The daily receipt is specific to the non-hourly daily path. Both
+        # generic context and hourly suppression retain the shared cause.
+        for daily, hourly in ((False, False), (True, True)):
+            with (
+                patch(
+                    "butlers.tools.switchboard.insight.broker.get_suppressing_context_signal",
+                    new=AsyncMock(return_value="traveling"),
+                ),
+                patch(
+                    "butlers.tools.switchboard.insight.broker.record_attention_event",
+                    new=AsyncMock(return_value="suppressed-id"),
+                ) as generic_ledger,
+            ):
+                generic_result = await delivery_cycle(
+                    insight_pool,
+                    notify_fn=notify_mock,
+                    daily_hold_mode=daily,
+                    urgent_only=hourly,
+                    now=datetime(2026, 1, 15, _DAILY_HOLD_FALLBACK_UTC_HOUR, 0, tzinfo=UTC),
+                )
+            assert generic_result["skipped"] is True
+            generic_ledger.assert_awaited_once()
+            assert generic_ledger.call_args.kwargs["reason"] == "context_bus:traveling"
+        notify_mock.assert_not_awaited()
+
+        from butlers.tools.switchboard.insight.broker import expire_candidates
+
+        held = await insight_pool.fetchrow(
+            "SELECT id, metadata, expires_at FROM insight_candidates "
+            "WHERE dedup_key = 'health:routine:dh5:2026'"
+        )
+        assert held["metadata"]["blocked_by"] == "held_by"
+        expiry_now = held["expires_at"] + timedelta(seconds=1)
+        with patch(
+            "butlers.tools.switchboard.insight.broker.record_attention_event",
+            new=AsyncMock(return_value="expiry-id"),
+        ) as expiry_ledger:
+            assert await expire_candidates(insight_pool, now=expiry_now) == 1
+            expiry_ledger.assert_awaited_once()
+            assert expiry_ledger.call_args.kwargs["outcome"] == "expired"
+            assert expiry_ledger.call_args.kwargs["reason"] == "blocked_by:held_by"
+            assert expiry_ledger.call_args.kwargs["notification_ref"] == str(held["id"])
+            assert await expire_candidates(insight_pool, now=expiry_now) == 0
+            expiry_ledger.assert_awaited_once()
+        notify_mock.assert_not_awaited()
+
+    async def test_urgent_candidate_still_bypasses_on_travel_day(self, insight_pool, authority):
         """An urgent (priority>=90) candidate is delivered on a travel day
         exactly as it would be for any other suppressing signal — travel-day
         defer only changes the no-urgent-pending fallback path."""
@@ -1001,6 +1140,7 @@ class TestDailyHoldMode:
 
         await self._seed(insight_pool, dedup_key="health:routine:dh6:2026")
         await _insert_candidate(insight_pool, dedup_key="health:urgent:dh6:2026", priority=95)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:dh6:2026")
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with patch(
@@ -1179,7 +1319,7 @@ class TestBrokerCatchupCycle:
         assert kwargs["deliver_at"] == expected_deliver_at
         assert kwargs["reason"] == "context_bus:traveling"
 
-    async def test_urgent_bypass_does_not_schedule_catchup(self, insight_pool):
+    async def test_urgent_bypass_does_not_schedule_catchup(self, insight_pool, authority):
         """A cycle that delivers an urgent candidate this tick was never
         fully suppressed — no catch-up is needed (Slices 1-2 regression
         guard: the urgent-bypass path stays untouched by this change)."""
@@ -1187,6 +1327,7 @@ class TestBrokerCatchupCycle:
 
         await self._seed(insight_pool, dedup_key="health:routine:cu4:2026")
         await _insert_candidate(insight_pool, dedup_key="health:urgent:cu4:2026", priority=95)
+        await _owner_authorize_candidate(insight_pool, authority, "health:urgent:cu4:2026")
 
         notify_mock = AsyncMock(return_value={"status": "ok"})
         with (
@@ -1247,3 +1388,46 @@ class TestBrokerCatchupCycle:
 
         assert result["skipped"] is False
         catchup_mock.assert_not_awaited()
+
+
+class TestCatchupReadAvailability:
+    @pytest.mark.parametrize("failure", ["unavailable", "cancelled", "unexpected"])
+    async def test_optional_context_reread_preserves_failure_boundary(self, failure):
+        """Only a typed unavailable optional read may finish without scheduling."""
+        from butlers.core.approvals_policy import AttentionReadUnavailable
+        from butlers.tools.switchboard.insight.broker import _schedule_insight_catchup
+
+        errors = {
+            "unavailable": AttentionReadUnavailable("context_store_unavailable"),
+            "cancelled": asyncio.CancelledError(),
+            "unexpected": ValueError("unexpected"),
+        }
+        error = errors[failure]
+        pool = object()
+        with (
+            patch(
+                "butlers.tools.switchboard.insight.broker._get_suppressing_context_signal_detail",
+                new=AsyncMock(side_effect=error),
+            ) as detail,
+            patch(
+                "butlers.tools.switchboard.insight.broker.reconcile_catchup_task",
+                new=AsyncMock(),
+            ) as reconcile,
+        ):
+
+            async def attempt():
+                return await _schedule_insight_catchup(
+                    pool,
+                    suppression_signal="meeting",
+                    suppression_reason="context_bus:meeting",
+                    policy=None,
+                    now=_PINNED_NOW,
+                )
+
+            if failure == "unavailable":
+                assert await attempt() is None
+            else:
+                with pytest.raises(type(error)):
+                    await attempt()
+            detail.assert_awaited_once_with(pool, now=_PINNED_NOW)
+            reconcile.assert_not_awaited()

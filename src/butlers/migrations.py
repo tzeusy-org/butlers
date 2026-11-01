@@ -6,18 +6,24 @@ Alembic CLI. Supports targeting a specific version chain (core or butler-specifi
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 
 from alembic import command
+from butlers.bootstrap_prerequisite import check_bootstrap_database
+
+if TYPE_CHECKING:
+    from butlers.modules.base import Module
 
 logger = logging.getLogger(__name__)
 
@@ -93,48 +99,26 @@ def _discover_butler_chains() -> list[str]:
 class _ChainRootFamily:
     """One discoverable shape of migration-chain root directory.
 
-    Pairs the filesystem resolution rule with the GitHub Actions path-filter
-    glob (relative to the repo root) that must cover it in the post-merge
-    migration-chain workflow (``.github/workflows/migration-chain-main.yml``).
-    This is the single source of truth for both ``_resolve_chain_dir``'s
-    resolution order and the CI-coverage guard test in
-    ``tests/config/test_migration_chain_head.py`` — adding a new root shape
-    here without a matching workflow glob update fails that guard test
-    instead of letting migrations land with the "Migration Chain Integrity
-    (main)" check silently absent.
+    Pairs the filesystem resolution rule with the chains it applies to; the
+    tuple order below is ``_resolve_chain_dir``'s resolution order.
     """
 
-    workflow_path_filter: str
     dir_for_chain: Callable[[str], Path]
     applies_to_chain: Callable[[str], bool] = lambda chain: True  # noqa: E731
 
 
 _CHAIN_ROOT_FAMILIES: tuple[_ChainRootFamily, ...] = (
     _ChainRootFamily(
-        workflow_path_filter="alembic/versions/**",
         applies_to_chain=lambda chain: chain in _SHARED_CHAINS,
         dir_for_chain=lambda chain: ALEMBIC_DIR / "versions" / chain,
     ),
     _ChainRootFamily(
-        workflow_path_filter="src/butlers/modules/*/migrations/**",
         dir_for_chain=lambda chain: MODULES_DIR / chain / "migrations",
     ),
     _ChainRootFamily(
-        workflow_path_filter="roster/*/migrations/**",
         dir_for_chain=lambda chain: ROSTER_DIR / chain / "migrations",
     ),
 )
-
-
-def chain_root_workflow_path_filters() -> tuple[str, ...]:
-    """Return the workflow path-filter globs required to cover every migration-root family.
-
-    Derived from ``_CHAIN_ROOT_FAMILIES`` — the same data ``_resolve_chain_dir``
-    resolves against — so the CI-coverage guard test can assert workflow
-    coverage against this instead of restating the globs as test-local
-    literals that could silently drift from the resolver.
-    """
-    return tuple(family.workflow_path_filter for family in _CHAIN_ROOT_FAMILIES)
 
 
 def _resolve_chain_dir(chain: str) -> Path | None:
@@ -171,6 +155,36 @@ def get_all_chains() -> list[str]:
     module_set = set(modules)
     butlers = [c for c in _discover_butler_chains() if c not in shared_set and c not in module_set]
     return shared + modules + butlers
+
+
+def get_module_migration_chains(modules: Iterable[Module], butler_name: str) -> dict[str, str]:
+    """Map admitted module names to their existing, non-empty migration directories.
+
+    Roster modules can have a different public name from their owning directory
+    (``home_assistant`` lives in ``roster/home/modules``). Resolve that layout
+    without a constructor or a module-provided migration hook. The butler's own
+    chain already ran in the preceding phase and must not run twice.
+    """
+    available = set(get_all_chains()) - set(_SHARED_CHAINS)
+    chains: dict[str, str] = {}
+    for module in modules:
+        chain = module.name
+        if chain not in available:
+            source = Path(inspect.getfile(type(module))).resolve()
+            try:
+                relative = source.relative_to(ROSTER_DIR.resolve())
+            except ValueError:
+                continue
+            # Only the roster's root module owns its roster chain. A broker
+            # submodule must not acquire the entire roster chain by proximity.
+            if len(relative.parts) != 3 or relative.parts[1:] != ("modules", "__init__.py"):
+                continue
+            chain = relative.parts[0]
+        if chain == butler_name and has_butler_chain(butler_name):
+            continue
+        if chain in available and _resolve_chain_dir(chain) is not None:
+            chains[module.name] = chain
+    return chains
 
 
 def _normalize_schema(schema: str | None) -> str | None:
@@ -352,13 +366,17 @@ async def run_migrations(db_url: str, chain: str = "core", schema: str | None = 
         schema: Optional target schema for one-db/multi-schema topology.
     """
     chains = _resolve_target_chains(chain)
+    normalized_schema = _normalize_schema(schema)
+    for resolved_chain in chains:
+        if _resolve_chain_dir(resolved_chain) is None:
+            raise ValueError(f"Unknown migration chain: {resolved_chain!r}")
+    check_bootstrap_database(db_url)
 
     # Extensions must exist before any migration that uses extension-provided
     # types (e.g. pgvector's ``vector``).  The call is idempotent.
     if "core" in chains or chain == "core":
         _bootstrap_extensions(db_url)
 
-    normalized_schema = _normalize_schema(schema)
     config = _build_alembic_config(db_url, chains, target_schema=normalized_schema)
     for resolved_chain in chains:
         _upgrade_chain(config, resolved_chain, normalized_schema)

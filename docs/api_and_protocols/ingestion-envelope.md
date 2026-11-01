@@ -11,7 +11,7 @@ Connectors are transport adapters that normalize events from external systems (T
 
 ## Envelope Contract
 
-The wire shape is defined by Pydantic models in `roster/switchboard/tools/routing/contracts.py`:
+The wire shape is defined by Pydantic models in `roster/switchboard/tools/contracts.py`:
 `IngestEnvelopeV1` and its blocks `IngestSourceV1`, `IngestEventV1`, `IngestSenderV1`,
 `IngestPayloadV1`, and `IngestControlV1`. The closed vocabularies — `SourceChannel`,
 `SourceProvider`, `PolicyTier`, `IngestionTier` — and the allowed channel-to-provider pairs
@@ -30,6 +30,16 @@ Rules the models encode and connectors must respect:
 - **`event.external_event_id` is required** and must be the provider's native, stable event id.
   Placeholder values (`unknown`, `none`, …) are treated as missing and fall back to content-hash
   dedupe. `event.observed_at` must be an RFC 3339 string with a timezone.
+- **Conversation identity is split from reply targeting.** `event.external_conversation_id` is
+  the stable, channel-namespaced conversation key (for example `telegram:<chat_id>`, with a
+  `:topic:<topic_id>` suffix when Telegram marks the message `is_topic_message`,
+  `whatsapp:<chat_jid>`, or the Gmail `threadId`). Continuity consumers (conversation anchors,
+  provider-session resume, realtime history) key on it. `event.reply_target_ref` is the
+  provider-native per-message target used only for replies and reactions (for example
+  `<chat_id>:<message_id>`). Telegram bot ingress without both fields is rejected. A producer that
+  has not adopted the split still sends `event.external_thread_id`, which then serves as both its
+  conversation key and its reply target; a split field always wins over it
+  (`butlers.conversation_identity.event_conversation_identity`).
 - **`sender.identity` is provider-native** (user id, email address). The Switchboard resolves it
   to an entity (see [Identity Model](../concepts/identity-model.md)); connectors never resolve
   identity themselves.
@@ -54,18 +64,55 @@ at the URL in `SWITCHBOARD_MCP_URL` (for example `http://localhost:41100/sse`).
 The connector provides source, event, and sender facts only. The Switchboard assigns the
 canonical request context (`RouteRequestContextV1`) at ingest acceptance — including the
 `request_id` (UUIDv7) and `received_at` — and returns the `request_id` for lineage tracking.
-Lineage fields are immutable once assigned.
+Lineage fields are immutable once assigned. The request context carries
+`external_conversation_id` and `reply_target_ref` from the event; `source_thread_identity` is
+retained as the notify-facing name for the reply target and never carries the conversation key.
 
 ## Idempotency and Deduplication
 
 Deduplication is the Switchboard's responsibility at the ingest boundary (`_compute_dedupe_key`
 in `roster/switchboard/tools/ingestion/ingest.py`). The key prefers `control.idempotency_key`,
 then `external_event_id` plus source identity, then a content hash; a secondary content-hash
-check catches the same message arriving through two connectors. Connectors must:
+check catches the same message arriving through two connectors. Content hashes derive from the
+bearer-scrubbed text, so a stored key cannot be brute-forced back to a withheld one-time code;
+when bearer material was withheld (by ingest or by a pre-scrubbing connector) the secondary check
+is skipped and `content_hash_key` is omitted. This decision includes all content subtrees scrubbed
+for storage, including bearer links present only in `payload.raw` beside benign visible text.
+The same decision applies before and inside the advisory lock. Connectors must:
 
 - Send stable source identity fields on every submission, including retries.
 - Provide `control.idempotency_key` when the source has no stable event id.
 - Treat duplicate acceptance as success, not error.
+
+## Dark goal input and reply references
+
+The trusted closed goal harness reads canonical retained `normalized_text`, attachments and
+`payload.untrusted_spans` by server request reference. It recomputes the input digest and returns a
+frozen sequence whose marked ranges and attribution labels are data. There is no caller-supplied
+trusted cache, duplicate raw store, live ingress consumer, model launch or key mount. Owner sender
+verification is independent of quoted authors, display names and body claims. Email From/domain
+verdicts alone do not authenticate an owner principal. Authenticated dashboard authority requires
+the private stored owner admission bound to the exact accepted origin/body and unique live entity.
+
+`event.in_reply_to_ref` identifies the message being answered; `event.reply_target_ref` identifies
+where to send the current reply. Neither is a caller-selected goal/effect ID. Exact stored inbound
+or outbound provenance must match transport, endpoint, conversation and verified recipient.
+Unknown/foreign references create no guessed continuity. Missing inbound trust is exposed; a bot
+reply uses the producing goal's actual exposure. A live owner prompt may receive one immutable
+source-bound inbox entry without a new budget or invocation; Stop/expiry are rechecked after locks.
+
+Channel kind comes only from the authoritative registry. A successful missing/invalid declaration
+means message; lookup failure refuses. Feed input records through its domain-owned deterministic
+service and creates no goal without a matching Git declaration. Registry kind drift cannot change
+the canonical accepted request identity or allocate a second budget on retry.
+
+Roll out receiver/schema before marker/reference producers because envelope models forbid extras.
+Complete buffered and filtered replay propagation before consumption. Keep live activation off;
+rollback disables activation/consumption before removing reader or producer support.
+
+## Sender Authentication Verdict
+
+For every accepted `email` envelope the Switchboard stores one verdict on the canonical `public.ingestion_events.sender_authentication` column: `authenticated`, `unverified` or `failed`. It describes the From domain only and is computed once at ingest from the topmost `Authentication-Results` header kept in `payload.raw` (a lower or injected header never counts). An aligned `dkim=pass` or a `dmarc=pass` gives `authenticated`; a `dmarc` fail or permerror, or an aligned `dkim` fail, gives `failed`; a missing header, a metadata-tier row with no raw payload, `temperror`, `none` and unaligned passes give `unverified`. Non-email rows, and rows ingested before the column existed, read `NULL`. A verifier error stores `NULL` and never fails the ingest. Header parsing is quote-, comment- and literal-aware, so sender text echoed by the receiver cannot forge a clause; an unreadable header is `unverified`, unless it still carries a `dmarc` fail or permerror or a fail on an aligned `dkim` signature, which reads `failed` (a stray character in echoed text can hide a forgery from the strict parser but never a real failure). Alignment uses `header.d` only. The verdict is the receiving provider's claim from the topmost header: it is not proof for mail placed without SMTP receipt (IMAP APPEND, import or insert), where the sender can write that header. The verdict never grants owner origin. Readers use this column instead of parsing headers themselves. See `openspec/specs/ingestion-event-registry/spec.md`.
 
 ## Heartbeat Protocol
 

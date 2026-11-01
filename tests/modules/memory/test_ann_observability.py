@@ -9,6 +9,7 @@ from butlers.modules.memory.ann_observability import (
     EXACT_CORPUS_MAX_ROWS,
     run_ann_observability,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 
 class _Transaction:
@@ -26,15 +27,7 @@ class _Transaction:
         return False
 
 
-class _Acquire:
-    def __init__(self, connection: _Connection) -> None:
-        self._connection = connection
-
-    async def __aenter__(self) -> _Connection:
-        return self._connection
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
+_Acquire = AsyncCtx
 
 
 class _Connection:

@@ -13,10 +13,11 @@ import functools
 import logging
 import sys
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 from typing import Any
 
 import asyncpg
+
+from butlers.telegram_api import terminal_telegram_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -50,23 +51,10 @@ _CHRONICLER_INTERNAL_SCHEMAS = frozenset(
 def _load_switchboard_eligibility_sweep_job() -> Callable[
     [asyncpg.Pool], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard eligibility sweep job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard eligibility sweep job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "eligibility_sweep.py"
-    )
-    module_name = "roster_switchboard_eligibility_sweep_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load switchboard eligibility sweep job from {module_path}")
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_eligibility_sweep_job
+    return roster_module("switchboard", "jobs/eligibility_sweep").run_eligibility_sweep_job
 
 
 async def _run_switchboard_eligibility_sweep_job(
@@ -83,25 +71,12 @@ async def _run_switchboard_eligibility_sweep_job(
 def _load_switchboard_rule_promotion_trigger_job() -> Callable[
     [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
 ]:
-    """Load the switchboard rule-promotion trigger job from roster/ by file path."""
-    import importlib.util as _ilu
+    """Resolve the canonical Switchboard rule promotion trigger job on first use."""
+    from butlers.roster_imports import roster_module
 
-    module_path = (
-        Path(__file__).resolve().parents[2]
-        / "roster"
-        / "switchboard"
-        / "jobs"
-        / "rule_promotion_trigger.py"
-    )
-    module_name = "roster_switchboard_rule_promotion_trigger_job"
-    spec = _ilu.spec_from_file_location(module_name, module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(
-            f"Unable to load switchboard rule promotion trigger job from {module_path}"
-        )
-    module = _ilu.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.run_rule_promotion_trigger_job
+    return roster_module(
+        "switchboard", "jobs/rule_promotion_trigger"
+    ).run_rule_promotion_trigger_job
 
 
 async def _run_switchboard_rule_promotion_trigger_job(
@@ -111,6 +86,25 @@ async def _run_switchboard_rule_promotion_trigger_job(
     """Run the switchboard rule-promotion trigger deterministic schedule job."""
     run_rule_promotion_trigger_job = _load_switchboard_rule_promotion_trigger_job()
     return await run_rule_promotion_trigger_job(pool, job_args)
+
+
+@functools.lru_cache(maxsize=1)
+def _load_switchboard_dropped_known_watch_job() -> Callable[
+    [asyncpg.Pool, dict[str, Any] | None], Awaitable[dict[str, Any]]
+]:
+    """Resolve the canonical Switchboard dropped known watch job on first use."""
+    from butlers.roster_imports import roster_module
+
+    return roster_module("switchboard", "jobs/dropped_known_watch").run_dropped_known_watch_job
+
+
+async def _run_switchboard_dropped_known_watch_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the switchboard dropped-known watch deterministic schedule job."""
+    run_dropped_known_watch_job = _load_switchboard_dropped_known_watch_job()
+    return await run_dropped_known_watch_job(pool, job_args)
 
 
 async def _run_switchboard_domain_event_reconciliation_sweep_job(
@@ -155,34 +149,6 @@ async def _run_switchboard_fleet_case_lapse_sweep_job(
     from butlers.core.fleet_cases import run_lapse_sweep
 
     return await run_lapse_sweep(pool)
-
-
-async def _run_switchboard_decision_review_digest_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the weekly decision-review digest job for the Switchboard butler.
-
-    Delegates to ``butlers.jobs.decision_review.run_decision_review_digest``
-    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
-    """
-    from butlers.jobs.decision_review import run_decision_review_digest
-
-    return await run_decision_review_digest(pool, job_args)
-
-
-async def _run_switchboard_decision_escalation_check_job(
-    pool: asyncpg.Pool,
-    job_args: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Run the P1/deploy decision-block age-escalation check for Switchboard.
-
-    Delegates to ``butlers.jobs.decision_review.run_decision_escalation_check``
-    (bu-ckkpz.4, epic bu-ckkpz "Owner Decision Desk").
-    """
-    from butlers.jobs.decision_review import run_decision_escalation_check
-
-    return await run_decision_escalation_check(pool, job_args)
 
 
 def _build_switchboard_insight_notify_fn(
@@ -258,6 +224,7 @@ def _build_switchboard_insight_notify_fn(
             return {
                 "status": "error",
                 "error": deliver_result.get("error", "delivery failed"),
+                **terminal_telegram_metadata(deliver_result),
             }
         return deliver_result
 
@@ -308,12 +275,15 @@ async def _run_switchboard_insight_delivery_cycle_job(
     regardless of whether the owner is reachable yet.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
         daily_hold_mode=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
     )
@@ -336,12 +306,15 @@ async def _run_switchboard_insight_urgent_subcycle_job(
     selection and cadence differ.
     """
     del job_args
+    from butlers.core.finance_warning_control import lookup_owner
     from butlers.tools.switchboard.insight.broker import delivery_cycle
 
+    owner = lookup_owner(pool)
     notify_fn = _build_switchboard_insight_notify_fn(pool)
     return await delivery_cycle(
         pool,
         notify_fn=notify_fn,
+        **({"finance_warning_reader": owner.read} if owner is not None else {}),
         urgent_only=True,
         amend_fn=_build_switchboard_insight_amend_fn(pool),
     )
@@ -1147,6 +1120,16 @@ async def _run_health_baseline_watch_job(
     return await run_baseline_watch(pool, job_args)
 
 
+async def _run_health_visit_brief_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Run the health pre-appointment visit brief (deterministic, zero LLM, owner-only)."""
+    from butlers.jobs.health_visit_brief import run_visit_brief
+
+    return await run_visit_brief(pool, job_args)
+
+
 async def _run_health_atmosphere_advisory_job(
     pool: asyncpg.Pool,
     job_args: dict[str, Any] | None,
@@ -1229,6 +1212,28 @@ async def _run_relationship_insight_scan_job(
 
     mod = load_roster_jobs("relationship")
     return await mod.run_insight_scan(pool)
+
+
+async def _run_relationship_upcoming_dates_check_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Remind the owner of active people's dates this week (bu-idc5mx.4; template, zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_upcoming_dates_check
+
+    return await run_upcoming_dates_check(pool)
+
+
+async def _run_relationship_maintenance_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Suggest the week's top overdue reconnections by urgency (bu-idc5mx.4; zero LLM)."""
+    del job_args
+    from butlers.tools.relationship.reminders import run_relationship_maintenance
+
+    return await run_relationship_maintenance(pool)
 
 
 async def _run_prepared_action_orphan_sweep_job(
@@ -1609,6 +1614,16 @@ async def _run_home_atmosphere_preconditioning_job(
     return await run_home_atmosphere_preconditioning(pool, job_args)
 
 
+async def _run_home_safety_sentinel_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Reconcile owner-declared leak/smoke/CO/gas sensors and alert without a model."""
+    from butlers.jobs.home_safety import run_safety_sentinel
+
+    return await run_safety_sentinel(pool, job_args)
+
+
 _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = {
     "device_health_check": _run_home_device_health_check_job,
     "environment_report": _run_home_environment_report_job,
@@ -1617,6 +1632,7 @@ _HOME_DETERMINISTIC_JOB_HANDLERS: dict[str, _DeterministicScheduleJobHandler] = 
     "context_producer_home_presence": _run_context_producer_home_presence_job,
     "atmosphere_feed_refresh": _run_home_atmosphere_feed_refresh_job,
     "atmosphere_preconditioning": _run_home_atmosphere_preconditioning_job,
+    "home_safety_sentinel": _run_home_safety_sentinel_job,
 }
 
 
@@ -1678,6 +1694,19 @@ async def _run_qa_evidence_cleanup_job(
 # ---------------------------------------------------------------------------
 # Chronicler jobs
 # ---------------------------------------------------------------------------
+
+
+async def _run_chronicler_gap_interview_job(
+    pool: asyncpg.Pool,
+    job_args: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Ask Chronicler's day-close gap interview for yesterday (bu-idc5mx.4; zero LLM)."""
+    from butlers.chronicler.gap_interview_job import run_gap_interview_job
+    from butlers.core.tool_call_capture import get_current_credential_store
+
+    store = get_current_credential_store()
+    store_kwargs = {"credential_store": store} if store is not None else {}
+    return await run_gap_interview_job(pool, job_args, **store_kwargs)
 
 
 async def _run_chronicler_project_sessions_job(
@@ -2084,6 +2113,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_health_calendar_overlay_contribution_job,
             "insight_scan": _run_health_insight_scan_job,
             "baseline_watch": _run_health_baseline_watch_job,
+            "health_visit_brief": _run_health_visit_brief_job,
             "atmosphere_advisory": _run_health_atmosphere_advisory_job,
             "context_producer_sleep_window": _run_context_producer_sleep_window_job,
             **_retention_pruner_job_handlers("health"),
@@ -2106,6 +2136,8 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "calendar_overlay_contribution": _run_relationship_calendar_overlay_contribution_job,
             "calendar_prep_contribution": _run_relationship_calendar_prep_contribution_job,
             "insight_scan": _run_relationship_insight_scan_job,
+            "upcoming_dates_check": _run_relationship_upcoming_dates_check_job,
+            "relationship_maintenance": _run_relationship_maintenance_job,
             "meeting_debrief": _run_relationship_meeting_debrief_job,
             "interaction_sync": _run_relationship_interaction_sync_job,
             "loan_cost_claim_backfill": _run_relationship_loan_cost_claim_backfill_job,
@@ -2150,6 +2182,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             # purge_superseded / catalog_backfill) or they fail with "unknown
             # deterministic job".
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
+            "chronicler_gap_interview": _run_chronicler_gap_interview_job,
             "chronicler_project_sessions": _run_chronicler_project_sessions_job,
             "chronicler_project_calendar": _run_chronicler_project_calendar_job,
             "chronicler_project_owntracks": _run_chronicler_project_owntracks_job,
@@ -2208,8 +2241,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
             "commitment_escalation": _run_switchboard_commitment_escalation_job,
             "spend_rule_savings": _run_switchboard_spend_rule_savings_job,
             "rule_promotion_trigger": _run_switchboard_rule_promotion_trigger_job,
-            "decision_review_digest": _run_switchboard_decision_review_digest_job,
-            "decision_escalation_check": _run_switchboard_decision_escalation_check_job,
+            "dropped_known_watch": _run_switchboard_dropped_known_watch_job,
             "domain_event_reconciliation_sweep": (
                 _run_switchboard_domain_event_reconciliation_sweep_job
             ),

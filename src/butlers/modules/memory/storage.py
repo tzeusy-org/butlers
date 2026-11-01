@@ -8,15 +8,16 @@ use the EmbeddingEngine for semantic vector generation.
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import json
 import logging
 import math
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from butlers.modules.memory.embedding import EmbeddingEngine
+from butlers.modules.memory.search_vector import preprocess_text, tsvector_sql
 
 if TYPE_CHECKING:
     from asyncpg import Connection, Pool
@@ -43,29 +44,6 @@ class StaleSupersessionTargetError(ValueError):
 
 
 # ---------------------------------------------------------------------------
-# Load sibling modules from disk (roster/ is not a Python package).
-# ---------------------------------------------------------------------------
-
-_MODULE_DIR = Path(__file__).resolve().parent
-
-
-def _load_module(name: str):
-    path = _MODULE_DIR / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_embedding_mod = _load_module("embedding")
-_search_mod = _load_module("search_vector")
-
-EmbeddingEngine = _embedding_mod.EmbeddingEngine
-preprocess_text = _search_mod.preprocess_text
-tsvector_sql = _search_mod.tsvector_sql
-
-# ---------------------------------------------------------------------------
 # Discovery-catalog write-time sensitivity exclusion (defense-in-depth)
 # ---------------------------------------------------------------------------
 #
@@ -76,16 +54,10 @@ tsvector_sql = _search_mod.tsvector_sql
 # explicitly authorize higher levels via max_sensitivity), write-time
 # exclusion means an under-authorized reader can never even race a purge.
 #
-# This vocabulary is intentionally DUPLICATED from
-# search.py::CATALOG_SENSITIVITY_LEVELS / DEFAULT_CATALOG_SENSITIVITY rather
-# than imported: a static import of search.py -- even just for these two
-# constants -- would make search.py's pgvector distance operators reachable
-# from every transitive importer of this module, including relationship's
-# deterministic-Finder endpoint guardrail (see the identical rationale next
-# to `_search_helper.search_catalog` in `__init__.py`, and
-# `roster/relationship/tests/test_finder_no_llm_transitive.py`).
-# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity
-# against the real search.py constants so the two cannot silently drift.
+# Keep the write policy's vocabulary local; the parity test below pins it to
+# search.py's read ceiling. Deterministic API readers use their own lightweight
+# channel/attribution modules rather than importing semantic storage/search.
+# `tests/modules/memory/test_catalog_write_time_sensitivity.py` pins parity.
 _CATALOG_SENSITIVITY_LEVELS: tuple[str, ...] = ("normal", "pii", "confidential")
 _DEFAULT_CATALOG_SENSITIVITY = "normal"
 
@@ -1824,6 +1796,21 @@ async def store_fact(
                     # fact already exists; no new guidance is needed).
                     return {"id": existing_idem_id, "supersedes_id": None}
 
+            # Mirrored writes reserve both closure pairs before taking fact-row
+            # locks. Reciprocal writers must share one lock order, not first lock
+            # their respective forward pair and then wait on each other's inverse.
+            _inverse_predicate: str | None = None
+            _gap_closure_allowed = True
+            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
+                if _registry_row.get("is_symmetric"):
+                    _inverse_predicate = predicate
+                else:
+                    _inverse_predicate = _registry_row.get("inverse_of") or None
+                if _inverse_predicate is not None:
+                    _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
+                        conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
+                    )
+
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
             # active rows regardless of predicate_registry.is_temporal.
@@ -1966,14 +1953,15 @@ async def store_fact(
 
             # An owner question this fact answers moves to `answerable` in this same
             # transaction (bu-q7vx1q.9), so a rolled-back write never answers a gap.
-            await knowledge_gaps.close_matching_gaps(
-                conn,
-                entity_id=entity_id,
-                predicate=predicate,
-                ref=f"fact:{fact_id}",
-                value=content,
-                authority=authority,
-            )
+            if _gap_closure_allowed:
+                await knowledge_gaps.close_matching_gaps(
+                    conn,
+                    entity_id=entity_id,
+                    predicate=predicate,
+                    ref=f"fact:{fact_id}",
+                    value=content,
+                    authority=authority,
+                )
 
             if entity_id is not None and object_entity_id is not None:
                 # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity
@@ -2010,14 +1998,6 @@ async def store_fact(
             # Requires mem_025 migration to be applied (inverse_of and is_symmetric
             # columns must exist on predicate_registry).
             if _registry_row is not None and entity_id is not None and object_entity_id is not None:
-                _inverse_predicate: str | None = None
-                _is_symmetric = _registry_row.get("is_symmetric") or False
-                _inverse_of = _registry_row.get("inverse_of")
-                if _is_symmetric:
-                    _inverse_predicate = predicate
-                elif _inverse_of:
-                    _inverse_predicate = _inverse_of
-
                 if _inverse_predicate is not None:
                     # Compute the inverse fact's idempotency key when applicable.
                     _inv_idem_key: str | None = None
@@ -2109,6 +2089,18 @@ async def store_fact(
                             embedding_model_version=embedding_engine.model_name,
                             authority=authority,
                         )
+                        # Cite the newly active inverse itself, with its swapped
+                        # value and the original server stamp. A temporal skip
+                        # never enters this path and cannot heal a stranded gap.
+                        if _gap_closure_allowed:
+                            await knowledge_gaps.close_matching_gaps(
+                                conn,
+                                entity_id=object_entity_id,
+                                predicate=_inverse_predicate,
+                                ref=f"fact:{_inv_fact_id}",
+                                value=_inv_content,
+                                authority=authority,
+                            )
                         # The mirrored fact is itself a canonical edge-fact row
                         # (entity_id/object_entity_id both set by construction
                         # above) -- it gets its own projected edge under its
@@ -3019,8 +3011,9 @@ async def retry_dead_letter_episode(
             daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
-        The updated episode row (dict) if the reset succeeded, or ``None`` if
-        no episode with that id exists.
+        The updated episode row (dict, including the public lifecycle dossier
+        columns, never the lease columns) if the reset succeeded, or ``None``
+        if no episode with that id exists.
 
     Raises:
         EpisodeNotDeadLetterError: If the episode exists but its
@@ -3028,15 +3021,9 @@ async def retry_dead_letter_episode(
     """
     table = _memory_relation("episode", memory_schema)
 
-    row = await pool.fetchrow(
-        f"SELECT consolidation_status FROM {table} WHERE id = $1",
-        episode_id,
-    )
-    if row is None:
-        return None
-    if row["consolidation_status"] != "dead_letter":
-        raise EpisodeNotDeadLetterError(row["consolidation_status"])
-
+    # One schema-qualified conditional UPDATE decides the transition, so two
+    # concurrent requeues produce exactly one reset and one event; the loser
+    # observes the episode's current status in the follow-up read.
     async with pool.acquire() as conn:
         async with conn.transaction():
             updated = await conn.fetchrow(
@@ -3052,21 +3039,27 @@ async def retry_dead_letter_episode(
                 WHERE id = $1 AND consolidation_status = 'dead_letter'
                 RETURNING id, butler, session_id, content, importance, reference_count,
                           consolidated, consolidation_status, created_at,
-                          last_referenced_at, expires_at, metadata
+                          last_referenced_at, expires_at, metadata,
+                          consolidation_attempts, last_consolidation_error,
+                          dead_letter_reason, next_consolidation_retry_at
                 """,
                 episode_id,
             )
             if updated is None:
-                # Raced with a concurrent transition between the pre-check and
-                # this guarded UPDATE — report the current terminal reality.
-                raise EpisodeNotDeadLetterError("dead_letter")
+                current = await conn.fetchrow(
+                    f"SELECT consolidation_status FROM {table} WHERE id = $1",
+                    episode_id,
+                )
+                if current is None:
+                    return None
+                raise EpisodeNotDeadLetterError(current["consolidation_status"])
 
             await conn.execute(
                 """
                 INSERT INTO memory_events
                     (event_type, actor, memory_type, memory_id, payload)
                 VALUES
-                    ('episode_consolidation_retry_requested', 'dashboard_api',
+                    ('episode_consolidation_requeued', 'dashboard_api',
                      'episode', $1, $2)
                 """,
                 episode_id,
@@ -3533,6 +3526,24 @@ async def invert_to_anti_pattern(
 # ---------------------------------------------------------------------------
 
 
+_LEGACY_FADING_MARKER = "fading"
+
+
+def _clear_legacy_fading_marker(metadata: dict) -> bool:
+    """Drop the sweep's own pre-validity marker; leave every domain key alone.
+
+    Before the ``validity`` column (bu-5ud8p.1) the sweep recorded a fading fact as
+    ``metadata.status = 'fading'`` (mem_008 backfilled and cleared those rows). That exact
+    value is the only thing it ever wrote, so it is the only thing it may remove: a domain
+    status such as a Health condition's ``resolved`` or ``managed`` shares the key and must
+    survive (bu-pimdvx). Returns True when the marker was present and removed.
+    """
+    if metadata.get("status") == _LEGACY_FADING_MARKER:
+        del metadata["status"]
+        return True
+    return False
+
+
 async def run_decay_sweep(pool: Pool) -> dict:
     """Run a confidence decay sweep across all active (and previously-fading) facts
     and rules (excluding permanent ones with decay_rate=0.0).
@@ -3642,9 +3653,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
             )
 
             if eff < expiry_thresh:
-                # Legacy metadata.status bookkeeping is superseded by the
-                # validity column — drop the stale key as part of the transition.
-                metadata.pop("status", None)
+                _clear_legacy_fading_marker(metadata)
                 if archive_first:
                     try:
                         metadata["archived_at"] = now.isoformat()
@@ -3692,7 +3701,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                         continue
                 stats["facts_expired"] += 1
             elif eff < fading_thresh:
-                had_stale_status = metadata.pop("status", None) is not None
+                had_stale_status = _clear_legacy_fading_marker(metadata)
                 if fact["validity"] != "fading" or had_stale_status:
                     await conn.execute(
                         "UPDATE facts SET validity = 'fading', metadata = $1 WHERE id = $2",
@@ -3701,7 +3710,7 @@ async def run_decay_sweep(pool: Pool) -> dict:
                     )
                 stats["facts_fading"] += 1
             else:
-                had_stale_status = metadata.pop("status", None) is not None
+                had_stale_status = _clear_legacy_fading_marker(metadata)
                 if fact["validity"] != "active" or had_stale_status:
                     await conn.execute(
                         "UPDATE facts SET validity = 'active', metadata = $1 WHERE id = $2",

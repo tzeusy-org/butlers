@@ -6,7 +6,7 @@
 // Reduces vertical stacking and gives the Gantt area more room above.
 //
 // Modes:
-//   - "open"      — default. ~360x260 panel in the corner.
+//   - "open"      — default. min(360px, 45vw) × min(270px, 35vh) panel in the corner.
 //   - "expanded"  — large overlay (min(720px, 90vw) × min(540px, 70vh)).
 //   - "minimized" — collapsed to a small pill button; click to reopen.
 //
@@ -59,14 +59,11 @@ export function FloatingMapMinimap({
   return (
     <div
       className={cn(
-        // Fixed at expanded dimensions; scale-down to "open" size via transform.
-        // Animating transform instead of width/height avoids layout reflow
-        // (motion contract AC #5: no width/height/top/left/margin transitions).
-        // transform-origin: bottom-right keeps the corner anchor stable.
+        // Mode dimensions change instantly; the map observes its container size.
         "fixed bottom-4 right-4 z-30 flex flex-col rounded-lg border bg-card shadow-lg overflow-hidden",
-        "w-[min(720px,90vw)] h-[min(540px,70vh)]",
-        "transition-transform duration-200 ease-out origin-bottom-right",
-        !isExpanded && "scale-50",
+        isExpanded
+          ? "w-[min(720px,90vw)] h-[min(540px,70vh)]"
+          : "w-[min(360px,45vw)] h-[min(270px,35vh)]",
       )}
       data-testid="map-minimap"
       data-mode={mode}
@@ -74,7 +71,7 @@ export function FloatingMapMinimap({
       role="region"
     >
       {/* Header bar */}
-      <div className="flex items-center justify-between gap-2 border-b bg-card/80 px-2 py-1 backdrop-blur">
+      <div className="flex items-center justify-between gap-0 border-b bg-card/80 px-1 py-1 backdrop-blur sm:gap-2 sm:px-2">
         <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
           <MapPin className="size-3.5" />
           <span>Map</span>

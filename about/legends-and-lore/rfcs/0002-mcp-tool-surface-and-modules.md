@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+**Superseded in part at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (ephemeral MCP config and own-butler session binding; module ABC and registration remain).
 
 ## Summary
 
@@ -41,8 +42,7 @@ Modules add domain-specific tools by implementing the `Module` abstract base cla
 
 ```python
 class Module(abc.ABC):
-    @property
-    def name(self) -> str: ...              # Unique module identifier
+    name = "example"                       # Concrete classes declare a stable string
     @property
     def config_schema(self) -> type[BaseModel]: ...  # Pydantic config model
     @property
@@ -60,11 +60,11 @@ Key constraints:
 - Modules MUST only add tools via `register_tools()`. They MUST NOT touch core infrastructure (scheduler, spawner, session log).
 - Modules declare dependencies via the `dependencies` property. The daemon resolves these using topological sort, detecting cycles at startup (RFC 0001, phase 3).
 - `on_startup()` receives an optional `CredentialStore` for DB-first credential resolution.
-- `migration_revisions()` returns the Alembic branch label for the module's migration chain, or `None` if the module has no tables (see RFC 0006).
+- CLI and daemon select migration chains from recognized non-empty directories in dependency order, preserving roster aliases and private schemas (see RFC 0006). The legacy optional `migration_revisions()` hook no longer selects chains.
 
 ### Module Registry
 
-The `ModuleRegistry` (`src/butlers/modules/registry.py`) maps module names to their implementing classes. A `default_registry()` function returns the built-in registry. Butler TOML config references modules by name; the registry resolves names to instances during phase 3.
+The `ModuleRegistry` (`src/butlers/modules/registry.py`) maps module names to their implementing classes. A `default_registry()` function returns the built-in registry. Registration reads class-level names without constructing modules. Butler TOML config references modules by name; `load_from_config()` constructs only declared names during phase 3, rejecting unknown names, missing declared dependencies and cycles before database work. The explicit `load_all()` utility remains separate from daemon admission.
 
 ### Registration Wrappers
 
@@ -325,7 +325,7 @@ applied once per process from `ButlerDaemon._build_mcp_http_app`.
 - **RFC 0001:** Tool registration occurs during daemon startup phases 13-14.
 - **RFC 0003:** `route.execute` is a core tool that accepts Switchboard-routed envelopes.
 - **RFC 0005:** Core and module wrappers preserve bounded call logging/capture; module spans are wrapper-owned while core span ownership remains with each handler.
-- **RFC 0006:** Module migrations are discovered and executed based on `migration_revisions()`.
+- **RFC 0006:** Module migrations are selected from recognized non-empty directories by the shared CLI/daemon selector.
 - **RFC 0011:** The insight broker module on the Switchboard registers `propose_insight_candidate` as a module tool. The `notify` core tool is extended with `intent='insight'` for insight delivery.
 
 ## Alternatives Considered

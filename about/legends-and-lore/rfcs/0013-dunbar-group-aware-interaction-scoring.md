@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-16
-**Amended:** 2026-07-05 (D7 Reciprocal Engagement Gating); see [Amendments](#amendments).
+**Amended:** 2026-07-05 (D7 Reciprocal Engagement Gating), 2026-10-08 (D4 chat key); see [Amendments](#amendments).
 
 ## Summary
 
@@ -432,3 +432,7 @@ context about how many people were involved.
 ## Amendments
 
 - **2026-07-05:** added D7 (reciprocal engagement gating, `raw_score × min(1.0, engagement_days / 3)`) and aligned D6 and Deployment Impact with it.
+- **2026-10-08:** the D4 chat key is now `request_context->>'external_conversation_id'`, falling
+  back to `source_thread_identity` and then `source_sender_identity`. Since the conversation
+  identity split, `source_thread_identity` carries the per-message reply target for Telegram
+  user-client rows, so grouping on it alone would split one chat into one group per message.

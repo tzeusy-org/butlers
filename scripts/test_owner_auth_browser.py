@@ -50,6 +50,23 @@ async def initialize(env: dict[str, str]) -> None:
 
 
 def main() -> int:
+    if os.environ.get("GITHUB_ACTIONS") == "true":
+        # Keep the existing PG16/Ryuk lifecycle and credentials. Only preload
+        # compatible public image content on the ordinary hosted runner.
+        from testcontainers.core.config import testcontainers_config
+
+        command = [
+            sys.executable,
+            str(ROOT / "scripts/ci_test_images.py"),
+            "--image",
+            "owner-browser",
+        ]
+        if (
+            not testcontainers_config.ryuk_disabled
+            and testcontainers_config.ryuk_image == "testcontainers/ryuk:0.8.1"
+        ):
+            command.append("--ryuk")
+        subprocess.run(command, check=True, timeout=365)
     # Avoid forwarding ambient owner/provider credentials to synthetic children.
     env = {
         key: os.environ[key]

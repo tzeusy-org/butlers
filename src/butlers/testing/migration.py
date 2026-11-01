@@ -32,8 +32,12 @@ Adding a migration column or table requires zero changes in tests — the next
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
+import threading
 import uuid
 from pathlib import Path
+from types import ModuleType
 from urllib.parse import quote, urlparse
 
 import asyncpg
@@ -41,6 +45,7 @@ from sqlalchemy import Connection, create_engine, text
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _INIT_DB = _REPO_ROOT / "scripts" / "init-db.sql"
+_MODULE_REGISTRATION_LOCK = threading.RLock()
 _PSQL_ON_ERROR_STOP_DIRECTIVE = r"\set ON_ERROR_STOP on" + "\n"
 
 
@@ -471,3 +476,39 @@ async def create_migrated_test_pool(
         pool_kwargs["server_settings"] = {"search_path": search_path}
 
     return await asyncpg.create_pool(db_url, **pool_kwargs)
+
+
+def load_migration(
+    path: str | Path, name: str | None = None, *, register: bool = False
+) -> ModuleType:
+    """Import an explicit migration file freshly, without running upgrade/downgrade.
+
+    ``name`` preserves the caller's module identity; the default is
+    ``_migration_<file stem>``. Missing files and import errors propagate.
+    ``register=True`` supports files whose import needs ``sys.modules`` (for
+    example dataclasses); the prior entry is restored even if execution fails.
+    Default loads never insert into ``sys.modules``. This does not provision a DB.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    name = name if name is not None else f"_migration_{path.stem}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None, f"Cannot load migration: {path}"
+    module = importlib.util.module_from_spec(spec)
+    if not register:
+        spec.loader.exec_module(module)
+        return module
+    # Registration is opt-in process-global state; serialize our temporary slots.
+    with _MODULE_REGISTRATION_LOCK:
+        missing = object()
+        previous = sys.modules.get(name, missing)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+            return module
+        finally:
+            if previous is missing:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous

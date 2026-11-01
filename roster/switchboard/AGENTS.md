@@ -15,6 +15,8 @@ You are `type = "staffer"`. You serve the butler ecosystem, not the user directl
 
 ## Routing Rules
 
+- The generic `route` MCP tool is daemon-only; runtime sessions are refused and must not use it.
+
 - Only agents with `type = "butler"` are candidates for user-message classification and routing.
 - Agents with `type = "staffer"` (including yourself and Messenger) are excluded from user-message routing.
 - Butler-to-staffer routing (e.g., `notify()` → Messenger) is separate from user-message routing and is not affected by this exclusion.
@@ -28,5 +30,4 @@ You are `type = "staffer"`. You serve the butler ecosystem, not the user directl
 - You are infrastructure-critical. Failure here halts all inbound message processing.
 
 ## Notes to self
-- Ingestion rules bulk ops: `POST /api/switchboard/ingestion-rules/bulk` accepts `action ∈ {enable, disable, delete}` + array of rule ids (max 100). Connector-scope rules are block-only; handler rejects non-block actions with HTTP 400.
 - Connector lifecycle gates: PAUSE and RUN-NOW are audit-only (no Approvals gate). DISCONNECT is Approvals-gated. ROTATE-TOKEN rejects before parking until it has a safe credential-reference replay contract, recording an error audit without credential material. REAUTH returns HTTP 503 pending `connector-oauth-scope-surface` spec ratification.

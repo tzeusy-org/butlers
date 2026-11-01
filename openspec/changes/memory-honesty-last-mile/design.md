@@ -1,5 +1,11 @@
 ## Context
 
+This change is re-scoped by `bu-kqnum.14.8` to the adopted RFC 0038 D2, D6 and
+D18 goal runtime before `bu-kqnum.14.7` reconciles and archives it. The original
+memory-honesty gaps below explain the recovery guarantees; merged legacy
+implementation evidence does not establish goal-runtime delivery. No RFC
+decision or recorded consolidation-throughput policy changes here.
+
 The dashboard memory API fans out across independently owned memory pools. A
 missing row is meaningful only after every relevant source was queried
 successfully or was known to lack the memory schema. A genuine source failure
@@ -42,7 +48,9 @@ failed or unavailable source.
 - Keep Chronicler's private `chronicler_mem` episodes outside this generic
   retry and requeue slice.
 - Give the owner an auditable, race-safe requeue operation that never starts a
-  consolidation session.
+  consolidation session or admits a goal.
+- Perform consolidation judgment in one declared obligation goal per tenant,
+  source domain and taint partition, preserving the bounded recovery lifecycle.
 - Make user-facing recovery and fact-mutation outcomes keyboard- and
   screen-reader-accessible.
 
@@ -105,6 +113,37 @@ global count.
 
 ### 3. Make the episode state machine explicit and closed
 
+The deterministic `memory_consolidation` schedule submits one obligation
+admission per `(tenant_id, source butler, partition)` with the git-declared
+memory read and consolidation-apply capabilities. It never passes a Spawner
+to `run_consolidation` or starts a session. An empty eligible population admits
+no goal. Model selection, spend routing, budgets, quotas, failover and timeouts
+belong to goal-runner role/tier resolution over the model catalog; the job
+supplies no model, runtime or timeout override.
+
+The read capability retains ordered, schema-qualified claims, due-failed
+backoff and lease checks. Each tenant/source group splits into untainted
+owner-class episodes and all other episodes. Dedup context for the untainted
+partition contains only untainted owner-class facts and rules, so another
+partition's evidence cannot expose its goal. Reads fence episode content as
+data with UUID, authority and taint stamps. The goal submits structured
+artifacts through consolidation-apply, whose deterministic implementation
+validates episode evidence and applies actions under `REQ-module-memory-006`
+and authority/taint rules under `REQ-module-memory-013`. The apply capability
+is not `owner_authority`: exposed goals can submit artifacts, but derived
+tainted rules remain held and tainted artifacts cannot supersede untainted
+ones. Missing or blank output fails the group with an actionable error;
+independent groups continue.
+
+Read/apply capabilities use the active module's runtime pool and embedding
+engine lifecycle, including private-schema plumbing. Such plumbing does not
+make a private source eligible for the new failed retries or dashboard requeue.
+A dry run only groups/counts eligible episodes; it admits no goal and applies
+no artifacts. These execution changes leave all four throughput-policy declines
+intact: no additional batching control, per-run cap, backlog deadman or forced
+cheap transport is adopted. The five recorded decision scenarios survive with
+goal-runner/catalog authority replacing direct Spawner transport.
+
 For recovery-eligible sources, the lifecycle uses existing durable fields and
 has these externally observable rules:
 
@@ -140,9 +179,17 @@ because it erases the operator boundary that makes a dead letter trustworthy.
 
 `POST /api/memory/episodes/{episode_id}/requeue` is a dashboard API-only owner
 operation. It requires the dashboard's owner authorization guard; a caller
-without owner authority receives `403` with the stable `owner_required` code.
+without valid owner authority is stopped by the central `dashboard-owner-auth`
+boundary before the handler: `401 UNAUTHORIZED` for missing, expired, revoked or invalid
+authority, `403 FORBIDDEN` for a cookie-backed request that fails the exact-Origin or
+synchronizer-CSRF admission, and safe `503 AUTH_UNAVAILABLE` when auth state is unavailable.
+The route adds no per-route owner check, and no per-route `403 owner_required` exists because
+no authenticated non-owner principal can reach the dashboard API.
 It is not registered as an MCP tool and no scheduler, request handler, or UI
-callback may invoke `run_consolidation` as a consequence.
+callback may invoke `run_consolidation`, submit an obligation admission or
+start a goal/session as a consequence of the requeue request. Only a later
+ordinary schedule may select the newly pending episode under the same claim,
+backoff, lease and partition rules.
 
 After recovery-eligible source resolution, one transaction conditionally
 updates only a `dead_letter` row to `pending`. It resets the current
@@ -217,6 +264,17 @@ solution was rejected because it loses the initiating action's context.
   state that it queues for a future scheduled write-up, with no run-now path.
 
 ## Migration Plan
+
+The goal-runtime implementation remains with the generalist change's domain
+conversion (task 2.12) and hard switch (task 4.1); authoring this amendment
+earns neither. Reconciliation must map the amended scenarios to actual
+implementation and executing tests before claiming completion. After this
+change archives, the generalist task 4.2 rebuild of its same-name
+`LLM-driven memory consolidation pipeline` block must preserve the new
+due-failed, lease and private-source recovery clauses as well as all five
+archived throughput-decision scenarios. Its current pending-only grouping
+cannot erase the recovery lifecycle. Shared baseline edits stay with their
+existing owners; this amendment changes only this active change.
 
 This specification proposes no data migration or live repair. The later
 implementation should use the existing episode lifecycle fields and event

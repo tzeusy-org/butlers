@@ -20,6 +20,20 @@ then drives the parent `abort.v1(reason=blocked_dnd)` fanout to origin-local
 `release_retained_dnd` state. Messenger SHALL not call an origin, mutate an
 origin queue, or expose a DND read surface for that fanout.
 
+Cancellation SHALL remain deterministic service-plane work under RFC 0038
+D1/D2/D7 and SHALL NOT admit a reasoning goal, invoke an LLM or start a session.
+Generic route-proxy mediation SHALL be replaced by a named control-plane
+service-listener endpoint fixing the cancellation schema, Messenger recipient
+operation and authenticated Switchboard caller allowlist. Messenger SHALL
+authenticate the current-fence Switchboard service identity independently of
+payload source claims and retain every existing gate, cohort, replay and DND
+check. The endpoint and recipient operation SHALL NOT be LLM-presentable or
+reachable from the session listener; no direct peer caller or grant is added.
+
+ID: REQ-butler-messenger-004
+Source: proposal.md; design.md D0–D7; RFC 0038 D1/D2/D7
+Scope: v1-mandatory
+
 #### Scenario: Messenger rejects a direct non-Switchboard caller
 - **WHEN** Health, an origin Scheduler, or an unauthenticated caller invokes
   the cancellation admission surface directly

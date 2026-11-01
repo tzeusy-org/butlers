@@ -28,12 +28,12 @@ from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     CliRuntimeDetail,
     SystemSecretDetail,
     _content_blind_cli_detail,
     _content_blind_system_detail,
-    _get_db_manager,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
@@ -233,7 +233,7 @@ def _make_db_manager_for_per_credential(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 
@@ -915,6 +915,19 @@ def test_cli_credential_miss_returns_404():
 
     resp = client.get("/api/secrets/cli/nonexistent-cli-id")
     assert resp.status_code == 404
+
+
+def test_cli_credential_miss_for_store_only_provider_returns_never_set_placeholder():
+    """An unset Claude key opens as never_set, matching its inventory row."""
+    mock_db = _make_db_manager_for_per_credential(cli_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/cli/cli-auth/claude")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["id"] == "cli-auth/claude"
+    assert data["state"] == "never_set"
+    assert data["fingerprint"] is None
 
 
 def test_cli_credential_miss_no_shared_pool_returns_404():

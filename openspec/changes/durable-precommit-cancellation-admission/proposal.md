@@ -17,6 +17,13 @@ or add another cross-butler state authority.
   `wake_recovery.cancel_finalize.v1`, and `wake_recovery.cancel_publish.v1` as
   authenticated, Switchboard-mediated request/receipt contracts for one
   complete prepared cohort and one immutable run fence.
+- Align cancellation mediation with adopted RFC 0038 D1/D2/D7: cancellation
+  remains deterministic service-plane coordination, never a reasoning goal or
+  LLM invocation. Replace any generic route proxy for this traffic with named
+  control-plane service-listener endpoints, each fixing its payload schema,
+  one recipient service-plane operation and an authenticated calling-daemon
+  allowlist. These endpoints are neither LLM-presentable nor served on the
+  session listener; payload identity claims grant no authority.
 - Make Messenger the sole final authority for precommit cancellation admission:
   it records an idempotent accepted, rejected, or ambiguous decision while
   serializing against its local wake-recovery egress state and the canonical
@@ -64,3 +71,12 @@ transitions and receipts, coordinator retry handling, and PostgreSQL
 role/concurrency tests.
 It depends on the canonical DND generation guard from `bu-12iab`; it neither
 implements nor alters the parent wake-recovery protocol in `bu-kqnum.3.4`.
+
+This amendment brings the existing packet into conformance with
+[RFC 0038](../../../about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+before archive. Its full participant cohort, DND admission, private-gate lock
+ordering, durable replay and all-cohort finalization/publication remain intact.
+Each frozen recipient operation is bound to its own declared endpoint; a missing
+endpoint is an unavailable participant, never permission to shrink the cohort. No
+runtime implementation, task completion, archive, subscription, goal, grant or
+RFC decision change is delivered by this prose amendment.

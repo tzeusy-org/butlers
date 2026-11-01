@@ -22,9 +22,9 @@ import logging
 from uuid import UUID
 
 import asyncpg
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.api.models.ingestion_event import (
     PriorityContactAddRequest,
@@ -132,11 +132,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ingestion/priority-contacts", tags=["ingestion"])
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # GET /api/ingestion/priority-contacts
 # ---------------------------------------------------------------------------
@@ -146,7 +141,8 @@ def _get_db_manager() -> DatabaseManager:
 async def list_priority_contacts(
     limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[PriorityContactEntry]:
     """List all priority contacts (global — butler-agnostic).
 
@@ -220,7 +216,8 @@ async def list_priority_contacts(
 async def add_priority_contact(
     body: PriorityContactAddRequest,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PriorityContactAddResponse:
     """Add a priority contact (global — butler-agnostic).
 
@@ -343,7 +340,8 @@ async def add_priority_contact(
 async def remove_priority_contact(
     contact_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Remove a priority contact (global — butler-agnostic).
 

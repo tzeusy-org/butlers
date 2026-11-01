@@ -95,7 +95,7 @@ The evaluator is instantiated with `scope = 'connector:<connector_type>:<endpoin
 - **WHEN** a connector instantiates its evaluator
 - **THEN** it passes `scope = 'connector:<connector_type>:<endpoint_identity>'` and a shared DB pool; the evaluator loads only connector-scoped rules for that scope
 
-### Requirement: ingest.v1 Envelope Schema
+### Requirement: ingest.v1 Envelope Contract
 The `ingest.v1` envelope SHALL be the canonical format for all messages entering the butler ecosystem. It SHALL conform to the IngestEnvelopeV1 schema with five required sub-sections validated at the point of entry.
 
 #### Scenario: Top-level envelope structure
@@ -113,7 +113,9 @@ The `ingest.v1` envelope SHALL be the canonical format for all messages entering
 
 #### Scenario: Event metadata (IngestEventV1)
 - **WHEN** `event` is populated
-- **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_thread_id` is an optional non-empty string (email thread ID, Telegram chat ID), and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
+- **THEN** `external_event_id` is a non-empty string (the provider's stable event ID, required for deduplication), `external_conversation_id` is an optional non-empty, channel-namespaced conversation key (for example `telegram:<chat_id>`, `whatsapp:<chat_jid>`, or a Gmail `threadId`), `reply_target_ref` is an optional non-empty per-message reply or reaction target (for example `<chat_id>:<message_id>`), `external_thread_id` is an optional non-empty string for producers that have not split conversation identity from reply targeting, and `observed_at` is a timezone-aware datetime (RFC3339, when the connector observed the event)
+- **AND** for a producer that sends only `external_thread_id`, that value SHALL serve as both its conversation key and its reply target; a split field SHALL always take precedence over it
+- **AND** a `telegram_bot` envelope SHALL carry both `external_conversation_id` and `reply_target_ref`, or fail validation
 
 #### Scenario: Sender identity (IngestSenderV1)
 - **WHEN** `sender` is populated
@@ -175,7 +177,28 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 
 #### Scenario: Priority 3 — Content hash fallback
 - **WHEN** neither explicit key nor usable event ID is available
-- **THEN** the dedupe key is `"hash:{channel}:{endpoint_identity}:{sender}:{hour_bucket}:{content_hash[:16]}"` where `content_hash` is SHA256 of `normalized_text:sender_identity` and `hour_bucket` is the hourly time window (`YYYYMMDDHH`)
+- **THEN** the dedupe key is `"hash:{channel}:{endpoint_identity}:{sender}:{hour_bucket}:{content_hash[:16]}"` where `content_hash` is SHA256 of `bearer_scrubbed_normalized_text:sender_identity` and `hour_bucket` is the hourly time window (`YYYYMMDDHH`)
+- **AND** text containing no bearer material hashes exactly as its `normalized_text`
+
+#### Scenario: Keys never derive from withheld bearer material
+- **WHEN** the submitted text contains bearer material (one-time codes, reset or magic links) that ingest withholds from the stored text
+- **THEN** every stored dedupe or content-hash key (`request_context.dedupe_key`, `request_context.content_hash_key`, `public.ingestion_events.dedupe_key`) is derived from the scrubbed text and never from the raw text
+- **AND** two submissions differing only in the withheld material derive the same content-hash key
+- **AND** the Switchboard MUST NOT store any value from which the withheld material can be recovered by hashing candidate values
+
+#### Scenario: Secondary content-hash lookup skips withheld bearer text
+- **WHEN** a submission has a Priority 1 or 2 key and bearer material was withheld from any centrally scrubbed content subtree (including `payload.raw` even when `normalized_text` is benign), whether by ingest or by a connector that scrubbed before submitting (the envelope's `control.bearer_scrubbed` flag, or a canonical withheld-artifact placeholder in the text)
+- **THEN** the Switchboard omits `request_context.content_hash_key` and skips the secondary cross-connector content-hash lookup, inside and outside the advisory lock
+- **AND** primary-key deduplication still applies, so a second code with its own event ID is not dropped as a duplicate
+
+#### Scenario: Scrub failure fails closed
+- **WHEN** scrubbing for key derivation raises
+- **THEN** the content hash is derived from a constant withheld-text marker and `content_hash_key` is omitted
+- **AND** no key is derived from the raw text
+
+#### Scenario: Pipeline ingress dedupe key
+- **WHEN** the in-process pipeline records an ingress without a stable event id or idempotency key
+- **THEN** its payload-hash dedupe key is derived from the bearer-scrubbed message text, scrubbed before the key is built
 
 #### Scenario: Advisory lock serialization
 - **WHEN** the Switchboard processes an ingest submission
@@ -186,12 +209,12 @@ The Switchboard SHALL compute a stable deduplication key for each ingest submiss
 - **WHEN** the Switchboard accepts an ingest submission
 - **THEN** it returns `IngestAcceptedResponse` with: `request_id` (UUID7, canonical reference), `status` (`"accepted"`), `duplicate` (bool), `triage_decision` (string or None), `triage_target` (butler name or None)
 
-### Requirement: Request Context Assignment
+### Requirement: Request Context Construction
 The Switchboard SHALL build an immutable request context from each accepted ingest envelope. This context SHALL travel with the message through classification, routing, and butler processing. The `request_id` SHALL be a UUID7 identifier.
 
 #### Scenario: Request context fields
 - **WHEN** a message is accepted for processing
-- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `source_thread_identity` (from `external_thread_id`), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
+- **THEN** the Switchboard assigns: `request_id` (UUID7, equals `public.ingestion_events.id`), `received_at` (server timestamp), `source_channel`, `source_endpoint_identity`, `source_sender_identity`, `external_conversation_id` (the resolved conversation key), `reply_target_ref` (the resolved reply target), `source_thread_identity` (the notify-facing name for the same reply target, never the conversation key), `idempotency_key`, `trace_context`, `ingestion_tier`, `dedupe_key`, `dedupe_strategy` (`"connector_api"`)
 - **AND** if triage was evaluated: `triage_decision`, `triage_target`, `triage_rule_id`, `triage_rule_type`
 - **AND** if the envelope carries group-chat metadata: `participant_count`, `chat_type`, and `interaction_eligible` (only when `false`)
 - **AND** if the envelope is a batch covering several senders: `source_sender_identities` (a JSON array built from `sender.participants`) and, when the connector reports one, `owner_sender_identity` (from `sender.owner_sender_id`)
@@ -489,6 +512,10 @@ meaning.
 Connectors that need noise filtering before Switchboard ingestion SHALL use the shared LLM-based filter (`butlers.connectors.discretion`) that evaluates messages in context and decides whether they warrant butler attention (FORWARD) or should be silently discarded (IGNORE).
 
 The discretion layer uses the project's RuntimeAdapter interface via a dedicated `DiscretionDispatcher` (`butlers.connectors.discretion_dispatcher`), which resolves models from the shared model catalog at the `specialty` complexity tier. This unifies all LLM interaction within the repository under explicit adapter resolution — the same Settings UI and model catalog that manages butler session models also manages discretion models.
+
+ID: REQ-connector-base-spec-007
+Source: bu-1wwjrb; [Observed] `src/butlers/connectors/discretion.py` evaluator log sites
+Scope: v1-mandatory
 
 #### Scenario: Discretion module location
 - **WHEN** a connector integrates the discretion layer
@@ -904,3 +931,98 @@ The preview seam SHALL treat provider and sender-domain labels as untrusted hint
 - **THEN** it SHALL reuse the shared preview detector, update only subject_or_preview in locked keyset batches, preserve other columns and report content-free complete/incomplete counts
 - **AND** a complete rerun SHALL change zero rows; rollback/restart/unknown acknowledgements SHALL not skip a row or fabricate completion
 - **AND** source-only implementation SHALL NOT imply live execution or reversal of already redacted bearer material
+
+### Requirement: Auth-state columns on connector_registry
+
+The `public.connector_registry` table SHALL include four additive columns to
+expose auth and scope state. All columns are nullable; no data backfill is
+required.
+
+#### Scenario: Additive columns present
+
+- **WHEN** the `public.connector_registry` schema is the most recent
+  migration head
+- **THEN** the table SHALL include the columns:
+  - `observed_scopes TEXT[] NULL`
+  - `observed_scopes_fetched_at TIMESTAMPTZ NULL`
+  - `required_scopes_version SMALLINT NULL`
+  - `auth_status VARCHAR(32) NULL`
+- **AND** existing columns SHALL be unchanged in type, default, or
+  constraint
+- **AND** existing inserts, queries, and rollups SHALL continue to function
+  without modification
+
+#### Scenario: NULL values are well-defined
+
+- **WHEN** any of the four columns is NULL
+- **THEN** the meaning SHALL be as specified in
+  `connector-oauth-scope-surface/spec` (§Observed-scope storage on
+  connector_registry §Scenario: NULL semantics on read)
+- **AND** dashboard surfaces SHALL NOT treat NULL as a database error — NULL
+  is the documented absence-of-observation state
+
+### Requirement: ConnectorDetailEntry Pydantic auth and scopes blocks
+
+The flat `ConnectorDetailEntry` Pydantic response model SHALL be extended
+additively to include an `auth` block and a `scopes` block, populated per
+`connector-oauth-scope-surface/spec` §Dashboard API response shape. The model
+is defined by `connector-base-spec`.
+
+#### Scenario: ConnectorDetailEntry includes auth block
+
+- **WHEN** `GET /api/ingestion/connectors/{type}/{identity}` returns a
+  `ConnectorDetailEntry` payload
+- **THEN** the payload SHALL include an `auth` field whose shape conforms to
+  `connector-oauth-scope-surface/spec` §Dashboard API response shape
+- **AND** the `auth.status` field SHALL be a non-null enum value drawn from
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}`
+- **AND** the API SHALL apply the documented
+  `expired | rotation-needed` → `needs_reauth` normalization before the
+  typed recovery resolver consumes the response
+- **AND** `auth.recovery_reason` SHALL preserve `expired` or
+  `rotation-needed` when normalization occurred, and otherwise be null
+
+#### Scenario: ConnectorDetailEntry includes scopes block
+
+- **WHEN** the same endpoint returns a `ConnectorDetailEntry` payload
+- **THEN** the payload SHALL include a `scopes` array
+- **AND** for connectors with `auth.status = unsupported`, the array SHALL
+  be the empty list `[]`
+- **AND** for OAuth-bound connectors, the array entries SHALL conform to
+  the per-scope shape in `connector-oauth-scope-surface/spec`
+
+#### Scenario: Backward compatibility for ConnectorSummary
+
+- **WHEN** a `ConnectorSummary` list entry (per
+  `connector-base-spec/spec.md:431-443`) is serialized
+- **THEN** the model SHALL NOT be extended with the `auth` or `scopes`
+  blocks (those are detail-only to keep list-page payloads small)
+- **AND** the list endpoint MAY include a single `auth_status` enum field on
+  each summary entry for the connector-attention strip; despite the legacy
+  field name, this public value SHALL use
+  `{ok, degraded, needs_reauth, unsupported, unconfigured}` and SHALL apply
+  the same stored-cause normalization as `ConnectorDetailEntry.auth.status`
+- **AND** full scope state is reserved for the detail endpoint
+
+### Requirement: OAuth connector observation responsibility
+
+OAuth-bound connectors SHALL maintain `observed_scopes` and `observed_scopes_fetched_at` on their `connector_registry` row per the re-introspection cadence defined in `connector-oauth-scope-surface/spec` §Re-introspection cadence and triggers. The applicability matrix in `connector-oauth-scope-surface/spec` determines which connectors are OAuth-bound. This is an additive responsibility; it does not modify the existing heartbeat protocol.
+
+#### Scenario: OAuth connector updates observed scopes
+
+- **WHEN** an OAuth-bound connector successfully refreshes its access token
+  OR completes a fallback-cadence introspection
+- **THEN** the connector SHALL update its row's `observed_scopes` and
+  `observed_scopes_fetched_at` per the contract in
+  `connector-oauth-scope-surface/spec`
+- **AND** the connector SHALL recompute and persist `auth_status` per the
+  parent spec's §Auth status computation requirement
+
+#### Scenario: Non-OAuth connectors do not observe scopes
+
+- **WHEN** a non-OAuth connector (Telegram bot, OwnTracks, etc.) starts
+- **THEN** it SHALL NOT attempt to populate `observed_scopes` (the column
+  remains NULL)
+- **AND** the dashboard API SHALL compute `auth_status = unsupported` for
+  the row based on the per-connector applicability matrix in
+  `connector-oauth-scope-surface/spec`

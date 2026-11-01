@@ -23,7 +23,7 @@
  * blanket refetch of the whole app.
  */
 
-import type { QueryClient } from "@tanstack/react-query";
+import { hashKey, matchQuery, type InvalidateOptions, type InvalidateQueryFilters, type QueryClient } from "@tanstack/react-query";
 import { invalidateEntityActivityFamily } from "@/hooks/entity-activity-cache";
 
 // ---------------------------------------------------------------------------
@@ -37,7 +37,9 @@ export interface FleetEvent {
   data: Record<string, unknown>;
 }
 
-type CachePatch = (qc: QueryClient, event: FleetEvent) => void;
+// Registry patches describe invalidations only; they do not own a QueryClient.
+type CacheInvalidator = Pick<QueryClient, "invalidateQueries">;
+type CachePatch = (qc: CacheInvalidator, event: FleetEvent) => void;
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -205,8 +207,8 @@ const calendarPatch: CachePatch = (qc) => {
   qc.invalidateQueries({ queryKey: ["calendar-overlays"] });
   qc.invalidateQueries({ queryKey: ["calendar-day-briefing"] });
   qc.invalidateQueries({ queryKey: ["calendar-proposals"] });
-  qc.invalidateQueries({ queryKey: ["calendar-duplicates"] });
   qc.invalidateQueries({ queryKey: ["calendar-conflicts"] });
+  qc.invalidateQueries({ queryKey: ["calendar-invitations"] });
   qc.invalidateQueries({ queryKey: ["calendar-workspace-entry"] });
   qc.invalidateQueries({ queryKey: ["calendar-workspace-search"] });
   qc.invalidateQueries({ queryKey: ["calendar-workspace-meta"] });
@@ -286,7 +288,43 @@ export const EVENT_CACHE_REGISTRY: Record<string, CachePatch> = {
 };
 
 /** Apply one fleet event's cache patch, if a registry entry exists for its type. */
-export function applyFleetEvent(qc: QueryClient, event: FleetEvent): void {
-  const patch = EVENT_CACHE_REGISTRY[event.type];
+export function applyFleetEvent(qc: CacheInvalidator, event: FleetEvent): void {
+  const patch = Object.hasOwn(EVENT_CACHE_REGISTRY, event.type) ? EVENT_CACHE_REGISTRY[event.type] : undefined;
   patch?.(qc, event);
+}
+
+/**
+ * Replay the same registry against a scoped invalidation plan, then apply the
+ * union of its filters. Never replace methods on the shared QueryClient.
+ * Different refetch policies stay separate: ingestion must not cancel reads
+ * already in flight. matchQuery retains prefix/exact/dynamic/predicate rules,
+ * so the union covers only queries the original patches would invalidate.
+ */
+export function applyFleetEventBatch(qc: QueryClient, events: readonly FleetEvent[]): void {
+  const groups: { filters: InvalidateQueryFilters[]; options?: InvalidateOptions }[] = [];
+  const plan: CacheInvalidator = {
+    invalidateQueries(filters = {}, options) {
+      const group = groups.find((entry) => (
+        entry.options?.cancelRefetch === options?.cancelRefetch &&
+        entry.options?.throwOnError === options?.throwOnError &&
+        entry.filters[0].refetchType === filters.refetchType &&
+        entry.filters[0].type === filters.type
+      ));
+      if (!group) groups.push({ filters: [filters], options });
+      else if (!group.filters.some((existing) => (
+        hashKey([existing.queryKey]) === hashKey([filters.queryKey]) &&
+        existing.exact === filters.exact && existing.stale === filters.stale &&
+        existing.fetchStatus === filters.fetchStatus && existing.predicate === filters.predicate
+      ))) group.filters.push(filters);
+      return Promise.resolve();
+    },
+  };
+  for (const event of events) applyFleetEvent(plan, event);
+  for (const { filters, options } of groups) {
+    void qc.invalidateQueries({
+      type: filters[0].type,
+      refetchType: filters[0].refetchType,
+      predicate: (query) => filters.some((filter) => matchQuery(filter, query)),
+    }, options);
+  }
 }

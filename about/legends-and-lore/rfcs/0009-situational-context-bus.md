@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-03-25
+**Proposed amendment (bu-dhloi1.17):** The response-building integration example under How Butlers Use Context, plus the Owner Attention Policy Sleep Producer, Context Preamble, Bound Owner Context Mutation and Bounded Suppression Read Failures clauses below, are reviewable replacement text, pending independent conformance review and exact-text owner adoption. The existing RFC remains accepted outside this pending amendment; this draft does not authorize implementation or activation.
+Governing doctrine: [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (situational context signals are a named shared `public` coordination table) and [v1.md, What v1 Is](../../heart-and-soul/v1.md#what-v1-is) (the context bus is a named v1 capability).
 
 ## Summary
 
@@ -479,29 +481,83 @@ Typical integration patterns:
 
 1. **Before sending a notification:** Check for `dnd`, `sleeping`, `meeting`, `focused`. If active, defer or suppress.
 2. **Before scheduling a prompt:** Check for `traveling`, `sick`. If active, adjust timing or content.
-3. **When building a response:** Include relevant context in the LLM prompt preamble (e.g., "The user is currently traveling in Paris").
+3. **When building a response:** Use the typed Context Preamble projection below (e.g., `[User Context: traveling (explicit)]`), omitting traveling values and metadata.
 4. **In scheduler tick handlers:** Check context before executing scheduled prompts. A health check-in can be skipped if the user is in a meeting.
 
 A butler is NOT required to check context. It is an opt-in enhancement. Butlers that do not check context continue to work exactly as they do today.
 
 ### Owner Attention Policy Sleep Producer
 
-The deterministic health `sleeping` producer derives its membership and TTL
-from the shared `public.approvals_policy` Owner Attention Policy. Its interval
-is `[quiet_start_hour, quiet_end_hour)` in the stored IANA timezone, and its
-`expires_at` is the exact configured end converted to UTC. Missing, incomplete,
-or invalid persisted policy data fails open: the producer does not invent a
-timezone or a replacement wake time and clears/avoids its derived signal.
+The deterministic Health sleeping producer MUST use the stored Owner Attention
+Policy's end-exclusive `[quiet_start_hour, quiet_end_hour)` and exact configured
+end converted to UTC, subject to the existing sleeping TTL maximum. It MUST NOT
+invent a timezone, add an hour or infer a replacement wake time. A successful
+read of absent, disabled, incomplete or invalid policy clears/avoids only its
+owned sleeping signal. A transient read failure is unavailable state, not an
+absent policy: preserve any existing unexpired confirmed assertion without
+refreshing set_at/expires_at or creating a new one. Original expiry remains
+binding through repeated outage. Recovery re-reads current policy before
+setting or clearing state.
 
 ### Context Preamble for LLM Sessions
 
-When a butler spawns an LLM session, it MAY prepend a context summary to the prompt:
+An optional LLM context preamble MUST project only validated signal types,
+confidence labels and values admitted by a finite typed producer contract.
+Initially, only General's deterministic calendar producer may supply rendered
+values: meeting/busy and focused/focused. The producer MUST NOT copy calendar
+title, description or free-text metadata into context values, metadata or
+returned state; existing title classification may select only the finite type.
+No escaping, truncation, matching string or caller-provided source label can
+promote arbitrary text into a trusted value. Other context types render only
+type and confidence. For example:
 
 ```
-[User Context: traveling (Paris, high confidence), meeting (standup, expires in 15min)]
+[User Context: traveling (explicit), meeting (busy, high confidence)]
 ```
 
-This gives the LLM session awareness of the user's situation without requiring tool calls. The spawner can optionally call `get_active_context()` and format the result as a preamble, similar to the identity preamble (RFC 0004).
+The renderer MUST omit non-allowlisted values and metadata. It neither confers
+owner authority nor removes RFC0038 exposure. Type vocabulary, confidence
+labels, TTL filtering and empty-input behavior remain unchanged.
+
+### Bound Owner Context Mutation
+
+Model-mediated set_context/clear_context MUST require the server-verified
+current runtime invocation bound to an actual owner-channel request, resolved
+to the owner entity or authenticated owner device. Third-party, unknown,
+mixed/system provenance, missing binding and an unbound session locator MUST
+refuse before writes. Prompt/tool text, caller labels, a request/channel string,
+confidence or possession of a mutation ID is not owner authority. Existing
+role-scoped deterministic producers remain separate internal paths. DND keeps
+its canonical gateway, writer/generation/replay/receipt controls unchanged.
+
+### Bounded Suppression Read Failures
+
+Routine attention consumers MUST distinguish a successful absent/invalid-policy
+or empty-context read from a transient unavailable read. Unavailable state
+MUST hold/refuse the current routine attempt without sending or claiming a
+chosen destructive suppression. Any durable hold MUST use a confirmed finite
+anchor: the original active signal expiry and existing consumer max-hold where
+applicable, or confirmed policy end. Failure MUST NOT refresh timestamps,
+create sleeping/DND state, choose a new duration or invent a timezone/wake time.
+Without a confirmed anchor, or after its expiry while reads remain unavailable,
+the attempt MUST end unavailable without sending, fabricating an enqueue,
+creating an indefinite hold or silently dropping pending work. Expiry is not a
+successful all-clear. Recovery MUST read current state and re-evaluate normal
+expiry/deduplication/policy before release, without duplicate delivery.
+
+Existing bounds remain: DND TTL default2h/max24h; sleeping default8h/max12h;
+meeting default1h/max4h; focused default2h/max8h. The insight broker alone caps
+continuous routine holds at DND4h/focused4h/meeting2h/sleeping10h/traveling6h;
+these do not become new direct-notify caps. Direct notify uses the latest active
+DND/sleeping expiry. Quiet hours keep their stored IANA zone and exact end.
+These numbers are bound to the sources listed in the active change design;
+no outage timer is introduced. Repeated failure cannot renew an old assertion.
+
+The existing deterministic safety/urgent bypass MUST remain before routine
+suppression, including read failures. Neither model nor source text may claim
+that bypass. It does not waive other owner, recipient or approval controls.
+Best-effort attention-ledger write failure cannot turn an unavailable read into
+delivery success.
 
 ### Conflict Resolution
 
@@ -568,3 +624,39 @@ def downgrade() -> None:
 **Push notifications to butlers when context changes.** Rejected for the same reasons as pub/sub. Pull-based checking at decision points is simpler, sufficient, and does not require butlers to maintain listener state or handle missed notifications.
 
 **Per-butler context tables.** Rejected because the entire point is shared awareness. Per-butler tables would recreate the isolation problem this feature solves.
+
+## Proposed dated successor: canonical perception at the first switch (2026-10-24)
+
+**Exact text: bu-dhloi1.19, pending reserved adoption and independent review.**
+The current RFC above, including bu-dhloi1.17's current-context/suppression
+contract, remains the old-runtime contract. This is its explicitly dated
+perception successor, not a retroactive claim that the legacy table was typed,
+role-fenced or already replaced. The authoritative fields and APIs are
+[RFC0038 S3–S5](0038-goal-runtime-and-capability-authorization.md#s3-one-perception-registry-and-trusted-writer-interface)
+and the active `perception-registry`/`condition-evaluation` deltas.
+
+At the named activation, public.situation_slots, timeline, owner_modes, typed
+conditions and suppressions SHALL be the single shared projection. Registered
+primitives/enum/reference schemas, null-subject uniqueness, four-state
+freshness, stable source/event identity, generation CAS, role-derived writer
+authority and atomic transition receipts SHALL follow S3. Domain stores keep
+source truth. No separate life-record/owner_clock/presence/observations store,
+generic model record writer, arbitrary context text or raw coordinates is
+created by this successor.
+
+Registry/schema and restrictive writers land first; source-labelled adapters,
+backfill/replay, shadow read parity and complete failure/migration tests precede
+one atomic reader/sole-writer activation. Expired legacy context is not fresh
+perception; missing provenance stays unknown/exposed. Preserve DND/attention
+versioned suppression and authenticated owner mutation until their explicitly
+mapped successor is proven; a plain mode row is not replacement authority.
+A failed parity/activation rollback holds new readers/writers and keeps receipts,
+old IDs and restrictive evidence rather than restoring unsafe authority.
+
+Representation is owned by bu-dhloi1.9. Dots bu-jv1moa.17 consumes the stable
+writer/event/CAS API for owner.place; bu-dhloi1.21 owns clock/modes and consumer
+activation; .14 owns system.dep, and bu-xxfkhk owns confirmed expect.* feeds.
+This text does not implement any reducer, switch an existing consumer, alter
+.18 mode policy, authorize deployment, or widen a grant. Perception detail and
+recall remain source-labelled; exposed/third-party views are availability-only
+and raw coordinates never enter model context.

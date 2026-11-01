@@ -42,6 +42,7 @@ import json
 import logging
 import uuid
 
+from fastapi.routing import APIRoute
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -136,6 +137,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         if not path.startswith("/api/") or any(path.startswith(p) for p in _SKIP_PREFIXES):
             return await call_next(request)
 
+        parsed_body: dict | None = None
         # Collect the request body (bounded) without consuming it for downstream.
         raw_body: bytes = b""
         body_truncated = False
@@ -149,7 +151,6 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
 
         # Parse body as JSON for redaction; fall back to raw string on parse error.
         # Both dict and list bodies are handled; list items are recursively redacted.
-        parsed_body: dict | None = None
         if raw_body:
             try:
                 parsed = json.loads(raw_body)
@@ -168,7 +169,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
                     parsed_body = {"__value__": parsed}
                     if body_truncated:
                         parsed_body["__body_truncated__"] = True
-            except json.JSONDecodeError:
+            except (json.JSONDecodeError, UnicodeDecodeError):
                 parsed_body = {"__raw__": raw_body.decode(errors="replace")}
                 if body_truncated:
                     parsed_body["__body_truncated__"] = True
@@ -179,12 +180,21 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         # Call downstream handler and capture status code.
         response: Response = await call_next(request)
         status_code = response.status_code
+        # No request schema authorizes retaining bodies sent to an unknown route.
+        # This also protects stale bearer payloads after a feature is retired.
+        if not isinstance(request.scope.get("route"), APIRoute):
+            parsed_body = {"redacted": "unmatched_route"}
         result = "success" if status_code < 400 else "error"
 
         # Expose the trace_id on the response so clients can correlate failures
         # with audit log entries.  Set this BEFORE the audit write so the header
         # is present even when the audit emit fails.
         response.headers["X-Trace-Id"] = trace_id
+
+        # The override owner wrote its one mandatory receipt in the mutation TX.
+        # Failed/uncommitted requests retain the existing error telemetry path.
+        if getattr(request.state, "model_override_audit_committed", False):
+            return response
 
         # Infer butler and collect path params for replay-ability.
         butler = _infer_butler(path)

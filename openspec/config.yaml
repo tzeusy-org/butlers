@@ -4,12 +4,18 @@ context: |
   Tech stack: Python 3.12+, FastMCP, Claude Agent SDK, PostgreSQL (JSONB), Docker, asyncio
   Domain: AI agent framework — personal butler daemons with MCP-based communication
   Doctrine: about/heart-and-soul/ (vision.md defines 7 non-negotiable rules)
-  Design contracts: about/legends-and-lore/rfcs/ (12 accepted RFCs)
+  Design contracts: about/legends-and-lore/rfcs/ (numbered RFCs; each carries its own status)
 
 rules:
-  spec:
+  specs:
     - >
       Include a "## Source References" section at the end of each spec listing
       the doctrine principles (by rule number from vision.md) and RFC numbers
       that ground the spec's design decisions. Example:
       "## Source References\n- Non-Negotiable Rule 3 (MCP-only inter-butler communication)\n- RFC 0003 (Switchboard routing and ingestion)"
+    - >
+      Every ADDED or MODIFIED requirement block in a change carries three trace lines:
+      "ID: REQ-<capability>-<NNN>" (capability matching the spec directory), "Source: <doctrine or
+      RFC grounding>" and "Scope: v1-mandatory|v1-reserved|post-v1".
+      scripts/check_requirement_trace_lines.py enforces this in CI; pre-existing debt is frozen
+      in scripts/requirement-trace-baseline.json and an edited block must carry the lines.

@@ -280,9 +280,9 @@ sessions.
   view reads, only on the view.
 - **`openspec/specs/staffer-archetype/spec.md`:** Concierge is a fourth
   concrete staffer (after switchboard, messenger, QA), validating the
-  archetype's extensibility claim with `cross_butler_access = ["*"]` backed
-  by database-level view grants rather than live MCP connectivity to every
-  butler.
+  archetype's extensibility claim. Fleet reads use database-level view grants;
+  outbound `cross_butler_access = ["qa"]` is scoped separately to the RFC 0015
+  error-report relay.
 
 ## Alternatives Considered
 

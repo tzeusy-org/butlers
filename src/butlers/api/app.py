@@ -25,6 +25,7 @@ from butlers.api.dashboard_audit_middleware import DashboardAuditMiddleware
 from butlers.api.deps import (
     get_butler_configs,
     get_db_manager,
+    get_discovery_diagnostics,
     get_mcp_manager,
     get_pricing,
     init_db_manager,
@@ -32,7 +33,7 @@ from butlers.api.deps import (
     init_pricing,
     shutdown_db_manager,
     shutdown_dependencies,
-    wire_db_dependencies,
+    wire_qa_credentials,
 )
 from butlers.api.lifespan_supervisor import supervise_lifespan_loop
 from butlers.api.middleware import register_error_handlers
@@ -42,103 +43,14 @@ from butlers.api.owner_auth.service import (
     close_owner_auth_service,
     create_owner_auth_service,
 )
-from butlers.api.router_discovery import discover_butler_routers
-from butlers.api.routers.activity_feed import router as activity_feed_router
-from butlers.api.routers.approvals import router as approvals_router
-from butlers.api.routers.attention_ledger import router as attention_ledger_router
-from butlers.api.routers.audit import router as audit_router
-from butlers.api.routers.beads import router as beads_router
-from butlers.api.routers.blob_storage import router as blob_storage_router
-from butlers.api.routers.butler_logs import router as butler_logs_router
-from butlers.api.routers.butler_management import router as butler_management_router
-from butlers.api.routers.butlers import router as butlers_router
-from butlers.api.routers.calendar_workspace import (
-    accounts_router as calendar_accounts_router,
-)
-from butlers.api.routers.calendar_workspace import (
-    export_router as calendar_export_router,
-)
-from butlers.api.routers.calendar_workspace import (
-    router as calendar_workspace_router,
-)
-from butlers.api.routers.channel_defaults import router as channel_defaults_router
-from butlers.api.routers.cli_auth import router as cli_auth_router
-from butlers.api.routers.contacts import router as contacts_router
-from butlers.api.routers.conversations import messages_search_router
-from butlers.api.routers.conversations import router as conversations_router
-from butlers.api.routers.dashboard_briefing import router as dashboard_briefing_router
+from butlers.api.router_registry import build_router_registry
 from butlers.api.routers.data_ops import _is_production
-from butlers.api.routers.data_ops import router as data_ops_router
-from butlers.api.routers.decisions import router as decisions_router
-from butlers.api.routers.delegation import router as delegation_router
-from butlers.api.routers.domain_events import router as domain_events_router
-from butlers.api.routers.events import router as events_router
-from butlers.api.routers.general_settings import router as general_settings_router
-from butlers.api.routers.google_health import router as google_health_router
-from butlers.api.routers.healing import router as healing_router
-from butlers.api.routers.home_assistant import router as home_assistant_router
-from butlers.api.routers.home_person_mappings import router as home_person_mappings_router
-from butlers.api.routers.identity import router as identity_router
-from butlers.api.routers.ingestion_connectors import router as ingestion_connectors_router
-from butlers.api.routers.ingestion_events import rollup_router as ingestion_rollup_router
-from butlers.api.routers.ingestion_events import router as ingestion_events_router
-from butlers.api.routers.ingestion_pipeline import router as ingestion_pipeline_router
-from butlers.api.routers.issues import router as issues_router
-from butlers.api.routers.memory import butler_memory_router
-from butlers.api.routers.memory import router as memory_router
-from butlers.api.routers.model_settings import (
-    butler_model_router,
-    catalog_router,
-    dispatch_router,
-    pricing_router,
-)
-from butlers.api.routers.modules import router as modules_router
-from butlers.api.routers.notifications import (
-    butler_notifications_router,
-)
-from butlers.api.routers.notifications import (
-    router as notifications_router,
-)
-from butlers.api.routers.oauth import router as oauth_router
-from butlers.api.routers.owntracks import router as owntracks_router
-from butlers.api.routers.permissions import router as permissions_router
-from butlers.api.routers.preferences import router as preferences_router
-from butlers.api.routers.priority_contacts import router as priority_contacts_router
-from butlers.api.routers.provider_settings import router as provider_settings_router
-from butlers.api.routers.qa import router as qa_router
-from butlers.api.routers.runtime_config import router as runtime_config_router
-from butlers.api.routers.schedules import router as schedules_router
-from butlers.api.routers.search import router as search_router
-from butlers.api.routers.secrets import router as secrets_router
 from butlers.api.routers.secrets_v2 import (
     resolve_staleness_window_s,
-)
-from butlers.api.routers.secrets_v2 import (
-    router as secrets_v2_router,
-)
-from butlers.api.routers.sessions import (
-    butler_sessions_router,
-)
-from butlers.api.routers.sessions import (
-    router as sessions_router,
-)
-from butlers.api.routers.settings_console import (
-    router as settings_console_router,
 )
 from butlers.api.routers.settings_console import (
     run_settings_console_delta_loop,
 )
-from butlers.api.routers.spend import router as spend_router
-from butlers.api.routers.spotify import router as spotify_router
-from butlers.api.routers.sse import router as sse_router
-from butlers.api.routers.state import router as state_router
-from butlers.api.routers.steam import router as steam_router
-from butlers.api.routers.system import router as system_router
-from butlers.api.routers.telegram_auth import router as telegram_auth_router
-from butlers.api.routers.timeline import router as timeline_router
-from butlers.api.routers.timeline_saved_views import router as timeline_saved_views_router
-from butlers.api.routers.webhooks import router as webhooks_router
-from butlers.api.routers.whatsapp import router as whatsapp_router
 from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_KEY
 from butlers.core.definer_search_path import (
     compute_unpinned_definers,
@@ -152,7 +64,7 @@ from butlers.credential_store import CredentialStore
 from butlers.db import (
     check_infra_default_creds,
     has_insecure_infra_defaults,
-    is_grafana_anon_outside_dev,
+    is_grafana_anonymous_enabled,
 )
 from butlers.jobs.calendar_sync_deadman import (
     DEFAULT_CALENDAR_DEADMAN_CHECK_INTERVAL_S,
@@ -281,10 +193,7 @@ async def lifespan(app: FastAPI):
     shadow_observer_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
-        # Wire DB dependencies for both static and dynamic routers
-        dynamic_routers = getattr(app.state, "butler_routers", [])
-        dynamic_modules = [module for _, module in dynamic_routers]
-        wire_db_dependencies(app, dynamic_modules=dynamic_modules)
+        wire_qa_credentials(app)
         logger.info("DatabaseManager initialized for %d butler(s)", len(butler_configs))
 
         # L2 receiver observation runs independently of QA and of browser
@@ -303,7 +212,9 @@ async def lifespan(app: FastAPI):
                     get_db_manager().pool("switchboard"),
                     butler_configs,
                     after_cycle=controller_after_cycle(
-                        get_db_manager().pool("switchboard"), butler_configs
+                        get_db_manager().pool("switchboard"),
+                        butler_configs,
+                        get_discovery_diagnostics().is_retired,
                     ),
                 ),
             )
@@ -534,10 +445,10 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.warning("Failed to start calendar-sync-deadman loop", exc_info=True)
 
-        # External deadman (bu-9r3hd.4): periodic outbound ping to an
-        # operator-configured URL, catching a silently broken host/egress
-        # firewall after a reboot -- see butlers.jobs.external_deadman for
-        # the full design rationale. Only started when EXTERNAL_DEADMAN_URL
+        # External deadman: DB write/read and receiver-fleet truth gate the
+        # outbound heartbeat. No configured target means no loop or HTTP.
+        # See butlers.jobs.external_deadman for tick identity and failure rules.
+        # Only started when EXTERNAL_DEADMAN_URL
         # is actually configured; with no target there is nothing useful to
         # do every tick, and InfraStateSource treats "unconfigured" as a
         # legitimate absence rather than a failure.
@@ -723,90 +634,19 @@ def create_app(
     # CORS, exception reflection, routers and protected body reads.
     app.add_middleware(OwnerAuthMiddleware, config=app.state.owner_auth_config)
 
-    # --- Auto-discovered Butler Routers ---
-    # Discover and mount roster/{butler}/api/router.py routers
-    butler_routers = discover_butler_routers()
-    app.state.butler_routers = butler_routers  # Store for wire_db_dependencies
-
-    # --- Core Static Routers ---
-    app.include_router(approvals_router)
-    app.include_router(attention_ledger_router)
-    app.include_router(events_router)
-    app.include_router(butler_logs_router)
-    app.include_router(butlers_router)
-    app.include_router(butler_management_router)
-    app.include_router(notifications_router)
-    app.include_router(butler_notifications_router)
-    app.include_router(issues_router)
-    app.include_router(spend_router)
-    app.include_router(sessions_router)
-    app.include_router(butler_sessions_router)
-    app.include_router(activity_feed_router)
-    app.include_router(schedules_router)
-    app.include_router(modules_router)
-    app.include_router(secrets_router)
-    app.include_router(secrets_v2_router)
-    app.include_router(state_router)
-    app.include_router(ingestion_events_router)
-    app.include_router(ingestion_rollup_router)
-    app.include_router(identity_router)
-    app.include_router(ingestion_connectors_router)
-    app.include_router(ingestion_pipeline_router)
-    app.include_router(priority_contacts_router)
-    app.include_router(contacts_router)
-    app.include_router(channel_defaults_router)
-    app.include_router(timeline_router)
-    app.include_router(timeline_saved_views_router)
-    app.include_router(calendar_workspace_router)
-    app.include_router(calendar_accounts_router)
-    app.include_router(calendar_export_router)
-    app.include_router(search_router)
-    app.include_router(audit_router)
-    app.include_router(beads_router)
-    app.include_router(memory_router)
-    app.include_router(butler_memory_router)
-    app.include_router(oauth_router)
-    app.include_router(cli_auth_router)
-    app.include_router(sse_router)
-    app.include_router(catalog_router)
-    app.include_router(pricing_router)
-    app.include_router(butler_model_router)
-    app.include_router(dispatch_router)
-    app.include_router(healing_router)
-    app.include_router(qa_router)
-    app.include_router(provider_settings_router)
-    app.include_router(general_settings_router)
-    app.include_router(blob_storage_router)
-    app.include_router(owntracks_router)
-    app.include_router(home_assistant_router)
-    app.include_router(home_person_mappings_router)
-    app.include_router(spotify_router)
-    app.include_router(google_health_router)
-    app.include_router(steam_router)
-    app.include_router(telegram_auth_router)
-    app.include_router(whatsapp_router)
-    app.include_router(conversations_router)
-    app.include_router(messages_search_router)
-    app.include_router(preferences_router)
-    app.include_router(runtime_config_router)
-    app.include_router(system_router)
-    app.include_router(dashboard_briefing_router)
-    app.include_router(permissions_router)
-    app.include_router(settings_console_router)
-    app.include_router(data_ops_router)
-    app.include_router(decisions_router)
-    app.include_router(delegation_router)
-    app.include_router(domain_events_router)
-    app.include_router(webhooks_router)
-
-    # --- Auto-discovered Butler Routers ---
-    # Mount after static/core routers so dynamic routes cannot shadow
-    # fixed API paths like /api/oauth/*.
-    for butler_name, router_module in butler_routers:
-        app.include_router(router_module.router)
-        logger.info(
-            "Mounted butler router: %s (prefix=%s)", butler_name, router_module.router.prefix
-        )
+    registrations = build_router_registry()
+    app.state.router_registry = registrations
+    app.state.butler_routers = [
+        (entry.butler_name, entry.module)
+        for entry in registrations
+        if entry.butler_name is not None
+    ]
+    for entry in registrations:
+        app.include_router(entry.router)
+        if entry.butler_name is not None:
+            logger.info(
+                "Mounted butler router: %s (prefix=%s)", entry.butler_name, entry.router.prefix
+            )
 
     @app.get("/api/health")
     @app.get("/health")
@@ -827,13 +667,13 @@ def create_app(
         #
         # security.insecure_infra_defaults: True when any infra credential is at
         #   its known default (absent env var = docker-compose default applies) OR
-        #   when Grafana anonymous access is enabled outside dev posture.
+        #   when Grafana anonymous access is configured in this process.
         #   Clears only when all infra creds are overridden AND anon access is
-        #   disabled (or posture is dev).  Read at request time for live updates.
+        #   disabled. This is a configuration diagnostic, not fleet attestation.
         #
         # security.role_enforcement_disabled: True when SET ROLE schema-isolation
-        #   is NOT active for the managed database connections.  In dev posture
-        #   the butler schema isolation layer is disabled (no DB role configured
+        #   is NOT active for the managed database connections. The API
+        #   has its own authority boundary (no DB role configured
         #   on the API pools); this clears only when all managed pools have an
         #   active, verified DB role.  Read from the DatabaseManager singleton
         #   so it reflects real connection state established at startup.
@@ -864,7 +704,7 @@ def create_app(
             },
             "security": {
                 "insecure_infra_defaults": has_insecure_infra_defaults()
-                or is_grafana_anon_outside_dev(),
+                or is_grafana_anonymous_enabled(),
                 "role_enforcement_disabled": role_enforcement_disabled,
             },
         }

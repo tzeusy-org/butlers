@@ -51,23 +51,21 @@ describe("FloatingMapMinimap", () => {
     expect(html).toContain("right-4")
   })
 
-  it("uses transform: scale instead of width/height transitions (motion AC #5)", () => {
-    // The motion contract forbids animating width/height/top/left/margin.
-    // The panel must use transition-transform + scale, not transition-[width,height].
+  it("uses distinct instant mode dimensions without scale or layout transitions", () => {
     const openHtml = renderToStaticMarkup(<FloatingMapMinimap trailPoints={[]} />)
     const expandedHtml = renderToStaticMarkup(
       <FloatingMapMinimap trailPoints={[]} initialMode="expanded" />,
     )
-
-    // Must animate transform, not dimensions.
-    expect(openHtml).toContain("transition-transform")
-    expect(openHtml).not.toContain("transition-[width,height]")
-
-    // "open" mode is the scaled-down state — scale-50 shrinks visually.
-    expect(openHtml).toContain("scale-50")
-    // Both modes render at the expanded (larger) fixed dimensions.
-    expect(openHtml).toContain("origin-bottom-right")
-    expect(expandedHtml).not.toContain("scale-50")
+    expect(openHtml).toContain("w-[min(360px,45vw)]")
+    expect(openHtml).toContain("h-[min(270px,35vh)]")
+    expect(expandedHtml).toContain("w-[min(720px,90vw)]")
+    expect(expandedHtml).toContain("h-[min(540px,70vh)]")
+    for (const html of [openHtml, expandedHtml]) {
+      expect(html).not.toContain("transition-transform")
+      expect(html).not.toContain("transition-" + "[width,height]")
+      expect(html).not.toContain("scale-50")
+      expect(html).not.toContain("origin-bottom-right")
+    }
   })
 
   it("forwards the playheadPoint and trailPoints to MapWidget", () => {

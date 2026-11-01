@@ -1,7 +1,7 @@
 ## Context
 
 See `proposal.md` for motivation and
-`docs/superpowers/specs/2026-08-24-whatsapp-identity-reconciliation-design.md` for the approved design
+`docs/plans/2026-08-24-whatsapp-identity-reconciliation-design.md` for the approved design
 record. The critical current constraints are:
 
 - `source_channel=whatsapp_user_client` is a transport, policy, replay, and telemetry key that cannot

@@ -32,6 +32,7 @@ the run-outcome contract is verifiable without either.
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import shutil
@@ -112,8 +113,20 @@ done
 
 if [ -n "${command}" ]; then
   case "${command}" in
+    *"public.fleet_cases"*)
+      case "${command}" in
+        *"SET TRANSACTION SNAPSHOT"*) printf '%s\\n' 'fleet-export' >> "${log}.fleet" ;;
+        *) printf '%s\\n' 'fleet-restore-authorization' >> "${log}.fleet"; printf '%s\\n' '-- synthetic restore authorization' ;;
+      esac
+      exit 0
+      ;;
     *"SET TRANSACTION SNAPSHOT"*)
       printf '%s\\n' 'scoped-export' >> "${log}"
+      case "${command}" in
+        *"FROM public.captures AS t"*)
+          printf '%s\\n' 'general-capture-export' >> "${log}"
+          ;;
+      esac
       ;;
     *"pg_policy AS p"*)
       printf '%s\\n' 'standalone-policy-precheck' >> "${log}"
@@ -139,9 +152,18 @@ while IFS= read -r line; do
           printf 'ABCDEF-012345\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-exported' >> "${log}"
           ;;
+        */capture-count) printf '%s\\n' "${FAKE_CAPTURE_COUNT:-0}" > "${output_file}" ;;
         */policy-count)
-          printf '3\\n' > "${output_file}"
+          printf '5\\n' > "${output_file}"
           printf '%s\\n' 'snapshot-policy-verified' >> "${log}"
+          ;;
+        */fleet-evidence-proof)
+          printf '1\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-fleet-evidence-verified' >> "${log}.fleet"
+          ;;
+        */confirm-policy-count)
+          printf '1\\n' > "${output_file}"
+          printf '%s\\n' 'snapshot-confirm-policy-verified' >> "${log}"
           ;;
       esac
       output_file=""
@@ -213,7 +235,7 @@ def backup_dir(tmp_path: Path) -> Path:
 
 
 def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path, bin_dir: Path):
-    proc = _run(backup_dir, bin_dir)
+    proc = _run(backup_dir, bin_dir, FAKE_CAPTURE_COUNT="3")
 
     assert proc.returncode == 0, proc.stderr
     published = _dumps(backup_dir)
@@ -223,6 +245,41 @@ def test_successful_run_records_success_and_names_the_artifact(backup_dir: Path,
     assert receipt["reason"] == "ok"
     assert receipt["exit_code"] == 0
     assert receipt["artifact"] == published[0].name
+    # This is a producer/framing oracle, not a substitute for migrated PG data
+    # validation. The real script must emit its fixed General replay boundary.
+    artifact = gzip.decompress(published[0].read_bytes()).decode()
+    assert "-- Butlers scoped General capture data\n" in artifact
+    assert (
+        "COPY butlers_capture_restore_rows (ordinal, relation_name, payload_hex) FROM stdin;\n"
+        in artifact
+    )
+    assert "\\.\n\\set ON_ERROR_STOP on\n" in artifact
+    assert "BEGIN;\nSET LOCAL row_security=on;\nSET LOCAL ROLE butler_general_rw;\n" in artifact
+    assert "SELECT public.capture_restore_row(relation_name," in artifact
+    assert "COMMIT;\nDROP TABLE butlers_capture_restore_rows;\n" in artifact
+    assert "general-capture-export" in (backup_dir / ".fake-psql-events").read_text().splitlines()
+    with gzip.open(published[0], "rt", encoding="utf-8") as stream:
+        dump = stream.read()
+    fleet_lines = dump.split("\n-- Butlers Fleet case history\n", 1)[1].splitlines()
+    assert "BEGIN;" in fleet_lines
+    assert "\\set ON_ERROR_STOP on" in fleet_lines
+    assert (
+        "SELECT public.fleet_case_restore_row(relation_name, convert_from(decode(payload_hex,'hex'),'UTF8')::jsonb) FROM butlers_fleet_restore_rows WHERE ordinal=1 ORDER BY payload_hex;"
+        in fleet_lines
+    )
+    assert (backup_dir / ".fake-psql-events.fleet").read_text().splitlines() == [
+        "snapshot-fleet-evidence-verified",
+        "fleet-export",
+        "fleet-restore-authorization",
+    ]
+    assert fleet_lines[-3:] == ["RESET ROLE;", "COMMIT;", "DROP TABLE butlers_fleet_restore_rows;"]
+
+    # A partial capture installation must refuse before replacing the good dump.
+    before = published[0].read_bytes()
+    refused = _run(backup_dir, bin_dir, FAKE_CAPTURE_COUNT="2")
+    assert refused.returncode != 0
+    assert published[0].read_bytes() == before
+    assert _receipt(backup_dir)["result"] == "failed"
 
 
 def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Path, bin_dir: Path):
@@ -233,6 +290,9 @@ def test_policy_proof_is_snapshot_bound_before_the_scoped_export(backup_dir: Pat
     assert (backup_dir / ".fake-psql-events").read_text(encoding="utf-8").splitlines() == [
         "snapshot-exported",
         "snapshot-policy-verified",
+        "snapshot-confirm-policy-verified",
+        "scoped-export",
+        "restore-authorization",
         "scoped-export",
         "restore-authorization",
     ]

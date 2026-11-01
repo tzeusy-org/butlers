@@ -17,7 +17,7 @@ _REPO_ROOT = Path(__file__).parent.parent.parent
 _RFC = _REPO_ROOT / "about/legends-and-lore/rfcs/0023-durable-approval-delivery-intent-recovery.md"
 _CORE_NOTIFY_DELTA = _REPO_ROOT / "openspec/specs/approval-delivery-intent-recovery/spec.md"
 _IMPLEMENTATION_PLAN = (
-    _REPO_ROOT / "docs/superpowers/plans/2026-08-13-durable-approval-delivery-intent-recovery.md"
+    _REPO_ROOT / "docs/plans/2026-08-13-durable-approval-delivery-intent-recovery.md"
 )
 _TASKS = (
     _REPO_ROOT

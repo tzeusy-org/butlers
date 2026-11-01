@@ -17,12 +17,9 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
     """Register all relationship MCP tools as closures over *module*."""
 
     from butlers.core.tool_call_capture import get_current_runtime_session_id
-    from butlers.modules.base import group_enabled
+    from butlers.modules.base import tool_registrar
 
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn
+    _tool = tool_registrar(mcp, config)
 
     # Import sub-modules (deferred to avoid import-time side effects)
     from butlers.tools.relationship import addresses as _addr
@@ -248,6 +245,41 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
                 conn=conn,
             )
             return {"recorded": result is not None}
+
+    @_tool("contacts_ingress")
+    async def contacts_report_channel(
+        subject: uuid.UUID,
+        channel_type: str,
+        channel_value: str,
+        primary: bool = False,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Report one Contacts channel with target-fixed third-party provenance.
+
+        Candidate and pending_approval are incomplete outcomes. This exposes no
+        trusted source, reporter, confirmation or approved-executor parameter.
+        """
+        from butlers.tools.relationship.contacts_ingress import report_channel
+
+        return await report_channel(
+            module._get_pool(), subject, channel_type, channel_value, primary
+        )
+
+    @_tool("contacts_ingress")
+    async def contacts_resolve_channel(
+        channel_type: str,
+        channel_value: str,
+        request_id: uuid.UUID,
+        trace_context: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Return unique/empty/ambiguous/unavailable for a complete Contacts lookup.
+
+        A request id correlates the response; it is not an authority token.
+        Generic identity resolution keeps its existing normalization and API.
+        """
+        from butlers.tools.relationship.contacts_ingress import resolve_channel
+
+        return await resolve_channel(module._get_pool(), channel_type, channel_value, request_id)
 
     # =================================================================
     # Contact tools (group: contacts)
@@ -1115,7 +1147,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             entity_id,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_update(
         entity_id: str,
         canonical_name: str | None = None,
@@ -1131,7 +1163,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
             metadata=metadata,
         )
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def entity_set_posture(entity_id: str, posture: str) -> dict[str, Any]:
         """Record how the owner wants a person treated: active, memorial, quiet or no_contact.
 
@@ -1172,7 +1204,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         )
 
     # =================================================================
-    # Facts triple-store tools (group: entity — central writer)
+    # Facts triple-store tools (unconditional central writer)
     # =================================================================
 
     # Import the library WRITER FUNCTION directly. Note ``butlers.tools.
@@ -1379,7 +1411,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:  # noqa: 
         """
         return await _predicate_coverage(module._get_pool(), entity_id, predicates)
 
-    @_tool("entity")
+    @_tool("entity_write")
     async def relationship_record_coverage(
         entity_id: uuid.UUID,
         predicate: str,

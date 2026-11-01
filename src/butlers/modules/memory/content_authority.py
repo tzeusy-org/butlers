@@ -25,7 +25,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from butlers.core.owner import fetch_owner_entity_id
-from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
+from butlers.core.tool_call_capture import (
+    current_runtime_session_locator_is_unbound,
+    get_current_runtime_session_routing_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +113,10 @@ async def resolve_content_authority(
     """
     if routing_context is None:
         routing_context = get_current_runtime_session_routing_context()
+        if not routing_context and current_runtime_session_locator_is_unbound():
+            # The request named a session by locator without a valid invocation binding:
+            # not provably the owner, and not a daemon-internal caller either (bu-m2zcah).
+            return ContentAuthority(THIRD_PARTY)
     if not routing_context:
         return ContentAuthority(SYSTEM)
     owner_entity_id = await fetch_owner_entity_id(pool)

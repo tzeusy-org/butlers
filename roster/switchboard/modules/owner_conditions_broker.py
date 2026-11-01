@@ -54,22 +54,11 @@ class OwnerConditionsBrokerModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "owner_conditions_broker"
+    name = "owner_conditions_broker"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return OwnerConditionsBrokerConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # public.owner_conditions is created by the shared core Alembic chain
-        # (core_184) — no separate branch label needed here.
-        return None
 
     async def on_startup(
         self,

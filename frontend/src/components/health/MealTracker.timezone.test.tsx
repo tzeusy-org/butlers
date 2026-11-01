@@ -12,10 +12,24 @@
 
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 import MealTracker, { type MealTrackerProps } from "@/components/health/MealTracker";
+import { AppTimezoneProvider } from "@/components/ui/timezone-context";
+
+const realToLocaleDateString = Date.prototype.toLocaleDateString;
+
+beforeEach(() => {
+  // Only resolve the browser's default locale; real Intl still formats the
+  // timestamp with the component's options, including its owner timezone.
+  vi.spyOn(Date.prototype, "toLocaleDateString").mockImplementation(function (this: Date, locales, options) {
+    const locale = locales == null || (Array.isArray(locales) && locales.length === 0)
+      ? "en-US"
+      : locales;
+    return realToLocaleDateString.call(this, locale, options);
+  });
+});
 
 vi.mock("@/hooks/use-health", () => ({
   useMeals: () => ({
@@ -65,6 +79,7 @@ const noopProps: MealTrackerProps = {
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -72,22 +87,28 @@ describe("MealTracker: owner-tz day grouping", () => {
   const originalTZ = process.env.TZ;
 
   afterEach(() => {
-    process.env.TZ = originalTZ;
+    if (originalTZ === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTZ;
   });
 
   it("splits owner-midnight-straddling meals into owner-tz days across host timezones", () => {
     for (const tz of ["UTC", "America/Los_Angeles", "Pacific/Kiritimati"]) {
       process.env.TZ = tz;
-      const { unmount } = render(<MealTracker {...noopProps} />);
+      expect(new Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(tz);
+      const { unmount } = render(
+        <AppTimezoneProvider timezone="Asia/Singapore">
+          <MealTracker {...noopProps} />
+        </AppTimezoneProvider>,
+      );
 
       const groups = screen.getAllByRole("rowgroup");
       const labels = groups.map((g) => g.getAttribute("aria-label"));
 
       // Two distinct owner-tz days, newest first (server order preserved).
-      // Assert on the owner-tz calendar day (locale renders "Jul 12, 2026").
+      // Exact labels pin the owner calendar days and newest-first order.
       expect(labels).toHaveLength(2);
-      expect(labels[0]).toContain("Jul 12, 2026");
-      expect(labels[1]).toContain("Jul 11, 2026");
+      expect(labels[0]).toBe("Sun, Jul 12, 2026");
+      expect(labels[1]).toBe("Sat, Jul 11, 2026");
 
       unmount();
       cleanup();

@@ -62,6 +62,10 @@ bounded requeue control for an owner-visible dead-letter episode. The control
 is a queueing affordance, not an execution control, and client visibility does
 not replace server-side owner authorization.
 
+ID: REQ-dashboard-domain-pages-061
+Source: memory-honesty-last-mile adopted PR #3464; bu-kqnum.14.8; RFC 0038 D2 and D18
+Scope: v1-mandatory
+
 #### Scenario: Episode dossier shows approved lifecycle evidence only
 
 - **WHEN** EpisodeDetailPage renders an episode with consolidation lifecycle
@@ -92,6 +96,9 @@ not replace server-side owner authorization.
 - **WHEN** the API returns 200
 - **THEN** a local announced status MUST state that the episode was queued for
   a future scheduled write-up and that no write-up started now
+- **AND** the control MUST NOT admit a consolidation goal or start a session;
+  future scheduled obligation admission remains separate from the requeue
+  transition
 - **WHEN** the API returns 409, 503, or another failure
 - **THEN** a local announced error MUST preserve enough context to retry or
   refresh the dossier and MUST NOT claim the episode was queued

@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-24
+Governing doctrine: [security.md, Schema Isolation](../../heart-and-soul/security.md#schema-isolation) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation), implementing [vision.md rule 1, the user owns the database and all data](../../heart-and-soul/vision.md#non-negotiable-rules).
 
 ## Summary
 
@@ -138,8 +139,11 @@ the pool, assuming the runtime role created by the `core_001_foundation` migrati
 - A butler CANNOT access another butler's schema.
 - A butler CANNOT write to `public` tables unless explicitly authorized by the write authorization
   matrix below (enforced by PostgreSQL role privileges, not just application convention).
-- If the runtime role does not exist (e.g., in a development environment without CREATEROLE), the
-  butler logs a warning and falls back to operating with the shared database user's privileges.
+- Runtime pools fail closed in every environment when the designated role is missing,
+  cannot be verified or assumed, or is unconfigured for a butler schema. No deployment
+  setting permits shared-user runtime continuation. Each acquire re-establishes the role;
+  revoked membership refuses before the connection reaches a caller. Owned partial
+  connections/pools are cleaned up, with causal errors retained and content-blind diagnostics.
 - asyncpg's built-in `RESET ALL` on connection return restores the connecting user's role for pool
   safety.
 
@@ -175,6 +179,7 @@ applied by the `core_065` migration. All other `public` tables are read-only for
 | `runtime_attention_outbox` | No raw producer DML; producer roles invoke fixed server-derived append functions. `butler_switchboard_rw` receives SELECT plus a narrow lifecycle/claim UPDATE column set. | durable inert runtime-attention representation (core_198) |
 | `runtime_attention_delivery_lease` | `butler_switchboard_rw` SELECT, INSERT, UPDATE only. | future Switchboard delivery-service lease (core_198) |
 | `expected_signals` | SELECT for all roles; INSERT/UPDATE only for the row's originating runtime role through forced RLS. | liveness-qualified gap detectors (RFC 0029) |
+| `qa_publication_operations` | SELECT for all roles; INSERT/UPDATE only for `butler_qa_rw` through forced RLS; rows cannot be deleted because no DELETE policy exists (the bootstrap re-grants DELETE); the owner/runtime login keeps TRUNCATE and ALTER/DROP POLICY (residual). | QA publication operation ledger and lineage hold (core_266) |
 
 Tables not in this matrix (`model_catalog`, `token_limits`, and any future public tables without
 explicit grants) are SELECT-only for butler roles. When a new public table is added and butlers
@@ -259,11 +264,28 @@ Conventions:
 - Migrations use raw SQL via `op.execute()` rather than Alembic ORM operations.
 - Revision IDs follow `<prefix>_<number>` convention.
 
+#### Reviewed Bootstrap Prerequisite
+
+Every supported database, including ordinary dev, must complete reviewed
+`scripts/init-db.sql` as its distinct configured cluster-superuser bootstrap
+identity before its first online Alembic migration, and rerun it when the managed
+role/schema/interface surface changes. Both online entrypoints inspect the actual
+current catalog before extension, schema or version/revision side effects and
+refuse missing, partial, unreadable or untrusted provenance. This read-only check
+runs no installer, grants no privilege and trusts no writable completion marker.
+Staged and legitimately finalized states both remain supported; consumed installer
+grants are not demanded back on repeat or second-schema migrations. Protected
+point-of-use guards and managed privileged rollback constraints remain independent.
+Fail-closed runtime role establishment does not waive online migration/startup
+admission or the independent DND authorization boundary. The profile is current
+catalog evidence, not script-history attestation. It does not enable the recovery
+executor or provide its secret. See the [operator procedure](../../../docs/data_and_storage/reviewed-bootstrap.md).
+
 #### Execution Order at Startup
 
 1. Core migrations (`chain="core"`)
-2. Module migrations (for each enabled module with non-None `migration_revisions()`)
-3. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+2. Butler-specific migrations (if `has_butler_chain(butler_name)` returns True)
+3. Declared module migration directories, in dependency order, excluding the already-run butler chain
 
 Each chain is upgraded to its head independently. Alembic tracks applied revisions per-chain in the `alembic_version` table within the target schema.
 
@@ -353,7 +375,7 @@ Butlers is a user-federated platform (each user owns their instance). This shape
 ## Integration
 
 - **RFC 0001:** Database provisioning occurs at phase 6, core migrations at phase 7, module migrations at phase 8, credential store creation at phase 8b.
-- **RFC 0002:** Modules declare their migration chains via `migration_revisions()`.
+- **RFC 0002:** CLI and daemon select declared modules' chains from recognized non-empty directories; roster-root aliases and private schemas are preserved.
 - **RFC 0003:** Switchboard-specific tables (`routing_log`, `triage_rules`, `ingestion_events`) live in the switchboard schema.
 - **RFC 0004:** All identity tables reside in the `public` schema with the access model described there.
 - **RFC 0007:** The dashboard reads from all butler schemas (via a privileged connection) to provide cross-butler views.

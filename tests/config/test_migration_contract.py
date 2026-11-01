@@ -82,7 +82,7 @@ def test_all_migration_chains_integrity() -> None:
             revisions[rev] = m
 
         for m in modules:
-            rev = getattr(m, "revision")
+            rev = m.revision
             down_rev = getattr(m, "down_revision", None)
             if down_rev is not None:
                 # down_revision may be a string (linear chain) or tuple/list (merge migration)

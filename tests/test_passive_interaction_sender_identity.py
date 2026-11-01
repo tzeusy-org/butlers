@@ -51,7 +51,7 @@ class TestWhatsAppJidCandidates:
 
 
 def _envelope(sender: dict[str, Any]) -> Any:
-    from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+    from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
     return IngestEnvelopeV1.model_validate(
         {
@@ -180,7 +180,7 @@ class TestWhatsAppBatchEnvelopeParticipants:
 
     def test_batch_envelope_validates_against_ingest_contract(self) -> None:
         """The envelope must survive ingest.v1 validation (extra="forbid")."""
-        from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
+        from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 
         conn = self._connector()
         env = conn._build_batch_envelope("6598150802-1386556114@g.us", self._events(), "batch:1")

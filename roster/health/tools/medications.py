@@ -121,7 +121,7 @@ async def medication_add(
             predicate="medication",
             content=content,
             embedding_engine=embedding_engine,
-            permanence="stable",
+            permanence="permanent",
             scope="health",
             valid_at=None,  # property fact — supersedes previous for same name
             metadata=metadata,
@@ -210,7 +210,7 @@ async def medication_update(
             predicate="medication",
             content=content,
             embedding_engine=embedding_engine,
-            permanence="stable",
+            permanence="permanent",
             scope="health",
             valid_at=None,  # property fact — supersedes the previous
             metadata=new_meta,
@@ -379,7 +379,7 @@ async def medication_log_dose(
             predicate="took_dose",
             content=med_name,
             embedding_engine=embedding_engine,
-            permanence="standard",
+            permanence="permanent",
             scope="health",
             entity_id=owner_entity_id,
             valid_at=valid_at,

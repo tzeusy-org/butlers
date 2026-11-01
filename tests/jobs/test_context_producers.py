@@ -367,13 +367,13 @@ async def test_calendar_context_producer_skips_explicit_butler_generated_event_b
     clear_context_mock = AsyncMock()
 
     with (
-        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
         patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
     ):
         result = await run_calendar_context_producer(pool)
 
     assert result["signal"] == "meeting"
-    assert result["value"] == "Human standup"
+    assert result["value"] == "busy"
     assert set_context_mock.await_args.kwargs["expires_at"] == now + timedelta(minutes=20)
     pool.fetch.assert_awaited_once()
 
@@ -398,7 +398,7 @@ async def test_calendar_context_producer_treats_legacy_midnight_block_as_non_mee
     clear_context_mock = AsyncMock()
 
     with (
-        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
         patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
     ):
         result = await run_calendar_context_producer(pool)
@@ -426,13 +426,13 @@ async def test_calendar_context_producer_malformed_provenance_retains_timed_huma
     clear_context_mock = AsyncMock()
 
     with (
-        patch("butlers.jobs.context_producers.set_context", new=set_context_mock),
+        patch("butlers.jobs.context_producers.set_calendar_context", new=set_context_mock),
         patch("butlers.jobs.context_producers.clear_context", new=clear_context_mock),
     ):
         result = await run_calendar_context_producer(pool)
 
     assert result["signal"] == "meeting"
-    assert result["value"] == "Planning"
+    assert result["value"] == "busy"
     set_context_mock.assert_awaited_once()
 
 
@@ -680,6 +680,29 @@ async def test_sleep_producer_uses_shared_exact_policy_anchor():
     assert set_context_mock.await_args.kwargs["expires_at"] == expected
 
 
+async def test_sleep_outage_never_clears_or_renews_then_recovers(monkeypatch):
+    """REQ-context-bus-013: unavailable is distinct from successful invalid data."""
+    from butlers.jobs import context_producers as producers
+
+    policy = AsyncMock(side_effect=[RuntimeError("unavailable"), RuntimeError("unavailable"), None])
+    write, clear = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(producers, "get_approvals_policy_quiet_hours", policy)
+    monkeypatch.setattr(producers, "set_context", write)
+    monkeypatch.setattr(producers, "clear_context", clear)
+    for _ in range(2):
+        assert await producers.run_sleep_window_context_producer(AsyncMock()) == {
+            "signal": None,
+            "reason": "policy_unavailable",
+        }
+        write.assert_not_awaited()
+        clear.assert_not_awaited()
+    assert (await producers.run_sleep_window_context_producer(AsyncMock()))["cleared"] == [
+        "sleeping"
+    ]
+    clear.assert_awaited_once()
+    write.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Integration tests (real Postgres via testcontainers)
 # ---------------------------------------------------------------------------
@@ -750,7 +773,17 @@ class TestContextProducersIntegration:
                 "WHERE signal_type = 'meeting' AND set_by_butler = 'general' "
                 "AND superseded_at IS NULL"
             )
-            assert row is not None and row["value"] == "Standup"
+            assert row is not None and row["value"] == "busy"
+
+            from butlers.context_bus import format_context_preamble, get_active_context
+
+            preamble = format_context_preamble(await get_active_context(pool))
+            assert "meeting (busy, explicit)" in preamble and "Standup" not in preamble
+            metadata = await pool.fetchval(
+                "SELECT metadata FROM public.user_context "
+                "WHERE signal_type = 'meeting' AND set_by_butler = 'general'"
+            )
+            assert metadata == {"source": "calendar"}
 
             # Event ends: producer clears meeting.
             await pool.execute("UPDATE calendar_events SET ends_at = now() - interval '1 minute'")

@@ -24,10 +24,17 @@ import asyncpg
 from croniter import croniter
 from opentelemetry import trace
 
+from butlers.config import ScheduleSpec
+from butlers.core.approvals_policy import is_policy_quiet_now
 from butlers.core.metrics import ButlerMetrics
 from butlers.core.model_routing import Complexity, allowance_deferral, coerce_complexity_tier
+from butlers.core.owner_creation import owner_creation_transaction
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
+_PARTIAL_DEFERRED = PartialDeliveryLatch()
+
 
 _DEFAULT_MAX_STAGGER_SECONDS = 15 * 60
 # Fallback timezone for cron evaluation when no per-schedule or owner timezone
@@ -190,8 +197,20 @@ def _check_notify_reference(
     contains the string ``notify`` (case-insensitive).  This is a soft check
     only — some tasks legitimately skip notify (e.g., cleanup jobs).
     """
-    if "notify" in prompt.lower():
+    if _references_notify(prompt, skills_dir):
         return
+
+    logger.warning(
+        "Scheduled task %r has dispatch_mode=prompt but prompt/skill does not reference"
+        " notify() — task results may not reach the user",
+        task_name,
+    )
+
+
+def _references_notify(prompt: str, skills_dir: Path | None) -> bool:
+    """True when the prompt, or a skill SKILL.md it names, mentions ``notify``."""
+    if "notify" in prompt.lower():
+        return True
 
     if skills_dir is not None and skills_dir.is_dir():
         for match in _SKILL_NAME_PATTERN.finditer(prompt):
@@ -200,19 +219,56 @@ def _check_notify_reference(
             if skill_md.is_file():
                 try:
                     if "notify" in skill_md.read_text(encoding="utf-8").lower():
-                        return
+                        return True
                 except OSError as exc:
                     logger.debug(
                         "Could not read skill file %s for notify check: %s",
                         skill_md,
                         exc,
                     )
+    return False
 
-    logger.warning(
-        "Scheduled task %r has dispatch_mode=prompt but prompt/skill does not reference"
-        " notify() — task results may not reach the user",
-        task_name,
-    )
+
+# A week of firings is examined for the always-suppressed lint; a cron that fires more often
+# than this inside that week is treated as irregular and never warned about.
+_QUIET_LINT_HORIZON = timedelta(days=7)
+_QUIET_LINT_MAX_FIRINGS = 2000
+
+
+def schedule_always_in_quiet_window(
+    cron: str,
+    *,
+    timezone: str,
+    quiet_policy: dict[str, Any] | None,
+    now: datetime,
+    max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
+) -> bool:
+    """True when every firing of *cron* in the next week lands inside the owner quiet window.
+
+    A firing counts as inside only when both its nominal instant and the latest instant the
+    schedule stagger can push it to are quiet. Uncertain cases return False so they never
+    warn: no usable policy, an empty window, an invalid cron, or a cron that fires more than
+    ``_QUIET_LINT_MAX_FIRINGS`` times in the horizon.
+    """
+    if quiet_policy is None or not croniter.is_valid(cron):
+        return False
+    anchor = now.astimezone(_coerce_schedule_zone(timezone))
+    iterator = croniter(cron, anchor)
+    horizon = now + _QUIET_LINT_HORIZON
+    firings = 0
+    while True:
+        firing = iterator.get_next(datetime).astimezone(UTC)
+        if firing > horizon:
+            return firings > 0
+        firings += 1
+        if firings > _QUIET_LINT_MAX_FIRINGS:
+            return False
+        latest = firing + timedelta(seconds=max_stagger_seconds)
+        if not (
+            is_policy_quiet_now(quiet_policy, now=firing)
+            and is_policy_quiet_now(quiet_policy, now=latest)
+        ):
+            return False
 
 
 def _normalize_schedule_projection_fields(
@@ -588,12 +644,13 @@ def _jsonb_to_dict(value: Any, *, context: str) -> dict[str, Any] | None:
 
 async def sync_schedules(
     pool: asyncpg.Pool,
-    schedules: list[dict[str, Any]],
+    schedules: list[ScheduleSpec],
     *,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     skills_dir: Path | None = None,
     default_timezone: str = _DEFAULT_SCHEDULE_TIMEZONE,
+    quiet_policy: dict[str, Any] | None = None,
 ) -> None:
     """Sync TOML ``[[butler.schedule]]`` entries to the ``scheduled_tasks`` DB table.
 
@@ -610,143 +667,38 @@ async def sync_schedules(
 
     Args:
         pool: asyncpg connection pool.
-        schedules: List of dicts with schedule fields.
+        schedules: Validated ``ScheduleSpec`` entries (see ``butlers.config``); all
+            schedule validation happens when the spec is constructed, not here.
         skills_dir: Optional path to the butler's skills directory for notify
             reference checking.  When provided, SKILL.md files for any
             kebab-case skill names found in the prompt are also inspected.
         default_timezone: IANA timezone used to interpret cron fields for TOML
             schedules (which have no per-row timezone).  Defaults to UTC; the
             daemon passes the owner's configured general timezone so hour-pinned
-            crons fire at the intended local time.
+            crons fire at the intended local time. A spec may carry its own
+            ``timezone`` (IANA name) which overrides this; the literal ``"UTC"`` is the
+            owner-timezone sentinel, so pin real UTC with ``"Etc/UTC"``.
+        quiet_policy: Owner quiet-window policy (``quiet_start_hour``, ``quiet_end_hour``,
+            ``timezone``) from ``get_approvals_policy_quiet_hours``. Only used for the
+            warn-only lint below; ``None`` disables it.
+
+    Emits one WARNING per prompt-mode schedule that notifies the owner but whose every
+    firing in the next week falls inside the owner quiet window (the lint never rejects,
+    and uncertain cases do not warn).
     """
-    # Determine whether the DB schema includes temporal intelligence columns.
-    _has_task_type = await _has_column(pool, "scheduled_tasks", "task_type")
+    # The current migrated schema is required.
 
-    normalized_schedules: list[dict[str, Any]] = []
-    for i, schedule in enumerate(schedules):
-        schedule_path = f"schedules[{i}]"
-        if not isinstance(schedule, dict):
-            raise ValueError(f"{schedule_path} must be a dict/object")
+    toml_names = {spec.name for spec in schedules}
 
-        name = schedule.get("name")
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError(f"{schedule_path}.name must be a non-empty string")
-
-        cron = schedule.get("cron")
-        if not isinstance(cron, str) or not cron.strip():
-            raise ValueError(f"{schedule_path}.cron must be a non-empty string")
-        if not croniter.is_valid(cron):
-            raise ValueError(f"Invalid {schedule_path}.cron: {cron!r}")
-
-        task_type = schedule.get("task_type", "cron")
-        if task_type not in ("cron", "deadline"):
-            raise ValueError(
-                f"{schedule_path}.task_type must be 'cron' or 'deadline' (got {task_type!r})"
-            )
-
-        dispatch_mode, prompt, job_name, job_args, complexity = _normalize_schedule_dispatch(
-            dispatch_mode=schedule.get("dispatch_mode", _DISPATCH_MODE_PROMPT),
-            prompt=schedule.get("prompt"),
-            job_name=schedule.get("job_name"),
-            job_args=schedule.get("job_args"),
-            complexity=schedule.get("complexity"),
-            context=schedule_path,
-        )
-
-        # Warn if a prompt-mode task omits notify() — task results will be silent otherwise.
-        if dispatch_mode == _DISPATCH_MODE_PROMPT and prompt is not None:
-            _check_notify_reference(
-                task_name=name,
-                prompt=prompt,
-                skills_dir=skills_dir,
-            )
-
-        # Deadline-specific fields
-        deadline_fields: dict[str, Any] = {}
-        if task_type == "deadline":
-            from datetime import date as _date
-
-            raw_target = schedule.get("target_date")
-            if raw_target is None:
-                raise ValueError(
-                    f"{schedule_path}.target_date is required when task_type='deadline'"
-                )
-            if isinstance(raw_target, str):
-                try:
-                    from datetime import date as _date2
-
-                    raw_target = _date2.fromisoformat(raw_target)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"{schedule_path}.target_date must be a YYYY-MM-DD date string"
-                    ) from exc
-            if not isinstance(raw_target, _date):
-                raise ValueError(
-                    f"{schedule_path}.target_date must be a date value (got {raw_target!r})"
-                )
-
-            lead_time_days = schedule.get("lead_time_days")
-            if not isinstance(lead_time_days, int) or lead_time_days <= 0:
-                raise ValueError(
-                    f"{schedule_path}.lead_time_days must be a positive integer "
-                    f"(got {lead_time_days!r})"
-                )
-
-            alert_thresholds = schedule.get("alert_thresholds")
-            if not isinstance(alert_thresholds, list) or not alert_thresholds:
-                raise ValueError(
-                    f"{schedule_path}.alert_thresholds must be a non-empty list of threshold dicts"
-                )
-
-            deadline_fields = {
-                "target_date": raw_target,
-                "lead_time_days": lead_time_days,
-                "alert_thresholds": alert_thresholds,
-            }
-
-        raw_budget = schedule.get("max_token_budget")
-        max_token_budget: int | None = None
-        if raw_budget is not None:
-            max_token_budget = int(raw_budget) if isinstance(raw_budget, (int, float)) else None
-
-        continuity = bool(schedule.get("continuity", False))
-
-        normalized_schedules.append(
-            {
-                "name": name,
-                "cron": cron,
-                "task_type": task_type,
-                "dispatch_mode": dispatch_mode,
-                "prompt": prompt,
-                "job_name": job_name,
-                "job_args": job_args,
-                "complexity": complexity,
-                "max_token_budget": max_token_budget,
-                "continuity": continuity,
-                # Deadline-specific fields — validated above for deadline tasks,
-                # None for cron tasks; always present so the needs_update check
-                # can compare them without KeyError.
-                "target_date": deadline_fields.get("target_date"),
-                "lead_time_days": deadline_fields.get("lead_time_days"),
-                "alert_thresholds": deadline_fields.get("alert_thresholds"),
-            }
-        )
-
-    toml_names = {s["name"] for s in normalized_schedules}
-
-    # When the schema includes temporal intelligence columns, fetch them so the
+    # Fetch temporal columns so the
     # needs_update check can detect changes to deadline-specific fields.
-    _temporal_select = (
-        ", task_type, target_date, lead_time_days, alert_thresholds" if _has_task_type else ""
-    )
+    _temporal_select = ", task_type, target_date, lead_time_days, alert_thresholds"
 
-    # Detect whether the max_token_budget column exists (added in core_050).
-    _has_budget = await _has_column(pool, "scheduled_tasks", "max_token_budget")
-    _budget_select = ", max_token_budget" if _has_budget else ""
+    _budget_select = ", max_token_budget"
 
-    # Detect whether the continuity column exists (added in core_229).
-    _has_continuity = await _has_column(pool, "scheduled_tasks", "continuity")
-    _continuity_select = ", continuity" if _has_continuity else ""
+    _continuity_select = ", continuity"
+
+    _trailing_select = _continuity_select + (", timezone")
 
     # Fetch existing tasks whose names match any TOML schedule (regardless of source).
     # A runtime-created task (source='db') may share a name with a TOML schedule;
@@ -754,7 +706,7 @@ async def sync_schedules(
     rows = await pool.fetch(
         f"""
         SELECT id, name, source, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}{_budget_select}{_continuity_select}
+               complexity, enabled{_temporal_select}{_budget_select}{_trailing_select}
         FROM scheduled_tasks
         WHERE name = ANY($1::text[])
         """,
@@ -764,7 +716,7 @@ async def sync_schedules(
     toml_only_rows = await pool.fetch(
         f"""
         SELECT id, name, cron, prompt, dispatch_mode, job_name, job_args,
-               complexity, enabled{_temporal_select}{_budget_select}{_continuity_select}
+               complexity, enabled{_temporal_select}{_budget_select}{_trailing_select}
         FROM scheduled_tasks
         WHERE source = 'toml' AND name != ALL($1::text[])
         """,
@@ -775,26 +727,53 @@ async def sync_schedules(
     for row in toml_only_rows:
         db_by_name.setdefault(row["name"], row)
 
-    for entry in normalized_schedules:
-        name = entry["name"]
-        cron = entry["cron"]
-        task_type = entry["task_type"]
-        prompt = entry["prompt"]
-        dispatch_mode = entry["dispatch_mode"]
-        job_name = entry["job_name"]
-        job_args = entry["job_args"]
-        complexity = entry["complexity"]
-        max_token_budget = entry["max_token_budget"]
-        continuity = entry["continuity"]
-        target_date = entry["target_date"]
-        lead_time_days = entry["lead_time_days"]
-        alert_thresholds = entry["alert_thresholds"]
+    for spec in schedules:
+        name = spec.name
+        cron = spec.cron
+        task_type = spec.task_type
+        prompt = spec.prompt
+        dispatch_mode = spec.dispatch_mode.value
+        job_name = spec.job_name
+        job_args = spec.job_args
+        complexity = spec.complexity or _DEFAULT_COMPLEXITY
+        max_token_budget = spec.max_token_budget
+        continuity = spec.continuity
+        target_date = spec.target_date
+        lead_time_days = spec.lead_time_days
+        alert_thresholds = spec.alert_thresholds
+        # Warn if a prompt-mode task omits notify() — task results will be silent otherwise.
+        if dispatch_mode == _DISPATCH_MODE_PROMPT and prompt is not None:
+            _check_notify_reference(task_name=name, prompt=prompt, skills_dir=skills_dir)
+        # An explicit per-schedule zone wins; otherwise the owner's zone (the stored
+        # "UTC" column default is the follow-the-owner sentinel, so it is stored for unset).
+        stored_timezone = spec.timezone or "UTC"
+        effective_timezone = _effective_schedule_timezone(spec.timezone, default_timezone)
         next_run_at = _next_run(
             cron,
-            timezone=default_timezone,
+            timezone=effective_timezone,
             stagger_key=stagger_key,
             max_stagger_seconds=max_stagger_seconds,
         )
+        if (
+            task_type == "cron"
+            and dispatch_mode == _DISPATCH_MODE_PROMPT
+            and prompt is not None
+            and _references_notify(prompt, skills_dir)
+            and schedule_always_in_quiet_window(
+                cron,
+                timezone=effective_timezone,
+                quiet_policy=quiet_policy,
+                now=datetime.now(UTC),
+                max_stagger_seconds=max_stagger_seconds,
+            )
+        ):
+            logger.warning(
+                "Scheduled task %r (cron %r, zone %s) only fires inside the owner quiet window; "
+                "its notifications will always be held or dropped",
+                name,
+                cron,
+                effective_timezone,
+            )
 
         if name in db_by_name:
             existing = db_by_name[name]
@@ -814,16 +793,19 @@ async def sync_schedules(
                 or existing_complexity != complexity
                 or not existing["enabled"]
             )
-            # Also detect changes to max_token_budget when schema supports it.
-            if not needs_update and _has_budget:
+            # Also detect changes to max_token_budget in the migrated schema.
+            if not needs_update:
                 needs_update = existing.get("max_token_budget") != max_token_budget
-            # Also detect changes to continuity when schema supports it.
-            if not needs_update and _has_continuity:
+            # Also detect changes to continuity in the migrated schema.
+            if not needs_update:
                 needs_update = bool(existing.get("continuity")) != continuity
-            # Also detect changes to deadline-specific fields when schema supports them.
+            # Also detect a changed per-schedule timezone in the migrated schema.
+            if not needs_update:
+                needs_update = (existing.get("timezone") or "UTC") != stored_timezone
+            # Also detect changes to deadline-specific fields in the migrated schema.
             # Restrict to deadline tasks to avoid spurious updates on cron tasks that
             # may carry stale deadline-column values from a prior task_type migration.
-            if not needs_update and _has_task_type and task_type == "deadline":
+            if not needs_update and task_type == "deadline":
                 existing_alert_thresholds = existing.get("alert_thresholds")
                 if isinstance(existing_alert_thresholds, str):
                     existing_alert_thresholds = json.loads(existing_alert_thresholds)
@@ -833,8 +815,8 @@ async def sync_schedules(
                     or existing_alert_thresholds != alert_thresholds
                 )
             if needs_update:
-                _budget_set = ", max_token_budget = $13" if _has_budget else ""
-                if _has_task_type and task_type == "deadline":
+                _budget_set = ", max_token_budget = $13"
+                if task_type == "deadline":
                     base_args = [
                         existing["id"],
                         cron,
@@ -849,8 +831,7 @@ async def sync_schedules(
                         lead_time_days,
                         alert_thresholds,
                     ]
-                    if _has_budget:
-                        base_args.append(max_token_budget)
+                    base_args.append(max_token_budget)
                     await pool.execute(
                         f"""
                         UPDATE scheduled_tasks
@@ -872,14 +853,13 @@ async def sync_schedules(
                         """,
                         *base_args,
                     )
-                    if _has_continuity:
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                            existing["id"],
-                            continuity,
-                        )
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                        existing["id"],
+                        continuity,
+                    )
                 else:
-                    _budget_set_cron = ", max_token_budget = $9" if _has_budget else ""
+                    _budget_set_cron = ", max_token_budget = $9"
                     base_args = [
                         existing["id"],
                         cron,
@@ -890,8 +870,7 @@ async def sync_schedules(
                         complexity,
                         next_run_at,
                     ]
-                    if _has_budget:
-                        base_args.append(max_token_budget)
+                    base_args.append(max_token_budget)
                     await pool.execute(
                         f"""
                         UPDATE scheduled_tasks
@@ -909,18 +888,22 @@ async def sync_schedules(
                         """,
                         *base_args,
                     )
-                    if _has_continuity:
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                            existing["id"],
-                            continuity,
-                        )
+                    await pool.execute(
+                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                        existing["id"],
+                        continuity,
+                    )
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                    existing["id"],
+                    stored_timezone,
+                )
                 logger.info("Updated TOML schedule: %s", name)
         else:
             # Insert new TOML task
-            _budget_col = ", max_token_budget" if _has_budget else ""
-            if _has_task_type and task_type == "deadline":
-                _budget_val = ", $13" if _has_budget else ""
+            _budget_col = ", max_token_budget"
+            if task_type == "deadline":
+                _budget_val = ", $13"
                 base_args = [
                     name,
                     cron,
@@ -935,8 +918,7 @@ async def sync_schedules(
                     lead_time_days,
                     alert_thresholds,
                 ]
-                if _has_budget:
-                    base_args.append(max_token_budget)
+                base_args.append(max_token_budget)
                 new_id = await pool.fetchval(
                     f"""
                     INSERT INTO scheduled_tasks (
@@ -961,14 +943,13 @@ async def sync_schedules(
                     """,
                     *base_args,
                 )
-                if _has_continuity:
-                    await pool.execute(
-                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                        new_id,
-                        continuity,
-                    )
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                    new_id,
+                    continuity,
+                )
             else:
-                _budget_val_cron = ", $9" if _has_budget else ""
+                _budget_val_cron = ", $9"
                 base_args = [
                     name,
                     cron,
@@ -979,8 +960,7 @@ async def sync_schedules(
                     complexity,
                     next_run_at,
                 ]
-                if _has_budget:
-                    base_args.append(max_token_budget)
+                base_args.append(max_token_budget)
                 new_id = await pool.fetchval(
                     f"""
                     INSERT INTO scheduled_tasks (
@@ -1000,12 +980,16 @@ async def sync_schedules(
                     """,
                     *base_args,
                 )
-                if _has_continuity:
-                    await pool.execute(
-                        "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
-                        new_id,
-                        continuity,
-                    )
+                await pool.execute(
+                    "UPDATE scheduled_tasks SET continuity = $2 WHERE id = $1",
+                    new_id,
+                    continuity,
+                )
+            await pool.execute(
+                "UPDATE scheduled_tasks SET timezone = $2 WHERE id = $1",
+                new_id,
+                stored_timezone,
+            )
             logger.info("Inserted TOML schedule: %s", name)
 
     # Disable TOML tasks no longer present in config
@@ -1113,9 +1097,7 @@ async def ensure_module_default_schedule(
                     "owner_schema to recover a TOML-owned schedule"
                 )
 
-            # Import lazily so normal scheduler use does not load the API
-            # router layer unless a recovery actually transitions a row.
-            from butlers.api.routers.audit import append as append_audit
+            from butlers.core.audit import append as append_audit
 
             await append_audit(
                 connection,
@@ -1130,69 +1112,6 @@ async def ensure_module_default_schedule(
                     "owner_schema": normalized_owner_schema,
                 },
             )
-
-
-async def _has_column(pool: asyncpg.Pool, table: str, column: str) -> bool:
-    """Return True if *column* exists in *table* within the pool's current schema.
-
-    Filtering by ``current_schema()`` is critical: butler pools share the
-    Postgres database and only differ by their ``search_path``.  Without the
-    schema filter, a check against (e.g.) ``chronicler.scheduled_tasks``
-    spuriously returns True because another butler's schema has the column,
-    and the subsequent query then fails with "column does not exist".
-    """
-    result = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = $1
-              AND column_name = $2
-        )
-        """,
-        table,
-        column,
-    )
-    return bool(result)
-
-
-async def _has_table(pool: asyncpg.Pool, table: str) -> bool:
-    """Return True if *table* exists in the pool's current schema."""
-    result = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = $1
-        )
-        """,
-        table,
-    )
-    return bool(result)
-
-
-async def _has_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> bool:
-    """Return True if *table* has every named column in the pool's current schema."""
-    found = await _existing_columns(pool, table, columns)
-    return columns.issubset(found)
-
-
-async def _existing_columns(pool: asyncpg.Pool, table: str, columns: set[str]) -> set[str]:
-    """Return the requested columns that exist in *table* within the current schema."""
-    if not columns:
-        return set()
-    rows = await pool.fetch(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = $1
-          AND column_name = ANY($2::text[])
-        """,
-        table,
-        sorted(columns),
-    )
-    return {row["column_name"] for row in rows}
 
 
 async def _defer_cron_for_allowance(
@@ -1244,7 +1163,6 @@ async def _tick_deadline_pass(
     dispatch_fn,
     *,
     now: datetime,
-    has_task_type_col: bool | None = None,
     stagger_key: str | None = None,
     max_stagger_seconds: int = _DEFAULT_MAX_STAGGER_SECONDS,
     metrics: ButlerMetrics | None = None,
@@ -1260,8 +1178,6 @@ async def _tick_deadline_pass(
          dispatch a prompt if a threshold fires, record it.
 
     Args:
-        has_task_type_col: Optional pre-computed result from _has_column() check.
-            Pass this from tick() to avoid redundant schema round-trips.
         admission_refusal: Optional fresh policy check awaited immediately
             before each dispatch; a refusal stops the pass with the threshold
             left unfired.
@@ -1277,25 +1193,6 @@ async def _tick_deadline_pass(
         find_unfired_threshold,
         is_deadline_blocked,
     )
-
-    # Skip the deadline pass if the schema hasn't been fully migrated yet.
-    # Long-lived databases can briefly hold a partial temporal schema after a
-    # failed or interrupted migration; tick() must keep cron dispatch alive.
-    required_deadline_columns = {
-        "task_type",
-        "target_date",
-        "lead_time_days",
-        "alert_thresholds",
-        "deadline_status",
-        "fired_thresholds",
-        "depends_on",
-    }
-    if has_task_type_col is None:
-        has_task_type_col = await _has_column(pool, "scheduled_tasks", "task_type")
-    if not has_task_type_col or not await _has_columns(
-        pool, "scheduled_tasks", required_deadline_columns
-    ):
-        return 0, 0
 
     deadline_rows = await pool.fetch(
         """
@@ -1526,7 +1423,6 @@ async def _tick_event_chain_pass(
     """Detect event chain triggers and materialize actions.
 
     Handles:
-    - calendar_event_end: calendar_projection events that ended before now
     - deadline_passed: deadline tasks that transitioned to 'expired' or 'completed'
     - deadline_threshold: deadline tasks where a matching severity threshold has fired
 
@@ -1538,235 +1434,154 @@ async def _tick_event_chain_pass(
 
     chains_fired = 0
 
-    # event_chains is a prerequisite for every trigger in this pass.  Bail out
-    # early so we avoid unnecessary schema probes for calendar_projection and
-    # scheduled_tasks when the core table is missing.
-    has_event_chains_table = await _has_table(pool, "event_chains")
-    if not has_event_chains_table:
-        return 0
-
-    # --- Trigger: calendar_event_end ---
-    # Only evaluated when the optional calendar_projection table exists with
-    # the legacy projection columns this pass reads.
-    calendar_projection_ready = await _has_columns(
-        pool,
-        "calendar_projection",
-        {"event_id", "butler_name", "end_at", "chain_triggered"},
-    )
-
-    if calendar_projection_ready:
-        # Find calendar events that ended before now and haven't triggered chains yet
-        ended_events = await pool.fetch(
-            """
-            SELECT event_id, butler_name
-            FROM calendar_projection
-            WHERE end_at <= $1 AND chain_triggered = false
-            """,
-            now,
-        )
-
-        for event_row in ended_events:
-            event_id = event_row["event_id"]
-            butler_name = event_row["butler_name"]
-
-            chains = await pool.fetch(
-                """
-                SELECT id, name, actions
-                FROM event_chains
-                WHERE trigger_type = 'calendar_event_end'
-                  AND trigger_reference = $1
-                  AND status = 'active'
-                  AND butler_name = $2
-                """,
-                event_id,
-                butler_name,
-            )
-
-            for chain_row in chains:
-                chain_id = chain_row["id"]
-                chain_name = chain_row["name"]
-                actions = chain_row["actions"]
-                if isinstance(actions, str):
-                    actions = _json.loads(actions)
-
-                if not should_fire_chain(chain_depth=0, chain_name=chain_name):
-                    continue
-
-                await _fire_chain(
-                    pool,
-                    chain_id=chain_id,
-                    chain_name=chain_name,
-                    actions=actions,
-                    now=now,
-                    trigger_label=f"calendar event {event_id!r}",
-                )
-                chains_fired += 1
-
-            # Mark calendar event as chain_triggered regardless of whether chains fired
-            await pool.execute(
-                """
-                UPDATE calendar_projection SET chain_triggered = true
-                WHERE event_id = $1 AND butler_name = $2
-                """,
-                event_id,
-                butler_name,
-            )
-
     # --- Trigger: deadline_passed ---
     # Detect active chains whose referenced deadline has reached a terminal status
     # (expired or completed).  The deadline_status was already updated in Pass 1
     # (_tick_deadline_pass) earlier in the same tick() call.
     #
-    # Guard: skip if scheduled_tasks lacks deadline columns (pre-migration schema).
-    has_deadline_status_col = await _has_column(pool, "scheduled_tasks", "deadline_status")
-    if has_deadline_status_col:
-        # Fetch deadline chains without casting trigger_reference in SQL.
-        # trigger_reference is user-authored text, and malformed rows must not
-        # abort the entire scheduler tick.
-        deadline_passed_chains = await pool.fetch(
+    # Migrated schema is required; storage faults remain visible.
+    deadline_passed_chains = await pool.fetch(
+        """
+        SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
+        FROM event_chains
+        WHERE trigger_type = 'deadline_passed'
+          AND status = 'active'
+        """
+    )
+
+    deadline_passed_refs: dict[Any, tuple[uuid.UUID, str, Any]] = {}
+    for row in deadline_passed_chains:
+        chain_id = row["chain_id"]
+        chain_name = row["chain_name"]
+        trigger_ref = row["trigger_reference"]
+        deadline_id = _parse_uuid_reference(trigger_ref)
+        if deadline_id is None:
+            if trigger_ref is not None:
+                logger.warning(
+                    "Event chain %r has invalid deadline_passed trigger_reference %r "
+                    "(expected '<deadline-uuid>'); skipping",
+                    chain_name,
+                    trigger_ref,
+                )
+            continue
+        deadline_passed_refs[chain_id] = (deadline_id, chain_name, row["actions"])
+
+    deadline_passed_statuses: dict[uuid.UUID, str] = {}
+    if deadline_passed_refs:
+        status_rows = await pool.fetch(
             """
-            SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
-            FROM event_chains
-            WHERE trigger_type = 'deadline_passed'
-              AND status = 'active'
-            """
+            SELECT id, deadline_status
+            FROM scheduled_tasks
+            WHERE id = ANY($1::uuid[])
+              AND task_type = 'deadline'
+              AND deadline_status IN ('expired', 'completed')
+            """,
+            list({deadline_id for deadline_id, _, _ in deadline_passed_refs.values()}),
         )
+        deadline_passed_statuses = {row["id"]: row["deadline_status"] for row in status_rows}
 
-        deadline_passed_refs: dict[Any, tuple[uuid.UUID, str, Any]] = {}
-        for row in deadline_passed_chains:
-            chain_id = row["chain_id"]
-            chain_name = row["chain_name"]
-            trigger_ref = row["trigger_reference"]
-            deadline_id = _parse_uuid_reference(trigger_ref)
-            if deadline_id is None:
-                if trigger_ref is not None:
-                    logger.warning(
-                        "Event chain %r has invalid deadline_passed trigger_reference %r "
-                        "(expected '<deadline-uuid>'); skipping",
-                        chain_name,
-                        trigger_ref,
-                    )
-                continue
-            deadline_passed_refs[chain_id] = (deadline_id, chain_name, row["actions"])
+    for chain_id, (deadline_id, chain_name, actions) in deadline_passed_refs.items():
+        dl_status = deadline_passed_statuses.get(deadline_id)
+        if dl_status is None:
+            continue
+        if isinstance(actions, str):
+            actions = _json.loads(actions)
 
-        deadline_passed_statuses: dict[uuid.UUID, str] = {}
-        if deadline_passed_refs:
-            status_rows = await pool.fetch(
-                """
-                SELECT id, deadline_status
-                FROM scheduled_tasks
-                WHERE id = ANY($1::uuid[])
-                  AND task_type = 'deadline'
-                  AND deadline_status IN ('expired', 'completed')
-                """,
-                list({deadline_id for deadline_id, _, _ in deadline_passed_refs.values()}),
-            )
-            deadline_passed_statuses = {row["id"]: row["deadline_status"] for row in status_rows}
+        if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+            continue
 
-        for chain_id, (deadline_id, chain_name, actions) in deadline_passed_refs.items():
-            dl_status = deadline_passed_statuses.get(deadline_id)
-            if dl_status is None:
-                continue
-            if isinstance(actions, str):
-                actions = _json.loads(actions)
-
-            if not should_fire_chain(chain_depth=0, chain_name=chain_name):
-                continue
-
-            await _fire_chain(
-                pool,
-                chain_id=chain_id,
-                chain_name=chain_name,
-                actions=actions,
-                now=now,
-                trigger_label=f"deadline_passed (status={dl_status!r})",
-            )
-            chains_fired += 1
-
-        # --- Trigger: deadline_threshold ---
-        # Detect active chains whose referenced deadline has fired the severity in
-        # trigger_reference.  Format: "<deadline-uuid>:<severity>" (e.g. "abc-123:critical").
-        # The chain fires when that severity appears in the deadline's fired_thresholds.
-        deadline_threshold_chains = await pool.fetch(
-            """
-            SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
-            FROM event_chains
-            WHERE trigger_type = 'deadline_threshold'
-              AND status = 'active'
-            """
+        await _fire_chain(
+            pool,
+            chain_id=chain_id,
+            chain_name=chain_name,
+            actions=actions,
+            now=now,
+            trigger_label=f"deadline_passed (status={dl_status!r})",
         )
+        chains_fired += 1
 
-        deadline_threshold_refs: dict[Any, tuple[uuid.UUID, str, Any, str]] = {}
-        for row in deadline_threshold_chains:
-            chain_id = row["chain_id"]
-            chain_name = row["chain_name"]
-            trigger_ref = row["trigger_reference"]
-            parsed_ref = _parse_deadline_threshold_reference(trigger_ref)
-            if parsed_ref is None:
-                if trigger_ref is not None:
-                    logger.warning(
-                        "Event chain %r has invalid deadline_threshold trigger_reference %r "
-                        "(expected '<deadline-uuid>:<severity>'); skipping",
-                        chain_name,
-                        trigger_ref,
-                    )
-                continue
-            deadline_id, expected_severity = parsed_ref
-            deadline_threshold_refs[chain_id] = (
-                deadline_id,
-                expected_severity,
-                row["actions"],
-                chain_name,
-            )
+    # --- Trigger: deadline_threshold ---
+    # Detect active chains whose referenced deadline has fired the severity in
+    # trigger_reference.  Format: "<deadline-uuid>:<severity>" (e.g. "abc-123:critical").
+    # The chain fires when that severity appears in the deadline's fired_thresholds.
+    deadline_threshold_chains = await pool.fetch(
+        """
+        SELECT id AS chain_id, name AS chain_name, actions, trigger_reference
+        FROM event_chains
+        WHERE trigger_type = 'deadline_threshold'
+          AND status = 'active'
+        """
+    )
 
-        deadline_fired_thresholds: dict[uuid.UUID, Any] = {}
-        if deadline_threshold_refs:
-            threshold_rows = await pool.fetch(
-                """
-                SELECT id, fired_thresholds
-                FROM scheduled_tasks
-                WHERE id = ANY($1::uuid[])
-                  AND task_type = 'deadline'
-                  AND fired_thresholds IS NOT NULL
-                  AND fired_thresholds != '[]'::jsonb
-                """,
-                list({deadline_id for deadline_id, _, _, _ in deadline_threshold_refs.values()}),
-            )
-            deadline_fired_thresholds = {
-                row["id"]: row["fired_thresholds"] for row in threshold_rows
-            }
-
-        for chain_id, (
+    deadline_threshold_refs: dict[Any, tuple[uuid.UUID, str, Any, str]] = {}
+    for row in deadline_threshold_chains:
+        chain_id = row["chain_id"]
+        chain_name = row["chain_name"]
+        trigger_ref = row["trigger_reference"]
+        parsed_ref = _parse_deadline_threshold_reference(trigger_ref)
+        if parsed_ref is None:
+            if trigger_ref is not None:
+                logger.warning(
+                    "Event chain %r has invalid deadline_threshold trigger_reference %r "
+                    "(expected '<deadline-uuid>:<severity>'); skipping",
+                    chain_name,
+                    trigger_ref,
+                )
+            continue
+        deadline_id, expected_severity = parsed_ref
+        deadline_threshold_refs[chain_id] = (
             deadline_id,
             expected_severity,
-            actions,
+            row["actions"],
             chain_name,
-        ) in deadline_threshold_refs.items():
-            raw_fired = deadline_fired_thresholds.get(deadline_id)
-            if raw_fired is None:
-                continue
-            if isinstance(actions, str):
-                actions = _json.loads(actions)
+        )
 
-            fired_thresholds: list[dict] = (
-                raw_fired if isinstance(raw_fired, list) else _json.loads(raw_fired or "[]")
-            )
-            severity_fired = any(t.get("severity") == expected_severity for t in fired_thresholds)
-            if not severity_fired:
-                continue
+    deadline_fired_thresholds: dict[uuid.UUID, Any] = {}
+    if deadline_threshold_refs:
+        threshold_rows = await pool.fetch(
+            """
+            SELECT id, fired_thresholds
+            FROM scheduled_tasks
+            WHERE id = ANY($1::uuid[])
+              AND task_type = 'deadline'
+              AND fired_thresholds IS NOT NULL
+              AND fired_thresholds != '[]'::jsonb
+            """,
+            list({deadline_id for deadline_id, _, _, _ in deadline_threshold_refs.values()}),
+        )
+        deadline_fired_thresholds = {row["id"]: row["fired_thresholds"] for row in threshold_rows}
 
-            if not should_fire_chain(chain_depth=0, chain_name=chain_name):
-                continue
+    for chain_id, (
+        deadline_id,
+        expected_severity,
+        actions,
+        chain_name,
+    ) in deadline_threshold_refs.items():
+        raw_fired = deadline_fired_thresholds.get(deadline_id)
+        if raw_fired is None:
+            continue
+        if isinstance(actions, str):
+            actions = _json.loads(actions)
 
-            await _fire_chain(
-                pool,
-                chain_id=chain_id,
-                chain_name=chain_name,
-                actions=actions,
-                now=now,
-                trigger_label=f"deadline_threshold (severity={expected_severity!r})",
-            )
-            chains_fired += 1
+        fired_thresholds: list[dict] = (
+            raw_fired if isinstance(raw_fired, list) else _json.loads(raw_fired or "[]")
+        )
+        severity_fired = any(t.get("severity") == expected_severity for t in fired_thresholds)
+        if not severity_fired:
+            continue
+
+        if not should_fire_chain(chain_depth=0, chain_name=chain_name):
+            continue
+
+        await _fire_chain(
+            pool,
+            chain_id=chain_id,
+            chain_name=chain_name,
+            actions=actions,
+            now=now,
+            trigger_label=f"deadline_threshold (severity={expected_severity!r})",
+        )
+        chains_fired += 1
 
     return chains_fired
 
@@ -1831,8 +1646,9 @@ def _group_due_deferred_notifications(
     A decision dossier is bound to one non-owner delivery decision. Do not
     fold such rows into a rewritten digest envelope: each must retain its own
     validated context for flush-time recipient-gate revalidation. The same is
-    true for ``approval_request`` control-plane envelopes: coalescing would
-    discard their per-action callback tokens and inline keyboard payload.
+    true for ``approval_request`` control-plane
+    envelopes: coalescing would discard their callback tokens and inline
+    keyboard payload.
     """
     groups: dict[tuple[str | None, str | None, str | None], list[dict[str, Any]]] = {}
     order: list[tuple[str | None, str | None, str | None]] = []
@@ -1843,7 +1659,7 @@ def _group_due_deferred_notifications(
             str(row["id"])
             if (
                 envelope.get("decision_dossier") is not None
-                or delivery.get("intent") == "approval_request"
+                or delivery.get("intent") in {"approval_request"}
             )
             else None
         )
@@ -1901,20 +1717,52 @@ async def _tick_deferred_notification_pass(
     digest of N rows counts as N, not 1 — it reflects candidates consumed,
     not ``notify_fn`` calls made).
     """
-    # Check if deferred_notifications table exists
-    table_exists = await pool.fetchval(
-        """
-        SELECT EXISTS (
-            SELECT 1 FROM information_schema.tables
-            WHERE table_schema = current_schema()
-              AND table_name = 'deferred_notifications'
-        )
-        """
-    )
-    if not table_exists:
-        return 0
-
     import json as _json
+
+    from butlers.core.attention_ledger import record_attention_event
+
+    async def terminal_partial(group: list[dict[str, Any]], metadata: dict[str, bool]) -> None:
+        ids = [row["id"] for row in group]
+        for row in group:
+            _PARTIAL_DEFERRED.mark(pool, str(row["id"]), metadata)
+        await pool.execute(
+            "UPDATE deferred_notifications SET status = 'cancelled' "
+            "WHERE id = ANY($1::uuid[]) AND status = 'pending'",
+            ids,
+        )
+        for row in group:
+            _PARTIAL_DEFERRED.clear(pool, str(row["id"]))
+            await record_attention_event(
+                pool,
+                origin_butler=row["butler_name"],
+                source="notify",
+                outcome="failed",
+                channel=row["channel"],
+                intent="send",
+                priority=row["priority"],
+                notification_ref=str(row["id"]),
+                reason=(
+                    "telegram_partial_delivery"
+                    if metadata.get("partial_delivery")
+                    else "telegram_delivery_uncertain"
+                ),
+                metadata=metadata,
+            )
+
+    # Reconcile the exact old logical send even if its due/expiry window changed.
+    # No fresh-row grouping or provider call happens before this terminal write.
+    quarantined = _PARTIAL_DEFERRED.keys(pool)
+    if quarantined:
+        rows = await pool.fetch(
+            "SELECT id, butler_name, channel, priority FROM deferred_notifications "
+            "WHERE id = ANY($1::uuid[])",
+            quarantined,
+        )
+        for row in rows:
+            await terminal_partial([dict(row)], _PARTIAL_DEFERRED.metadata(pool, str(row["id"])))
+        # A deleted row cannot be re-admitted; release its process-local owner too.
+        for key in quarantined:
+            _PARTIAL_DEFERRED.clear(pool, key)
 
     # Expire stale pending notifications (> 24h past deliver_at)
     await pool.execute(
@@ -1950,8 +1798,6 @@ async def _tick_deferred_notification_pass(
         )
         return 0
 
-    from butlers.core.attention_ledger import record_attention_event
-
     parsed_rows: list[dict[str, Any]] = []
     for row in due_rows:
         envelope = row["envelope"]
@@ -1968,7 +1814,10 @@ async def _tick_deferred_notification_pass(
             try:
                 # Deliver via the standard notify pipeline using the stored
                 # notify.v1 envelope, NOT via the LLM spawner.
-                await notify_fn(envelope)
+                outcome = await notify_fn(envelope)
+                if metadata := terminal_telegram_metadata(outcome):
+                    await terminal_partial(group, metadata)
+                    continue
                 await pool.execute(
                     """
                     UPDATE deferred_notifications
@@ -2002,7 +1851,10 @@ async def _tick_deferred_notification_pass(
         group_ids = [row["id"] for row in group]
         digest_envelope = _format_deferred_digest(group)
         try:
-            await notify_fn(digest_envelope)
+            outcome = await notify_fn(digest_envelope)
+            if metadata := terminal_telegram_metadata(outcome):
+                await terminal_partial(group, metadata)
+                continue
             await pool.execute(
                 """
                 UPDATE deferred_notifications
@@ -2059,6 +1911,8 @@ class QaSchedulePolicy(StrEnum):
 
 
 _QA_BUTLER_NAME = "qa"
+# sw_053's role-derived projection of the caller's own control-plane policy.
+_BUTLER_POLICY_QUERY = "SELECT butler_name, policy_state FROM public.butler_local_schedule_policy()"
 # sw_038's fixed projection: no caller-supplied name, and it raises 42501
 # unless the connection's effective role is butler_qa_rw.
 _QA_POLICY_QUERY = "SELECT policy_state, policy_provenance FROM public.qa_local_schedule_policy()"
@@ -2126,10 +1980,12 @@ async def _butler_dispatch_gated(
     receiver-derived routing, remote observation staleness is not an authority
     to stop a healthy local scheduler.
 
-    With the receiver cutover enabled, the administrative policy row gates
-    local dispatch; a missing row or non-active policy suppresses the tick.
-    With the flag disabled, the legacy route resolver also gates stale
-    heartbeat state.
+    With the receiver cutover enabled, the butler's own administrative policy
+    (read through ``public.butler_local_schedule_policy()`` on its own runtime
+    role, so *eligibility_pool* is the butler's own pool) gates local dispatch;
+    a missing row or non-active policy suppresses the tick. With the flag
+    disabled, the legacy route resolver also gates stale heartbeat state; that
+    reads switchboard tables, so only the switchboard passes a pool then.
 
     Returns ``None`` when dispatch should proceed (eligible, or no gating
     context available), or a human-readable reason string when dispatch must be
@@ -2147,11 +2003,16 @@ async def _butler_dispatch_gated(
         )
 
         if receiver_route_cutover_enabled():
-            row = await eligibility_pool.fetchrow(
-                "SELECT policy_state FROM switchboard.butler_registry_control_plane"
-                " WHERE name = $1",
-                butler_name,
-            )
+            # sw_053: the butler's own runtime role reads only its own policy;
+            # the function derives the butler from that role, not from input.
+            try:
+                row = await eligibility_pool.fetchrow(_BUTLER_POLICY_QUERY)
+            except asyncpg.PostgresError as exc:
+                if exc.sqlstate != "P0002":  # anything but "no policy row" fails open
+                    raise
+                row = None
+            if row is not None and row["butler_name"] != butler_name:
+                raise RuntimeError("eligibility pool belongs to another butler")
             if row is None or row["policy_state"] != "active":
                 return f"Butler {butler_name!r} is held by administrative policy"
             return None
@@ -2288,22 +2149,6 @@ async def tick(
     with tracer.start_as_current_span("butler.tick") as span:
         now = datetime.now(UTC)
 
-        # Hoist schema probes: deadline and cron dispatch share these results.
-        scheduled_task_columns = await _existing_columns(
-            pool,
-            "scheduled_tasks",
-            {"task_type", "max_token_budget", "until_at", "continuity"},
-        )
-        _has_task_type_col = "task_type" in scheduled_task_columns
-        _has_budget_col = "max_token_budget" in scheduled_task_columns
-        _has_until_at_col = "until_at" in scheduled_task_columns
-        _has_continuity_col = "continuity" in scheduled_task_columns
-        if not _has_until_at_col:
-            logger.warning(
-                "scheduled_tasks.until_at column missing in current schema; "
-                "using NULL projection until core migrations are applied"
-            )
-
         # ------------------------------------------------------------------
         # Seasonal context — queried once per tick, injected into ALL dispatches
         # (both deadline pass and cron pass).  Must be queried before Pass 1 so
@@ -2361,7 +2206,6 @@ async def tick(
                 pool,
                 dispatch_fn,
                 now=now,
-                has_task_type_col=_has_task_type_col,
                 stagger_key=stagger_key,
                 max_stagger_seconds=max_stagger_seconds,
                 metrics=metrics,
@@ -2373,21 +2217,15 @@ async def tick(
             span.set_attribute("deadline_dispatched", deadline_dispatched)
 
         # --- Pass 2: Cron dispatch ---
-        # If task_type column doesn't exist (legacy schema), treat all rows as cron.
-        # If it does exist, skip deadline tasks (handled in pass 1).
+        # Deadline tasks were handled in pass 1; select only cron tasks.
         # When the butler is gated (paused/quarantined/stale), skip the cron
         # fetch entirely so no rows are dispatched and next_run_at is preserved.
         rows: list[asyncpg.Record] = []
         if dispatch_gate_reason is None:
-            if _has_task_type_col:
-                cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
-            else:
-                cron_filter = ""
-            _budget_col_select = ", max_token_budget" if _has_budget_col else ""
-            _until_at_select = (
-                ", until_at" if _has_until_at_col else ", NULL::timestamptz AS until_at"
-            )
-            _continuity_col_select = ", continuity" if _has_continuity_col else ""
+            cron_filter = "AND COALESCE(task_type, 'cron') = 'cron'"
+            _budget_col_select = ", max_token_budget"
+            _until_at_select = ", until_at"
+            _continuity_col_select = ", continuity"
             rows = await pool.fetch(
                 f"""
                 SELECT id, name, cron, dispatch_mode, prompt, job_name, job_args,
@@ -2416,12 +2254,12 @@ async def tick(
             job_name = row["job_name"]
             job_args = _jsonb_to_dict(row["job_args"], context=f"scheduled_tasks[{name}]")
             task_complexity = _parse_complexity_from_db_row(row)
-            max_token_budget: int | None = row["max_token_budget"] if _has_budget_col else None
-            continuity_enabled: bool = bool(row["continuity"]) if _has_continuity_col else False
+            max_token_budget: int | None = row["max_token_budget"]
+            continuity_enabled: bool = bool(row["continuity"])
 
             # Effective cron timezone: a non-UTC per-row value overrides; the
             # default 'UTC'/NULL sentinel follows the owner's general timezone.
-            # row.get keeps legacy/pre-core_112 rows (no column) tolerant.
+            # A NULL/UTC value retains the owner-timezone sentinel behavior.
             task_timezone = _effective_schedule_timezone(row.get("timezone"), default_timezone)
 
             until_at = row["until_at"]
@@ -2474,8 +2312,10 @@ async def tick(
                     """
                     UPDATE scheduled_tasks
                     SET enabled = false, next_run_at = NULL, updated_at = now()
-                    WHERE id = $1 AND next_run_at IS NOT DISTINCT FROM $2
-                    RETURNING id
+                    WHERE id = $1 AND enabled AND next_run_at IS NOT DISTINCT FROM $2
+                    RETURNING id, dashboard_attention.final_claim(
+                        current_schema(), id, $2
+                    ) AS attention_claim
                     """,
                     task_id,
                     original_next_run_at,
@@ -2505,6 +2345,15 @@ async def tick(
                     "Scheduled task %s has passed until_at (%s); auto-disabling", name, until_at
                 )
 
+            from butlers.core.attention_urgency import AttentionOrigin, _current_origin
+
+            attention_token = _current_origin.set(
+                AttentionOrigin(
+                    namespace=butler_name or stagger_key,
+                    task_id=task_id,
+                    original_next_run_at=original_next_run_at,
+                )
+            )
             result_json: str | None = None
             dispatch_result: Any = None
             try:
@@ -2567,6 +2416,9 @@ async def tick(
                         task_name=name,
                         outcome="failure",
                     )
+
+            finally:
+                _current_origin.reset(attention_token)
 
             # Fire completion hook for prompt-mode tasks (after success or failure).
             # Hooks are butler-specific post-processing (e.g. cache writes).
@@ -2640,6 +2492,7 @@ async def schedule_list(pool: asyncpg.Pool) -> list[dict[str, Any]]:
     return tasks
 
 
+@owner_creation_transaction
 async def schedule_create(
     pool: asyncpg.Pool,
     name: str,
@@ -2818,8 +2671,8 @@ async def schedule_create(
             calendar_event_id,
             next_run_at,
         )
-    except asyncpg.UniqueViolationError:
-        raise ValueError(f"Task name {name!r} already exists")
+    except asyncpg.UniqueViolationError as exc:
+        raise ValueError(f"Task name {name!r} already exists") from exc
     logger.info("Created runtime schedule: %s (%s)", name, task_id)
     return task_id
 
@@ -3023,7 +2876,10 @@ async def schedule_update(
     set_clauses.append("updated_at = now()")
 
     # Single atomic UPDATE statement
-    query = f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1"
+    query = (
+        f"UPDATE scheduled_tasks SET {', '.join(set_clauses)} WHERE id = $1 "
+        "RETURNING dashboard_attention.final_claim(current_schema(), id, NULL)"
+    )
     await pool.execute(query, *params)
 
     logger.info("Updated schedule %s: %s", task_id, list(normalized_fields.keys()))
@@ -3110,6 +2966,11 @@ async def schedule_toggle(
             current_enabled = bool(row["enabled"])
             requested_enabled = enabled
             if current_enabled == requested_enabled:
+                if not requested_enabled:
+                    await conn.fetchval(
+                        "SELECT dashboard_attention.final_claim(current_schema(), $1, NULL)",
+                        task_id,
+                    )
                 observed_next_run_at = row["next_run_at"]
                 changed = False
             else:
@@ -3128,7 +2989,9 @@ async def schedule_toggle(
                     UPDATE scheduled_tasks
                     SET enabled = $2, next_run_at = $3, updated_at = now()
                     WHERE id = $1
-                    RETURNING next_run_at
+                    RETURNING next_run_at, dashboard_attention.final_claim(
+                        current_schema(), id, NULL
+                    ) AS attention_claim
                     """,
                     task_id,
                     requested_enabled,

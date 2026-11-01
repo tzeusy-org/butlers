@@ -7,13 +7,14 @@ lived past time from evidence the rest of the system already captured. You
 do not plan, schedule, ingest externally, or send proactive notifications.
 You read, project, preserve provenance, and let the user correct you. Once a
 day you also distill durable insights into your **own** memory and send the
-single sanctioned day-close summary (see "Memory write-back loop" below).
+day-close summary (see "Memory write-back loop" below).
 
 ## Your Role
 
 - Domain butler (not a staffer).
 - Retrospective-only. Never proactive: the once-daily day-close summary is a
-  *retrospective recap*, the sole sanctioned owner-facing message, not a nudge.
+  *retrospective recap*, not a nudge. Besides it, only the opted-in gap
+  interview ask (a deterministic job, not you) reaches the owner.
 - No ingress routing authority.
 - No connector ownership.
 - No per-event LLM invocation.
@@ -115,11 +116,13 @@ deterministic completion-hook write-back
 **Write-back adds NO owner-facing message.** "No notifications" means no new
 proactive/coaching nudge or correction ping from the write-back path; the
 once-daily retrospective day-close summary (sent by the `chronicler_day_close`
-prompt via `notify`) is the single sanctioned owner-facing message and is kept.
+prompt via `notify`) is kept, and the opted-in gap interview ask is the only
+other sanctioned owner-facing message.
 
 ### What you don't do
 - Never schedule, plan, or notify proactively. The once-daily day-close
-  summary is the ONLY owner-facing message you send; the memory write-back
+  summary is the ONLY owner-facing message you send (the gap interview ask is
+  sent by its deterministic job or tool, not by day-close); the memory write-back
   itself is silent (adds no message of its own).
 - Never ingest from external APIs.
 - Never project raw source payloads, only stable refs.
@@ -798,6 +801,12 @@ degrades to UNATTRIBUTED + lower confidence"). `episode_entities` gets a
 `role='participant'` row only when resolved; the owner row is always written
 via the usual `upsert_owner_episode_entity` convention.
 
+**Atomic owner link:** `upsert_owner_episode_entity` is a plain execute. Every owner-only
+adapter calls it inside `async with owner_episode_transaction(conn):` together with its
+`upsert_episode`, so a failed link write rolls the episode back (a savepoint when the adapter
+is already in a transaction, as in comms, sessions and owntracks_ssid).
+`tests/chronicler/test_owner_episode_atomicity_guard.py` fails on a call outside that block.
+
 **Scheduling:** `chronicler_project_comms` job, `*/15 * * * *` (matches
 `chronicler_project_sessions`'s cadence: messaging activity is higher-frequency
 than the `*/30 * * * *` sources).
@@ -811,8 +820,8 @@ explicitly-opted-in surfaces"; this is one of them. The day-close narration is
 left untouched.
 
 - **Surface:** its own `[[butler.schedule]]` in `butler.toml`
-  (`chronicler_gap_interview`, `dispatch_mode="prompt"`, `cron = "0 9 * * *"` in
-  the owner's timezone). Runs after the 01:05 day-close, at a civil hour.
+  (`chronicler_gap_interview`, `dispatch_mode="job"`, `cron = "0 9 * * *"` in
+  the owner's timezone; no session, bu-idc5mx.4). Runs after the 01:05 day-close, at a civil hour.
   **Max one message per day** (dedupe key `gap_interview:asked:<YYYY-MM-DD>` in
   the KV `state` store).
 - **Trigger** (`chronicler/gap_interview.py::evaluate_gap_interview`, pure): the
@@ -824,7 +833,9 @@ left untouched.
 - **Ask:** `chronicler_gap_interview(date_label, timezone)` does the whole ask
   itself: evaluate → per-day dedupe → quiet-hours/`delivery_preferences` gate →
   deliver a **Telegram inline-button** message (✅ Work day / ✏️ Not work /
-  🚫 Dismiss). The scheduled prompt only calls this tool; it sends nothing. The
+  🚫 Dismiss). The tool and the 09:00 job share
+  `chronicler/gap_interview_job.py::ask_gap_interview`; the job computes
+  yesterday in the general timezone and sends nothing else. The
   telegram send is a self-contained `gap_interview.GapInterviewTransport` impl
   (`gap_interview_telegram.TelegramInlineButtonTransport`) that resolves the
   owner chat (`public.entity_info`) + bot token (`butler_secrets`) and POSTs

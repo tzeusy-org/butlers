@@ -22,7 +22,7 @@ Each message passes through the following stages, instrumented with OpenTelemetr
 
 ## Deduplication Strategies
 
-The dedupe key varies by channel: Telegram uses update IDs, email uses message IDs, API/MCP uses caller idempotency keys, and other channels fall back to a SHA-256 content hash within a 5-minute time bucket. All keys are scoped to the source endpoint identity. Advisory locks (`pg_advisory_xact_lock`) serialize concurrent inserts for the same dedupe key.
+The dedupe key varies by channel: Telegram uses update IDs, email uses message IDs, API/MCP uses caller idempotency keys, and other channels fall back to a SHA-256 content hash within a 5-minute time bucket. The hash is taken over the bearer-scrubbed text, so a stored key never lets a reader recover a withheld one-time code. All keys are scoped to the source endpoint identity. Advisory locks (`pg_advisory_xact_lock`) serialize concurrent inserts for the same dedupe key.
 
 ## Conversation History Loading
 
@@ -54,6 +54,6 @@ The pipeline uses per-task `ContextVar` isolation for routing context, preventin
 ## Related Pages
 
 - [Connector Interface](../connectors/overview.md) -- How connectors submit messages to the pipeline
-- [Metrics Module](metrics.md) -- Butler-level Prometheus integration
+- [Observability](../architecture/observability.md) -- Shared Prometheus query transport
 - [Telegram Module](telegram.md) -- Telegram ingestion feeds the pipeline
 - [Email Module](email.md) -- Email ingestion feeds the pipeline

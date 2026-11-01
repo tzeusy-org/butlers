@@ -62,20 +62,11 @@ class FinanceModule(Module):
         # Set by the daemon or tests; None disables progress reporting.
         self.notify_fn: Any = None
 
-    @property
-    def name(self) -> str:
-        return "finance"
+    name = "finance"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return FinanceModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # finance tables already exist via separate migrations
 
     async def on_startup(
         self,
@@ -84,14 +75,25 @@ class FinanceModule(Module):
         credential_store: Any = None,
         blob_store: Any = None,
     ) -> None:
-        """Store the Database reference and blob store for later pool/storage access."""
+        """Store the Database reference and blob store for later pool/storage access.
+
+        Also resolves the payment-destination fingerprint key once from the shared
+        credential store (``env_fallback=False``); a missing key logs one warning and
+        leaves bill destinations reported as ``unverifiable`` (bu-s11n0s.21).
+        """
         self._db = db
         self.blob_store = blob_store
+        from butlers.tools.finance.payment_destinations import resolve_destination_key
+
+        await resolve_destination_key(credential_store)
 
     async def on_shutdown(self) -> None:
         """Clear state references."""
         self._db = None
         self.blob_store = None
+        from butlers.tools.finance.payment_destinations import configure_destination_key
+
+        configure_destination_key(None)
 
     def _get_pool(self):
         """Return the asyncpg pool, raising if not initialised."""

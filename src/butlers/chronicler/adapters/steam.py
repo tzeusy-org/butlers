@@ -38,6 +38,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -274,24 +275,25 @@ class SteamPlayAdapter(ProjectionAdapter):
         confidence = derive_confidence([EvidenceKind(name="steam_play_history", strong=True)])
 
         async with chronicler_pool.acquire() as conn:
-            episode = await upsert_episode(
-                conn,
-                Episode(
-                    source_name=self.source_name,
-                    source_ref=source_ref,
-                    episode_type=EPISODE_TYPE_PLAY,
-                    start_at=start_at,
-                    end_at=end_at,
-                    precision=Precision.DAY,
-                    title=title,
-                    payload=payload,
-                    privacy=Privacy.NORMAL,
-                    layer=Layer.ACTIVITY,
-                    confidence=confidence,
-                ),
-            )
-            # Write owner row into episode_entities join table (bu-4c1ks).
-            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+            async with owner_episode_transaction(conn):
+                episode = await upsert_episode(
+                    conn,
+                    Episode(
+                        source_name=self.source_name,
+                        source_ref=source_ref,
+                        episode_type=EPISODE_TYPE_PLAY,
+                        start_at=start_at,
+                        end_at=end_at,
+                        precision=Precision.DAY,
+                        title=title,
+                        payload=payload,
+                        privacy=Privacy.NORMAL,
+                        layer=Layer.ACTIVITY,
+                        confidence=confidence,
+                    ),
+                )
+                # Write owner row into episode_entities join table (bu-4c1ks).
+                await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
 

@@ -175,3 +175,20 @@ async def test_open_chat_stream_listener_queues_and_returns_notify_payloads(monk
     await listener.aclose()
     assert fake_conn.removed == [channel]
     assert fake_conn.is_closed()
+
+
+async def test_connection_notify_failure_rolls_back_only_its_savepoint():
+    from unittest.mock import AsyncMock, MagicMock
+
+    import asyncpg
+
+    connection = MagicMock(spec=asyncpg.pool.PoolConnectionProxy)
+    connection.execute = AsyncMock(side_effect=asyncpg.QueryCanceledError("synthetic SQL failure"))
+    outcome = await publish_chat_stream_event(connection, uuid4(), "reply_ready")
+    assert outcome is False
+    connection.transaction.assert_called_once_with()
+    connection.execute.assert_awaited_once()
+    assert (
+        connection.transaction.return_value.__aexit__.await_args.args[0]
+        is asyncpg.QueryCanceledError
+    )

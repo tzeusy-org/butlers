@@ -8,12 +8,9 @@ butler's PostgreSQL schema via asyncpg.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -21,7 +18,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.connectors.home_assistant_statistics import (
     HAStatisticsClient,
     HAStatisticsError,
@@ -29,36 +28,34 @@ from butlers.connectors.home_assistant_statistics import (
 )
 from butlers.credential_store import upsert_owner_entity_info
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
+from butlers.roster_imports import roster_module
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("home_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["home_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("home", "api/models", api_source=__file__)
 
-    AreaResponse = _models.AreaResponse
-    CommandLogEntry = _models.CommandLogEntry
-    EntityStateResponse = _models.EntityStateResponse
-    EntitySummaryResponse = _models.EntitySummaryResponse
-    StatisticsResponse = _models.StatisticsResponse
-    DeviceInventoryEntry = _models.DeviceInventoryEntry
-    DeviceInventoryResponse = _models.DeviceInventoryResponse
-    DevicePaginationMeta = _models.DevicePaginationMeta
-    EnergyDataPoint = _models.EnergyDataPoint
-    TopConsumerEntry = _models.TopConsumerEntry
-    MaintenanceItemResponse = _models.MaintenanceItemResponse
-    MaintenanceItemCreateRequest = _models.MaintenanceItemCreateRequest
-    ThresholdConfig = _models.ThresholdConfig
-    ThresholdUpdateRequest = _models.ThresholdUpdateRequest
-    BatteryThresholds = _models.BatteryThresholds
-    OfflineHoursThresholds = _models.OfflineHoursThresholds
-    ComfortDefaults = _models.ComfortDefaults
-    ComfortDeviation = _models.ComfortDeviation
-    EnergyThresholds = _models.EnergyThresholds
-    AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
-    AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
+AreaResponse = _models.AreaResponse
+CommandLogEntry = _models.CommandLogEntry
+EntityStateResponse = _models.EntityStateResponse
+EntitySummaryResponse = _models.EntitySummaryResponse
+StatisticsResponse = _models.StatisticsResponse
+DeviceInventoryEntry = _models.DeviceInventoryEntry
+DeviceInventoryResponse = _models.DeviceInventoryResponse
+DevicePaginationMeta = _models.DevicePaginationMeta
+EnergyDataPoint = _models.EnergyDataPoint
+TopConsumerEntry = _models.TopConsumerEntry
+MaintenanceItemResponse = _models.MaintenanceItemResponse
+MaintenanceItemCreateRequest = _models.MaintenanceItemCreateRequest
+ThresholdConfig = _models.ThresholdConfig
+ThresholdUpdateRequest = _models.ThresholdUpdateRequest
+BatteryThresholds = _models.BatteryThresholds
+OfflineHoursThresholds = _models.OfflineHoursThresholds
+ComfortDefaults = _models.ComfortDefaults
+ComfortDeviation = _models.ComfortDeviation
+EnergyThresholds = _models.EnergyThresholds
+AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
+AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
+SafetyWatchEntry = _models.SafetyWatchEntry
+SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +81,6 @@ _ENERGY_DATA_STATUS_HEADER = "X-Butlers-Energy-Data-Status"
 _ENERGY_OMITTED_SENSORS_HEADER = "X-Butlers-Omitted-Sensors"
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _pool(db: DatabaseManager):
     """Retrieve the home butler's connection pool.
 
@@ -96,11 +88,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Home butler database is not available",
-        )
+        ) from exc
 
 
 async def _ha_source_available(pool) -> bool:
@@ -133,7 +125,8 @@ async def list_entities(
     area: str | None = Query(None, description="Filter by area_id stored in entity attributes"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[EntitySummaryResponse]:
     """List Home Assistant entities from the snapshot cache.
 
@@ -199,7 +192,8 @@ async def list_entities(
 @router.get("/entities/{entity_id:path}", response_model=EntityStateResponse)
 async def get_entity(
     entity_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> EntityStateResponse:
     """Retrieve full state detail for a single Home Assistant entity.
 
@@ -237,7 +231,8 @@ async def get_entity(
 
 @router.get("/areas", response_model=list[AreaResponse])
 async def list_areas(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[AreaResponse]:
     """List all areas found in the Home Assistant entity snapshot cache.
 
@@ -284,7 +279,8 @@ async def list_command_log(
     domain: str | None = Query(None, description="Filter by HA service domain"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[CommandLogEntry]:
     """Query the Home Assistant command audit log with optional time range and pagination."""
     pool = _pool(db)
@@ -368,7 +364,8 @@ async def list_command_log(
 
 @router.get("/snapshot-status", response_model=StatisticsResponse)
 async def get_snapshot_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> StatisticsResponse:
     """Return entity snapshot freshness and aggregate statistics.
 
@@ -425,7 +422,8 @@ async def list_devices(
     health: str | None = Query(None, description="Filter by health status: 'healthy' or 'offline'"),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     page_size: int = Query(50, ge=1, le=500, description="Items per page"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> DeviceInventoryResponse:
     """List all known HA devices with current state, area, and health status.
 
@@ -582,7 +580,8 @@ async def get_energy(
     period: str = Query("day", description="Aggregation period: 'day' or 'hour'"),
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
     end: str | None = Query(None, description="End date (ISO 8601). Default: now."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[dict[str, Any]]:
     """Return energy consumption time-series data.
 
@@ -601,19 +600,19 @@ async def get_energy(
     if start is not None:
         try:
             start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="Invalid 'start' datetime format. Expected ISO 8601.",
-            )
+            ) from exc
     if end is not None:
         try:
             end_dt = datetime.fromisoformat(end.replace("Z", "+00:00"))
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=422,
                 detail="Invalid 'end' datetime format. Expected ISO 8601.",
-            )
+            ) from exc
 
     if not await _ha_source_available(pool):
         raise HTTPException(status_code=503, detail=_HA_SOURCE_UNAVAILABLE_DETAIL)
@@ -703,7 +702,8 @@ async def get_energy_top_consumers(
     response: Response,
     start: str | None = Query(None, description="Start date (ISO 8601). Default: 7 days ago."),
     end: str | None = Query(None, description="End date (ISO 8601). Default: now."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[dict[str, Any]]:
     """Return the top 10 energy-consuming devices for the given period.
 
@@ -884,7 +884,8 @@ async def list_maintenance(
     status: str | None = Query(
         None, description="Filter by computed status: overdue, due, upcoming, ok"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[dict[str, Any]]:
     """List all maintenance items sorted by next_due_at ascending (NULLs first).
 
@@ -926,7 +927,7 @@ async def list_maintenance(
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     items = [_row_to_maintenance_item(r) for r in rows]
@@ -947,7 +948,8 @@ async def list_maintenance(
 async def create_maintenance_item(
     request: Request,
     body: MaintenanceItemCreateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Create a new maintenance item.
 
@@ -972,12 +974,12 @@ async def create_maintenance_item(
             raise HTTPException(
                 status_code=409,
                 detail=f"Maintenance item with name '{body.name}' already exists",
-            )
+            ) from exc
         if "does not exist" in err_str or "relation" in err_str:
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     if row is None:
@@ -1007,7 +1009,8 @@ async def create_maintenance_item(
 async def complete_maintenance_item(
     item_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Mark a maintenance item as completed.
 
@@ -1033,7 +1036,7 @@ async def complete_maintenance_item(
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     if row is None:
@@ -1063,7 +1066,8 @@ async def complete_maintenance_item(
 async def delete_maintenance_item(
     item_id: UUID,
     request: Request,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> None:
     """Delete a maintenance item.
 
@@ -1082,7 +1086,7 @@ async def delete_maintenance_item(
             raise HTTPException(
                 status_code=503,
                 detail="Maintenance items table not found. Run migrations first.",
-            )
+            ) from exc
         raise
 
     if result is None:
@@ -1174,7 +1178,8 @@ async def _load_thresholds(pool) -> dict[str, Any]:
 
 @router.get("/settings/thresholds")
 async def get_thresholds(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Return the current threshold configuration for all home monitoring jobs.
 
@@ -1195,7 +1200,8 @@ async def get_thresholds(
 async def update_thresholds(
     request: Request,
     body: ThresholdUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Partially update threshold configuration.
 
@@ -1251,7 +1257,7 @@ async def update_thresholds(
             raise HTTPException(
                 status_code=503,
                 detail=f"Failed to persist threshold: {store_key}",
-            )
+            ) from exc
 
     # Merge into current and return
     current.update(update_map)
@@ -1311,7 +1317,8 @@ _ATMOSPHERE_STALE_THRESHOLD = timedelta(hours=2)
 
 @router.get("/atmosphere/current", response_model=AtmosphereCurrentResponse)
 async def get_atmosphere_current(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AtmosphereCurrentResponse:
     """Return current weather/AQI/pollen conditions for the home location.
 
@@ -1400,7 +1407,8 @@ async def get_atmosphere_current(
 async def update_atmosphere_location(
     request: Request,
     body: AtmosphereLocationUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> dict[str, Any]:
     """Set the home location used by the atmosphere context feed.
 
@@ -1429,3 +1437,94 @@ async def update_atmosphere_location(
         request=request,
     )
     return {"latitude": body.latitude, "longitude": body.longitude}
+
+
+# ---------------------------------------------------------------------------
+# /api/home/safety-watch — owner-declared leak/smoke/CO/gas sensors (bu-jv1moa.6)
+# ---------------------------------------------------------------------------
+
+
+def _safety_watch_entry(row: Any) -> SafetyWatchEntry:
+    updated_at = row["updated_at"]
+    return SafetyWatchEntry(
+        entity_id=row["entity_id"],
+        role=row["role"],
+        owner_label=row["owner_label"],
+        updated_at=updated_at.isoformat() if updated_at else None,
+    )
+
+
+@router.get("/safety-watch", response_model=list[SafetyWatchEntry])
+async def list_safety_watch(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> list[SafetyWatchEntry]:
+    """The sensors the safety sentinel watches, as the owner declared them."""
+    rows = await _pool(db).fetch(
+        "SELECT entity_id, role, owner_label, updated_at FROM safety_watch ORDER BY entity_id, role"
+    )
+    return [_safety_watch_entry(row) for row in rows]
+
+
+@router.put("/safety-watch", response_model=SafetyWatchEntry)
+async def upsert_safety_watch(
+    request: Request,
+    body: SafetyWatchUpsertRequest,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> SafetyWatchEntry:
+    """Declare a binary sensor as guarding against a hazard, or relabel it.
+
+    The label is the owner's own wording and is the only name an alert uses; Home Assistant's
+    ``friendly_name`` is never read.  Only ``binary_sensor`` entities are accepted.
+    """
+    row = await _pool(db).fetchrow(
+        "INSERT INTO safety_watch (entity_id, role, owner_label) VALUES ($1, $2, $3) "
+        "ON CONFLICT (entity_id, role) DO UPDATE "
+        "SET owner_label = EXCLUDED.owner_label, updated_at = now() "
+        "RETURNING entity_id, role, owner_label, updated_at",
+        body.entity_id,
+        body.role,
+        body.owner_label,
+    )
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="safety_watch_upsert",
+        method="PUT",
+        path="/api/home/safety-watch",
+        body={"entity_id": body.entity_id, "role": body.role},
+        response_status=200,
+        request=request,
+    )
+    return _safety_watch_entry(row)
+
+
+@router.delete("/safety-watch/{entity_id}/{role}", status_code=204)
+async def delete_safety_watch(
+    request: Request,
+    entity_id: str,
+    role: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: Db,
+) -> Response:
+    """Stop watching a sensor for one hazard; an open condition resolves on the next sweep."""
+    status = await _pool(db).execute(
+        "DELETE FROM safety_watch WHERE entity_id = $1 AND role = $2", entity_id, role
+    )
+    if status == "DELETE 0":
+        raise HTTPException(status_code=404, detail="No such safety watch")
+    await emit_dashboard_audit(
+        db,
+        butler="home",
+        operation="safety_watch_delete",
+        method="DELETE",
+        path="/api/home/safety-watch",
+        body={"entity_id": entity_id, "role": role},
+        response_status=204,
+        request=request,
+    )
+    return Response(status_code=204)

@@ -71,6 +71,12 @@ class Episode(BaseModel):
     last_referenced_at: str | None = None
     expires_at: str | None = None
     metadata: dict = {}
+    # Recovery-safe lifecycle dossier. The error and reason strings are the sanitized
+    # category summaries the consolidator stores; lease columns are never exposed.
+    consolidation_attempts: int = 0
+    last_consolidation_error: str | None = None
+    dead_letter_reason: str | None = None
+    next_consolidation_retry_at: str | None = None
 
 
 class Fact(BaseModel):
@@ -94,6 +100,9 @@ class Fact(BaseModel):
     entity_name: str | None = None
     object_entity_id: str | None = None
     object_entity_name: str | None = None
+    content_authority: str | None = None
+    authority_entity_id: str | None = None
+    authority_entity_name: str | None = None
     validity: str = "active"
     scope: str = "global"
     tenant_id: str = "owner"
@@ -143,6 +152,9 @@ class Rule(BaseModel):
     # came from. ``held`` rules are invisible to sessions until the owner endorses.
     content_authority: str | None = None
     authority_entity_id: str | None = None
+    authority_entity_name: str | None = None
+    endorsed_by: str | None = None
+    endorsed_by_name: str | None = None
     endorsed_at: str | None = None
     held: bool = False
 

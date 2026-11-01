@@ -11,16 +11,17 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
 import uuid
 import warnings
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from importlib.machinery import ModuleSpec
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -100,9 +101,6 @@ def _assert_butlers_resolves_in_tree() -> None:
 
 _assert_butlers_resolves_in_tree()
 
-# Trigger roster module discovery so dynamically-loaded modules
-# are available in sys.modules before test collection.
-from butlers.modules.registry import default_registry as _default_registry  # noqa: E402
 from butlers.testing.shared_fixtures import (  # noqa: E402
     MockSpawner,
     SpawnerResult,
@@ -110,28 +108,6 @@ from butlers.testing.shared_fixtures import (  # noqa: E402
 )
 
 __all__ = ["MockSpawner", "SpawnerResult", "mock_spawner"]
-
-_default_registry()
-
-# Pre-load roster job modules so ``from butlers.jobs._roster.<butler>_jobs``
-# imports work in tests without relying on roster/ being a namespace package
-# on sys.path (which fails in Docker).
-from butlers.jobs._roster_loader import load_roster_jobs as _load_roster_jobs  # noqa: E402
-
-for _butler in ("finance", "health", "relationship", "travel"):
-    try:
-        _load_roster_jobs(_butler)
-    except FileNotFoundError:
-        pass
-
-# Pre-load roster API routers so ``from butlers.api._roster.<butler>.router``
-# and ``from butlers.api._roster.<butler>.models`` work in tests.
-from butlers.api.router_discovery import discover_butler_routers as _discover_routers  # noqa: E402
-
-try:
-    _discover_routers()
-except Exception:
-    pass
 
 
 @pytest.fixture(autouse=True)
@@ -245,6 +221,20 @@ def _restore_approval_hook_runtimes():
     finally:
         _hooks._approval_hooks_by_pool.clear()
         _hooks._approval_hooks_by_pool.update(saved_runtimes)
+
+
+@pytest.fixture(autouse=True)
+def _restore_fact_source_registry(monkeypatch):
+    """Keep a registry that a test's daemon start registers within that test.
+
+    ``ButlerDaemon.start`` registers the process-wide fact source registry, and
+    a leaked one reroutes later pipelines' identity resolution through the
+    owning-role MCP resolver. Capture the actual prior object; teardown restores
+    it without clearing its live reports or replacing it with None.
+    """
+    from butlers.core import fact_authority
+
+    monkeypatch.setattr(fact_authority, "_source_registry", fact_authority.source_registry())
 
 
 if TYPE_CHECKING:
@@ -474,6 +464,15 @@ def _install_serialized_testcontainers_run() -> None:
 
     def _serialized_run(self: object, *args: object, **kwargs: object) -> object:
         with _serialize_testcontainer_startup():
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                from scripts.ci_test_images import IMAGES, prepare
+
+                image = args[0] if args else kwargs.get("image")
+                required = [name for name, pin in IMAGES.items() if image == pin["alias"]]
+                if required:
+                    # Only an actual known container consumer acquires content.
+                    # Ryuk reaches this same boundary under its existing policy.
+                    prepare(required)
             return original_run(self, *args, **kwargs)
 
     _serialized_run.__butlers_serialized_start__ = True
@@ -534,6 +533,48 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     return _DEFAULT_XDIST_AUTO_WORKERS
 
 
+# Docker's default /dev/shm is 64 MB. One session container accumulates hundreds
+# of test databases, and Postgres's dynamic shared memory (the cumulative stats
+# area grows with every relation) outgrew it late in the single-job faketime legs:
+# "could not resize shared memory segment ... No space left on device", then a
+# crash into recovery mode that errored every later DB test (bu-29wkwj.6).
+_POSTGRES_SHM_SIZE = "1g"
+_CONTAINER_FAKETIME_LIBRARY = "/opt/butlers-faketime/libfaketime.so.1"
+
+
+def _configure_postgres_container(container: Any, environ: Mapping[str, str]) -> Any:
+    """Apply the shared Postgres container's options.
+
+    When the pytest process runs under libfaketime (the nightly faketime legs),
+    the container gets the same library and offset, so SQL ``now()`` and Python
+    ``datetime.now()`` stay in agreement. Without it every DB test comparing the
+    two clocks failed by the leg offset unless it carried the ``pg_clock``
+    marker, and new tests kept arriving without one (bu-29wkwj.6).
+
+    The shifted container starts as ``postgres``, not root: libfaketime in the
+    root entrypoint creates its ``/faketime_sem_1`` semaphore as root, and after
+    the entrypoint drops to ``postgres`` it exits on "sem_open failed ...
+    Permission denied" (run 39770283852).
+    """
+    offset = environ.get("FAKETIME")
+    library = next(
+        (
+            path
+            for path in re.split(r"[:\s]+", environ.get("LD_PRELOAD", ""))
+            if os.path.basename(path).startswith("libfaketime")
+        ),
+        None,
+    )
+    if not offset or library is None:
+        return container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE)
+    return (
+        container.with_kwargs(shm_size=_POSTGRES_SHM_SIZE, user="postgres")
+        .with_volume_mapping(library, _CONTAINER_FAKETIME_LIBRARY, mode="ro")
+        .with_env("LD_PRELOAD", _CONTAINER_FAKETIME_LIBRARY)
+        .with_env("FAKETIME", offset)
+    )
+
+
 def _unique_test_db_name() -> str:
     return f"test_{uuid.uuid4().hex[:12]}"
 
@@ -549,7 +590,10 @@ def postgres_container() -> Iterator[PostgresContainer]:
     """
     from testcontainers.postgres import PostgresContainer
 
-    with PostgresContainer("pgvector/pgvector:pg17") as pg:
+    container = _configure_postgres_container(
+        PostgresContainer("pgvector/pgvector:pg17"), os.environ
+    )
+    with container as pg:
         yield pg
 
 
@@ -569,7 +613,14 @@ def provisioned_postgres_pool(
     explicit prefix, or "public" to reproduce a caller whose search_path
     lacks the schema entirely).
     """
-    from butlers.db import Database
+    import asyncpg
+
+    from butlers.db import (
+        Database,
+        register_jsonb_codec,
+        schema_search_path,
+        should_retry_with_ssl_disable,
+    )
 
     @asynccontextmanager
     async def _provision(
@@ -578,9 +629,11 @@ def provisioned_postgres_pool(
         max_pool_size: int = 3,
         schema: str | None = None,
     ) -> AsyncIterator[Pool]:
+        # Validate before provisioning: this scopes administrative test queries,
+        # and does not establish or bypass a runtime role.
+        search_path = schema_search_path(schema)
         db = Database(
             db_name=_unique_test_db_name(),
-            schema=schema,
             host=postgres_container.get_container_host_ip(),
             port=int(postgres_container.get_exposed_port(5432)),
             user=postgres_container.username,
@@ -589,10 +642,45 @@ def provisioned_postgres_pool(
             max_pool_size=max_pool_size,
         )
         await db.provision()
-        pool = await db.connect()
+        pool_kwargs = {
+            "host": db.host,
+            "port": db.port,
+            "user": db.user,
+            "password": db.password,
+            "database": db.db_name,
+            "min_size": min_pool_size,
+            "max_size": max_pool_size,
+            "init": register_jsonb_codec,
+        }
+        if search_path is not None:
+            pool_kwargs["server_settings"] = {"search_path": search_path}
+        if db.ssl is not None:
+            pool_kwargs["ssl"] = db.ssl
+
+        async def _open_pool():
+            # Keep the native pool while initialization is awaited so a failed
+            # or cancelled initialization cannot orphan its owned connections.
+            candidate = asyncpg.create_pool(**pool_kwargs)
+            try:
+                return await candidate
+            except BaseException:
+                candidate.terminate()
+                raise
+
+        try:
+            pool = await _open_pool()
+        except Exception as exc:
+            if not should_retry_with_ssl_disable(exc, db.ssl):
+                raise
+            pool_kwargs["ssl"] = "disable"
+            pool = await _open_pool()
         try:
             yield pool
         finally:
-            await db.close()
+            try:
+                await pool.close()
+            except BaseException:
+                pool.terminate()
+                raise
 
     return _provision

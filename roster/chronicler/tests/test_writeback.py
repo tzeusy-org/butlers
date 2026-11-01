@@ -292,3 +292,138 @@ async def test_fact_writer_binds_chronicler_schema(monkeypatch):
     assert captured["pool"] is sentinel_pool
     assert captured["source_butler"] == SOURCE_BUTLER
     assert captured["source_schema"] == SOURCE_BUTLER
+
+
+async def test_actual_writeback_does_not_turn_absent_or_unavailable_lanes_into_debt(monkeypatch):
+    from datetime import timedelta
+
+    from butlers.chronicler import storage
+    from butlers.chronicler.writeback import run_day_close_writeback
+
+    baseline = [
+        SimpleNamespace(
+            local_date=_DAY - timedelta(days=i),
+            lane="sleep",
+            seconds=28800,
+            episode_count=1,
+            timezone="UTC",
+        )
+        for i in range(1, 15)
+    ]
+    monkeypatch.setattr(storage, "list_daily_rollups", AsyncMock(return_value=[]))
+    monkeypatch.setattr(storage, "list_daily_rollups_range", AsyncMock(return_value=baseline))
+    monkeypatch.setattr(storage, "list_daily_rollup_flags", AsyncMock(return_value=[]))
+    monkeypatch.setattr(storage, "list_daily_rollup_flags_range", AsyncMock(return_value=[]))
+    store = _StoreSpy()
+    await run_day_close_writeback(AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert store.calls == []
+
+    # A supported explicit zero is data; synthetic zero-fill with count0 is not.
+    for count, expected in ((0, False), (1, True)):
+        monkeypatch.setattr(
+            storage,
+            "list_daily_rollups",
+            AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        local_date=_DAY,
+                        lane="sleep",
+                        seconds=0,
+                        episode_count=count,
+                        timezone="UTC",
+                    )
+                ]
+            ),
+        )
+        store = _StoreSpy()
+        await run_day_close_writeback(
+            AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store
+        )
+        assert (PREDICATE_LANE_SKEW in store.predicates) is expected
+
+    # A missing baseline date cannot be compressed into "the last N days".
+    incomplete_baseline = [
+        SimpleNamespace(
+            local_date=row.local_date,
+            lane="sleep",
+            seconds=(18000 if i < 2 else 28800),
+            episode_count=1,
+            timezone="UTC",
+        )
+        for i, row in enumerate(baseline[:-1])
+    ]
+    monkeypatch.setattr(
+        storage, "list_daily_rollups_range", AsyncMock(return_value=incomplete_baseline)
+    )
+    store = _StoreSpy()
+    await run_day_close_writeback(AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert PREDICATE_SLEEP_DEBT not in store.predicates
+
+    monkeypatch.setattr(
+        storage, "list_daily_rollups", AsyncMock(side_effect=OSError("unavailable"))
+    )
+    store = _StoreSpy()
+    await run_day_close_writeback(AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert store.calls == []
+
+
+async def test_actual_writeback_binds_historical_availability_to_each_baseline_date(monkeypatch):
+    from datetime import timedelta
+
+    from butlers.chronicler import storage
+    from butlers.chronicler.aggregations import sources_for_lane
+    from butlers.chronicler.balance import DEFAULT_BASELINE_LOOKBACK_DAYS
+    from butlers.chronicler.writeback import run_day_close_writeback
+
+    baseline = [
+        SimpleNamespace(
+            local_date=_DAY - timedelta(days=i),
+            lane="sleep",
+            seconds=28800,
+            episode_count=1,
+            timezone="UTC",
+        )
+        for i in range(1, DEFAULT_BASELINE_LOOKBACK_DAYS + 1)
+    ]
+    target = SimpleNamespace(
+        local_date=_DAY, lane="sleep", seconds=0, episode_count=1, timezone="UTC"
+    )
+    source = next(iter(sources_for_lane("sleep")))
+    flags = [
+        SimpleNamespace(
+            local_date=row.local_date, flag_type="feeder_dark", detail={"dark_sources": [source]}
+        )
+        for row in baseline
+    ]
+    monkeypatch.setattr(storage, "list_daily_rollups", AsyncMock(return_value=[target]))
+    monkeypatch.setattr(storage, "list_daily_rollups_range", AsyncMock(return_value=baseline))
+    monkeypatch.setattr(storage, "list_daily_rollup_flags", AsyncMock(return_value=[]))
+    history_flags = AsyncMock(return_value=flags)
+    monkeypatch.setattr(storage, "list_daily_rollup_flags_range", history_flags)
+    store = _StoreSpy()
+    await run_day_close_writeback(AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert PREDICATE_LANE_SKEW not in store.predicates
+    assert PREDICATE_SLEEP_DEBT not in store.predicates
+    history_flags.assert_awaited_once()
+    assert history_flags.call_args.kwargs == {
+        "start_date": _DAY - timedelta(days=DEFAULT_BASELINE_LOOKBACK_DAYS),
+        "end_date": _DAY - timedelta(days=1),
+    }
+
+    # One partially unavailable date cannot invalidate every other baseline
+    # sample, nor can it be compressed into a complete consecutive sleep window.
+    history_flags.return_value = flags[:1]
+    baseline[1].seconds = baseline[2].seconds = 18000
+    store = _StoreSpy()
+    await run_day_close_writeback(AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert PREDICATE_LANE_SKEW in store.predicates
+    assert PREDICATE_SLEEP_DEBT not in store.predicates
+    skew = next(c for c in store.calls if c["predicate"] == PREDICATE_LANE_SKEW)
+    assert skew["metadata"]["baseline_seconds"] == sum(row.seconds for row in baseline[1:]) / len(
+        baseline[1:]
+    )
+
+    history_flags.side_effect = OSError("synthetic historical availability read unavailable")
+    store = _StoreSpy()
+    await run_day_close_writeback(AsyncMock(), day_date=_DAY, timezone="UTC", store_fact_fn=store)
+    assert store.calls == []

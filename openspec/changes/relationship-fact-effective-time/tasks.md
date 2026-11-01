@@ -50,3 +50,23 @@
       enforcement over this representation.
 - [ ] 4.2 `bu-1ypjo` defines and implements opt-in `as_of` MCP and REST reads. It must not retrofit an
       implicit effective-now filter onto existing readers.
+
+
+## 5. Contacts composition and future owning repair
+
+- [ ] 5.1 Genuinely qualify this complete current single-carrier paired native preparation and obtain exact ROOT source release. Private drafting/consumer controls are accounted in receipts, not temporal owner acceptance or this future tick.
+- [ ] 5.2 Implement fixed target-owned Contacts report and complete typed normalized owning lookup, preserving old callbacks, authority, candidate/owner gates, local provenance lifetime and context reset.
+- [ ] 5.3 Prove real migrated roles/bootstrap/catalog, denied foreign SQL beside registered owning positive, durable commit/readback/rollback/concurrency and complete channel/lookup/temporal/approval outcomes.
+- [ ] 5.4 Serialize and prove P2 safe warning diagnostics/privacy without weakening unrelated required events or treating it as P1 role repair.
+- [ ] 5.5 After separately earned source/proof and explicit ROOT release, perform supported current full paired native administration with all temporal-owner holds preserved, then distinct resulting-head review/current normal/protected union/actual squash and separate P1/P2 closure accounts. No forced incomplete archive, future ticks or temporal cutover authority.
+
+The original tasks above remain verbatim, including every existing mark, owner acceptance/cutover/real-Postgres hold and separately owned follow-up. Contacts composition does not certify those marks anew.
+
+
+## 6. Existing Registered Tool Surface preserving bookkeeping
+
+- [ ] 6.1 Genuinely qualify and ROOT-adopt this exact complete private current inventory amendment, its reserved existing002 metadata and reversible two-carrier history transfers. Authoring and disposable consumer controls do not tick this future approval.
+- [ ] 6.2 Obtain explicit then-current publication/administration release only after required source and genuine qualification, preserving all prior temporal owner, cutover, SQL, candidate and P1/P2 holds.
+- [ ] 6.3 Deliver applicable exact normal, distinct resulting-head review, full protected union and actual squash; perform supported native application/archive only when separately released and all actual stages are earned.
+
+Every original task and mark remains verbatim above; no owner or Entity activation, SQL or temporal stage is earned by this preparation.

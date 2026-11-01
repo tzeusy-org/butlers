@@ -11,7 +11,9 @@ Helpers: ``_check_write_permission``, ``_clamp_ttl``
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import OrderedDict
+from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
@@ -46,6 +48,62 @@ class ContextEntry:
     expires_at: datetime
     confidence: float
     metadata: dict[str, Any] | None = None
+    # Database-observed MVCC revision, never caller metadata or serialized output.
+    _row_revision: str | None = field(default=None, init=False, repr=False)
+    # Process-local proof, never serialized in metadata or accepted from tools.
+    _producer_proof: object | None = field(default=None, init=False, repr=False, compare=False)
+
+
+_CALENDAR_PROOF = object()
+_CALENDAR_VALUES = {"meeting": "busy", "focused": "focused"}
+# At most two exact producer rows per pool, at most 16 pools. Losing an
+# attestation (restart/eviction/another process) only removes the value from
+# prompts; it never removes the signal or affects suppression.
+_calendar_rows: OrderedDict[Any, dict[str, ContextEntry]] = OrderedDict()
+_CALENDAR_POOL_LIMIT = 16
+
+
+def _entry_from_row(row: Any) -> ContextEntry:
+    entry = ContextEntry(
+        **deepcopy(
+            {
+                name: row[name]
+                for name in (
+                    "signal_type",
+                    "value",
+                    "set_by_butler",
+                    "set_at",
+                    "expires_at",
+                    "confidence",
+                    "metadata",
+                )
+            }
+        )
+    )
+    revision = row.get("producer_revision")
+    if isinstance(revision, str) and revision.isascii() and revision.isdecimal():
+        entry._row_revision = revision
+    return entry
+
+
+async def set_calendar_context(pool: Any, signal_type: str, *, expires_at: datetime) -> None:
+    """The deterministic Calendar writer's fixed, instruction-free projection.
+
+    Only this server callsite requests an atomic returned-row attestation.
+    Stored writer/source strings alone never reconstruct that proof.
+    """
+    if signal_type not in _CALENDAR_VALUES:
+        raise ValueError("invalid calendar context type")
+    await set_context(
+        pool,
+        "general",
+        signal_type,
+        value=_CALENDAR_VALUES[signal_type],
+        expires_at=expires_at,
+        confidence=1.0,
+        metadata={"source": "calendar"},
+        _producer_proof=_CALENDAR_PROOF,
+    )
 
 
 @dataclass(frozen=True)
@@ -297,24 +355,27 @@ async def get_active_context(pool: Any) -> list[ContextEntry]:
     """
     rows = await pool.fetch(
         """
-        SELECT signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata
+        SELECT signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata,
+               xmin::text AS producer_revision
         FROM public.user_context
         WHERE superseded_at IS NULL AND expires_at > now()
         ORDER BY confidence DESC, set_at DESC
         """
     )
-    return [
-        ContextEntry(
-            signal_type=row["signal_type"],
-            value=row["value"],
-            set_by_butler=row["set_by_butler"],
-            set_at=row["set_at"],
-            expires_at=row["expires_at"],
-            confidence=row["confidence"],
-            metadata=row["metadata"],
-        )
-        for row in rows
-    ]
+    entries = [_entry_from_row(row) for row in rows]
+    witnessed = _calendar_rows.get(pool, {})
+    visible = {entry.signal_type for entry in entries}
+    for absent in set(witnessed) - visible:
+        witnessed.pop(absent, None)
+    for entry in entries:
+        previous = witnessed.get(entry.signal_type)
+        if previous == entry and entry.expires_at > datetime.now(UTC):
+            entry._producer_proof = previous
+        elif previous is not None:
+            # Observing a replaced row revokes its old proof, even if a later
+            # write restores the old labels. No resurrection by metadata.
+            witnessed.pop(entry.signal_type, None)
+    return entries
 
 
 async def is_user_in_context(
@@ -370,12 +431,17 @@ async def set_context(
     confidence: float = 1.0,
     metadata: dict[str, Any] | None = None,
     mutation_id: UUID | None = None,
+    _producer_proof: object | None = None,
 ) -> DndMutationReceipt | None:
     """Write or update a context signal.
 
     Validates write permissions and signal vocabulary, clamps the TTL to the
     maximum, then performs an upsert via ``INSERT ... ON CONFLICT DO UPDATE``.
     If the signal was previously superseded, ``superseded_at`` is cleared.
+    ``set_at`` records when the current value began: re-asserting an unchanged,
+    still-active value keeps it (only ``expires_at`` is refreshed), while a changed
+    value, a reactivated superseded row or an expired row restarts it. The insight
+    broker measures its max-hold from ``set_at``, so refreshes must not reset it (bu-r9mlu3).
     DND is the safety-critical exception: it requires a stable action identity
     and is delegated to the database-owned guard/receipt gateway.
 
@@ -413,9 +479,9 @@ async def set_context(
     # Validate signal type against enum vocabulary
     try:
         ContextSignal(signal_type)
-    except ValueError:
+    except ValueError as exc:
         valid = [s.value for s in ContextSignal]
-        raise ValueError(f"Invalid signal type '{signal_type}'. Valid types: {valid}")
+        raise ValueError(f"Invalid signal type '{signal_type}'. Valid types: {valid}") from exc
 
     # Validate confidence range
     if not 0.0 <= confidence <= 1.0:
@@ -448,28 +514,66 @@ async def set_context(
     # Clamp to maximum TTL
     expires_at = _clamp_ttl(signal_type, now, expires_at)
 
-    await pool.execute(
-        """
+    query = """
         INSERT INTO public.user_context
             (signal_type, value, set_by_butler, set_at, expires_at, confidence, metadata,
              superseded_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
         ON CONFLICT (signal_type, set_by_butler) DO UPDATE
             SET value         = EXCLUDED.value,
-                set_at        = EXCLUDED.set_at,
+                -- set_at marks when the signal's current value began. A re-assertion of an
+                -- unchanged, still-active value (not superseded, not expired) keeps it so
+                -- consumers measuring continuous activity (the insight broker's max-hold)
+                -- are not reset by every refresh; expires_at is still refreshed below.
+                set_at        = CASE
+                    WHEN public.user_context.value IS DISTINCT FROM EXCLUDED.value
+                        OR public.user_context.superseded_at IS NOT NULL
+                        OR public.user_context.expires_at <= EXCLUDED.set_at
+                    THEN EXCLUDED.set_at
+                    ELSE public.user_context.set_at
+                END,
                 expires_at    = EXCLUDED.expires_at,
                 confidence    = EXCLUDED.confidence,
                 metadata      = EXCLUDED.metadata,
                 superseded_at = NULL
-        """,
-        signal_type,
-        value,
-        butler_name,
-        now,
-        expires_at,
-        confidence,
-        metadata,
-    )
+        """
+    args = (signal_type, value, butler_name, now, expires_at, confidence, metadata)
+    # Generic/model-mediated assertions invalidate this process's old witness.
+    # Expiry and exact row equality are checked again by read and render.
+    if pool in _calendar_rows:
+        _calendar_rows[pool].pop(signal_type, None)
+    if _producer_proof is _CALENDAR_PROOF:
+        if (
+            butler_name != "general"
+            or _CALENDAR_VALUES.get(signal_type) != value
+            or metadata != {"source": "calendar"}
+            or confidence != 1.0
+        ):
+            raise ValueError("invalid typed calendar assertion")
+        row = await pool.fetchrow(
+            query + " RETURNING signal_type, value, set_by_butler, "
+            "set_at, expires_at, confidence, metadata, xmin::text AS producer_revision",
+            *args,
+        )
+        if row is None:
+            raise RuntimeError("calendar context write returned no row")
+        entry = _entry_from_row(row)
+        if (
+            entry.signal_type != signal_type
+            or entry.value != value
+            or entry.set_by_butler != "general"
+            or entry.expires_at != expires_at
+            or entry.confidence != 1.0
+            or entry.metadata != metadata
+            or entry._row_revision is None
+        ):
+            raise RuntimeError("calendar context write returned an unexpected row")
+        _calendar_rows.setdefault(pool, {})[signal_type] = entry
+        _calendar_rows.move_to_end(pool)
+        while len(_calendar_rows) > _CALENDAR_POOL_LIMIT:
+            _calendar_rows.popitem(last=False)
+    else:
+        await pool.execute(query, *args)
     return None
 
 
@@ -499,6 +603,8 @@ async def clear_context(
         Stable UUID created once for the routed DND clear action. Required only
         for DND.
     """
+    if pool in _calendar_rows:
+        _calendar_rows[pool].pop(signal_type, None)
     if signal_type == ContextSignal.dnd:
         _check_write_permission(butler_name, signal_type)
         return await _mutate_dnd(
@@ -541,9 +647,9 @@ def _confidence_label(confidence: float) -> str:
 def format_context_preamble(signals: list[ContextEntry]) -> str:
     """Format a list of active context signals into an LLM-ready preamble string.
 
-    Format: ``[User Context: <signal_type> (<value>, <label>), ...]``
-
-    When a signal has no value, the format is ``<signal_type> (<label>)``.
+    Only the two fixed Calendar values with an exact, still-live local
+    producer witness render. Legacy, restarted, foreign-pool or evicted rows
+    render type/confidence only; stored writer/source labels are not proof.
     Returns an empty string when *signals* is empty.
 
     Parameters
@@ -561,10 +667,23 @@ def format_context_preamble(signals: list[ContextEntry]) -> str:
 
     parts: list[str] = []
     for entry in signals:
+        try:
+            ContextSignal(entry.signal_type)
+        except ValueError:
+            continue
         label = _confidence_label(entry.confidence)
-        if entry.value is not None:
+        if (
+            any(
+                entry._producer_proof is row and row == entry
+                for rows in _calendar_rows.values()
+                for row in rows.values()
+            )
+            and entry.set_by_butler == "general"
+            and entry.value == _CALENDAR_VALUES.get(entry.signal_type)
+            and entry.expires_at > datetime.now(UTC)
+        ):
             parts.append(f"{entry.signal_type} ({entry.value}, {label})")
         else:
             parts.append(f"{entry.signal_type} ({label})")
 
-    return "[User Context: " + ", ".join(parts) + "]"
+    return "[User Context: " + ", ".join(parts) + "]" if parts else ""

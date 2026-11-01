@@ -15,6 +15,7 @@ import { TONE_COLORS } from "@/components/ui/StateDot";
 import { useUpdateMindMapStatus } from "@/hooks/use-education";
 
 const STATUS_TONE: Record<string, keyof typeof TONE_COLORS> = {
+  draft: "amber",
   active: "green",
   completed: "green",
   abandoned: "neutral",
@@ -28,11 +29,13 @@ function statusBadgeStyle(status: string) {
 interface CurriculumActionsProps {
   mindMapId: string;
   status: string;
+  nodeCount?: number;
 }
 
 export default function CurriculumActions({
   mindMapId,
   status,
+  nodeCount,
 }: CurriculumActionsProps) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingStatus, setPendingStatus] = useState<string | null>(null);
@@ -54,10 +57,10 @@ export default function CurriculumActions({
   return (
     <div className="flex items-center gap-3">
       <Badge variant="outline" style={statusBadgeStyle(status)}>
-        {status}
+        {status === "draft" ? "Setting up" : status}
       </Badge>
 
-      {status === "active" && (
+      {(status === "active" || status === "draft") && (
         <Button
           variant="outline"
           size="sm"
@@ -72,10 +75,20 @@ export default function CurriculumActions({
           variant="outline"
           size="sm"
           onClick={() => handleAction("active")}
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || !nodeCount}
+          title={!nodeCount ? "There are no concepts to return to." : undefined}
         >
           Re-activate
         </Button>
+      )}
+
+      {status === "abandoned" && !nodeCount && (
+        <p className="text-sm text-muted-foreground">There are no concepts to return to.</p>
+      )}
+      {mutation.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {mutation.error instanceof Error ? mutation.error.message : "Could not change curriculum status."}
+        </p>
       )}
 
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>

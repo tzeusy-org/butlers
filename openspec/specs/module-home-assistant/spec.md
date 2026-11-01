@@ -230,6 +230,47 @@ The tool SHALL return state history for entities over a time window from HA's re
 - **WHEN** `ha_get_history` is called without `entity_ids`
 - **THEN** the tool SHALL raise `ValueError` (unbounded history queries are prohibitively expensive)
 
+### Requirement: Durable Recorded State History
+
+The read-only `ha_get_recorded_history(entity_ids, start, end=None, limit=500,
+include_attributes=false)` tool SHALL read `connectors.home_assistant_history`
+without contacting Home Assistant or changing the live `ha_get_history` tool.
+It SHALL return only named entities, ordered by `recorded_at` ascending then
+`id` ascending, with `entity_id`, nullable `state`, and `recorded_at`.
+Attributes SHALL be omitted unless explicitly requested. The positive window
+SHALL use timezone-aware ISO 8601 timestamps, include `start`, exclude `end`,
+and span at most 31 days; an omitted `end` SHALL mean now. The limit SHALL be
+an integer from 1 through 2000. The Home runtime role SHALL receive only the
+explicit per-table SELECT grant needed for this read.
+
+#### Scenario: Named stored transitions have bounded ordering and freshness
+
+- **WHEN** a valid bounded query names entities with stored transitions
+- **THEN** the tool SHALL return `status=ok`, ordered `transitions`, and `truncated=false` when no additional row exists beyond the limit
+- **AND** source freshness SHALL report `last_success_at` from `ha_source_health`, using PostgreSQL's clock to classify a successful contact within five minutes as `healthy` and an expired healthy lease as `stale`
+- **AND** an absent health row or successful-contact timestamp SHALL be `unknown`, never an invented healthy verdict
+- **AND** freshness SHALL describe last confirmed HA contact, not prove gap-free history or absence of activity
+
+#### Scenario: HA outage does not hide stored history
+
+- **WHEN** `ha_source_health` reports `error` while the durable table is readable
+- **THEN** the tool SHALL still return stored transitions with source status `error` and the last successful contact, including a null value when no success was recorded
+- **AND** it SHALL NOT call HA or suppress the transitions because HA is unreachable
+
+#### Scenario: Invalid bounds are refused and additional rows signal truncation
+
+- **WHEN** entity IDs are empty or invalid, timestamps are malformed or lack timezones, the window is non-positive or exceeds 31 days, or the limit is outside 1 through 2000
+- **THEN** the tool SHALL refuse the query with `ValueError` before reading storage
+- **WHEN** more stored transitions match than the requested limit
+- **THEN** it SHALL return only that limit and set `truncated=true`, using a bounded extra-row probe
+
+#### Scenario: Missing storage or read authority is unavailable rather than empty
+
+- **WHEN** a required table is missing, SELECT permission is denied, or the database connection is unavailable
+- **THEN** the tool SHALL return a typed `status=unavailable` with reason `missing_table`, `permission_denied`, or `database_unavailable` respectively, without a `transitions` list or private exception details
+- **WHEN** storage is readable but no transition matches
+- **THEN** it SHALL return `status=ok` with an empty list and truthful source freshness
+
 ### Requirement: Query Tool — ha_get_statistics
 
 The tool SHALL return aggregated hourly/daily statistics for sensor entities from HA's recorder.
@@ -269,6 +310,7 @@ The tool SHALL provide a generic service call supporting any HA domain, service,
 #### Scenario: Service call with area target
 
 - **WHEN** `target` includes `area_id`
+- **AND** the authenticated owner has approved that exact stored command and the original handler is executing with matching server-derived approval lineage
 - **THEN** the service call SHALL be issued with the area_id in the target (HA resolves to entities)
 
 #### Scenario: Service call error
@@ -296,6 +338,51 @@ MUST execute only through the approvals executor's server-derived lineage.
 - **WHEN** an authenticated owner approves the parked action
 - **THEN** the approvals executor SHALL bind the action id, originating session id, and decided-by actor while invoking the original Home Assistant handler
 - **AND** the handler SHALL perform one new, independently receipted actuation attempt
+
+#### Scenario: Argument-aware execution uses the complete target and data contract
+
+- **WHEN** Home evaluates a service invocation for physical execution
+- **THEN** the following automatic-risk and exact-command conditions SHALL apply before that request can leave the process
+
+Automatic execution of a base `reversible` call additionally MUST require a nonempty explicit `entity_id` string or list, no other target key, and complete canonical same-domain entity tokens. Area, device, label, all, malformed, mixed-domain, absent and empty targets MUST instead be treated as `consequential`. The base service map MUST remain unchanged; no protected or unknown pair may be downgraded. Explicit read-back extraction MUST accept only entity-only targets whose entire nonempty string/list consists of canonical entity tokens; bulk, extra-selector, empty or malformed forms MUST yield no inferred or partial entity set, including the pseudo-id all.
+
+Data for automatic reversible execution MUST satisfy the repository-owned per-service key/type/bounds subset: `light.turn_on` permits brightness(integer0..255), brightness_pct(finite number0..100), color_temp_kelvin(integer1000..10000), rgb_color(list of3 integers0..255), and transition(finite number0..60seconds); `light.turn_off` permits transition only; switch/fan/humidifier turn_on/turn_off permit no data keys. Booleans SHALL NOT count as numbers. Simultaneous brightness+brightness_pct or rgb_color+color_temp_kelvin SHALL require approval. Unknown keys, typed/range violations and selector keys entity_id/area_id/device_id/label_id/target in data MUST promote to consequential rather than be dropped or normalized.
+
+`climate.set_temperature` automatic execution MUST contain temperature only, a finite non-boolean number within inclusive16..28C or equivalent60.8..82.4F. Every target MUST have a consistent recognized existing module-cache attributes.temperature_unit of C/°C or F/°F. Missing, mixed or unknown unit context, missing temperature, out-of-range values and range/mode keys require approval. The handler MUST NOT guess Celsius, convert the request or contact HA to discover units before this gate. These constants define the conservative automatic subset, not a claim about HA's complete schema or an owner preference profile.
+
+One detached strict JSON argument snapshot MUST bind classification, approval digest, parked arguments, outgoing payload and receipt. Non-object target/data, non-string JSON object keys, nonfinite/cyclic/non-JSON values and string leaves or object keys containing NUL or surrogate code points MUST be refused before persistence or physical dispatch without string/NULL coercion. Representable strings MUST remain exact, including Unicode scalar values and ordinary JSON control characters. Valid-JSON unsafe calls MUST park with exact original arguments and bounded owner-visible categorical reasons, including canonical unknown key names without values. No new target/data value may appear in generic logs or shared events. At physical dispatch, simultaneous explicit target and any data-carried selector MUST be refused as ambiguous rather than silently merged or dropped, even under approval; the owner may create a new unambiguous action. Exact approved data-only selector calls remain supported when target is absent and preserve honest unverified semantics.
+
+#### Scenario: Broad reversible target is parked
+
+- **WHEN** a base reversible call names an area, device, label, all, empty, malformed, mixed-domain or non-explicit target
+- **THEN** effective risk SHALL be consequential and a pending approval SHALL retain its exact original arguments and categorical reason
+- **AND** no HA request SHALL be sent before exact owner-approved execution
+
+#### Scenario: Data cannot bypass explicit target and data-key conditions
+
+- **WHEN** a base reversible call carries a selector, unlisted data key, wrong typed/ranged value or conflicting automatic parameters
+- **THEN** it SHALL park before any HA request without dropping or coercing the data
+- **AND** approved execution with both explicit target and data selector SHALL refuse an ambiguous payload without issuing a physical attempt
+
+#### Scenario: Allowed explicit reversible call remains automatic
+
+- **WHEN** light.turn_on names light.kitchen with brightness_pct80 and no extra selector or invalid parameter
+- **THEN** it SHALL retain reversible risk and the existing independently receipted live-verification path without approval
+- **AND** all other automatic reversible calls SHALL satisfy the same complete target and their service-specific data constraints
+
+#### Scenario: Climate comfort checks retain unit meaning
+
+- **WHEN** a climate temperature is outside the inclusive known-unit comfort range, has boolean/string type, or its target unit is missing, inconsistent or unknown
+- **THEN** it SHALL park with the categorical reason without assuming Celsius or converting the payload
+- **AND** exact known-unit inclusive-boundary temperature-only requests MAY remain reversible subject to the existing receipt verifier
+
+#### Scenario: Promoted approved bulk replay remains exact and once-only
+
+- **WHEN** the authenticated owner approves an unambiguous parked area/device/all call
+- **THEN** the original handler SHALL send its exact stored command once through the existing executor task/tool/argument binding and receipt fence
+- **AND** repeat/concurrent dispatch under the same approval SHALL NOT resend after a possible effect
+- **AND** lack of explicit observable targets SHALL settle unverified and require reconciliation rather than claim success
+- **AND** receipt/approval unavailability or failure SHALL never authorize a physical request
 
 ### Requirement: Honest Actuation Receipts
 
@@ -426,7 +513,7 @@ The module SHALL declare approval sensitivity for control tools via `tool_metada
 #### Scenario: Query tools not declared
 
 - **WHEN** `tool_metadata()` is called
-- **THEN** no entries SHALL exist for `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, or `ha_render_template`
+- **THEN** no entries SHALL exist for `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_recorded_history`, `ha_get_statistics`, or `ha_render_template`
 
 ### Requirement: Module Identity and Dependencies
 
@@ -441,17 +528,17 @@ The module SHALL register under the name `home_assistant` with a dependency on `
 
 ### Requirement: Tool Registration
 
-The module SHALL register up to 13 MCP tools during `register_tools()`: 9 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
+The module SHALL register up to 14 MCP tools during `register_tools()`: 10 Home Assistant control/query tools plus 4 maintenance tools. Mutation tools are skipped when `read_only = true`.
 
 #### Scenario: Tool inventory
 
 - **WHEN** `register_tools(mcp, config, db)` is called with `read_only = false` (default)
-- **THEN** the following tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`, `ha_maintenance_list`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove`
+- **THEN** the following tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_recorded_history`, `ha_get_statistics`, `ha_render_template`, `ha_call_service`, `ha_activate_scene`, `ha_maintenance_list`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove`
 
 #### Scenario: Read-only tool inventory
 
 - **WHEN** `register_tools(mcp, config, db)` is called with `read_only = true`
-- **THEN** only the query tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_statistics`, `ha_render_template`, `ha_maintenance_list`
+- **THEN** only the query tools SHALL be registered: `ha_get_entity_state`, `ha_list_entities`, `ha_list_areas`, `ha_list_services`, `ha_get_history`, `ha_get_recorded_history`, `ha_get_statistics`, `ha_render_template`, `ha_maintenance_list`
 - **AND** the mutation tools `ha_call_service`, `ha_activate_scene`, `ha_maintenance_create`, `ha_maintenance_complete`, `ha_maintenance_remove` SHALL NOT be registered
 
 ### Requirement: Maintenance Tool Suite

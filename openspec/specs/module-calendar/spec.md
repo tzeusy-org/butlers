@@ -67,7 +67,13 @@ Configuration SHALL be declared under `[modules.calendar]` in `butler.toml` with
 
 ### Requirement: Calendar Event CRUD Tools
 
-The module registers 22 MCP tools total. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Attendee Management Tools (2: `calendar_add_attendees`, `calendar_remove_attendees`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
+The module SHALL register 20 MCP tools before conditional invitation-response and historical-fence tools are added under their own requirements. The core CRUD tools are: `calendar_list_events`, `calendar_get_event`, `calendar_create_event`, `calendar_update_event`, `calendar_delete_event`, the occurrence-targeted `calendar_update_event_instance`, `calendar_delete_event_instance`, and the read/utility tools `calendar_find_free_slots` and `calendar_list_calendars`. The remaining tools are enumerated by the Butler Event Management Tools (4: `calendar_create_butler_event`, `calendar_update_butler_event`, `calendar_delete_butler_event`, `calendar_toggle_butler_event`), Reminder Tools (3: `reminder_create`, `reminder_list`, `reminder_dismiss`), and Calendar Sync Tools (3: `calendar_sync_status`, `calendar_force_sync`, `calendar_set_primary`) requirements below, plus the `calendar_propose_event` producer (behavior specified by the `calendar-event-proposals` capability). Butler-authored events SHALL default to the dedicated "Butlers" calendar when no explicit `calendar_id` is given; the user's own events SHALL be edited in place on whichever calendar they live on, resolved by event id. A caller MAY pass an explicit `calendar_id` to target a specific calendar; the available `calendar_id` values SHALL be enumerated by the read-only `calendar_list_calendars` source-listing tool (see the Calendar Source Listing Tool requirement).
+
+The retired `attendees` group SHALL register no tools, including when explicitly requested. The standalone `calendar_add_attendees` and `calendar_remove_attendees` tools SHALL NOT be registered. Event attendee fields, attendee arguments on retained create/update tools and approval-bound self invitation responses retain their separate contracts.
+
+ID: REQ-module-calendar-031
+Source: accepted bu-qozovd.1 slice 1 design and unchanged AC5
+Scope: v1-mandatory
 
 #### Scenario: List events with time window
 
@@ -272,23 +278,6 @@ The module registers MCP tools for managing butler-owned workspace events (sched
 - **WHEN** `calendar_toggle_butler_event` is called with an event ID and enabled flag
 - **THEN** the butler event is paused or resumed without deletion
 - **AND** high-impact mutations require approval gate
-
-### Requirement: Attendee Management Tools
-
-The module SHALL register MCP tools for managing event attendees: `calendar_add_attendees` and `calendar_remove_attendees`.
-
-#### Scenario: Add attendees to event
-
-- **WHEN** `calendar_add_attendees` is called with an event ID and list of email addresses
-- **THEN** attendees are added to the event with deduplication
-- **AND** notification policy controls whether attendees are notified
-- **AND** provider failures return a fail-closed structured error
-
-#### Scenario: Remove attendees from event
-
-- **WHEN** `calendar_remove_attendees` is called with an event ID and list of email addresses
-- **THEN** matching attendees are removed (case-insensitive email match)
-- **AND** cancellation notifications follow the send_updates policy
 
 ### Requirement: Google OAuth and Rate Limiting
 
@@ -579,6 +568,12 @@ The dashboard SHALL provide a page at `/butlers/calendar` with a view toggle bet
   source's staleness (e.g. "Last synced Apr 7 — 96 days ago") with a
   "Sync now" action wired to the existing sync mutation
 - **AND** the clause is absent (quiet) when every enabled source is fresh
+- **AND** only provider sources count: each connected source carries
+  `sync_applicable` (true only for `source_kind = provider_event`), and an
+  internal source (schedules, reminders) is excluded from the worst-of because
+  it is projected locally and never gets a sync cursor — its null
+  `last_synced_at` is normal, not "Never synced" (same rule as the sync
+  deadman)
 
 #### Scenario: Freshness plaque never silently reads as fresh
 
@@ -761,6 +756,12 @@ undo endpoint SHALL pass the nullable `all_day` truth through the inverse
 `calendar_update_event` or `calendar_create_event` payload without an extra
 provider read.
 
+**Amendment (bu-q11586.7, owner decision bu-kf3n4i = A).** The dashboard undo
+endpoint (`POST /api/calendar/workspace/undo/{action_id}`) no longer exists. The
+module's pre-state capture and the calendar MCP tools are unchanged: the captured
+pre-image stays in `action_result` as audit evidence and for any future inverse
+caller, but no dashboard route consumes it.
+
 #### Scenario: All-day pre-state round-trips through undo
 
 - **WHEN** an applied user-lane update or delete has a captured pre-state with
@@ -901,6 +902,150 @@ existing fail-open behavior when projection tables are unavailable.
 - **WHEN** `calendar_force_sync` is called without `queue=true`
 - **THEN** it retains the existing inline incremental/full behavior and response fields
 - **AND** queued-command processing does not require the normal sync poller to be enabled
+
+### Requirement: Explicit Provider Invitation Status Provenance
+
+Calendar provider projection SHALL distinguish a provider-supplied valid RSVP
+from the AttendeeInfo default, without changing existing tool defaults, declined
+or transparency radar behavior, recurrence expansion, or provider write authority.
+
+ID: REQ-module-calendar-028
+Source: bu-q7vx1q.17; explicit-status preserving adjudication; Non-Negotiable Rules 1 and 7; RFC 0006
+Scope: v1-mandatory
+
+#### Scenario: Explicit status survives the provider projection
+- **WHEN** a provider attendee carries a valid explicit responseStatus
+- **THEN** projection retains the exact normalized response_status and a literal true response_status_explicit marker
+- **AND** self and organizer remain actual provider-copy flags
+- **AND** existing projected attendees stay exactly equal to the unchanged tool payloads; a separate ordered attendee_status_provenance companion binds each marker to its exact email and normalized status
+
+#### Scenario: Default and malformed statuses remain unknown
+- **WHEN** a provider attendee omits responseStatus or supplies a malformed value
+- **THEN** AttendeeInfo and tool payload defaults remain compatible
+- **AND** projected response_status_explicit is false, so no unanswered invitation can be inferred from the default
+
+#### Scenario: Legacy projection is never restamped by a read
+- **WHEN** a legacy projected needsAction attendee lacks explicit-status provenance
+- **THEN** the invitation read omits that ambiguous candidate and reports admission unavailable
+- **AND** no provider request, backfill, RSVP write or projection rewrite is performed
+
+### Requirement: Approval-Bound Self Invitation Response
+
+The Calendar module SHALL expose occurrence-only calendar_respond through its actual server approval gate and shared owning executor. It MUST prepare one immutable source/account/self/occurrence/version command before approval, claim at most one write attempt durably, preserve all other event fields, and expose honest noop, rejection, uncertainty, confirmed receipt and guarded self-only inverse outcomes. Missing capability or target proof MUST refuse before effect; no caller assertion, generic retry, provider-read inference or new request key may bypass a started unresolved command.
+For this dedicated response write only, this requirement SHALL narrow the existing Google OAuth and Rate Limiting rate-limit retry scenario: a started participant-response request MUST NOT be retried, including after 401, 429 or 503. Readiness and token refresh precede its write-start claim; all existing operations retain their current OAuth, retry and error-redaction behavior.
+
+ID: REQ-module-calendar-029
+Source: bu-q7vx1q.18 original AC1-4; bu-q7vx1q.3 consequential-write posture; heart-and-soul/security.md Approval Gates; RFC0023 authority separation; design.md
+Scope: v1-mandatory
+
+#### Scenario: Exact self participant response preserves the event
+
+- **WHEN** an approved response targets a verified configured self attendee on an eligible exact occurrence
+- **THEN** only that attendee response is changed by one conditional participant-only write
+- **AND** organizer, every other attendee, title/time and recurrence remain unchanged
+- **AND** send_updates is the exact approved choice, default none
+
+#### Scenario: Ambiguous or ineligible response targets cause no write
+
+- **WHEN** self/account/source/ownership or occurrence is missing, ambiguous, cancelled, read-only, foreign or a series root
+- **THEN** the command is refused before any provider write
+- **AND** legacy normalized response status does not supply explicit provider truth
+- **AND** existing provider/tool read defaults remain unchanged
+
+#### Scenario: Same response is a no-op
+
+- **WHEN** the exact current self response already equals the approved choice
+- **THEN** execution returns noop with zero writes
+- **AND** no applied inverse is created
+
+#### Scenario: Unapproved autonomous response is parked
+
+- **WHEN** an autonomous session invokes the registered response without the exact approved executor context
+- **THEN** the real gate prepares and parks one canonical command without provider write
+- **AND** caller actor, recipient, approval-id or bypass flags cannot authorize it
+- **AND** an outbound-owner exemption or standing rule cannot supply the missing exact decision
+
+#### Scenario: Unavailable capability fails closed
+
+- **WHEN** the owning daemon lacks the registered canonical preparer, enabled approval gate, executor or verified eligible source
+- **THEN** response is unavailable and performs no provider effect
+- **AND** another butler capability cannot be substituted
+
+#### Scenario: Approved replay is bound to one task and command
+
+- **WHEN** dispatch uses the owning action and exact persisted tool args
+- **THEN** only the executor task with the matching immutable command binding can execute
+- **AND** wrong owner/tool/args and inherited child context refuse
+
+#### Scenario: Concurrent requests share one atomic command
+
+- **WHEN** concurrent calls use the same request key and full command digest
+- **THEN** one owning command and one pending action are admitted
+- **AND** identical replays return that outcome
+- **AND** changed digest is refused without replacing its target or approval
+
+#### Scenario: Post-start uncertainty never resends
+
+- **WHEN** timeout, cancellation, restart or disconnect follows a committed write-start marker
+- **THEN** the attempt remains uncertain with no applied success receipt or inverse
+- **AND** same or replacement request cannot dispatch a second write for that unresolved target
+- **AND** current-status readback alone cannot attribute the prior effect or clear the fence
+
+#### Scenario: Physical response fencing spans owning schemas
+
+- **WHEN** the same provider/account/calendar/self/occurrence is projected by multiple response-capable butlers
+- **THEN** an unresolved write-start marker in any historical owner prevents a replacement provider attempt through every owner
+- **AND** each command, approval and marker remains in its original owner's schema, with content-blind evidence exchanged only through Switchboard MCP routing
+- **AND** missing, incompatible or unreachable historical owner evidence never counts as clear; disabling execution does not waive probing retained fence evidence
+- **AND** claims prove one shared database lock space, serialize target admission, check all historical owners and commit the owning marker before releasing serialization
+- **AND** coordination has dedicated bounded capacity and a finite deadline so reciprocal probes do not depend on a peer's held work-pool connection
+- **AND** pre-start refusal preserves the command; retry must re-read its durable phase and cannot replace a marker whose commit is uncertain
+
+#### Scenario: Provider rejection preserves honest failure
+
+- **WHEN** a provider explicitly rejects the one conditional request including an ETag conflict
+- **THEN** failure audit is retained without an applied receipt or usable inverse
+- **AND** no write retry occurs
+- **AND** projection/UI do not fabricate a responded status
+
+#### Scenario: Confirmed provider effect survives projection failure
+
+- **WHEN** the original provider response verifies the exact target effect but projection persistence fails
+- **THEN** the applied provider receipt reports projection unavailable
+- **AND** the action is not labelled rolled back and is not resent
+
+#### Scenario: Restart and retention preserve non-reacceptance
+
+- **WHEN** an unresolved started response outlives a request task or ordinary receipt-detail retention
+- **THEN** durable owning evidence or a safe compacted fence prevents a duplicate attempt
+- **AND** no elapsed deadline, guessed update sequence or detached periodic resend supplies authority
+
+#### Scenario: Guarded inverse restores only the previous self response
+
+- **WHEN** the applied receipt has retained prior self status and exact unchanged post-status/version
+- **THEN** a newly approved single-use inverse restores only that self status including server-recorded needsAction
+- **AND** all other event fields are preserved
+- **AND** unknown, failed, stale, repeated or missing pre-state requests cause zero write
+
+### Requirement: Calendar Write Permission Availability
+
+Existing `calendar.write`-guarded CRUD, recurrence-scoped mutation and programmatic `create_user_event` paths SHALL refuse unavailable permission state before provider mutations or workspace idempotency preparation. This requirement refines Calendar Event CRUD Tools, Programmatic Butler-Authored Event Creation and Recurrence-Scoped Occurrence Mutation; it does not add permission gates to other operations or alter approval requirements.
+
+#### Scenario: Readable permission state
+- **WHEN** a guarded calendar operation reads no permission row or `granted=true`
+- **THEN** it MAY proceed through its existing validation, approval and idempotency path
+- **AND** an explicit `granted=false` row SHALL continue to refuse the operation
+
+#### Scenario: Unavailable permission state
+- **WHEN** the permission pool is missing, the lookup fails, or its row is malformed
+- **THEN** create, update, delete, occurrence mutations and `create_user_event` SHALL raise a typed transient permission-unavailable error before provider mutations or workspace mutation preparation
+- **AND** no applied mutation receipt SHALL be created by that refusal
+- **AND** availability errors and gate logs SHALL exclude effect content, row reasons and raw database exception text
+
+#### Scenario: Fresh execution after recovery
+- **WHEN** a caller retries or deferred execution resumes after permission-store recovery
+- **THEN** the guarded path SHALL read current permission state again
+- **AND** existing request-id idempotency and approval behavior SHALL remain in force
 
 ## Source References
 

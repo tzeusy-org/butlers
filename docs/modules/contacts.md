@@ -40,11 +40,15 @@ providers = [
 include_other_contacts = false
 
 [modules.contacts.sync]
-enabled = true
+enabled = true        # default false; only the Relationship butler sets true
 run_on_startup = true
 interval_minutes = 15
 full_sync_interval_days = 6
 ```
+
+Sync is off unless `sync.enabled = true`. Only the Relationship butler enables it, because it owns
+entities and sync takes no cross-process lock; every other butler's `butler.toml` sets
+`enabled = false` explicitly, and a roster test pins that exactly one butler syncs.
 
 Exactly one of `provider` (single) or `providers` (multi) must be specified. Multiple entries of the same type require distinct `account` fields.
 
@@ -83,8 +87,8 @@ Relationship butler respectively.
 
 ## Rollout
 
-Enabled butlers are those with a `[modules.contacts]` table in `roster/*/butler.toml`. The
-Switchboard (routing plane) and Messenger (delivery plane) intentionally omit it.
+Butlers with a `[modules.contacts]` table in `roster/*/butler.toml` load the module, but only
+Relationship runs the sync poller. The Switchboard (routing plane) and Messenger (delivery plane) intentionally omit it.
 
 ### Credentials
 
@@ -105,6 +109,35 @@ None. The contacts module is a leaf module.
   (`ContactsSyncRuntime`; `trigger_immediate_sync()` is the poller trigger).
 - Rollout: `[modules.contacts]` with `provider = "google"` on general, health and relationship;
   deliberately absent from switchboard (routing plane) and messenger (delivery plane).
+- Telegram absence detection is part of the shared sync engine's completion path, so polling and
+  `contacts_sync_now` use the same guard before successful state persistence. It requires an explicit
+  complete-full-fetch receipt after all pages and local contact applications finish. Incremental sync
+  never infers absence, including an empty unchanged-hash result; the current Telegram incremental
+  implementation still returns the full list even when its hash is unchanged.
+- A full empty list refuses deletion even if its hash matches. A removed fraction strictly greater than
+  half also refuses, where removed is the set of pre-cycle active Telegram links absent from the
+  snapshot, `|active - present| / |active|`, so contacts added in the same snapshot cannot offset
+  removals; an empty active set deletes nothing. `max_shrink_fraction` defaults to `0.5`, is finite in
+  `[0, 1)`, and accepts equality. This allows ordinary individual removals while parking substantial
+  list loss; it is an implementation sanity parameter, not permission to delete entities or facts.
+  Refusals log `contact_sync_absence_refused` with a bounded reason and counts. Safe positive work
+  and an otherwise successful cursor may persist when only absence inference is refused.
+- A reappearing Telegram contact whose inactive local anchor entity was merged away or deleted fails
+  closed every cycle until an operator repairs the link. The failed cycle records the content-free
+  `contacts_sync_state.last_error` value `contacts source anchor unavailable` (instead of the generic
+  `contacts sync failed`) and logs `contact_sync_anchor_stalled` with a bounded reason, no ids.
+- Accepted absence marks only the configured account's active Telegram source links, preserving
+  entities, Telegram handles and Google/other-provider links. `contact_sync_deleted_source` records
+  new transitions after commit. Absence changes, affected version-cache eviction and successful
+  cursor/state save share one hosting transaction. Earlier per-contact positive commits survive a
+  later failure and are replayable; remote owner calls remain outside that transaction. Ordinary
+  logs are not a durable outbox and do not promise exactly-once emission after a crash.
+- Same-account manual/poll cycles serialize. Persistent state and absent-source baseline checks
+  refuse stale competing-engine finalization or links seen again during a fetch. Other accounts
+  progress independently. Reappearance bypasses an unchanged etag/fingerprint cache when its exact
+  source anchor is inactive, retains that still-live entity anchor and uses the existing upsert to
+  clear `deleted_at`; inactive links do not become generally routable. No schema/grant change or
+  automatic retry is introduced. See the canonical [completeness guard](../../openspec/specs/module-contacts/spec.md).
 - Backfill never auto-merges an ambiguous name match. A provider overwrites only the fields it owns
   in the provenance map; locally edited fields are preserved.
 - Migration `contacts_001` adds the `contacts_source_links.local_contact_id` FK only when
@@ -115,3 +148,37 @@ None. The contacts module is a leaf module.
 
 - [Module System](module-system.md)
 - [Identity Model](../concepts/identity-model.md) -- entity anchor, channel facts, resolution
+
+
+### Relationship ownership and bounded channel diagnostics
+
+Contacts keeps entity/profile/source-link work on its hosting pool. Channel reads
+and reports use the daemon's configured Switchboard client, a fixed Relationship
+destination, and the registered `contacts_resolve_channel` / `contacts_report_channel`
+operations in the production-enabled `contacts_ingress` group. Existing explicitly
+selected legacy groups keep their original members. The target uses its ordinary pool and the existing central writer,
+selecting `contacts-backfill` and a fresh third-party report itself. Subject UUIDs,
+provider locators and transport trace context supply no owner or approval authority.
+No foreign SQL fallback, extra grant, role switch or automatic retry is added.
+
+Source-link matching remains first. Email uses strip/lower normalization; phones
+retain the stripped exact and digits/plus alternatives. Only a completed empty
+owning lookup permits fallback to the next channel or local name/new-person path.
+Ambiguous matches refuse automatic merge, and unavailable or malformed responses
+leave the contact apply incomplete. Initial startup before runtime transport is
+wired follows the same unavailable rule. Generic identity resolution is unchanged.
+
+An applied contact counts local entity/source-link processing, not active channel
+facts. Candidate and pending-approval channel results remain explicitly incomplete
+and retain the central writer's ordinary adoption/decision rules. A timeout after
+a possible remote commit is uncertain; ordinary later replay uses the same central
+idempotency rules. Child calls remain outside the local provenance transaction;
+there is no distributed atomicity promise.
+
+Channel failures emit `contacts_channel_report_failed` with only entity UUID and
+internally selected channel type/predicate. They omit values, exception strings,
+tracebacks, chains, payloads and arbitrary failure-class labels. Failed entries
+continue to the next channel and restore temporary report context. Unrelated
+mandatory CRM sync events retain their existing fields. Historical rollout cause
+and historical log exposure remain unverified; this repair neither erases logs
+nor changes credentials, provider behavior or temporal cutover ownership.

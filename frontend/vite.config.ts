@@ -8,6 +8,7 @@ import tailwindcss from '@tailwindcss/vite'
 const frontendRoot = path.dirname(fileURLToPath(import.meta.url))
 
 const CHUNK_WARNING_LIMIT_KB = 1_500
+const testDependencies = ['@dagrejs/dagre', 'date-fns', 'date-fns-tz']
 
 function packageNameFromModuleId(id: string): string | undefined {
   const nodeModulesMarker = '/node_modules/'
@@ -93,7 +94,7 @@ function baseNoSlashRedirect(): Plugin {
 export default defineConfig({
   // Dependencies are shared between worktrees through a node_modules symlink,
   // so generated Vite artifacts must live in the writable worktree instead.
-  cacheDir: '.vite',
+  cacheDir: process.env.BUTLERS_VITEST_CACHE_DIR || '.vite',
   build: {
     // The statically routed app shell and the intentionally lazy map renderer
     // each remain below this measured budget after the explicit domain splits.
@@ -104,6 +105,14 @@ export default defineConfig({
     },
   },
   test: {
+    // Isolated forks otherwise reload the date libraries' large ESM graphs
+    // for every file. Prebundle dependencies once for both node and jsdom.
+    deps: {
+      optimizer: {
+        ssr: { enabled: true, include: testDependencies },
+        web: { enabled: true, include: testDependencies },
+      },
+    },
     // Pin the runner timezone to UTC so date/time-sensitive specs are
     // deterministic on any machine. Several CalendarWorkspacePage grid-drag and
     // find-time specs render the grid in the *workspace* timezone (UTC in those
@@ -122,7 +131,6 @@ export default defineConfig({
       "**/tests/e2e/**",
       "**/tests/owner-auth/**",
       "**/node_modules/**",
-      "route-a-api-receipt.test.mjs",
     ],
   },
   plugins: [tailwindcss(), react(), baseNoSlashRedirect()],

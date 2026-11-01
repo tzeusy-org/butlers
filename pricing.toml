@@ -43,6 +43,35 @@ cached_input_price_per_token = 0.0000005   # $0.50 / 1M tokens (0.1x input)
 cache_creation_price_per_token = 0.00000625  # $6.25 / 1M tokens (1.25x input)
 output_price_per_token = 0.000025   # $25 / 1M tokens
 
+# Claude 5.5 family — sourced from the Anthropic model docs and release notes (2026-10-14).
+# Sonnet 5.5 cache reads were cut from $0.20 to $0.10 on 2026-10-07; Opus 5.5 reads at 0.05x.
+[models."claude-sonnet-5-5"]
+input_price_per_token = 0.000002    # $2 / 1M tokens
+cached_input_price_per_token = 0.0000001   # $0.10 / 1M tokens
+cache_creation_price_per_token = 0.0000025  # $2.50 / 1M tokens (1.25x input)
+output_price_per_token = 0.00001    # $10 / 1M tokens
+
+[models."claude-opus-5-5"]
+input_price_per_token = 0.000004    # $4 / 1M tokens
+cached_input_price_per_token = 0.0000002   # $0.20 / 1M tokens (0.05x input)
+cache_creation_price_per_token = 0.000005  # $5 / 1M tokens (1.25x input)
+output_price_per_token = 0.00002    # $20 / 1M tokens
+
+# Haiku 5.5 has two rate cards, split at a 100K-token prompt.
+[[models."claude-haiku-5-5".tiers]]
+context_threshold = 0               # <= 100K tokens
+input_price_per_token = 0.0000001   # $0.10 / 1M tokens
+cached_input_price_per_token = 0.00000001  # $0.01 / 1M tokens (0.1x input)
+cache_creation_price_per_token = 0.000000125  # $0.125 / 1M tokens (1.25x input)
+output_price_per_token = 0.0000005  # $0.50 / 1M tokens
+
+[[models."claude-haiku-5-5".tiers]]
+context_threshold = 100001          # > 100K tokens (selection is inclusive, so 100000 stays lower)
+input_price_per_token = 0.0000005   # $0.50 / 1M tokens
+cached_input_price_per_token = 0.00000005  # $0.05 / 1M tokens (0.1x input)
+cache_creation_price_per_token = 0.000000625  # $0.625 / 1M tokens (1.25x input)
+output_price_per_token = 0.0000025  # $2.50 / 1M tokens
+
 # Google — sourced from https://cloud.google.com/vertex-ai/generative-ai/pricing (2026-03-23)
 
 [models."gemini-2.5-pro"]
@@ -52,6 +81,18 @@ output_price_per_token = 0.00001    # $10.00 / 1M tokens
 [models."gemini-2.5-flash"]
 input_price_per_token = 0.0000003   # $0.30 / 1M tokens (≤200K context)
 output_price_per_token = 0.0000025  # $2.50 / 1M tokens
+
+# Gemini 3.8 Flash and Gemini 4 Argon — Gemini API pricing (2026-10-14). Both rates are
+# introductory: Argon doubles on 2026-12-01 and 3.8 Flash on 2027-01-01.
+[models."gemini-3.8-flash"]
+input_price_per_token = 0.00000075  # $0.75 / 1M tokens
+cached_input_price_per_token = 0.000000075  # $0.075 / 1M tokens
+output_price_per_token = 0.00000375  # $3.75 / 1M tokens
+
+[models."gemini-4-argon"]
+input_price_per_token = 0.000002    # $2.00 / 1M tokens
+cached_input_price_per_token = 0.0000001  # $0.10 / 1M tokens
+output_price_per_token = 0.00001    # $10.00 / 1M tokens
 
 # OpenAI — sourced from https://developers.openai.com/api/docs/pricing/ (2026-04-28)
 # gpt-5.5 and gpt-5.4 have two pricing tiers based on context length; entries below use the <272K tier.
@@ -67,6 +108,15 @@ output_price_per_token = 0.0000025  # $2.50 / 1M tokens
 # Sources: https://developers.openai.com/api/docs/models/gpt-6-sol and
 # https://developers.openai.com/api/docs/models/gpt-6-luna (2026-09-24);
 # GPT-5.6 rates: https://developers.openai.com/api/docs/pricing (2026-08-01).
+# GPT-6.1 Sol (released 2026-09-29) supersedes GPT-6 Sol at the same input/output rates
+# with cheaper cache reads: https://developers.openai.com/api/docs/pricing (2026-10-14).
+[models."gpt-6.1-sol"]
+billing_class = "metered"
+input_price_per_token = 0.000002  # $2.00 / 1M tokens (<=272K context)
+cached_input_price_per_token = 0.0000001  # $0.10 / 1M tokens
+cache_creation_price_per_token = 0.0000025  # $2.50 / 1M tokens
+output_price_per_token = 0.00001  # $10.00 / 1M tokens
+
 [models."gpt-6-sol"]
 billing_class = "metered"
 input_price_per_token = 0.000002  # $2.00 / 1M tokens (<=272K context)
@@ -262,16 +312,19 @@ output_price_per_token = 0.00000348  # $3.48 / 1M tokens
 
 [models."opencode-go/minimax-m3"]
 input_price_per_token = 0.0000003   # $0.30 / 1M tokens
+cached_input_price_per_token = 0.00000006  # $0.06 / 1M tokens (OpenCode Go price sheet, 2026-10-14)
 output_price_per_token = 0.0000012  # $1.20 / 1M tokens
 
-# Qwen3.7 Plus — context-tiered at 256K tokens.
+# Qwen3.7 Plus — context-tiered at 256K tokens. The card (https://opencode.ai/docs/go/) labels
+# the tiers "<= 256K tokens" and "> 256K tokens", so the upper tier starts one token above 256K.
+# tier_for_context() picks a tier at context_tokens >= context_threshold, hence 256001 (bu-jkhucb).
 [[models."opencode-go/qwen3.7-plus".tiers]]
 context_threshold = 0               # <= 256K tokens
 input_price_per_token = 0.0000004   # $0.40 / 1M tokens
 output_price_per_token = 0.0000016  # $1.60 / 1M tokens
 cached_input_price_per_token = 0.00000004  # $0.04 / 1M tokens
 [[models."opencode-go/qwen3.7-plus".tiers]]
-context_threshold = 256000          # > 256K tokens
+context_threshold = 256001          # > 256K tokens
 input_price_per_token = 0.0000012   # $1.20 / 1M tokens
 output_price_per_token = 0.0000048  # $4.80 / 1M tokens
 cached_input_price_per_token = 0.00000012  # $0.12 / 1M tokens
@@ -280,14 +333,17 @@ cached_input_price_per_token = 0.00000012  # $0.12 / 1M tokens
 input_price_per_token = 0.0000025   # $2.50 / 1M tokens
 output_price_per_token = 0.0000075  # $7.50 / 1M tokens
 
-# Qwen3.6 Plus — context-tiered at 256K tokens.
+# Qwen3.6 Plus — historical Go card (opencode revision 1ead9e3, 2026-09-01) labels <= 256K/> 256K;
+# the matching models.dev record dd8ad847 supplies numeric size 256000. Together they imply an
+# upper threshold of 256001 with the unchanged >= selector (bu-jkhucb). Continued availability
+# and billing on 2026-10-18 or today remain UNVERIFIED; the current card omits this model.
 [[models."opencode-go/qwen3.6-plus".tiers]]
 context_threshold = 0               # <= 256K tokens
 input_price_per_token = 0.0000005   # $0.50 / 1M tokens
 output_price_per_token = 0.000003   # $3.00 / 1M tokens
 cached_input_price_per_token = 0.00000005  # $0.05 / 1M tokens
 [[models."opencode-go/qwen3.6-plus".tiers]]
-context_threshold = 256000          # > 256K tokens
+context_threshold = 256001          # > 256K tokens
 input_price_per_token = 0.000002    # $2.00 / 1M tokens
 output_price_per_token = 0.000006   # $6.00 / 1M tokens
 cached_input_price_per_token = 0.0000002  # $0.20 / 1M tokens
@@ -296,9 +352,17 @@ cached_input_price_per_token = 0.0000002  # $0.20 / 1M tokens
 input_price_per_token = 0.0000002   # $0.20 / 1M tokens
 output_price_per_token = 0.0000012  # $1.20 / 1M tokens
 
+# DeepSeek rates double during peak hours; entries use the peak rate so estimates never
+# undercount (OpenCode Go price sheet, 2026-10-14; off-peak is half of each figure).
 [models."opencode-go/deepseek-v4-pro"]
-input_price_per_token = 0.00000174  # $1.74 / 1M tokens (sourced from OpenCode Go price sheet, 2026-07-05)
-output_price_per_token = 0.00000348  # $3.48 / 1M tokens
+input_price_per_token = 0.00000132  # $1.32 / 1M tokens
+cached_input_price_per_token = 0.000000044  # $0.044 / 1M tokens
+output_price_per_token = 0.00000396  # $3.96 / 1M tokens
+
+[models."opencode-go/deepseek-v4.1-flash"]
+input_price_per_token = 0.0000003   # $0.30 / 1M tokens
+cached_input_price_per_token = 0.000000006  # $0.006 / 1M tokens
+output_price_per_token = 0.0000012  # $1.20 / 1M tokens
 
 [models."opencode-go/deepseek-v4-flash"]
 input_price_per_token = 0.00000014  # $0.14 / 1M tokens (sourced from OpenCode Go price sheet, 2026-07-05)

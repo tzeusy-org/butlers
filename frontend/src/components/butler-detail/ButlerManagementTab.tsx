@@ -1,13 +1,12 @@
 /**
  * ButlerManagementTab — Phase 7 fold-in (§9.1–§9.4).
  *
- * Renders the six sections defined in the ButlersExpanded design:
+ * Renders the five sections defined in the ButlersExpanded design:
  *   §1  Identity & routing   — fallback chain, schedule, ceiling, approvals, timeout, concurrency
  *   §2  System prompt        — serif body + version caption + edit modal
- *   §3  Tools matrix         — tool · description · scope · on toggles
- *   §4  Memory access        — short / mid / long read/write tiles
- *   §5  Activity stripe      — 24h sessions per hour
- *   §6  Kill switch          — 30s grace confirmation
+ *   §3  Memory access        — short / mid / long read/write tiles
+ *   §4  Activity stripe      — 24h sessions per hour
+ *   §5  Kill switch          — 30s grace confirmation
  */
 
 import { useState } from "react";
@@ -19,11 +18,11 @@ import {
   useButlerMemoryAccess,
   useButlerPrompt,
   useButlerPromptHistory,
-  useButlerTools,
   useKillButler,
   useUpdateButlerPrompt,
 } from "@/hooks/use-butler-management";
 import { useButlerHourlyActivity } from "@/hooks/use-butler-analytics";
+import { useRuntimeConfig } from "@/hooks/use-butlers";
 import { useResolveModel } from "@/hooks/use-model-catalog";
 import { useModalChoreography } from "@/hooks/use-modal-choreography";
 import { bucketHourInZone } from "@/lib/hourly-buckets";
@@ -175,6 +174,21 @@ function ConfigRow({ label, value }: { label: string; value: React.ReactNode }) 
 // §1 Identity & routing (static from runtime config)
 // ---------------------------------------------------------------------------
 
+// Tiers each memory read ceiling admits (mirrors the server-held read policy).
+const MEMORY_CEILING_ADMITS: Record<string, string> = {
+  normal: "normal only",
+  internal: "normal + pii",
+  confidential: "all tiers",
+};
+
+function memoryCeilingLabel(value: unknown): string {
+  if (typeof value === "string" && Object.hasOwn(MEMORY_CEILING_ADMITS, value)) {
+    return `${value} · ${MEMORY_CEILING_ADMITS[value]}`;
+  }
+  // Missing or unrecognized values fail closed to the lowest ceiling.
+  return `normal · ${MEMORY_CEILING_ADMITS.normal} (default, fail-closed)`;
+}
+
 function IdentitySection({ butlerName }: { butlerName: string }) {
   // Model + per-session timeout are owned by the model catalog (resolved per
   // complexity tier), not runtime_config — core_073 moved session_timeout_s onto
@@ -182,6 +196,7 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
   // read-only here and defer all model/timeout editing to the Models tab.
   const { data: resolved, isLoading } = useResolveModel(butlerName, DEFAULT_COMPLEXITY);
   const r = resolved?.data;
+  const { data: runtimeConfig, isLoading: runtimeLoading } = useRuntimeConfig(butlerName);
 
   return (
     <Section n={1} title="Identity & routing" hint="model, fallback chain, schedule, ceilings">
@@ -211,6 +226,18 @@ function IdentitySection({ butlerName }: { butlerName: string }) {
                   : r?.resolved && r.session_timeout_s != null
                     ? `${r.session_timeout_s}s`
                     : "—"
+              }
+            />
+            <ConfigRow
+              label="Memory read ceiling"
+              value={
+                runtimeLoading
+                  ? "…"
+                  : runtimeConfig
+                    ? memoryCeilingLabel(runtimeConfig.catalog_read_sensitivity)
+                    : // No runtime_config row (fetch error, paused or disabled query): the
+                      // server's real ceiling is unknown, so claim nothing about it.
+                      "—"
               }
             />
           </div>
@@ -545,65 +572,7 @@ function PromptEditModal({
 }
 
 // ---------------------------------------------------------------------------
-// §3 Tools matrix
-// ---------------------------------------------------------------------------
-
-function ToolsSection({ butlerName }: { butlerName: string }) {
-  const { data, isLoading } = useButlerTools(butlerName);
-  const tools = data?.data ?? [];
-
-  return (
-    <Section
-      n={3}
-      title="Tools & integrations"
-      hint={
-        tools.length > 0
-          ? `${tools.filter((t) => t.allowed).length}/${tools.length} allowed`
-          : "no tools configured"
-      }
-    >
-      {isLoading ? (
-        <div className="h-24 w-full rounded bg-muted" />
-      ) : tools.length === 0 ? (
-        <p className="font-mono text-[11px] text-muted-foreground">
-          No tool grants configured for this butler.
-        </p>
-      ) : (
-        <>
-          <div className="grid grid-cols-[10rem_1fr_1fr_2.5rem] gap-3 border-b border-border pb-2">
-            <MonoCaption>tool</MonoCaption>
-            <MonoCaption>description</MonoCaption>
-            <MonoCaption>scope</MonoCaption>
-            <MonoCaption>on</MonoCaption>
-          </div>
-          {tools.map((t) => (
-            <div
-              key={t.name}
-              className="grid grid-cols-[10rem_1fr_1fr_2.5rem] items-center gap-3 border-b border-border/50 py-2.5 last:border-b-0"
-            >
-              <span className="font-mono text-[11px] text-foreground">{t.name}</span>
-              <span className="text-xs text-muted-foreground">{t.description ?? "—"}</span>
-              <span className="font-mono text-[10px] text-muted-foreground">{t.scope ?? "—"}</span>
-              <span className="flex justify-end">
-                <span
-                  className={cn(
-                    "h-4 w-4 rounded-full border",
-                    t.allowed
-                      ? "border-[var(--green)] bg-[var(--green)]/30"
-                      : "border-border bg-transparent",
-                  )}
-                />
-              </span>
-            </div>
-          ))}
-        </>
-      )}
-    </Section>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// §4 Memory access
+// §3 Memory access
 // ---------------------------------------------------------------------------
 
 function MemoryAccessSection({ butlerName }: { butlerName: string }) {
@@ -613,7 +582,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
   const tiers = ["short", "mid", "long"] as const;
 
   return (
-    <Section n={4} title="Memory access" hint="which tiers this butler may read, write, and owns">
+    <Section n={3} title="Memory access" hint="which tiers this butler may read, write, and owns">
       {isLoading ? (
         <div className="h-20 w-full rounded bg-muted" />
       ) : (
@@ -674,7 +643,7 @@ function MemoryAccessSection({ butlerName }: { butlerName: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// §5 Activity stripe (24h)
+// §4 Activity stripe (24h)
 // ---------------------------------------------------------------------------
 
 function ActivityStripeSection({ butlerName }: { butlerName: string }) {
@@ -697,7 +666,7 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
 
   return (
     <Section
-      n={5}
+      n={4}
       title="Activity · last 24 hours"
       hint="hour-buckets"
       right={
@@ -735,7 +704,7 @@ function ActivityStripeSection({ butlerName }: { butlerName: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// §6 Kill switch
+// §5 Kill switch
 // ---------------------------------------------------------------------------
 
 function KillSwitchSection({ butlerName }: { butlerName: string }) {
@@ -752,7 +721,7 @@ function KillSwitchSection({ butlerName }: { butlerName: string }) {
   }
 
   return (
-    <Section n={6} title="Kill switch" hint="graceful shutdown with configurable grace window">
+    <Section n={5} title="Kill switch" hint="graceful shutdown with configurable grace window">
       <div className="flex items-center gap-4">
         <button
           type="button"
@@ -809,7 +778,6 @@ export default function ButlerManagementTab({ butlerName }: Props) {
     <div className="divide-y divide-border">
       <IdentitySection butlerName={butlerName} />
       <SystemPromptSection butlerName={butlerName} />
-      <ToolsSection butlerName={butlerName} />
       <MemoryAccessSection butlerName={butlerName} />
       <ActivityStripeSection butlerName={butlerName} />
       <KillSwitchSection butlerName={butlerName} />

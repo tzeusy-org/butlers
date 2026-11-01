@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from butlers.modules.base import group_enabled
+from butlers.modules.base import tool_registrar
 
 
 def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
@@ -32,12 +32,7 @@ def register_tools(mcp: Any, module: Any, config: Any) -> None:  # noqa: C901
     from butlers.tools.education import spaced_repetition as _sr
     from butlers.tools.education import teaching_flows as _flows
 
-    # Build a group-aware tool decorator: returns @mcp.tool() when the
-    # group is enabled, or a no-op passthrough when disabled.
-    def _tool(group: str):
-        if group_enabled(config, group):
-            return mcp.tool()
-        return lambda fn: fn  # no-op — function defined but not registered
+    _tool = tool_registrar(mcp, config)
 
     # --- Scheduler callback factories ---
     # Education tools use callback injection for scheduler integration.

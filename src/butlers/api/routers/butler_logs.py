@@ -28,10 +28,10 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 
 logger = logging.getLogger(__name__)
 
@@ -47,11 +47,6 @@ def _level_rank(level: str) -> int:
         return _LEVEL_ORDER.index(level.upper())
     except ValueError:
         return -1
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +94,8 @@ async def list_butler_logs(
         le=1000,
         description="Maximum number of log lines to return (default 100, max 1000).",
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> LogLines:
     """Return recent structured log lines from a butler's ``butler_logs`` table.
 
@@ -109,11 +105,11 @@ async def list_butler_logs(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     # Validate level parameter
     if level is not None:
@@ -156,12 +152,12 @@ async def list_butler_logs(
 
     try:
         rows = await pool.fetch(sql, *args)
-    except Exception:
+    except Exception as exc:
         logger.warning("Failed to query butler_logs for butler %s", name, exc_info=True)
         raise HTTPException(
             status_code=503,
             detail=f"Failed to query logs for butler '{name}'",
-        )
+        ) from exc
 
     lines: list[LogLine] = []
     for row in rows:

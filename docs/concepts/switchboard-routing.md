@@ -54,7 +54,7 @@ Every ingested message receives a canonical request context before any routing d
 - **`source_endpoint_identity`** --- the ingress identity that received the message (e.g., the bot's identity)
 - **`source_sender_identity`** --- the actor who sent the message (e.g., a Telegram user ID)
 
-Optional fields include `source_thread_identity` (conversation/thread identifier) and `trace_context` (OpenTelemetry propagation payload).
+Optional fields include `external_conversation_id` (the stable conversation key used for anchors, provider-session resume, and history), `reply_target_ref` with its notify-facing alias `source_thread_identity` (the per-message reply or reaction target), and `trace_context` (OpenTelemetry propagation payload).
 
 When fanout occurs (a message routes to multiple butlers), all sub-requests share the same `request_id` and source context. Sub-request metadata can add `subrequest_id` and `segment_id` but cannot replace the root context.
 
@@ -183,6 +183,16 @@ psql -h localhost -U butlers -d butlers -c \
 
 ## Implementation Notes
 
+- `correct_route` records `action_type='correct_route'` for both dispatch
+  outcomes, with `outcome='success'` or `outcome='failure'`. Forward revision
+  `sw_043` adds these existing producer values to `operator_audit_log` while
+  preserving every older action and outcome, including the distinct `failed`
+  value. Applied `sw_002` stays unchanged. Downgrade refuses while either new
+  domain value exists; it never deletes or rewrites audit history to roll back.
+  The owning audit tests use the actual core and Switchboard chains under an
+  ordinary migration login and exercise writes as `butler_switchboard_rw`,
+  with a separate connection for committed readback.
+
 - Steam presence events (`status_change`, `online_status`) are both metadata-only and
   routing-skipped. `control.ingestion_tier = "metadata"` only sets the persistence shape; the skip
   comes from a `scope='global'` `ingestion_rules` row evaluated by `IngestionPolicyEvaluator` in
@@ -212,7 +222,7 @@ psql -h localhost -U butlers -d butlers -c \
   with `notify.v1` in `input.context.notify_request`, and Messenger answers `route_response.v1`
   with the normalised delivery in `result.notify_response`, including on error paths.
   `RouteInputV1.context` therefore accepts `str | dict`, and `parse_notify_request()`
-  (`roster/switchboard/tools/routing/contracts.py`) is the one `notify.v1` parser. Messenger rejects
+  (`roster/switchboard/tools/contracts.py`) is the one `notify.v1` parser. Messenger rejects
   a `notify_request.origin_butler` that differs from `request_context.source_sender_identity`
   before any side effect. Error classes match the route executors (`validation_error`,
   `target_unavailable`, `timeout`, `overload_rejected`, `internal_error`).

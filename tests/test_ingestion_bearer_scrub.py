@@ -123,8 +123,8 @@ def test_untouched_envelope_is_not_flagged() -> None:
 def test_ingest_helper_records_typed_artifacts_without_the_code() -> None:
     from datetime import UTC, datetime
 
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
     from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     text = "Your code is 482913, expires in 10 minutes. Order 12345678."
     envelope = parse_ingest_envelope(
@@ -204,8 +204,8 @@ def test_stored_record_aggressive_mode_only_rewrites_message_content() -> None:
 def test_ingest_helper_leaves_service_sender_metadata_untouched() -> None:
     from datetime import UTC, datetime
 
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
     from butlers.tools.switchboard.ingestion.ingest import _scrub_bearer_material
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
 
     record = _service_record()
     before = json.loads(json.dumps(record))
@@ -259,3 +259,112 @@ def test_aggressive_mode_keeps_date_shaped_runs_in_content() -> None:
     )
     assert "55123" not in out
     assert "2026-10-03 12:00" in out
+
+
+def test_stored_record_scrubs_legacy_top_level_content() -> None:
+    from butlers.ingestion_bearer_scrub import scrub_stored_record
+
+    record = _service_record()
+    record["content"] = "Your code is 482913"
+    before = json.loads(json.dumps(record))
+    new_raw, _, fresh = scrub_stored_record(record, "")
+
+    assert "482913" not in new_raw["content"] and fresh
+    _assert_metadata_untouched(before, new_raw)
+    assert scrub_stored_record({"content": "Invoice 482913"}, "")[0]["content"] == "Invoice 482913"
+
+
+def test_scrub_that_moves_text_collapses_untrusted_spans_to_whole_text() -> None:
+    """Scrubbing shifts the connector's offsets; each kind then marks the whole text (bu-xmueeq)."""
+    text = "Fwd from Mallory: Your code is 482913. Pay account 12-34."
+    envelope = {
+        "source": {"provider": "telegram"},
+        "sender": {"identity": "owner"},
+        "payload": {
+            "raw": None,
+            "normalized_text": text,
+            "untrusted_spans": [
+                {"kind": "forwarded", "start": 18, "end": len(text), "origin_identity": "555"}
+            ],
+        },
+    }
+    out, hits = scrub_envelope(envelope)
+
+    assert hits
+    scrubbed = out["payload"]["normalized_text"]
+    assert out["payload"]["untrusted_spans"] == [
+        {"kind": "forwarded", "start": 0, "end": len(scrubbed), "origin_identity": "555"}
+    ]
+
+
+def test_filtered_preview_retains_every_closed_connector_label() -> None:
+    """REQ-connector-base-spec-009: projection preserves the complete old label population."""
+    from butlers.ingestion_bearer_scrub import scrub_filtered_preview
+
+    labels = (
+        "gmail",
+        "telegram",
+        "telegram_bot",
+        "telegram_user",
+        "telegram_user_client",
+        "whatsapp_user_client",
+        "google_drive",
+        "google_calendar",
+        "google_health",
+        "spotify",
+        "owntracks",
+        "steam",
+        "activitywatch",
+        "home_assistant",
+        "live-listener",
+        "live_listener",
+    )
+    for label in labels:
+        assert (
+            scrub_filtered_preview(
+                "Your login code is 482913",
+                connector_type=label,
+                sender_identity="",
+                full_payload={},
+            )
+            == f"Your login code is [auth-code withheld: {label}]"
+        ), label
+    for label in ("unknown-label", "discord", "482913", "https://test.invalid/reset?token=482913"):
+        result = scrub_filtered_preview(
+            "Your login code is 482913",
+            connector_type=label,
+            sender_identity="",
+            full_payload={},
+        )
+        assert result == "Your login code is [auth-code withheld: unknown]"
+
+
+def test_filtered_preview_keeps_link_withholding_and_detector_failure(monkeypatch) -> None:
+    from butlers import ingestion_bearer_scrub as scrubber
+
+    preview = "Reset https://example.test/reset?token=synthetic-private-token"
+    out = scrubber.scrub_filtered_preview(
+        preview,
+        connector_type="https://caller.invalid/secret",
+        sender_identity="",
+        full_payload={"source": {"provider": "482913"}},
+    )
+    assert out == "Reset [reset-link withheld: example.test]"
+    assert "synthetic-private-token" not in out and "caller.invalid" not in out
+
+    def detector_error(*args, **kwargs):
+        raise RuntimeError("synthetic private marker must not be reflected")
+
+    monkeypatch.setattr(scrubber, "scrub_text", detector_error)
+    assert (
+        scrubber.scrub_filtered_preview(
+            "Your code is 482913", connector_type="gmail", sender_identity="", full_payload={}
+        )
+        is None
+    )
+    assert (
+        scrubber.scrub_filtered_preview(
+            None, connector_type="gmail", sender_identity="", full_payload={}
+        )
+        is None
+    )

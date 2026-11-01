@@ -2,31 +2,36 @@
 
 ## What Butlers Is
 
-Butlers is a personal AI agent system where specialized, long-running daemons
-handle the recurring mental labor of daily life. Each butler owns a life domain
---- health, relationships, finance, education, travel, home --- and acts
-autonomously on schedules and in response to incoming messages. A central
-Switchboard routes everything to the right specialist, brokers proactive
-insights from domain butlers, and maintains shared situational awareness so
-butlers adapt to the user's current context. You own the instance, the data,
-the credentials, and the agents. There is no cloud service, no account, no
-subscription. Just infrastructure that works for one person.
+Butlers absorbs the recurring mental labor of one person's life. It maintains
+health, relationships, finance, education, travel, home, and other declared
+responsibilities, acts on incoming requests, and notices useful work before the
+owner asks. One user owns the instance, data, credentials, and model choices.
 
-The system distinguishes two types of agents:
+The owner can express a whole goal across life domains. A generalist lead keeps
+that goal intact, discovers relevant capabilities and context, and handles it
+directly or delegates bounded work to focused subagents. The owner does not
+have to choose a department or reconcile separate specialists' answers.
 
-- **Butlers** are domain specialists. Each butler owns a life domain, has a
-  manifesto defining its scope and personality, and serves the user directly
-  through scheduled tasks and message handling. Domain butlers are the primary
-  interface between the user and the system.
+Three concepts have distinct lifetimes:
 
-- **Staffers** are infrastructure specialists. They serve the ecosystem rather
-  than the user directly. Staffers handle cross-cutting concerns --- message
-  routing, outbound delivery --- that must exist for domain butlers to function.
-  A staffer's identity is defined by an infrastructure contract (its
-  `MANIFESTO.md`) specifying responsibilities, SLAs, failure modes, and
-  escalation procedures. Staffers are excluded from user-message routing and
-  from briefing contribution, because their domain is the system, not the user's
-  life.
+- **Domain responsibilities (butlers)** persist across sessions. Each has a
+  manifesto, owned data and capabilities, schedules or event subscriptions,
+  and obligations that survive any individual model invocation. Domain names
+  express what the system cares for; they do not require one reasoning agent
+  or one model per domain.
+- **Reasoning agents** are ephemeral. One lead is accountable for each goal.
+  It may create focused children with dedicated task prompts, selected context,
+  and explicit permissions. The initial hierarchy has maximum depth one: lead
+  at depth 0, children at depth 1. Children cannot delegate further. Different
+  goals may have concurrent leads; there is no single global conversation.
+- **Staffers and the control plane** own deterministic infrastructure such as
+  ingress, identity, scheduling, execution admission, recovery, and delivery.
+  Infrastructure responsibilities remain distinct from user life domains.
+  Reasoning needed by a staffer still runs in an ephemeral session.
+
+Specialization lives in domain knowledge, governing guidance, capability
+contracts, and focused reasoning where it helps. The number of reasoning
+agents is an execution choice, not the product's identity.
 
 ## What Butlers Is Not
 
@@ -39,10 +44,10 @@ briefings, inbox triage, health check-ins, memory consolidation. A user may
 never send a message directly and still get value. Conversation is one input
 channel, not the primary interface.
 
-**Not a monolithic agent.** There is no single "do everything" agent. Domain
-specialization is fundamental. The health butler knows health. The relationship
-butler knows relationships. The Switchboard knows routing. No butler tries to be
-all of them.
+**Not an unrestricted agent.** A generalist may reason across domains, but
+cannot grant itself access, bypass domain rules, or replace durable services
+with an ever-growing conversation. Focused prompts are guidance; permissions
+and approval gates are enforced by the runtime and capability owners.
 
 **Not a framework for building other products.** Butlers is the product. It is
 not a library, not a toolkit, not a platform for third-party developers. It
@@ -68,14 +73,20 @@ does not ship.
    the session log. If a capability requires core changes, it belongs in core,
    not in a module.
 
-3. **Inter-butler communication is MCP-only through the Switchboard.** Butlers
-   must not share memory, call each other's functions, or access each other's
-   database schemas. The Switchboard is the only sanctioned channel. This
-   constraint is structural, not aspirational. Narrowly scoped exceptions
-   (read-only SQL views for deterministic batch aggregation) may be documented
-   via RFC when the MCP-compliant alternative incurs unjustifiable LLM session
-   cost for zero-reasoning work. Each exception requires explicit guardrails
-   and reuse criteria (see RFC 0010).
+3. **Cross-domain capability access is MCP-only through the control plane.**
+   Switchboard remains the broker for domain-owned capabilities. A permitted
+   read or action need not start another LLM session. A lead may combine
+   authorized results across domains without direct schema access, shared
+   database connections, or imports of another domain's implementation.
+   Discovery and prompt instructions never grant authority. Invocation checks
+   bind the caller, goal, permitted operation, and applicable approval to the
+   action; delegated authority can only narrow. Durable facts retain their
+   owner and provenance when retrieved into a goal's working context.
+
+   [RFC 0038](../legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md)
+   defines the grants, broker and call verification. Narrowly scoped
+   read-only SQL exceptions still require an RFC with explicit guardrails and
+   reuse criteria (see RFC 0010); RFC 0038 grants none.
 
    One separately reviewed exception permits only the QA daemon's
    deterministic local scheduler, under its matching runtime database role,
@@ -100,9 +111,9 @@ does not ship.
 
 4. **The daemon is deterministic infrastructure; intelligence is in ephemeral LLM
    sessions.** The daemon manages state, runs migrations, enforces schedules, and
-   registers tools. It must be testable, debuggable, and predictable. The LLM
-   sessions spawned by the daemon are where reasoning and judgment happen. Mixing
-   LLM logic into the daemon is a defect.
+   registers tools. It must be testable, debuggable, and predictable. The goal
+   invocations the control plane launches are where reasoning and judgment
+   happen. Mixing LLM logic into the daemon is a defect.
 
 5. **Git-based config is the source of truth for butler identity; operational
    tuning lives in the database.** A butler's personality, schedule, module
@@ -116,7 +127,11 @@ does not ship.
    the dashboard Models tab (see `src/butlers/core/model_routing.py`). The
    distinction: identity answers
    "what is this butler?"; operational tuning answers "how should it behave
-   right now?" If someone changes a butler's name, manifesto, or module list,
+   right now?" Reusable lead policies, domain guidance, and focus templates are
+   also versioned identity configuration.
+   Per-task prompts and selected context are invocation artifacts, not new
+   roster identities. Runtime tuning cannot widen policy-granted authority.
+   If someone changes a butler's name, manifesto, or module list,
    that is an identity change and belongs in git. If someone changes which
    model it uses or how many concurrent sessions it runs, that is operational
    tuning and belongs in the database.
@@ -130,11 +145,19 @@ does not ship.
    document is not decoration --- it is binding. Features, tools, and UX
    decisions must be deeply aligned with the governing document. A capability
    that contradicts it must not be added without a formal amendment.
+   A lead inherits the system's governing policy; a focused child inherits
+   that policy and the applicable domain guidance plus a bounded task brief.
+   Each invocation records which versions govern it. A generated task prompt
+   cannot override these documents. The runtime enforces the depth-one limit,
+   finite work budgets, and child scope; a child must return requests for
+   further work to its lead rather than spawn or route another reasoning agent.
 
 7. **Transport is connector responsibility; butlers never know about transport
    details.** Connectors normalize external events into a canonical ingestion
-   format and submit them to the Switchboard. Butlers receive classified,
-   structured requests. A butler must never contain Telegram polling logic, Gmail
+   format and submit them to the Switchboard. Reasoning sessions receive
+   structured events and goals; domain classification is not a mandatory
+   decomposition of the owner's intent. A butler must never contain Telegram
+   polling logic, Gmail
    API calls, or Discord websocket handling. If a butler knows how a message
    arrived, something is wrong.
 
@@ -147,8 +170,11 @@ the system reliably absorbs.
 
 Concrete markers:
 
-- The owner sends a message from any channel and the right butler handles it
-  without manual routing.
+- The owner expresses a goal from any channel, including a cross-domain goal,
+  and receives one coherent outcome without manual routing or reconciliation.
+- Focused workers improve the outcome when used; the lead remains accountable
+  for resolving conflicting evidence and reporting partial or unknown outcomes.
+- Domain obligations remain active when no conversation or lead is running.
 - Scheduled tasks fire on time, produce useful output, and recover from
   transient failures.
 - The owner's health data, relationship context, financial signals, and calendar
@@ -159,7 +185,10 @@ Concrete markers:
 
 ## Anti-Patterns
 
-- Adding a "general purpose" mode that bypasses domain specialization.
+- Requiring a new reasoning agent merely to access another domain's capability.
+- Giving a generalist unrestricted authority or treating a focus prompt as a sandbox.
+- Replacing proactive responsibilities with a purely request-driven assistant.
+- Encoding today's model limits or prices as permanent agent boundaries.
 - Building admin features for managing multiple users.
 - Embedding transport-specific logic inside butler code.
 - Making the daemon "smart" instead of keeping intelligence in sessions.

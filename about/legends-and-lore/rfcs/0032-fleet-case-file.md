@@ -3,6 +3,7 @@
 **Status:** Decision record; seven source slices landed, runtime conformance partial.
 **Date:** 2026-09-05
 **Canonical contract:** [Fleet case file](../../../openspec/specs/fleet-case-file/spec.md)
+Governing doctrine: [vision.md rule 3, Switchboard remains the broker for cross-domain capabilities, with no direct schema access](../../heart-and-soul/vision.md#non-negotiable-rules) and [architecture.md, The Core Loop](../../heart-and-soul/architecture.md#the-core-loop) (persist the goal and evidence outside model context).
 
 ## Context
 
@@ -13,6 +14,8 @@ The Switchboard insight broker computes correlated multi-butler candidate cluste
 Represent a recognized situation as a durable shared case, so later observations accrete onto its identity instead of reconstructing it from cycle-scoped candidates. Keep case existence, lifecycle, posture and ledger bindings under Switchboard write authority, with contributors recording their own attributed evidence through their sanctioned paths. The canonical specification contains the complete lifecycle, correlation, evidence, read, attention, lapse, backfill and link requirements.
 
 The storage model permits general ledger references, including another-case references. The shipped S7 tool admits the three explicit ledger kinds whose references its existing contribution, attention and backfill call sites can observe. This distinction preserves the original general model without inventing a fourth tool producer.
+
+Offline backup and restore preserve the complete case/evidence/link family through a fixed table-owner-only INSERT path. This narrow offline exception does not confer runtime execute authority, UPDATE/DELETE, arbitrary relation selection or relaxed constraints; Switchboard remains the sole runtime case/link writer.
 
 Switchboard arbitration is a sole-writer, last-write-wins decision. It does not introduce quorum, decay or per-butler voting. Situation-scoped attention records a deduplicated quiet-window bypass; it is not proof of notification delivery or automatic broker wiring.
 
@@ -32,4 +35,4 @@ Other requirements have partial proof: actual registered transport, post-migrati
 
 ## Non-goals
 
-This decision adds no automatic insight-broker producer or provider send, dashboard UI/write surface, joint-objective register, or `delegate_act` mandate; commitment and mandate design remains with RFC 0026. Historical backfill stays closed-only. Native Fleet backup/offline restore adoption, private-schema authority, new grant policy and activation are outside this source translation. Existing backup and capture holds remain unchanged.
+This decision adds no automatic insight-broker producer or provider send, dashboard UI/write surface, joint-objective register, or `delegate_act` mandate; commitment and mandate design remains with RFC 0026. Historical backfill stays closed-only. Private-schema authority, evidence mutation policy and activation remain outside this change. The approved offline Fleet restore exception does not release other backup/capture or runtime-conformance holds.

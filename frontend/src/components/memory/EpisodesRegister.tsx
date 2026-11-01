@@ -20,7 +20,7 @@
 //   daybook therefore shows zero red pixels.
 //
 // Interaction: clicking a row toggles in-place expansion to full content
-// (120ms height transition, linear, no fade/scale). The expanded row carries an
+// (instant content reveal, no fade/scale). The expanded row carries an
 // explicit `open ↗` mono link to /memory/episodes/:id as the unambiguous
 // navigation affordance (a click on that link navigates; the row body only
 // toggles).
@@ -39,6 +39,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 
 import { MemoryLoadError } from "@/components/memory/MemoryLoadError";
+import { MemoryPaginationFooter } from "@/components/memory/MemoryPaginationFooter";
+import { PoolsDegradedNote } from "@/components/memory/PoolsDegradedNote";
 import { ButlerMark } from "@/components/ui/ButlerMark";
 import { Mono } from "@/components/ui/Mono";
 import { useTimezone } from "@/components/ui/timezone-context";
@@ -54,7 +56,6 @@ import {
   formatEpisodeTime,
   groupEpisodesByDay,
 } from "@/lib/memory-derived";
-import { formatNumeral } from "@/lib/memory-overture";
 import { cn } from "@/lib/utils";
 import type { Episode } from "@/api/types.ts";
 
@@ -176,13 +177,13 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
       </span>
 
       {/* Content — sans 13px. Collapsed: clamp 2 lines. Expanded: full content
-          revealed via a height transition (no fade, no scale) plus the explicit
+          revealed instantly (no fade, no scale) plus the explicit
           open link. */}
       <div className="min-w-0">
         <div
           className={cn(
-            "overflow-hidden transition-[max-height] duration-[120ms] ease-linear",
-            expanded ? "max-h-[60rem]" : "max-h-[2.6em]",
+            "overflow-hidden",
+            !expanded && "max-h-[2.6em]",
           )}
         >
           <span
@@ -218,10 +219,7 @@ export function EpisodeRow({ episode }: { episode: Episode }) {
                     // target, not a collapse/expand trigger.
                     e.preventDefault();
                     e.stopPropagation();
-                    retryConsolidation.mutate({
-                      butler: episode.butler,
-                      episodeId: episode.id,
-                    });
+                    retryConsolidation.mutate({ episodeId: episode.id });
                   }}
                   disabled={retryConsolidation.isPending}
                   className="inline-block font-mono text-[11px] text-[var(--red-text)] underline [text-underline-offset:3px] hover:text-fg disabled:opacity-50"
@@ -275,55 +273,6 @@ function StatusPills({
 }
 
 // ---------------------------------------------------------------------------
-// Pagination footer
-// ---------------------------------------------------------------------------
-
-/** `1–50 of 1,204` left, prev/next pills right. Mono dim, no numbered pages. */
-function PaginationFooter({
-  offset,
-  count,
-  total,
-  hasMore,
-  onOffset,
-}: {
-  offset: number;
-  count: number;
-  total: number;
-  hasMore: boolean;
-  onOffset: (next: number) => void;
-}) {
-  if (total === 0) return null;
-
-  const from = offset + 1;
-  const to = offset + count;
-  const atStart = offset === 0;
-
-  return (
-    <div className="flex items-baseline justify-between pt-1">
-      <Mono muted>
-        {formatNumeral(from)}–{formatNumeral(to)} of {formatNumeral(total)}
-      </Mono>
-      <div className="flex gap-1.5">
-        <Pill
-          selected={false}
-          disabled={atStart}
-          onClick={() => onOffset(Math.max(0, offset - EPISODES_PAGE_SIZE))}
-        >
-          prev
-        </Pill>
-        <Pill
-          selected={false}
-          disabled={!hasMore}
-          onClick={() => onOffset(offset + EPISODES_PAGE_SIZE)}
-        >
-          next
-        </Pill>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // EpisodesRegister
 // ---------------------------------------------------------------------------
 
@@ -352,7 +301,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const { state, setState } = useMemoryUrlState();
   const { status, offset } = state;
 
-  const { data: response, isError, refetch } = useEpisodes({
+  const { data: response, isError, isPending, refetch } = useEpisodes({
     butler: butlerScope,
     status: status ?? undefined,
     offset,
@@ -364,6 +313,7 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
   const episodes = response?.data ?? [];
   const total = response?.meta?.total ?? 0;
   const hasMore = response?.meta?.has_more ?? false;
+  const poolsFailed = response?.meta?.pools_failed ?? [];
 
   const groups = groupEpisodesByDay(episodes, tz, now);
 
@@ -376,6 +326,13 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
     <div className="flex flex-col gap-4">
       <StatusPills status={status} onSelect={onSelectStatus} />
 
+      <PoolsDegradedNote
+        label="Episodes"
+        poolsFailed={poolsFailed}
+        onRetry={() => void refetch()}
+        testId="memory-episodes-degraded"
+      />
+
       {isError && episodes.length === 0 ? (
         // An errored fetch must not render "Nothing observed yet." — a down
         // backend would read as a genuinely empty daybook (bu-mkd5r).
@@ -384,10 +341,13 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
           onRetry={() => void refetch()}
           testId="memory-episodes-error"
         />
-      ) : episodes.length === 0 ? (
-        <Voice variant="italic" className="py-6">
-          {status == null ? "Nothing observed yet." : "Nothing in the daybook for this."}
-        </Voice>
+      ) : episodes.length === 0 && poolsFailed.length === 0 ? (
+        // The calm empty copy is a verdict: only a completed response may say it.
+        !isPending && (
+          <Voice variant="italic" className="py-6">
+            {status == null ? "Nothing observed yet." : "Nothing in the daybook for this."}
+          </Voice>
+        )
       ) : (
         <div className="flex flex-col">
           {groups.map((group) => (
@@ -401,11 +361,13 @@ export default function EpisodesRegister({ butlerScope, now }: EpisodesRegisterP
         </div>
       )}
 
-      <PaginationFooter
+      <MemoryPaginationFooter
         offset={offset}
         count={episodes.length}
         total={total}
         hasMore={hasMore}
+        pageSize={EPISODES_PAGE_SIZE}
+        partial={poolsFailed.length > 0}
         onOffset={(next) => setState({ offset: next })}
       />
     </div>

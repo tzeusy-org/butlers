@@ -31,6 +31,7 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
@@ -117,9 +118,9 @@ def _build_app(pool: asyncpg.Pool):
     mock_db.fan_out_with_status = AsyncMock(return_value=({}, []))
 
     app = create_app()
-    for butler_name, router_module in app.state.butler_routers:
+    for butler_name, _router_module in app.state.butler_routers:
         if butler_name == "chronicler":
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+            app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 

@@ -80,10 +80,13 @@ prints which ones have healed.
 
 Limits
 ------
-Only test files are scanned (``tests/`` and ``roster/*/tests/``, matching
-``testpaths``). ``src/`` and ``roster/`` implementation modules cite requirement
-ids too and are not covered here. Resolution is by exact id, so a requirement
-that was renumbered rather than removed reads as dangling -- which is the
+Python files are scanned in two scopes: test files (``tests/`` and
+``roster/*/tests/``, matching ``testpaths``) and implementation modules (every
+``*.py`` under ``src/`` and under ``roster/`` that is not beneath a ``tests``
+directory). A file is scanned once even when both scopes reach it. Only
+qualified ids are looked up, so change-local shorthand in a module docstring is
+still out of scope. Other file types (docs, TypeScript) are not scanned. Resolution is by
+exact id, so a requirement that was renumbered rather than removed reads as dangling -- which is the
 intended reading, since the citation is then pointing at nothing.
 
 Usage:
@@ -122,7 +125,7 @@ DEFINITION = re.compile(r"^ID:\s*(REQ-\S+?)\s*$", re.MULTILINE)
 
 @dataclass(frozen=True)
 class Citation:
-    """One requirement id named in one test file."""
+    """One requirement id named in one scanned Python file."""
 
     path: str  # relative to the scanned root, POSIX-separated
     line: int
@@ -205,14 +208,38 @@ def test_files(root: Path) -> list[Path]:
     return sorted(found)
 
 
+def implementation_files(root: Path) -> list[Path]:
+    """Every non-test Python module under ``src/`` and ``roster/``.
+
+    Same pruning walk as ``test_files`` (dot-directories are never descended into).
+    Files beneath a ``tests`` directory belong to ``test_files`` and are excluded
+    here so a citation in ``roster/<butler>/tests/`` is reported once.
+    """
+    found: list[Path] = []
+    for top in ("src", "roster"):
+        base = root / top
+        if not base.is_dir():
+            continue
+        for directory, subdirectories, names in os.walk(base):
+            subdirectories[:] = [name for name in subdirectories if not name.startswith(".")]
+            if "tests" in Path(directory).relative_to(root).parts:
+                continue
+            found.extend(
+                Path(directory) / name
+                for name in names
+                if name.endswith(".py") and not name.startswith(".")
+            )
+    return sorted(found)
+
+
 def collect(root: Path) -> list[Citation]:
-    """Every qualified requirement id cited by a test file, with where it was cited.
+    """Every qualified requirement id cited by a scanned file, with where it was cited.
 
     Deduplicated per ``(file, line, id)``: naming the same id twice for one line
     is two lines of output and one repair.
     """
     found: dict[Citation, None] = {}
-    for path in test_files(root):
+    for path in sorted({*test_files(root), *implementation_files(root)}):
         relative = path.relative_to(root).as_posix()
         for number, text in enumerate(path.read_text("utf-8", errors="ignore").splitlines(), 1):
             for req_id in CITATION.findall(text):
@@ -247,7 +274,9 @@ def report_pending(pending_cited: dict[str, list[Citation]]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Fail when a test cites a REQ id with no canonical definition."
+        description=(
+            "Fail when a test or implementation module cites a REQ id with no canonical definition."
+        )
     )
     parser.add_argument(
         "--root",
@@ -313,7 +342,7 @@ def main() -> int:
             for citation in sorted(items, key=lambda c: (c.line, c.req_id)):
                 print(f"  line {citation.line}: {citation.req_id} is defined nowhere")
         print(
-            f"\n{total} citation(s) across {len(unresolved)} test file(s) name a requirement id "
+            f"\n{total} citation(s) across {len(unresolved)} file(s) name a requirement id "
             "with no definition in openspec/specs/ and none in an unarchived change. Either the "
             "id is wrong in the test, or the requirement never reached the baseline: an archived "
             "change does not count as a definition, because archiving is exactly when it was "

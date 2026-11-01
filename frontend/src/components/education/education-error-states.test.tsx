@@ -24,6 +24,7 @@ vi.mock("@/hooks/use-education", () => ({
   useMindMapAnalytics: vi.fn(),
   useMindMap: vi.fn(),
   useFrontierNodes: vi.fn(),
+  useUpdateMindMapStatus: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
 }));
 
 import {
@@ -141,9 +142,9 @@ describe("MindMapGraph error state", () => {
     expect(screen.queryByText(/still building it/i)).toBeNull();
   });
 
-  it("still shows the 'still building it' empty state when there is no error and no nodes", () => {
+  it("shows fresh draft setup when there is no error and no nodes", () => {
     mockUseMindMap.mockReturnValue({
-      data: { nodes: [], edges: [] },
+      data: { id: "mm-1", status: "draft", created_at: new Date().toISOString(), nodes: [], edges: [] },
       isLoading: false,
       isError: false,
       refetch: vi.fn(),
@@ -154,7 +155,8 @@ describe("MindMapGraph error state", () => {
 
     render(<MindMapGraph mindMapId="mm-1" onSelectNode={vi.fn()} />);
 
-    expect(screen.getByText(/still building it/i)).toBeTruthy();
+    expect(screen.getByText(/setting up this curriculum/i)).toBeTruthy();
+    expect(screen.queryByText(/still building it/i)).toBeNull();
   });
 });
 
@@ -211,4 +213,27 @@ describe("StrugglingNodesCard error state", () => {
 
     expect(container.firstChild).toBeNull();
   });
+});
+
+
+it("names empty-curriculum lifecycle and exact age boundaries, retaining an inline stalled action", () => {
+  const now = Date.now();
+  for (const [status, ageMinutes, text] of [
+    ["draft", 29, "Setting up this curriculum"],
+    ["draft", 30, "Still setting up"],
+    ["draft", 180, "3 hours ago"],
+    ["draft", 1440, "Setup stalled"],
+    ["draft", 34 * 1440, "34 days ago"],
+    ["abandoned", 0, "was abandoned"],
+    ["completed", 0, "was marked complete"],
+    ["active", 0, "should not be possible"],
+  ] as const) {
+    mockUseMindMap.mockReturnValue({ data: { id: "mm-1", status, created_at: new Date(now-ageMinutes*60_000).toISOString(), nodes: [], edges: [] }, isLoading: false } as unknown as ReturnType<typeof useMindMap>);
+    mockUseFrontierNodes.mockReturnValue({ data: [] } as unknown as ReturnType<typeof useFrontierNodes>);
+    const view = render(<MindMapGraph mindMapId="mm-1" onSelectNode={vi.fn()} />);
+    expect(screen.getByText(new RegExp(text))).toBeTruthy();
+    expect(screen.queryByText(/still building it/i)).toBeNull();
+    if (status === "draft" && ageMinutes >= 1440) expect(screen.getByRole("button", { name: "Abandon" })).toBeTruthy();
+    view.unmount();
+  }
 });

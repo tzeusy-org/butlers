@@ -14,6 +14,18 @@ metadata:
 
 Comprehensive audit of the MCP tool surface across all butlers. Produces a structured report covering tool inventory, docstring quality, error message quality, and group configuration.
 
+## Authorization Metadata
+
+Every LLM-presentable tool needs RFC 0038 metadata: owner domain, effect class,
+output trust and sensitivity, resource and safety arguments, approval policy,
+idempotency, owner authority, and `recipient_params` for any tool that can
+deliver to or invite a party (recipients, attendees, invitees, shares), or
+`undeterminable`. Flag missing or implausible values (a send tool marked
+`record`, an email reader marked `trusted`, a calendar write with no attendee
+arguments declared). Report registered,
+searchable and initially loaded tools separately; a tool count is not an
+outcome. Search never authorizes a call.
+
 ## Support files
 
 - [references/tool-budget.md](references/tool-budget.md) — core registration gates and group-review guidance. Load in Phase 1 (inventory) and Phase 6 (group config review); derive counts from live/configured behavior.

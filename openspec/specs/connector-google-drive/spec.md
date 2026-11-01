@@ -246,6 +246,10 @@ The connector SHALL export standardized Prometheus metrics via `ConnectorMetrics
 - **WHEN** the metadata cache is updated
 - **THEN** `connector_gdrive_metadata_cache_size` (Gauge, labels: `endpoint_identity`) SHALL reflect the current number of cached file entries
 
+#### Scenario: Cached file names withhold bearer material
+- **WHEN** the metadata cache is persisted to `connector_registry.settings`
+- **THEN** bearer material in cached file names SHALL be replaced by the connector-base placeholder, and a detector failure SHALL skip that write
+
 ### Requirement: Rate Limiting
 
 The connector SHALL respect Google Drive API rate limits.

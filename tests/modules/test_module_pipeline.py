@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
-from contextlib import nullcontext
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from opentelemetry.util._once import Once
 
+from butlers.core import fact_authority
 from butlers.modules.pipeline import (
     MessagePipeline,
     PipelineConfig,
@@ -139,7 +141,40 @@ async def test_decomposition_loader_failure_log_is_content_blind(
     assert failure_record.failure_class == "RuntimeError"
 
 
-async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels():
+@pytest.fixture
+def unregistered_identity_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[], AbstractContextManager[None]]:
+    """Own the unregistered mock scenario without discarding a prior live issuer."""
+
+    @contextmanager
+    def scenario() -> Iterator[None]:
+        with monkeypatch.context() as scope:
+            scope.setattr(fact_authority, "_source_registry", None)
+            yield
+
+    return scenario
+
+
+@pytest.fixture
+def mocked_pipeline_source(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+) -> Iterator[None]:
+    """Opt mocked process cases out of source admission, retaining any live issuer.
+
+    These routing fixtures have synthetic pools and public request identifiers;
+    they do not model the accepted-source database boundary. Registration and
+    resolver controls request their own contexts instead of this fixture.
+    """
+    prior_registry = fact_authority.source_registry()
+    with unregistered_identity_source():
+        yield
+    assert fact_authority.source_registry() is prior_registry
+
+
+async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutral_labels(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
     """REQ-switchboard-identity-002: batch speakers reuse authoritative resolutions."""
     known_entity = uuid4()
     unknown_entity = uuid4()
@@ -190,11 +225,15 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
     pipeline = MessagePipeline(MagicMock(), AsyncMock(), source_butler="switchboard")
     pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
 
-    with patch.object(
-        identity_inject,
-        "resolve_sender_identities",
-        resolver,
-        create=True,
+    prior_registry = fact_authority.source_registry()
+    with (
+        unregistered_identity_source(),
+        patch.object(
+            identity_inject,
+            "resolve_sender_identities",
+            resolver,
+            create=True,
+        ),
     ):
         enriched, resolutions = await pipeline._resolve_decomp_speakers(
             source_channel="whatsapp_user_client",
@@ -221,6 +260,52 @@ async def test_decomposition_speakers_are_enriched_once_with_canonical_or_neutra
         channel_type="whatsapp_jid",
         channel_value="222@lid",
     )
+    assert fact_authority.source_registry() is prior_registry
+
+    # A configured issuer must still supply its actual owning resolver methods.
+    # This registration is test-owned; retain whatever issuer the process held.
+    with patch.object(fact_authority, "_source_registry", prior_registry):
+        issuer = fact_authority.FactSourceContextRegistry(MagicMock())
+        fact_authority.register_source_registry(issuer)
+        resolver.reset_mock()
+        with patch.object(identity_inject, "resolve_sender_identities", resolver):
+            registered_messages, registered_resolutions = await pipeline._resolve_decomp_speakers(
+                source_channel="whatsapp_user_client",
+                messages=messages,
+            )
+        assert registered_messages == enriched
+        assert registered_resolutions is resolutions
+        resolver.assert_awaited_once_with(
+            pipeline._pool,
+            "whatsapp_user_client",
+            ["111@s.whatsapp.net", "222@lid", "111@s.whatsapp.net", "222@lid"],
+            notify_owner_fn=None,
+            resolver=issuer.resolve_identity,
+            bulk_resolver=issuer.resolve_identities,
+        )
+
+        # Both legitimate entry states survive normal and exceptional teardown.
+        for entry_registry in (None, issuer):
+            with patch.object(fact_authority, "_source_registry", entry_registry):
+                with unregistered_identity_source():
+                    assert fact_authority.source_registry() is None
+                assert fact_authority.source_registry() is entry_registry
+                with pytest.raises(RuntimeError, match="scenario failed"):
+                    with unregistered_identity_source():
+                        assert fact_authority.source_registry() is None
+                        raise RuntimeError("scenario failed")
+                assert fact_authority.source_registry() is entry_registry
+                with unregistered_identity_source():
+                    with unregistered_identity_source():
+                        assert fact_authority.source_registry() is None
+                    assert fact_authority.source_registry() is None
+                    with pytest.raises(RuntimeError, match="nested scenario failed"):
+                        with unregistered_identity_source():
+                            assert fact_authority.source_registry() is None
+                            raise RuntimeError("nested scenario failed")
+                    assert fact_authority.source_registry() is None
+                assert fact_authority.source_registry() is entry_registry
+    assert fact_authority.source_registry() is prior_registry
 
 
 async def test_batch_unknown_reservation_failure_preserves_other_speaker_anchor(
@@ -277,7 +362,9 @@ async def test_batch_unknown_reservation_failure_preserves_other_speaker_anchor(
     assert "15551234567" not in caplog.text
 
 
-async def test_decomposition_primary_sender_reuses_batch_resolution():
+async def test_decomposition_primary_sender_reuses_batch_resolution(
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
     """REQ-switchboard-identity-002: the routing sender is not resolved twice."""
     primary_entity = uuid4()
     messages = [
@@ -317,7 +404,9 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
     single_resolver = AsyncMock(return_value=primary_result)
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -338,6 +427,7 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
             message_inbox_id="00000000-0000-0000-0000-000000000099",
         )
 
+    assert fact_authority.source_registry() is prior_registry
     assert result.target_butler == "decomposed_empty"
     pipeline._resolve_decomp_speakers.assert_awaited_once_with(
         source_channel="whatsapp_user_client",
@@ -348,9 +438,16 @@ async def test_decomposition_primary_sender_reuses_batch_resolution():
     assert routing_context["identity_preamble"] == primary_result.preamble
     assert routing_context["source_entity_id"] == str(primary_entity)
 
+    with pytest.raises(RuntimeError, match="primary scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("primary scenario failed")
+    assert fact_authority.source_registry() is prior_registry
+
 
 async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_history(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
     """REQ-switchboard-identity-002: strict batch outages stay neutral and fail-open."""
     sentinel = "15551234567@s.whatsapp.net"
@@ -388,7 +485,9 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
     reserve_unknown = AsyncMock()
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -415,6 +514,7 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
             message_inbox_id="00000000-0000-0000-0000-000000000098",
         )
 
+    assert fact_authority.source_registry() is prior_registry
     assert result.target_butler == "decomposed_empty"
     assert captured_messages[0]["sender"] == "Unknown WhatsApp sender"
     assert captured_messages[0]["sender_identity"] == sentinel
@@ -435,6 +535,81 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
     )
     assert warning_record.failure_class == "RuntimeError"
 
+    with pytest.raises(RuntimeError, match="bulk outage scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("bulk outage scenario failed")
+    assert fact_authority.source_registry() is prior_registry
+
+
+async def test_single_sender_identity_failure_warns_content_blind_and_routes_without_identity(
+    caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
+):
+    from butlers.identity import IdentityResolutionQueryError
+
+    sentinel = "PRIVATE IDENTITY FAILURE sender@example.test SELECT secret credential-canary"
+    failure = IdentityResolutionQueryError("UniqueViolationError")
+    failure.add_note(sentinel)
+
+    async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
+        return FakeSpawnerResult(output="Routed to health.", tool_calls=[_route_call("health")])
+
+    resolver = AsyncMock(side_effect=failure)
+    pipeline = MessagePipeline(
+        MagicMock(), dispatch, source_butler="switchboard", enable_identity_resolution=True
+    )
+    pipeline._set_routing_context = MagicMock()  # type: ignore[method-assign]
+    pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+    pipeline._resolve_decomp_speakers = AsyncMock()  # type: ignore[method-assign]
+    pipeline._assert_sender_channel_fact = AsyncMock()  # type: ignore[method-assign]
+
+    prior_registry = fact_authority.source_registry()
+    with (
+        unregistered_identity_source(),
+        patch(
+            "butlers.tools.switchboard.routing.classify._load_available_butlers",
+            new=AsyncMock(return_value=_MOCK_BUTLERS),
+        ),
+        patch.object(identity_inject, "resolve_and_inject_identity", resolver),
+        caplog.at_level(logging.DEBUG),
+    ):
+        result = await pipeline.process(
+            "hello",
+            tool_args={"source_channel": "telegram_bot", "source_id": "sender-1"},
+            message_inbox_id="00000000-0000-0000-0000-000000000099",
+        )
+
+    assert fact_authority.source_registry() is prior_registry
+    resolver.assert_awaited_once_with(
+        pipeline._pool,
+        channel_type="telegram_bot",
+        channel_value="sender-1",
+        display_name=None,
+        notify_owner_fn=None,
+    )
+    pipeline._resolve_decomp_speakers.assert_not_awaited()
+    pipeline._assert_sender_channel_fact.assert_not_awaited()
+    assert result.acked_targets == ["health"]
+    assert result.routing_error is None
+    context = pipeline._set_routing_context.call_args.kwargs
+    assert context["identity_preamble"] is None
+    assert context["source_entity_id"] is None
+    assert context["source_contact_id"] is None
+    warning = next(
+        record
+        for record in caplog.records
+        if record.message == "pipeline.identity_resolution_failed"
+    )
+    assert warning.levelno == logging.WARNING
+    assert warning.failure_class == "IdentityResolutionQueryError"
+    assert warning.args == ()
+    assert warning.exc_info is None
+    assert warning.exc_text is None
+    assert warning.stack_info is None
+    assert sentinel not in caplog.text
+    assert sentinel not in repr([record.__dict__ for record in caplog.records])
+
 
 @pytest.mark.parametrize(
     ("source_channel", "sentinel_identity", "sentinel_chat"),
@@ -453,6 +628,7 @@ async def test_decomposition_bulk_outage_warns_and_routes_neutral_unanchored_his
 )
 async def test_decomposition_observability_omits_message_and_transport_identifiers(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
     source_channel: str,
     sentinel_identity: str,
     sentinel_chat: str,
@@ -491,7 +667,9 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
     pipeline._load_decomp_conversation_messages = AsyncMock(return_value=None)  # type: ignore[method-assign]
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -499,6 +677,7 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
         patch("butlers.modules.pipeline.trace.get_tracer", return_value=_Tracer()),
         caplog.at_level(logging.DEBUG),
     ):
+        assert fact_authority.source_registry() is None
         await pipeline.process(
             sentinel_message,
             tool_args={
@@ -515,6 +694,7 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
             message_inbox_id=inbox_uuid,
         )
 
+    assert fact_authority.source_registry() is prior_registry
     observability = (
         caplog.text + repr([record.__dict__ for record in caplog.records]) + repr(span_attributes)
     )
@@ -524,9 +704,16 @@ async def test_decomposition_observability_omits_message_and_transport_identifie
     assert request_uuid not in observability
     assert inbox_uuid not in observability
 
+    with pytest.raises(RuntimeError, match="observability scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("observability scenario failed")
+    assert fact_authority.source_registry() is prior_registry
+
 
 async def test_decomposition_route_exception_is_content_blind_in_result_and_persistence(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
     sentinel = "15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
     signal = {
@@ -547,7 +734,9 @@ async def test_decomposition_route_exception_is_content_blind_in_result_and_pers
     )
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -567,15 +756,23 @@ async def test_decomposition_route_exception_is_content_blind_in_result_and_pers
             message_inbox_id="00000000-0000-0000-0000-000000000096",
         )
 
+    assert fact_authority.source_registry() is prior_registry
     assert result.routing_error == "finance: route_failed:RuntimeError"
     lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
     assert lifecycle["dispatch_outcomes"]["failed"] == ["finance"]
     assert sentinel not in repr(lifecycle)
     assert sentinel not in caplog.text
 
+    with pytest.raises(RuntimeError, match="route exception scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("route exception scenario failed")
+    assert fact_authority.source_registry() is prior_registry
+
 
 async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_boundary(
     caplog: pytest.LogCaptureFixture,
+    unregistered_identity_source: Callable[[], AbstractContextManager[None]],
 ):
     """Conversation-history dispatch failures expose only stable category/class."""
     sentinel = (
@@ -629,7 +826,9 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
     )
     pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
 
+    prior_registry = fact_authority.source_registry()
     with (
+        unregistered_identity_source(),
         patch(
             "butlers.tools.switchboard.routing.classify._load_available_butlers",
             new=AsyncMock(return_value=_MOCK_BUTLERS),
@@ -654,6 +853,9 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
             message_inbox_id="11111111-1111-4111-8111-111111111111",
         )
 
+        assert fact_authority.source_registry() is None
+
+    assert fact_authority.source_registry() is prior_registry
     lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
     assert lifecycle["decomposition_output"] == {
         "error": {
@@ -692,9 +894,15 @@ async def test_decomposition_dispatch_exception_is_content_blind_at_active_span_
     assert decision_span["attributes"]["error.class"] == "RuntimeError"
     assert decision_span["attributes"]["error.category"] == "classification_dispatch_failed"
 
+    with pytest.raises(RuntimeError, match="active span scenario failed"):
+        with unregistered_identity_source():
+            assert fact_authority.source_registry() is None
+            raise RuntimeError("active span scenario failed")
+    assert fact_authority.source_registry() is prior_registry
+
 
 async def test_decomposition_ingress_dedupe_failure_is_content_blind(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, mocked_pipeline_source
 ):
     """Conversation-history dedupe failures never expose DB exception details."""
     sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
@@ -738,7 +946,7 @@ async def test_decomposition_ingress_dedupe_failure_is_content_blind(
 
 
 async def test_content_blind_structured_classification_failure_has_no_traceback(
-    caplog: pytest.LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture, mocked_pipeline_source
 ):
     sentinel = "postgresql://secret-dsn 15551234567@s.whatsapp.net PRIVATE MESSAGE SQL SELECT"
 
@@ -783,7 +991,9 @@ async def test_content_blind_structured_classification_failure_has_no_traceback(
     assert sentinel not in observability
 
 
-async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic() -> None:
+async def test_non_content_blind_structured_classification_keeps_detailed_diagnostic(
+    mocked_pipeline_source,
+) -> None:
     async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
         return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
 
@@ -813,7 +1023,9 @@ async def test_non_content_blind_structured_classification_keeps_detailed_diagno
     pipeline_exception.assert_called_once()
 
 
-async def test_conversation_history_routed_log_omits_raw_model_output() -> None:
+async def test_conversation_history_routed_log_omits_raw_model_output(
+    mocked_pipeline_source,
+) -> None:
     sentinel = "postgresql://secret-dsn telegram:777000111 PRIVATE MESSAGE SQL SELECT"
 
     async def dispatch(**_kwargs: Any) -> FakeSpawnerResult:
@@ -946,7 +1158,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_dispatch_carries_immutable_turn_id(
-        self, _mock_load, _mock_dashboard_context
+        self, _mock_load, _mock_dashboard_context, mocked_pipeline_source
     ):
         """Dashboard classification must register against its user-message turn.
 
@@ -1003,7 +1215,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_dispatch_recovers_immutable_turn_id_from_inbox(
-        self, _mock_load, mock_dashboard_context
+        self, _mock_load, mock_dashboard_context, mocked_pipeline_source
     ):
         """Direct pipeline callers may omit transport-only dashboard metadata."""
         captured_kwargs: dict[str, Any] = {}
@@ -1045,7 +1257,9 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_dashboard_dispatch_fails_closed_without_a_valid_turn_id(self, _mock_load):
+    async def test_dashboard_dispatch_fails_closed_without_a_valid_turn_id(
+        self, _mock_load, mocked_pipeline_source
+    ):
         """A dashboard-originated runtime must never bypass Stop control."""
         dispatch = AsyncMock()
         pipeline = MessagePipeline(
@@ -1073,7 +1287,7 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_single_target_routing(self, mock_load):
+    async def test_single_target_routing(self, mock_load, mocked_pipeline_source):
         captured_kwargs = {}
 
         async def mock_dispatch(**kwargs):
@@ -1105,7 +1319,9 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_explicit_classification_timeout_is_forwarded(self, mock_load):
+    async def test_explicit_classification_timeout_is_forwarded(
+        self, mock_load, mocked_pipeline_source
+    ):
         captured_kwargs = {}
 
         async def mock_dispatch(**kwargs):
@@ -1137,7 +1353,7 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_falls_back_to_general_when_no_tools(self, mock_load):
+    async def test_falls_back_to_general_when_no_tools(self, mock_load, mocked_pipeline_source):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(output="No routing needed.", tool_calls=[])
 
@@ -1153,7 +1369,7 @@ class TestMessagePipelineProcess:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_error_in_dispatch_returns_fallback(self, mock_load):
+    async def test_error_in_dispatch_returns_fallback(self, mock_load, mocked_pipeline_source):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(output=None, success=False, error="LLM error", tool_calls=[])
 
@@ -1177,7 +1393,7 @@ class TestMessagePipelineProcess:
         return_value=_MOCK_BUTLERS,
     )
     async def test_decomposition_empty_runtime_output_is_decomposed_empty(
-        self, mock_load, mock_history
+        self, mock_load, mock_history, mocked_pipeline_source
     ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
@@ -1231,7 +1447,7 @@ class TestMessagePipelineRoutingVerdictLog:
     for the migration + real-insert coverage.
     """
 
-    async def test_rule_bypass_route_to_records_rule_verdict(self):
+    async def test_rule_bypass_route_to_records_rule_verdict(self, mocked_pipeline_source):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1284,7 +1500,7 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_target"] == "finance"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
 
-    async def test_non_email_route_records_the_wire_endpoint_identity(self):
+    async def test_non_email_route_records_the_wire_endpoint_identity(self, mocked_pipeline_source):
         """Opaque endpoints must remain identical to policy-rule keys."""
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
@@ -1326,7 +1542,9 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["sender_identity"] == "spotify:acct-1"
         assert kwargs["source_channel"] == "spotify_user_client"
 
-    async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(self):
+    async def test_pinned_target_bypass_records_pinned_verdict_with_no_rule_id(
+        self, mocked_pipeline_source
+    ):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1360,7 +1578,9 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_source"] == "pinned"
         assert kwargs["matched_rule_id"] is None
 
-    async def test_thread_affinity_bypass_records_rule_verdict_with_no_rule_id(self):
+    async def test_thread_affinity_bypass_records_rule_verdict_with_no_rule_id(
+        self, mocked_pipeline_source
+    ):
         """thread_affinity has no backing ingestion_rules row (matched_rule_id
         is always None for it) but is still bucketed as verdict_source='rule'
         — see verdict_log module docstring."""
@@ -1398,7 +1618,7 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs["verdict_source"] == "rule"
         assert kwargs["matched_rule_id"] is None
 
-    async def test_skip_bypass_records_skip_verdict(self):
+    async def test_skip_bypass_records_skip_verdict(self, mocked_pipeline_source):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1429,7 +1649,7 @@ class TestMessagePipelineRoutingVerdictLog:
         assert kwargs.get("verdict_target") is None
         assert kwargs["matched_rule_id"] == "22222222-2222-2222-2222-222222222222"
 
-    async def test_metadata_only_bypass_records_metadata_only_verdict(self):
+    async def test_metadata_only_bypass_records_metadata_only_verdict(self, mocked_pipeline_source):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1453,7 +1673,9 @@ class TestMessagePipelineRoutingVerdictLog:
         kwargs = mock_record.await_args.kwargs
         assert kwargs["verdict_action"] == "metadata_only"
 
-    async def test_bypass_does_not_record_verdict_when_no_message_inbox_id(self):
+    async def test_bypass_does_not_record_verdict_when_no_message_inbox_id(
+        self, mocked_pipeline_source
+    ):
         """No ingestion_event_id to FK against -> the write must be skipped,
         not attempted with a null FK."""
         pipeline = MessagePipeline(
@@ -1481,7 +1703,9 @@ class TestMessagePipelineRoutingVerdictLog:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_llm_route_to_butler_call_records_llm_verdict_with_session_id(self, mock_load):
+    async def test_llm_route_to_butler_call_records_llm_verdict_with_session_id(
+        self, mock_load, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
                 output="Routed to health butler.",
@@ -1529,7 +1753,9 @@ class TestMessagePipelineRoutingVerdictLog:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_llm_no_tool_calls_fallback_does_not_record_llm_verdict(self, mock_load):
+    async def test_llm_no_tool_calls_fallback_does_not_record_llm_verdict(
+        self, mock_load, mocked_pipeline_source
+    ):
         """The no-tool-calls -> infer-from-text/"general" fallback is a
         heuristic default, not a genuine per-sender LLM decision, and must
         not be logged as mining evidence."""
@@ -1558,7 +1784,9 @@ class TestMessagePipelineRoutingVerdictLog:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_llm_multiple_route_to_butler_calls_record_one_verdict_each(self, mock_load):
+    async def test_llm_multiple_route_to_butler_calls_record_one_verdict_each(
+        self, mock_load, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
                 output="Routed to health and finance.",
@@ -1605,7 +1833,9 @@ class TestMessagePipelineRoutingVerdictLog:
 
 
 class TestMessagePipelineDashboardPolicyBypassContext:
-    async def test_pinned_bypass_injects_deterministic_dashboard_context_block(self):
+    async def test_pinned_bypass_injects_deterministic_dashboard_context_block(
+        self, mocked_pipeline_source
+    ):
         pipeline = MessagePipeline(
             switchboard_pool=MagicMock(),
             dispatch_fn=AsyncMock(),
@@ -1644,7 +1874,9 @@ class TestMessagePipelineDashboardPolicyBypassContext:
         assert '"route": "/spend"' in context
         assert '"visible_summary": "Spend — this week"' in context
 
-    async def test_pinned_bypass_omits_context_block_when_not_a_dashboard_conversation(self):
+    async def test_pinned_bypass_omits_context_block_when_not_a_dashboard_conversation(
+        self, mocked_pipeline_source
+    ):
         """No conversation_id resolved (e.g. dashboard_context load failed) —
         the bypass must dispatch exactly as before, with no context block."""
         pipeline = MessagePipeline(
@@ -1674,7 +1906,9 @@ class TestMessagePipelineDashboardPolicyBypassContext:
         envelope = mock_route.await_args.kwargs["args"]
         assert "context" not in envelope["input"]
 
-    async def test_non_dashboard_pinned_bypass_never_calls_load_dashboard_context(self):
+    async def test_non_dashboard_pinned_bypass_never_calls_load_dashboard_context(
+        self, mocked_pipeline_source
+    ):
         """A non-dashboard channel's policy bypass (e.g. email) must not pay
         the dashboard-context lookup cost or attempt injection."""
         pipeline = MessagePipeline(
@@ -1731,7 +1965,9 @@ class TestMessagePipelineDemotionSpotCheck:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_spot_check_route_to_agreement_suppresses_bypass(self, mock_load):
+    async def test_spot_check_route_to_agreement_suppresses_bypass(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Fresh LLM verdict matches the rule's own target -> agreement."""
 
         async def mock_dispatch(**kwargs):
@@ -1794,7 +2030,7 @@ class TestMessagePipelineDemotionSpotCheck:
         return_value=_MOCK_BUTLERS,
     )
     async def test_spot_check_route_to_disagreement_records_llm_target_not_rule_target(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """Fresh LLM verdict disagrees with the rule -> spot_check row still
         records what the LLM actually said, not what the rule would have."""
@@ -1847,7 +2083,9 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["verdict_target"] == "general"
         assert kwargs["matched_rule_id"] == "11111111-1111-1111-1111-111111111111"
 
-    async def test_spot_check_skip_agreement_records_skip_counterpart_verdict(self):
+    async def test_spot_check_skip_agreement_records_skip_counterpart_verdict(
+        self, mocked_pipeline_source
+    ):
         """A spot-checked skip rule the LLM AGREES with (no route) must not
         take the early skip return, but MUST record a ``spot_check`` skip
         counterpart row (bu-wa3nb) so the agreement scorer sees the agreement,
@@ -1900,7 +2138,9 @@ class TestMessagePipelineDemotionSpotCheck:
         mock_demotion.assert_awaited_once()
         assert mock_demotion.await_args.kwargs["rule_id"] == "22222222-2222-2222-2222-222222222222"
 
-    async def test_spot_check_metadata_only_agreement_records_counterpart_verdict(self):
+    async def test_spot_check_metadata_only_agreement_records_counterpart_verdict(
+        self, mocked_pipeline_source
+    ):
         """Same as the skip counterpart, for a spot-checked metadata_only
         rule the LLM agrees with -> ``verdict_action='metadata_only'``."""
 
@@ -1949,7 +2189,9 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["matched_rule_id"] == "33333333-3333-3333-3333-333333333333"
         mock_demotion.assert_awaited_once()
 
-    async def test_spot_check_skip_disagreement_records_route_to_not_skip(self):
+    async def test_spot_check_skip_disagreement_records_route_to_not_skip(
+        self, mocked_pipeline_source
+    ):
         """A spot-checked skip rule the LLM DISAGREES with (calls
         route_to_butler) records the route_to disagreement row exactly as
         before — the skip counterpart branch must NOT also fire."""
@@ -2007,7 +2249,7 @@ class TestMessagePipelineDemotionSpotCheck:
         assert kwargs["verdict_target"] == "finance"
         mock_demotion.assert_awaited_once()
 
-    async def test_spot_check_skip_did_not_run_records_nothing(self):
+    async def test_spot_check_skip_did_not_run_records_nothing(self, mocked_pipeline_source):
         """Honesty doctrine: a spot-check whose classification never produced
         a result (dispatch returns None -> spawn error/timeout equivalent)
         must record no counterpart row, so it counts as neither agreement nor
@@ -2052,7 +2294,7 @@ class TestMessagePipelineDemotionSpotCheck:
         mock_record.assert_not_awaited()
         mock_demotion.assert_not_awaited()
 
-    async def test_no_spot_check_flag_preserves_existing_skip_bypass(self):
+    async def test_no_spot_check_flag_preserves_existing_skip_bypass(self, mocked_pipeline_source):
         """Regression guard: omitting triage_spot_check must not change
         pre-existing bypass behavior."""
         pipeline = MessagePipeline(
@@ -2093,7 +2335,7 @@ class TestMessagePipelineStructuredClassificationFastLane:
         return_value=_MOCK_BUTLERS,
     )
     async def test_local_tool_server_provider_is_resolved_lazily_not_at_construction(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """Regression guard: ``ButlerDaemon._wire_pipelines()`` (and therefore
         ``MessagePipeline.__init__``) runs BEFORE ``daemon.mcp`` is assigned a
@@ -2140,7 +2382,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_result_flows_through_unchanged_and_cli_is_skipped(self, mock_load):
+    async def test_fast_lane_result_flows_through_unchanged_and_cli_is_skipped(
+        self, mock_load, mocked_pipeline_source
+    ):
         """When the fast lane returns a result, downstream extraction/telemetry
         must behave identically to the CLI path, and dispatch_fn (the CLI
         spawn) must never be called.
@@ -2181,7 +2425,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_falls_back_to_cli_when_fast_lane_returns_none(self, mock_load):
+    async def test_falls_back_to_cli_when_fast_lane_returns_none(
+        self, mock_load, mocked_pipeline_source
+    ):
         """try_structured_classification() returning None (runtime not "api",
         schema-invalid twice, failover exhausted, ...) must fall back to the
         existing CLI dispatch_fn path unchanged.
@@ -2220,7 +2466,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_not_attempted_when_mcp_server_is_none(self, mock_load):
+    async def test_fast_lane_not_attempted_when_mcp_server_is_none(
+        self, mock_load, mocked_pipeline_source
+    ):
         """mcp_server defaults to None — the fast lane must never even be
         imported/called, and every existing dispatch_fn-only test stays valid.
         """
@@ -2260,7 +2508,9 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_skipped_for_decomposition_payload(self, mock_load, mock_history):
+    async def test_fast_lane_skipped_for_decomposition_payload(
+        self, mock_load, mock_history, mocked_pipeline_source
+    ):
         """The decomposition/signal-extraction lane parses a JSON signal
         array, not route_to_butler/file_bug_report tool calls — the fast
         lane must never be attempted for it, even when mcp_server is set.
@@ -2297,7 +2547,7 @@ class TestMessagePipelineStructuredClassificationFastLane:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_fast_lane_exception_falls_back_to_cli(self, mock_load):
+    async def test_fast_lane_exception_falls_back_to_cli(self, mock_load, mocked_pipeline_source):
         """A bug in the fast lane must never take down classification — any
         unexpected exception falls back to the existing CLI path.
         """
@@ -2581,7 +2831,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_a_data_statement_routes_to_domain_butler(self, mock_load):
+    async def test_lane_a_data_statement_routes_to_domain_butler(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Lane A: a route_to_butler call routes normally, same as any channel."""
 
         async def mock_dispatch(**kwargs):
@@ -2624,7 +2876,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_b_bug_report_never_reaches_route_to_butler_fallback(self, mock_load):
+    async def test_lane_b_bug_report_never_reaches_route_to_butler_fallback(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Lane B: file_bug_report short-circuits — never falls into the
         route_to_butler extraction/fallback-to-general path."""
 
@@ -2664,7 +2918,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_b_surfaces_co_occurring_route_route_then_bug(self, mock_load, caplog):
+    async def test_lane_b_surfaces_co_occurring_route_route_then_bug(
+        self, mock_load, caplog, mocked_pipeline_source
+    ):
         """Route-then-bug (bu-j5jqv): route_to_butler dispatched first (the
         tool-layer guard lets an already-dispatched route stand), then
         file_bug_report claimed the lane in the same session. Bug lane still
@@ -2722,7 +2978,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_lane_b_surfaces_co_occurring_route_bug_then_route_refused(
-        self, mock_load, caplog
+        self, mock_load, caplog, mocked_pipeline_source
     ):
         """Failed/refused co-occurring routes remain observable as attempts.
 
@@ -2798,7 +3054,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_unroutable_dashboard_message_dead_letters_instead_of_general(self, mock_load):
+    async def test_unroutable_dashboard_message_dead_letters_instead_of_general(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Dashboard messages that route to neither lane must dead-letter + notify,
         never silently fall back to 'general' (that fallback is channel-specific)."""
 
@@ -2832,7 +3090,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_ambiguous_dashboard_message_yields_clarifying_question_no_route(self, mock_load):
+    async def test_ambiguous_dashboard_message_yields_clarifying_question_no_route(
+        self, mock_load, mocked_pipeline_source
+    ):
         """bu-0ynlk.1: an ambiguous message must not be force-routed via a
         best-guess route_to_butler call. When the classifier follows the
         updated prompt and calls neither tool, the pipeline must dead-letter
@@ -2877,7 +3137,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_non_dashboard_channel_still_falls_back_to_general(self, mock_load):
+    async def test_non_dashboard_channel_still_falls_back_to_general(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Non-dashboard channels are unaffected — existing fallback-to-general behavior."""
 
         async def mock_dispatch(**kwargs):
@@ -2898,7 +3160,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_classifier_spawn_exception_dead_letters_instead_of_general(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """(G2) A classifier spawn exception on a dashboard envelope must never
         silently fall back to 'general' like every other channel — it must
@@ -2938,7 +3200,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_non_dashboard_spawn_exception_still_falls_back_to_general(self, mock_load):
+    async def test_non_dashboard_spawn_exception_still_falls_back_to_general(
+        self, mock_load, mocked_pipeline_source
+    ):
         """A classifier exception dispatches the original message to General."""
 
         async def mock_dispatch(**kwargs):
@@ -2975,7 +3239,8 @@ class TestMessagePipelineProcessDashboardLanes:
                     "source_identity": "telegram:bot:synthetic",
                     "request_context": {
                         "source_sender_identity": "owner-sender",
-                        "source_thread_identity": "owner-thread",
+                        "source_thread_identity": "owner-chat:7",
+                        "external_conversation_id": "telegram:owner-chat",
                     },
                 },
                 message_inbox_id="00000000-0000-0000-0000-000000000007",
@@ -2990,6 +3255,9 @@ class TestMessagePipelineProcessDashboardLanes:
         assert envelope["input"]["prompt"] == "Just browsing"
         assert envelope["request_context"]["source_channel"] == "telegram_bot"
         assert envelope["request_context"]["source_sender_identity"] == "owner-sender"
+        # The fallback turn keeps the chat's anchor and reply target.
+        assert envelope["request_context"]["external_conversation_id"] == "telegram:owner-chat"
+        assert envelope["request_context"]["source_thread_identity"] == "owner-chat:7"
         assert envelope["target"]["butler"] == "general"
         assert "provider" not in envelope["source_metadata"]
         lifecycle = pipeline._update_message_inbox_lifecycle.await_args.kwargs
@@ -3016,10 +3284,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_classification_fallback_preserves_supported_sender_shapes(
-        self,
-        mock_load,
-        sender_field: str,
-        sender_value: str,
+        self, mock_load, sender_field: str, sender_value: str, mocked_pipeline_source
     ) -> None:
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -3051,7 +3316,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_non_dashboard_spawn_exception_reports_nested_fallback_rejection(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ) -> None:
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -3117,7 +3382,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_non_dashboard_fallback_requires_recognized_route_success(
-        self, mock_load, malformed_result
+        self, mock_load, malformed_result, mocked_pipeline_source
     ) -> None:
         async def mock_dispatch(**kwargs):
             raise RuntimeError("boom")
@@ -3146,7 +3411,7 @@ class TestMessagePipelineProcessDashboardLanes:
         return_value=_MOCK_BUTLERS,
     )
     async def test_dashboard_failed_route_dead_letters_instead_of_returning_routed(
-        self, mock_load, caplog
+        self, mock_load, caplog, mocked_pipeline_source
     ):
         """(G3) route_to_butler was attempted but route.execute failed for the
         only target — this must dead-letter, not silently return a 'routed
@@ -3200,7 +3465,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_dashboard_successful_route_does_not_dead_letter(self, mock_load):
+    async def test_dashboard_successful_route_does_not_dead_letter(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Regression guard for the 'not routed' -> 'not acked' gate change:
         a fully successful dashboard route must NOT go through the
         dead-letter path."""
@@ -3240,7 +3507,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_refused_cannot_answer_does_not_override_accepted_route(self, mock_load):
+    async def test_refused_cannot_answer_does_not_override_accepted_route(
+        self, mock_load, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             return FakeSpawnerResult(
                 output="Routed to finance; later decline call was refused.",
@@ -3290,7 +3559,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_d_domain_question_routes_to_domain_butler(self, mock_load):
+    async def test_lane_d_domain_question_routes_to_domain_butler(
+        self, mock_load, mocked_pipeline_source
+    ):
         """Lane D (domain scope): answer_question dispatches to the target
         butler and merges into the same routed/acked bookkeeping route_to_butler
         uses (bu-0ynlk.2)."""
@@ -3335,7 +3606,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_d_cannot_answer_dead_letters_without_double_capture(self, mock_load):
+    async def test_lane_d_cannot_answer_dead_letters_without_double_capture(
+        self, mock_load, mocked_pipeline_source
+    ):
         """cannot_answer already performed its own dead-letter capture and
         in-thread reply — the generic 'no lane decision' dead-letter net must
         NEVER fire again for the same turn (bu-0ynlk.2 AC3)."""
@@ -3387,7 +3660,9 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_lane_d_system_scope_answer_question_dead_letters_via_fallback(self, mock_load):
+    async def test_lane_d_system_scope_answer_question_dead_letters_via_fallback(
+        self, mock_load, mocked_pipeline_source
+    ):
         """bu-0ynlk.3 (Concierge) does not exist yet — a scope="system"
         answer_question resolves through the same dead-letter path as
         cannot_answer, never routes to any domain butler."""
@@ -3434,8 +3709,133 @@ class TestMessagePipelineProcessDashboardLanes:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_lane_d_system_scope_read_is_published_without_dead_letter(
+        self, mock_load, mocked_pipeline_source, monkeypatch, cancelled
+    ):
+        """Successful Concierge evidence is consumed as an answer, not a decline."""
+
+        async def mock_dispatch(**kwargs):
+            return FakeSpawnerResult(
+                output="Fleet estimated cost was $1.23.",
+                tool_calls=[
+                    {
+                        "name": "answer_question",
+                        "args": {"scope": "system", "question": "What did the fleet spend today?"},
+                        "result": {
+                            "status": "cancelled" if cancelled else "ok",
+                            "answered": True,
+                            "tool": "dashboard_read_spend_summary",
+                            "data": {
+                                "total_cost_cents": 123,
+                                "source": {
+                                    "kind": "view",
+                                    "ref": "concierge.v_fleet_spend",
+                                    "as_of": "2026-10-14T00:00:00+00:00",
+                                },
+                            },
+                        },
+                    }
+                ],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=mock_dispatch, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(  # type: ignore[method-assign]
+            return_value={"conversation_id": "conv-10", "page_context": None}
+        )
+        pipeline._update_message_inbox_lifecycle = AsyncMock()  # type: ignore[method-assign]
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()  # type: ignore[method-assign]
+
+        persist = AsyncMock(return_value="completed")
+        monkeypatch.setattr(
+            "butlers.core_tools._dashboard_system_answer.persist_system_answer", persist
+        )
+        result = await pipeline.process(
+            "What did the fleet spend today?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-000000000010",
+        )
+
+        if cancelled:
+            assert result.target_butler == "cancelled"
+            assert result.route_result == {"cancelled": True}
+            assert result.routing_error is None
+            persist.assert_not_awaited()
+        else:
+            assert result.target_butler == "concierge"
+            assert result.route_result == {"lane": "system_answer", "status": "completed"}
+            assert persist.await_args.kwargs["answer"] == "Fleet estimated cost was $1.23."
+            assert (
+                persist.await_args.kwargs["evidence"]["data"]["source"]["ref"]
+                == "concierge.v_fleet_spend"
+            )
+        assert result.routed_targets == []
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
+    async def test_system_answer_pending_publication_remains_non_success(
+        self, mock_load, mocked_pipeline_source, monkeypatch
+    ):
+        evidence = {
+            "status": "ok",
+            "answered": True,
+            "tool": "dashboard_read_spend_summary",
+            "data": {
+                "source": {
+                    "kind": "view",
+                    "ref": "concierge.v_fleet_spend",
+                    "as_of": "2026-10-14T00:00:00+00:00",
+                }
+            },
+        }
+
+        async def classify(**kwargs):
+            return FakeSpawnerResult(
+                output="A sourced answer awaiting durable settlement.",
+                tool_calls=[{"name": "answer_question", "result": evidence}],
+            )
+
+        pipeline = MessagePipeline(
+            switchboard_pool=MagicMock(), dispatch_fn=classify, source_butler="switchboard"
+        )
+        pipeline._load_dashboard_context = AsyncMock(return_value={"conversation_id": "conv-10"})
+        pipeline._update_message_inbox_lifecycle = AsyncMock()
+        pipeline._dead_letter_dashboard_unroutable = AsyncMock()
+        publish = AsyncMock(return_value="pending")
+        monkeypatch.setattr(
+            "butlers.core_tools._dashboard_system_answer.persist_system_answer", publish
+        )
+        result = await pipeline.process(
+            "Fleet cost?",
+            tool_args=_dashboard_tool_args(),
+            message_inbox_id="00000000-0000-0000-000000000010",
+        )
+        assert result.route_result == {"lane": "system_answer", "status": "pending"}
+        assert result.routing_error == "system_answer:pending"
+        assert result.acked_targets == [] and result.routed_targets == []
+        assert publish.await_args.kwargs["evidence"] == evidence
+        assert (
+            publish.await_args.kwargs["answer"] == "A sourced answer awaiting durable settlement."
+        )
+        assert (
+            pipeline._update_message_inbox_lifecycle.await_args.kwargs["lifecycle_state"]
+            == "errored"
+        )
+        pipeline._dead_letter_dashboard_unroutable.assert_not_awaited()
+
+    @patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new_callable=AsyncMock,
+        return_value=_MOCK_BUTLERS,
+    )
     async def test_ambiguous_question_fixture_yields_cannot_answer_not_general_route(
-        self, mock_load
+        self, mock_load, mocked_pipeline_source
     ):
         """bu-0ynlk.2 AC1: an ambiguous question fixture resolves via
         cannot_answer, never a route_to_butler('general') best-guess."""
@@ -3500,7 +3900,7 @@ class TestDeadLetterDashboardUnroutable:
         monkeypatch.setattr(capture_mod, "capture_to_dead_letter", mock_capture)
         fake_reply = AsyncMock(return_value={"id": "msg-1"})
         monkeypatch.setattr(
-            "butlers.api.conversations.conversation_reply_create",
+            "butlers.conversation_messages.conversation_reply_create",
             fake_reply,
         )
 
@@ -3544,7 +3944,7 @@ class TestDeadLetterDashboardUnroutable:
         monkeypatch.setattr(capture_mod, "capture_to_dead_letter", AsyncMock(return_value="dl-id"))
         fake_reply = AsyncMock()
         monkeypatch.setattr(
-            "butlers.api.conversations.conversation_reply_create",
+            "butlers.conversation_messages.conversation_reply_create",
             fake_reply,
         )
 
@@ -3752,7 +4152,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_colliding_authoritative_message_ids_are_not_selectable(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Spec: REQ-conversation-decomposition-001."""
 
@@ -3877,7 +4277,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_carries_full_schema(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Fan-out must produce the full schema, not just target/tool_name/tool_args."""
         signal = {
@@ -3966,10 +4366,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_same_target_concepts_receive_unique_target_visible_subrequests(
-        self,
-        mock_route,
-        mock_load,
-        mock_history,
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Each same-target concept has independent route.execute dedupe identity."""
         signals = [
@@ -4035,7 +4432,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_enriches_calendar_proposal_from_ingestion_context(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """A live ``events`` signal becomes a provenance-linked pending proposal call."""
         source_event_id = "00000000-0000-0000-0000-000000000010"
@@ -4123,7 +4520,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_routes_calendar_proposal_to_general_not_model_target(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Calendar proposal ownership stays code-controlled at the general butler."""
         signal = {
@@ -4183,7 +4580,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_cannot_turn_event_signal_into_provider_write(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """Model tool selection cannot bypass the proposal-only event contract."""
         signal = {
@@ -4239,7 +4636,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_fanout_drops_below_floor_calendar_signal(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """A MEDIUM-confidence event never reaches the calendar proposal producer."""
         signal = {
@@ -4293,7 +4690,7 @@ class TestDecompositionSignalSchema:
         return_value={"status": "ok"},
     )
     async def test_decomposition_parses_markdown_fenced_output(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         """A markdown-fenced array must still route, not fall back to decomposed_empty."""
         signal = {
@@ -4439,7 +4836,9 @@ class TestDecompositionEmptyMetric:
         new_callable=AsyncMock,
         return_value=_MOCK_BUTLERS,
     )
-    async def test_counter_incremented_on_empty_decomposition(self, mock_load, mock_history):
+    async def test_counter_incremented_on_empty_decomposition(
+        self, mock_load, mock_history, mocked_pipeline_source
+    ):
         async def mock_dispatch(**kwargs):
             # No parseable signals → decomposed_empty short-circuit.
             return FakeSpawnerResult(
@@ -4501,7 +4900,7 @@ class TestDecompositionEmptyMetric:
         return_value={"status": "ok"},
     )
     async def test_counter_not_incremented_on_non_empty_decomposition(
-        self, mock_route, mock_load, mock_history
+        self, mock_route, mock_load, mock_history, mocked_pipeline_source
     ):
         signal = {
             "signal_type": "finance",
@@ -4546,3 +4945,184 @@ class TestDecompositionEmptyMetric:
             assert "butlers.pipeline.decomposition_empty" not in data
         finally:
             _reset_metrics_global_state()
+
+
+def _ingress_pipeline(existing: dict[str, Any] | None = None) -> tuple[MessagePipeline, AsyncMock]:
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=[existing, {"request_id": "req-1"}])
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    pool = MagicMock()
+    pool.execute = AsyncMock()
+    pool.acquire.return_value = ctx
+    pipeline = MessagePipeline(
+        pool, AsyncMock(), source_butler="switchboard", enable_ingress_dedupe=True
+    )
+    return pipeline, conn
+
+
+async def _accept(pipeline: MessagePipeline, text: str):
+    return await pipeline._accept_ingress(
+        message_text=text,
+        args={"source_channel": "email", "source_identity": "sender@example.com"},
+        source_metadata={},
+        source="email",
+        chat_id=None,
+    )
+
+
+async def test_accept_ingress_binds_scrubbed_text_and_keeps_dedupe_reuse() -> None:
+    pipeline, conn = _ingress_pipeline()
+    record = await _accept(pipeline, "Your code is 482913")
+
+    assert record is not None and record.decision == "accepted"
+    insert_args = conn.fetchrow.await_args_list[1].args
+    raw_payload, normalized_text = insert_args[3], insert_args[4]
+    assert "482913" not in str(raw_payload) + normalized_text
+    assert "[auth-code withheld" in normalized_text
+    assert raw_payload["content"] == normalized_text
+
+    reuse, conn = _ingress_pipeline(existing={"request_id": "req-0"})
+    record = await _accept(reuse, "Your code is 482913")
+    assert record is not None and record.decision == "deduped"
+    assert conn.fetchrow.await_count == 1
+
+
+async def test_ordinary_numbers_survive_all_inbound_writers() -> None:
+    from uuid import UUID
+
+    from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+    from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+    text = "Invoice 482913 total 20.50"
+    pipeline, conn = _ingress_pipeline()
+    await _accept(pipeline, text)
+    assert conn.fetchrow.await_args_list[1].args[4] == text
+
+    dl_conn = AsyncMock()
+    dl_conn.fetchrow = AsyncMock(return_value={"id": "dl-1"})
+    await capture_to_dead_letter(
+        dl_conn,
+        original_request_id=UUID(int=1),
+        source_table="message_inbox",
+        failure_reason="boom",
+        failure_category="retry_exhausted",
+        retry_count=1,
+        last_retry_at=None,
+        original_payload={"content": text},
+        request_context={},
+        error_details={},
+    )
+    assert json.loads(dl_conn.fetchrow.await_args.args[7]) == {"content": text}
+
+    replay_conn = _replay_conn({"content": text})
+    await replay_dead_letter_request(
+        replay_conn, dead_letter_id=UUID(int=2), operator_identity="op", reason="r"
+    )
+    assert _replayed_insert(replay_conn)[3] == text
+
+
+def _replay_conn(original_payload: dict[str, Any]) -> AsyncMock:
+    from uuid import UUID
+
+    conn = AsyncMock()
+    conn.transaction = MagicMock(return_value=AsyncMock())
+    conn.fetchrow = AsyncMock(
+        return_value={
+            "id": UUID(int=2),
+            "original_request_id": UUID(int=1),
+            "source_table": "message_inbox",
+            "original_payload": json.dumps(original_payload),
+            "request_context": json.dumps({}),
+            "replay_eligible": True,
+            "replayed_at": None,
+        }
+    )
+    return conn
+
+
+def _replayed_insert(conn: AsyncMock) -> tuple[Any, ...]:
+    call = next(
+        c for c in conn.execute.await_args_list if "INTO switchboard.message_inbox" in c.args[0]
+    )
+    return call.args[1:]
+
+
+async def test_dead_letter_capture_stores_scrubbed_original_payload() -> None:
+    from uuid import UUID
+
+    from butlers.tools.switchboard.dead_letter.capture import capture_to_dead_letter
+
+    dl_conn = AsyncMock()
+    dl_conn.fetchrow = AsyncMock(return_value={"id": "dl-1"})
+    await capture_to_dead_letter(
+        dl_conn,
+        original_request_id=UUID(int=1),
+        source_table="message_inbox",
+        failure_reason="boom",
+        failure_category="retry_exhausted",
+        retry_count=1,
+        last_retry_at=None,
+        original_payload={"content": "Your code is 482913", "message_text": "Your code is 482913"},
+        request_context={},
+        error_details={},
+    )
+    assert "482913" not in dl_conn.fetchrow.await_args.args[7]
+
+
+async def test_dead_letter_replay_scrubs_legacy_raw_payload() -> None:
+    from uuid import UUID
+
+    from butlers.tools.switchboard.dead_letter.replay import replay_dead_letter_request
+
+    # A legacy pre-fix dead letter still holds raw text; replay scrubs it on reinsert.
+    conn = _replay_conn({"content": "Your code is 482913"})
+    result = await replay_dead_letter_request(
+        conn, dead_letter_id=UUID(int=2), operator_identity="op", reason="r"
+    )
+    assert result["success"] is True
+    _, _, raw_payload, normalized_text, _ = _replayed_insert(conn)
+    assert "482913" not in raw_payload + normalized_text
+    assert "[auth-code withheld" in normalized_text
+
+
+async def test_process_routes_scrubbed_text_and_withholds_it_on_detector_failure(
+    mocked_pipeline_source,
+) -> None:
+    """The routing prompt gets the placeholder, never the code; a detector failure withholds."""
+    prompts: list[str] = []
+
+    async def dispatch(**kwargs: Any) -> FakeSpawnerResult:
+        prompts.append(kwargs["prompt"])
+        return FakeSpawnerResult(output="routed", tool_calls=[_route_call("finance")])
+
+    pipeline = MessagePipeline(MagicMock(), dispatch, source_butler="switchboard")
+    tool_args = {
+        "source_channel": "email",
+        "source_identity": "sender@example.com",
+        "request_id": "019c8812-fb0f-77f3-88b9-5763c1336b27",
+    }
+    with patch(
+        "butlers.tools.switchboard.routing.classify._load_available_butlers",
+        new=AsyncMock(return_value=_MOCK_BUTLERS),
+    ):
+        await pipeline.process(
+            "Your code is 482913",
+            tool_args=dict(tool_args),
+            message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+        )
+        with patch(
+            "butlers.modules.pipeline.scrub_message_text", side_effect=RuntimeError("482913")
+        ):
+            await pipeline.process(
+                "Your code is 482913",
+                tool_args=dict(tool_args),
+                message_inbox_id="019c8812-fb0f-77f3-88b9-5763c1336b27",
+            )
+
+    assert len(prompts) == 2
+    assert all("482913" not in prompt for prompt in prompts)
+    assert "[auth-code withheld" in prompts[0]
+    assert "[content withheld]" in prompts[1]

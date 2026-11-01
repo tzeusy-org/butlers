@@ -43,7 +43,6 @@ vi.mock("@/hooks/use-butler-management", () => ({
   useButlerPrompt: vi.fn(),
   useUpdateButlerPrompt: vi.fn(),
   useButlerPromptHistory: vi.fn(),
-  useButlerTools: vi.fn(),
   useButlerMemoryAccess: vi.fn(),
   useKillButler: vi.fn(),
 }));
@@ -57,7 +56,6 @@ import {
   useButlerPrompt,
   useUpdateButlerPrompt,
   useButlerPromptHistory,
-  useButlerTools,
   useButlerMemoryAccess,
   useKillButler,
 } from "@/hooks/use-butler-management";
@@ -118,11 +116,6 @@ function setupDefaultHooks(mutateFn = vi.fn()) {
     mutate: mutateFn,
     isPending: false,
   } as unknown as ReturnType<typeof useUpdateButlerPrompt>);
-
-  vi.mocked(useButlerTools).mockReturnValue({
-    data: { data: [] },
-    isLoading: false,
-  } as unknown as ReturnType<typeof useButlerTools>);
 
   vi.mocked(useButlerMemoryAccess).mockReturnValue({
     data: undefined,
@@ -772,5 +765,108 @@ describe("Activity stripe axis semantics", () => {
       expect(axis.getByText(label)).toBeTruthy();
     }
     expect(axis.queryByText("now")).toBeNull();
+  });
+});
+
+describe("retired tool-grant section (bu-svqpzo.4)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+  });
+  afterEach(() => cleanup());
+
+  it("renders no tool-grant section and requests no tool grants", async () => {
+    renderTab();
+
+    expect(screen.queryByRole("heading", { name: "Tools & integrations" })).toBeNull();
+    expect(screen.queryByText("No tool grants configured for this butler.")).toBeNull();
+    expect(screen.queryByText(/\d+\/\d+ allowed/)).toBeNull();
+    expect(screen.queryByText("no tools configured")).toBeNull();
+
+    // The hooks module no longer offers a tool-grant hook for the tab to call.
+    const hooks = await import("@/hooks/use-butler-management");
+    expect(Object.keys(hooks).filter((name) => /Tools?$/.test(name))).toEqual([]);
+  });
+});
+
+describe("Memory read ceiling row (bu-6uarl2)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
+  });
+  afterEach(() => cleanup());
+
+  function renderWithCeiling(value: unknown) {
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: { ...RUNTIME_CONFIG, catalog_read_sensitivity: value },
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+    renderTab();
+  }
+
+  it.each([
+    ["normal", "normal · normal only"],
+    ["internal", "internal · normal + pii"],
+    ["confidential", "confidential · all tiers"],
+  ])("shows what the %s ceiling admits", (value, text) => {
+    renderWithCeiling(value);
+    expect(screen.getByText("Memory read ceiling")).toBeTruthy();
+    expect(screen.getByText(text)).toBeTruthy();
+  });
+
+  it.each([null, undefined, "secret"])(
+    "marks %s as the fail-closed default",
+    (value) => {
+      renderWithCeiling(value);
+      expect(
+        screen.getByText("normal · normal only (default, fail-closed)"),
+      ).toBeTruthy();
+    },
+  );
+
+  it("shows a placeholder while runtime config loads", () => {
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: undefined,
+      isLoading: true,
+      isError: false,
+      error: null,
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+    renderTab();
+    expect(screen.queryByText(/fail-closed/)).toBeNull();
+  });
+});
+
+describe("Memory read ceiling row without a runtime config (bu-6uarl2)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupDefaultHooks();
+    vi.mocked(useButlerModules).mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+      isError: false,
+    } as unknown as ReturnType<typeof useButlerModules>);
+  });
+  afterEach(() => cleanup());
+
+  it("renders a dash, not the fail-closed default, when the config fetch failed", () => {
+    vi.mocked(useRuntimeConfig).mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new Error("boom"),
+    } as unknown as ReturnType<typeof useRuntimeConfig>);
+
+    renderTab();
+
+    const row = screen.getByText("Memory read ceiling").parentElement;
+    expect(row?.textContent).toContain("—");
+    expect(screen.queryByText(/fail-closed/)).toBeNull();
   });
 });

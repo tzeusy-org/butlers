@@ -17,6 +17,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useInsightDeliveryState } from "@/hooks/use-system"
 import { Time } from "@/components/ui/time"
@@ -40,22 +41,6 @@ function TileSkeleton() {
           <Skeleton className="h-5 w-40" />
           <Skeleton className="h-5 w-48" />
         </div>
-      </TileContent>
-    </Tile>
-  )
-}
-
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Insight Delivery</TileTitle>
-        <TileDescription>Proactive insight pipeline state</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="insight-delivery-tile-error" className="text-destructive text-sm">
-          Could not load insight delivery state.
-        </p>
       </TileContent>
     </Tile>
   )
@@ -100,14 +85,22 @@ function StatRow({ label, value, testId, muted = false }: StatRowProps) {
  * Values come from real delivery-state tables — never placeholders.
  */
 export function InsightDeliveryTile() {
-  const { data: response, isPending, isError } = useInsightDeliveryState()
+  const q = useInsightDeliveryState()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Insight Delivery" description="Proactive insight pipeline state"
+      errorMessage="Could not load insight delivery state." errorTestId="insight-delivery-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <InsightDeliveryContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const state = response?.data
+function InsightDeliveryContent({ response }: {
+  response: NonNullable<ReturnType<typeof useInsightDeliveryState>["data"]>
+}) {
+  const state = response.data
 
-  const lastDeliveryLabel = state?.last_delivery_at ? (
+  const lastDeliveryLabel = state.last_delivery_at ? (
     <Time value={state.last_delivery_at} mode="absolute" precision="minute" />
   ) : "No deliveries yet"
 
@@ -121,24 +114,24 @@ export function InsightDeliveryTile() {
         <dl className="divide-y divide-border">
           <StatRow
             label="Queued"
-            value={state?.queued ?? 0}
+            value={state.queued}
             testId="insight-delivery-queued"
           />
           <StatRow
             label="Delivered"
-            value={state?.delivered ?? 0}
+            value={state.delivered}
             testId="insight-delivery-delivered"
           />
           <StatRow
             label="Failed"
-            value={state?.failed ?? 0}
+            value={state.failed}
             testId="insight-delivery-failed"
           />
           <StatRow
             label="Last delivery"
             value={lastDeliveryLabel}
             testId="insight-delivery-last-at"
-            muted={!state?.last_delivery_at}
+            muted={!state.last_delivery_at}
           />
         </dl>
       </TileContent>

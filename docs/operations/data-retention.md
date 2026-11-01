@@ -138,6 +138,19 @@ separate export step before enabling it.
 
 ---
 
+### `connectors.activitywatch_events`
+
+**Decision: 14 DAYS BY DEFAULT — connector-owned purge, no scheduled job**
+
+Durable ActivityWatch window-focus evidence, including raw window titles, which are sensitive.
+ActivityWatch stays the upstream source of truth. The connector itself purges rows whose event
+timestamp `ts` is older than `ACTIVITYWATCH_RETENTION_DAYS` (default 14, minimum 1; a lower value
+refuses to start) every 6 hours while it has a database pool
+(`ActivityWatchRetention` in `src/butlers/connectors/activitywatch.py`). It is not one of the
+scheduled pruners below, and Chronicler projections are not pruned.
+
+---
+
 ### Memory tables (`{butler_schema}.episodes`, `episode_chunks`, `entity_*`, `relations`, etc.)
 
 **Decision: RETENTION-CLASS GOVERNED**

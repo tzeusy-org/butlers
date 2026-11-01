@@ -10,6 +10,7 @@ import uuid
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.contract
 
@@ -18,7 +19,7 @@ class TestIngestEnvelopeFormat:
     """RFC 0003: ingest.v1 is the canonical envelope for all external events."""
 
     def test_envelope_parsing_and_channel_pairings(self):
-        from butlers.tools.switchboard.routing.contracts import (
+        from butlers.tools.switchboard.contracts import (
             _ALLOWED_PROVIDERS_BY_CHANNEL,
             parse_ingest_envelope,
         )
@@ -32,6 +33,8 @@ class TestIngestEnvelopeFormat:
             },
             "event": {
                 "external_event_id": str(uuid.uuid4()),
+                "external_conversation_id": "telegram:12345",
+                "reply_target_ref": "12345:1",
                 "observed_at": datetime.now(UTC).isoformat(),
             },
             "sender": {"identity": "user123"},
@@ -43,7 +46,7 @@ class TestIngestEnvelopeFormat:
         # Missing source raises
         base = dict(envelope)
         del base["source"]
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             parse_ingest_envelope(base)
 
         # Canonical pairings present

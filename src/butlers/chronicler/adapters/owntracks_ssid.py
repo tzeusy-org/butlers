@@ -39,6 +39,7 @@ from uuid import UUID
 import asyncpg
 
 from butlers.chronicler.adapters._owner_entity import (
+    owner_episode_transaction,
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
@@ -641,30 +642,31 @@ class OwnTracksSsidPresenceAdapter(ProjectionAdapter):
             EPISODE_TYPE_WORK_PRESENCE if span.place == "work" else EPISODE_TYPE_HOME_PRESENCE
         )
         evidence_ids = await self._fetch_location_point_event_ids(conn, span)
-        episode = await upsert_episode(
-            conn,
-            Episode(
-                source_name=self.source_name,
-                source_ref=span.source_ref(),
-                episode_type=episode_type,
-                start_at=span.start_at,
-                end_at=span.end_at,
-                precision=Precision.MINUTE,
-                title=f"At {span.place}",
-                payload={
-                    "place": span.place,
-                    "point_count": span.point_count,
-                    "endpoint_identity": span.endpoint_identity,
-                },
-                privacy=Privacy.NORMAL,
-                layer=Layer.ACTIVITY,
-                confidence=derive_confidence(
-                    [EvidenceKind(name="owner_mapped_wifi_ssid", strong=True)]
+        async with owner_episode_transaction(conn):
+            episode = await upsert_episode(
+                conn,
+                Episode(
+                    source_name=self.source_name,
+                    source_ref=span.source_ref(),
+                    episode_type=episode_type,
+                    start_at=span.start_at,
+                    end_at=span.end_at,
+                    precision=Precision.MINUTE,
+                    title=f"At {span.place}",
+                    payload={
+                        "place": span.place,
+                        "point_count": span.point_count,
+                        "endpoint_identity": span.endpoint_identity,
+                    },
+                    privacy=Privacy.NORMAL,
+                    layer=Layer.ACTIVITY,
+                    confidence=derive_confidence(
+                        [EvidenceKind(name="owner_mapped_wifi_ssid", strong=True)]
+                    ),
+                    evidence_refs=evidence_refs_from_event_ids(evidence_ids),
                 ),
-                evidence_refs=evidence_refs_from_event_ids(evidence_ids),
-            ),
-        )
-        await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
+            )
+            await upsert_owner_episode_entity(conn, episode.id, owner_id=entity_id)
         return episode
 
     @staticmethod

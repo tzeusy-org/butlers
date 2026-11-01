@@ -93,6 +93,10 @@ plane by name:
 | `public.dnd_generation_mutations` | DND generation mutation audit |
 | `public.user_context` | Context-bus signals; every row carries a hard `expires_at` |
 | `public.runtime_attention_outbox`, `public.runtime_attention_delivery_lease`, `public.runtime_attention_producer_control` | Runtime-attention delivery state and its producer control row |
+| `public.task_continuity` | Task continuity control state; not recovered from this artifact |
+| `public.runtime_attention_condition_episodes` | Fenced runtime attention episode state |
+| `public.runtime_probe_control_receipts` | Fenced runtime probe control receipts |
+| `public.qa_publication_operations` | Fenced QA publication operation control |
 | `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing
@@ -146,6 +150,42 @@ Everything else in the table above is reconstructed by the bootstrap, expiring
 runtime state, or a deterministic projection rebuilt on the next detector run.
 No canonical source observation is excluded.
 
+
+### Fleet case history
+
+Fleet recovery now includes all three shared relations: `public.fleet_cases`,
+`public.fleet_case_evidence` and `public.fleet_case_links`. Cases and links are
+forced-RLS tables admitted alongside the three cost tables only while each has
+exactly the existing permissive PUBLIC SELECT policy. Evidence is unfenced;
+its data-only exclusion and separate owner/shape/FK proof keep its DDL and
+validated constraints in the ordinary dump. It is not classified as another
+forced-table exception. These five forced datasets, evidence and Confirm share
+the same exported snapshot. Any changed/restrictive case/link read policy
+refuses publication rather than producing filtered history.
+
+A fixed stage replays complete case rows, then evidence, then links inside one
+`ON_ERROR_STOP` transaction. Hex-encoded JSON preserves UUIDs, timestamps, nulls,
+nested values and text delimiters. Core288's fixed owner-only importer accepts
+only case/link INSERTs; it cannot update/delete, select arbitrary relations or
+suppress constraint failures. The restoring identity must already be a member
+of the exact common source table owner when history is present. Runtime and
+connector roles receive no importer EXECUTE authority. Original runtime policies
+and forced RLS remain binding across bootstrap.
+
+Before certification, the restore script checks complete declared populations,
+both correct validated/enabled case foreign keys and actual orphan absence.
+It never synthesizes parents, deletes evidence or disables constraints to repair
+a dump. A failing new history stage commits none of its rows. Older ordinary
+dumps excluded cases/links but could contain evidence: nonempty such artifacts
+are refused even if generic psql ignored a failed FK statement. Authentic old
+zero-history artifacts retain legacy compatibility only; that does not recover
+Fleet history, establish a migrated serving schema, or certify omitted ledgers.
+
+Real script/role/catalog regression carriers are checked in. Source, framing
+and collection results do not establish the mandatory native PostgreSQL
+roundtrip, bootstrap or migration outcomes; those require actual hosted receipts.
+
+
 ### Forced-RLS cost-claim ledgers
 
 `public.cost_claims`, `public.cost_claim_resolutions`, and
@@ -188,6 +228,48 @@ and equally if the script excludes something the dump role can in fact read
 (which would silently narrow them). Do not add an entry to that set to make a
 red run go green — an entry there is a decision that data will not be in the
 backup.
+
+Fleet case parents, links and evidence now travel together under the adopted
+Fleet recovery contract described above. The fixed owner-only importer restores
+the fenced parents and links before their readable evidence; the final audit
+requires the real validated, enabled foreign key and refuses orphan data. An
+authentic older zero-history artifact remains supported, while excluded parents
+with retained evidence cannot be certified. This does not grant runtime INSERT
+authority or synthesize missing cases. General capture validation and its host
+epoch prerequisite remain independent of the Fleet audit.
+
+### Confidential signed-confirm history
+
+`public.pending_confirms` is durable application state. A backup preserves the
+whole immutable prompt, accepted answer, application receipt, claim and delivery
+state; losing these rows could send another prompt or apply a recorded choice
+again. The table remains protected by enabled and forced RLS. Its schema,
+ownership, policies and functions travel through ordinary `pg_dump`, while its
+rows use a separate hex-wrapped JSON staging block bound to the same exported
+snapshot as the ordinary dump and cost-claim export.
+
+The confirm export uses `confirm_backup_read`, whose condition allows only
+`CURRENT_USER` equal to the actual table owner. It does not expose prompts to
+all runtime roles or use a public unconditional read policy. Before either
+stream is published, the snapshot-bound catalogue proof requires enabled and
+forced RLS, the exact owner-conditional read expression, and no extra or
+restrictive SELECT-applying policy. Policy drift fails the backup loudly.
+
+Restore calls only `public.confirm_restore_row(jsonb)`. This fixed
+`SECURITY INVOKER` importer checks the exact current table-owner identity before
+inserting the full row, has a fixed `pg_catalog` search path, and accepts no
+relation selector. It sets `row_security=on` for replay because the ordinary
+dump deliberately sets it off. Execution grants are revoked from public and runtime roles;
+the identity check still refuses them after a later broad bootstrap grant. No
+role receives `BYPASSRLS` or a runtime restore capability.
+
+A populated confirm staging block requires membership in the source table's
+owner role and explicitly exits nonzero if membership is absent. An empty
+block needs no history replay. The existing ownership audit remains necessary
+for the rest of the dump. PostgreSQL backup/restore contracts compare complete
+source and restored confirm rows, enabled and forced RLS, ownership, and runtime
+read/import refusal. Ambiguous sends and pending application remain ambiguous
+or pending after restore; replay does not reset their fences.
 
 A restore of one of these dumps therefore reconstitutes the application schema
 and data only. Re-run the managed bootstrap procedure to restore the executor
@@ -311,8 +393,12 @@ repository, is never copied into `.env` as a value, and is mounted by Compose
 only at `/run/secrets/restore_drill_executor_password` in the executor
 container. Its content is UTF-8 with at most one terminal LF; embedded/multiple
 LF, CR, and NUL are rejected. The bootstrap procedure creates or repairs the distinct login with
-`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION` and maintains
-the normal-role `NOCREATEDB` boundary.
+`LOGIN CREATEDB NOINHERIT NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS` and
+maintains the normal-role `NOCREATEDB` boundary. Every normal role it normalizes
+(the migration login, `butler_*_rw`, `connector_writer`, the optional calendar role
+and the restore-drill roles) also ends bootstrap `NOBYPASSRLS`, so forced
+row-level security binds them; online migration admission refuses with a bounded "missing or untrusted" error
+if any of them still has `BYPASSRLS`. Rerun `scripts/init-db.sql` to repair.
 
 When the executor uses `RESTORE_DRILL_EXECUTOR_SSLMODE=verify-ca` or
 `verify-full`, configure a separate, noncredential CA-root source file as
@@ -370,6 +456,18 @@ the public projection, which is an availability denial: the enclosing
 retaining a partial or false recovery result. Repair the audited trigger through
 normal privileged database governance; never bypass the boundary by granting
 the private owner public-audit DML.
+
+The core audit-integrity stage (`core_279`) adds an insert-bound `writer_role`:
+the fixed definer projection above records
+`restore_drill_executor_audit_writer`, the role actually executing its INSERT.
+A normal runtime cannot supply that writer identity. Logical `actor` and event
+text remain descriptive and do not certify a restore result. The private
+executor ledger remains the sole authority. UPDATE/DELETE and TRUNCATE guards
+survive bootstrap's public-table grant replay, but the shared table owner can
+still alter those guards. Removing that hostile-owner capability belongs to
+the separate managed-topology security work; this stage does not certify it.
+See [audit writer integrity](../data_and_storage/audit-log.md) for transaction,
+rollback and stage boundaries.
 
 Do not bypass that managed procedure. In particular, do not issue ad hoc
 database-role changes, manually pre-create the scratch database, pass a shared
@@ -554,6 +652,58 @@ into the live application database or manually erase recovery evidence.
 
 ## Implementation Notes
 
+- The reviewed bootstrap prerequisite applies to all supported online migrations,
+  including ordinary dev. [The operator procedure](../data_and_storage/reviewed-bootstrap.md)
+  separates configured privileged bootstrap from normal migrations and genuine
+  core195 repair. It neither enables this executor nor supplies its secret;
+  existing protected downgrade and data-preservation constraints still apply.
+
 - Host BusyBox differs from Alpine's (Ubuntu `busybox find` has no `-delete`): parse-check
   `deploy/backup/pg_dump.sh` with `busybox ash -n` locally and execute it only in the
   `postgres:17-alpine` image (`tests/scripts/test_pg_dump_backup.py`).
+
+## General capture recovery boundary
+
+Capture data is durable. `deploy/backup/pg_dump.sh` retains its schema, ownership,
+FORCE RLS and immutability triggers in the ordinary dump, excludes only capture table
+**data** from that role-less path, and appends a fixed General-role projection. The
+capture query, exact policy proof, ordinary General `source_versions`, and existing
+cost-claim export use the same exported snapshot. Capture uses effective General
+role RLS; it does not acquire the cost-claim PUBLIC SELECT exception. Missing or
+altered policy/role installation refuses publication.
+
+For a capture-bearing dump, `scripts/pg_restore.sh` requires an explicit absolute
+`--capture-epoch-file` (or `CAPTURE_EPOCH_FILE`) on a persistent host volume outside
+the repository/database. It disables existing target admission/dispatch before
+import and atomically rotates this nonsecret JSON manifest with a new generation
+and precise occurrence cutoff. The scoped General import transaction explicitly
+sets `row_security=on`, overriding the ordinary dump's session setting while
+keeping FORCE RLS active through deferred receipt validation at commit. The
+fixed invoker-rights importer restores only the three allowlisted row types,
+exact UUID/digest/operation bindings and terminal
+receipts. Conflicts refuse. Imported control always has admission/dispatch false
+and recovery required, regardless of dumped enablement. Capture row/operation,
+FORCE-RLS and trigger checks run before certification; the prior definer-ownership
+and cost-claim fences remain required.
+
+Captures may import before operations in one transaction, but deferred commit
+validation requires the complete relationship and the exact immutable General
+create-version proof. A routed capture cannot omit its operation or substitute a
+locator/digest. Historical routed receipts remain durable after later deletion or
+private classification; validating restore history does not reopen current source
+read authority.
+
+An older snapshot may omit a completed effect's receipt. Missing proof is not
+permission to repeat it: the rotated host cutoff denies the original pre-restore
+source occurrence even if a later adapter tries to mint it under the new epoch.
+Restored in-flight/unknown operations retain their old lineage and remain held.
+Recovery needs exact source-owned read-only outcomes and explicit control adoption;
+there is no automatic resume, old-epoch rebase, timer expiry or reconstructed epoch
+from restored rows. Shipping these scripts does not run a live restore or provision
+its host path. The internal capture service is initially inactive.
+
+An empty inactive ledger may be removed on downgrade. Repeated schema-chain
+downgrade tolerates complete shared absence; partial tables, altered General
+policies or retained admission/operation evidence require forward remediation.
+The empty check holds exclusive table locks so a concurrent admission cannot
+commit between inspection and removal.

@@ -35,6 +35,8 @@ import { DispatchLayout, DispatchHeader, DispatchSurface } from '@/components/in
 import { IngestionTimelineVerdictOpener } from '@/components/ingestion/dispatch/IngestionVerdictOpeners'
 import { TimelineTab, type IngestionRange } from '@/components/ingestion/TimelineTab'
 import { LiveStatusBadge } from '@/components/ui/live-status-badge'
+import { SourceDegradedNote } from '@/components/ui/query-boundary'
+import { usePipelineStats } from '@/hooks/use-ingestion'
 
 // ---------------------------------------------------------------------------
 // Range-driven headline (bu-4utdw.4 honesty fix — replaces the hardcoded
@@ -51,6 +53,46 @@ const RANGE_HEADLINE: Record<IngestionRange, string> = {
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
+
+const SCRUB_RULES = [
+  ['auth_code', 'Auth codes'],
+  ['reset_link', 'Reset links'],
+  ['magic_link', 'Magic links'],
+] as const
+
+function BearerScrubEstimates({ range }: { range: IngestionRange }) {
+  const { data, isPending, isError } = usePipelineStats(range)
+  const counts = data?.bearer_scrub_counts
+  const available = !isError && data?.bearer_scrub_available === true && counts != null &&
+    SCRUB_RULES.every(([kind]) => typeof counts[kind] === 'number' &&
+      Number.isFinite(counts[kind]) && counts[kind] >= 0)
+
+  return (
+    <section aria-label="Bearer scrub estimates" className="border-b border-border py-4">
+      <h2 className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+        Bearer scrub estimates
+      </h2>
+      <p className="mt-1 text-xs text-muted-foreground">
+        Prometheus estimates for fresh Switchboard scrub operations, including attempts.
+        These are not unique message counts. Connector-prescrubbed content and historical cleanup are excluded.
+      </p>
+      {isPending ? (
+        <p role="status" className="mt-3 text-xs text-muted-foreground">Loading scrub estimates…</p>
+      ) : available ? (
+        <dl className="mt-3 grid grid-cols-3 divide-x divide-border border-t border-border pt-3">
+          {SCRUB_RULES.map(([kind, label], index) => (
+            <div key={kind} className={index === 0 ? 'pr-3' : 'px-3'}>
+              <dt className="text-xs text-muted-foreground">{label}</dt>
+              <dd className="mt-1 font-mono text-lg tabular-nums">{counts[kind]}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <SourceDegradedNote label="Prometheus scrub estimates" className="mt-3" />
+      )}
+    </section>
+  )
+}
 
 export default function IngestionTimelinePage() {
   // Freshness state: undefined until TimelineTab reports its first data fetch.
@@ -86,6 +128,7 @@ export default function IngestionTimelinePage() {
       />
       <IngestionTimelineVerdictOpener range={activeRange} />
       <IngestionSubNav />
+      <BearerScrubEstimates range={activeRange} />
       <DispatchSurface>
         <TimelineTab
           isActive={true}

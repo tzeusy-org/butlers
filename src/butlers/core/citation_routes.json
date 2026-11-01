@@ -7,7 +7,6 @@
     {"path": "/qa"},
     {"path": "/ingestion", "query": {"event": {"pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}}},
     {"path": "/approvals"},
-    {"path": "/decisions"},
     {"path": "/memory"},
     {"path": "/entities"},
     {"path": "/secrets"},
@@ -43,7 +42,6 @@
     {"path": "/memory/rules/:ruleId", "parameters": {"ruleId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
     {"path": "/memory/episodes/:episodeId", "parameters": {"episodeId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
     {"path": "/approvals/:id", "parameters": {"id": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"}},
-    {"path": "/beads/:beadId", "parameters": {"beadId": "^bu-[a-z0-9.]+$"}},
     {
       "path": "/chat/:conversationId",
       "parameters": {"conversationId": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"},

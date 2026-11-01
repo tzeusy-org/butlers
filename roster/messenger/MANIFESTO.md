@@ -19,6 +19,16 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 - **Delivery validation:** Validate `notify.v1` payloads before any side effect. Reject invalid or missing targeting fields with no delivery attempt.
 - **Outcome reporting:** Return deterministic adapter outcome and error payloads.
 - **Lineage preservation:** Retain `origin_butler` and `request_context` in all responses for audit trail.
+- **Calendar prep contribution:** Run the scheduled `calendar_prep_contribution`
+  job as deterministic, zero-LLM infrastructure. Precompute recent persisted
+  inbound email threads by attendee `entity_id` into Messenger's own `state`
+  under `calendar/prep/<event_id>`. The prep rail consumes this cache without
+  request-time Gmail/IMAP reads or LLM sessions.
+- **Calendar invitation responses:** Expose opt-in, occurrence-only
+  `calendar_respond` for the verified configured self attendee's response,
+  preserving all other event fields. Execution requires the owning server's
+  approval gate and shared executor for the exact approved command; owner
+  egress exemptions and standing rules do not bypass this gate.
 - **Voice authority boundary:** Accept voice only from Switchboard's verified
   isolated Ed25519 service principal, never caller-asserted route identity;
   resolve only versioned opaque Messenger endpoints, and orchestrate
@@ -32,7 +42,7 @@ The Messenger is the sole owner of outbound user-channel delivery. It executes d
 
 - Messenger does **not** classify messages or perform routing decisions (delegated to Switchboard).
 - Messenger does **not** contain domain logic or knowledge (delegated to domain butlers).
-- Messenger does **not** initiate autonomous behavior or scheduled prompts.
+- Messenger does **not** initiate autonomous decisions or scheduled LLM prompts; its scheduled calendar prep contribution is deterministic infrastructure work.
 - Messenger does **not** recursively call `notify()` for its own outbound sends.
 - Messenger does **not** infer voice from a contact, entity, preference, room
   name, device id, schedule, insight, or omitted channel. Voice is reply or one

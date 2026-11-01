@@ -77,6 +77,9 @@ function buildMessagePayload(
 }
 
 export interface UseConversationTurnOptions {
+  /** Existing successful POST response only; not a resolver or reload outcome claim. */
+  onMessageAccepted?: (messageId: string) => void;
+  onMessagePrepared?: (messageId: string) => void;
   butlerName: string;
   activeConversationId: string | null;
   setActiveConversationId: (id: string | null) => void;
@@ -109,7 +112,13 @@ export function useConversationTurn({
   activeConversationId,
   setActiveConversationId,
   messagesData,
+  onMessageAccepted,
+  onMessagePrepared,
 }: UseConversationTurnOptions): UseConversationTurnResult {
+  const preparedRef = useRef(onMessagePrepared);
+  preparedRef.current = onMessagePrepared;
+  const acceptedRef = useRef(onMessageAccepted);
+  acceptedRef.current = onMessageAccepted;
   const queryClient = useQueryClient();
   const capturePageContext = usePageContextCapture();
   const contextPreview = capturePageContext();
@@ -229,6 +238,7 @@ export function useConversationTurn({
       setSendError(null);
       const isNew = activeConversationId == null;
       const messageId = retryMessageId ?? createClientMessageId();
+      preparedRef.current?.(messageId);
       if (activeMessageIdRef.current !== null && activeMessageIdRef.current !== messageId) {
         abortRef.current?.abort();
       }
@@ -316,6 +326,8 @@ export function useConversationTurn({
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
+
+        acceptedRef.current?.(messageId);
 
         // The API creates the durable user-message/turn record before it
         // returns its SSE response. Stop may become actionable now, even

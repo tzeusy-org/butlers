@@ -1,93 +1,35 @@
-"""Versioned contract models for Switchboard ingest/route envelopes."""
+"""Versioned contract models for the Switchboard `route.v1` envelope.
+
+The shared ingest/notify wire types and validators live in
+``butlers.tools.switchboard.contracts``.
+"""
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    StringConstraints,
     ValidationInfo,
     field_validator,
     model_validator,
 )
 from pydantic_core import PydanticCustomError
 
-NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-
-SourceChannel = Literal[
-    "telegram_bot",
-    "telegram_user_client",
-    "slack",
-    "email",
-    "api",
-    "mcp",
-    "voice",
-    "whatsapp_user_client",
-    "google_calendar",
-    "spotify_user_client",
-    "owntracks",
-    "dashboard",
-    "home_assistant",
-    "gaming",
-    "google_drive",
-    "discord",
-    "wellness",
-    "activitywatch",
-]
-SourceProvider = Literal[
-    "telegram",
-    "slack",
-    "gmail",
-    "imap",
-    "internal",
-    "live-listener",
-    "whatsapp",
-    "google_calendar",
-    "spotify",
-    "owntracks",
-    "home_assistant",
-    "steam",
-    "google_drive",
-    "discord",
-    "google_health",
-    "activitywatch",
-]
-NotifyChannel = Literal["telegram", "email", "sms", "chat", "whatsapp"]
-NotifyIntent = Literal["send", "reply", "react", "insight", "approval_request"]
-PolicyTier = Literal["default", "interactive", "passive", "high_priority"]
-IngestionTier = Literal["full", "metadata"]
-FanoutMode = Literal["parallel", "ordered", "conditional"]
-_ALLOWED_PROVIDERS_BY_CHANNEL: dict[SourceChannel, frozenset[SourceProvider]] = {
-    "telegram_bot": frozenset({"telegram"}),
-    "telegram_user_client": frozenset({"telegram"}),
-    "slack": frozenset({"slack"}),
-    "email": frozenset({"gmail", "imap"}),
-    "api": frozenset({"internal"}),
-    "mcp": frozenset({"internal"}),
-    "voice": frozenset({"live-listener"}),
-    "whatsapp_user_client": frozenset({"whatsapp"}),
-    "google_calendar": frozenset({"google_calendar"}),
-    "spotify_user_client": frozenset({"spotify"}),
-    "owntracks": frozenset({"owntracks"}),
-    "dashboard": frozenset({"internal"}),
-    "home_assistant": frozenset({"home_assistant"}),
-    "gaming": frozenset({"steam"}),
-    "google_drive": frozenset({"google_drive"}),
-    "discord": frozenset({"discord"}),
-    "wellness": frozenset({"google_health", "home_assistant"}),
-    "activitywatch": frozenset({"activitywatch"}),
-}
-_THREAD_TARGET_REQUIRED_NOTIFY_CHANNELS: frozenset[NotifyChannel] = frozenset({"telegram", "chat"})
-_RFC3339_WITH_TZ_RE = re.compile(
-    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$"
+from butlers.tools.switchboard.contracts import (
+    NonEmptyStr,
+    SourceChannel,
+    _validate_rfc3339_timestamp_input,
+    _validate_schema_version,
+    _validate_tz_aware,
 )
+
+FanoutMode = Literal["parallel", "ordered", "conditional"]
 _IMMUTABLE_REQUEST_CONTEXT_FIELDS = (
     "request_id",
     "received_at",
@@ -95,45 +37,6 @@ _IMMUTABLE_REQUEST_CONTEXT_FIELDS = (
     "source_endpoint_identity",
     "source_sender_identity",
 )
-
-
-def _validate_schema_version(value: str, *, expected: str) -> str:
-    normalized = value.strip()
-    if normalized != expected:
-        raise PydanticCustomError(
-            "unsupported_schema_version",
-            "Unsupported schema version '{received}'; expected '{expected}'.",
-            {"received": normalized, "expected": expected},
-        )
-    return normalized
-
-
-def _validate_tz_aware(value: datetime, *, field_name: str) -> datetime:
-    if value.tzinfo is None or value.utcoffset() is None:
-        raise PydanticCustomError(
-            "timezone_required",
-            "{field_name} must be RFC3339 with timezone offset.",
-            {"field_name": field_name},
-        )
-    return value
-
-
-def _validate_rfc3339_timestamp_input(value: Any, *, field_name: str) -> str:
-    if not isinstance(value, str):
-        raise PydanticCustomError(
-            "rfc3339_string_required",
-            "{field_name} must be an RFC3339 timestamp string with timezone offset.",
-            {"field_name": field_name},
-        )
-
-    normalized = value.strip()
-    if not _RFC3339_WITH_TZ_RE.fullmatch(normalized):
-        raise PydanticCustomError(
-            "rfc3339_string_required",
-            "{field_name} must be an RFC3339 timestamp string with timezone offset.",
-            {"field_name": field_name},
-        )
-    return normalized
 
 
 def _normalize_request_context_payload(payload: Any) -> Any:
@@ -145,227 +48,6 @@ def _normalize_request_context_payload(payload: Any) -> Any:
     if isinstance(received_at, datetime):
         normalized["received_at"] = received_at.isoformat()
     return normalized
-
-
-class IngestSourceV1(BaseModel):
-    """Source identity for canonical ingest payloads."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    channel: SourceChannel
-    provider: SourceProvider
-    endpoint_identity: NonEmptyStr
-
-    @model_validator(mode="after")
-    def _validate_channel_provider_pair(self) -> IngestSourceV1:
-        allowed_providers = _ALLOWED_PROVIDERS_BY_CHANNEL[self.channel]
-        if self.provider not in allowed_providers:
-            raise PydanticCustomError(
-                "invalid_source_provider",
-                "source.provider '{provider}' is not valid for source.channel '{channel}'.",
-                {"provider": self.provider, "channel": self.channel},
-            )
-        return self
-
-
-class IngestEventV1(BaseModel):
-    """Provider event metadata for canonical ingest payloads."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    external_event_id: NonEmptyStr
-    external_thread_id: NonEmptyStr | None = None
-    observed_at: datetime
-
-    @field_validator("observed_at", mode="before")
-    @classmethod
-    def _observed_at_must_be_rfc3339_string(cls, value: Any) -> str:
-        return _validate_rfc3339_timestamp_input(value, field_name="event.observed_at")
-
-    @field_validator("observed_at")
-    @classmethod
-    def _observed_at_must_be_tz_aware(cls, value: datetime) -> datetime:
-        return _validate_tz_aware(value, field_name="event.observed_at")
-
-
-class IngestSenderV1(BaseModel):
-    """Sender identity for canonical ingest payloads."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    identity: NonEmptyStr
-    display_name: str | None = None
-    """Raw human display name from the source (e.g. the ``From:`` header's
-
-    display part for email). Persisted verbatim to
-    ``public.ingestion_events.source_sender_display_name`` so identity
-    enrichment can use the real name instead of guessing one from the address
-    local-part (bu-vs9cr). ``None`` when the source carried no display name.
-    Unlike ``identity`` this is NOT normalized — it is a display string, not a
-    routing key."""
-    participants: dict[str, str] | None = None
-    """Batch envelopes: mapping of sender_id → display_name for all participants."""
-    owner_sender_id: str | None = None
-    """Batch envelopes: the owner's sender_id, used to distinguish other senders."""
-    participant_count: int | None = Field(default=None, ge=1)
-    """Group chat metadata: number of participants in the chat.
-
-    DMs have participant_count=2. Chats exceeding max_interaction_group_size are
-    gated from interaction-eligible processing. See RFC 0013 D3.
-    """
-    chat_type: Literal["private", "group", "supergroup", "channel", "community"] | None = None
-    """Group chat metadata: chat type descriptor from the connector. See RFC 0013 D3."""
-
-
-class IngestAttachment(BaseModel):
-    """Attachment metadata for canonical ingest payloads.
-
-    Eager-fetched attachments have a ``storage_ref`` pointing to blob storage.
-    Lazy-fetched attachments (e.g. large CSVs) have ``storage_ref=None`` and
-    carry ``source_message_id`` / ``source_attachment_id`` for on-demand
-    retrieval via the connector's ``fetch_attachment()`` method.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    media_type: NonEmptyStr
-    storage_ref: NonEmptyStr | None = None
-    size_bytes: int = Field(ge=0)
-    filename: NonEmptyStr | None = None
-    width: int | None = Field(default=None, ge=1)
-    height: int | None = Field(default=None, ge=1)
-    # Lazy-fetch identifiers — set when storage_ref is None.
-    source_message_id: str | None = None
-    source_attachment_id: str | None = None
-
-
-class IngestPayloadV1(BaseModel):
-    """Source payload for canonical ingest payloads.
-
-    For Tier 1 (full) ingestion: raw must be a non-empty dict.
-    For Tier 2 (metadata-only) ingestion: raw must be None; normalized_text
-    contains subject-only text.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    raw: dict[str, Any] | None = None
-    # Not a NonEmptyStr: a captioned-media message's normalized_text is the
-    # caption, which is legitimately "" when the sender attached media with no
-    # caption. The connector must never synthesize a placeholder like "Photo"
-    # to satisfy a non-empty constraint (bu-2jtfw.7) — the real content lives
-    # in `attachments`, not in this field.
-    normalized_text: Annotated[str, StringConstraints(strip_whitespace=True)]
-    attachments: tuple[IngestAttachment, ...] | None = None
-
-    @model_validator(mode="after")
-    def _validate_normalized_text_or_attachments(self) -> IngestPayloadV1:
-        """normalized_text stays non-empty for text/caption content.
-
-        It MAY be empty only for a captionless media message, i.e. when
-        `attachments` carries the real content instead (bu-2jtfw.7).
-        """
-        if not self.normalized_text and not self.attachments:
-            raise PydanticCustomError(
-                "normalized_text_or_attachments_required",
-                "payload.normalized_text must be non-empty unless payload.attachments "
-                "is non-empty.",
-                {},
-            )
-        return self
-
-
-PayloadType = Literal["conversation_history"]
-
-
-class IngestControlV1(BaseModel):
-    """Optional ingest control metadata.
-
-    ingestion_tier semantics (from docs/connectors/email_ingestion_policy.md):
-    - "full" (default): Standard Tier 1 pipeline. Full payload + LLM classification.
-    - "metadata": Tier 2 pipeline. Bypass LLM classification; persist metadata ref only.
-      Requires payload.raw=None and subject-only normalized_text.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    idempotency_key: NonEmptyStr | None = None
-    trace_context: dict[str, Any] = Field(default_factory=dict)
-    policy_tier: PolicyTier = "default"
-    ingestion_tier: IngestionTier = "full"
-    addressed: bool = False
-    payload_type: PayloadType | None = None
-    interaction_eligible: bool = True
-    """Whether this message is eligible for interaction scoring.
-
-    Connectors MUST set this to ``False`` for chats exceeding
-    ``max_interaction_group_size``. Defaults to ``True`` for backward
-    compatibility with existing envelopes. This flag is propagated into
-    ``request_context`` and consumed by downstream interaction-scoring jobs.
-    See RFC 0013 D3.
-    """
-    bearer_scrubbed: bool = False
-    """True when the connector withheld bearer material (OTP, reset or magic link)
-    from the payload before submit. Persisted into ``raw_payload.control``."""
-    pinned_target: NonEmptyStr | None = None
-    """Optional butler name this envelope SHALL be routed to deterministically.
-
-    When set, Switchboard ingestion bypasses thread-affinity lookup and
-    ingestion-policy rule evaluation and produces a ``route_to`` triage
-    decision to this butler directly (no LLM classification). The target is
-    validated against the live, routable butler registry at ingest time; an
-    unknown or non-routable target is rejected rather than silently
-    misrouted. Used by per-butler dashboard conversations to pin follow-up
-    messages to the butler the owner is already talking to.
-    """
-
-
-class IngestEnvelopeV1(BaseModel):
-    """Canonical versioned ingest envelope (`ingest.v1`)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: str
-    source: IngestSourceV1
-    event: IngestEventV1
-    sender: IngestSenderV1
-    payload: IngestPayloadV1
-    control: IngestControlV1 = Field(default_factory=IngestControlV1)
-
-    @field_validator("schema_version")
-    @classmethod
-    def _validate_ingest_schema_version(cls, value: str) -> str:
-        return _validate_schema_version(value, expected="ingest.v1")
-
-    @model_validator(mode="after")
-    def _validate_tier_payload_constraints(self) -> IngestEnvelopeV1:
-        """Enforce tier-specific payload constraints.
-
-        Tier 2 (metadata) constraints:
-        - payload.raw MUST be None
-        - normalized_text MUST be present (subject-only text)
-
-        Tier 1 (full) constraints:
-        - payload.raw MUST be a non-None dict
-        """
-        tier = self.control.ingestion_tier
-        raw = self.payload.raw
-
-        if tier == "metadata":
-            if raw is not None:
-                raise PydanticCustomError(
-                    "tier2_raw_must_be_null",
-                    "Tier 2 (metadata) envelopes must have payload.raw=null.",
-                    {},
-                )
-        elif tier == "full":
-            if raw is None:
-                raise PydanticCustomError(
-                    "tier1_raw_required",
-                    "Tier 1 (full) envelopes must have a non-null payload.raw dict.",
-                    {},
-                )
-        return self
 
 
 class RouteRequestContextV1(BaseModel):
@@ -381,6 +63,8 @@ class RouteRequestContextV1(BaseModel):
     source_sender_contact_id: NonEmptyStr | None = None
     source_sender_entity_id: NonEmptyStr | None = None
     source_thread_identity: NonEmptyStr | None = None
+    external_conversation_id: NonEmptyStr | None = None
+    reply_target_ref: NonEmptyStr | None = None
     addressed: bool = False
     subrequest_id: NonEmptyStr | None = None
     segment_id: NonEmptyStr | None = None
@@ -554,345 +238,18 @@ class RouteEnvelopeV1(BaseModel):
         return self
 
 
-class NotifyRequestContextV1(BaseModel):
-    """Optional request-context lineage for `notify.v1` requests."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    request_id: UUID
-    source_channel: SourceChannel
-    source_endpoint_identity: NonEmptyStr
-    source_sender_identity: NonEmptyStr
-    source_thread_identity: NonEmptyStr | None = None
-    received_at: datetime | None = None
-
-    @field_validator("request_id")
-    @classmethod
-    def _request_id_must_be_uuid7(cls, value: UUID) -> UUID:
-        if value.version != 7:
-            raise PydanticCustomError(
-                "uuid7_required",
-                "request_context.request_id must be a valid UUID7.",
-                {},
-            )
-        return value
-
-    @field_validator("received_at")
-    @classmethod
-    def _received_at_must_be_tz_aware(cls, value: datetime | None) -> datetime | None:
-        if value is None:
-            return None
-        return _validate_tz_aware(value, field_name="request_context.received_at")
-
-    @field_validator("received_at", mode="before")
-    @classmethod
-    def _received_at_must_be_rfc3339_string(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        return _validate_rfc3339_timestamp_input(value, field_name="request_context.received_at")
-
-
-class NotifyDeliveryV1(BaseModel):
-    """Delivery payload for `notify.v1` requests."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    intent: NotifyIntent
-    channel: NotifyChannel
-    message: str  # Can be empty for react intent
-    recipient: NonEmptyStr | None = None
-    subject: NonEmptyStr | None = None
-    emoji: NonEmptyStr | None = None
-
-    @field_validator("message")
-    @classmethod
-    def _validate_message_required_for_send_reply(cls, value: str, info: ValidationInfo) -> str:
-        """Message must be non-empty for owner-facing delivery intents."""
-        intent = info.data.get("intent")
-        if intent in ("send", "reply", "insight") and (not value or not value.strip()):
-            raise PydanticCustomError(
-                "message_required",
-                "delivery.message must be non-empty for {intent} intent.",
-                {"intent": intent},
-            )
-        return value
-
-
-ApprovalActionVerb = Literal["approve", "reject", "open_dashboard"]
-ApprovalRecoveryOperation = Literal["handoff", "reconcile"]
-ApprovalRecoverySubjectKind = Literal["action", "cohort"]
-ApprovalRecoveryPresentationMode = Literal["single", "burst_digest"]
-
-
-class ApprovalRecoveryV1(BaseModel):
-    """Correlation-only recovery request; authority is transport-derived."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    operation: ApprovalRecoveryOperation
-    subject_kind: ApprovalRecoverySubjectKind
-    subject_key: NonEmptyStr
-    presentation_key: NonEmptyStr
-    presentation_generation: int = Field(ge=1, le=1000)
-    presentation_mode: ApprovalRecoveryPresentationMode
-
-    @model_validator(mode="after")
-    def _validate_binding_shape(self) -> ApprovalRecoveryV1:
-        expected_mode = "single" if self.subject_kind == "action" else "burst_digest"
-        if self.presentation_mode != expected_mode:
-            raise PydanticCustomError(
-                "approval_recovery_mode_mismatch",
-                "approval recovery subject kind and presentation mode do not match.",
-                {},
-            )
-        prefix = "approval:" if self.subject_kind == "action" else "approval-cohort:"
-        if not self.subject_key.startswith(prefix):
-            raise PydanticCustomError(
-                "approval_recovery_subject_mismatch",
-                "approval recovery subject key has the wrong kind prefix.",
-                {},
-            )
-        expected_key = f"{self.subject_key}:p:{self.presentation_generation}"
-        if self.presentation_key != expected_key:
-            raise PydanticCustomError(
-                "approval_recovery_presentation_mismatch",
-                "approval recovery presentation key does not match its subject and generation.",
-                {},
-            )
-        return self
-
-
-class ApprovalRequestActionV1(BaseModel):
-    """One deterministic affordance on an owner approval-request notification."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    verb: ApprovalActionVerb
-    callback_token: NonEmptyStr | None = None
-    dashboard_url: NonEmptyStr
-
-    @model_validator(mode="after")
-    def _validate_signed_decision_actions(self) -> ApprovalRequestActionV1:
-        if self.verb in ("approve", "reject") and self.callback_token is None:
-            raise PydanticCustomError(
-                "approval_callback_token_required",
-                "approval-request {verb} action requires callback_token.",
-                {"verb": self.verb},
-            )
-        if self.verb == "open_dashboard" and self.callback_token is not None:
-            raise PydanticCustomError(
-                "approval_dashboard_action_token_forbidden",
-                "approval-request open_dashboard action must not include callback_token.",
-                {},
-            )
-        return self
-
-
-class NotifyRequestV1(BaseModel):
-    """Canonical versioned notify envelope (`notify.v1`)."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    schema_version: str
-    origin_butler: NonEmptyStr
-    delivery: NotifyDeliveryV1
-    request_context: NotifyRequestContextV1 | None = None
-    # Strict dossier validation remains owned by the recipient guard: this
-    # envelope only preserves the already-validated context across deferred
-    # delivery so Messenger can validate it again against the flush-time target.
-    decision_dossier: dict[str, Any] | None = None
-    actions: tuple[ApprovalRequestActionV1, ...] | None = None
-    recovery: ApprovalRecoveryV1 | None = None
-
-    @field_validator("schema_version")
-    @classmethod
-    def _validate_notify_schema_version(cls, value: str) -> str:
-        return _validate_schema_version(value, expected="notify.v1")
-
-    @model_validator(mode="after")
-    def _validate_reply_context(self) -> NotifyRequestV1:
-        if self.delivery.intent != "reply":
-            return self
-
-        if self.request_context is None:
-            raise PydanticCustomError(
-                "reply_context_required",
-                "notify.v1 reply intent requires request_context.",
-                {},
-            )
-
-        if self.delivery.channel == "telegram" and not self.request_context.source_thread_identity:
-            raise PydanticCustomError(
-                "reply_thread_required",
-                "notify.v1 telegram reply intent requires request_context.source_thread_identity.",
-                {},
-            )
-
-        if self.delivery.channel == "whatsapp" and not self.request_context.source_thread_identity:
-            raise PydanticCustomError(
-                "reply_thread_required",
-                "notify.v1 whatsapp reply intent requires request_context.source_thread_identity.",
-                {},
-            )
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_react_context(self) -> NotifyRequestV1:
-        """Validate react intent requirements."""
-        if self.delivery.intent != "react":
-            return self
-
-        # WhatsApp does not support react intent
-        if self.delivery.channel == "whatsapp":
-            raise PydanticCustomError(
-                "react_unsupported",
-                "notify.v1 react intent is not supported for whatsapp channel.",
-                {},
-            )
-
-        # React intent requires emoji
-        if not self.delivery.emoji:
-            raise PydanticCustomError(
-                "react_emoji_required",
-                "notify.v1 react intent requires delivery.emoji.",
-                {},
-            )
-
-        # React intent requires request_context for source message identification
-        if self.request_context is None:
-            raise PydanticCustomError(
-                "react_context_required",
-                "notify.v1 react intent requires request_context.",
-                {},
-            )
-
-        # React intent requires source_thread_identity for telegram
-        if self.delivery.channel == "telegram" and not self.request_context.source_thread_identity:
-            raise PydanticCustomError(
-                "react_thread_required",
-                "notify.v1 telegram react intent requires request_context.source_thread_identity.",
-                {},
-            )
-
-        # React intent does not use message field
-        # (allowing but not requiring it for flexibility)
-
-        return self
-
-    @model_validator(mode="after")
-    def _validate_approval_request(self) -> NotifyRequestV1:
-        """Keep approval-request envelopes structurally safe before egress.
-
-        Owner identity itself is an asynchronous database lookup owned by
-        Messenger's delivery boundary.  The versioned contract nevertheless
-        requires an explicit target and action affordances so that a request
-        can never degrade into an unaddressed, non-interactive owner page.
-        """
-        if self.delivery.intent != "approval_request":
-            if self.actions is not None:
-                raise PydanticCustomError(
-                    "approval_actions_unexpected",
-                    "actions are only valid for approval_request intent.",
-                    {},
-                )
-            if self.recovery is not None:
-                raise PydanticCustomError(
-                    "approval_recovery_intent_required",
-                    "recovery is only valid for approval_request intent.",
-                    {},
-                )
-            return self
-
-        if self.recovery is not None and self.recovery.operation == "reconcile":
-            if (
-                self.delivery.message != ""
-                or self.delivery.recipient is not None
-                or self.actions is not None
-                or self.decision_dossier is not None
-            ):
-                raise PydanticCustomError(
-                    "approval_reconcile_content_forbidden",
-                    "approval recovery reconciliation must be correlation-only.",
-                    {},
-                )
-            return self
-
-        if not self.delivery.message.strip():
-            raise PydanticCustomError(
-                "message_required",
-                "delivery.message must be non-empty for approval_request intent.",
-                {},
-            )
-
-        if self.delivery.recipient is None:
-            raise PydanticCustomError(
-                "approval_recipient_required",
-                "approval_request intent requires delivery.recipient.",
-                {},
-            )
-        if not self.actions:
-            raise PydanticCustomError(
-                "approval_actions_required",
-                "approval_request intent requires a non-empty actions payload.",
-                {},
-            )
-        verbs = [action.verb for action in self.actions]
-        if len(set(verbs)) != len(verbs):
-            raise PydanticCustomError(
-                "approval_action_verbs_unique",
-                "approval_request actions may contain each verb at most once.",
-                {},
-            )
-        if not any(action.verb == "open_dashboard" for action in self.actions):
-            raise PydanticCustomError(
-                "approval_dashboard_action_required",
-                "approval_request actions must include open_dashboard.",
-                {},
-            )
-        return self
-
-
-def parse_ingest_envelope(payload: Mapping[str, Any]) -> IngestEnvelopeV1:
-    """Parse and validate an `ingest.v1` envelope."""
-
-    return IngestEnvelopeV1.model_validate(payload)
-
-
 def parse_route_envelope(payload: Mapping[str, Any]) -> RouteEnvelopeV1:
     """Parse and validate a `route.v1` envelope."""
 
     return RouteEnvelopeV1.model_validate(payload)
 
 
-def parse_notify_request(payload: Mapping[str, Any]) -> NotifyRequestV1:
-    """Parse and validate a `notify.v1` request envelope."""
-
-    return NotifyRequestV1.model_validate(payload)
-
-
 __all__ = [
-    "IngestAttachment",
-    "IngestControlV1",
-    "IngestionTier",
-    "PayloadType",
-    "IngestEnvelopeV1",
-    "IngestEventV1",
-    "IngestPayloadV1",
-    "IngestSenderV1",
-    "IngestSourceV1",
-    "ApprovalRequestActionV1",
-    "ApprovalRecoveryV1",
-    "NotifyDeliveryV1",
-    "NotifyRequestContextV1",
-    "NotifyRequestV1",
     "RouteEnvelopeV1",
     "RouteInputV1",
     "RouteRequestContextV1",
     "RouteSourceMetadataV1",
     "RouteSubrequestV1",
     "RouteTargetV1",
-    "parse_ingest_envelope",
-    "parse_notify_request",
     "parse_route_envelope",
 ]

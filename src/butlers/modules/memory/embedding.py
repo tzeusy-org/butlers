@@ -6,8 +6,6 @@ using the all-MiniLM-L6-v2 model.
 
 from __future__ import annotations
 
-from sentence_transformers import SentenceTransformer
-
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _EMBEDDING_DIM = 384
 
@@ -20,6 +18,8 @@ class EmbeddingEngine:
     """
 
     def __init__(self, model_name: str = _MODEL_NAME) -> None:
+        from sentence_transformers import SentenceTransformer
+
         self._model_name = model_name
         self._model = SentenceTransformer(model_name)
         self._dim = _EMBEDDING_DIM

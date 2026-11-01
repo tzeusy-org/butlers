@@ -11,6 +11,7 @@ Covers unique ClaudeCode behaviors:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -218,3 +219,55 @@ async def test_invoke_stderr_log(tmp_path: Path):
         await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
             prompt="hi", system_prompt="sys", mcp_servers={}, env={}
         )
+
+
+async def test_invoke_hands_the_cli_an_mcp_config_with_the_invocation_header():
+    """The Spawner's binding header reaches the --mcp-config file the CLI reads (bu-m2zcah)."""
+    from butlers.core.fact_authority import INVOCATION_HEADER
+
+    seen: dict[str, object] = {}
+
+    async def fake_exec(*cmd, **kwargs):
+        config_path = Path(cmd[cmd.index("--mcp-config") + 1])
+        seen["config"] = json.loads(await asyncio.to_thread(config_path.read_text))
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        proc.pid = 1
+        return proc
+
+    with patch(_EXEC, side_effect=fake_exec):
+        await ClaudeCodeAdapter(claude_binary="/usr/bin/claude").invoke(
+            prompt="hi",
+            system_prompt="",
+            mcp_servers={
+                "my-butler": {
+                    "url": "http://localhost:9100/mcp",
+                    "headers": {INVOCATION_HEADER: "synthetic-binding"},
+                }
+            },
+            env={},
+        )
+
+    entry = seen["config"]["mcpServers"]["my-butler"]
+    assert entry["headers"] == {"X-Butlers-Fact-Invocation": "synthetic-binding"}
+    # Without a ``type`` the CLI defaults the entry to stdio, rejects it for lacking
+    # ``command`` and skips the server, so the header and the connection would both be lost.
+    assert entry["type"] == "http"
+
+
+def test_build_config_file_keeps_stdio_and_explicit_types(tmp_path: Path):
+    """Only a url entry with no type gains ``http``; stdio and explicit types are untouched."""
+    config_path = ClaudeCodeAdapter(claude_binary="/usr/bin/claude").build_config_file(
+        mcp_servers={
+            "local": {"command": "some-server", "args": ["--flag"]},
+            "streaming": {"type": "sse", "url": "http://localhost:9100/sse"},
+            "plain": {"url": "http://localhost:9100/mcp"},
+        },
+        tmp_dir=tmp_path,
+    )
+
+    servers = json.loads(config_path.read_text())["mcpServers"]
+    assert "type" not in servers["local"]
+    assert servers["streaming"]["type"] == "sse"
+    assert servers["plain"]["type"] == "http"

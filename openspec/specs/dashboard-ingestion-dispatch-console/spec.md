@@ -37,6 +37,30 @@ status, saved-view, and expanded-event query parameters. `history` SHALL map to
 the Timeline route with an equivalent range or saved view; it SHALL NOT remain
 a fourth redesigned tab.
 
+Normalization SHALL be implemented by stripping the `tab` key and carrying
+every remaining query parameter through unchanged, rather than by an allowlist,
+so a parameter added later cannot be silently dropped by a stale list. An
+unrecognized `tab` value SHALL normalize to `/ingestion` rather than error. When
+no `tab` parameter is present the Timeline SHALL render in place with no
+navigation, so the compatibility shim cannot loop.
+
+Every legacy normalization SHALL replace the current history entry rather than
+push a new one, so the back button returns to wherever the owner came from and
+not to the legacy URL that would immediately redirect again. In addition to the
+`?tab=` shim, the following bookmark-compatibility routes SHALL exist and SHALL
+likewise replace rather than push:
+
+- `/ingestion/history` → `/ingestion`. This is a redirect only; there SHALL be
+  no `/ingestion/history` page component.
+- `/connectors` → `/ingestion/connectors`.
+- `/connectors/:connectorType/:endpointIdentity` →
+  `/ingestion/connectors/:connectorType/:endpointIdentity`, preserving the full
+  query string.
+
+The ingestion sub-navigation SHALL be route-driven links whose active state is
+derived from the current route, not a tab component holding local selection
+state.
+
 #### Scenario: Timeline route replaces legacy tab landing
 
 - **WHEN** the owner navigates to `/ingestion`
@@ -59,6 +83,37 @@ a fourth redesigned tab.
 - **THEN** the dashboard renders `/ingestion` with the closest equivalent
   Timeline range or saved view
 - **AND** no `/ingestion/history` primary redesigned route is required
+
+#### Scenario: Unknown tab value normalizes rather than errors
+
+- **WHEN** the owner opens `/ingestion?tab=<unrecognized>`
+- **THEN** the dashboard normalizes to `/ingestion` with `tab` stripped
+
+#### Scenario: Absent tab renders in place
+
+- **WHEN** the owner opens `/ingestion` with no `tab` parameter
+- **THEN** the Timeline renders without any navigation being issued
+
+#### Scenario: Every non-tab parameter survives normalization
+
+- **WHEN** a legacy URL carries query parameters beyond the compatible set
+  named above
+- **THEN** all of them are carried through to the normalized URL unchanged
+- **AND** only the `tab` key is removed
+
+#### Scenario: Normalization replaces rather than pushes
+
+- **WHEN** any legacy path or `?tab=` URL normalizes
+- **THEN** the current history entry is replaced
+- **AND** pressing back does not return to the legacy URL
+
+#### Scenario: Legacy connector paths redirect under /ingestion
+
+- **WHEN** the owner opens `/connectors` or
+  `/connectors/:connectorType/:endpointIdentity`
+- **THEN** the dashboard replaces history state with the corresponding
+  `/ingestion/connectors` path
+- **AND** the full query string is preserved on the detail redirect
 
 ### Requirement: Dispatch Visual Language
 
@@ -963,6 +1018,259 @@ reports that the aggregate source is available.
 - **THEN** the API reports `meta.aggregates_available=false`, not a measured empty distribution
 - **AND** one or more successful target queries returning zero rows, with no failed targets, reports a measured empty distribution
 - **AND** a failed target query reports `meta.aggregates_available=false` while preserving rows from successful targets
+
+### Requirement: Filter control contract on sub-routes
+
+Filter controls that write their selection into the URL SHALL do so through the
+query string so a link can be shared and reloaded to the same view. The
+parameter name `tab` SHALL NOT be reused for any filter, sort, or pagination
+control; it is reserved for the legacy compatibility shim.
+
+On the Timeline route the URL SHALL carry the time range, the free-text search
+term, the selected channel set, the scoped-minute selection with its bucket
+width, and the expanded event. Each SHALL be read back from the URL on mount so
+a reload restores the same view. The free-text term SHALL be debounced before
+being written so that typing does not produce a history entry per keystroke;
+every other control SHALL write immediately. An empty search term SHALL remove
+its parameter rather than write an empty value.
+
+Changing the range, committing a settled debounced search (including clearing
+it), changing the channel set, selecting or clearing a minute scope, and
+opening or closing an event drawer SHALL push a URL history entry. Explicitly
+clearing the trace filter SHALL also push an entry. Browser back SHALL return
+to the preceding URL selection; mount or reload SHALL hydrate its controls as
+specified above. This does not assert additional same-mounted popstate
+synchronization for local range or search state.
+
+The status-chip and active saved-view mirroring effect SHALL replace the
+current entry. That mirroring creates no back step for the immediately prior
+mirrored statuses or view identity. A custom saved view may separately apply
+range, search or channels through the push interactions above; its subsequent
+statuses/view mirror still replaces that resulting entry. Legacy route/tab
+normalization and consumed OAuth markers SHALL likewise replace the current
+entry, rather than add a redirect or one-shot-marker back step.
+
+The Timeline SHALL also carry `statuses` and `view` in the URL, parse them on
+mount, and mirror subsequent changes with replacement history. Default
+statuses and the default `all` view SHALL be omitted from the canonical URL.
+Unknown statuses SHALL be named and ignored, never expanded into invented
+known statuses. A link to an unresolved custom saved-view id SHALL retain its
+explicit filters and expose the unresolved view honestly; the id does not
+transfer the other owner's saved-view contents. The Connectors roster,
+connector detail and Filters pipeline routes have no additional URL-backed
+filter state specified here.
+
+#### Scenario: Filter state preserved in URL
+
+- **WHEN** the owner changes the range, search term, channel set, or minute
+  scope on the Timeline
+- **THEN** the URL query string is updated with the selected value
+- **AND** reloading the page restores the same selection
+
+#### Scenario: Tab key is not reused for filter state
+
+- **WHEN** any filter, sort, or pagination control writes to the URL
+- **THEN** the parameter name `tab` is not used
+
+#### Scenario: Search term is debounced
+
+- **WHEN** the owner types continuously into the Timeline search box
+- **THEN** the URL is written once after the input settles, not once per
+  keystroke
+
+#### Scenario: Empty search removes its parameter
+
+- **WHEN** the owner clears the search box
+- **THEN** the search parameter is removed from the URL rather than set empty
+
+#### Scenario: Filter changes are navigable
+
+- **WHEN** the owner changes the range, commits a settled debounced search,
+  changes channels, selects or clears minute scope, opens or closes an event
+  drawer, or explicitly clears trace, and then presses back
+- **THEN** the pushed history entry returns to the preceding URL selection
+- **AND** mounting or reloading that URL hydrates its specified controls
+- **AND** this push-navigation species excludes replacement-only statuses/view
+  mirroring, legacy normalization and consumed OAuth markers
+
+#### Scenario: One-shot parameter strips replace
+
+- **WHEN** an inbound OAuth error marker is consumed and removed
+- **THEN** the history entry is replaced rather than pushed
+- **WHEN** the owner explicitly clears the trace filter
+- **THEN** the history change pushes so back can restore the trace
+
+#### Scenario: URL-backed status and view identity are restored honestly
+
+- **WHEN** a Timeline link carries `statuses` and `view`
+- **THEN** the recipient restores the supported statuses and view identity,
+  alongside range, search, channels, scope and open event
+- **AND** an unresolved custom view is named without fabricating its contents
+- **WHEN** the status-chip or active saved-view mirroring effect updates
+  `statuses` or `view`
+- **THEN** it replaces the current history entry rather than pushes a new one
+- **AND** back does not restore the immediately prior mirrored statuses or
+  view identity through an entry that mirroring did not create
+
+### Requirement: Connector roster list summary-only polling
+
+The Connectors roster SHALL populate its list from a single summary endpoint
+and SHALL NOT mount a per-connector detail query for any row. A roster of N
+connectors SHALL therefore cost one request per poll, not N. The summary
+endpoint SHALL be database-sourced with no Prometheus dependency, so the roster
+still renders when the metrics backend is down. Polling SHALL be on a fixed
+interval; the roster SHALL NOT poll faster than once per 30 seconds.
+
+The available-connector catalogue, which describes connector types rather than
+live state, SHALL NOT use a refetch interval. Its query SHALL use the existing
+60-second stale time and 120-second garbage-collection time. This is absence of
+polling, not a prohibition on the query library's focus/remount/invalidation
+refetches once data is stale.
+
+#### Scenario: Roster loads from the summary endpoint
+
+- **WHEN** the Connectors roster mounts
+- **THEN** it issues one request for the connector summaries
+- **AND** it issues no per-connector detail request
+
+#### Scenario: Roster polling interval
+
+- **WHEN** the roster is left open
+- **THEN** the summary query refetches on a fixed interval no faster than once
+  per 30 seconds
+
+#### Scenario: Roster renders without Prometheus
+
+- **WHEN** the metrics backend is unavailable
+- **THEN** the roster still renders, because every summary field is
+  database-sourced
+
+#### Scenario: Catalogue is fetched, not polled
+
+- **WHEN** the available-connector catalogue is loaded
+- **THEN** it uses the query cache with no refetch interval
+- **AND** ordinary stale-query refetch semantics remain supported
+
+### Requirement: Connector routing-rule deep-link fidelity
+
+Every connector-detail routing-rule row SHALL link to `/ingestion/filters?rule=<URL-encoded id>` for that exact rule. Filters SHALL interpret `rule` only as a navigational focus target and SHALL NOT mutate connector or rule state while resolving it. The target SHALL be compared by exact decoded id against complete successful non-archived (including disabled) and archived reads. Filters SHALL reveal, visibly highlight, scroll into view and accessibly focus only that exact row once per target change, following dashboard-design-language Interaction Affordances. This requirement composes with Connector Detail, Filters Pipeline and the active restore-ingestion-console-spec-coverage change.
+
+#### Scenario: Active rule target is exact
+
+- **WHEN** the owner follows a connector rule link and both rule reads complete successfully
+- **THEN** Filters decodes the id once and reveals, highlights, scrolls to and focuses that exact non-archived rule row, including a disabled rule
+- **AND** other rows do not receive the target highlight or focus
+- **AND** the row has an accessible name and visible focus and selection affordances
+- **AND** no rule or connector mutation is issued
+
+#### Scenario: Archived target arrives asynchronously
+
+- **WHEN** the exact target exists in an archived response that finishes after the active read
+- **THEN** Filters waits for the complete successful reads, expands the archived section and highlights, scrolls to and focuses that exact row
+- **AND** the rule remains archived and no restore is issued
+
+#### Scenario: Target is verified absent
+
+- **WHEN** both complete rule reads succeed and neither contains the target id
+- **THEN** Filters announces that the rule no longer exists
+- **AND** no different rule is selected or focused
+
+#### Scenario: Rule reads are pending or unavailable
+
+- **WHEN** either rule read is pending, incomplete or failed, including a failed refresh that retains stale rows
+- **THEN** Filters does not declare the rule missing and does not focus a stale match
+- **AND** pending reads show a loading status and failed or incomplete reads show an unavailable status with retry
+- **AND** successful retry resolves the exact target or verified absence
+
+#### Scenario: Focus follows target changes without interrupting the owner
+
+- **WHEN** the owner changes the decoded target id, or removes and later re-adds it
+- **THEN** Filters permits one reveal, scroll and focus move for the new target after complete successful reads
+- **AND** repeated links to the same target, query refetches and archived re-expansion do not steal focus after that move
+- **AND** no filter or server state is changed by navigation
+
+### Requirement: Timeline bearer scrub estimates
+
+The /ingestion Timeline SHALL show a compact optional bearer scrub section
+following its existing selected 1h/24h/7d range. It SHALL read the flat pipeline
+response through the existing getPipelineStats/usePipelineStats path and render
+stable Auth codes, Reset links and Magic links labels with finite non-negative
+operation estimates. A measured zero is valid only when bearer_scrub_available
+is true and all three counts are readable. The section SHALL use Dispatch
+eyebrow styling, tabular numerals and accessible source text naming Prometheus
+and fresh Switchboard scrub estimates, including attempts rather than unique
+accepted messages or false positives. No new route, control or write is required.
+
+Loading SHALL be acknowledged without blocking the ledger or range control.
+Request errors, unavailable scrub fields and absent legacy fields SHALL render
+a named unavailable source state, never zero counts or an all-clear. Existing
+funnel, backlog, verdict, freshness and ledger behavior SHALL remain independent.
+
+#### Scenario: Selected range controls scrub estimates
+
+- **WHEN** the owner changes the Timeline's existing range
+- **THEN** the scrub section requests the matching pipeline window and displays its three estimates
+- **AND** the existing ledger, freshness and verdict behavior remains usable
+
+#### Scenario: Unavailable scrub source is explicit
+
+- **WHEN** loading, request failure, source unavailability or legacy missing fields prevent reading counts
+- **THEN** the section acknowledges loading or names Prometheus scrub metrics as unavailable
+- **AND** it does not substitute zero or an all-clear
+
+#### Scenario: Readable zero is an operation measurement
+
+- **WHEN** the API confirms available zero scrub estimates
+- **THEN** the section renders zero for each closed kind with its operation-estimate explanation
+
+### Requirement: OAuth reauth lifecycle authority
+
+The `/ingestion/connectors` recovery resolver SHALL assign each `reauth`
+interaction to the durable authority path defined by
+`connector-oauth-scope-surface/spec`. Only generic OAuth reauth SHALL invoke
+the Approvals module and emit the generic reauth audit sequence. Spotify and
+non-OAuth recovery SHALL remain outside that generic approval path.
+
+Before the typed recovery resolver runs, the API SHALL normalize stored scope
+status `expired | rotation-needed` → `needs_reauth` and preserve the stored
+cause as `auth.recovery_reason`. The typed recovery resolver therefore retains
+one interactive state: generic OAuth selects the Approvals-gated generic flow,
+Spotify selects its connector-owned Passport/PKCE flow, and `unsupported`
+non-OAuth connectors remain non-interactive.
+
+#### Scenario: Generic OAuth reauth is Approvals-gated
+
+- **WHEN** an owner invokes reauth for a generic OAuth-bound connector other
+  than Spotify
+- **THEN** the reauth handler SHALL submit the generic OAuth request to the
+  Approvals module before it delegates to the generic OAuth flow defined by
+  `connector-oauth-scope-surface/spec`
+- **AND** the generic reauth audit sequence SHALL be emitted only for that
+  generic OAuth request
+- **AND** the production generic OAuth provider registry SHALL remain
+  Google-only
+
+#### Scenario: Spotify reauth stays connector-owned
+
+- **WHEN** the recovery resolver identifies a Spotify connector
+- **THEN** it SHALL navigate to `/secrets?focus=u:spotify`
+- **AND** the Passport projection's action SHALL call
+  `POST /api/connectors/spotify/oauth/start`
+- **AND** Spotify access and refresh tokens SHALL remain RFC 0006 Tier 2
+  credentials stored in `public.entity_info` on the owner entity and resolved
+  via `resolve_owner_entity_info()`; the content-blind Passport projection is
+  not a secret authority
+- **AND** it SHALL NOT submit the recovery to the Approvals module, construct
+  a generic OAuth URL, or create a generic OAuth Spotify state or callback
+
+#### Scenario: Non-OAuth reauth is rejected before approval
+
+- **WHEN** a connector's `auth_status = unsupported` reaches the recovery
+  resolver
+- **THEN** the handler SHALL return the structured unsupported response defined
+  by `connector-oauth-scope-surface/spec`
+- **AND** the response SHALL be produced before approval submission
+- **AND** the request SHALL NOT pass through the Approvals module
 
 ## Source References
 

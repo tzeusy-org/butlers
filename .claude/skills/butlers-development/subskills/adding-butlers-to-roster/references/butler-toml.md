@@ -8,13 +8,11 @@ name = "<butler-name>"          # Required. Lowercase, no hyphens. Matches direc
 port = <port-number>            # Required. Unique across all butlers.
 description = "<description>"   # Required. One-line summary for registry/display.
 
-[butler.runtime]                # Optional. Runtime model and concurrency.
-model = "gpt-5.4-mini"  # Model for runtime invocations.
-max_concurrent_sessions = 3     # Default 1 (serial). Set higher for throughput.
-max_queued_sessions = 100       # Default 100.
-
-[runtime]                       # Optional. Runtime type.
-type = "codex"                  # Runtime adapter type.
+[butler.runtime_seed]           # Optional. Concurrency and liveness only.
+max_concurrent_sessions = 3     # Default 3. Set higher for throughput.
+max_queued_sessions = 10        # Default 10.
+# Model, runtime type, args and session timeout live in the model catalog, not here:
+# model/runtime_type/args/session_timeout_s are rejected, and a top-level [runtime] is rejected.
 
 [butler.db]
 name = "butlers"                # Required. Always "butlers" (shared database).
@@ -162,12 +160,8 @@ name = "health"
 port = 41103
 description = "Health tracking assistant for measurements, medications, diet, food preferences, nutrition, meals, and symptoms"
 
-[butler.runtime]
-model = "gpt-5.4-mini"
+[butler.runtime_seed]
 max_concurrent_sessions = 3
-
-[runtime]
-type = "codex"
 
 [butler.db]
 name = "butlers"
@@ -235,12 +229,8 @@ name = "messenger"
 port = 41104
 description = "Outbound delivery execution plane for Telegram and Email"
 
-[butler.runtime]
-model = "gpt-5.4-mini"
+[butler.runtime_seed]
 max_concurrent_sessions = 3
-
-[runtime]
-type = "codex"
 
 [butler.db]
 name = "butlers"
@@ -279,12 +269,8 @@ name = "general"
 port = 41101
 description = "Flexible catch-all assistant for freeform data. IMPORTANT: This is a fallback butler, routing to this butler should be MUTUALLY EXCLUSIVE from routing to any other butler!"
 
-[butler.runtime]
-model = "gpt-5.4-mini"
+[butler.runtime_seed]
 max_concurrent_sessions = 3
-
-[runtime]
-type = "codex"
 
 [butler.db]
 name = "butlers"

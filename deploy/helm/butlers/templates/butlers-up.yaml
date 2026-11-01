@@ -28,31 +28,32 @@ spec:
           image: {{ include "butlers.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           # Same command as the compose service (runtime needs dev extras).
-          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up"]
+          command: ["/app/scripts/dev_entrypoint.sh", "butlers/up", "sh", "-c", "uv sync --dev && exec uv run butlers up{{ if .Values.butlersControl.enabled }} --exclude switchboard{{ end }}"]
           ports:
-            - {name: switchboard, containerPort: 41100}
+            - {name: daemon, containerPort: {{ if .Values.butlersControl.enabled }}41101{{ else }}41100{{ end }}}
           env:
             {{- include "butlers.postgresEnv" . | nindent 12 }}
             - {name: HOME, value: /root}
+            {{- if .Values.butlersControl.enabled }}
+            - {name: SWITCHBOARD_MCP_URL, value: "http://{{ include "butlers.switchboardHost" . }}:41100/sse"}
+            {{- end }}
             - {name: BUTLERS_SWITCHBOARD_URL, value: "http://dashboard-api:41200"}
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
+            - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
           readinessProbe:
-            httpGet: {path: /health, port: switchboard}
+            httpGet: {path: /health, port: daemon}
             periodSeconds: 5
           startupProbe:
-            httpGet: {path: /health, port: switchboard}
+            httpGet: {path: /health, port: daemon}
             periodSeconds: 5
             failureThreshold: 60
           livenessProbe:
-            httpGet: {path: /health, port: switchboard}
+            httpGet: {path: /health, port: daemon}
             periodSeconds: 15
             failureThreshold: 8
           resources:
             {{- toYaml .Values.butlersUp.resources | nindent 12 }}
-          securityContext:
-            # Codex's Bubblewrap sandbox; matches compose apparmor:unconfined.
-            appArmorProfile: {type: Unconfined}
           volumeMounts:
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
@@ -60,7 +61,6 @@ spec:
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
             {{- include "butlers.verifiersMount" . | nindent 12 }}
-            {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportMount" . | nindent 12 }}{{- end }}
       volumes:
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
@@ -68,7 +68,6 @@ spec:
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
-        {{- if .Values.beadsExport.enabled }}{{- include "butlers.beadsExportVolume" . | nindent 8 }}{{- end }}
 ---
 # Every butler daemon listens on 41100-41112 inside the pod; dashboard-api
 # (BUTLERS_HOST=butlers-up) and connectors address them by this name.
@@ -82,6 +81,7 @@ spec:
   selector:
     {{- include "butlers.selector" (dict "root" . "component" "butlers-up") | nindent 4 }}
   ports:
-    {{- range $p := untilStep 41100 41113 1 }}
+    {{- $first := ternary 41101 41100 .Values.butlersControl.enabled }}
+    {{- range $p := untilStep (int $first) 41113 1 }}
     - {name: p{{ $p }}, port: {{ $p }}, targetPort: {{ $p }}}
     {{- end }}

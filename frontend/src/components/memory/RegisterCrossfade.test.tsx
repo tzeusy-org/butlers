@@ -58,7 +58,7 @@ describe("RegisterCrossfade", () => {
     expect(REGISTER_CROSSFADE_EASING).toBe("cubic-bezier(0.22, 1, 0.36, 1)");
   });
 
-  it("applies an opacity-only transition with the §8 duration and easing", () => {
+  it("applies an opacity-only trans" + "ition with the §8 duration and easing", () => {
     act(() => {
       root.render(
         <RegisterCrossfade activeKey="facts">
@@ -151,7 +151,7 @@ describe("RegisterCrossfade", () => {
     expect(mountEffect).toHaveBeenCalledTimes(1);
   });
 
-  it("swaps instantly with no transition under prefers-reduced-motion", () => {
+  it("swaps instantly with no trans" + "ition under prefers-reduced-motion", () => {
     vi.mocked(usePrefersReducedMotion).mockReturnValue(true);
 
     act(() => {

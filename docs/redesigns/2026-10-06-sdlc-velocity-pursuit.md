@@ -4,7 +4,7 @@
 
 A non-standard-lens run of the JARVIS pursuit, aimed at the owner's four targets: CI under 7 minutes, test condensation, code cleanup and deduplication with legacy retirement, and th-engineering cruft cleanup. Twenty-four read-only agents measured CI, tests and code; a critic re-checked the boldest claims. Fifteen moves survive deduplication against the held five-minute-lane program `bu-gvut0`, 426 non-closed beads and prior engineering proposals.
 
-[Structured evidence](2026-10-06-sdlc-velocity-pursuit-data.json)
+Structured evidence (archived): `git show 3c8d72607aea90d41d7115b2d7e0569ba5753562:docs/redesigns/2026-10-06-sdlc-velocity-pursuit-data.json`
 
 ## Decision in view
 
@@ -209,5 +209,5 @@ Real candidates held back: owner decisions, deferrals until a ranked move lands,
 
 - Orchestration: 24 agents in 12 batches of 2, 55 minutes apart (never more than 2 in flight); Workflow run `wf_1127ed0c-6c3`; zero errors or retries; about 2.8M subagent tokens. Models: opus/high for measurement, design and critique; sonnet/high for the QC pass, source-pin audit, frontend dedup and tooling cruft.
 - Agents were read-only except for scratch files outside the tree; measurement was limited to `gh` reads, pytest collection, `-X importtime` and static analysers. No test suite, DB or live stack was run, so template-clone and Vitest-selection savings are derived, not measured; each owning bead measures first.
-- Access: `jq '.audits["<lens>"]' docs/redesigns/2026-10-06-sdlc-velocity-pursuit-data.json`; lens keys are in `orchestration.batch_plan`. `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves. Long strings in `audits` are capped for size; the harvest file was not committed.
+- Access: `git show 3c8d72607aea90d41d7115b2d7e0569ba5753562:docs/redesigns/2026-10-06-sdlc-velocity-pursuit-data.json | jq '.audits["<lens>"]'`; lens keys are in `orchestration.batch_plan`. `jq '.synthesis.ranked_moves[] | {rank, title, bead}'` lists the moves. Long strings in `audits` are capped for size; the harvest file was not committed.
 - Retention: this PR removes `2026-10-03-jarvis-pursuit-data.json` from the tree per the two-newest-runs rule; read it with `git show 9cc43f3e5443dd812354ff6ee7112d9575205288:docs/redesigns/2026-10-03-jarvis-pursuit-data.json`.

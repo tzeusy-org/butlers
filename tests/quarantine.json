@@ -1,0 +1,4 @@
+{
+  "note": "Flaky tests kept out of default pytest runs by tests/quarantine.py; the nightly quarantined job runs them with --quarantined. Each bead owns the root cause; the PR that removes the cause deletes the entry. See docs/testing/quarantine.md.",
+  "tests": []
+}

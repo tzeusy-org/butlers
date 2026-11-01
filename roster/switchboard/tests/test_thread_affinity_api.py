@@ -6,15 +6,28 @@ No Docker required — all DB calls are mocked.
 
 from __future__ import annotations
 
+import importlib
+import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import Request
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.unit
 
 # Butler DB key used by the switchboard router's _pool() helper
 _BUTLER_DB = "switchboard"
+
+# The tests import ``switchboard_api_router``, the name router discovery gives
+# roster/switchboard/api/router.py. Register it here so this file does not rely
+# on another test having loaded it first on the same worker. Discovery reuses an
+# existing sys.modules entry, so both paths see the same module.
+_ROUTER_MODULE = "switchboard_api_router"
+_ROUTER_PATH = Path(__file__).resolve().parents[1] / "api" / "router.py"
+if _ROUTER_MODULE not in sys.modules:
+    _router_module = importlib.import_module("butlers.api._roster.switchboard.router")
 
 
 # ---------------------------------------------------------------------------
@@ -371,17 +384,17 @@ class TestThreadOverrideUpsertValidation:
     def test_force_mode_without_butler_invalid(self) -> None:
         from switchboard_api_models import ThreadOverrideUpsert
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ThreadOverrideUpsert(mode="force:")
 
     def test_unknown_mode_invalid(self) -> None:
         from switchboard_api_models import ThreadOverrideUpsert
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ThreadOverrideUpsert(mode="allow")
 
     def test_empty_mode_invalid(self) -> None:
         from switchboard_api_models import ThreadOverrideUpsert
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValidationError):
             ThreadOverrideUpsert(mode="")

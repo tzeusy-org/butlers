@@ -14,8 +14,25 @@ import dagre from "@dagrejs/dagre";
 import { Section, SectionContent, SectionHeader, SectionTitle } from "@/components/ui/Section";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { useMindMap, useFrontierNodes } from "@/hooks/use-education";
+import { useTickingNow } from "@/hooks/use-ticking-now";
+import CurriculumActions from "./CurriculumActions";
 import { MASTERY_STATUS_COLORS } from "./mastery-status";
 import type { EducationNodeSelection } from "./types";
+
+function emptyCurriculumCopy(status: string | undefined, createdAt: string | undefined, now: number): string {
+  if (status === "abandoned") return "This curriculum was abandoned before any concepts were mapped.";
+  if (status === "completed") return "This curriculum was marked complete without any concepts.";
+  if (status === "active") return "This curriculum is marked active but has no concepts. That should not be possible: please report it.";
+  const age = now - Date.parse(createdAt ?? "");
+  if (status !== "draft" || !Number.isFinite(age)) return "Curriculum setup status is unavailable.";
+  const minutes = Math.max(0, Math.floor(age / 60_000));
+  const count = minutes >= 1440 ? Math.floor(minutes / 1440) : minutes >= 60 ? Math.floor(minutes / 60) : minutes;
+  const unit = minutes >= 1440 ? "day" : minutes >= 60 ? "hour" : "minute";
+  const relativeAge = `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+  if (age < 1_800_000) return "Setting up this curriculum: the butler is mapping out the concepts.";
+  if (age < 86_400_000) return `Still setting up: requested ${relativeAge}. This is taking longer than usual.`;
+  return `Setup stalled: requested ${relativeAge} and no concepts have been added yet.`;
+}
 
 function ConceptNode({ data }: { data: Record<string, unknown> }) {
   const status = data.mastery_status as string;
@@ -83,6 +100,7 @@ interface MindMapGraphProps {
 }
 
 export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphProps) {
+  const now = useTickingNow();
   const { data: mindMap, isLoading, isError, refetch } = useMindMap(mindMapId);
   const { data: frontierNodes } = useFrontierNodes(mindMapId);
 
@@ -168,8 +186,13 @@ export default function MindMapGraph({ mindMapId, onSelectNode }: MindMapGraphPr
           <SectionTitle>Concept Map</SectionTitle>
         </SectionHeader>
         <SectionContent>
-          <div className="flex h-96 items-center justify-center text-muted-foreground">
-            This curriculum has no concepts yet. The butler is still building it.
+          <div className="flex h-96 flex-col items-center justify-center gap-4 text-muted-foreground">
+            <p role={mindMap?.status === "active" ? "alert" : undefined}>
+              {emptyCurriculumCopy(mindMap?.status, mindMap?.created_at, now)}
+            </p>
+            {mindMap?.status === "draft" && now - Date.parse(mindMap.created_at) >= 86_400_000 && (
+              <CurriculumActions mindMapId={mindMap.id} status="draft" nodeCount={0} />
+            )}
           </div>
         </SectionContent>
       </Section>

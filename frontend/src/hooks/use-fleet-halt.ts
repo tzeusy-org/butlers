@@ -29,7 +29,6 @@ import { useQuery } from "@tanstack/react-query";
 
 import { getDispatchAttempts, getFleetHaltAttention } from "@/api/client";
 import type { DispatchAttemptEntry, FleetHaltAttentionEpisode } from "@/api/types";
-import { useBusAwarePollInterval } from "@/hooks/use-bus-aware-poll-interval";
 import { useTimezone } from "@/components/ui/timezone-context";
 import { todayISO } from "@/lib/day-window";
 
@@ -90,8 +89,11 @@ export interface FleetHaltStatus {
   isAttentionLoading: boolean;
 }
 
+// No fleet event reports a ceiling denial (denials are dispatch_attempts rows and stop
+// the spend events that would signal them), so the bus never invalidates these keys.
+const FLEET_HALT_POLL_MS = 30_000;
+
 export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): FleetHaltStatus {
-  const refetchInterval = useBusAwarePollInterval();
   const ownerTz = useTimezone();
   const sinceMonth = startOfMonthIso();
   const sinceToday = startOfTodayIso(ownerTz);
@@ -110,7 +112,7 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
         order: "asc",
         limit: 1,
       }),
-    refetchInterval,
+    refetchInterval: FLEET_HALT_POLL_MS,
   });
 
   const today = useQuery({
@@ -126,7 +128,7 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
         since: sinceToday,
         limit: 1,
       }),
-    refetchInterval,
+    refetchInterval: FLEET_HALT_POLL_MS,
   });
 
   const recent = useQuery({
@@ -144,13 +146,13 @@ export function useFleetHaltStatus(drawerLimit: number = DEFAULT_DRAWER_LIMIT): 
         order: "desc",
         limit: drawerLimit,
       }),
-    refetchInterval,
+    refetchInterval: FLEET_HALT_POLL_MS,
   });
 
   const attention = useQuery({
     queryKey: FLEET_HALT_QUERY_KEY,
     queryFn: getFleetHaltAttention,
-    refetchInterval,
+    refetchInterval: FLEET_HALT_POLL_MS,
   });
 
   const isLoading = onset.isLoading || today.isLoading || recent.isLoading;

@@ -50,6 +50,8 @@ def _build_ingest_envelope(
         },
         "event": {
             "external_event_id": f"event-{uuid.uuid4()}",
+            "external_conversation_id": "telegram:12345",
+            "reply_target_ref": "12345:1",
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {

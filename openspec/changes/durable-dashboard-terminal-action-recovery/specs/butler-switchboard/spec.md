@@ -214,11 +214,20 @@ Scope: v1-mandatory
 - **THEN** the tool SHALL fail closed with `reason="dashboard_context_required"`
 - **AND** it SHALL NOT route a butler, capture a dead letter, or create a conversation reply
 
+#### Scenario: Lane D — a system-scope question uses Concierge read tools
+
+- **WHEN** the classification session calls `answer_question(scope="system", question, system_tool, system_args)` selecting an existing `dashboard_read_*` tool
+- **THEN** Switchboard SHALL make a bounded, permission-checked MCP tool call to Concierge and return its source-attributed read evidence to that same classification session
+- **AND** it SHALL NOT dispatch `route.execute`, route a user message to Concierge, spawn a Concierge LLM session, or consult a domain butler
+- **AND** the classification session SHALL answer only from returned evidence, preserving estimates, unpriced usage, dates and limits
+- **AND** the pipeline SHALL persist the final answer with the returned `source.ref` and `source.as_of`, settle the dashboard turn without overriding Stop, and leave conversation-wide `routed_butler` unset
+
 #### Scenario: Lane D — a system-scope question falls back to the honest-decline dead-letter path
 
 - **WHEN** the classification session calls `answer_question(scope="system", question)` and no Concierge system-scope answering tool is available
 - **THEN** `answer_question` SHALL NOT route to any domain butler
 - **AND** it SHALL dead-letter the request with `failure_category="unanswerable"` and persist an in-thread `conversation_reply` naming what was checked, via the same shared path `cannot_answer` uses
+- **AND** a missing/invalid read selector or arguments, permission denial, timeout, or missing source attribution SHALL use this same honest-decline path
 
 #### Scenario: Lane D — cannot_answer dead-letters directly and never files a bug report or domain route
 

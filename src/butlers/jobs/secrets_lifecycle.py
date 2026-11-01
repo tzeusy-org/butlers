@@ -123,7 +123,6 @@ from zoneinfo import ZoneInfo
 
 from butlers.api.db import DatabaseManager
 from butlers.api.degraded import DegradedSources
-from butlers.api.routers import audit as audit_router
 from butlers.api.routers.secrets_v2 import (
     PROVIDER_CATALOG,
     _fetch_cli_secrets,
@@ -133,6 +132,7 @@ from butlers.api.routers.secrets_v2 import (
     _secrets_schema_absent_at_start,
     _secrets_source_schema,
 )
+from butlers.core import audit as audit_router
 from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
@@ -145,8 +145,12 @@ from butlers.core.temporal.delivery_db import (
     insert_deferred_notification,
 )
 from butlers.credential_store import resolve_owner_telegram_recipient
+from butlers.telegram_api import terminal_telegram_metadata
+from butlers.telegram_text import PartialDeliveryLatch
 
 logger = logging.getLogger(__name__)
+_PARTIAL_TRANSITIONS = PartialDeliveryLatch()
+
 
 # States that warrant a proactive owner push. Deliberately excludes 'warn'
 # (never-probed — not yet actionable) and the frontend-only synthetic states
@@ -329,14 +333,14 @@ async def _collect_snapshots(
     return snapshots
 
 
-async def _last_notified_state(pool: Any, key: str) -> str | None:
+async def _last_notified_state(pool: Any, key: str, *, required: bool = False) -> str | None:
     """Return the state we last successfully delivered a notification for.
 
     Read from ``public.audit_log`` (no new migration): the most recent
     ``lifecycle_state_notified`` row's ``note`` column IS the state string
-    that was current at delivery time. Returns None (never notified, or the
-    table/lookup is unavailable) so the caller treats that as "not yet
-    debounced" rather than silently skipping a real transition.
+    that was current at delivery time. Admission uses ``required=True``: an
+    unavailable read is UNKNOWN and must stop the send, unlike a confirmed
+    absent row. The default preserves the legacy diagnostic helper contract.
     """
     try:
         row = await pool.fetchrow(
@@ -350,6 +354,8 @@ async def _last_notified_state(pool: Any, key: str) -> str | None:
             _LIFECYCLE_NOTIFIED_ACTION,
         )
     except Exception:
+        if required:
+            raise
         logger.debug(
             "secrets_lifecycle_check: last-notified lookup failed for key=%s", key, exc_info=True
         )
@@ -416,7 +422,9 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     return "\n".join(lines)
 
 
-async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
+async def _supersede_pending_retries(
+    pool: Any, dedup_marker: str, *, required: bool = False
+) -> int:
     """Cancel prior PENDING retry envelopes sharing ``dedup_marker``, best-effort.
 
     ``dedup_marker`` is a credential's state-independent ``_focus_fragment``.
@@ -431,6 +439,8 @@ async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
             pool, butler_name="switchboard", line_token=dedup_marker
         )
     except Exception:
+        if required:
+            raise
         logger.warning(
             "secrets_lifecycle_check: failed to supersede prior pending retry "
             "envelopes for marker=%s",
@@ -438,6 +448,27 @@ async def _supersede_pending_retries(pool: Any, dedup_marker: str) -> int:
             exc_info=True,
         )
         return 0
+
+
+async def _settle_partial_transition(
+    db: DatabaseManager, pool: Any, *, key: str, state: str
+) -> None:
+    marker = _focus_fragment(key)
+    await _supersede_pending_retries(db.pool("switchboard"), marker, required=True)
+    await audit_router.append(
+        pool,
+        _LIFECYCLE_ACTOR,
+        _LIFECYCLE_NOTIFIED_ACTION,
+        target=key,
+        note=state,
+        result=(
+            "partial_delivery"
+            if _PARTIAL_TRANSITIONS.metadata(pool, key + ":" + state).get("partial_delivery")
+            else "delivery_uncertain"
+        ),
+        metadata=_PARTIAL_TRANSITIONS.metadata(pool, key + ":" + state),
+    )
+    _PARTIAL_TRANSITIONS.clear(pool, key + ":" + state)
 
 
 async def _enqueue_deferred_envelope(
@@ -657,6 +688,23 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             "errors": 0,
         }
 
+    # Reconcile prior terminal outcomes before a credential leaves its attention
+    # state. An unavailable terminal store must not re-arm this job's sends.
+    for pending in _PARTIAL_TRANSITIONS.keys(shared_pool):
+        key, _, state = pending.rpartition(":")
+        try:
+            await _settle_partial_transition(db, shared_pool, key=key, state=state)
+        except Exception:
+            logger.warning("secrets_lifecycle_check: terminal bookkeeping remains incomplete")
+            return {
+                "scanned": 0,
+                "attention": 0,
+                "delivered": 0,
+                "deferred": 0,
+                "suppressed": 0,
+                "errors": 1,
+            }
+
     tracker = DegradedSources(logger)
     snapshots = await _collect_snapshots(db, tracker=tracker)
     attention = [s for s in snapshots if s.state in _ATTENTION_STATES]
@@ -678,8 +726,15 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
         recipient: str | None = None
         dedup_marker: str | None = None
         deferred_at: datetime | None = None
+        partial = _PARTIAL_TRANSITIONS.contains(shared_pool, snapshot.key + ":" + snapshot.state)
         try:
-            last_state = await _last_notified_state(shared_pool, snapshot.key)
+            if partial:
+                await _settle_partial_transition(
+                    db, shared_pool, key=snapshot.key, state=snapshot.state
+                )
+                errors += 1
+                continue
+            last_state = await _last_notified_state(shared_pool, snapshot.key, required=True)
             if last_state == snapshot.state:
                 # Already notified for this exact state — debounce.
                 continue
@@ -830,6 +885,32 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 metadata={"origin": _LIFECYCLE_ACTOR, "credential_key": snapshot.key},
             )
 
+            if terminal := terminal_telegram_metadata(deliver_result):
+                partial = True
+                _PARTIAL_TRANSITIONS.mark(
+                    shared_pool, snapshot.key + ":" + snapshot.state, terminal
+                )
+                await _settle_partial_transition(
+                    db, shared_pool, key=snapshot.key, state=snapshot.state
+                )
+                errors += 1
+                await record_attention_event(
+                    shared_pool,
+                    origin_butler=_LIFECYCLE_ACTOR,
+                    source="notify",
+                    outcome="failed",
+                    channel="telegram",
+                    intent="send",
+                    priority="medium",
+                    reason=(
+                        "telegram_partial_delivery"
+                        if terminal.get("partial_delivery")
+                        else "telegram_delivery_uncertain"
+                    ),
+                    dedup_key=snapshot.key,
+                    metadata=terminal,
+                )
+                continue
             if deliver_result.get("status") == "failed":
                 errors += 1
                 # Retryable: recipient + message are already resolved above,
@@ -947,7 +1028,12 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
             # confirmed direct delivery advances it, so the retry (or the next
             # scan) still fires.
             retry_ref: str | None = None
-            if message is not None and recipient is not None and dedup_marker is not None:
+            if (
+                not partial
+                and message is not None
+                and recipient is not None
+                and dedup_marker is not None
+            ):
                 retry_deliver_at = (
                     deferred_at if deferred_at is not None else datetime.now(UTC) + _RETRY_BACKOFF
                 )
@@ -975,6 +1061,11 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
                 reason=reason,
                 dedup_key=snapshot.key,
                 notification_ref=retry_ref,
+                metadata=_PARTIAL_TRANSITIONS.metadata(
+                    shared_pool, snapshot.key + ":" + snapshot.state
+                )
+                if partial
+                else None,
             )
 
     summary: dict[str, Any] = {

@@ -267,6 +267,12 @@ class ProtectedApprovalMCP:
                     result = await client.call_tool(tool, arguments)
         except (TimeoutError, httpx.TimeoutException):
             raise RecoveryAuthorityError(_REFUSAL) from None
+        except RuntimeError as error:
+            # FastMCP wraps initialization failures with their explicit cause.
+            # Inspect one typed hop, never messages or unrelated runtime faults.
+            if not isinstance(error.__cause__, (TimeoutError, httpx.TimeoutException)):
+                raise
+            raise RecoveryAuthorityError(_REFUSAL) from None
         if not isinstance(result.data, dict):
             raise RecoveryAuthorityError(_REFUSAL)
         return result.data
@@ -308,7 +314,7 @@ class SourceApprovalAdmission:
         self._admissions.pop(hashlib.sha256(proof.encode()).hexdigest(), None)
 
     async def mint(self, claim: DeliveryClaim, payload: dict[str, Any]) -> str:
-        from butlers.tools.switchboard.routing.contracts import parse_notify_request
+        from butlers.tools.switchboard.contracts import parse_notify_request
 
         if self._retired:
             raise RecoveryAuthorityError(_REFUSAL)

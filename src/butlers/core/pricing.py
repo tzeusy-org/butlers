@@ -43,20 +43,9 @@ _BILLING_CLASSES = frozenset({"metered", "subscription", "local"})
 # rate is always preferred; this allowlist exists only so a newly added
 # catalog entry cannot silently reopen the "28 of 49 models billed cache
 # reads at full input price" defect it was named for.
-NO_CACHE_DISCOUNT_MODELS: frozenset[str] = frozenset(
-    {
-        # Vertex AI publishes a distinct cached-content rate for both, but it
-        # has not been reconciled into pricing.toml yet.
-        "gemini-2.5-pro",
-        "gemini-2.5-flash",
-        # OpenCode Go resells these; no cache-discount rate is published on
-        # its price sheet for these specific models.
-        "opencode-go/glm-5",
-        "opencode-go/kimi-k2.5",
-        "opencode-go/minimax-m2.5",
-        "opencode-go/minimax-m2.7",
-    }
-)
+# Empty since the 2026-10-14 catalog refresh: every metered default now has a
+# confirmed cache-read rate.
+NO_CACHE_DISCOUNT_MODELS: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

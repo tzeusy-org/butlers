@@ -27,7 +27,7 @@ import { SessionTable } from "@/components/sessions/SessionTable";
 import { SessionDetailDrawer } from "@/components/sessions/SessionDetailDrawer";
 import { Button } from "@/components/ui/button";
 import { QueryBoundary, SourceDegradedNote } from "@/components/ui/query-boundary";
-import { ButlerPanelGrid, Panel } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel } from "@/components/ui/atoms";
 import { ButlerFrictionPanel } from "@/components/butler-detail/ButlerFrictionPanel";
 import { useButlerSessions } from "@/hooks/use-sessions";
 

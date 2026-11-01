@@ -22,3 +22,36 @@ spec:
         - ipBlock: {cidr: {{ .Values.hostIngress.nodeSourceCidr }}}
         - podSelector: {}
 {{- end }}
+
+{{- if .Values.butlersControl.enabled }}
+---
+# Service traffic stays namespace-local. Session reachability is a distinct
+# identity boundary: only the operator health pod and future session host.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-control-ingress
+  labels:
+    {{- include "butlers.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "butlers.selector" (dict "root" . "component" "butlers-control") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - {protocol: TCP, port: 41100}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: session-host
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: control-session-health
+      ports:
+        - {protocol: TCP, port: 41199}
+{{- end }}

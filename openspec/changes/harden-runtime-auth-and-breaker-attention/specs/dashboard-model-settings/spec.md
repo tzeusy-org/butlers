@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Catalog Verify-All API
@@ -14,6 +19,20 @@ healthy keyless session authority exists. Domain checks remain mandatory after
 central authentication; auth-store reads necessary for verification are distinct
 from forbidden pre-authentication domain access.
 
+After the goal switch, the private deterministic control-plane coordinator
+SHALL execute catalog verification through the applicable runtime tuple while
+credential projection/login targets the session host through the control-plane
+service listener (RFC 0038 D3). Verification and benchmark probes SHALL remain
+D18 tool-less, single-turn fixed-prompt/structured-output measurements, not
+goals, broker clients or domain-capability calls. "Same runtime environment"
+below means applicable authority, model, adapter mapping/configuration and
+arguments, never an invocation's broker access. All owner authentication,
+signed capability/receipt, readiness, rate/deadline, history and honest degraded
+outcomes below remain; a probe cannot produce routed success or reset a breaker.
+The private probe signer is not the goal-broker signer and never reaches the
+session host. Existing Models facts persist until the separately governed D19
+switch, with no invented replacement UI route in this amendment.
+
 ID: REQ-dashboard-model-settings-003
 Source: dashboard-owner-auth successor design D1-D9; existing dashboard-model-settings behavior preserved except explicit owner-auth supersession
 Scope: v1-mandatory
@@ -21,6 +40,7 @@ Scope: v1-mandatory
 #### Scenario: Verify-all parallel execution
 - **WHEN** `POST /api/settings/models/verify-all` is accepted
 - **THEN** the system requests a signed Switchboard runtime probe for each enabled model concurrently with a bounded concurrency of 8
+- **AND** rows that share an allowance account (`COALESCE(allowance_account, runtime_type)`, across runtimes) are probed one after another within the overall bound of 8, so one account never sees concurrent probes
 - **AND** only a completed probe causes Switchboard to persist `last_verified_at`, `last_verified_latency_ms`, `last_verified_ok`, and `last_verified_error`
 - **AND** a control-plane unavailable result preserves the prior verification evidence and is reported separately from a completed failed probe
 - **AND** the response data contains exactly `accepted`, `total`, `ok`, `failed`, and `unavailable`
@@ -100,7 +120,7 @@ The Models API's per-entry test and scheduled verification SHALL invoke a
 deterministic Switchboard-owned runtime-probe coordinator. The coordinator
 SHALL use the same runtime home, authoritative CLI-auth source, adapter
 construction, canonical model identifier, runtime-specific execution mapping,
-generated runtime configuration, and runtime arguments as a new daemon
+generated runtime configuration, and runtime arguments as a new goal
 invocation, but SHALL expose no domain MCP tools and SHALL not create routed
 dispatch provenance. It SHALL be reached only through an authenticated
 dashboard-to-Switchboard control-plane command that is not registered in the
@@ -163,7 +183,7 @@ Scope: v1-mandatory
   verification sweep runs
 - **THEN** the request is executed by the runtime-probe coordinator using the
   same shared runtime environment, canonical-to-execution mapping, generated
-  runtime configuration, and catalog arguments as new daemon work
+  runtime configuration, and catalog arguments as new goal invocation work
 - **AND** the returned evidence is labelled as a runtime probe rather than a
   routed session result
 
@@ -290,8 +310,20 @@ Scope: v1-mandatory
 
 - **WHEN** a caller requests a manual reissue for a pending, sending, sent,
   failed, or already-reissued episode
-- **THEN** the API rejects it without creating an episode or external delivery
+- **THEN** the API rejects it with `409` ("Attention episode is not eligible for reissue") without creating an episode or external delivery
 - **AND** the UI keeps the control absent or disabled with an accessible reason
+
+#### Scenario: Reissue for an unknown episode is not found
+
+- **WHEN** a caller with valid owner-control authority requests a manual reissue for an episode id that does not exist
+- **THEN** the API returns `404` ("Attention episode not found")
+- **AND** no successor episode and no external delivery is created
+
+#### Scenario: Reissue is unavailable when the reissue path fails
+
+- **WHEN** a caller with valid owner-control authority requests a manual reissue and the reissue database operation fails for a reason other than ineligibility or a missing episode, the database connection is unavailable, or the operation returns no result
+- **THEN** the API returns `503` ("Attention reissue is unavailable") with no database error detail
+- **AND** no successor episode is reported as created
 
 #### Scenario: Attention observation degradation stays truthful
 

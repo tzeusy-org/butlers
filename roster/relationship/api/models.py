@@ -387,6 +387,32 @@ class OverdueContactsResponse(BaseModel):
     unmeasurable_count: int
 
 
+class PendingDebriefAttendee(BaseModel):
+    """An attendee frozen into a debrief snapshot (active-posture entities only)."""
+
+    entity_id: str | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class PendingDebrief(BaseModel):
+    """One prompted, unanswered meeting debrief."""
+
+    debrief_id: str
+    number: int | None = None
+    event_title: str | None = None
+    occurrence_start: str
+    prompted_at: str
+    attendees: list[PendingDebriefAttendee]
+
+
+class PendingDebriefsResponse(BaseModel):
+    """Pending debriefs; ``debriefs_available`` is false when the read failed."""
+
+    debriefs: list[PendingDebrief]
+    debriefs_available: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Entity-level tab API models (entity-keyed, facts-based)
 # ---------------------------------------------------------------------------
@@ -1557,23 +1583,6 @@ class EntityFactEntry(FactAttribution):
     #: never stored on the row.  Confidence (``conf``) and staleness are separate
     #: axes (lifecycle §"Age").
     staleness_band: str
-
-
-class EntityFactsResponse(BaseModel):
-    """Keyset-paginated response for ``GET /entities/{id}/facts``.
-
-    Keyset (cursor) pagination per the repo convention (CLAUDE.md §"Cursor
-    Pagination"): ordered ``created_at DESC, id DESC``, no ``total`` field.
-
-    - ``items`` — the page of fact rows (active identity rows by default;
-      labeled narrative rows additionally when ``store=all``).
-    - ``next_cursor`` — opaque cursor for the next page (``None`` on last page).
-    - ``has_more`` — True when more rows exist beyond this page.
-    """
-
-    items: list[EntityFactEntry]
-    next_cursor: str | None = None
-    has_more: bool
 
 
 # ---------------------------------------------------------------------------

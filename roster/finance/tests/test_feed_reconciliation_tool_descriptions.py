@@ -4,21 +4,10 @@ from __future__ import annotations
 
 import inspect
 
+from fastmcp import FastMCP
+
 from butlers.modules._roster_finance.tools import register_tools
-
-
-class _FakeMCP:
-    """Capture registered tool closures without starting an MCP server."""
-
-    def __init__(self) -> None:
-        self.tools: dict[str, object] = {}
-
-    def tool(self):
-        def _decorator(fn):
-            self.tools[fn.__name__] = fn
-            return fn
-
-        return _decorator
+from butlers.testing.mcp import registered_tools
 
 
 class _FakeModule:
@@ -28,15 +17,15 @@ class _FakeModule:
         raise AssertionError("tool description test must not acquire a pool")
 
 
-def _registered_tools() -> dict[str, object]:
-    mcp = _FakeMCP()
+async def _registered_tools() -> dict[str, object]:
+    mcp = FastMCP()
     register_tools(mcp, _FakeModule(), config=None)
-    return mcp.tools
+    return await registered_tools(mcp)
 
 
-def test_feed_reconciliation_descriptions_cover_optional_simplefin_degradation() -> None:
+async def test_feed_reconciliation_descriptions_cover_optional_simplefin_degradation() -> None:
     """Public tool descriptions distinguish an optional feed from an all-clear."""
-    tools = _registered_tools()
+    tools = await _registered_tools()
     reconcile_description = inspect.getdoc(tools["reconcile_feed_vs_email"]) or ""
     freshness_description = inspect.getdoc(tools["account_feed_freshness"]) or ""
     normalized_reconcile_description = " ".join(reconcile_description.split())

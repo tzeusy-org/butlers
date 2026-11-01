@@ -1400,6 +1400,7 @@ async def _insert_message_inbox(
     direction: str = "inbound",
     source_endpoint_identity: str | None = None,
     source_thread_identity: str | None = None,
+    external_conversation_id: str | None = None,
 ) -> None:
     """Insert a message_inbox row for testing."""
     if received_at is None:
@@ -1412,6 +1413,8 @@ async def _insert_message_inbox(
         request_context["source_endpoint_identity"] = source_endpoint_identity
     if source_thread_identity is not None:
         request_context["source_thread_identity"] = source_thread_identity
+    if external_conversation_id is not None:
+        request_context["external_conversation_id"] = external_conversation_id
     from roster.relationship.tests.calendar_projection import insert_message
 
     await insert_message(
@@ -1595,6 +1598,41 @@ async def test_interaction_sync_logs_telegram_interaction(interaction_sync_pool)
             meta = _json.loads(meta)
         assert meta.get("type") == "telegram_user_client"
         assert meta.get("direction") == "incoming"
+
+
+async def test_interaction_sync_groups_chat_by_conversation_not_reply_target(
+    interaction_sync_pool,
+):
+    """Per-message reply targets in one chat aggregate into one chat group (bu-7exe4.2)."""
+    from butlers.jobs._roster.relationship_jobs import run_interaction_sync
+
+    async with interaction_sync_pool() as pool:
+        contact_id = await _insert_contact_anchor(pool, first_name="Grace")
+        await _insert_contact_info(
+            pool, contact_id=contact_id, ci_type="telegram_chat_id", value="777002"
+        )
+        observed_at = datetime.now(UTC) - timedelta(hours=1)
+        for message_id in (1, 2):
+            await _insert_message_inbox(
+                pool,
+                sender_identity="777002",
+                source_channel="telegram_user_client",
+                source_thread_identity=f"777002:{message_id}",
+                external_conversation_id="telegram:777002",
+                received_at=observed_at + timedelta(minutes=message_id),
+            )
+
+        result = await run_interaction_sync(pool)
+
+        assert result["processed"] == 1
+        assert result["logged"] == 1
+        message_count = await pool.fetchval(
+            """
+            SELECT (metadata -> 'extra_metadata' ->> 'message_count')::int FROM facts
+            WHERE predicate = 'interaction_telegram_user_client'
+            """
+        )
+        assert message_count == 2
 
 
 async def test_interaction_sync_keeps_sibling_endpoints_separate(

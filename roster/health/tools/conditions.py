@@ -107,7 +107,7 @@ async def condition_add(
             predicate="condition",
             content=content,
             embedding_engine=embedding_engine,
-            permanence="stable",
+            permanence="permanent",
             scope="health",
             valid_at=None,  # property fact — supersedes previous for same name
             metadata=metadata,
@@ -218,7 +218,7 @@ async def condition_update(
             predicate="condition",
             content=content,
             embedding_engine=embedding_engine,
-            permanence="stable",
+            permanence="permanent",
             scope="health",
             valid_at=None,  # property fact — supersedes the previous
             metadata=new_meta,
@@ -312,7 +312,7 @@ async def symptom_log(
             predicate="symptom",
             content=name,
             embedding_engine=embedding_engine,
-            permanence="standard",
+            permanence="permanent",
             scope="health",
             entity_id=owner_entity_id,
             valid_at=valid_at,

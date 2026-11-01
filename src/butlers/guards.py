@@ -17,10 +17,12 @@ from butlers.core.tool_call_capture import (
     reset_current_approval_push_runtime,
     reset_current_runtime_butler_name,
     reset_current_runtime_session_id,
+    reset_current_runtime_session_locator_unbound,
     reset_current_runtime_trigger_source,
     set_current_approval_push_runtime,
     set_current_runtime_butler_name,
     set_current_runtime_session_id,
+    set_current_runtime_session_locator_unbound,
     set_current_runtime_trigger_source,
 )
 
@@ -187,6 +189,11 @@ class _McpRuntimeSessionGuard:
         return resolved_session_id, trigger_source
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        from butlers.core.finance_warning_control import HEADER, _pending
+
+        pending_token = _pending.set(
+            self._header_value(scope.get("headers"), HEADER.lower().encode())
+        )
         runtime_session_id, trigger_source = self._resolve_session_params(scope)
         from butlers.core import fact_authority
 
@@ -205,6 +212,11 @@ class _McpRuntimeSessionGuard:
                 binding = None
             else:
                 self._admitted_sessions[mcp_session] = binding.runtime_session
+        from butlers.core.attention_urgency import _current_origin
+
+        attention_token = _current_origin.set(
+            binding.attention_origin if binding is not None else None
+        )
         report_token = fact_authority._current_report.set(
             binding.report
             if binding is not None
@@ -220,6 +232,9 @@ class _McpRuntimeSessionGuard:
         if binding is not None:
             runtime_session_id = binding.runtime_session
         session_token = set_current_runtime_session_id(runtime_session_id)
+        locator_token = set_current_runtime_session_locator_unbound(
+            binding is None and bool(runtime_session_id)
+        )
         trigger_token = set_current_runtime_trigger_source(trigger_source)
         butler_token = set_current_runtime_butler_name(self._butler_name)
         push_token = set_current_approval_push_runtime(self._approval_push_runtime)
@@ -245,6 +260,8 @@ class _McpRuntimeSessionGuard:
         try:
             await self._app(scope, receive, _send_with_session_capture)
         finally:
+            _pending.reset(pending_token)
+            _current_origin.reset(attention_token)
             fact_authority._incoming_receipt.reset(receipt_token)
             fact_authority._pipeline_source.reset(pipeline_token)
             fact_authority._incoming_source.reset(source_token)
@@ -252,4 +269,5 @@ class _McpRuntimeSessionGuard:
             reset_current_approval_push_runtime(push_token)
             reset_current_runtime_butler_name(butler_token)
             reset_current_runtime_trigger_source(trigger_token)
+            reset_current_runtime_session_locator_unbound(locator_token)
             reset_current_runtime_session_id(session_token)

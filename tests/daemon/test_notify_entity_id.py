@@ -28,6 +28,7 @@ import pytest
 from butlers.daemon import ButlerDaemon
 from butlers.identity import ResolvedContact
 from butlers.testing.approval_parking_fake import record_pending_action
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -85,19 +86,40 @@ def _make_fetchrow_side_effect(butler_name: str = "test-butler"):
     return _fetchrow
 
 
+def _make_transactional_connection(entity_connection: Any = None) -> AsyncMock:
+    """Keep startup transactions separate from the entity-query assertions."""
+    connection = AsyncMock()
+    connection.execute = AsyncMock(return_value=None)
+    connection.fetchval = AsyncMock(return_value=None)
+    connection.fetch = AsyncMock(return_value=[])
+
+    async def fetchrow(query: str, *args: Any, **kwargs: Any) -> Any:
+        if entity_connection is not None and "FROM relationship.entity_facts ef" in query:
+            return await entity_connection.fetchrow(query, *args, **kwargs)
+        # The fixture's current core groups already equal the TOML seed. The
+        # conditional reconciliation therefore returns no changed row.
+        return None
+
+    connection.fetchrow = AsyncMock(side_effect=fetchrow)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
+    return connection
+
+
 def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
     """Patch infrastructure dependencies for daemon tests."""
     if mock_pool is None:
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock(return_value=None)
-        mock_conn.fetchrow = AsyncMock(return_value=None)
-        mock_conn.fetchval = AsyncMock(return_value=None)
-        mock_conn.fetch = AsyncMock(return_value=[])
+        mock_conn = _make_transactional_connection()
+
+        @asynccontextmanager
+        async def mock_acquire():
+            yield mock_conn
 
         mock_pool = AsyncMock()
         # Support `async with pool.acquire() as conn:` for _ensure_owner_entity
-        mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_pool.acquire = mock_acquire
         mock_pool.fetchval = AsyncMock(return_value=None)
         mock_pool.execute = AsyncMock(return_value=None)
         mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
@@ -120,7 +142,7 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     mock_credential_store = AsyncMock()
     mock_credential_store.resolve = AsyncMock(return_value=None)
@@ -155,7 +177,9 @@ def _patch_infra(mock_pool: Any = None) -> dict[str, Any]:
             new_callable=AsyncMock,
             return_value=mock_credential_store,
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
     }
 
@@ -193,7 +217,7 @@ async def _start_daemon_with_notify(
         patches["create_audit_pool"],
         patches["recover_route_inbox"],
         patches["build_credential_store"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
     ):
         daemon = ButlerDaemon(butler_dir)
@@ -298,10 +322,10 @@ def _make_pool_with_entity_facts_conn(
     # pool-level fetchrow must return runtime_config rows so seed_if_empty works
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetch = AsyncMock(return_value=[])
+    acquisition_connection = _make_transactional_connection(mock_conn)
 
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
+    def mock_acquire():
+        return AsyncCtx(acquisition_connection)
 
     mock_pool.acquire = mock_acquire
     return mock_pool, mock_conn
@@ -325,9 +349,8 @@ def _make_pool_with_conn(
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetch = AsyncMock(return_value=[])
 
-    @asynccontextmanager
-    async def mock_acquire():
-        yield mock_conn
+    def mock_acquire():
+        return AsyncCtx(mock_conn)
 
     mock_pool.acquire = mock_acquire
     return mock_pool, mock_conn
@@ -505,15 +528,14 @@ class TestNotifyEntityIdResolution:
 
 def _make_missing_id_patches(butler_dir: Path) -> tuple[dict, Any, Any]:
     """Return patches + daemon startup for missing-identifier tests."""
-    mock_conn_inner = AsyncMock()
-    mock_conn_inner.execute = AsyncMock(return_value=None)
-    mock_conn_inner.fetchrow = AsyncMock(return_value=None)
-    mock_conn_inner.fetchval = AsyncMock(return_value=None)
-    mock_conn_inner.fetch = AsyncMock(return_value=[])
+    mock_conn_inner = _make_transactional_connection()
+
+    @asynccontextmanager
+    async def mock_acquire():
+        yield mock_conn_inner
 
     mock_pool = AsyncMock()
-    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn_inner)
-    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    mock_pool.acquire = mock_acquire
     mock_pool.execute = AsyncMock(return_value=None)
     mock_pool.fetchrow = AsyncMock(side_effect=_make_fetchrow_side_effect())
     mock_pool.fetchval = AsyncMock(return_value=None)
@@ -1110,6 +1132,7 @@ class TestNotifyDecisionDossierBoundary:
         ]
         standing_rule = MagicMock(id=uuid.uuid4())
         match_rules = AsyncMock(return_value=standing_rule)
+        claim_rule_use = AsyncMock(return_value=True)
 
         with (
             patch(
@@ -1137,6 +1160,10 @@ class TestNotifyDecisionDossierBoundary:
                 new=AsyncMock(return_value=_non_owner_contact()),
             ),
             patch("butlers.modules.approvals.rules.match_rules", new=match_rules),
+            patch(
+                "butlers.modules.approvals.rules.claim_rule_use",
+                new=claim_rule_use,
+            ),
         ):
             result = await notify_fn(
                 channel="telegram",
@@ -1151,6 +1178,7 @@ class TestNotifyDecisionDossierBoundary:
 
         assert result["status"] == "deferred"
         match_rules.assert_awaited_once()
+        claim_rule_use.assert_awaited_once()
         envelope = deferred_insert.await_args.kwargs["envelope"]
         assert envelope["delivery"]["recipient"] == "900800700"
         assert envelope["decision_dossier"] == {

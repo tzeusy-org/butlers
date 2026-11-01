@@ -50,6 +50,9 @@ describe("ingestionKeys", () => {
     const k24 = ingestionKeys.connectorStats("gmail", "a@x.com", "24h");
     const k7d = ingestionKeys.connectorStats("gmail", "a@x.com", "7d");
     expect(k24).not.toEqual(k7d);
+    expect(ingestionKeys.pipelineStats("1h")).not.toEqual(ingestionKeys.pipelineStats("24h"));
+    expect(ingestionKeys.pipelineStats("24h")).not.toEqual(ingestionKeys.pipelineStats("7d"));
+    expect(ingestionKeys.pipelineStats("1h")).not.toEqual(ingestionKeys.pipelineStats("7d"));
   });
 
   it("connectorFanout uses the documented aggregate key and isolates periods", () => {

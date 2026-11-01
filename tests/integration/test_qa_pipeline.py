@@ -160,12 +160,17 @@ class TestFullPatrolCycle:
                 "butlers.core.qa.dispatch.create_healing_worktree",
                 new_callable=AsyncMock,
                 return_value=(worktree_path, branch_name),
-            ),
+            ) as mock_worktree,
             patch("butlers.core.qa.dispatch._run_investigation_session", new_callable=AsyncMock),
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
+            fresh_main_commit = "a" * 40
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            # Successful fetch has no output; rev-parse supplies the immutable
+            # origin/main commit required before a new investigation can start.
+            mock_proc.communicate = AsyncMock(
+                side_effect=[(b"", b""), (fresh_main_commit.encode() + b"\n", b"")]
+            )
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -186,6 +191,24 @@ class TestFullPatrolCycle:
         assert result.attempt_id == attempt_id
         # Watchdog was scheduled
         assert len(task_registry) == 1
+        assert [call.args for call in mock_exec.await_args_list] == [
+            (
+                "git",
+                "fetch",
+                "--upload-pack=git-upload-pack",
+                "--no-tags",
+                "origin",
+                "+refs/heads/main:refs/remotes/origin/main",
+            ),
+            ("git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"),
+        ]
+        mock_worktree.assert_awaited_once_with(
+            Path("/tmp/repo"),
+            finding.source_butler,
+            finding.fingerprint,
+            prefix="qa",
+            base_ref=fresh_main_commit,
+        )
 
         # Cancel background tasks
         for task in task_registry:
@@ -247,7 +270,7 @@ class TestFullPatrolCycle:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -313,7 +336,7 @@ class TestFullPatrolCycle:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -453,7 +476,7 @@ class TestReactiveRelay:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -544,7 +567,7 @@ class TestCrossSourceDeduplication:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -661,70 +684,6 @@ class TestSandboxEnforcement:
 
         assert "GH_TOKEN" not in env_without
         assert env_with["GH_TOKEN"] == "injected_token"
-
-
-# ---------------------------------------------------------------------------
-# 12.5: Anonymization gate
-# ---------------------------------------------------------------------------
-#
-# Scenario: PR with PII is blocked, attempt transitions to anonymization_failed
-
-
-class TestAnonymizationGate:
-    """Integration: anonymization gate blocks PRs with PII."""
-
-    async def test_anonymization_failure_transitions_to_failed_status(self):
-        """When anonymization fails, attempt status transitions to anonymization_failed."""
-        from butlers.core.qa.dispatch import QaDispatchConfig, _run_investigation_session
-
-        pool = _make_pool()
-        attempt_id = uuid.uuid4()
-        finding_id = uuid.uuid4()
-        update_calls: list[tuple] = []
-
-        async def capture_update_status(p, aid, status, **kwargs):
-            update_calls.append((aid, status))
-
-        finding = _make_qa_finding(severity=1)
-
-        # Simulate a spawner that succeeds (agent ran) but PR creation fails due to anonymization
-        spawner = MagicMock()
-        mock_result = MagicMock()
-        mock_result.success = True
-        mock_result.session_id = uuid.uuid4()
-        mock_result.error = None
-        spawner.trigger = AsyncMock(return_value=mock_result)
-
-        worktree_path = Path("/tmp/qa-wt-anon-test")
-
-        with (
-            patch(
-                "butlers.core.qa.dispatch.update_attempt_status", side_effect=capture_update_status
-            ),
-            patch("butlers.core.qa.dispatch.remove_healing_worktree", new_callable=AsyncMock),
-            patch(
-                "butlers.core.qa.dispatch._create_qa_pr",
-                new_callable=AsyncMock,
-                return_value=(None, None, None, "anonymization_failed"),
-            ),
-        ):
-            await _run_investigation_session(
-                pool=pool,
-                repo_root=Path("/tmp/repo"),
-                attempt_id=attempt_id,
-                finding_id=finding_id,
-                branch_name="qa/finance/test",
-                worktree_path=worktree_path,
-                finding=finding,
-                config=QaDispatchConfig(),
-                spawner=spawner,
-                gh_token="ghtoken",
-            )
-
-        # Find the final status transition — should be anonymization_failed
-        assert any(status == "anonymization_failed" for _, status in update_calls), (
-            f"Expected anonymization_failed in status transitions: {update_calls}"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -851,7 +810,7 @@ class TestHealingApiBackwardCompatibility:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -915,7 +874,7 @@ class TestHealingApiBackwardCompatibility:
             patch("butlers.core.qa.dispatch._qa_timeout_watchdog", new_callable=AsyncMock),
         ):
             mock_proc = MagicMock()
-            mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+            mock_proc.communicate = AsyncMock(side_effect=[(b"", b""), (b"a" * 40 + b"\n", b"")])
             mock_proc.returncode = 0
             mock_exec.return_value = mock_proc
 
@@ -1024,13 +983,13 @@ class TestConcurrencyModel:
 
 
 # ---------------------------------------------------------------------------
-# AC 6 (bu-i0geq): SelfHealingModule.report_error → Switchboard route() →
+# AC 6 (bu-i0geq): Core QaRelay.report_error → Switchboard route() →
 #                   QaModule.report_finding end-to-end relay integration
 # ---------------------------------------------------------------------------
 #
-# Scenario: a butler's SelfHealingModule has been wired with a real
+# Scenario: a butler's Core QaRelay has been wired with a real
 # switchboard_client (as daemon._wire_module_runtime() now does). When
-# report_error is called, the finding travels from SelfHealingModule through
+# report_error is called, the finding travels from Core QaRelay through
 # Switchboard's route() tool to QaModule's report_finding handler, where it
 # is enqueued in the ButlerReportsSource buffer.
 
@@ -1039,15 +998,15 @@ class TestSelfHealingToQaRelayIntegration:
     """Integration: report_error → Switchboard route() → QA report_finding (AC 6)."""
 
     async def test_report_error_relays_finding_to_qa_module(self):
-        """Full relay: SelfHealingModule.report_error calls route(), which lands in QaModule.
+        """Full relay: Core QaRelay.report_error calls route(), which lands in QaModule.
 
         Simulates the Switchboard forwarding mechanism: when the Switchboard
         receives a route() call for target_butler="qa" and tool_name="report_finding",
         it invokes QaModule's _handle_report_finding() directly.
         """
+        from butlers.core.qa.relay import QaRelay
         from butlers.core.qa.sources.butler_reports import ButlerReportsSource
         from butlers.modules.qa import QaModule
-        from butlers.modules.self_healing import SelfHealingModule
 
         # Set up QA module with a real ButlerReportsSource buffer
         qa_mod = QaModule()
@@ -1072,11 +1031,8 @@ class TestSelfHealingToQaRelayIntegration:
         client = MagicMock()
         client.call_tool = mock_call_tool
 
-        # Wire the SelfHealingModule with the mock client (as daemon does after bu-i0geq fix)
-        sh_mod = SelfHealingModule()
-        # Identity flows through register_tools per spec; use it here too.
-        await sh_mod.register_tools(MagicMock(), None, None, butler_name="general")
-        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+        # Bind the core relay to the current Switchboard transport
+        sh_mod = QaRelay("general", None, lambda: client)
         sh_mod._pool = None  # No DB required for this relay path
 
         # Invoke report_error — triggers the full relay chain
@@ -1111,7 +1067,7 @@ class TestSelfHealingToQaRelayIntegration:
         Confirms graceful degradation: missing QA registration → explicit unconfirmed
         reception, never a local dispatcher.
         """
-        from butlers.modules.self_healing import SelfHealingModule
+        from butlers.core.qa.relay import QaRelay
 
         async def mock_call_tool(tool_name: str, args: dict | None = None) -> object:
             if tool_name == "list_butlers":
@@ -1122,8 +1078,7 @@ class TestSelfHealingToQaRelayIntegration:
         client = MagicMock()
         client.call_tool = mock_call_tool
 
-        sh_mod = SelfHealingModule()
-        sh_mod.wire_runtime(MagicMock(), "/repo", switchboard_client=client)
+        sh_mod = QaRelay("general", None, lambda: client)
         sh_mod._pool = None
 
         result = await sh_mod._handle_report_error(

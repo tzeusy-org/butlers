@@ -4,6 +4,7 @@
 **Date:** 2026-08-30
 **Baseline:** `ba1c55c31056af5eaa362a254193bbf43741e86a`
 **Related:** RFC 0001, RFC 0002, RFC 0005, RFC 0008
+**Extended at cutover by:** [RFC 0038](0038-goal-runtime-and-capability-authorization.md) (one per-invocation corpus over the goal grant with authorization metadata; discovery, adapter and replay rules remain).
 
 **Owner approval:** 2026-08-30, artifact
 `3448804aaff7b163b4b81deb646db2c9f4ae1397`. Approval adopts this design and

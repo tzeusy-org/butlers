@@ -144,9 +144,8 @@
    *                     fleeting = Eden (transient), medium = short-term,
    *                     strong = mid-term, permanent = long-term.
    *
-   * --category-1..12    Butler identity palette. These tokens are reserved for
-   *                     ButlerMark; non-butler categorical axes use the
-   *                     dedicated --categorical-* ramp below.
+   * Butler identity hues are not tokens: they live in ButlerMark's private
+   * palette map. Non-butler categorical axes use the --categorical-* ramp below.
    * ---------------------------------------------------------------------------*/
 
   /* Severity */
@@ -227,29 +226,6 @@
   --permanence-medium:    oklch(0.6 0.110 184.7);  /* teal-blue                 — chroma 0.118 → 0.110 */
   --permanence-strong:    oklch(0.646 0.120 41.1); /* warm orange               — chroma 0.222 → 0.120 */
   --permanence-permanent: oklch(0.488 0.130 264.4); /* deep blue                 — chroma 0.243 → 0.130 */
-
-  /* Categorical palette
-   *
-   * bu-86c4c.6: extended from 8 to 12 slots. The 11-butler roster
-   * (frontend/src/components/ui/ButlerMark.tsx KNOWN_BUTLERS) collided past
-   * slot 8 under the old mod-8 wrap (qa/relationship/travel silently reused
-   * chronicler/education/finance's hues). Slots 9-11 are new hues chosen to
-   * fill the largest gaps in the existing hue ring (see hue survey below);
-   * slot 12 is spare growth headroom. Slots 1-8 are UNCHANGED — every
-   * existing consumer (charts, badges, tags) keeps its exact color.
-   */
-  --category-1: oklch(0.623 0.130 259.0);  /* blue   — chroma 0.214 → 0.130 */
-  --category-2: oklch(0.581 0.130 292.5);  /* violet — chroma 0.234 → 0.130 */
-  --category-3: oklch(0.769 0.120 84.0);   /* amber  — chroma 0.189 → 0.120 */
-  --category-4: oklch(0.706 0.120 183.5);  /* teal   — chroma 0.145 → 0.120 */
-  --category-5: oklch(0.641 0.140 11.2);   /* rose   — chroma 0.271 → 0.140 */
-  --category-6: oklch(0.585 0.130 320.0);  /* mauve  — chroma 0.233 → 0.130, hue 278 → 320 (gap fix) */
-  --category-7: oklch(0.717 0.120 208.5);  /* cyan   — chroma 0.184 → 0.120 */
-  --category-8: oklch(0.737 0.130 58.0);   /* orange — chroma 0.213 → 0.130 */
-  --category-9:  oklch(0.650 0.130 128.0); /* green       — fills the 84°→183.5° (amber→teal) gap */
-  --category-10: oklch(0.620 0.150 346.0); /* raspberry   — fills the 320°→11.2° (mauve→rose) gap */
-  --category-11: oklch(0.580 0.140 234.0); /* indigo      — fills the 208.5°→259° (cyan→blue) gap */
-  --category-12: oklch(0.620 0.150 35.0);  /* red-orange  — fills the 11.2°→58° (rose→orange) gap; spare growth slot */
 
   /* Non-butler categorical/decorative ramp.
    *
@@ -668,20 +644,6 @@ body {
   --permanence-strong:    oklch(0.769 0.120 70.1);                 /* amber  — chroma 0.188 → 0.120 */
   --permanence-permanent: oklch(0.627 0.130 303.9);                /* violet — chroma 0.265 → 0.130 */
 
-  /* Categorical palette — muted to match evening-glance dark-primary commitment */
-  --category-1: oklch(0.680 0.130 259.0);  /* blue   — chroma 0.195 → 0.130 */
-  --category-2: oklch(0.640 0.130 292.5);  /* violet — chroma 0.220 → 0.130 */
-  --category-3: oklch(0.810 0.120 84.0);   /* amber  — chroma 0.185 → 0.120 */
-  --category-4: oklch(0.758 0.115 183.5);  /* teal   — chroma 0.135 → 0.115 */
-  --category-5: oklch(0.695 0.140 11.2);   /* rose   — chroma 0.255 → 0.140 */
-  --category-6: oklch(0.640 0.130 320.0);  /* mauve  — chroma 0.218 → 0.130, hue 278 → 320 (gap fix) */
-  --category-7: oklch(0.770 0.115 208.5);  /* cyan   — chroma 0.168 → 0.115 */
-  --category-8: oklch(0.790 0.130 58.0);   /* orange — chroma 0.200 → 0.130 */
-  --category-9:  oklch(0.710 0.125 128.0); /* green       — lifted ~0.06 L to match dark-mode siblings */
-  --category-10: oklch(0.680 0.145 346.0); /* raspberry   — lifted ~0.06 L */
-  --category-11: oklch(0.640 0.135 234.0); /* indigo      — lifted ~0.06 L */
-  --category-12: oklch(0.680 0.145 35.0);  /* red-orange  — lifted ~0.06 L; spare growth slot */
-
   /* Non-butler categorical/decorative ramp — lifted for text on dark surfaces */
   --categorical-1:  oklch(0.750 0.130 255.0); /* blue */
   --categorical-2:  oklch(0.730 0.140 290.0); /* violet */
@@ -771,34 +733,6 @@ body {
   }
 }
 
-/* ---------------------------------------------------------------------------
- * Motion utilities
- *
- * Compound transition shortcuts with duration and easing baked in.
- * Prefer these over bare `duration-200 ease-*` pairs so the contract
- * stays single-source.
- *
- * Usage:
- *   .transition-fast   transition: all 150ms cubic-bezier(0.22, 1, 0.36, 1)
- *   .transition-base   transition: all 200ms cubic-bezier(0.22, 1, 0.36, 1)
- *   .transition-slow   transition: all 250ms cubic-bezier(0.22, 1, 0.36, 1)
- *
- * To animate a specific property, combine with a transition-property modifier:
- *   transition-[transform] duration-base ease-out-quart
- *   transition-[opacity] duration-fast ease-out-quart
- * ---------------------------------------------------------------------------*/
-@utility transition-fast {
-  transition: all var(--duration-fast) var(--ease-out-quart);
-}
-
-@utility transition-base {
-  transition: all var(--duration-base) var(--ease-out-quart);
-}
-
-@utility transition-slow {
-  transition: all var(--duration-slow) var(--ease-out-quart);
-}
-
 /* Named duration utilities for use alongside transition-property modifiers.
  * e.g. transition-[transform] duration-base ease-out-quart */
 @utility duration-fast {
@@ -856,24 +790,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Calendar search jump-to flash
+ * Calendar search jump-to highlight
  *
  * Applied transiently (~2.2s) to the calendar entry a user jumped to from the
  * search palette, so the eye lands on it after the grid navigates to its day.
- * Neutral foreground pulse only — no state hues.
+ * Static neutral foreground attention paint — no motion or state hues.
  * ---------------------------------------------------------------------------*/
-@keyframes calendar-entry-flash {
-  0% {
-    box-shadow: 0 0 0 2px var(--fg);
-    background-color: oklch(from var(--fg) l c h / 0.12);
-  }
-  100% {
-    box-shadow: 0 0 0 2px transparent;
-    background-color: transparent;
-  }
-}
 .calendar-entry-flash {
-  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 2px var(--fg);
+  background-color: oklch(from var(--fg) l c h / 0.12);
   position: relative;
   z-index: 20;
 }
@@ -885,14 +810,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Chat message-search jump-to flash (bu-0ynlk.9)
+ * Chat message-search jump-to highlight (bu-0ynlk.9)
  *
- * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * Same static jump-to-highlight treatment as .calendar-entry-flash above, applied to a
  * message bubble when a conversation_recall / message-search result is
  * opened and scrolled into view.
  * ---------------------------------------------------------------------------*/
 .chat-message-highlight {
-  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 2px var(--fg);
+  background-color: oklch(from var(--fg) l c h / 0.12);
   position: relative;
   z-index: 20;
   border-radius: var(--radius-md);
@@ -905,14 +831,15 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
- * Spend routing-rule jump-to flash (bu-lygbct)
+ * Spend routing-rule jump-to highlight (bu-lygbct)
  *
- * Same jump-to-flash treatment as .calendar-entry-flash above, applied to a
+ * Same static jump-to-highlight treatment as .calendar-entry-flash above, applied to a
  * routing-rule row when an audit-log "rule:<id>" target is followed to
  * /spend?rule=<id>.
  * ---------------------------------------------------------------------------*/
 .spend-rule-highlight {
-  animation: calendar-entry-flash 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  box-shadow: 0 0 0 2px var(--fg);
+  background-color: oklch(from var(--fg) l c h / 0.12);
   position: relative;
   z-index: 20;
 }

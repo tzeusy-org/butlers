@@ -94,6 +94,9 @@ The companion's HTTP client disables separate HTTPX phase timers so the
 whole-call deadline governs instead of an implicit shorter read timeout.
 Both that deadline and HTTPX timeout exceptions normalize to the same
 content-blind `RecoveryAuthorityError`; no raw request or error URL is exposed.
+FastMCP's connection-initialization `RuntimeError` normalizes only when its
+direct explicit cause has a timeout type. This single-hop check uses no error
+message matching; unrelated runtime errors and non-timeout causes propagate.
 If that deadline expires after provider start, the worker records
 `ambiguous/provider_outcome_unknown` under its existing claim fence and clears
 the lease without scheduling a retry. The durable Messenger start marker is

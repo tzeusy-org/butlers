@@ -11,13 +11,17 @@ deterministic inputs — no network, no real GitHub PR required.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "scripts"))
+import fetch_pr_metadata as metadata  # noqa: E402
 import session_link_guard as slg  # noqa: E402
 
 pytestmark = pytest.mark.unit
@@ -360,6 +364,128 @@ def test_main_exits_nonzero_on_leaking_pr_body(
     out = capsys.readouterr().out
     assert "claude-code-session-url" in out
 
+    # REQ-testing-044: public mode retains detection without exposing a match.
+    assert slg.main(["--pr-body-file", str(body_file), "--redact-findings"]) == 1
+    public = capsys.readouterr().out
+    assert "claude-code-session-url" in public and _CLAUDE_EXAMPLE_URL not in public
+    assert slg.main(["--pr-body-file", str(body_file), "--redact-findings", "--json"]) == 1
+    categories = json.loads(capsys.readouterr().out)
+    assert categories["count"] == 2 and all("matched_text" not in x for x in categories["findings"])
+    # Execute the actual workflow producer with a private, synthetic gh adapter.
+    # The stale event strings are deliberately clean and cannot supply authority.
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    step = next(
+        x
+        for job in workflow["jobs"].values()
+        for x in job.get("steps", [])
+        if x.get("name") == "Write PR title and body to files"
+    )
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    fake = binary / "gh"
+    fake.write_text(
+        '#!/bin/sh\n[ "$1" = api ] || exit 9\n'
+        '[ "$2" = repos/tzeusy-org/butlers/pulls/123 ] || exit 9\n'
+        'cat "$PR_FIXTURE"\n'
+    )
+    fake.chmod(0o755)
+    fixture = tmp_path / "private-response.json"
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    environment = {
+        **os.environ,
+        "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+        "PR_NUMBER": "123",
+        "PR_TITLE": "clean frozen title",
+        "PR_BODY": "clean frozen body",
+        "PR_FIXTURE": str(fixture),
+        "RUNNER_TEMP": str(runner),
+    }
+    for body_text, number, expected in (
+        (_CLAUDE_EXAMPLE_URL, 123, 1),
+        (None, 123, 0),
+        ("clean", 124, None),
+        ({"malformed": True}, 123, None),
+    ):
+        fixture.write_text(
+            json.dumps(
+                {
+                    "number": number,
+                    "title": "actual live title",
+                    "body": body_text,
+                    "base": {"repo": {"full_name": "tzeusy-org/butlers"}},
+                }
+            )
+        )
+        producer = subprocess.run(
+            ["bash", "-e", "-c", step["run"]],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert _CLAUDE_EXAMPLE_URL not in producer.stdout + producer.stderr
+        if expected is None:
+            assert producer.returncode != 0 and not (runner / "pr_body.txt").exists()
+        else:
+            assert producer.returncode == 0
+            assert (
+                slg.main(["--pr-body-file", str(runner / "pr_body.txt"), "--redact-findings"])
+                == expected
+            )
+            assert _CLAUDE_EXAMPLE_URL not in capsys.readouterr().out
+
+    # REQ-testing-044: one failed read must not force a full CI rerun. Reuse
+    # the actual workflow/scanner fixture and keep provider diagnostics private.
+    attempts = tmp_path / "attempts"
+    environment["ATTEMPTS"] = str(attempts)
+    environment["ATTEMPT_SNAPSHOT"] = str(tmp_path / "attempt-snapshot.json")
+    fixture.write_text(
+        json.dumps(
+            {
+                "number": 123,
+                "title": "actual live title",
+                "body": "clean retry body",
+                "base": {"repo": {"full_name": "tzeusy-org/butlers"}},
+            }
+        )
+    )
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "assert sys.argv[1:] == ['api', 'repos/tzeusy-org/butlers/pulls/123']\n"
+        "counter = pathlib.Path(os.environ['ATTEMPTS'])\n"
+        "counter.write_text((counter.read_text() if counter.exists() else '') + 'x')\n"
+        "if counter.read_text() == 'x':\n"
+        "    root = pathlib.Path(os.environ['RUNNER_TEMP'])\n"
+        "    pathlib.Path(os.environ['ATTEMPT_SNAPSHOT']).write_text(json.dumps([n for n in "
+        "['pr_title.txt', 'pr_body.txt', 'pr_metadata_receipt.json'] if (root / n).exists()]))\n"
+        "    print('private-provider-failure', file=sys.stderr)\n"
+        "    raise SystemExit(7)\n"
+        "sys.stdout.write(pathlib.Path(os.environ['PR_FIXTURE']).read_text())\n"
+    )
+    for name in ("pr_title.txt", "pr_body.txt", "pr_metadata_receipt.json"):
+        (runner / name).write_text("stale clean input")
+    producer = subprocess.run(
+        ["bash", "-e", "-c", step["run"]],
+        cwd=root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert producer.returncode == 0
+    assert attempts.read_text() == "xx"
+    assert json.loads(Path(environment["ATTEMPT_SNAPSHOT"]).read_text()) == []
+    assert "private-provider-failure" not in producer.stdout + producer.stderr
+    assert (runner / "pr_title.txt").read_text() == "actual live title"
+    assert (runner / "pr_body.txt").read_text() == "clean retry body"
+    receipt = json.loads((runner / "pr_metadata_receipt.json").read_text())
+    assert receipt["number"] == 123 and receipt["repository"] == "tzeusy-org/butlers"
+    assert slg.main(["--pr-body-file", str(runner / "pr_body.txt"), "--redact-findings"]) == 0
+
 
 def test_main_exits_nonzero_on_leaking_pr_title(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -419,3 +545,271 @@ def test_main_treats_empty_commit_range_as_clean_not_as_no_input(
 
     assert exit_code == 0
     assert "clean" in capsys.readouterr().out.lower()
+
+
+@pytest.mark.parametrize("mode", ["first", "recover", "exhaust", "budget", "oversleep"])
+def test_metadata_retry_obeys_one_deadline(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control only time/process boundaries; run the real retry and validator."""
+    now = 0.0
+    waits: list[float] = []
+    caps: list[float] = []
+    good = json.dumps(
+        {
+            "number": 123,
+            "title": "live",
+            "body": None,
+            "base": {"repo": {"full_name": "tzeusy-org/butlers"}},
+        }
+    ).encode()
+
+    def run(command, *, capture_output, check, timeout):
+        nonlocal now
+        assert command == ["gh", "api", "repos/tzeusy-org/butlers/pulls/123"]
+        assert capture_output and check
+        caps.append(timeout)
+        if mode == "first" or mode == "recover" and len(caps) == 3:
+            return subprocess.CompletedProcess(command, 0, stdout=good)
+        now += 96 if mode == "budget" else (31 if mode == "recover" else 0)
+        if len(caps) == 2:
+            raise subprocess.TimeoutExpired(command, timeout, stderr=b"private-provider-error")
+        raise subprocess.CalledProcessError(7, command, stderr=b"private-provider-error")
+
+    def sleep(seconds):
+        nonlocal now
+        waits.append(seconds)
+        now += 100 if mode == "oversleep" else seconds
+
+    monkeypatch.setattr(metadata.time, "monotonic", lambda: now)
+    monkeypatch.setattr(metadata.time, "sleep", sleep)
+    monkeypatch.setattr(metadata.subprocess, "run", run)
+    if mode in {"first", "recover"}:
+        assert metadata.fetch(123) == ("live", "")
+    else:
+        with pytest.raises(subprocess.SubprocessError):
+            metadata.fetch(123)
+    expected = {
+        "first": ([30], []),
+        "recover": ([30, 30, 28], [2, 5]),
+        "exhaust": ([30, 30, 30], [2, 5]),
+        "budget": ([30], []),
+        "oversleep": ([30], [2]),
+    }
+    assert (caps, waits) == expected[mode]
+
+
+def test_metadata_invalid_reads_never_retry_or_publish(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    good = {
+        "number": 123,
+        "title": "private-title",
+        "body": "private-body",
+        "base": {"repo": {"full_name": "tzeusy-org/butlers"}},
+    }
+    variants = [
+        b"private-invalid-json",
+        json.dumps({**good, "base": {"repo": {"full_name": "wrong/repo"}}}).encode(),
+        json.dumps({**good, "title": 8}).encode(),
+        json.dumps({**good, "number": True}).encode(),
+        OSError("private-local-error"),
+    ]
+    paths = [tmp_path / n for n in ("pr_title.txt", "pr_body.txt", "pr_metadata_receipt.json")]
+    for value in variants:
+        calls = []
+
+        def run(command, *, calls=calls, value=value, **kwargs):
+            calls.append(command)
+            if isinstance(value, OSError):
+                raise value
+            return subprocess.CompletedProcess(command, 0, stdout=value)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(metadata.subprocess, "run", run)
+            for path in paths:
+                path.write_text("stale private data")
+            assert metadata.main(["--number", "123", "--output-dir", str(tmp_path)]) == 1
+        assert len(calls) == 1
+        assert not any(path.exists() for path in paths)
+        output = capsys.readouterr()
+        assert output.out == "pr_metadata: unavailable_or_invalid\n" and output.err == ""
+    for value in (True, 0, "123"):
+        with pytest.raises(ValueError):
+            metadata.fetch(value)
+    # Invalid CLI values must also stay categorical, before any provider call.
+    with monkeypatch.context() as patch:
+        patch.setattr(metadata, "fetch", lambda _: pytest.fail("invalid argument reached fetch"))
+        assert (
+            metadata.main(["--number", "private-not-a-number", "--output-dir", str(tmp_path)]) == 1
+        )
+        assert metadata.main(["--unknown-private-option"]) == 1
+    output = capsys.readouterr()
+    assert output.out == "pr_metadata: unavailable_or_invalid\n" * 2 and output.err == ""
+
+
+def test_metadata_cleanup_failures_are_categorical_and_attempt_all_outputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names = ("pr_title.txt", "pr_body.txt", "pr_metadata_receipt.json")
+    real_unlink, real_write = Path.unlink, Path.write_text
+    for phase in ("before-read", "after-partial-publication", "terminal-read"):
+        directory = tmp_path / phase
+        directory.mkdir()
+        for name in names:
+            (directory / name).write_text("stale")
+        removed, fetched = [], []
+
+        def unlink(path, *args, removed=removed, phase=phase, **kwargs):
+            removed.append(path.name)
+            if phase == "before-read" and path.name == names[0]:
+                raise PermissionError("private-removal-error")
+            if phase == "after-partial-publication" and len(removed) > 3 and path.name == names[0]:
+                raise PermissionError("private-secondary-cleanup-error")
+            return real_unlink(path, *args, **kwargs)
+
+        def write(path, text, *args, **kwargs):
+            if path.name == names[1]:
+                raise OSError("private-publication-error")
+            return real_write(path, text, *args, **kwargs)
+
+        def fetch(number, *, fetched=fetched, phase=phase):
+            fetched.append(number)
+            if phase == "terminal-read":
+                raise subprocess.CalledProcessError(7, "gh api", stderr=b"private-terminal-error")
+            return "private-title", "private-body"
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "unlink", unlink)
+            patch.setattr(Path, "write_text", write)
+            patch.setattr(metadata, "fetch", fetch)
+            assert metadata.main(["--number", "123", "--output-dir", str(directory)]) == 1
+        assert removed == list(names) * (1 if phase == "before-read" else 2)
+        assert fetched == ([] if phase == "before-read" else [123])
+        assert not (directory / names[1]).exists() and not (directory / names[2]).exists()
+        output = capsys.readouterr()
+        assert output.out == "pr_metadata: unavailable_or_invalid\n" and output.err == ""
+
+
+def test_metadata_workflow_watchdog_kills_owned_group_and_cleans_partial_outputs(
+    tmp_path: Path,
+) -> None:
+    implementation = subprocess.run(
+        ["timeout", "--version"], capture_output=True, text=True, check=True, timeout=5
+    )
+    assert "GNU coreutils" in implementation.stdout, "GNU timeout required; group proof unsupported"
+    root = Path(__file__).resolve().parents[2]
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
+    step = next(
+        x
+        for x in workflow["jobs"]["guards"]["steps"]
+        if x.get("name") == "Write PR title and body to files"
+    )
+    # Execute the exact shell path, shortening only its two test-owned timers.
+    run = step["run"].replace("--kill-after=3s 100s", "--kill-after=0.2s 1s")
+    assert run != step["run"]
+    command = tmp_path / "step.sh"
+    command.write_text(run)
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    fake = binary / "python3"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent("""
+        import os, pathlib, select, signal, subprocess, sys, time
+        root = pathlib.Path(os.environ['RUNNER_TEMP'])
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        (root / 'owned-group').write_text(str(os.getpgrp()))
+        read_fd, write_fd = os.pipe()
+        try:
+            try:
+                child = subprocess.Popen([sys.executable, '-c',
+                    'import os,signal,sys,time; '
+                    'signal.signal(signal.SIGTERM,signal.SIG_IGN); '
+                    'os.write(int(sys.argv[1]),b"R"); os.close(int(sys.argv[1])); time.sleep(60)',
+                    str(write_fd)], pass_fds=(write_fd,))
+            finally:
+                os.close(write_fd)
+            ready, _, _ = select.select([read_fd], [], [], 0.5)
+            assert ready and os.read(read_fd, 2) == b"R"
+        finally:
+            os.close(read_fd)
+        for name in ('pr_title.txt', 'pr_body.txt', 'pr_metadata_receipt.json'):
+            (root / name).write_text('private-partial-output')
+        (root / 'started').write_text('two owned processes')
+        while True:
+            time.sleep(1)
+        """)
+    )
+    fake.chmod(0o755)
+    # Isolated Linux subreaper owns ONLY this synthetic shell's descendants.
+    # Reap the killed monitor/helper/child, not merely the direct shell leader.
+    supervisor = tmp_path / "supervisor.py"
+    supervisor.write_text(
+        textwrap.dedent("""
+        import ctypes, errno, json, os, pathlib, signal, subprocess, sys, time
+        assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+        root = pathlib.Path(os.environ['RUNNER_TEMP'])
+        child = subprocess.Popen(['bash', '-e', sys.argv[1]], stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+        settled = False
+        try:
+            out, err = child.communicate(timeout=5)
+            assert child.returncode != 0
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    pid, status = os.waitpid(-1, os.WNOHANG)
+                except ChildProcessError:
+                    settled = True
+                    break
+                if pid == 0:
+                    time.sleep(0.01)
+            assert settled
+            assert (root / 'started').read_text() == 'two owned processes'
+            assert not any((root / n).exists() for n in
+                           ('pr_title.txt', 'pr_body.txt', 'pr_metadata_receipt.json'))
+            assert b'private-partial-output' not in out + err
+            assert b'pr_metadata: unavailable_or_invalid' in out
+            print(json.dumps({'nonzero': True, 'owned_children_settled': settled,
+                              'outputs_absent': True}))
+        finally:
+            # Failure cleanup is confined to the exact group this helper wrote.
+            if not settled:
+                marker = root / 'owned-group'
+                if marker.exists():
+                    try:
+                        os.killpg(int(marker.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if child.poll() is None:
+                    os.killpg(child.pid, signal.SIGKILL)
+                try:
+                    child.wait(timeout=2)
+                finally:
+                    deadline = time.monotonic() + 2
+                    while time.monotonic() < deadline:
+                        try:
+                            pid, status = os.waitpid(-1, os.WNOHANG)
+                        except ChildProcessError:
+                            break
+                        if pid == 0:
+                            time.sleep(0.01)
+        """)
+    )
+    result = subprocess.run(
+        [sys.executable, str(supervisor), str(command)],
+        env={
+            **os.environ,
+            "PATH": str(binary) + os.pathsep + os.environ["PATH"],
+            "RUNNER_TEMP": str(tmp_path),
+            "PR_NUMBER": "123",
+        },
+        capture_output=True,
+        text=True,
+        timeout=12,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {
+        "nonzero": True,
+        "owned_children_settled": True,
+        "outputs_absent": True,
+    }

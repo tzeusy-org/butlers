@@ -120,7 +120,8 @@ def _build_conversation_history_envelope(
         },
         "event": {
             "external_event_id": event_id or f"evt-{uuid.uuid4()}",
-            "external_thread_id": thread_id,
+            "external_conversation_id": f"telegram:{thread_id}",
+            "reply_target_ref": thread_id,
             "observed_at": datetime.now(UTC).isoformat(),
         },
         "sender": {
@@ -697,7 +698,8 @@ async def test_mixed_whatsapp_speakers_keep_distinct_authoritative_entity_anchor
                 "source_id": known_identity,
                 "request_context": {
                     "payload_type": "conversation_history",
-                    "source_thread_identity": envelope["event"]["external_thread_id"],
+                    "source_thread_identity": envelope["event"]["reply_target_ref"],
+                    "external_conversation_id": envelope["event"]["external_conversation_id"],
                 },
             },
             message_inbox_id=ingest_response.request_id,
@@ -840,7 +842,8 @@ async def test_two_unknown_whatsapp_speakers_get_distinct_reused_neutral_entitie
                     "source_id": identities[0],
                     "request_context": {
                         "payload_type": "conversation_history",
-                        "source_thread_identity": envelope["event"]["external_thread_id"],
+                        "source_thread_identity": envelope["event"]["reply_target_ref"],
+                        "external_conversation_id": envelope["event"]["external_conversation_id"],
                     },
                 },
                 message_inbox_id=ingest_response.request_id,
@@ -1086,7 +1089,8 @@ async def test_real_route_boundary_persists_anchored_facts_and_rejects_missing_a
                 "source_id": known_identity,
                 "request_context": {
                     "payload_type": "conversation_history",
-                    "source_thread_identity": envelope["event"]["external_thread_id"],
+                    "source_thread_identity": envelope["event"]["reply_target_ref"],
+                    "external_conversation_id": envelope["event"]["external_conversation_id"],
                 },
             },
             message_inbox_id=ingest_response.request_id,
@@ -1182,7 +1186,8 @@ async def test_real_telegram_producer_decomposes_with_authoritative_speaker_anch
                 "source_id": "777",
                 "request_context": {
                     "payload_type": "conversation_history",
-                    "source_thread_identity": envelope["event"]["external_thread_id"],
+                    "source_thread_identity": envelope["event"]["reply_target_ref"],
+                    "external_conversation_id": envelope["event"]["external_conversation_id"],
                 },
             },
             message_inbox_id=ingest_response.request_id,

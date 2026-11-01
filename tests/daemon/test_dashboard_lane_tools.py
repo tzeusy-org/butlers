@@ -83,6 +83,10 @@ def _patch_infra():
     mock_conn.fetchrow = AsyncMock(return_value=None)
     mock_conn.fetchval = AsyncMock(return_value=None)
     mock_conn.fetch = AsyncMock(return_value=[])
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock()
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_conn.transaction = MagicMock(return_value=transaction)
 
     # MagicMock, not AsyncMock: `.acquire` must be a plain sync call returning
     # an async-context-manager double (see TestDeadLetterDashboardUnroutable
@@ -117,7 +121,7 @@ def _patch_infra():
 
     mock_adapter = MagicMock()
     mock_adapter.binary_name = "claude"
-    mock_adapter_cls = MagicMock(return_value=mock_adapter)
+    mock_adapter_builder = MagicMock(return_value=mock_adapter)
 
     return {
         "db_from_env": patch("butlers.lifecycle.Database.from_env", return_value=mock_db),
@@ -136,7 +140,9 @@ def _patch_infra():
         "connect_switchboard": patch.object(
             ButlerDaemon, "_connect_switchboard", new_callable=AsyncMock
         ),
-        "get_adapter": patch("butlers.lifecycle.get_adapter", return_value=mock_adapter_cls),
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter", new=mock_adapter_builder
+        ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "mock_pool": mock_pool,
         "mock_spawner": mock_spawner,
@@ -179,7 +185,7 @@ async def _start_switchboard_and_capture_tools(
         patches["sync_schedules"],
         patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
         patches["Spawner"],
-        patches["get_adapter"],
+        patches["build_runtime_adapter"],
         patches["shutil_which"],
         patches["start_mcp_server"],
         patches["connect_switchboard"],
@@ -875,6 +881,7 @@ async def test_answer_question_rejects_unknown_scope(tmp_path: Path) -> None:
     assert "scope must be" in result["error"]
 
 
+# Historical fallback fixture supplies no read selector; Concierge now exists.
 async def test_answer_question_system_falls_back_to_cannot_answer_dead_letter(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -919,6 +926,254 @@ async def test_answer_question_system_falls_back_to_cannot_answer_dead_letter(
 
     # Never routed to any domain butler.
     mock_route.assert_not_awaited()
+
+
+async def test_system_question_reads_registered_concierge_and_publishes_cited_answer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Exercise both registered MCP ends and the pipeline consumer, without staffer spawning."""
+    from types import SimpleNamespace
+
+    from butlers.core_tools._dashboard_system_answer import persist_system_answer
+    from butlers.modules.dashboard_read import DashboardReadModule, queries
+    from butlers.modules.pipeline import _extract_cannot_answer_calls
+
+    patches = _patch_infra()
+    concierge = RuntimeFastMCP("concierge")
+    module = DashboardReadModule()
+    await module.register_tools(concierge, {}, SimpleNamespace(pool=MagicMock()), "concierge")
+    query = AsyncMock(return_value=[queries.DailySpend("2026-10-13", 123, 7)])
+    monkeypatch.setattr(queries, "query_spend_daily", query)
+
+    from importlib import import_module
+
+    router = import_module("butlers.tools.switchboard.routing.route")
+    actual_route = router.route
+    monkeypatch.setattr(router, "receiver_route_cutover_enabled", lambda: False)
+    monkeypatch.setattr(
+        router,
+        "resolve_routing_target",
+        AsyncMock(
+            return_value=(
+                {"endpoint_url": "http://localhost:41112/mcp"},
+                None,
+            )
+        ),
+    )
+    monkeypatch.setattr(router, "inject_trace_context", lambda: {"traceparent": "synthetic-trace"})
+
+    async def transport(endpoint, name, args):
+        assert name == "dashboard_read_spend_daily"
+        assert args == {"days": 2}  # router tracing must not poison strict tool arguments
+        async with Client(concierge) as client:
+            return await client.call_tool(name, args)
+
+    monkeypatch.setattr(router, "_call_tool_with_router_client", transport)
+
+    async def read(*args, **kwargs):
+        assert kwargs["target_butler"] == "concierge"
+        assert kwargs["tool_name"] == "dashboard_read_spend_daily"
+        return await actual_route(*args, **kwargs)
+
+    route = AsyncMock(side_effect=read)
+    _, tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path),
+        patches,
+        mock_route=route,
+    )
+    switchboard = RuntimeFastMCP("switchboard")
+    switchboard.tool()(tools["answer_question"])
+    _set_dashboard_routing_context()
+    try:
+        async with Client(switchboard) as client:
+            result = (
+                await client.call_tool(
+                    "answer_question",
+                    {
+                        "scope": "system",
+                        "question": "What did yesterday's sessions cost?",
+                        "system_tool": "dashboard_read_spend_daily",
+                        "system_args": {"days": 2},
+                    },
+                )
+            ).data
+        refusal = await tools["route_to_butler"](butler="finance", prompt="write")
+    finally:
+        _clear_routing_context()
+    assert result["answered"] is True
+    assert result["data"]["days"] == [{"date": "2026-10-13", "cost_cents": 123, "session_count": 7}]
+    assert refusal["reason"] == "dashboard_lane_conflict"
+    call = {"name": "answer_question", "args": {"scope": "system"}, "result": result}
+    assert _extract_cannot_answer_calls([call]) == (False, False, None)
+    reply = AsyncMock(return_value={"id": "answer"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    conn = patches["mock_pool"].acquire.return_value.__aenter__.return_value
+    conn.transaction = MagicMock()
+    status = await persist_system_answer(
+        patches["mock_pool"],
+        dashboard_context={"conversation_id": "c1c1c1c1-0000-7000-8000-000000000001"},
+        message_id=None,
+        request_id=UUID("019c8812-fb0f-77f3-88b9-5763c1336b27"),
+        answer="Yesterday's estimated session spend was $1.23 across 7 sessions.",
+        evidence=result,
+    )
+    assert status == "completed"
+    label = f"concierge.v_fleet_spend (as of {result['data']['source']['as_of']})"
+    assert reply.await_args.kwargs["sources"] == [label]
+    assert reply.await_args.kwargs["citations"] == [
+        {"label": label, "target": None, "kind": "unlinked"}
+    ]
+    route.assert_awaited_once()
+    query.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "unavailable",
+        "timeout",
+        "missing_source",
+        "unknown_tool",
+        "bad_args",
+        "denied",
+        "missing_argument",
+        "unknown_argument",
+        "invalid_argument",
+    ],
+)
+async def test_system_read_failures_decline_without_domain_dispatch(tmp_path, monkeypatch, failure):
+    from types import SimpleNamespace
+
+    from butlers.core_tools import _dashboard_system_answer as system
+
+    patches = _patch_infra()
+    route = AsyncMock(return_value={"error": "unavailable"})
+    if failure == "timeout":
+        import asyncio
+
+        async def delayed(*args, **kwargs):
+            await asyncio.sleep(3600)
+
+        monkeypatch.setattr(system, "_READ_TIMEOUT_S", 0.01)
+        route.side_effect = delayed
+    elif failure == "missing_source":
+        route.return_value = {"result": {"total_cost_cents": 0}}
+    monkeypatch.setattr(
+        system,
+        "check_permission",
+        AsyncMock(return_value=SimpleNamespace(allowed=failure != "denied")),
+    )
+    _, tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path), patches, mock_route=route
+    )
+    import butlers.tools.switchboard.dead_letter.capture as capture
+
+    dl = AsyncMock(return_value="dl-unavailable")
+    reply = AsyncMock(return_value={"id": "decline"})
+    monkeypatch.setattr(capture, "capture_to_dead_letter", dl)
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    _set_dashboard_routing_context()
+    try:
+        result = await tools["answer_question"](
+            scope="system",
+            question="Fleet cost?",
+            system_tool="route.execute"
+            if failure == "unknown_tool"
+            else "dashboard_read_butler_detail"
+            if failure == "missing_argument"
+            else "dashboard_read_spend_summary",
+            system_args=[]
+            if failure == "bad_args"
+            else {"bogus": 1}
+            if failure == "unknown_argument"
+            else {"period": 7}
+            if failure == "invalid_argument"
+            else {},
+        )
+    finally:
+        _clear_routing_context()
+    assert result["answered"] is False
+    assert result["dead_letter_id"] == "dl-unavailable"
+    assert "concierge" in reply.await_args.kwargs["message"]
+    dl.assert_awaited_once()
+    if failure in {
+        "unknown_tool",
+        "bad_args",
+        "denied",
+        "missing_argument",
+        "unknown_argument",
+        "invalid_argument",
+    }:
+        route.assert_not_awaited()
+    else:
+        assert route.await_args.kwargs["target_butler"] == "concierge"
+        assert route.await_args.kwargs["tool_name"] != "route.execute"
+
+
+@pytest.mark.parametrize(
+    "case", ["completed", "stopped_before", "stopped_during", "reply_failed", "already_finished"]
+)
+async def test_system_answer_terminal_reply_preserves_stop_and_rolls_back_failures(
+    monkeypatch, case
+):
+    from butlers.core_tools._dashboard_system_answer import persist_system_answer
+
+    pool = MagicMock()
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    before = _turn_result(
+        "cancelled"
+        if case == "stopped_before"
+        else "finished"
+        if case == "already_finished"
+        else "active"
+    )
+    terminal = _turn_result("cancelled" if case == "stopped_during" else "finished")
+    inspect = AsyncMock(return_value=before)
+    mark = AsyncMock(return_value=terminal)
+    reply = AsyncMock(return_value=None if case == "reply_failed" else {"id": "reply"})
+    monkeypatch.setattr("butlers.core.dashboard_turns.dispatch_status", inspect)
+    monkeypatch.setattr("butlers.core.dashboard_turns.mark_terminal", mark)
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    outcome = await persist_system_answer(
+        pool,
+        dashboard_context={"conversation_id": "c1c1c1c1-0000-7000-8000-000000000001"},
+        message_id=UUID("d1d1d1d1-0000-7000-8000-000000000001"),
+        request_id=UUID("019c8812-fb0f-77f3-88b9-5763c1336b27"),
+        answer="An estimated $1.23.",
+        evidence={
+            "data": {
+                "source": {
+                    "kind": "view",
+                    "ref": "concierge.v_fleet_spend",
+                    "as_of": "2026-10-14T00:00:00+00:00",
+                }
+            }
+        },
+    )
+    assert outcome == (
+        "cancelled"
+        if case.startswith("stopped")
+        else "refused"
+        if case == "already_finished"
+        else "error"
+        if case == "reply_failed"
+        else "completed"
+    )
+    if case.startswith("stopped") or case == "already_finished":
+        reply.assert_not_awaited()
+    else:
+        reply.assert_awaited_once()
+    if case == "reply_failed":
+        assert conn.transaction.return_value.__aexit__.await_args.args[0] is RuntimeError
+    if case in {"stopped_before", "already_finished"}:
+        mark.assert_not_awaited()
+    else:
+        mark.assert_awaited_once_with(
+            conn, message_id=UUID("d1d1d1d1-0000-7000-8000-000000000001"), state="completed"
+        )
 
 
 async def test_answer_question_propagates_turn_id_and_obeys_a_prior_stop(
@@ -1308,3 +1563,102 @@ async def test_question_lane_tools_refuse_non_dashboard_sessions(
     mock_route.assert_not_awaited()
     fake_capture.assert_not_awaited()
     assert sensitive_question not in captured.err
+
+
+async def test_system_answer_pending_session_defers_repeated_publication(monkeypatch):
+    from butlers.core_tools._dashboard_system_answer import persist_system_answer
+
+    pool = MagicMock()
+    conn = MagicMock()
+    conn.execute = AsyncMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    monkeypatch.setattr(
+        "butlers.core.dashboard_turns.dispatch_status",
+        AsyncMock(return_value=_turn_result("active")),
+    )
+    monkeypatch.setattr(
+        "butlers.core.dashboard_turns.mark_terminal",
+        AsyncMock(return_value=_turn_result("pending")),
+    )
+    reply = AsyncMock(return_value={"id": "reply"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    for _ in range(2):
+        outcome = await persist_system_answer(
+            pool,
+            dashboard_context={"conversation_id": "c1c1c1c1-0000-7000-8000-000000000001"},
+            message_id=UUID("d1d1d1d1-0000-7000-8000-000000000001"),
+            request_id=UUID("019c8812-fb0f-77f3-88b9-5763c1336b27"),
+            answer="A sourced answer awaiting durable session settlement.",
+            evidence={
+                "data": {
+                    "source": {
+                        "ref": "concierge.v_fleet_spend",
+                        "as_of": "2026-10-14T00:00:00+00:00",
+                    }
+                }
+            },
+        )
+        assert outcome == "pending"
+        # Deferring must undo this attempt's completed intent, not settle a live session.
+        assert conn.transaction.return_value.__aexit__.await_args.args[0] is not None
+    reply.assert_not_awaited()
+
+
+@pytest.mark.parametrize("declarations_available", [True, False])
+async def test_system_read_uses_daemon_plugin_validator(
+    tmp_path, monkeypatch, declarations_available
+):
+    from types import SimpleNamespace
+
+    from butlers.core_tools import _dashboard_system_answer as system
+    from butlers.modules.dashboard_read import tools as provider
+    from butlers.tools.switchboard.dead_letter import capture
+
+    patches = _patch_infra()
+    evidence = {
+        "source": {
+            "kind": "view",
+            "ref": "concierge.v_fleet_spend",
+            "as_of": "2026-10-14T00:00:00+00:00",
+        }
+    }
+    route = AsyncMock(return_value={"result": evidence})
+    monkeypatch.setattr(
+        system, "check_permission", AsyncMock(return_value=SimpleNamespace(allowed=True))
+    )
+    daemon, tools = await _start_switchboard_and_capture_tools(
+        _make_switchboard_dir(tmp_path), patches, mock_route=route
+    )
+    declaration = MagicMock(wraps=provider.register_tools)
+    if not declarations_available:
+        declaration.side_effect = RuntimeError("provider declarations unavailable")
+    monkeypatch.setattr(provider, "register_tools", declaration)
+    validator = MagicMock(wraps=daemon._validate_dashboard_read_arguments)
+    monkeypatch.setattr(daemon, "_validate_dashboard_read_arguments", validator)
+    reply = AsyncMock(return_value={"id": "decline"})
+    monkeypatch.setattr("butlers.api.conversations.conversation_reply_create", reply)
+    monkeypatch.setattr(
+        capture,
+        "capture_to_dead_letter",
+        AsyncMock(return_value="unavailable"),
+    )
+    _set_dashboard_routing_context()
+    try:
+        result = await tools["answer_question"](
+            scope="system",
+            question="Fleet cost?",
+            system_tool="dashboard_read_spend_daily",
+            system_args={"days": 2},
+        )
+    finally:
+        _clear_routing_context()
+    validator.assert_called_once_with("dashboard_read_spend_daily", {"days": 2})
+    declaration.assert_called_once()
+    if declarations_available:
+        assert result["answered"] is True and result["data"] == evidence
+        route.assert_awaited_once()
+        reply.assert_not_awaited()
+    else:
+        assert result["answered"] is False
+        assert "declarations unavailable" in reply.await_args.kwargs["message"]
+        route.assert_not_awaited()

@@ -1,3 +1,5 @@
+import { useDraft } from "@/hooks/use-draft";
+import { DraftNotice } from "@/components/ui/draft-notice";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -10,8 +12,10 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Textarea } from "@/components/ui/textarea";
 import { useCreateRule } from "@/hooks/use-approvals";
+import { useButlers } from "@/hooks/use-butlers";
 
 const GATED_TOOLS = [
   "notify",
@@ -25,6 +29,7 @@ interface CreateRuleDialogProps {
 }
 
 const EMPTY_FORM = {
+  butler: "",
   tool_name: "",
   description: "",
   arg_constraints_text: "{}",
@@ -35,14 +40,19 @@ const EMPTY_FORM = {
 export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [constraintsError, setConstraintsError] = useState<string | null>(null);
+  const draft = useDraft("approvals.rule.create", ["create"], { tool_name: form.tool_name, description: form.description, arg_constraints_text: form.arg_constraints_text, max_uses: form.max_uses, expires_days: form.expires_days }, (v) => setForm((current) => ({ ...current, ...v })), open, { tool_name: EMPTY_FORM.tool_name, description: EMPTY_FORM.description, arg_constraints_text: EMPTY_FORM.arg_constraints_text, max_uses: EMPTY_FORM.max_uses, expires_days: EMPTY_FORM.expires_days });
   const createMutation = useCreateRule();
+  const butlersQuery = useButlers();
+  const butlerNames = butlersQuery.data
+    ? butlersQuery.data.data.map((b) => b.name).sort()
+    : [];
 
   function resetForm() {
     setForm(EMPTY_FORM);
     setConstraintsError(null);
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     let argConstraints: Record<string, unknown>;
     try {
       argConstraints = JSON.parse(form.arg_constraints_text);
@@ -56,31 +66,37 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
       ? new Date(Date.now() + Number(form.expires_days) * 86400000).toISOString()
       : undefined;
 
-    createMutation.mutate(
-      {
-        tool_name: form.tool_name,
-        description: form.description,
-        arg_constraints: argConstraints,
-        max_uses: form.max_uses ? Number(form.max_uses) : undefined,
-        expires_at: expiresAt,
+    // Built as a variable, not a literal: `butler` joins ApprovalRuleCreateRequest with
+    // #4603, and a literal would fail the excess-property check on main before then.
+    const payload = {
+      butler: form.butler,
+      tool_name: form.tool_name,
+      description: form.description,
+      arg_constraints: argConstraints,
+      max_uses: form.max_uses ? Number(form.max_uses) : undefined,
+      expires_at: expiresAt,
+    };
+
+    const submission = draft.capture();
+    const preparation = draft.prepare();
+    if (preparation instanceof Promise ? !await preparation : !preparation) return;
+    createMutation.mutate(payload, {
+      onSuccess: () => {
+        void draft.submitted(submission, () => { resetForm(); onOpenChange(false); });
       },
-      {
-        onSuccess: () => {
-          resetForm();
-          onOpenChange(false);
-        },
-      },
-    );
+      onSettled: draft.finish,
+    });
   }
 
-  const isValid = form.tool_name.trim() !== "" && form.description.trim() !== "";
+  const isValid =
+    form.butler !== "" && form.tool_name.trim() !== "" && form.description.trim() !== "";
 
   return (
     <Dialog
       open={open}
       onOpenChange={(v) => {
-        if (!v) resetForm();
-        onOpenChange(v);
+        if (!v) draft.dismiss(() => { resetForm(); onOpenChange(false); });
+        else onOpenChange(v);
       }}
     >
       <DialogContent className="max-w-lg">
@@ -91,7 +107,39 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
           </DialogDescription>
         </DialogHeader>
 
+        <DraftNotice session={draft.session} />
         <div className="space-y-4">
+          <div>
+            <Label htmlFor="butler">Butler</Label>
+            <select
+              id="butler"
+              className="mt-1 flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+              value={form.butler}
+              disabled={!butlersQuery.data}
+              onChange={(e) => setForm((f) => ({ ...f, butler: e.target.value }))}
+            >
+              <option value="">Select a butler</option>
+              {butlerNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            {butlersQuery.isLoading && (
+              <p className="text-muted-foreground text-xs mt-1">Loading butlers</p>
+            )}
+            {butlersQuery.isError && (
+              <SourceDegradedNote
+                label="Butlers"
+                onRetry={() => void butlersQuery.refetch()}
+                className="mt-1"
+              />
+            )}
+            <p className="text-muted-foreground text-xs mt-1">
+              The butler whose approvals own this rule.
+            </p>
+          </div>
+
           <div>
             <Label htmlFor="tool_name">Tool Name</Label>
             <div className="flex gap-2 mt-1">
@@ -180,12 +228,12 @@ export function CreateRuleDialog({ open, onOpenChange }: CreateRuleDialogProps) 
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => { resetForm(); onOpenChange(false); }}>
+          <Button variant="outline" onClick={() => draft.dismiss(() => { resetForm(); onOpenChange(false); })}>
             Cancel
           </Button>
           <Button
             onClick={handleSubmit}
-            disabled={!isValid || createMutation.isPending}
+            disabled={!isValid || createMutation.isPending || draft.session?.presentation.submitting || draft.session?.presentation.cleanup}
           >
             {createMutation.isPending ? "Creating..." : "Create rule"}
           </Button>

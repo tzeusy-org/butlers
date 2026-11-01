@@ -11,7 +11,8 @@ ensures both gates enforce identical policy:
 3. For a target without the owner bypass, if *msg_context* is provided and the
    entity_facts triple is tagged with a conflicting context, park for approval.
 4. Non-owner or unknown → check standing approval rules.
-5. Rule matches → approve, bump ``use_count``.
+5. Rule matches → claim one use atomically (``rules.claim_rule_use``) and approve;
+   an exhausted rule parks instead.
 6. No rule → park as ``pending_action`` for human review.
 """
 
@@ -108,6 +109,17 @@ class EmailGuardDecision:
     rule_id: uuid.UUID | None = None
     contact_desc: str | None = None  # "known non-owner contact" | "unknown contact"
     dossier_error: dict[str, Any] | None = None
+
+
+async def _claim_rule_use(pool: asyncpg.Pool, rule_id: uuid.UUID) -> bool:
+    """Claim one use of *rule_id* through the shared helper; fail closed on error."""
+    from butlers.modules.approvals.rules import claim_rule_use
+
+    try:
+        return await claim_rule_use(pool, rule_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("email guard: could not claim a use of rule %s; parking", rule_id)
+        return False
 
 
 async def check_email_recipient(
@@ -316,6 +328,10 @@ async def check_email_recipient(
         # Table may not exist in this schema — that's fine
         pass
 
+    if rule is not None and not await _claim_rule_use(pool, rule.id):
+        # Exhausted / expired between match and claim: park for human review.
+        rule = None
+
     if rule is not None:
         logger.info(
             "email guard: standing rule %s permits %s %r — allowing delivery",
@@ -323,14 +339,6 @@ async def check_email_recipient(
             contact_desc,
             email_target,
         )
-        # Bump use_count
-        try:
-            await pool.execute(
-                "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-                rule.id,
-            )
-        except Exception:  # noqa: BLE001
-            pass
         return EmailGuardDecision(
             allowed=True,
             reason="rule",
@@ -509,6 +517,10 @@ async def check_recipient(
         # Table may not exist in this schema — that's fine.
         pass
 
+    if rule is not None and not await _claim_rule_use(pool, rule.id):
+        # Exhausted / expired between match and claim: park for human review.
+        rule = None
+
     if rule is not None:
         logger.info(
             "recipient guard: standing rule %s permits %s send to %r — allowing delivery",
@@ -516,13 +528,6 @@ async def check_recipient(
             contact_desc,
             target,
         )
-        try:
-            await pool.execute(
-                "UPDATE approval_rules SET use_count = use_count + 1 WHERE id = $1",
-                rule.id,
-            )
-        except Exception:  # noqa: BLE001
-            pass
         return EmailGuardDecision(
             allowed=True,
             reason="rule",

@@ -88,8 +88,32 @@ The dashboard SHALL expose CRUD over the permissions matrix.
 - **WHEN** an inherited cell is flipped
 - **THEN** the resulting row in `public.permissions` is explicit (not inherited) and the matrix re-fetch shows the cell as foreground.
 
+### Requirement: Runtime Permission Enforcement
+An explicit row SHALL decide the pair for every caller: `granted = true` allows, and `granted = false` denies with the row's recorded reason, so `require_permission` raises `PermissionDenied`.
+
+ID: REQ-dashboard-permissions-002
+Source: bu-30sah4 effect permission availability; bu-svqpzo.3 fail-closed permission, spend and pause state; RFC 0038 D7, D10
+Scope: v1-mandatory
+
+#### Scenario: Explicit grant allows
+- **WHEN** the read returns a row with `granted = true` for the butler and permission
+- **THEN** `check_permission` returns `allowed=True` and `explicit=True`
+
+#### Scenario: Explicit revoke denies
+- **WHEN** the read returns a row with `granted = false`
+- **THEN** `check_permission` returns `allowed=False`, `explicit=True` and the row's reason
+- **AND** `require_permission` raises `PermissionDenied`
+
+#### Scenario: Effect paths refuse an unreadable store
+- **WHEN** an email, calendar or Telegram effect path checks its permission and the pool is missing, the read raises, or the row is malformed
+- **THEN** `require_permission` raises `PermissionUnavailable` before the external effect
+
 ### Requirement: Data Operations API
 The dashboard SHALL expose data export and wipe endpoints under strict guards.
+
+ID: REQ-dashboard-permissions-001
+Source: bu-8ptawc owner data export correction; v1 owner data-export promise
+Scope: v1-mandatory
 
 #### Scenario: Encrypted export
 - **WHEN** `POST /api/data/export {scope}` is called with `scope ∈ {all, memory, audit, config}` (`full` accepted as an alias of `all`)
@@ -102,9 +126,12 @@ The dashboard SHALL expose data export and wipe endpoints under strict guards.
 - **THEN** the archive contains the actual data for that scope, never an empty/near-empty file behind a success response:
   - `memory` → the memory module's facts/rules/episodes data
   - `audit` → `public.audit_log`
-  - `config` → runtime/config tables (`public.runtime_config`, `public.model_catalog`, `public.permissions`)
+  - `config` → runtime/config tables (each registered butler’s own-schema `runtime_config`, read through its own pool and ordered by `butler_name`, plus `public.model_catalog` and `public.permissions`); the combined runtime rows retain the logical archive member `public_runtime_config.ndjson`
   - `all` → the union of every scope above
 - **AND** a scope that resolves to zero rows is reported as such (explicit empty marker), but a *known* scope MUST NOT silently map to "no tables" — the export must cover the data the scope name promises.
+- **AND** the `memory` scope reads the own memory schema of every butler that runs the memory module, one file per butler and table named `<butler>_memory_<table>.ndjson`.
+- **AND** when a butler configured with the memory module has no available database pool, the `memory` and `all` exports fail with HTTP 503 naming the unavailable butlers instead of returning a partial archive.
+- **AND** when no registered butler has a memory schema, the `memory` and `all` exports fail with HTTP 500 and an explicit message instead of returning an archive without memory data.
 
 #### Scenario: Wipe feature disabled
 - **WHEN** the `/settings/permissions` page renders

@@ -222,7 +222,7 @@ export function StatusBoardCell({
     "group relative flex flex-col",
     "border-r border-b border-border/60",
     "p-5 min-h-56",
-    "transition-colors duration-[120ms] ease-in-out",
+    "transition-colors duration-fast ease-out-quart",
     "hover:bg-foreground/[0.025] dark:hover:bg-foreground/[0.025]",
     "no-underline text-inherit cursor-pointer",
     isCursorActive ? "ring-2 ring-foreground ring-inset" : "",
@@ -360,12 +360,12 @@ export function StatusBoardCell({
             24H ACTIVITY
           </span>
           <span className="relative inline-flex items-center font-mono text-[9px] text-muted-foreground">
-            <span className="transition-opacity duration-[120ms] ease-in-out group-hover:opacity-0">
+            <span className="transition-opacity duration-fast ease-out-quart group-hover:opacity-0">
               past 24 h
             </span>
             <span
               aria-hidden="true"
-              className="absolute right-0 top-0 whitespace-nowrap opacity-0 group-hover:opacity-85 transition-opacity duration-[120ms] ease-in-out"
+              className="absolute right-0 top-0 whitespace-nowrap opacity-0 group-hover:opacity-85 transition-opacity duration-fast ease-out-quart"
             >
               open →
             </span>

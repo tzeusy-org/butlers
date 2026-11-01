@@ -5,7 +5,7 @@
 [[models]]
 alias = "claude-haiku"
 runtime_type = "claude"
-model_id = "claude-haiku-4-5-20251001"
+model_id = "claude-haiku-5-5"
 extra_args = []
 complexity_tier = "cheap"
 priority = 10
@@ -14,7 +14,7 @@ enabled = false
 [[models]]
 alias = "claude-sonnet"
 runtime_type = "claude"
-model_id = "claude-sonnet-4-6"
+model_id = "claude-sonnet-5-5"
 extra_args = []
 complexity_tier = "workhorse"
 priority = 10
@@ -23,7 +23,7 @@ enabled = false
 [[models]]
 alias = "claude-opus"
 runtime_type = "claude"
-model_id = "claude-opus-4-6"
+model_id = "claude-opus-5-5"
 extra_args = []
 complexity_tier = "reasoning"
 priority = 10
@@ -83,11 +83,13 @@ priority = 0
 enabled = true
 
 # ---------------------------------------------------------------------------
-# Codex GPT-6 routing: Luna max for trivial (cheap) work, Sol low for
-# sub-medium work (workhorse), Sol high for medium/high work (reasoning), and
-# Sol xhigh for planning/scoping/design (specialty). Luna max and Sol xhigh
-# rank below the direct-API rows so classification and discretion keep routing
-# onto them by default.
+# Codex GPT-6 routing: Luna max for trivial (cheap) work, GPT-6.1 Sol low for
+# sub-medium work (workhorse), and GPT-6.1 Sol high for medium/high work
+# (reasoning) and for planning/scoping/design and healing (specialty). GPT-6.1
+# Sol supersedes GPT-6 Sol and accepts low/medium/high/xhigh/max effort; routing
+# stays at high by policy, not because a higher effort is unavailable.
+# Luna max and the specialty row rank below the direct-API rows so
+# classification and discretion keep routing onto them by default.
 # ---------------------------------------------------------------------------
 
 [[models]]
@@ -100,102 +102,88 @@ priority = 26
 enabled = true
 
 [[models]]
-alias = "gpt-6-sol-low"
+alias = "gpt-6.1-sol-low"
 runtime_type = "codex"
-model_id = "gpt-6-sol"
+model_id = "gpt-6.1-sol"
 extra_args = ["--config", "model_reasoning_effort=\"low\""]
 complexity_tier = "workhorse"
 priority = 31
 enabled = true
 
 [[models]]
-alias = "gpt-6-sol-high"
+alias = "gpt-6.1-sol-high"
 runtime_type = "codex"
-model_id = "gpt-6-sol"
+model_id = "gpt-6.1-sol"
 extra_args = ["--config", "model_reasoning_effort=\"high\""]
 complexity_tier = "reasoning"
 priority = 30
 enabled = true
 
 [[models]]
-alias = "gpt-6-sol-xhigh"
+alias = "healing-gpt-6.1-sol"
 runtime_type = "codex"
-model_id = "gpt-6-sol"
-extra_args = ["--config", "model_reasoning_effort=\"xhigh\""]
+model_id = "gpt-6.1-sol"
+extra_args = ["--config", "model_reasoning_effort=\"high\""]
 complexity_tier = "specialty"
 priority = 5
 enabled = true
 
 [[models]]
-alias = "gemini-2.5-flash"
+alias = "gemini-3.8-flash"
 runtime_type = "gemini"
-model_id = "gemini-2.5-flash"
+model_id = "gemini-3.8-flash"
 extra_args = []
 complexity_tier = "cheap"
 priority = 10
 enabled = false
 
 [[models]]
-alias = "gemini-2.5-pro"
+alias = "gemini-4-argon"
 runtime_type = "gemini"
-model_id = "gemini-2.5-pro"
+model_id = "gemini-4-argon"
 extra_args = []
-complexity_tier = "workhorse"
+complexity_tier = "reasoning"
 priority = 10
 enabled = false
 
+# OpenCode Go (shared monthly allowance). GLM-5.3 Flash and MiMo V2.6 Flash
+# back up Sol low on workhorse work; MiMo V2.6 Pro backs up Sol high.
+# DeepSeek V4.1 Flash leads tool-use benchmarks at its price but returns empty
+# turns in OpenCode often enough to stay disabled until verified.
 [[models]]
-alias = "minimax-m2.5"
+alias = "glm-5.3-flash"
 runtime_type = "opencode"
-model_id = "opencode-go/minimax-m2.5"
+model_id = "opencode-go/glm-5.3-flash"
 extra_args = []
 complexity_tier = "workhorse"
-priority = 20
+priority = 30
 enabled = true
 
 [[models]]
-alias = "glm-5"
+alias = "mimo-v2.6-flash"
 runtime_type = "opencode"
-model_id = "opencode-go/glm-5"
+model_id = "opencode-go/mimo-v2.6-flash"
 extra_args = []
 complexity_tier = "workhorse"
-priority = 20
+priority = 25
 enabled = true
 
 [[models]]
-alias = "minimax-m2.7"
+alias = "deepseek-v4.1-flash"
 runtime_type = "opencode"
-model_id = "opencode-go/minimax-m2.7"
-extra_args = []
-complexity_tier = "workhorse"
-priority = 20
-enabled = true
-
-[[models]]
-alias = "minimax-m2.7-highspeed"
-runtime_type = "opencode"
-model_id = "opencode-go/minimax-m2.7-highspeed"
+model_id = "opencode-go/deepseek-v4.1-flash"
 extra_args = []
 complexity_tier = "workhorse"
 priority = 15
-enabled = true
+enabled = false
 
 [[models]]
-alias = "kimi-k2.5"
+alias = "mimo-v2.6-pro"
 runtime_type = "opencode"
-model_id = "opencode-go/kimi-k2.5"
+model_id = "opencode-go/mimo-v2.6-pro"
 extra_args = []
 complexity_tier = "reasoning"
-priority = 20
-enabled = true
-
-[[models]]
-alias = "qwen3-coder-480b"
-runtime_type = "opencode"
-model_id = "opencode-go/qwen3-coder-480b"
-extra_args = []
-complexity_tier = "reasoning"
-priority = 20
+priority = 30
 enabled = true
 
 # ---------------------------------------------------------------------------
@@ -265,7 +253,7 @@ enabled = true
 [[models]]
 alias = "healing-sonnet"
 runtime_type = "claude"
-model_id = "claude-sonnet-4-6"
+model_id = "claude-sonnet-5-5"
 extra_args = []
 complexity_tier = "specialty"
 priority = 10

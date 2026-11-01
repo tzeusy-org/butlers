@@ -77,6 +77,30 @@ remain active. The mapping uses the existing JSONB state store and requires no
 migration. Projected episodes contain only the canonical `payload.place`; raw
 network names remain in the private source evidence and state value.
 
+## How Chronicler cleans the trail
+
+The point and place-cluster projections share one plausibility policy
+(`src/butlers/chronicler/adapters/owntracks_trail.py`):
+
+- A fix that would need more than 1000 km/h from the endpoint's last accepted
+  fix (jumps under 1 km are never judged on speed) is an impossible jump. Its
+  `location` point event is still projected, but carries `payload.trail_outlier`.
+  It is excluded from movement, place and away episodes and from the dashboard
+  Map trail. Three consecutive fixes that agree with each other re-anchor the
+  trail, so one bad fix cannot hide a real one.
+- A `movement_episode` needs at least two accepted fixes. Its point count
+  covers the whole episode across batches. A new movement that overlaps a
+  stored one for the same endpoint widens it rather than adding a second chunk.
+- Place clusters are named, in order, from an `OWNTRACKS_PLACE_REFERENCES`
+  entry, from an OwnTracks region (`inregions`) seen on at least half the
+  cluster's fixes, or else stay explicitly `place_unknown`
+  (`payload.label_source`). No geocoding service is called.
+- With a `home` entry in `OWNTRACKS_PLACE_REFERENCES`, accepted fixes more
+  than 50 km from home form an evidence-layer `away_episode` ("Away from
+  home"), emitted once it spans at least 3 hours. It closes at the first fix
+  back within 50 km, and a gap of more than 36 hours splits it. It frames the
+  day and never counts as lived time.
+
 ## Privacy note
 
 OwnTracks location payloads contain precise coordinates and may include the

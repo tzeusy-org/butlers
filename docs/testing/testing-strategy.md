@@ -57,10 +57,12 @@ Long-running tests excluded from default CI. Run with `-m nightly`. These cover 
 
 ## Scheduled CI (`.github/workflows/nightly.yml`)
 
-Two jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request` — they surface hazards early without gating PR merges or the required `check`/`frontend`/`frontend-e2e` checks:
+These jobs run on a schedule (`0 2 * * *` UTC) and via `workflow_dispatch`, never on `push`/`pull_request`. They surface hazards early without gating PR merges or the required `check`/`guards`/`frontend` checks (Playwright `frontend-e2e` is required through `check`):
 
 - **`nightly`** — the `@pytest.mark.nightly` long-running/stress suite plus migration tests.
-- **`faketime-matrix`** — reruns the full unit+integration suite (excluding `e2e`/`bench`/`perf`/`nightly`) twice, with the runner's wall clock shifted `+45d` and `+120d` via `LD_PRELOAD`-ed `libfaketime`. This catches wall-clock time-bomb tests — a fixture that freezes one clock reading and compares it against a later, fresh `datetime.now()`/`date.today()` call, so the test only fails once real time drifts past whatever date was baked in at authoring time — before it detonates on `main` at its real trigger date. libfaketime does not affect the monotonic clock (asyncio sleep/timeout semantics are unchanged) or the Postgres service container's own clock (SQL `NOW()` stays real), so it only reaches Python-level wall-clock reads. The job carries `timeout-minutes: 90` and the run step passes `pytest-timeout`'s `--timeout=300` (scoped to this leg only) so a single wall-clock-confused hang surfaces as a named test failure — and the run concludes `failure` (triggering GitHub's scheduled-workflow-failure email) — instead of silently eating the whole 6h job limit and concluding `cancelled`.
+- **`coverage-shards` → `coverage-preflight` → `coverage-report`** — the only covered run of the suite: all five unit and six integration pytest-split groups with `CI_COVERAGE=1`, combined into the `ci-combined-coverage-report` artifact and the main coverage badge. Required CI runs the same tests untraced.
+- **`durations-refresh`** — merges every covered group's measured per-test durations into `.test_durations`, uploads it, and on Monday's scheduled run (or a manual dispatch) on `main` opens a PR with it. It never pushes to `main`.
+- **`faketime-matrix`** — reruns the full unit+integration suite (excluding `e2e`/`bench`/`perf`/`nightly`) twice, with the runner's wall clock shifted `+45d` and `+120d` via `LD_PRELOAD`-ed `libfaketime`. This catches wall-clock time-bomb tests — a fixture that freezes one clock reading and compares it against a later, fresh `datetime.now()`/`date.today()` call, so the test only fails once real time drifts past whatever date was baked in at authoring time — before it detonates on `main` at its real trigger date. libfaketime does not affect the monotonic clock (asyncio sleep/timeout semantics are unchanged). The root `conftest.py` runs the shared Postgres testcontainer under the same library and offset, so SQL `now()` agrees with Python's clock and a DB test needs no marker to survive the shift. Tests that need a live TLS handshake or a timed thread wait carry `faketime_fragile` and are deselected from this leg only. The job carries `timeout-minutes: 75` and the run step passes `pytest-timeout`'s `--timeout=300` (scoped to this leg only) so a single wall-clock-confused hang surfaces as a named test failure — and the run concludes `failure` (triggering GitHub's scheduled-workflow-failure email) — instead of silently eating the whole 6h job limit and concluding `cancelled`.
 
 ## Parallel Execution
 
@@ -96,7 +98,7 @@ make test-plan BASE=origin/main
 uv run --no-sync pytest path/to/test_file.py::test_name -q --tb=short -n 0
 
 # Hygiene for changed Python paths.
-uv run ruff check src/ tests/ roster/ conftest.py --output-format concise
+uv run ruff check src/ tests/ roster/ scripts/ conftest.py --output-format concise
 uv run ruff format --check src/ tests/ roster/ conftest.py -q
 ```
 

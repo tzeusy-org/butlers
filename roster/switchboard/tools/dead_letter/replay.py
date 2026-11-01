@@ -8,6 +8,8 @@ from typing import Any
 
 import asyncpg
 
+from .capture import scrub_original_payload
+
 
 async def replay_dead_letter_request(
     conn: asyncpg.Connection,
@@ -110,6 +112,9 @@ async def _replay_dead_letter_request_in_transaction(
                 if isinstance(original_payload_raw, str)
                 else original_payload_raw
             )
+
+            # Legacy dead letters may hold raw text; scrub before it re-enters message_inbox.
+            original_payload = scrub_original_payload(original_payload)
 
             request_context = request_context.copy()
             request_context["replay_metadata"] = {

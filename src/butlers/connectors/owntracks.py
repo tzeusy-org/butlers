@@ -55,7 +55,6 @@ import base64
 import binascii
 import hmac
 import logging
-import math
 import os
 import re
 import signal
@@ -63,13 +62,14 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from threading import Thread
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import uvicorn
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_client import Counter, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import NO_PARENT, load_cursor, save_cursor
 from butlers.connectors.db_role import connector_setup_role
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
@@ -85,7 +85,11 @@ from butlers.db import (
     schema_search_path,
     should_retry_with_ssl_disable,
 )
+from butlers.ingestion_bearer_scrub import scrub_evidence_json
 from butlers.ingestion_policy import IngestionEnvelope, IngestionPolicyEvaluator
+from butlers.ingestion_spans import CHANNEL_KIND_FEED
+
+_DESCRIPTOR = connector_descriptor("owntracks")
 
 if TYPE_CHECKING:
     import asyncpg
@@ -96,9 +100,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-_CONNECTOR_TYPE = "owntracks"
-_CONNECTOR_CHANNEL = "owntracks"
-_CONNECTOR_PROVIDER = "owntracks"
+_CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # Default configuration
 _DEFAULT_HEALTH_PORT = 40083
@@ -200,28 +202,6 @@ def build_idempotency_key(
 # ---------------------------------------------------------------------------
 
 
-def extract_tst(payload: dict[str, Any]) -> int | None:
-    """Extract the ``tst`` (device timestamp) from an OwnTracks payload.
-
-    Args:
-        payload: Parsed OwnTracks JSON payload dictionary.
-
-    Returns:
-        Integer Unix timestamp if ``tst`` is present and is a finite number,
-        ``None`` otherwise (including for NaN, Infinity, non-numeric types).
-    """
-    tst = payload.get("tst")
-    if isinstance(tst, bool):
-        return None
-    if isinstance(tst, int):
-        return tst
-    if isinstance(tst, float):
-        if not math.isfinite(tst):
-            return None
-        return int(tst)
-    return None
-
-
 def extract_event_type(payload: dict[str, Any]) -> str:
     """Extract the ``_type`` field from an OwnTracks payload.
 
@@ -274,8 +254,8 @@ class OwnTracksConnectorConfig:
     """Configuration for the OwnTracks connector runtime."""
 
     switchboard_mcp_url: str
-    provider: str = _CONNECTOR_PROVIDER
-    channel: str = _CONNECTOR_CHANNEL
+    provider: str = _DESCRIPTOR.provider
+    channel: str = _DESCRIPTOR.channel
 
     # OwnTracks-specific
     tracker_id_override: str | None = None
@@ -319,8 +299,8 @@ class OwnTracksConnectorConfig:
 
         return cls(
             switchboard_mcp_url=switchboard_mcp_url,
-            provider=os.environ.get("CONNECTOR_PROVIDER", _CONNECTOR_PROVIDER),
-            channel=os.environ.get("CONNECTOR_CHANNEL", _CONNECTOR_CHANNEL),
+            provider=_DESCRIPTOR.provider,
+            channel=_DESCRIPTOR.channel,
             tracker_id_override=tracker_id_override,
             retention_days=retention_days,
             ingestion_tier=ingestion_tier,
@@ -699,8 +679,8 @@ def build_location_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -739,8 +719,8 @@ def build_transition_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -778,8 +758,8 @@ def build_waypoints_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": _CONNECTOR_CHANNEL,
-            "provider": _CONNECTOR_PROVIDER,
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": endpoint_identity,
         },
         "event": {
@@ -846,6 +826,11 @@ async def persist_location_point(
     """
     idempotency_key = f"owntracks:{endpoint_identity}:{tst}:location"
     ts = datetime.fromtimestamp(tst, tz=UTC)
+    try:
+        raw_payload = scrub_evidence_json(raw_payload, provider_domain="owntracks")
+    except Exception:
+        logger.warning("owntracks: bearer scrub failed; evidence write skipped")
+        return False
 
     result = await pool.fetchval(
         f"""
@@ -1173,6 +1158,7 @@ class OwnTracksConnector:
             metrics=metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=lambda: self._get_checkpoint_info_for_identity(identity),
+            channel_kind=CHANNEL_KIND_FEED,
         )
         return _OwnTracksDeviceState(
             endpoint_identity=identity,
@@ -1335,7 +1321,7 @@ class OwnTracksConnector:
 
         # Apply source filter gate (task 6.6)
         ingest_envelope = IngestionEnvelope(
-            source_channel=_CONNECTOR_CHANNEL,
+            source_channel=_DESCRIPTOR.channel,
             raw_key=device.endpoint_identity,
         )
         decision = device.ingestion_policy.evaluate(ingest_envelope)
@@ -1353,7 +1339,7 @@ class OwnTracksConnector:
 
             device.filtered_event_buffer.record(
                 external_message_id=external_event_id,
-                source_channel=_CONNECTOR_CHANNEL,
+                source_channel=_DESCRIPTOR.channel,
                 sender_identity=device.endpoint_identity,
                 subject_or_preview=f"OwnTracks {payload_type} event",
                 filter_reason=FilteredEventBuffer.reason_policy_rule(
@@ -1362,8 +1348,8 @@ class OwnTracksConnector:
                     rule_type=decision.matched_rule_type or "unknown",
                 ),
                 full_payload=FilteredEventBuffer.full_payload(
-                    channel=_CONNECTOR_CHANNEL,
-                    provider=_CONNECTOR_PROVIDER,
+                    channel=_DESCRIPTOR.channel,
+                    provider=_DESCRIPTOR.provider,
                     endpoint_identity=device.endpoint_identity,
                     external_event_id=external_event_id,
                     external_thread_id=f"owntracks:{body.get('tid', 'unknown')}",
@@ -1611,8 +1597,8 @@ class OwnTracksConnector:
             # Parse payload
             try:
                 body = await request.json()
-            except Exception:
-                raise HTTPException(status_code=400, detail={"error": "Invalid JSON"})
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail={"error": "Invalid JSON"}) from exc
 
             if not isinstance(body, dict) or "_type" not in body:
                 raise HTTPException(
@@ -1740,57 +1726,6 @@ async def resolve_webhook_token(
 # have access to the full OwnTracksConnector class.
 
 
-async def resolve_owntracks_webhook_token(
-    store: CredentialStore | None = None,
-) -> str | None:
-    """Resolve the OwnTracks webhook bearer token, returning None if absent.
-
-    Resolution order:
-    1. ``CredentialStore`` lookup for ``owntracks_webhook_token`` (if *store*
-       is provided).
-    2. ``OWNTRACKS_WEBHOOK_TOKEN`` environment variable (fallback).
-
-    Parameters
-    ----------
-    store:
-        A ``CredentialStore`` instance backed by the butler DB.  When
-        ``None`` (e.g. no DB is available), only the env var is checked.
-
-    Returns
-    -------
-    str | None
-        The resolved token, or ``None`` if neither source has a value.
-    """
-    # 1. DB lookup via CredentialStore
-    if store is not None:
-        try:
-            raw_db_token = await store.resolve(_DB_KEY, env_fallback=False)
-            db_token = (raw_db_token or "").strip()
-            if db_token:
-                logger.info(
-                    "OwnTracks connector: resolved %r from CredentialStore",
-                    _DB_KEY,
-                )
-                return db_token
-        except Exception as exc:  # noqa: BLE001
-            logger.debug(
-                "OwnTracks connector: CredentialStore lookup for %r failed (non-fatal): %s",
-                _DB_KEY,
-                exc,
-            )
-
-    # 2. Env var fallback
-    env_token = os.environ.get(_ENV_VAR, "").strip()
-    if env_token:
-        logger.info(
-            "OwnTracks connector: resolved webhook token from env var %s",
-            _ENV_VAR,
-        )
-        return env_token
-
-    return None
-
-
 def _verify_webhook_auth(auth_header: str, expected_token: str) -> bool:
     """Return True if *auth_header* authenticates against *expected_token*.
 
@@ -1827,66 +1762,6 @@ def _verify_webhook_auth(auth_header: str, expected_token: str) -> bool:
         _, password = decoded.split(":", 1)
         return hmac.compare_digest(password.encode(), expected_bytes)
     return False
-
-
-def make_bearer_auth_dependency(*, token: str):
-    """Return a FastAPI dependency that authenticates the webhook ``Authorization`` header.
-
-    Accepts ``Bearer <token>`` or HTTP Basic auth (password compared to *token*,
-    username ignored) — Basic support exists because OwnTracks mobile's
-    username/password fields send Basic auth natively.
-
-    Comparison uses ``hmac.compare_digest`` for constant-time evaluation.
-    Requests with a missing, malformed, or non-matching credential receive 401.
-
-    Raises
-    ------
-    ValueError
-        If *token* is empty (fail-closed: refuse to create dependency with
-        an empty token that would match any empty credential).
-    """
-    normalized_token = token.strip()
-    if not normalized_token:
-        raise ValueError("make_bearer_auth_dependency: token must be a non-empty string")
-
-    async def _require_webhook_auth(
-        authorization: Annotated[str | None, Header()] = None,
-    ) -> None:
-        if authorization is None or not _verify_webhook_auth(authorization, normalized_token):
-            logger.debug("OwnTracks webhook: rejected request — auth failure")
-            raise HTTPException(status_code=401, detail={"error": "Unauthorized"})
-
-    return _require_webhook_auth
-
-
-def build_webhook_app(*, token: str) -> FastAPI:
-    """Build a minimal FastAPI app with the webhook auth dependency wired.
-
-    This is a thin factory used in tests and for future endpoint assembly.
-    Full connector implementation (payload parsing, normalisation, etc.) is
-    handled by the main connector entrypoint (task group §3+).
-
-    Parameters
-    ----------
-    token:
-        The resolved bearer token.  Must be non-empty.
-
-    Returns
-    -------
-    fastapi.FastAPI
-        App with ``/owntracks/webhook`` returning 200 on valid auth.
-    """
-    app = FastAPI()
-    require_auth = make_bearer_auth_dependency(token=token)
-
-    @app.post("/owntracks/webhook")
-    async def webhook(
-        _: None = Depends(require_auth),
-    ) -> list:
-        # OwnTracks protocol requires an empty JSON array response on success.
-        return []
-
-    return app
 
 
 # ---------------------------------------------------------------------------

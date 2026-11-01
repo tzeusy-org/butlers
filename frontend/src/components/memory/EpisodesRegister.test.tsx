@@ -54,6 +54,10 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     last_referenced_at: null,
     expires_at: null,
     metadata: {},
+    consolidation_attempts: 0,
+    last_consolidation_error: null,
+    dead_letter_reason: null,
+    next_consolidation_retry_at: null,
     ...overrides,
   };
 }
@@ -290,9 +294,9 @@ describe("EpisodesRegister — the daybook", () => {
     const mark = mounted.container.querySelector('[aria-label="health"]');
     expect(mark).not.toBeNull();
     expect(mark!.textContent).toBe("H");
-    // It carries a category hue via inline style (color or background).
+    // It carries its identity hue via inline style (color or background).
     const style = (mark as HTMLElement).getAttribute("style") ?? "";
-    expect(style).toContain("category");
+    expect(style).toContain("light-dark(oklch(");
   });
 
   it("keeps an initial-only episode row's full butler identity available on hover", () => {
@@ -331,13 +335,25 @@ describe("EpisodesRegister — the daybook", () => {
     expect(openLink!.textContent).toContain("open");
   });
 
-  it("animates expansion via a height (max-height) transition, not opacity/scale", () => {
-    setEpisodes([makeEpisode()]);
+  it("expands full content instantly through click and keyboard without a layout tween", () => {
+    const content = "Full episode content.\n".repeat(200);
+    setEpisodes([makeEpisode({ content })]);
     mounted = renderRegister();
-    const html = mounted.container.innerHTML;
-    expect(html).toContain("transition-[max-height]");
-    expect(html).toContain("duration-[120ms]");
-    expect(html).not.toContain("transition-opacity");
+    const row = mounted.container.querySelector<HTMLElement>('[role="button"]')!;
+    const text = row.querySelector<HTMLElement>(".whitespace-pre-wrap")!;
+    expect(row.getAttribute("aria-expanded")).toBe("false");
+    expect(text.className).toContain("line-clamp-2");
+    act(() => row.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(row.getAttribute("aria-expanded")).toBe("true");
+    expect(text.textContent).toBe(content);
+    expect(text.className).not.toContain("line-clamp-2");
+    expect(text.parentElement!.className).not.toMatch(/max-h-|transition/);
+    expect(mounted.container.innerHTML).not.toContain("transition-" + "opacity");
+    for (const key of ["Enter", " "]) {
+      act(() => row.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })));
+      expect(row.getAttribute("aria-expanded")).toBe(key === "Enter" ? "false" : "true");
+    }
+    expect(row.querySelector('a[href^="/memory/episodes/"]')).not.toBeNull();
   });
 
   it("navigates to the episode detail when the open link is clicked", () => {
@@ -388,7 +404,7 @@ describe("EpisodesRegister — the daybook", () => {
     act(() => {
       retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mutate).toHaveBeenCalledWith({ butler: "atlas", episodeId: "dead-1" });
+    expect(mutate).toHaveBeenCalledWith({ episodeId: "dead-1" });
     // The row stays expanded — the click must not bubble into the row toggle.
     expect(row.getAttribute("aria-expanded")).toBe("true");
   });

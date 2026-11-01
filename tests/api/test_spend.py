@@ -23,11 +23,12 @@ from butlers.api.deps import (
     ButlerUnreachableError,
     MCPClientManager,
     get_butler_configs,
+    get_db_optional,
     get_mcp_manager,
     get_pricing,
 )
+from butlers.api.deps import get_db_optional as _costs_get_db
 from butlers.api.models import ScheduleCost, SpendSummary
-from butlers.api.routers.spend import _get_db_manager as _costs_get_db
 from butlers.api.routers.spend import _is_tool_absent_error, _ledger_session_divergences
 from butlers.core.model_routing import check_monthly_ceiling
 from butlers.core.pricing import (
@@ -2385,10 +2386,8 @@ async def test_spend_ceiling_rejects_non_positive(app):
     """PUT /api/spend/ceiling returns 422 for monthly_usd <= 0."""
     from unittest.mock import MagicMock
 
-    from butlers.api.routers.spend import _get_db_manager
-
     mock_db = MagicMock()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db_optional] = lambda: mock_db
     _wire(app, MagicMock(spec=MCPClientManager), [], _flat_pricing())
 
     async with httpx.AsyncClient(

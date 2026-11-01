@@ -3,26 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import json
 import logging
 import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import icalendar
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastmcp.exceptions import ToolError
 
 from butlers.api.calendar.quick_add import parse_quick_add
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import ApiResponse
 from butlers.api.models.calendar import (
     CalendarWorkspaceButlerMutationRequest,
@@ -39,14 +35,8 @@ from butlers.api.models.calendar_workspace import (
     CalendarButlerEventPreviewResponse,
     CalendarConflictEntry,
     CalendarDayBriefingResponse,
-    CalendarDedupRulesModel,
-    CalendarDedupRulesUpdateRequest,
-    CalendarDuplicateCluster,
-    CalendarDuplicatesResponse,
-    CalendarIcsImportedEvent,
-    CalendarIcsImportResponse,
-    CalendarKeepSeparateRequest,
-    CalendarKeepSeparateResponse,
+    CalendarInvitationEntry,
+    CalendarInvitationsResponse,
     CalendarLinkedPerson,
     CalendarPrepAttendee,
     CalendarPrepCommitment,
@@ -54,12 +44,11 @@ from butlers.api.models.calendar_workspace import (
     CalendarPrepResponse,
     CalendarProposalAcceptRequest,
     CalendarProposalActionResponse,
+    CalendarRespondRequest,
+    CalendarRespondResponse,
     CalendarSourceToggleRequest,
     CalendarSourceToggleResponse,
     CalendarSuggestedSlot,
-    CalendarUndoResponse,
-    CalendarWorkspaceFindTimeRequest,
-    CalendarWorkspaceFindTimeResponse,
     CalendarWorkspaceLaneDefinition,
     CalendarWorkspaceMetaResponse,
     CalendarWorkspaceMutationResponse,
@@ -83,20 +72,19 @@ from butlers.api.models.calendar_workspace import (
     SetPrimaryCalendarResponse,
     UnifiedCalendarEntry,
 )
-from butlers.api.read_models.calendar_workspace_v1 import (
-    DEDUP_STRATEGIES,
-    CalendarDedupRules,
+from butlers.api.pagination import InvalidCursorError, decode_cursor, encode_cursor
+from butlers.api.read_models.calendar_workspace import (
     CalendarOverlayRow,
     CalendarPrepRow,
     CalendarProposalRow,
     _coerce_datetime,
     _dedup_workspace_rows,
-    _starts_epoch_ms,
     load_dedup_rules,
     load_keep_separate_keys,
     query_calendar_conflicts,
     query_calendar_entry_people,
     query_calendar_event_search,
+    query_calendar_invitations,
     query_calendar_overlays,
     query_calendar_prep,
     query_calendar_proposal_by_id,
@@ -104,13 +92,10 @@ from butlers.api.read_models.calendar_workspace_v1 import (
     query_calendar_sources,
     query_calendar_workspace,
     query_calendar_workspace_entry,
-    set_keep_separate,
     shallow_asdict,
     update_calendar_proposal_status,
-    update_dedup_rules,
 )
 from butlers.api.routers.audit import log_audit_entry
-from butlers.calendar_action_result import reconstruct_action_result
 from butlers.config import list_butlers
 from butlers.core.liveness import derive_liveness
 from butlers.credential_store import CredentialStore
@@ -143,6 +128,27 @@ def _calendar_core_enabled_butlers() -> set[str]:
     return enabled
 
 
+def _calendar_response_enabled_butlers() -> set[str]:
+    """Configured response owners; runtime admission remains independently gated."""
+    enabled = set()
+    try:
+        configs = list_butlers()
+    except Exception:
+        return enabled
+    for config in configs:
+        calendar = config.modules.get("calendar") or {}
+        approval = config.modules.get("approvals") or {}
+        groups = calendar.get("groups")
+        if (
+            calendar.get("response_enabled") is True
+            and (not groups or "response" in groups)
+            and approval.get("enabled") is True
+            and "calendar_respond" in (approval.get("gated_tools") or {})
+        ):
+            enabled.add(config.name)
+    return enabled
+
+
 router = APIRouter(prefix="/api/calendar/workspace", tags=["calendar", "workspace"])
 logger = logging.getLogger(__name__)
 
@@ -165,7 +171,6 @@ _RRULE_FREQ_UNIT = {
 # Keyset pagination bounds for the workspace read.
 _WORKSPACE_DEFAULT_LIMIT = 200
 _WORKSPACE_MAX_LIMIT = 1000
-_FIND_TIME_UNAVAILABLE_REASON = "Free/busy lookup unavailable; try again shortly."
 
 # Allowed values for the server-side facets. ``status`` mirrors the computed
 # values produced by ``_entry_status`` / ``STATUS_SQL``; ``source_type`` mirrors
@@ -184,37 +189,6 @@ _OVERLAY_DEFAULT_TZ = ZoneInfo("Asia/Singapore")
 # natural DB id (they live inside a JSONB envelope), so the entry_id is derived
 # from (butler, date, index, kind, label) — stable across reads of the same view.
 _OVERLAY_ENTRY_NAMESPACE = uuid5(NAMESPACE_URL, "butlers/calendar/overlay-contribution")
-
-
-def _encode_workspace_cursor(starts_at: datetime, entry_id: UUID) -> str:
-    """Encode a ``(starts_at, id)`` keyset position into an opaque cursor token."""
-    payload = json.dumps({"s": starts_at.isoformat(), "i": str(entry_id)})
-    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
-
-
-def _decode_workspace_cursor(raw: str) -> tuple[datetime, UUID]:
-    """Decode an opaque workspace cursor into ``(starts_at, id)``.
-
-    Raises :class:`ValueError` on any malformed/unparseable token so the caller
-    can surface a 400.
-    """
-    try:
-        decoded = base64.urlsafe_b64decode(raw.encode("ascii"))
-        payload = json.loads(decoded)
-        starts_at = _coerce_datetime(payload["s"])
-        entry_id = UUID(str(payload["i"]))
-    except (
-        KeyError,
-        ValueError,
-        TypeError,
-        binascii.Error,
-        json.JSONDecodeError,
-        UnicodeDecodeError,
-    ) as exc:
-        raise ValueError(f"Malformed cursor: {raw!r}") from exc
-    if starts_at is None:
-        raise ValueError(f"Malformed cursor: {raw!r}")
-    return starts_at, entry_id
 
 
 # Regex for hashed Google Calendar IDs like "ae06dba...@group.calendar.google.com"
@@ -264,11 +238,6 @@ def _format_writable_calendar_label(
     return formatted
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 def _normalize_json_object(value: object) -> dict[str, Any]:
     if isinstance(value, Mapping):
         return dict(value)
@@ -294,18 +263,6 @@ def _safe_uuid(value: object) -> UUID | None:
         except ValueError:
             return None
     return None
-
-
-def _title_collapse_key(row: Mapping[str, Any]) -> tuple[str, int]:
-    """Pass-2 read-model collapse key: cross-calendar copies of one event.
-
-    Keys on ``(title, starts_epoch)`` so a real-world event duplicated to a
-    group calendar (and thus given a fresh ``origin_ref`` by Google) still shows
-    once. Reused by ``.ics`` import to dedup against existing entries.
-    """
-    title = (row.get("title") or "").strip().lower()
-    starts_at = _coerce_datetime(row.get("instance_starts_at"))
-    return (title, _starts_epoch_ms(starts_at))
 
 
 def _entry_status(raw_status: object, source_type: str, event_metadata: dict[str, Any]) -> str:
@@ -406,6 +363,7 @@ def _to_source_freshness(row: Mapping[str, Any]) -> CalendarWorkspaceSourceFresh
         staleness_ms=staleness_ms,
         error_kind=classify_sync_error_kind(row.get("last_error")),
         sync_enabled=sync_enabled,
+        sync_applicable=row["source_kind"] == "provider_event",
     )
 
 
@@ -567,8 +525,8 @@ async def _fetch_sources(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Fetch calendar source rows via the versioned read-model boundary.
 
-    Delegates to :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_sources`
-    and converts the typed :class:`~butlers.api.read_models.calendar_workspace_v1.CalendarSourceRow`
+    Delegates to :func:`~butlers.api.read_models.calendar_workspace.query_calendar_sources`
+    and converts the typed :class:`~butlers.api.read_models.calendar_workspace.CalendarSourceRow`
     DTOs back to plain dicts for the existing downstream helpers
     (``_to_source_freshness``, ``_normalize_entry``, etc.) that expect
     ``Mapping[str, Any]`` inputs.
@@ -602,9 +560,9 @@ async def _fetch_workspace_rows(
     """Fetch calendar event-instance rows via the versioned read-model boundary.
 
     Delegates to
-    :func:`~butlers.api.read_models.calendar_workspace_v1.query_calendar_workspace`
+    :func:`~butlers.api.read_models.calendar_workspace.query_calendar_workspace`
     and converts the typed
-    :class:`~butlers.api.read_models.calendar_workspace_v1.CalendarWorkspaceRow`
+    :class:`~butlers.api.read_models.calendar_workspace.CalendarWorkspaceRow`
     DTOs back to plain dicts for the existing downstream helpers
     (``_normalize_entry``, deduplication logic, etc.) that expect
     ``Mapping[str, Any]`` inputs.
@@ -1164,7 +1122,8 @@ def _project_prep_contributions(
 @router.get("/prep/{event_id}", response_model=ApiResponse[CalendarPrepResponse])
 async def get_meeting_prep(
     event_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarPrepResponse]:
     """Return the meeting-prep rail context for a selected calendar event.
 
@@ -1204,7 +1163,8 @@ async def get_day_briefing(
     ),
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
     butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarDayBriefingResponse]:
     """Return the structured "tomorrow at a glance" day-briefing card for a date.
 
@@ -1270,7 +1230,8 @@ async def get_workspace(
         description="Max entries per page (keyset pagination)",
     ),
     cursor: str | None = Query(None, description="Opaque keyset cursor from a prior page"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceReadResponse]:
     """Return normalized workspace entries for the requested time range.
 
@@ -1288,12 +1249,11 @@ async def get_workspace(
     if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
         raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
 
-    cursor_pos: tuple[datetime, UUID] | None = None
-    if cursor is not None:
-        try:
-            cursor_pos = _decode_workspace_cursor(cursor)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Malformed cursor") from exc
+    cursor_pos = (
+        decode_cursor(cursor, (datetime, UUID), scope="calendar-workspace")
+        if cursor is not None
+        else None
+    )
 
     display_tz: ZoneInfo | None = None
     if timezone is not None:
@@ -1446,7 +1406,9 @@ async def get_workspace(
         last_starts_at = _coerce_datetime(last_row.get("instance_starts_at"))
         last_instance_id = last_row.get("instance_id")
         if last_starts_at is not None and isinstance(last_instance_id, UUID):
-            next_cursor = _encode_workspace_cursor(last_starts_at, last_instance_id)
+            next_cursor = encode_cursor(
+                (last_starts_at, last_instance_id), scope="calendar-workspace"
+            )
 
     # Hydrate linked people (bu-qs64f) for the events on THIS page only — one
     # batch-join over calendar_event_entities → public.entities, keyed by
@@ -1497,6 +1459,135 @@ async def get_workspace(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/invitations", response_model=ApiResponse[CalendarInvitationsResponse])
+async def get_workspace_invitations(
+    start: datetime = Query(...),
+    end: datetime = Query(...),
+    timezone: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    cursor: str | None = Query(None, max_length=2048),
+    *,
+    db: Db,
+) -> ApiResponse[CalendarInvitationsResponse]:
+    """Read only explicit unanswered projection truth in the visible window."""
+    if start.tzinfo is None or end.tzinfo is None:
+        raise HTTPException(400, "start and end must include a timezone")
+    if end <= start or end - start > _WORKSPACE_MAX_RANGE:
+        raise HTTPException(400, "Range must be ordered and at most 90 days")
+    try:
+        display_tz = ZoneInfo(timezone) if timezone is not None else None
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(400, "Invalid timezone") from exc
+
+    # The cursor carries the window it was minted for, so replaying it against a
+    # different window is a 400 rather than a seek into the wrong range.
+    window = (start.isoformat(), end.isoformat(), timezone)
+    position = None
+    if cursor is not None:
+        starts_at, instance_id, *cursor_window = decode_cursor(
+            cursor, (datetime, UUID, str, str, str | None), scope="calendar-invitations"
+        )
+        if tuple(cursor_window) != window:
+            raise InvalidCursorError()
+        position = (starts_at, instance_id)
+    invitation_read = await query_calendar_invitations(
+        db,
+        start=start,
+        end=end,
+        cursor=position,
+        limit=limit + 1,
+    )
+    degraded = set(invitation_read.failed_butlers)
+    if not invitation_read.status_available:
+        degraded.add("calendar invitation status")
+    try:
+        source_rows, source_failed = await _fetch_sources(db, lane="user")
+        degraded.update(source_failed)
+        # The event survivor and logical source owner have independent freshness
+        # rankings. A response must use the schema containing this exact entry.
+        owners = {
+            (row.get("db_butler"), row["source_key"]): row.get("db_butler") for row in source_rows
+        }
+    except Exception:
+        owners = {}
+        degraded.add("calendar sources")
+    try:
+        scan = await query_calendar_conflicts(db, start=start, end=end, display_tz=display_tz)
+    except Exception:
+        scan = None
+    conflicts_available = scan is not None and scan.available
+    if not conflicts_available:
+        degraded.add("calendar conflict scan")
+    observed_issues = scan.issues if scan is not None else []
+    response_owners = _calendar_response_enabled_butlers()
+    entries = []
+    for row in invitation_read.rows[:limit]:
+        owner = owners.get((row.get("db_butler"), row["source_key"]))
+        if not owner:
+            degraded.add("calendar source ownership")
+        metadata = _normalize_json_object(row.get("event_metadata"))
+        organizer = metadata.get("organizer")
+        organizer_source = "event"
+        if not isinstance(organizer, str) or not organizer.strip():
+            organizer = None
+            organizer_source = "unknown"
+            for attendee in metadata.get("attendees", []):
+                if not isinstance(attendee, Mapping) or attendee.get("organizer") is not True:
+                    continue
+                label = (
+                    attendee.get("display_name")
+                    or attendee.get("displayName")
+                    or attendee.get("email")
+                )
+                if isinstance(label, str) and label.strip():
+                    organizer, organizer_source = label.strip(), "attendee"
+                    break
+        entry_id = str(row["instance_id"])
+        issues = [
+            ConflictIssue(
+                kind=issue.kind,
+                date=issue.date,
+                summary=issue.summary,
+                severity=issue.severity,
+                events=[ConflictEventRef(**vars(ref)) for ref in issue.events],
+                proposal_ids=list(issue.proposal_ids),
+            )
+            for issue in observed_issues
+            if any(ref.entry_id == entry_id for ref in issue.events)
+        ]
+        entries.append(
+            CalendarInvitationEntry(
+                entry_id=row["instance_id"],
+                title=row.get("title") or "Untitled",
+                start_at=row["instance_starts_at"],
+                end_at=row["instance_ends_at"],
+                timezone=row.get("instance_timezone") or row.get("event_timezone") or "UTC",
+                organizer=organizer.strip() if isinstance(organizer, str) else None,
+                organizer_source=organizer_source,
+                butler_name=owner,
+                conflict_issues=issues,
+                response_configured=owner in response_owners and row.get("writable") is True,
+            )
+        )
+    has_more = len(invitation_read.rows) > limit
+    next_cursor = None
+    if has_more:
+        last = invitation_read.rows[limit - 1]
+        next_cursor = encode_cursor(
+            (last["instance_starts_at"], last["instance_id"], *window), scope="calendar-invitations"
+        )
+    return ApiResponse(
+        data=CalendarInvitationsResponse(
+            entries=entries,
+            issues_available=not degraded,
+            conflicts_available=conflicts_available,
+            sources_degraded=sorted(degraded),
+            has_more=has_more,
+            next_cursor=next_cursor,
+        )
+    )
+
+
 @router.get("/conflicts", response_model=ApiResponse[ConflictScanResponse])
 async def get_workspace_conflicts(
     start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
@@ -1509,7 +1600,8 @@ async def get_workspace_conflicts(
     overloaded_day_hours: float = Query(
         6.0, gt=0, le=24, description="Daily meeting-hours budget before a day is 'overloaded'"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[ConflictScanResponse]:
     """Proactively scan the forward window for scheduling problems.
 
@@ -1582,171 +1674,6 @@ async def get_workspace_conflicts(
     )
 
 
-def _rules_to_model(rules: CalendarDedupRules) -> CalendarDedupRulesModel:
-    """Map the read-model dedup-rules DTO to the API model."""
-    return CalendarDedupRulesModel(
-        match_strategy=rules.match_strategy,  # type: ignore[arg-type]
-        noisy_threshold=rules.noisy_threshold,
-    )
-
-
-@router.get("/duplicates", response_model=ApiResponse[CalendarDuplicatesResponse])
-async def get_workspace_duplicates(
-    view: str = Query("user", pattern="^(user|butler)$"),
-    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
-    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
-    timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
-    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
-    sources: list[str] | None = Query(None, description="Optional source_key filters"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CalendarDuplicatesResponse]:
-    """Expose the cross-source duplicate clusters the read-model collapses.
-
-    The workspace read silently collapses duplicate events synced into multiple
-    butler schemas / cross-calendar copies. This surface re-runs the same dedup
-    over the (un-collapsed) rows and returns every cluster of >1 members it would
-    collapse, plus the active rules. Clusters smaller than ``noisy_threshold`` are
-    filtered out. Keep-separate clusters are still reported (flagged).
-
-    Fails open: any read failure yields ``available=false`` with an empty cluster
-    list, never an HTTP 500.
-    """
-    if end <= start:
-        raise HTTPException(status_code=400, detail="end must be after start")
-    if end - start > _WORKSPACE_MAX_RANGE:
-        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
-
-    display_tz: ZoneInfo | None = None
-    if timezone is not None:
-        try:
-            display_tz = ZoneInfo(timezone.strip())
-        except ZoneInfoNotFoundError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone}") from exc
-
-    rules = await load_dedup_rules(db)
-    try:
-        keep_separate = await load_keep_separate_keys(db)
-        flattened, failed = await _fetch_flattened_workspace_rows(
-            db,
-            view=view,
-            start=start,
-            end=end,
-            butlers=butlers,
-            sources=sources,
-        )
-        _deduped, clusters = _dedup_workspace_rows(
-            flattened, strategy=rules.match_strategy, keep_separate=keep_separate
-        )
-    except Exception:
-        logger.warning("get_workspace_duplicates failed; degrading", exc_info=True)
-        return ApiResponse[CalendarDuplicatesResponse](
-            data=CalendarDuplicatesResponse(
-                clusters=[], rules=_rules_to_model(rules), available=False
-            )
-        )
-    # A partial fan-out failure means the dedup ran over an incomplete row set, so
-    # a cluster could be under-counted or missed entirely — flag it degraded even
-    # though the surface still renders the clusters it could compute.
-    duplicates_available = not failed
-
-    cluster_models: list[CalendarDuplicateCluster] = []
-    for cluster in clusters:
-        if len(cluster.members) < rules.noisy_threshold:
-            continue
-        try:
-            entries = [
-                _normalize_entry(member, view=view, display_tz=display_tz)
-                for member in cluster.members
-            ]
-        except ValueError:
-            continue
-        cluster_models.append(
-            CalendarDuplicateCluster(
-                cluster_key=cluster.cluster_key,
-                match_pass=cluster.match_pass,  # type: ignore[arg-type]
-                member_count=len(cluster.members),
-                keep_separate=cluster.keep_separate,
-                kept_entry=entries[0],
-                duplicate_entries=entries[1:],
-            )
-        )
-
-    # Most-duplicated clusters first, then by the kept entry's start.
-    cluster_models.sort(key=lambda c: (-c.member_count, c.kept_entry.start_at))
-    return ApiResponse[CalendarDuplicatesResponse](
-        data=CalendarDuplicatesResponse(
-            clusters=cluster_models, rules=_rules_to_model(rules), available=duplicates_available
-        )
-    )
-
-
-@router.patch("/dedup-rules", response_model=ApiResponse[CalendarDedupRulesModel])
-async def patch_dedup_rules(
-    body: CalendarDedupRulesUpdateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CalendarDedupRulesModel]:
-    """Persist the cross-source dedup match-strategy / noisy-threshold settings.
-
-    Omitted fields are left unchanged. Validation (strategy enum, threshold
-    bounds) is enforced by the request model; an empty body is a no-op that
-    returns the current rules.
-    """
-    if body.match_strategy is not None and body.match_strategy not in DEDUP_STRATEGIES:
-        raise HTTPException(
-            status_code=400, detail=f"Unknown match_strategy: {body.match_strategy}"
-        )
-    try:
-        rules = await update_dedup_rules(
-            db,
-            match_strategy=body.match_strategy,
-            noisy_threshold=body.noisy_threshold,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    await log_audit_entry(
-        db,
-        "calendar",
-        "calendar.workspace.dedup_rules.update",
-        {"match_strategy": rules.match_strategy, "noisy_threshold": rules.noisy_threshold},
-    )
-    return ApiResponse[CalendarDedupRulesModel](data=_rules_to_model(rules))
-
-
-@router.post(
-    "/duplicates/keep-separate",
-    response_model=ApiResponse[CalendarKeepSeparateResponse],
-)
-async def post_keep_separate(
-    body: CalendarKeepSeparateRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CalendarKeepSeparateResponse]:
-    """Pin or unpin a duplicate cluster as keep-separate.
-
-    When ``keep_separate`` is true the dedup will no longer collapse the cluster
-    (every member shows in the workspace read); when false the override is
-    removed and the cluster collapses again.
-    """
-    try:
-        state = await set_keep_separate(
-            db,
-            cluster_key=body.cluster_key,
-            keep_separate=body.keep_separate,
-            match_pass=body.match_pass,
-            label=body.label,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    await log_audit_entry(
-        db,
-        "calendar",
-        "calendar.workspace.dedup_keep_separate",
-        {"cluster_key": body.cluster_key, "keep_separate": body.keep_separate},
-    )
-    return ApiResponse[CalendarKeepSeparateResponse](
-        data=CalendarKeepSeparateResponse(cluster_key=body.cluster_key, keep_separate=state)
-    )
-
-
 @router.get("/search", response_model=ApiResponse[CalendarWorkspaceSearchResponse])
 async def search_workspace(
     q: str = Query("", description="Free-text query over title/description/location"),
@@ -1755,7 +1682,8 @@ async def search_workspace(
     butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
     sources: list[str] | None = Query(None, description="Optional source_key filters"),
     limit: int = Query(50, ge=1, le=200, description="Max matches to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceSearchResponse]:
     """Full-text search over the calendar projection, ranked by trigram relevance.
 
@@ -1805,7 +1733,8 @@ async def search_workspace(
 async def get_entry_detail(
     entry_id: UUID,
     timezone: str | None = Query(None, description="Optional display timezone (IANA)"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[UnifiedCalendarEntry]:
     """Fetch a single calendar workspace entry by instance ID."""
     display_tz: ZoneInfo | None = None
@@ -1841,7 +1770,8 @@ async def get_entry_detail(
 
 @router.get("/meta", response_model=ApiResponse[CalendarWorkspaceMetaResponse])
 async def get_workspace_meta(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mgr: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceMetaResponse]:
     """Return workspace metadata: capabilities, sources, lanes, writable calendars."""
@@ -1915,7 +1845,8 @@ async def get_workspace_meta(
 async def set_primary_calendar(
     body: SetPrimaryCalendarRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SetPrimaryCalendarResponse]:
     """Set the primary calendar for a butler via the calendar_set_primary MCP tool."""
     result = await _call_mcp_tool(
@@ -1945,7 +1876,8 @@ async def set_primary_calendar(
 )
 async def sync_workspace(
     request: CalendarWorkspaceSyncRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> ApiResponse[CalendarWorkspaceSyncResponse]:
     """Queue projection/provider sync for all sources or one selected source.
@@ -2136,17 +2068,23 @@ async def _call_mcp_tool(
     butler_name: str,
     tool_name: str,
     arguments: dict[str, Any],
+    *,
+    closed_error: bool = False,
 ) -> dict[str, Any]:
     """Call a butler MCP tool and coerce response content into a dict payload."""
     try:
         client = await mgr.get_client(butler_name)
         result = await client.call_tool(tool_name, arguments)
     except ButlerUnreachableError as exc:
+        if closed_error:
+            raise HTTPException(status_code=503, detail="response_transport_unavailable") from None
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{butler_name}' is unreachable: {exc}",
         ) from exc
     except Exception as exc:  # pragma: no cover - defensive transport fallback
+        if closed_error:
+            raise HTTPException(status_code=503, detail="response_transport_unavailable") from None
         logger.exception(
             "Unexpected MCP call failure for butler '%s' tool '%s'",
             butler_name,
@@ -2261,7 +2199,8 @@ def _quick_add_shared_authority_pool(db: DatabaseManager):
 @router.post("/parse-quick-add", response_model=ApiResponse[QuickAddParseResponse])
 async def parse_quick_add_event(
     body: QuickAddParseRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QuickAddParseResponse]:
     """Parse a natural-language string into a draft event for confirmation.
 
@@ -2296,25 +2235,316 @@ async def parse_quick_add_event(
     )
 
 
+async def _calendar_response_review_pool(
+    db: DatabaseManager, action_id: UUID, owner: str
+) -> tuple[Any, dict[str, Any]]:
+    """Authenticate read selection by complete own-source and command binding.
+
+    This read selector is not decision or execution authority. Messenger's
+    separate notification-review discriminator keeps its existing admission.
+    """
+    from butlers.modules.calendar_response import _digest
+
+    names = db.configured_butlers_with_module("approvals")
+    if (
+        not isinstance(names, list)
+        or not names
+        or len(names) > 64
+        or any(not isinstance(name, str) or not name for name in names)
+        or len(set(names)) != len(names)
+        or owner not in names
+    ):
+        raise HTTPException(status_code=503, detail="response_review_census_unavailable")
+    rows, failed = await db.fan_out_with_status(
+        "SELECT id FROM pending_actions WHERE id=$1", (action_id,), butler_names=names
+    )
+    if any(
+        len(values) > 1 or any(row.get("id") != action_id for row in values)
+        for values in rows.values()
+    ):
+        raise HTTPException(status_code=409, detail="response_review_owner_unverified")
+    matches = [name for name, values in rows.items() if values]
+    if failed:
+        raise HTTPException(status_code=503, detail="response_review_lookup_degraded")
+    if set(rows) != set(names) or len(matches) != 1 or matches[0] != owner:
+        raise HTTPException(status_code=409, detail="response_review_owner_unverified")
+    pool = db.pool(owner)
+    try:
+        command_row = await pool.fetchrow(
+            "SELECT action_type,action_payload FROM calendar_action_log WHERE id=$1", action_id
+        )
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args FROM pending_actions WHERE id=$1", action_id
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="response_review_unavailable") from None
+    payload = _normalize_json_object(command_row["action_payload"]) if command_row else {}
+    command = _normalize_json_object(payload.get("command"))
+    args = _normalize_json_object(pending["tool_args"]) if pending else {}
+    expected = {
+        **_normalize_json_object(command.get("arguments")),
+        "_command_id": str(action_id),
+        "_command_digest": payload.get("digest"),
+    }
+    if (
+        not command_row
+        or command_row["action_type"] != "workspace_user_respond"
+        or command.get("owner") != owner
+        or _digest(command) != payload.get("digest")
+        or not pending
+        or pending["tool_name"] != "calendar_respond"
+        or args != expected
+    ):
+        raise HTTPException(status_code=409, detail="response_review_binding_unverified")
+    # Carry the admitted immutable binding through the later dossier read.
+    # That read uses another acquisition and must not display a changed action.
+    return pool, expected
+
+
+async def _read_response_command(
+    db: DatabaseManager, command_id: UUID, owner: str
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    """Repeat the admitted immutable binding on the final receipt acquisition."""
+    from butlers.modules.calendar_response import _digest
+
+    pool, expected = await _calendar_response_review_pool(db, command_id, owner)
+    try:
+        row = await pool.fetchrow(
+            "SELECT action_type,action_payload,action_result FROM calendar_action_log WHERE id=$1",
+            command_id,
+        )
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", command_id
+        )
+    except Exception:
+        raise HTTPException(503, "response_review_unavailable") from None
+    if row is None or pending is None:
+        raise HTTPException(503, "response_review_unavailable")
+    payload = _normalize_json_object(row["action_payload"])
+    command = _normalize_json_object(payload.get("command"))
+    if (
+        row["action_type"] != "workspace_user_respond"
+        or command.get("owner") != owner
+        or _digest(command) != payload.get("digest")
+        or {
+            **_normalize_json_object(command.get("arguments")),
+            "_command_id": str(command_id),
+            "_command_digest": payload.get("digest"),
+        }
+        != expected
+        or pending["tool_name"] != "calendar_respond"
+        or _normalize_json_object(pending["tool_args"]) != expected
+    ):
+        raise HTTPException(409, "response_review_binding_unverified")
+    return payload, _normalize_json_object(row["action_result"]), pending["status"]
+
+
+@router.get("/responses/{command_id}", response_model=ApiResponse[CalendarRespondResponse])
+async def get_response_receipt(
+    command_id: UUID,
+    source_butler: str = Query(..., min_length=1, max_length=64),
+    inverse: bool = Query(False),
+    *,
+    db: Db,
+) -> ApiResponse[CalendarRespondResponse]:
+    """Read the exact retained response or its server-bound inverse, without dispatch.
+
+    The original identity survives a lost undo reply and removal of the inbox
+    row. A reservation without a prepared approval is unavailable, never an
+    applied receipt or permission to reserve another inverse.
+    """
+    payload, receipt, decision = await _read_response_command(db, command_id, source_butler)
+    if inverse:
+        original_id = command_id
+        try:
+            command_id = UUID(payload["inverse_claim"])
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise HTTPException(409, "response_inverse_unavailable") from None
+        payload, receipt, decision = await _read_response_command(db, command_id, source_butler)
+        if _normalize_json_object(payload.get("command")).get("inverse_of") != str(original_id):
+            raise HTTPException(409, "response_inverse_binding_unverified")
+    status = receipt.get("status")
+    reason = receipt.get("reason")
+    if not status:
+        if payload.get("phase") in {"egress_started", "uncertain"}:
+            status = "uncertain"
+        elif decision in {"rejected", "expired"}:
+            status, reason = "rejected", "response_approval_" + decision
+        elif decision in {"pending", "approved"}:
+            status = "pending_approval" if decision == "pending" else "approved"
+        else:
+            raise HTTPException(503, "response_receipt_unavailable")
+    return ApiResponse(
+        data=CalendarRespondResponse(
+            status=status,
+            command_id=command_id,
+            approval_id=command_id,
+            source_butler=source_butler,
+            reason=reason,
+            projection_available=receipt.get("projection_available") is True,
+        )
+    )
+
+
+async def _respond_through_approval(
+    *,
+    arguments: dict[str, Any],
+    butler_name: str,
+    http_request: Request,
+    mgr: MCPClientManager,
+    db: DatabaseManager,
+) -> CalendarRespondResponse:
+    from butlers.api.audit_emit import authenticated_principal
+    from butlers.api.routers.approvals import (
+        _decision_actor_id,
+        _dispatch_approved_action_outcome,
+        approve_owning_action,
+    )
+    from butlers.modules.calendar_response import _digest
+
+    authenticated_principal()
+    result = await _call_mcp_tool(
+        mgr,
+        butler_name,
+        "calendar_respond",
+        {
+            **arguments,
+            "_why": "Owner requested this exact invitation response",
+            "_evidence": [],
+            "_blast_radius": "self",
+            "_reversibility": "compensable",
+        },
+        closed_error=True,
+    )
+    if result.get("error"):
+        raise HTTPException(status_code=409, detail=result["error"])
+    try:
+        command_id = UUID(result["command_id"])
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(status_code=503, detail="response_command_unavailable") from None
+    pool = db.pool(butler_name)
+    command_row = await pool.fetchrow(
+        "SELECT action_payload,action_result FROM calendar_action_log WHERE id=$1", command_id
+    )
+    payload = _normalize_json_object(command_row["action_payload"]) if command_row else {}
+    if payload.get("request_digest") != _digest(arguments):
+        raise HTTPException(status_code=409, detail="response_command_binding_changed")
+    command = _normalize_json_object(payload.get("command"))
+    if command.get("owner") != butler_name:
+        raise HTTPException(status_code=409, detail="response_command_owner_changed")
+    if result["status"] in {"pending_approval", "approved"}:
+        pending = await pool.fetchrow(
+            "SELECT tool_name,tool_args,status FROM pending_actions WHERE id=$1", command_id
+        )
+        tool_args = _normalize_json_object(pending["tool_args"]) if pending else {}
+        if (
+            pending is None
+            or pending["tool_name"] != "calendar_respond"
+            or tool_args.get("_command_id") != str(command_id)
+            or tool_args.get("_command_digest") != payload.get("digest")
+        ):
+            raise HTTPException(status_code=409, detail="response_approval_binding_changed")
+        if pending["status"] == "pending":
+            decision = await approve_owning_action(
+                parsed_id=command_id,
+                actor_id=_decision_actor_id(None, callback_authenticated=False),
+                edits=None,
+                action_butler=butler_name,
+                target_pool=pool,
+                db_mgr=db,
+                mcp_mgr=mgr,
+                expected_tool_args=tool_args,
+            )
+            result = {
+                "status": "approved" if not decision.data.dispatched else "failed",
+                "command_id": str(command_id),
+            }
+        elif pending["status"] in {"rejected", "expired"}:
+            result = {"status": "rejected", "command_id": str(command_id)}
+        else:
+            if pending["status"] == "approved":
+                # Recovery dispatches only this existing, exact owning command.
+                # The executor/committed attempt fence prevents repeated egress.
+                await _dispatch_approved_action_outcome(
+                    mgr,
+                    db,
+                    pool,
+                    str(command_id),
+                    "calendar_respond",
+                    tool_args,
+                    butler_name,
+                )
+            result = {"status": "approved", "command_id": str(command_id)}
+    # Dispatch/executor result is not provider attribution. Only the owning
+    # durable command receipt, or committed start fence, determines the effect.
+    current = await pool.fetchrow(
+        "SELECT action_payload,action_result FROM calendar_action_log WHERE id=$1", command_id
+    )
+    receipt = _normalize_json_object(current["action_result"]) if current else {}
+    current_payload = _normalize_json_object(current["action_payload"]) if current else {}
+    phase = current_payload.get("phase")
+    status = receipt.get("status") or (
+        "uncertain" if phase in {"egress_started", "uncertain"} else result["status"]
+    )
+    return CalendarRespondResponse(
+        status=status,
+        command_id=command_id,
+        approval_id=command_id,
+        source_butler=butler_name,
+        reason=receipt.get("reason") or result.get("reason"),
+        projection_available=receipt.get("projection_available") is True,
+    )
+
+
+@router.post("/respond", response_model=ApiResponse[CalendarRespondResponse])
+async def respond_to_invitation(
+    body: CalendarRespondRequest,
+    http_request: Request,
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+    *,
+    db: Db,
+) -> ApiResponse[CalendarRespondResponse]:
+    """Compose an authenticated owner decision with the exact owning gated tool."""
+    targets = db.configured_butlers_with_module("calendar")
+    if targets is None:
+        raise HTTPException(status_code=503, detail="response_owner_census_unavailable")
+    owners, failed = await db.fan_out_with_status(
+        "SELECT id FROM calendar_event_instances WHERE id=$1",
+        (body.entry_id,),
+        butler_names=targets,
+    )
+    matches = [name for name, rows in owners.items() if rows]
+    if failed:
+        raise HTTPException(status_code=503, detail="response_owner_lookup_degraded")
+    if len(matches) != 1:
+        raise HTTPException(status_code=409, detail="response_owner_unverified")
+    return ApiResponse(
+        data=await _respond_through_approval(
+            arguments=body.model_dump(mode="json"),
+            butler_name=matches[0],
+            http_request=http_request,
+            mgr=mgr,
+            db=db,
+        )
+    )
+
+
 @router.post("/user-events", response_model=ApiResponse[CalendarWorkspaceMutationResponse])
 async def mutate_user_event(
     body: CalendarWorkspaceUserMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceMutationResponse]:
-    """Create, update, or delete a user-view provider event through calendar MCP.
+    """Create a user-view provider event (quick-add confirmation) through calendar MCP.
 
-    Side effects: dispatches the owning butler's calendar tool and records the
-    workspace mutation audit entry. Idempotency: forwarded ``request_id`` keys
-    replay handling in the calendar module. Failure: request validation rejects
-    an ambiguous people clear with HTTP 422; MCP failures retain the existing
-    HTTP error behavior.
+    Side effects: dispatches the owning butler's ``calendar_create_event`` tool
+    and records the workspace mutation audit entry. Idempotency: forwarded
+    ``request_id`` keys replay handling in the calendar module. Failure: request
+    validation rejects any action other than ``create`` with HTTP 422; MCP
+    failures retain the existing HTTP error behavior.
     """
-    tool_name = {
-        "create": "calendar_create_event",
-        "update": "calendar_update_event",
-        "delete": "calendar_delete_event",
-    }[body.action]
+    tool_name = "calendar_create_event"
 
     arguments = dict(body.payload)
     if body.request_id is not None:
@@ -2567,7 +2797,8 @@ def _result_indicates_not_found(result: dict[str, Any]) -> bool:
 async def mutate_butler_event(
     body: CalendarWorkspaceButlerMutationRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarWorkspaceMutationResponse]:
     """Create/update/delete/toggle/dismiss/snooze butler-view events via calendar MCP tools.
 
@@ -2740,7 +2971,8 @@ async def accept_proposal(
     proposal_id: UUID,
     body: CalendarProposalAcceptRequest | None = Body(default=None),
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarProposalActionResponse]:
     """Accept a calendar proposal — create the event on the Butlers subcalendar.
 
@@ -2868,7 +3100,8 @@ async def accept_proposal(
 )
 async def dismiss_proposal(
     proposal_id: UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarProposalActionResponse]:
     """Dismiss a calendar proposal — discard it with no provider write.
 
@@ -2934,110 +3167,6 @@ async def dismiss_proposal(
 
 
 # ---------------------------------------------------------------------------
-# Find time — POST /api/calendar/workspace/find-time
-# ---------------------------------------------------------------------------
-
-
-@router.post("/find-time", response_model=ApiResponse[CalendarWorkspaceFindTimeResponse])
-async def find_time(
-    body: CalendarWorkspaceFindTimeRequest,
-    mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CalendarWorkspaceFindTimeResponse]:
-    """Return ranked open time slots for the workspace "Find time" panel.
-
-    Read-only: dispatches the ``calendar_find_free_slots`` MCP tool, which queries
-    free/busy and ranks open slots honoring the owner's scheduling preferences. No
-    event is created here — selecting a slot drives a separate create call.
-    """
-    arguments: dict[str, Any] = {
-        "duration_minutes": body.duration_minutes,
-        "search_start": body.search_start.isoformat(),
-        "search_end": body.search_end.isoformat(),
-        "limit": body.limit,
-    }
-    if body.calendar_ids:
-        arguments["calendar_ids"] = body.calendar_ids
-    if body.constraints is not None:
-        arguments["constraints"] = body.constraints.model_dump(exclude_none=True)
-
-    summary = {"duration_minutes": body.duration_minutes, "limit": body.limit}
-    try:
-        result = await _call_mcp_tool(mgr, body.butler_name, "calendar_find_free_slots", arguments)
-
-        slots: list[CalendarSuggestedSlot] = []
-        raw_slots = result.get("slots")
-        if isinstance(raw_slots, list):
-            for slot in raw_slots:
-                if not isinstance(slot, dict):
-                    continue
-                try:
-                    slots.append(CalendarSuggestedSlot.model_validate(slot))
-                except Exception:
-                    logger.debug("Skipping malformed slot: %r", slot)
-
-        raw_ids = result.get("calendar_ids")
-        calendar_ids = (
-            [str(c) for c in raw_ids]
-            if isinstance(raw_ids, list)
-            else list(body.calendar_ids or [])
-        )
-
-        if result.get("status") == "error":
-            # Calendar tools fail closed with a structured result so the MCP
-            # caller can diagnose the provider failure. The dashboard owns a
-            # content-blind availability contract: never forward the raw
-            # provider/error fields into the owner-facing response.
-            await log_audit_entry(
-                db,
-                body.butler_name,
-                "calendar.workspace.find_time",
-                summary,
-                result="error",
-                error="MCP call failed",
-            )
-            return ApiResponse[CalendarWorkspaceFindTimeResponse](
-                data=CalendarWorkspaceFindTimeResponse(
-                    slots=[],
-                    duration_minutes=body.duration_minutes,
-                    calendar_ids=calendar_ids,
-                    available=False,
-                    reason=_FIND_TIME_UNAVAILABLE_REASON,
-                )
-            )
-
-        response_payload = CalendarWorkspaceFindTimeResponse(
-            slots=slots,
-            duration_minutes=body.duration_minutes,
-            calendar_ids=calendar_ids,
-            available=True,
-        )
-        await log_audit_entry(db, body.butler_name, "calendar.workspace.find_time", summary)
-        return ApiResponse[CalendarWorkspaceFindTimeResponse](data=response_payload)
-    except HTTPException:
-        # Fail-open + explicit-degraded: a free/busy lookup that cannot reach the
-        # butler must NOT 500 the panel. Return an honest degraded envelope so the
-        # UI renders "free/busy unavailable" instead of a misleading "no slots".
-        await log_audit_entry(
-            db,
-            body.butler_name,
-            "calendar.workspace.find_time",
-            summary,
-            result="error",
-            error="MCP call failed",
-        )
-        return ApiResponse[CalendarWorkspaceFindTimeResponse](
-            data=CalendarWorkspaceFindTimeResponse(
-                slots=[],
-                duration_minutes=body.duration_minutes,
-                calendar_ids=list(body.calendar_ids or []),
-                available=False,
-                reason=_FIND_TIME_UNAVAILABLE_REASON,
-            )
-        )
-
-
-# ---------------------------------------------------------------------------
 # Audit trail read — GET /api/calendar/workspace/audit
 # ---------------------------------------------------------------------------
 
@@ -3091,7 +3220,8 @@ async def get_calendar_audit(
     limit: int = Query(50, ge=1, le=200, description="Max entries to return"),
     offset: int = Query(0, ge=0, description="Number of entries to skip"),
     butler: str | None = Query(None, description="Restrict to a single butler schema"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarAuditResponse]:
     """Return paginated calendar mutation audit log entries.
 
@@ -3161,404 +3291,11 @@ async def get_calendar_audit(
     return ApiResponse[CalendarAuditResponse](data=data)
 
 
-# ---------------------------------------------------------------------------
-# Mutation undo — POST /api/calendar/workspace/undo/{action_id}
-# ---------------------------------------------------------------------------
-
-# Only user-lane mutations carry a reconstructable inverse; map each logged
-# action_type to the existing calendar MCP tool that reverses it.
-_UNDO_INVERSE_TOOL = {
-    "workspace_user_update": "calendar_update_event",
-    "workspace_user_delete": "calendar_create_event",
-    "workspace_user_create": "calendar_delete_event",
-}
-
-# Per-inverse-tool dispatch statuses that mean the original action is now
-# reversed. For an undo-of-create delete, "not_found" means the event is already
-# gone — effectively undone. For an update-restore, only "updated" counts (a
-# "not_found" there means the event vanished and the restore did NOT happen, so
-# the action stays undoable).
-_UNDO_SUCCESS_STATUSES = {
-    "calendar_update_event": frozenset({"updated"}),
-    "calendar_create_event": frozenset({"created"}),
-    "calendar_delete_event": frozenset({"deleted", "not_found"}),
-}
-
-_UNDO_LOOKUP_SQL = """
-    SELECT
-        id,
-        action_type,
-        action_status,
-        origin_ref,
-        action_payload,
-        action_result
-    FROM calendar_action_log
-    WHERE id = $1
-"""
-
-
-def _undo_update_args(pre_state: dict[str, Any]) -> dict[str, Any]:
-    """Build inverse calendar_update_event args that restore the pre-state."""
-    arguments: dict[str, Any] = {
-        "event_id": pre_state.get("event_id"),
-        "title": pre_state.get("title"),
-        "start_at": pre_state.get("start_at"),
-        "end_at": pre_state.get("end_at"),
-        "timezone": pre_state.get("timezone"),
-        "all_day": pre_state.get("all_day"),
-        "description": pre_state.get("description"),
-        "body": pre_state.get("body"),
-        "location": pre_state.get("location"),
-        "attendees": pre_state.get("attendees"),
-        "recurrence_rule": pre_state.get("recurrence_rule"),
-        "color_id": pre_state.get("color_id"),
-        "calendar_id": pre_state.get("calendar_id"),
-    }
-    entity_ids = pre_state.get("entity_ids")
-    if isinstance(entity_ids, list):
-        arguments["entity_ids"] = entity_ids
-        if not entity_ids:
-            arguments["clear_entity_ids"] = True
-    return arguments
-
-
-def _undo_create_args(pre_state: dict[str, Any]) -> dict[str, Any]:
-    """Build inverse calendar_create_event args that recreate the deleted event."""
-    arguments: dict[str, Any] = {
-        "title": pre_state.get("title"),
-        "start_at": pre_state.get("start_at"),
-        "end_at": pre_state.get("end_at"),
-        "timezone": pre_state.get("timezone"),
-        "all_day": pre_state.get("all_day"),
-        "description": pre_state.get("description"),
-        "body": pre_state.get("body"),
-        "location": pre_state.get("location"),
-        "attendees": pre_state.get("attendees"),
-        "recurrence_rule": pre_state.get("recurrence_rule"),
-        "color_id": pre_state.get("color_id"),
-        "calendar_id": pre_state.get("calendar_id"),
-    }
-    entity_ids = pre_state.get("entity_ids")
-    if isinstance(entity_ids, list):
-        arguments["entity_ids"] = entity_ids
-    return arguments
-
-
-def _created_event_id(action_result: dict[str, Any], origin_ref: object) -> str | None:
-    """Resolve the created event's provider id for an undo-of-create delete."""
-    event = action_result.get("event")
-    if isinstance(event, dict):
-        candidate = event.get("event_id")
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
-    if isinstance(origin_ref, str) and origin_ref.strip():
-        return origin_ref.strip()
-    return None
-
-
-async def _find_action_owner(
-    db: DatabaseManager, action_id: UUID
-) -> tuple[tuple[str, dict[str, Any]] | None, list[str]]:
-    """Locate the butler schema and row owning *action_id*.
-
-    Action ids are globally unique UUIDs, so the first calendar butler with a
-    matching ``calendar_action_log`` row owns it.
-
-    Returns ``(owner_or_none, failed_butlers)``. When ``owner`` is ``None`` but
-    ``failed_butlers`` is non-empty the lookup was inconclusive — the owning
-    schema may simply have been unreachable — so the caller must NOT report a
-    definitive 404 (that would fabricate "this action does not exist" from a
-    transient source failure).
-    """
-    targets = db.butlers_with_module("calendar")
-    results, failed = await db.fan_out_with_status(
-        _UNDO_LOOKUP_SQL, (action_id,), butler_names=targets
-    )
-    for butler_name, rows in results.items():
-        if rows:
-            return (butler_name, dict(rows[0])), failed
-    return None, failed
-
-
-@router.post("/undo/{action_id}", response_model=ApiResponse[CalendarUndoResponse])
-async def undo_calendar_mutation(
-    action_id: UUID,
-    mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CalendarUndoResponse]:
-    """Reverse a single previously-applied calendar mutation.
-
-    Synthesizes the inverse mutation from the logged ``calendar_action_log``
-    row (``action_payload`` plus the captured pre-mutation ``pre_state`` in
-    ``action_result``) and dispatches it through the existing calendar MCP
-    tools with a freshly generated ``request_id`` — no new MCP tool, no
-    provider call from the API layer itself.
-
-    Fail-fast guards:
-    - unknown ``action_id`` (all calendar sources answered, no match) → 404
-    - ``action_id`` unresolved because a calendar source was unreachable → 503
-    - status not ``applied`` (pending/failed/noop) → 409
-    - already undone → 409
-    - applied but missing/expired pre-state (or unreversible type) → 422
-    """
-    owner, lookup_failed = await _find_action_owner(db, action_id)
-    if owner is None:
-        if lookup_failed:
-            # Inconclusive: a schema that could own this action was unreachable.
-            # Return 503 (retryable) rather than a fabricated 404 "does not exist".
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Could not confirm the calendar action exists — "
-                    f"{len(lookup_failed)} calendar source(s) unavailable; retry shortly."
-                ),
-            )
-        raise HTTPException(status_code=404, detail=f"Unknown calendar action: {action_id}")
-    butler_name, row = owner
-
-    action_type = str(row["action_type"])
-    action_status = str(row["action_status"])
-    raw_action_result = row["action_result"]
-    action_result = reconstruct_action_result(raw_action_result)
-
-    if isinstance(raw_action_result, list):
-        # Legacy corrupted row (bu-x92jw double-encoding bug): heal it back to
-        # a proper jsonb object *before* the undo guards below run, so the
-        # SQL-level ``? 'undo'`` check in the atomic claim UPDATE (and any
-        # other action_result consumer) sees a correct object again. Guarded
-        # on jsonb_typeof so this stays idempotent under a concurrent repair
-        # racing the same row: only the first write actually lands, a racing
-        # repair's WHERE clause matches zero rows.
-        await db.pool(butler_name).execute(
-            """
-            UPDATE calendar_action_log
-            SET action_result = $2,
-                updated_at = now()
-            WHERE id = $1
-              AND jsonb_typeof(action_result) = 'array'
-            """,
-            action_id,
-            action_result,
-        )
-
-    if action_status != "applied":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Action {action_id} has status '{action_status}'; "
-                "only an 'applied' mutation can be undone."
-            ),
-        )
-
-    if isinstance(action_result.get("undo"), dict):
-        raise HTTPException(
-            status_code=409,
-            detail=f"Action {action_id} was already undone.",
-        )
-
-    inverse_tool = _UNDO_INVERSE_TOOL.get(action_type)
-    if inverse_tool is None:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "action_id": str(action_id),
-                "action_type": action_type,
-                "reason": "Action type has no reconstructable inverse mutation.",
-            },
-        )
-
-    pre_state_raw = action_result.get("pre_state")
-    pre_state = pre_state_raw if isinstance(pre_state_raw, dict) else None
-
-    if action_type == "workspace_user_create":
-        event_id = _created_event_id(action_result, row["origin_ref"])
-        if event_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "action_id": str(action_id),
-                    "action_type": action_type,
-                    "reason": "Created event id is unavailable; cannot synthesize delete.",
-                },
-            )
-        # The created event's home calendar can live on the pre-state (absent for
-        # creates), the create result top-level, or the original action payload.
-        payload = _normalize_json_object(row["action_payload"])
-        calendar_id = None
-        for candidate in (
-            pre_state.get("calendar_id") if pre_state else None,
-            action_result.get("calendar_id"),
-            payload.get("calendar_id"),
-        ):
-            if isinstance(candidate, str) and candidate.strip():
-                calendar_id = candidate.strip()
-                break
-        arguments: dict[str, Any] = {"event_id": event_id}
-        if calendar_id:
-            arguments["calendar_id"] = calendar_id
-    else:
-        if pre_state is None:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "action_id": str(action_id),
-                    "action_type": action_type,
-                    "reason": (
-                        "Captured pre-state is missing or expired; cannot reconstruct inverse."
-                    ),
-                },
-            )
-        arguments = (
-            _undo_update_args(pre_state)
-            if action_type == "workspace_user_update"
-            else _undo_create_args(pre_state)
-        )
-
-    request_id = f"undo-{uuid4().hex}"
-    arguments["request_id"] = request_id
-
-    summary = {
-        "undo_of": str(action_id),
-        "action_type": action_type,
-        "inverse_tool": inverse_tool,
-        "request_id": request_id,
-    }
-
-    # Atomically claim the undo BEFORE dispatching the inverse mutation. The
-    # earlier ``action_result.undo`` read (line ~2524) is only a fast-path
-    # check — it is racy because the read and the marker write are not a single
-    # operation, so two concurrent undos of the same action could both pass it
-    # and dispatch the inverse twice (e.g. recreate a deleted event twice).
-    #
-    # This guarded conditional UPDATE sets a provisional marker *only when no
-    # ``undo`` marker exists yet*. Under concurrent undo exactly one caller's
-    # UPDATE matches a row (``RETURNING id`` is non-null) and wins the claim;
-    # every other caller matches zero rows and falls through to the idempotent
-    # already-undone 409 WITHOUT a second dispatch.
-    #
-    # Bind the marker as a plain dict, NOT a json.dumps() string cast to
-    # ``::jsonb``: every asyncpg pool in this codebase registers
-    # register_jsonb_codec() (src/butlers/db.py), whose encoder expects a
-    # Python object and calls json.dumps() on it itself. Passing an
-    # already-serialized string double-encodes the value into a jsonb-typed
-    # STRING instead of an OBJECT, and Postgres's ``||`` between an object and
-    # a scalar coerces both operands to arrays -- corrupting action_result and
-    # defeating the ``? 'undo'`` guard below (bu-x92jw). No ``::jsonb`` cast is
-    # needed either: Postgres infers the parameter's type as jsonb from the
-    # ``||`` operator context, matching the same concat pattern used
-    # elsewhere in this codebase (e.g. api/routers/memory.py, modules/calendar.py).
-    provisional_marker = {
-        "undo": {
-            "status": "pending",
-            "request_id": request_id,
-            "inverse_tool": inverse_tool,
-        }
-    }
-    claimed = await db.pool(butler_name).fetchval(
-        """
-        UPDATE calendar_action_log
-        SET action_result = COALESCE(action_result, '{}'::jsonb) || $2,
-            updated_at = now()
-        WHERE id = $1
-          AND NOT (COALESCE(action_result, '{}'::jsonb) ? 'undo')
-        RETURNING id
-        """,
-        action_id,
-        provisional_marker,
-    )
-    if claimed is None:
-        # Lost the race (or already undone between the fast-path read and here):
-        # return the idempotent already-undone response, never a second inverse.
-        raise HTTPException(
-            status_code=409,
-            detail=f"Action {action_id} was already undone.",
-        )
-
-    async def _release_claim() -> None:
-        """Drop the provisional marker so the action stays undoable after a
-        failed or no-op inverse dispatch (preserves the original contract that
-        an unreversed action remains undoable)."""
-        try:
-            await db.pool(butler_name).execute(
-                """
-                UPDATE calendar_action_log
-                SET action_result = action_result - 'undo',
-                    updated_at = now()
-                WHERE id = $1
-                """,
-                action_id,
-            )
-        except Exception:  # pragma: no cover - defensive
-            logger.warning("Failed to release undo claim for action %s", action_id, exc_info=True)
-
-    try:
-        mutation_result = await _call_mcp_tool(mgr, butler_name, inverse_tool, arguments)
-    except HTTPException:
-        # The inverse never dispatched successfully — release the claim so the
-        # action can be retried, mirroring the pre-claim "stays undoable" path.
-        await _release_claim()
-        await log_audit_entry(
-            db,
-            butler_name,
-            "calendar.workspace.undo",
-            summary,
-            result="error",
-            error="MCP call failed",
-        )
-        raise
-
-    undone = str(mutation_result.get("status")) in _UNDO_SUCCESS_STATUSES[inverse_tool]
-    if undone:
-        # Finalize the provisional marker with the dispatch outcome so a repeated
-        # undo fails fast (409). jsonb concat replaces the top-level marker.
-        # Bind the marker as a plain dict (see the provisional_marker comment
-        # above for why -- no json.dumps, no ::jsonb cast; bu-x92jw).
-        marker = {
-            "undo": {
-                "request_id": request_id,
-                "inverse_tool": inverse_tool,
-                "status": mutation_result.get("status"),
-            }
-        }
-        try:
-            await db.pool(butler_name).execute(
-                """
-                UPDATE calendar_action_log
-                SET action_result = COALESCE(action_result, '{}'::jsonb) || $2,
-                    updated_at = now()
-                WHERE id = $1
-                """,
-                action_id,
-                marker,
-            )
-        except Exception:  # pragma: no cover - defensive; undo already dispatched
-            logger.warning(
-                "Undo dispatched for action %s but marker write failed", action_id, exc_info=True
-            )
-    else:
-        # The inverse did not take effect (e.g. update-restore returned
-        # not_found): release the claim so the action stays undoable.
-        await _release_claim()
-
-    await log_audit_entry(db, butler_name, "calendar.workspace.undo", summary)
-
-    data = CalendarUndoResponse(
-        action_id=action_id,
-        action_type=action_type,
-        inverse_tool=inverse_tool,
-        request_id=request_id,
-        undone=undone,
-        result=mutation_result,
-    )
-    return ApiResponse[CalendarUndoResponse](data=data)
-
-
 # ===========================================================================
 # Accounts control plane + per-calendar source toggle
 #
 # These endpoints live under /api/calendar (NOT /api/calendar/workspace) so a
-# separate router is exported. ``deps.wire_db_dependencies`` overrides the
-# shared ``_get_db_manager`` stub for this module, which both routers reference.
+# separate router is exported. Both routers use the public ``Db`` dependency.
 # ===========================================================================
 
 accounts_router = APIRouter(prefix="/api/calendar", tags=["calendar", "accounts"])
@@ -3672,7 +3409,8 @@ def _build_account_health(heartbeat: dict[str, Any] | None) -> CalendarAccountHe
 
 @accounts_router.get("/accounts", response_model=ApiResponse[CalendarAccountsResponse])
 async def list_calendar_accounts(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarAccountsResponse]:
     """List connected Google accounts joined with Google Calendar connector health.
 
@@ -3720,7 +3458,8 @@ async def list_calendar_accounts(
 @accounts_router.post("/sources", response_model=ApiResponse[CalendarSourceToggleResponse])
 async def toggle_calendar_source(
     request: CalendarSourceToggleRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CalendarSourceToggleResponse]:
     """Enable or disable a single calendar as a sync source.
 
@@ -3769,491 +3508,5 @@ async def toggle_calendar_source(
             source_id=row["id"],
             calendar_id=row["calendar_id"],
             enabled=request.enabled,
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
-# ICS export (data portability — owner sovereignty / anti-lock-in)
-# ---------------------------------------------------------------------------
-
-export_router = APIRouter(prefix="/api/calendar", tags=["calendar", "export"])
-
-# PRODID identifying Butlers as the generating product (RFC 5545 §3.7.3).
-_ICS_PRODID = "-//Butlers//Calendar Export//EN"
-
-
-def _entry_to_vevent(entry: UnifiedCalendarEntry, *, dtstamp: datetime) -> icalendar.Event:
-    """Project one :class:`UnifiedCalendarEntry` into an iCalendar VEVENT.
-
-    The ``SUMMARY`` is the entry title **verbatim** — the ``BUTLER:`` prefix on
-    butler-authored events is preserved so the export is a faithful, honest copy
-    of what the workspace shows. All-day entries emit DATE-valued DTSTART/DTEND;
-    timed entries emit the tz-aware datetimes (serialized as UTC ``Z`` instants).
-    """
-    event = icalendar.Event()
-    # UID is stable per workspace instance, domain-suffixed for global uniqueness
-    # so re-exports update rather than duplicate the event in the target client.
-    event.add("uid", f"{entry.entry_id}@butlers")
-    event.add("summary", entry.title)
-    if entry.all_day:
-        event.add("dtstart", entry.start_at.date())
-        event.add("dtend", entry.end_at.date())
-    else:
-        event.add("dtstart", entry.start_at)
-        event.add("dtend", entry.end_at)
-    event.add("dtstamp", dtstamp)
-
-    metadata = entry.metadata or {}
-    description = metadata.get("description")
-    if isinstance(description, str) and description.strip():
-        event.add("description", description)
-    location = metadata.get("location")
-    if isinstance(location, str) and location.strip():
-        event.add("location", location)
-    if entry.status == "cancelled":
-        event.add("status", "CANCELLED")
-    return event
-
-
-def _build_calendar_ics(entries: list[UnifiedCalendarEntry], *, dtstamp: datetime) -> bytes:
-    """Build a valid VCALENDAR byte stream from workspace entries."""
-    cal = icalendar.Calendar()
-    cal.add("prodid", _ICS_PRODID)
-    cal.add("version", "2.0")
-    cal.add("calscale", "GREGORIAN")
-    cal.add("method", "PUBLISH")
-    for entry in entries:
-        cal.add_component(_entry_to_vevent(entry, dtstamp=dtstamp))
-    return cal.to_ical()
-
-
-@export_router.get("/export/ics")
-async def export_calendar_ics(
-    view: str = Query("user", pattern="^(user|butler)$"),
-    start: datetime = Query(..., description="Inclusive ISO-8601 range start"),
-    end: datetime = Query(..., description="Exclusive ISO-8601 range end"),
-    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
-    sources: list[str] | None = Query(None, description="Optional source_key filters"),
-    status: str | None = Query(None, description="Optional computed-status facet"),
-    source_type: str | None = Query(None, description="Optional computed source_type facet"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> StreamingResponse:
-    """Stream the workspace entries for a range as a downloadable ICS file.
-
-    Read-only data-portability export (owner sovereignty / anti-lock-in): no
-    provider write, no LLM session. Reuses the same workspace projection and
-    ``view`` / ``butlers`` / ``sources`` / ``status`` / ``source_type`` filters
-    as ``GET /api/calendar/workspace`` so the export matches what the user sees,
-    and preserves the ``BUTLER:`` title prefix verbatim on butler-authored
-    events.
-
-    For a live re-rendering feed an external calendar app can subscribe to (so
-    it re-fetches on its own schedule), see ``GET /api/calendar/subscribe.ics``.
-    """
-    if end <= start:
-        raise HTTPException(status_code=400, detail="end must be after start")
-    if end - start > _WORKSPACE_MAX_RANGE:
-        raise HTTPException(status_code=400, detail="Requested range exceeds 90 days")
-    if status is not None and status not in _WORKSPACE_STATUS_FACETS:
-        raise HTTPException(status_code=400, detail=f"Unknown status facet: {status}")
-    if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
-        raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
-
-    ics_bytes = await _render_workspace_ics(
-        db,
-        view=view,
-        start=start,
-        end=end,
-        butlers=butlers,
-        sources=sources,
-        status=status,
-        source_type=source_type,
-    )
-    filename = f"butlers-calendar-{start.date().isoformat()}-{end.date().isoformat()}.ics"
-    return StreamingResponse(
-        iter((ics_bytes,)),
-        media_type="text/calendar",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-async def _render_workspace_ics(
-    db: DatabaseManager,
-    *,
-    view: str,
-    start: datetime,
-    end: datetime,
-    butlers: list[str] | None,
-    sources: list[str] | None,
-    status: str | None,
-    source_type: str | None,
-) -> bytes:
-    """Fetch the deduped workspace rows for a range and render them as ICS bytes.
-
-    Shared by the one-shot export and the live subscribe feed. Reuses the
-    workspace read/projection unbounded (no keyset pagination) — both surfaces
-    want every entry in the range, not a single page. Timestamps stay in their
-    source instant (``display_tz=None`` → UTC), which ICS serializes as ``Z``.
-    """
-    # The ICS feed is a raw calendar serialization with no envelope to carry a
-    # degraded flag, so a partial fan-out failure is only logged (below), not
-    # surfaced per-source; the JSON workspace read owns the honest signal.
-    workspace_rows, ics_failed = await _fetch_workspace_rows(
-        db,
-        view=view,
-        start=start,
-        end=end,
-        butlers=butlers,
-        sources=sources,
-        status=status,
-        source_type=source_type,
-    )
-    if ics_failed:
-        logger.warning(
-            "workspace ICS render: %d calendar source(s) failed the events fan-out "
-            "(%s); the feed may be missing their events",
-            len(ics_failed),
-            ", ".join(sorted(ics_failed)),
-        )
-    entries: list[UnifiedCalendarEntry] = []
-    for row in workspace_rows:
-        try:
-            entries.append(_normalize_entry(row, view=view, display_tz=None))
-        except ValueError:
-            continue
-    return _build_calendar_ics(entries, dtstamp=datetime.now(UTC))
-
-
-# Default rolling window for the subscribe feed, measured from "now": a calendar
-# app that subscribes wants recent history plus near-future entries on each
-# poll. Kept within the 90-day workspace cap (30 + 60 == 90).
-_SUBSCRIBE_PAST = timedelta(days=30)
-_SUBSCRIBE_FUTURE = timedelta(days=60)
-
-
-@export_router.get("/subscribe.ics")
-async def subscribe_calendar_ics(
-    view: str = Query("user", pattern="^(user|butler)$"),
-    butlers: list[str] | None = Query(None, description="Optional butler-name filters"),
-    sources: list[str] | None = Query(None, description="Optional source_key filters"),
-    status: str | None = Query(None, description="Optional computed-status facet"),
-    source_type: str | None = Query(None, description="Optional computed source_type facet"),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> StreamingResponse:
-    """Read-only live ICS feed for external calendar-app subscription (webcal).
-
-    A calendar app subscribes to this stable URL (``webcal://…/subscribe.ics``)
-    and re-fetches on its own schedule; each fetch **re-renders the current
-    workspace entries** over a rolling ``now - 30d … now + 60d`` window, so the
-    subscriber always sees the live state. Same read-only projection, filters,
-    and ``BUTLER:`` prefix preservation as the export — no provider write, no
-    LLM session.
-
-    Served behind the same network boundary (localhost + Tailscale) as every
-    other dashboard/calendar endpoint; it adds no new unauthenticated surface
-    and no per-feed token (see ``security.md`` — the trust boundary is
-    network-level, not app-key). ``Content-Disposition: inline`` so clients
-    treat it as a subscription feed, not a one-shot download.
-    """
-    if status is not None and status not in _WORKSPACE_STATUS_FACETS:
-        raise HTTPException(status_code=400, detail=f"Unknown status facet: {status}")
-    if source_type is not None and source_type not in _WORKSPACE_SOURCE_TYPE_FACETS:
-        raise HTTPException(status_code=400, detail=f"Unknown source_type facet: {source_type}")
-
-    now = datetime.now(UTC)
-    start = now - _SUBSCRIBE_PAST
-    end = now + _SUBSCRIBE_FUTURE
-    ics_bytes = await _render_workspace_ics(
-        db,
-        view=view,
-        start=start,
-        end=end,
-        butlers=butlers,
-        sources=sources,
-        status=status,
-        source_type=source_type,
-    )
-    return StreamingResponse(
-        iter((ics_bytes,)),
-        media_type="text/calendar",
-        headers={
-            "Content-Disposition": 'inline; filename="butlers-calendar.ics"',
-            # Discourage stale caching so the subscriber re-renders live state.
-            "Cache-Control": "no-cache, max-age=0",
-        },
-    )
-
-
-# Upper bound on VEVENTs accepted in one import — a guardrail against a
-# pathological upload, not a product limit. Surfaced as a 413 when exceeded.
-_ICS_IMPORT_MAX_EVENTS = 1000
-
-# Width of each dedup pre-fetch window for ``.ics`` import. A wide ``.ics``
-# (multi-month / multi-year span) is fetched in fixed-size time buckets rather
-# than one unbounded range query. The read-model's range filter overlaps each
-# window, and the windows tile the span contiguously, so the union of per-window
-# collapse keys is identical to a single full-span fetch — the dedup result is
-# unchanged, only the per-query span is bounded.
-_ICS_DEDUP_PREFETCH_WINDOW = timedelta(days=90)
-
-# Non-terminal windows are extended by this amount so a zero-duration existing
-# workspace event (ends_at == starts_at == T) that lands exactly on an internal
-# boundary is caught by the preceding window.  The DB overlap filter is
-# ``ends_at > window_start AND starts_at < window_end`` (strict inequalities),
-# so without the extension such an event satisfies neither ``T < T`` (window
-# ending at T) nor ``T > T`` (window starting at T) and would fall through both.
-_ICS_DEDUP_WINDOW_OVERLAP = timedelta(milliseconds=1)
-
-
-def _ics_dedup_windows(
-    range_start: datetime,
-    range_end: datetime,
-    *,
-    width: timedelta = _ICS_DEDUP_PREFETCH_WINDOW,
-) -> list[tuple[datetime, datetime]]:
-    """Tile ``[range_start, range_end)`` into fixed-width windows.
-
-    Each window is fetched separately so a very wide ``.ics`` span does not issue
-    one giant range query against the workspace. The windows tile the span
-    contiguously, so any event overlapping the full span overlaps at least one
-    window; the read-model uses the same overlap filter (``ends_at > start AND
-    starts_at < end``), so the union of per-window collapse keys is identical to
-    a single full-span fetch (an event straddling a boundary appears in both
-    adjacent windows but contributes the same key, which a set collapses).
-
-    Non-terminal window ends are extended by ``_ICS_DEDUP_WINDOW_OVERLAP`` (1 ms)
-    so that a zero-duration existing workspace event (``ends_at == starts_at == T``)
-    that lands exactly on an internal boundary is caught by the preceding window
-    instead of being dropped by both adjacent windows.  Window *starts* always
-    advance by exactly ``width``, so the extension never shifts later boundaries.
-    """
-    if width <= timedelta(0):
-        raise ValueError("dedup window width must be positive")
-    if range_end <= range_start:
-        return [(range_start, range_end)]
-    windows: list[tuple[datetime, datetime]] = []
-    cursor = range_start
-    while cursor < range_end:
-        nxt = min(cursor + width, range_end)
-        # Extend every non-terminal window end by 1 ms so a zero-duration event
-        # at exactly an internal boundary is caught by the preceding window.
-        # The terminal window keeps its exact range_end; callers rely on it.
-        win_end = nxt + _ICS_DEDUP_WINDOW_OVERLAP if nxt < range_end else nxt
-        windows.append((cursor, win_end))
-        cursor = nxt
-    return windows
-
-
-class _ParsedIcsEvent:
-    """A normalized VEVENT extracted from an uploaded ``.ics`` payload."""
-
-    __slots__ = ("title", "start_at", "end_at", "all_day", "description", "location")
-
-    def __init__(
-        self,
-        *,
-        title: str,
-        start_at: datetime,
-        end_at: datetime,
-        all_day: bool,
-        description: str | None,
-        location: str | None,
-    ) -> None:
-        self.title = title
-        self.start_at = start_at
-        self.end_at = end_at
-        self.all_day = all_day
-        self.description = description
-        self.location = location
-
-    @property
-    def collapse_key(self) -> tuple[str, int]:
-        """Same ``(title, starts_epoch)`` collapse key the read-model dedup uses.
-
-        Lets an imported event be matched against existing workspace entries with
-        :func:`_title_collapse_key`, so a re-import of the same ``.ics`` is a
-        no-op instead of creating duplicates.
-        """
-        return (self.title.strip().lower(), _starts_epoch_ms(self.start_at))
-
-
-def _coerce_ics_instant(value: object, *, all_day: bool) -> datetime | None:
-    """Coerce an icalendar DATE/DATE-TIME value into a tz-aware UTC datetime.
-
-    All-day DATE values anchor at UTC midnight so they share the start-instant
-    representation the workspace projection stores for all-day entries.
-    """
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
-    if isinstance(value, date):
-        return datetime(value.year, value.month, value.day, tzinfo=UTC)
-    return None
-
-
-def _parse_ics_events(raw: bytes) -> list[_ParsedIcsEvent]:
-    """Parse an uploaded ``.ics`` byte payload into normalized VEVENTs.
-
-    Skips VEVENTs missing a usable SUMMARY or DTSTART. A missing DTEND defaults
-    to the DTSTART (zero-length) so downstream creation always has both bounds.
-    Raises ``HTTPException(400)`` on a structurally invalid payload.
-    """
-    try:
-        cal = icalendar.Calendar.from_ical(raw)
-    except Exception as exc:  # icalendar raises ValueError subclasses on bad input
-        raise HTTPException(status_code=400, detail=f"Invalid ICS payload: {exc}") from exc
-
-    events: list[_ParsedIcsEvent] = []
-    for component in cal.walk("VEVENT"):
-        title = str(component.get("summary") or "").strip()
-        dtstart = component.get("dtstart")
-        if not title or dtstart is None:
-            continue
-        start_raw = getattr(dtstart, "dt", None)
-        all_day = isinstance(start_raw, date) and not isinstance(start_raw, datetime)
-        start_at = _coerce_ics_instant(start_raw, all_day=all_day)
-        if start_at is None:
-            continue
-
-        dtend = component.get("dtend")
-        end_raw = getattr(dtend, "dt", None) if dtend is not None else None
-        end_at = _coerce_ics_instant(end_raw, all_day=all_day) if end_raw is not None else None
-        if end_at is None or end_at < start_at:
-            end_at = start_at
-
-        description = component.get("description")
-        location = component.get("location")
-        events.append(
-            _ParsedIcsEvent(
-                title=title,
-                start_at=start_at,
-                end_at=end_at,
-                all_day=all_day,
-                description=str(description).strip() if description else None,
-                location=str(location).strip() if location else None,
-            )
-        )
-    return events
-
-
-@export_router.post("/import/ics", response_model=ApiResponse[CalendarIcsImportResponse])
-async def import_calendar_ics(
-    file: UploadFile = File(..., description="The .ics file to import"),
-    butler_name: str = Form(..., description="Calendar-enabled butler to import into"),
-    calendar_id: str | None = Form(None, description="Optional target calendar id"),
-    mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[CalendarIcsImportResponse]:
-    """Import an uploaded ``.ics`` into the user calendar, deduped against existing entries.
-
-    Each VEVENT is created through the blessed ``calendar_create_event`` MCP path
-    (same provider-write path as user-event creation) **only if** it is not
-    already present in the workspace. Deduplication reuses the read-model's
-    ``(title, starts_epoch)`` collapse key (:func:`_title_collapse_key`), so an
-    event that already exists — including every event on a re-import of the same
-    file — is skipped rather than duplicated. Duplicates within the uploaded file
-    itself are also collapsed.
-    """
-    butler_name = butler_name.strip()
-    if not butler_name:
-        raise HTTPException(status_code=400, detail="butler_name must be a non-empty string")
-
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="Uploaded .ics file is empty")
-
-    parsed = _parse_ics_events(raw)
-    if len(parsed) > _ICS_IMPORT_MAX_EVENTS:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Import exceeds the {_ICS_IMPORT_MAX_EVENTS}-event limit",
-        )
-
-    if not parsed:
-        return ApiResponse[CalendarIcsImportResponse](
-            data=CalendarIcsImportResponse(parsed=0, imported=0, skipped_duplicates=0)
-        )
-
-    # Fetch existing user-view entries spanning the imported events' range so we
-    # can dedup against the live workspace using the read-model collapse keys.
-    # A very wide ``.ics`` span is bucketed into fixed-size windows so we never
-    # issue one giant unbounded range query; the union of per-window collapse
-    # keys is identical to a single full-span fetch (see ``_ics_dedup_windows``).
-    range_start = min(event.start_at for event in parsed)
-    range_end = max(event.end_at for event in parsed) + timedelta(seconds=1)
-    seen_keys: set[tuple[str, int]] = set()
-    dedup_failed: set[str] = set()
-    for window_start, window_end in _ics_dedup_windows(range_start, range_end):
-        existing_rows, window_failed = await _fetch_workspace_rows(
-            db,
-            view="user",
-            start=window_start,
-            end=window_end,
-        )
-        dedup_failed.update(window_failed)
-        seen_keys.update(_title_collapse_key(row) for row in existing_rows)
-    if dedup_failed:
-        # A partial fan-out failure means the existing-event set used to dedup the
-        # import is incomplete, so a duplicate could slip through — log it rather
-        # than silently import over a half-read calendar.
-        logger.warning(
-            "ICS import dedup: %d calendar source(s) failed the events fan-out "
-            "(%s); imported events may duplicate existing ones from those sources",
-            len(dedup_failed),
-            ", ".join(sorted(dedup_failed)),
-        )
-
-    imported_events: list[CalendarIcsImportedEvent] = []
-    skipped = 0
-    for event in parsed:
-        key = event.collapse_key
-        if key in seen_keys:
-            skipped += 1
-            continue
-        # Mark seen up-front so duplicate VEVENTs within this same file collapse.
-        seen_keys.add(key)
-
-        arguments: dict[str, Any] = {
-            "title": event.title,
-            "all_day": event.all_day,
-        }
-        if event.all_day:
-            arguments["start_at"] = event.start_at.date().isoformat()
-            arguments["end_at"] = event.end_at.date().isoformat()
-        else:
-            arguments["start_at"] = event.start_at.isoformat()
-            arguments["end_at"] = event.end_at.isoformat()
-        if event.description:
-            arguments["description"] = event.description
-        if event.location:
-            arguments["location"] = event.location
-        if calendar_id:
-            arguments["calendar_id"] = calendar_id
-
-        await _call_mcp_tool(mgr, butler_name, "calendar_create_event", arguments)
-        imported_events.append(
-            CalendarIcsImportedEvent(
-                title=event.title,
-                start_at=event.start_at,
-                all_day=event.all_day,
-            )
-        )
-
-    await log_audit_entry(
-        db,
-        butler_name,
-        "calendar.workspace.import_ics",
-        {
-            "parsed": len(parsed),
-            "imported": len(imported_events),
-            "skipped_duplicates": skipped,
-        },
-    )
-    return ApiResponse[CalendarIcsImportResponse](
-        data=CalendarIcsImportResponse(
-            parsed=len(parsed),
-            imported=len(imported_events),
-            skipped_duplicates=skipped,
-            imported_events=imported_events,
         )
     )

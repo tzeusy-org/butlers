@@ -3,120 +3,6 @@
 ## Purpose
 Defines the test framework configuration, test categories and markers, test infrastructure (Docker PostgreSQL testcontainers, DB fixtures, resilient teardown), E2E staging harness architecture, E2E test domains (security, state, contracts, observability, approvals, resilience, flows, scheduling, performance, infrastructure), conftest fixture hierarchy, and test naming conventions.
 
-## Quick Start
-
-```bash
-# Install dependencies
-uv sync --dev
-
-# Run unit tests only (no Docker needed)
-uv run pytest tests/ --ignore=tests/e2e --ignore=tests/test_db.py --ignore=tests/test_migrations.py -q
-
-# Run integration tests (requires Docker)
-uv run pytest roster/ -q
-
-# Run E2E tests (requires Docker + ANTHROPIC_API_KEY + claude CLI)
-uv run pytest tests/e2e/ -v -s
-
-# Run a single E2E scenario by ID
-uv run pytest tests/e2e/test_scenario_runner.py -v -k "health-weight-log" -s
-
-# Run a single E2E flow module
-uv run pytest tests/e2e/test_health_flow.py -v -s --tb=long
-
-# Maximum verbosity (all logs to console)
-uv run pytest tests/e2e/ -v -s --log-cli-level=DEBUG --tb=long
-```
-
-## Debugging E2E Tests
-
-### Inspecting Databases During a Test Run
-
-While tests are running (or paused in a debugger), connect to any butler's database via the testcontainer's exposed port:
-
-```bash
-# The ecosystem fixture logs the actual port at session start.
-psql -h localhost -p $EXPOSED_PORT -U test -d butlers   # then: SET search_path TO health;
-```
-
-The `butler_ecosystem` fixture is session-scoped. If you set a breakpoint, all butlers remain running on their ports and all databases remain accessible.
-
-### Interactive Debugging
-
-From a debugger breakpoint inside a test, you can manually call MCP tools:
-
-```python
-from fastmcp import Client as MCPClient
-
-async with MCPClient("http://localhost:41103/sse") as client:
-    result = await client.call_tool("status", {})
-    print(result)
-```
-
-### Log Triage Commands
-
-All butler logs are captured to `.tmp/e2e-logs/e2e-latest.log`:
-
-```bash
-# All errors and exceptions
-grep -i 'error\|exception\|traceback' .tmp/e2e-logs/e2e-latest.log
-
-# Errors for a specific butler
-grep -i 'error.*health\|health.*error' .tmp/e2e-logs/e2e-latest.log
-
-# LLM invocations
-grep 'spawner.*trigger\|ClaudeCodeAdapter' .tmp/e2e-logs/e2e-latest.log
-
-# MCP tool calls
-grep 'tool_span\|call_tool' .tmp/e2e-logs/e2e-latest.log
-
-# Module failures (expected for telegram, email, calendar)
-grep 'Module.*disabled\|Module.*failed' .tmp/e2e-logs/e2e-latest.log
-
-# Routing decisions
-grep 'classify_message\|route.*target' .tmp/e2e-logs/e2e-latest.log
-```
-
-### Architecture Diagram
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                    TEST HARNESS (pytest)                       │
-│                                                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐    │
-│  │  conftest.py  │  │ scenarios.py │  │ test_*_flow.py   │    │
-│  │              │  │              │  │                  │    │
-│  │ Ecosystem    │  │ E2EScenario  │  │ Per-butler       │    │
-│  │ bootstrap    │  │ dataclass    │  │ complex flows    │    │
-│  │ + fixtures   │  │ registry     │  │                  │    │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘    │
-│         │                 │                    │               │
-│         ▼                 ▼                    ▼               │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │              BUTLER ECOSYSTEM (session-scoped)           │  │
-│  │                                                          │  │
-│  │  Switchboard ──► General ──► Relationship ──► Health     │  │
-│  │   :41100          :41101       :41102           :41103   │  │
-│  │                                                          │  │
-│  │  Messenger                                               │  │
-│  │   :41104                                                  │  │
-│  │                                                          │  │
-│  │  Each: ButlerDaemon + FastMCP SSE + Spawner + DB pool   │  │
-│  └──────────────────────┬──────────────────────────────────┘  │
-│                         │                                      │
-│                         ▼                                      │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │          TESTCONTAINER PostgreSQL (session-scoped)       │  │
-│  │                                                          │  │
-│  │  One `butlers` database; per-butler SCHEMAS:             │  │
-│  │  switchboard  general  relationship  health  messenger   │  │
-│  │  plus shared `public`                                    │  │
-│  │  Core tables: state, scheduled_tasks, sessions           │  │
-│  │  Butler tables: measurements, contacts, butler_registry  │  │
-│  └─────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
-```
-
 ## Requirements
 
 ### Requirement: Test Framework Configuration
@@ -179,7 +65,11 @@ Tests SHALL be organized into subdirectories by concern, with standalone test fi
 - **THEN** they live under `roster/{butler-name}/tests/` and are auto-marked with the integration marker via `roster/conftest.py`
 
 ### Requirement: Conftest Fixture Hierarchy
-Shared fixture definitions SHALL have one canonical module and one project-wide pytest registration layer. Nested and test-tree conftest files SHALL NOT re-register those project-wide shared fixtures; they MAY own fixtures, hooks, and helpers scoped to their tree.
+Shared fixture definitions SHALL have one canonical module and one project-wide pytest registration layer. Nested and test-tree conftest files SHALL NOT re-register those project-wide shared fixtures; they MAY own fixtures, hooks, and helpers scoped to their tree. Root conftest SHALL retain its in-tree package-source guard before the first Butlers import and every canonical fixture, fake-engine/cache lifetime, marker, database and finalizer contract. It SHALL NOT eagerly invoke full module discovery, preload roster job sets or discover every roster router just to enable imports. Owning package import resolution SHALL make the existing supported roster namespaces available on demand without needing conftest execution.
+
+ID: REQ-testing-039
+Source: bu-ly3lv5.4 released by bu-7lh5ew; performance-discipline; actual owning source and existing contract
+Scope: v1-mandatory
 
 #### Scenario: Root conftest (conftest.py)
 - **WHEN** any test in the project runs
@@ -191,6 +81,16 @@ Shared fixture definitions SHALL have one canonical module and one project-wide 
 - **WHEN** tests under `roster/` run
 - **THEN** `roster/conftest.py` auto-applies the `integration` marker and Docker-skip behavior to tests in that directory tree via `pytest_collection_modifyitems`, unless the test already declares an explicit `@pytest.mark.unit` (via `item.get_closest_marker("unit")`), in which case the auto-mark is skipped and the test keeps its declared `unit` taxonomy
 - **AND** a meta-test (`roster/test_conftest_marker_taxonomy.py`) pins this exception so it cannot silently regress
+
+#### Scenario: Root setup remains lightweight and complete
+- **WHEN** root conftest is imported in a fresh process without a requested roster body
+- **THEN** full registry, job and router discovery has not executed
+- **AND** its source guard and canonical shared-fixture registration remain active
+
+#### Scenario: A real roster request still resolves
+- **WHEN** a supported roster module, job, router or models import is requested without prior root-conftest preload
+- **THEN** it resolves from the actual checkout and preserves the owning discovery and registration behavior
+- **AND** an unrelated roster body is not eagerly executed
 
 ### Requirement: PostgreSQL Testcontainer Infrastructure
 Integration and E2E tests SHALL use Docker testcontainers for PostgreSQL, with resilient startup and teardown to handle transient Docker API errors.
@@ -634,6 +534,23 @@ E2E infrastructure tests SHALL validate the staging environment: PostgreSQL test
 - **THEN** it validates: Docker daemon is running, `ANTHROPIC_API_KEY` is set, `claude` CLI is on PATH, and Python 3.12+ is available
 - **AND** missing prerequisites result in `pytest.skip()` with a clear message, not a confusing traceback
 
+#### Scenario: Missing claude binary skips the whole E2E session
+- **WHEN** the `claude` binary is not found on `PATH` (`shutil.which("claude")` is empty)
+- **THEN** the session-scoped autouse fixture `require_claude_binary` in `tests/e2e/conftest.py` skips every E2E test by raising `pytest.skip(..., allow_module_level=True)` from the fixture
+- **AND** the session is reported as skipped, not failed
+
+#### Scenario: A new roster butler boots with no test edits
+- **WHEN** a directory containing a `butler.toml` is added under `roster/`
+- **THEN** the E2E ecosystem bootstrap discovers it through `list_butlers()` and provisions its schema, runs its migrations, assigns its offset port, starts it and tears it down with the other butlers
+- **AND** no change to the bootstrap code or to existing E2E tests is required to boot it
+- **AND** this covers only the bootstrap: declarative scenarios in `tests/e2e/scenarios.py` and the per-butler pool convenience fixtures are written by hand and are not generated from the roster
+
+#### Scenario: LLM output is asserted loosely and routing exactly
+- **WHEN** a declarative E2E scenario is verified
+- **THEN** assertions on LLM-driven behavior are loose: expected tool calls are checked as a subset of the tool names actually called (set containment, not exact match), and a scenario that exceeds its timeout is recorded as a timeout without failing the whole run
+- **AND** the routing target must equal the expected butler exactly
+- **AND** database assertions are evaluated and logged, not enforced: a failed assertion is logged as a warning and does not fail the scenario, and dict rows are compared on the expected key subset only
+
 #### Scenario: Module degradation during E2E
 - **WHEN** modules lack external service credentials (Telegram, Email, Calendar, Memory)
 - **THEN** they fail gracefully during daemon startup
@@ -752,19 +669,20 @@ fast smoke-tier framing and the latest-revision round-trip guard.
   session-scoped `postgres_container` fixture rather than introducing a parallel
   provisioning path
 
-#### Scenario: Post-merge migration-chain integrity gate
-- **WHEN** a push to `main` changes a migration under any root family discovered by
+#### Scenario: Merge-group migration-chain integrity gate
+- **WHEN** a pull request changes a migration under any root family discovered by
   `get_all_chains()`:
   - `alembic/versions/**` for shared/core chains
   - `src/butlers/modules/*/migrations/**` for module chains
   - `roster/*/migrations/**` for butler-specific chains
-- **THEN** the `Migration Chain Integrity (main)` workflow checks out the pushed
-  merged SHA and runs `tests/config/test_migration_chain_head.py`
-- **AND** the GitHub Actions check fails loudly if the merged tree has duplicate
+- **THEN** the required merge-group unit lane runs
+  `tests/config/test_migration_chain_head.py` against the exact merged tree before
+  it lands on `main`
+- **AND** the required check fails loudly if the merged tree has duplicate
   revisions or more than one Alembic head
-- **AND** a focused workflow-path regression evaluates a representative migration
-  change from each root family, so future chains within those families remain
-  covered without a static chain count
+- **AND** the guard discovers chains through `get_all_chains()`, so future chains
+  within those families stay covered without a static chain count or a separate
+  post-merge workflow (retired under owner decision bu-w72da2 = A)
 
 ### Requirement: Daemon Lifecycle Smoke Test
 The project SHALL prove that a butler daemon completes its lifecycle initialization
@@ -839,9 +757,15 @@ authentication and reports a healthy status when the API is up.
   string returned regardless of server state
 
 ### Requirement: Smoke Tests Run In CI As A Fast Gate
-The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every push and
+Fresh full pytest inventory, both lane budgets and the exact attempt assignment SHALL be produced by a dedicated bounded job after route. Full backend children SHALL await successful inventory; affected and Vitest execution MAY begin after route while static guards execute. Required final verdicts SHALL retain mandatory guards and require inventory success only for full/main-push modes, with explicit inventory skips only for scoped/docs modes. Browser SHALL retain its dependency on the guards-built source-bound artifact. Complete eleven-child reconciliation, smoke and existing event/selector policies SHALL remain unchanged.
+
+The smoke tier SHALL execute in CI (`.github/workflows/ci.yml`) on every merge-group tree and every backend-applicable
 pull request as a fast gate, distinct from and faster than the integration tier,
-and MUST NOT pull in the E2E suite or any real LLM dependency.
+and MUST NOT pull in the E2E suite or any real LLM dependency. The dedicated-selection scenario below and the distinct/faster fast-gate description apply to scoped execution and uncovered full-mode smoke items; full derived mode does not claim a separate smoke job completed faster than the full integration run. Complete full execution MAY use exact-identity derived smoke evidence from the same successful lane population under P8; this explicitly qualifies the previous unconditional dedicated invocation while preserving its command, no-LLM/no-E2E and failure contracts.
+
+ID: REQ-testing-034
+Source: bu-ly3lv5.1 preserved smoke outcome; existing bu-r5mnn event policy and testing-and-verification; bu-ly3lv5.6 P8 full-mode proof qualification
+Scope: v1-mandatory
 
 #### Scenario: Dedicated smoke selection in CI
 - **WHEN** the CI `check-preflight` job runs
@@ -855,9 +779,23 @@ and MUST NOT pull in the E2E suite or any real LLM dependency.
 - **AND** `tests/e2e` is excluded from the smoke selection, consistent with the
   existing E2E CI-exclusion mechanisms
 
+#### Scenario: Existing post-queue and docs-only smoke skips are explicit
+- **WHEN** a successful classifier identifies a docs/spec-only pull request, or the workflow is a push to main after protected merge-group validation
+- **THEN** check-preflight may skip under the existing event policy
+- **AND** this skip cannot authorize a missing classifier verdict, a failed/cancelled preflight, a backend-applicable pull request, or a merge-group omission
+
+#### Scenario: Exact full-lane smoke reuse preserves the same guarantee
+- **WHEN** full-lane receipts prove every item selected by the dedicated smoke command actually completed successfully
+- **THEN** preflight emits explicitly derived release evidence with actual commands and exact source/run/attempt identity
+- **AND** any uncovered or unavailable selected item requires the original dedicated command or a non-successful preflight
+
 ### Requirement: Smoke Run Release Evidence
 A smoke run SHALL emit a machine-readable release-evidence record so that a release
-can be tied to concrete operational proof.
+can be tied to concrete operational proof. A derived full-lane record SHALL retain every existing field, record actual invoked shard commands and separate smoke selector provenance, and MUST NOT claim an unexecuted dedicated command ran.
+
+ID: REQ-testing-051
+Source: bu-ly3lv5.6 P8; complete existing smoke release evidence
+Scope: v1-mandatory
 
 #### Scenario: Evidence record fields
 - **WHEN** the smoke tier completes (in CI or locally with evidence enabled)
@@ -866,6 +804,15 @@ can be tied to concrete operational proof.
   classes (e.g. tests skipped because Docker was unavailable)
 - **AND** the record is captured as a CI artifact or log line that can be
   referenced from release notes
+
+#### Scenario: Derived commands are actual execution evidence
+- **WHEN** a full-lane smoke record is derived
+- **THEN** its exact-command field records the actual executed shard commands and evidence_mode distinguishes derivation from the dedicated smoke command
+- **AND** source SHA, actual duration/outcome/skipped classes and artifact references remain available
+
+#### Scenario: Missing smoke provenance cannot be a release proof
+- **WHEN** identity, outcomes, markers or actual execution commands are incomplete
+- **THEN** the release evidence is unavailable/non-passing and the dedicated command is retained as the safe execution path
 
 ### Requirement: Schema Stand-In Parity Is Complete
 A hand-provisioned table stand-in SHALL mirror the indexes its migration chain
@@ -945,6 +892,426 @@ Each quality-gate make target SHALL state its xdist worker count on its own comm
 - **WHEN** a test pins a gate target's execution mode
 - **THEN** it obtains the target's arguments by expanding the recipe (`make -n`) rather than parsing Makefile variables, and obtains the effective `-n` from a real pytest process rather than from those arguments
 - **BECAUSE** the effective value does not exist until pytest merges `addopts` with argv: a Makefile grep for `-n 0` would pass while `addopts` changed the answer, which is how the serial target's documented meaning was inverted without any diff appearing to touch it
+
+### Requirement: Fresh-Process Import Boundary and Calibrated Budget
+Import-boundary contracts SHALL run in a fresh own-source interpreter and assert the actual forbidden module roots absent before demand. The root-conftest import budget SHALL use actual elapsed-time samples and a recorded numeric cap, with an independent child timeout. Original eager-source restoration and a positioned slow-import control SHALL prove the semantic and timed assertions can fail. Measurements SHALL identify exact source, interpreter, lock, command, corpus and cache context; historical/estimated gains SHALL NOT be presented as current measured improvements.
+
+ID: REQ-testing-040
+Source: bu-ly3lv5.4 released by bu-7lh5ew; performance-discipline; testing-and-verification; original no-wall-clock-gain acceptance route
+Scope: v1-mandatory
+
+#### Scenario: Parent fake cannot conceal an eager child import
+- **WHEN** a fresh subprocess imports the named unused memory, approvals, daemon/API or conftest boundary
+- **THEN** absence is measured from that child's sys.modules and own-source identity
+- **AND** restoring the actual eager embedding import makes the semantic contract fail
+
+#### Scenario: Numeric budget is causally enforced
+- **WHEN** a measured root-conftest import exceeds its recorded calibrated cap
+- **THEN** the timed contract fails independently of the absent-stack assertion
+- **AND** a positioned slow-import control and restored positive establish reachability
+
+#### Scenario: Gain claim follows its selected evidence route
+- **WHEN** completion reports a quantified affected-job wall-clock gain
+- **THEN** at least five named comparable before and five named after CI runs supply the p50 comparison
+- **AND** otherwise the report explicitly states no wall-clock gain is claimed, preserving the original allowed route
+
+### Requirement: Safe branch cleanup requires bound recovery and approval
+Branch cleanup SHALL default to dry-run and SHALL refuse live deletion without an author-approved exact manifest, current head/PR/protection/custody checks, and independently verified durable recovery. It SHALL preserve open/live/foreign/uncertain refs and use expected-head deletion and non-overwriting recovery. The under-100 outcome SHALL remain mandatory without granting permission to delete excluded refs.
+
+ID: REQ-testing-041
+Source: bu-ly3lv5.3 released run17 intent and complete original/folded clause map; engineering-bar Change Hygiene; development; security-and-secrets
+Scope: v1-mandatory
+
+#### Scenario: Unreviewed dry-run cannot delete
+- **WHEN** inventory includes a merged candidate and open, live, protected and uncertain companions
+- **THEN** only recoverable reviewed candidates are proposed and every remote ref remains intact
+- **AND** missing approval or incomplete pagination refuses apply
+
+#### Scenario: Closed PR and changed head do not prove safety
+- **WHEN** a closed PR name matches a different current head or an unreconciled unmerged ref
+- **THEN** the ref remains excluded until exact history, fourteen-day stale evidence where applicable and recovery are verified
+- **AND** a safely bound merged companion remains a candidate
+
+#### Scenario: Apply drift cannot erase new work
+- **WHEN** an approved ref changes or gains a PR/lease before deletion
+- **THEN** apply refuses that row and preserves the new ref
+- **AND** unchanged exact approved rows can be deleted with durable stage receipts
+
+#### Scenario: Recovery and unknown acknowledgment are truthful
+- **WHEN** delete acknowledgment is lost or the operator restores a deleted exact head
+- **THEN** read-only reconciliation reports actual absent/same/changed/UNKNOWN and restore refuses any replacement ref
+- **AND** isolated recovery reproduces the original object bytes without relying on deleted checkouts
+
+#### Scenario: Cleanup order preserves workers
+- **WHEN** an attached or dirty active worktree exists or owned worktree removal fails
+- **THEN** branch cleanup remains unavailable
+- **AND** ordinary owned clean terminal cleanup retains evidence outside the checkout and removes the worktree before branch references
+
+### Requirement: Repository setting and cache pressure have independent evidence
+The authorized operator SHALL enable delete_branch_on_merge, independently verify the setting, inventory/evict only approved non-main node caches, preserve genuine main-scoped node/uv cache semantics and report actual usage below ten decimal gigabytes. Cache eviction SHALL be reported as irreversible rebuildable loss, never as branch restoration or proof of a cache hit.
+
+ID: REQ-testing-042
+Source: bu-ly3lv5.3 released run17 intent and complete original/folded clause map; engineering-bar Change Hygiene; development; security-and-secrets
+Scope: v1-mandatory
+
+#### Scenario: Main survivor is positively witnessed
+- **WHEN** approved non-main node caches are evicted with main and Playwright companions present
+- **THEN** the exact main node-cache key/version remains readable and measured usage is below 10,000,000,000 bytes
+- **AND** main, active/uncertain refs and non-node caches survive
+
+#### Scenario: Setting alone is insufficient
+- **WHEN** delete_branch_on_merge becomes true while old branches or pressure remain
+- **THEN** setting success is recorded separately and prune/cache outcomes remain incomplete
+- **AND** failure does not broaden an eviction list
+
+#### Scenario: Cache race and rebuild preserve honesty
+- **WHEN** a cache ID/ref/key changes or a needed main entry is unavailable
+- **THEN** mutation refuses drift and main-presence remains unproven until real native rebuild/readback
+- **AND** key existence alone does not claim frontend hit or wall-clock improvement
+
+### Requirement: QA new branches use exact successfully refreshed main
+Trusted QA preparation SHALL resolve successfully refreshed origin/main before new investigation work, record and use that exact commit, and refuse failed refresh before checkout/spawn. It SHALL preserve existing follow-up head bindings, active-worktree data and the governing QA sandbox/publication holds; routine main movement SHALL NOT trigger rebase of an active PR.
+
+ID: REQ-testing-043
+Source: bu-ly3lv5.3 released run17 intent and complete original/folded clause map; engineering-bar Change Hygiene; development; security-and-secrets
+Scope: v1-mandatory
+
+#### Scenario: Successful new preparation records the real base
+- **WHEN** origin/main is successfully fetched and resolved before a new QA investigation
+- **THEN** the new checkout uses the resolved immutable commit and source/test receipts retain it
+- **AND** no existing worker checkout is reset
+
+#### Scenario: Failed fetch does not start stale work
+- **WHEN** fetch or exact commit verification fails while stale local main exists
+- **THEN** no new worktree or runtime launches and a categorical refusal is retained
+- **AND** a restored successful refresh reaches ordinary launch
+
+#### Scenario: Follow-up and foreign publication contracts survive
+- **WHEN** a bound existing PR needs follow-up or foreign QA isolation/publication remains unavailable
+- **THEN** its original expected head and all retained source/evidence/credential boundaries remain in force
+- **AND** this freshness repair supplies neither sandbox proof nor remote-deletion authority
+
+### Requirement: Session-link guard uses validated live PR metadata
+The mandatory PR session-link guard SHALL scan validated live title/body from the exact fixed repository/PR at execution rather than the frozen event copy. It SHALL fail closed on mandatory read/identity errors, preserve current trigger-head commit/trailer and review-source policies, avoid raw metadata diagnostics and retain required verdict routing without widened token/event authority.
+
+ID: REQ-testing-044
+Source: bu-ly3lv5.3 released run17 intent and complete original/folded clause map; engineering-bar Change Hygiene; development; security-and-secrets
+Scope: v1-mandatory
+
+#### Scenario: Corrected live body changes rerun verdict
+- **WHEN** an affected author-owned PR removes its existing forbidden link and current guards rerun on unchanged source
+- **THEN** the live body is scanned and passes while a private synthetic forbidden-body companion fails
+- **AND** no empty commit or new public forbidden-link canary is required
+
+#### Scenario: Stale clean payload cannot hide a new live link
+- **WHEN** frozen event body is clean but the validated current private API fixture contains a forbidden link
+- **THEN** the actual workflow scan fails
+- **AND** a clean live companion succeeds
+
+#### Scenario: Mandatory API failure cannot use stale fallback
+- **WHEN** live metadata fetch fails, response is malformed or repository/PR identity differs
+- **THEN** the mandatory guard and required verdict fail before scan success is credited
+- **AND** no raw body, matched link or provider error is printed
+
+#### Scenario: Bounded metadata retries retain mandatory refusal
+- **WHEN** the fixed-PR metadata subprocess fails before a successful validated read
+- **THEN** at most three attempts use 30-second caps and 2/5-second backoffs within one 97-second monotonic retry budget
+- **AND** invalid successful metadata or local I/O errors refuse immediately without retry or stale fallback
+- **AND** title/body/digest-receipt outputs are removed before reading and after completed failure with categorical diagnostics only
+- **AND** the workflow's separate GNU TERM100/KILL+3 command envelope preserves nonzero refusal and completed-failure cleanup; incomplete execution remains UNKNOWN/non-pass
+
+#### Scenario: Existing metadata surfaces and permissions survive
+- **WHEN** the current PR guard scans title/body and trigger-bound commits with best-effort review comments
+- **THEN** title, non-trailer commit and comment positives remain detectable with exact terminal commit trailer exemption
+- **AND** read-only permissions and ordinary pull_request/merge_group checkout policy are retained
+
+### Requirement: Storm-free elapsed windows retain complete evidence
+After authorized apply the operator SHALL retain both seven-day and fourteen-day complete UTC CI push-event windows with no non-main runs, under-100 remote-head readback and cache/main-survivor evidence. Incomplete queries or elapsed time SHALL remain UNKNOWN/incomplete. The selected timing route SHALL explicitly claim no wall-clock gain while preserving actual before/after state; merge_group SHALL remain the full terminal gate and every moved/removed check SHALL retain its named survivor.
+
+ID: REQ-testing-045
+Source: bu-ly3lv5.3 released run17 intent and complete original/folded clause map; engineering-bar Change Hygiene; development; security-and-secrets
+Scope: v1-mandatory
+
+#### Scenario: Seven days do not discharge fourteen
+- **WHEN** seven complete days after declared apply T0 have no non-main push
+- **THEN** the seven-day criterion passes and the fourteen-day criterion stays pending until its own end
+- **AND** the original cannot close from source publication or a short sample
+
+#### Scenario: Truncation and empty pages cannot produce green
+- **WHEN** a query exceeds provider result limits or returns no rows without complete successful enumeration
+- **THEN** the interval is UNKNOWN until bounded subdivision and complete pagination reconcile IDs/counts
+- **AND** a genuine main-push positive proves the same reader path
+
+#### Scenario: One non-main event fails the actual window
+- **WHEN** a failed, cancelled, queued or successful CI push run has a non-main branch during either interval
+- **THEN** that interval fails with its exact source/time identity retained
+- **AND** no evidence deletion or silent T0 restart converts it to PASS
+
+#### Scenario: No gain claim retains assurance
+- **WHEN** source and approved cleanup reduce refs/cache pressure without five before/five after timing samples
+- **THEN** the move explicitly claims no wall-clock gain and retains real state evidence
+- **AND** required check/guards/frontend, full merge_group population and named enforcing survivors remain unchanged
+
+### Requirement: CI Shard Ordering and Complete Timing Evidence
+CI shard preparation SHALL preserve every manifest file, selected item identity, marker, loadfile fixture boundary, named watchdog/finalizer and healthy-workload calibration. Duration ordering SHALL use complete compatible source/run/attempt/lane/shard/file/node/interpreter/lock evidence, stable descending durations and lexical ties; invalid or unavailable evidence SHALL report UNKNOWN and retain the original lexical schedule. Timing observers SHALL measure real phases without exporting raw parameter, environment, credential or provider content. Existing 2x-budget intent SHALL use an evidenced complete job budget including setup and recovery, never an aspirational lane target.
+
+ID: REQ-testing-046
+Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
+Scope: v1-mandatory
+
+#### Scenario: Duration ordering preserves membership
+- **WHEN** complete compatible timing evidence exists for the exact selected file and node population
+- **THEN** the same files execute in stable duration-descending order with original loadfile grouping
+- **AND** restoring the actual scheduler reordering defeats the positioned order assertion while the corrected scheduler succeeds
+
+#### Scenario: Invalid timing evidence has a truthful fallback
+- **WHEN** evidence is missing, stale, incomplete, nonfinite, negative, duplicated or incompatible with source, lane, shard, manifest, nodes, lock or interpreter
+- **THEN** the original lexical schedule and full selected population remain
+- **AND** the receipt reports UNKNOWN rather than a guessed weight or a performance pass
+
+#### Scenario: Scheduler behavior is actually reached
+- **WHEN** the pinned inherited loadfile scheduler is exercised with planted unequal file duration and item-count groups
+- **THEN** the selected no-reorder mechanism preserves duration order without splitting file fixtures
+- **AND** a default-reorder causal control reaches the wrong order and every original item still executes
+
+#### Scenario: Result identity precedes sanitization
+- **WHEN** the actual selected pytest items execute and their JUnit is later sanitized
+- **THEN** stable complete-node digest multiplicities, phase outcomes and selected-population equality are recorded from the actual process
+- **AND** redacted parameter names and identical aggregate counts are not treated as exact identity proof
+
+#### Scenario: Timing records actual boundaries
+- **WHEN** a complete named run supplies wrapper start and item phase/completion observations
+- **THEN** job setup, first actual result, first one percent and final five percent are measured from actual timestamps
+- **AND** missing progress, observer failure, cancellation or early maxfail leaves the affected metric UNKNOWN
+
+#### Scenario: Watchdogs retain complete healthy-workload compatibility
+- **WHEN** an ordering or timer change is proposed
+- **THEN** existing item, job, UV and browser bounds, finalizers and known healthy-workload floors survive until genuinely calibrated replacement evidence exists
+- **AND** a helper timeout/cancellation negative and successful healthy companion test actual reachability; twice a five-minute aspiration is not adopted
+
+#### Scenario: Timing collection does not repartition the corpus
+- **WHEN** the observer collects actual timing or falls back for unavailable data
+- **THEN** the original ten manifests and full selected item multiplicities remain unchanged
+- **AND** it does not adopt .6 replacement inventory, planner exemptions or extra shard membership
+
+### Requirement: CI Orphan Database Service Retirement
+The twelve current backend service jobs SHALL retire only their unused postgres:16 service and CI-injected DATABASE_URL, preserving production environment parsing and every real Testcontainer, migration, bootstrap, ordinary-role, API, roster, retry, cleanup and DB invariant. Any ambient-dependent fixture SHALL be repaired to use its genuinely provisioned explicit target. Full preflight plus five unit and five integration shards SHALL retain exact testcase identities, counts, outcomes and full terminal verdict; absence alone SHALL NOT establish successful database behavior.
+
+ID: REQ-testing-047
+Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
+Scope: v1-mandatory
+
+#### Scenario: All twelve job declarations are retired
+- **WHEN** preflight, unit1..5, integration1..5 and affected jobs are inspected after the change
+- **THEN** their declared PG16 service and injected ambient URL are absent
+- **AND** the job names, selection/skip pairing, static commands, smoke tier, watchdogs, finalizers and full merge_group fan-in remain
+
+#### Scenario: Provisioned PG17 remains the real target
+- **WHEN** an owning DB fixture commits a sentinel under its ordinary migrated runtime role
+- **THEN** a separate acquisition reads the sentinel from its actual pgvector PG17 Testcontainer
+- **AND** a planted inaccessible ambient URL cannot redirect the explicit target and its deliberately ambient-only companion fails
+
+#### Scenario: Production DB configuration remains valid
+- **WHEN** an API, daemon, connector or operational caller supplies its governed explicit environment
+- **THEN** existing DB URL, SSL, default and error behavior remains unchanged
+- **AND** no blind global unset, fallback shared database, new principal or grant is introduced
+
+#### Scenario: Moved service assertions retain an enforcing survivor
+- **WHEN** the old CI service-presence and default-URL assertions are intentionally superseded
+- **THEN** exact twelve-job absence and genuine endpoint/role/commit readback enforce the replacement contract
+- **AND** every unrelated original assertion and both complete marker/roster/migration populations remain mandatory
+
+#### Scenario: Terminal gate proves retirement scope
+- **WHEN** the no-service branch and protected merge-group tree finish their full hosted runs
+- **THEN** preflight and all ten shards are successful with exact baseline testcase population and coverage provenance
+- **AND** Initialize containers is absent from all twelve jobs and the original under-three-second observation is separately recorded rather than inferred
+
+### Requirement: CPU Dependency Lock and Own Source Environment Cache
+The project SHALL explicitly select a compatible CPU-only torch lock source and frozen environment, with zero installed or locked NVIDIA dependencies and preserved embedding, tensor, vector-extension, image and entrypoint behavior. Retirement of unused Python pgvector or qrcode WhatsApp packaging SHALL preserve their actual governed runtime survivors. Venv and bytecode cache restoration SHALL be advisory and exact-compatible, never bypass frozen synchronization, editable source repair, own-checkout import validation or finite installation failure. Only the current job-owned real directory MAY be rebuilt; linked or foreign environments SHALL NOT be accepted.
+
+ID: REQ-testing-048
+Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
+Scope: v1-mandatory
+
+#### Scenario: CPU choice is a lock source decision
+- **WHEN** the required supported Python/platform environment resolves and installs from the explicit CPU index
+- **THEN** the frozen project and installed CPU tensor operation agree, CUDA is unavailable and NVIDIA match count is zero
+- **AND** index metadata, UV_TORCH_BACKEND labels or a no-match rg exit code alone cannot establish installed behavior
+
+#### Scenario: Embedding and image survivors remain
+- **WHEN** CPU/package changes finish their owning tests and both actual image builds
+- **THEN** model, dimension, normalization, first-use/cache and entrypoint behavior remain and before/after image sizes are recorded
+- **AND** PostgreSQL vector extension, Pillow, Go bridge and unrelated extras are preserved
+
+#### Scenario: Unused packaging retirement is causally checked
+- **WHEN** a pgvector Python or qrcode-only extra/flag is removed after a complete consumer and packaging audit
+- **THEN** the actual dynamic, entrypoint, Go and image consumers still succeed through their mandatory survivors
+- **AND** AST import absence alone supplies no runtime or packaging completion credit
+
+#### Scenario: Compatible warm cache repairs the current checkout
+- **WHEN** an exact OS, architecture, Python ABI/micro-version, uv, lock, project, helper-layout and extras/dev cache is restored
+- **THEN** a finite frozen sync with bytecode compilation and editable project repair precedes tests
+- **AND** the actual interpreter and butlers import resolve the current checkout src without an external-package escape
+
+#### Scenario: Corrupt or incompatible cache rebuilds safely
+- **WHEN** a symlink, foreign pth, wrong lock/interpreter, corrupt manifest or unavailable cache is presented
+- **THEN** the advisory restore is rejected or repaired and only the current job-owned real directory is rebuilt
+- **AND** a full cold frozen sync and current-source positive succeed while neutralizing repair reaches the foreign-source negative
+
+#### Scenario: Cache cannot silence install failure
+- **WHEN** the cache hits but frozen synchronization or current-source import validation fails
+- **THEN** the job fails with a bounded categorical receipt
+- **AND** it neither uses cached successful-test evidence nor skips synchronization
+
+#### Scenario: Cold and warm metrics stay distinct
+- **WHEN** named source-compatible cold and warm runs complete
+- **THEN** actual install/setup observations include cache state and complete compatibility provenance
+- **AND** the original about-five-second install and twenty-second setup targets remain UNMET when not reached or measured
+
+#### Scenario: Cached material remains private and bounded
+- **WHEN** environment caching or recovery publishes a receipt
+- **THEN** only compatibility digests and bounded hit/miss/invalid/repaired/import-bound categories are emitted
+- **AND** credentials, env values, DSNs, provider content, shared worktree venvs and unrelated cache deletion remain excluded
+
+### Requirement: Measured Worker and Coverage Core Selection
+Unit worker and covered tracer selection SHALL be independent measured comparisons against current unit3 and ctrace baselines. Actual worker identities, capacity, memory and no-OOM evidence SHALL govern any fixed4 or bounded-auto choice; local3 and integration cap behavior SHALL remain. A sysmon candidate SHALL prove its actual supported installed tracer, complete source/file/line/context population and report/badge semantics; unsupported or fallback execution SHALL be rejected or truthfully retained as baseline. CI_COVERAGE 0/1, all eleven full-source covered assurance shards, the complete protected queue test population and fail-closed publisher identity checks SHALL remain mandatory. Owned scheduled/manual and coverage-pipeline PR validation SHALL retain actual event provenance, complete fresh inventory and eleven-input execution reconciliation before report publication; PR validation MUST NOT publish the main badge. Protected merge-group and ordinary PR executions SHALL preserve their existing required test populations and run untraced with CI_COVERAGE=0; the owned daily scheduled/manual and coverage-pipeline PR assurance workflow SHALL own full eleven-shard coverage with CI_COVERAGE=1. Local covered defaults and every actual worker/tracer comparison remain unchanged.
+
+ID: REQ-testing-049
+Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
+Scope: v1-mandatory
+
+#### Scenario: Auto records its actual count
+- **WHEN** unit3, fixed4 and bounded-auto run comparable complete populations
+- **THEN** actual worker identities, CPU allocation and memory/no-OOM observations are recorded
+- **AND** the root auto cap of three is not mislabeled as four based on a runner name
+
+#### Scenario: Worker selection preserves local and integration bounds
+- **WHEN** a measured supported unit worker choice is installed
+- **THEN** only the existing unit CI override changes
+- **AND** local addopts3, integration cap/retry/serialization, ten shard names and exact testcase population remain
+
+#### Scenario: Sysmon actual tracer is proved
+- **WHEN** a supported covered run requests sysmon
+- **THEN** the actual installed tracer and full normalized file, line and context records match the required baseline
+- **AND** a planted covered-line companion proves collection and a forced fallback or unsupported branch/context/concurrency candidate is rejected
+
+#### Scenario: Coverage mode stays exact
+- **WHEN** ordinary PR, standalone, protected untraced merge_group or owned scheduled/manual/pipeline-validation covered consumers execute
+- **THEN** strict CI_COVERAGE 0/1 selection and governed coverage flags stay exact
+- **AND** a worker/core experiment does not enable partial coverage, append across jobs or skip any protected shard
+
+#### Scenario: Publisher rejects wrong evidence
+- **WHEN** any shard source, attempt, lane, population, historical pseudo-src identity or upload is missing, duplicated, stale or wrong
+- **THEN** the existing coverage combine/publication guard refuses it before badge publication
+- **AND** genuine complete ten-source artifacts supply the positive companion
+
+#### Scenario: Factors are compared independently
+- **WHEN** worker and core candidates produce admissible comparable runs
+- **THEN** each factor selects one actually supported configuration or retains a documented baseline result
+- **AND** counterfactual gains are not summed and original targets/completeness remain pending without a lawful explicit root deferral
+
+#### Scenario: No provider or fixture substitution proves throughput
+- **WHEN** a measurement report claims worker/core or dependency gains
+- **THEN** the exact hosted corpus, runner, interpreter, lock, cache, tracer and source are named
+- **AND** synthetic conformance, shortened tests or preserved historical embedding proof cannot establish current full throughput
+
+### Requirement: Whole Fixed Overhead Delivery and Measurement Preservation
+Whole fixed-overhead delivery SHALL preserve all seven original acceptance literals, all twelve complete folded move objects, all five slices and every existing governing scenario and assertion. At least ten named genuine merge-group observations per original slice and the selected original before/after p50 or explicit no-gain route SHALL be retained. All hard first-result-about25, setup20, first-one-percent30, final-five-percent30, install-about5 and container-absence/under3 targets SHALL remain separate mandatory observations. Every removed or moved check SHALL name its enforcing survivor; normal own native adoption and final exact-head independent, hosted and protected gates SHALL precede whole closure.
+
+ID: REQ-testing-050
+Source: bu-ly3lv5.5 full original seven outcomes and twelve committed folded objects; released bu-7lh5ew; AGENTS.md test policy; testing-and-verification; performance-discipline
+Scope: v1-mandatory
+
+#### Scenario: Full original outcomes survive
+- **WHEN** the proposal, source or completion packet changes
+- **THEN** all seven exact literals, twelve full objects and S1..S5 map to surviving mandatory homes
+- **AND** committed clipped suffixes stay unknown and no future partition/matrix/sixth-shard proposal is adopted
+
+#### Scenario: Ten observations and p50 use real provenance
+- **WHEN** completion supplies original slice timing evidence
+- **THEN** ten named actual merge_group observations per original slice and at least five before/five after where p50 is claimed are reconciled
+- **AND** the allowed explicit no-wall-clock-gain route erases none of the independent hard timing, DB, dependency, identity, assurance or completeness outcomes
+
+#### Scenario: Every moved check has a survivor
+- **WHEN** a service, packaging, scheduling, cache or coverage check is removed or moved
+- **THEN** its full original invariant and executing enforcing survivor are identified
+- **AND** all unrelated privacy, auth, retry, idempotency, migration, fixture, finalizer, FE and fail-closed contracts remain
+
+#### Scenario: Native preparation does not claim future gates
+- **WHEN** source preparation and normal validated own sync/archive finish
+- **THEN** only completed prearchive tasks and actual administrative readback are marked done
+- **AND** fresh final-head normal/nonself/protected and elapsed observations stay explicit mandatory closure records; no force, skip-validation, ratchet, foreign adoption or silent slice deferral occurs
+
+#### Scenario: Rollback preserves the governed baseline
+- **WHEN** a source factor fails its causal or hosted controls
+- **THEN** its reviewed source/config/dependency unit is reverted or repaired with full original corpus and survivors intact
+- **AND** no root or peer venv, live deployment, settings, refs, cache or elapsed evidence is modified by PRIMARY
+
+### Requirement: Composed read-only local pre-push refusal
+The repository SHALL provide an installed read-only pre-push path for its applicable deterministic guards that preserves existing Beads hook behavior and exact Git ref-update input. Actual collection-dependent inventory/budget predicates SHALL require freshly collected real selected items, not planner/cache/count inference. The hook SHALL execute no test bodies, DB/provider/network calls or tracked-tree rewrites. Installation SHALL preserve exact prior common configuration and managed hook bodies/modes, refuse uncomposable custom inputs, and be reversible. The required CI guards and complete terminal merge-group SHALL remain independently authoritative. The original twenty natural-push p95-under30s target SHALL remain mandatory and unearned until measured.
+
+ID: REQ-testing-052
+Source: bu-ly3lv5.10 approved A123/B168 R1; about/heart-and-soul/development.md; about/craft-and-care/testing-and-verification.md; AGENTS.md Test Scope Policy
+Scope: v1-mandatory
+
+#### Scenario: Actual violation and restored ordinary push
+- **WHEN** the owning real push path encounters a planted new em-dash in the mandated doctrine surface
+- **THEN** its actual scanner refuses before remote publication with fixed failed-target attribution
+- **AND** restoring the owning source makes that same actual path healthy without skipped invariants
+
+#### Scenario: Beads hook input and other hook lifecycles survive
+- **WHEN** Git invokes root or worktree hooks with multiple ref updates and actual args
+- **THEN** the original managed hook receives the complete stream exactly once and its status propagates
+- **AND** post-checkout and post-merge retain BD_IMPORT_AUTO=false outside managed markers
+
+#### Scenario: Unsupported configuration or source refuses before mutation
+- **WHEN** a custom/global/worktree-specific hook path, missing asset, unknown ref/tree or applicable unavailable tool cannot be safely composed
+- **THEN** installation/check refuses categorically and exact before configuration/assets remain
+- **AND** a restored supported path proves positive behavior
+
+#### Scenario: Fresh collection-dependent predicate preserves actual population
+- **WHEN** a partition or collected-budget check requires current test membership
+- **THEN** the real collect-only path and current predicates execute against the complete fresh population
+- **AND** stale receipts, cached counts, AST test counts, planner omissions and side-effect execution cannot claim green
+
+#### Scenario: Natural timing and rollback are separately admitted
+- **WHEN** twenty natural installed push envelopes and complete statuses are available
+- **THEN** p95 strictly below30s is assessed from their exact source/runtime/plan and full hook boundaries
+- **AND** unavailable timing or a missed target remains unmet; rollback restores exact prior config and all enforcing CI survivors
+
+### Requirement: Condensation requires current executable survivor evidence
+
+Test removal SHALL be governed by review alone. The repository SHALL NOT keep a protected-test inventory, survivor ledger, contract-evolution manifest or deletion guard script, and no required check SHALL refuse a pull request because it removes or weakens tests. A pull request that deletes, moves or renames a test, or weakens one in place by dropping an assertion, parameter case, fixture or marker, SHALL carry a `Tests: +a ~m -d` line in its body, measured from its own collection. For each removed check it SHALL either name the executing survivor that still enforces that behavior at the pull-request head, or state that the behavior itself is intentionally removed or changed by the same pull request. Architecture, wire, privacy, authorization, no-send, retry, idempotency and migration-outcome checks SHALL keep a named executing survivor unless their governing requirement changes in the same pull request. Reviewers SHALL refuse a missing delta line, a survivor that does not exist or does not exercise the removed behavior, and a protected-check loss with neither a survivor nor a requirement change. Matching names, smaller counts and deleted production paths are not survivors on their own. This rule SHALL NOT change the per-lane collected-test budget, test selection, markers, coverage, required checks or the complete terminal merge-group gate.
+
+This requirement supersedes the executable survivor-proof admission, the intentional contract-evolution mode and the single bu-mmax8j.8 replay conformance account that it previously defined; none of them remains an admission route or an obligation.
+
+ID: REQ-testing-053
+Source: bu-lm2b4v owner decision B (2026-10-21), retiring the bu-ly3lv5.11 condensation ledger and the bu-mmax8j.9 replay exception; about/craft-and-care/testing-and-verification.md Removing or Weakening Tests; AGENTS.md Test Scope Policy
+Scope: v1-mandatory
+
+#### Scenario: A test deletion with a stated delta passes CI
+
+- **WHEN** a pull request deletes tests, states a `Tests:` line with the deletions and names each survivor or intentional behavior change
+- **THEN** no CI step refuses it for the test loss
+- **AND** the required check, guards and frontend verdicts and the complete terminal merge-group gate still run unchanged
+
+#### Scenario: Review refuses an unaccounted loss
+
+- **WHEN** a pull request removes or weakens a check without a `Tests:` line, or without a named survivor or stated behavior change for that check
+- **THEN** the reviewer refuses it until the line and the account are present
+- **AND** a survivor that does not exist at the pull-request head, or does not exercise the removed behavior, does not count
+
+#### Scenario: Protected behavior keeps an executing survivor
+
+- **WHEN** a removed check covers architecture, wire, privacy, authorization, no-send, retry, idempotency or a migration outcome and its governing requirement is unchanged
+- **THEN** the pull request names the executing test that still enforces that behavior
+- **AND** a matching name, a smaller count or a deleted production path cannot stand in for it
+
+#### Scenario: An intended behavior change edits its pinning tests in the same pull request
+
+- **WHEN** a reviewed product change alters behavior that an existing test pins
+- **THEN** that pull request changes or removes the pinning test itself and states the delta and the changed behavior
+- **AND** no authorization manifest, separate authorization bead or replacement guard is required
 
 ## Source References
 - Non-Negotiable Rule 4 (the daemon is deterministic infrastructure; it must be

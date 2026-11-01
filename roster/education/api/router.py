@@ -8,12 +8,9 @@ queried directly from the education butler's PostgreSQL database via asyncpg.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import logging
-import sys
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 import asyncpg
@@ -21,10 +18,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 
 from butlers.api.audit_emit import emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import MCPClientManager, get_mcp_manager
+from butlers.api.deps import Db, MCPClientManager, get_mcp_manager
 from butlers.api.models import PaginatedResponse, PaginationMeta
 from butlers.core.attention_ledger import find_notify_dispatch_for_session
 from butlers.core.state import state_get
+from butlers.roster_imports import roster_module
 from butlers.tools.education.analytics import (
     analytics_get_cross_topic,
     analytics_get_snapshot,
@@ -32,50 +30,45 @@ from butlers.tools.education.analytics import (
 )
 from butlers.tools.education.mastery import mastery_detect_struggles, mastery_get_map_summary
 from butlers.tools.education.mind_map_queries import mind_map_frontier
-from butlers.tools.education.mind_maps import mind_map_get, mind_map_list, mind_map_update_status
+from butlers.tools.education.mind_maps import (
+    MindMapLifecycleError,
+    mind_map_get,
+    mind_map_list,
+    mind_map_update_status,
+)
 from butlers.tools.education.source_material import source_material_get_many
 from butlers.tools.education.spaced_repetition import spaced_repetition_pending_reviews
 from butlers.tools.education.teaching_flows import teaching_flow_list
 
 # Dynamically load models module from the same directory
-_models_path = Path(__file__).parent / "models.py"
-_spec = importlib.util.spec_from_file_location("education_api_models", _models_path)
-if _spec is not None and _spec.loader is not None:
-    _models = importlib.util.module_from_spec(_spec)
-    sys.modules["education_api_models"] = _models
-    _spec.loader.exec_module(_models)
+_models = roster_module("education", "api/models", api_source=__file__)
 
-    AnalyticsSnapshotResponse = _models.AnalyticsSnapshotResponse
-    AnalyticsTrendEntry = _models.AnalyticsTrendEntry
-    AnalyticsTrendResponse = _models.AnalyticsTrendResponse
-    CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
-    CrossTopicTopicEntry = _models.CrossTopicTopicEntry
-    CurriculumRequestBody = _models.CurriculumRequestBody
-    CurriculumRequestReceipt = _models.CurriculumRequestReceipt
-    CurriculumRequestResponse = _models.CurriculumRequestResponse
-    CurriculumRequestStatusResponse = _models.CurriculumRequestStatusResponse
-    MasterySummaryResponse = _models.MasterySummaryResponse
-    MindMapEdgeResponse = _models.MindMapEdgeResponse
-    MindMapNodeResponse = _models.MindMapNodeResponse
-    MindMapResponse = _models.MindMapResponse
-    PendingReviewNodeResponse = _models.PendingReviewNodeResponse
-    QuizResponseModel = _models.QuizResponseModel
-    SourceMaterialResponse = _models.SourceMaterialResponse
-    StatusUpdateRequest = _models.StatusUpdateRequest
-    StrugglingNodeEntry = _models.StrugglingNodeEntry
-    StrugglingNodesResponse = _models.StrugglingNodesResponse
-    TeachingFlowResponse = _models.TeachingFlowResponse
+AnalyticsSnapshotResponse = _models.AnalyticsSnapshotResponse
+AnalyticsTrendEntry = _models.AnalyticsTrendEntry
+AnalyticsTrendResponse = _models.AnalyticsTrendResponse
+CrossTopicAnalyticsResponse = _models.CrossTopicAnalyticsResponse
+CrossTopicTopicEntry = _models.CrossTopicTopicEntry
+CurriculumRequestBody = _models.CurriculumRequestBody
+CurriculumRequestReceipt = _models.CurriculumRequestReceipt
+CurriculumRequestResponse = _models.CurriculumRequestResponse
+CurriculumRequestStatusResponse = _models.CurriculumRequestStatusResponse
+MasterySummaryResponse = _models.MasterySummaryResponse
+MindMapEdgeResponse = _models.MindMapEdgeResponse
+MindMapNodeResponse = _models.MindMapNodeResponse
+MindMapResponse = _models.MindMapResponse
+PendingReviewNodeResponse = _models.PendingReviewNodeResponse
+QuizResponseModel = _models.QuizResponseModel
+SourceMaterialResponse = _models.SourceMaterialResponse
+StatusUpdateRequest = _models.StatusUpdateRequest
+StrugglingNodeEntry = _models.StrugglingNodeEntry
+StrugglingNodesResponse = _models.StrugglingNodesResponse
+TeachingFlowResponse = _models.TeachingFlowResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/education", tags=["education"])
 
 BUTLER_DB = "education"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _pool(db: DatabaseManager):
@@ -85,11 +78,11 @@ def _pool(db: DatabaseManager):
     """
     try:
         return db.pool(BUTLER_DB)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Education butler database is not available",
-        )
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -159,10 +152,13 @@ def _map_dict_to_response(m: dict, include_dag: bool = False) -> MindMapResponse
 
 @router.get("/mind-maps", response_model=PaginatedResponse[MindMapResponse])
 async def list_mind_maps(
-    status: str | None = Query(None, description="Filter by status (active, completed, abandoned)"),
+    status: str | None = Query(
+        None, description="Filter by status (draft, active, completed, abandoned)"
+    ),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[MindMapResponse]:
     """List mind maps with optional status filter and pagination."""
     pool = _pool(db)
@@ -187,7 +183,8 @@ async def list_mind_maps(
 @router.get("/mind-maps/{mind_map_id}", response_model=MindMapResponse)
 async def get_mind_map(
     mind_map_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MindMapResponse:
     """Retrieve a mind map by ID with full node and edge DAG."""
     pool = _pool(db)
@@ -207,7 +204,8 @@ async def get_mind_map(
 @router.get("/mind-maps/{mind_map_id}/frontier", response_model=list[MindMapNodeResponse])
 async def get_mind_map_frontier(
     mind_map_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[MindMapNodeResponse]:
     """Return frontier nodes for a mind map.
 
@@ -236,7 +234,8 @@ async def get_mind_map_analytics(
     trend_days: int | None = Query(
         None, ge=1, le=365, description="Include trend for this many days"
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AnalyticsSnapshotResponse:
     """Return the latest analytics snapshot for a mind map, with optional trend."""
     pool = _pool(db)
@@ -288,7 +287,8 @@ async def list_quiz_responses(
     node_id: str | None = Query(None, description="Filter by node ID"),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QuizResponseModel]:
     """List quiz responses with optional mind_map_id and node_id filters."""
     pool = _pool(db)
@@ -364,7 +364,8 @@ async def list_flows(
             "quizzing, reviewing, completed, abandoned)"
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[TeachingFlowResponse]:
     """List teaching flows with optional status filter."""
     pool = _pool(db)
@@ -392,7 +393,8 @@ async def list_flows(
 
 @router.get("/analytics/cross-topic", response_model=CrossTopicAnalyticsResponse)
 async def get_cross_topic_analytics(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CrossTopicAnalyticsResponse:
     """Return comparative analytics across all active mind maps."""
     pool = _pool(db)
@@ -436,7 +438,8 @@ async def list_source_material(
             "response rather than raised as an error."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[SourceMaterialResponse]:
     """Resolve specific ``source_id``s against the registry.
 
@@ -487,7 +490,8 @@ async def get_pending_reviews(
             "Omit to return only overdue nodes (next_review_at <= now)."
         ),
     ),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> list[PendingReviewNodeResponse]:
     """Return nodes due (or upcoming) for spaced-repetition review.
 
@@ -529,7 +533,8 @@ async def get_pending_reviews(
 )
 async def get_mastery_summary(
     mind_map_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MasterySummaryResponse:
     """Return aggregate mastery statistics for a mind map."""
     pool = _pool(db)
@@ -564,7 +569,8 @@ async def get_mastery_summary(
 async def get_analytics_trend(
     mind_map_id: str,
     days: int = Query(7, ge=1, le=365, description="Number of days to look back"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> AnalyticsTrendResponse:
     """Return a time-series of analytics snapshots for a mind map.
 
@@ -604,7 +610,8 @@ async def get_analytics_trend(
 )
 async def get_struggling_nodes(
     mind_map_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> StrugglingNodesResponse:
     """Return concept nodes with declining or consistently low mastery.
 
@@ -649,7 +656,8 @@ async def update_mind_map_status(
     mind_map_id: str,
     request: Request,
     body: StatusUpdateRequest = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> MindMapResponse:
     """Update a mind map's status (active, completed, abandoned)."""
     pool = _pool(db)
@@ -662,8 +670,10 @@ async def update_mind_map_status(
 
     try:
         await mind_map_update_status(pool, mind_map_id, body.status)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}")
+    except MindMapLifecycleError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=f"Mind map not found: {mind_map_id}") from exc
 
     m = await mind_map_get(pool, mind_map_id)
 
@@ -1214,7 +1224,8 @@ def _receipts_unavailable(exc: BaseException) -> bool:
 async def submit_curriculum_request(
     request: Request,
     body: CurriculumRequestBody = Body(...),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     mcp_manager: MCPClientManager = Depends(get_mcp_manager),
 ) -> CurriculumRequestResponse:
     """Accept a curriculum request and return its durable receipt ID.
@@ -1245,7 +1256,7 @@ async def submit_curriculum_request(
                 status_code=503,
                 detail="Curriculum request receipts are unavailable"
                 " — the education database is not migrated",
-            )
+            ) from exc
         raise
 
     if receipt is None:
@@ -1287,7 +1298,8 @@ async def submit_curriculum_request(
 
 @router.get("/curriculum-requests/latest", response_model=CurriculumRequestStatusResponse)
 async def get_latest_curriculum_request(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CurriculumRequestStatusResponse:
     """Read the most recent curriculum request receipt.
 
@@ -1319,7 +1331,8 @@ async def get_latest_curriculum_request(
 @router.get("/curriculum-requests/{request_id}", response_model=CurriculumRequestStatusResponse)
 async def get_curriculum_request(
     request_id: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> CurriculumRequestStatusResponse:
     """Read one curriculum request receipt by its immutable request ID."""
     pool = _pool(db)
@@ -1333,7 +1346,7 @@ async def get_curriculum_request(
         if isinstance(exc, asyncpg.DataError):
             raise HTTPException(
                 status_code=422, detail=f"Malformed curriculum request ID: {request_id}"
-            )
+            ) from exc
         raise
 
     if row is None:

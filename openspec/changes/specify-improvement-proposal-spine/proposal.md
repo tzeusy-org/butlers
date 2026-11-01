@@ -1,5 +1,15 @@
 # Specify unified improvement proposals and gated amendment PRs
 
+## Current fold-in disposition
+
+The complete `core-skills` delta for `AGENTS.md Read/Write Access`
+(`REQ-core-skills-004`) has moved to
+`generalist-lead-focused-delegation/specs/core-skills/spec.md`. This source is emptied of that
+moved delta and remains active, unarchived, for its 20 `improvement-proposal-spine` requirements
+and 41 scenarios. Its historical drafting tasks and all outstanding review, owner approval,
+implementation, verification and archive gates remain recorded in `tasks.md`. The fold does not
+approve the remaining spine, register a tool or activate runtime behavior.
+
 ## Why
 
 `bu-8cdl1.15` ("One improvement-proposal spine + `propose_amendment`") is not packet-complete:
@@ -14,14 +24,16 @@ determined `.15` cannot proceed as implementation and proposed this spec-first p
 
 Three further conflicts make this a specification problem before it can be an implementation one:
 
-1. **`core-skills` already authorizes direct `AGENTS.md` writes**, and the active (unmerged, no
-   open PR found) `k3s-deployment-helm-chart` change goes further, adding a `state`-table DB
-   fallback so a read-only k3s pod can still persist "runtime agent notes" — which get read back
-   and concatenated into the next system prompt. Neither authority currently exists on any
+1. **Historical `core-skills` authority allowed direct `AGENTS.md` writes** ("runtime agent notes", read
+   back into the next system prompt). That authority does not currently exist on any
    runtime-facing MCP tool surface (`write_agents_md`/`append_agents_md` are today only used by
-   tests and other developer-facing tooling, per a full-repo call-site scan), but both remain
-   *latent* direct-write authority that a gated-PR-only identity contract must close off before
-   any future tool wires a runtime session to either path.
+   tests and other developer-facing tooling, per a full-repo call-site scan), but it remains
+   *latent* direct-write authority. The General goal-runtime change now owns the full folded
+   requirement: helpers remain tooling-only, no goal/sandbox or direct/thin-wrapper MCP write
+   path is granted, and any future tracked-roster proposal still requires explicit owner accept
+   through its target adapter. D2 guidance-notes `record` remains distinct. (An earlier draft also had to
+   reconcile the `k3s-deployment-helm-chart` change's `state`-table DB fallback; that change was
+   abandoned and removed, bu-60pwv6.3.)
 2. **QA's `_create_qa_pr` (`src/butlers/core/qa/dispatch.py`) is finding-specific implementation**,
    not generic authority: it carries QA statuses (`healing_attempts`), QA labels, and QA prompt
    assumptions. Its clone/worktree/anonymization/whitelist/push/PR primitives are reusable
@@ -33,8 +45,8 @@ Three further conflicts make this a specification problem before it can be an im
 This change is specification only. It defines the public schema, state machines, target adapters,
 trust boundaries, actor derivation, audit events, dashboard API/UI, retry, concurrency,
 partial-effect, compatibility, and rollback semantics for one unified improvement-proposal spine —
-and it explicitly reconciles the `core-skills`/k3s conflict and draws the QA-substrate boundary
-so neither is a silent authority change. It performs no schema, runtime, Beads, branch, PR,
+and it draws the QA-substrate boundary. The former `core-skills` direct-write boundary is now
+owned by the General fold-in, not a competing delta in this source. It performs no schema, runtime, Beads, branch, PR,
 dashboard, or deployment mutation. It is itself a draft artifact requiring separate owner approval
 before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
 
@@ -71,14 +83,12 @@ before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
     restricted payload only in the privileged detail view, and truthfully surfaces degraded
     sources per this repository's fan-out convention
     (`docs/api_and_protocols/response-conventions.md`) rather than a silent empty/all-clear state.
-- Add a **`[TARGET-STATE]`** MODIFIED requirement to `core-skills`'s "AGENTS.md Read/Write Access"
-  requirement: `write_agents_md`/`append_agents_md` (file path or DB fallback alike) MUST NOT be
-  reachable from any runtime-facing MCP tool surface; any future exposure of agent-notes writing
-  to a butler runtime session MUST route through `propose_amendment` and the PR target adapter
-  instead of a direct call. Developer/deployment tooling callers (migrations, CLI scripts, the
-  existing test suite) are unaffected — this constrains only a *runtime session's* reachable
-  surface, which today is empty (no MCP tool wires to either function), so the change is
-  preventive, not a revocation of exercised behavior.
+- The former **`[TARGET-STATE]`** `core-skills` MODIFIED requirement is folded into the General
+  change's full `AGENTS.md Read/Write Access` block. That block retains developer/deployment
+  helper semantics, the direct/thin-wrapper runtime MCP prohibition, and the conditional
+  owner-accepted `propose_amendment` path for tracked roster-file changes. It also preserves the
+  target's goal/sandbox ban and separate D2 guidance-notes authority. No `core-skills` delta
+  remains in this source.
 - No change to `about/legends-and-lore/rfcs/0021-decision-loop-one-tap-approvals-and-decision-memory.md`,
   `pending_actions`, the approvals executor, `autonomy-suggestions`, or
   `switchboard-rule-promotion`'s baseline requirements — all remain authoritative, unmodified, and
@@ -99,9 +109,9 @@ before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
 
 ### Modified Capabilities
 
-- `core-skills`: adds a `[TARGET-STATE]` boundary constraint to "AGENTS.md Read/Write Access" —
-  no runtime-facing MCP tool surface may reach `write_agents_md`/`append_agents_md` directly;
-  additive to developer/deployment callers, preventive (not revocation) for runtime sessions.
+None remain in this source: the whole `core-skills` block moved to
+`generalist-lead-focused-delegation`, with the existing requirement ID and complete eight-name
+scenario union. The new `improvement-proposal-spine` capability remains here.
 
 ## Impact
 
@@ -116,21 +126,12 @@ before any implementation of `bu-8cdl1.15` or its decomposed children may begin.
 - **Affected RFCs**: none amended by this draft. A future implementation PR should record the
   spine's wire contract as a new RFC (next free number: **0033**, since 0001-0032 are taken) per
   `design.md` D1, rather than amending RFC 0021 (a materially different trust model — see D1).
-- **`core-skills` / `k3s-deployment-helm-chart` sequencing (named, not silent)**: this draft's
-  `core-skills` delta is authored as a full superset — it carries forward, verbatim, every
-  scenario the unarchived `k3s-deployment-helm-chart` change's own `AGENTS.md Read/Write Access`
-  MODIFIED block already defines (the DB-fallback-on-read-only-filesystem behavior), and adds
-  the new runtime-tool-surface boundary scenario on top. Both changes still modify the *same*
-  requirement name against the *same* current baseline, which `check-spec-overwrites`
-  (`scripts/check_spec_overwrites.py`) and `openspec archive` treat as an ordinary two-change
-  collision, not a conflict this draft can resolve unilaterally by archive order. This is named
-  here as the exact prerequisite: whichever of the two changes archives second MUST rebase its
-  `core-skills` delta onto the requirement text the other one left in `openspec/specs/` before
-  archiving (mechanical, since this draft's DB-fallback scenarios are copied verbatim from
-  `k3s-deployment-helm-chart`'s own text — see `design.md` D13). No implementation may treat either
-  change as archived out of this order. **Update 2026-09-26:** `k3s-deployment-helm-chart` was
-  abandoned and removed (bu-60pwv6.3), so this sequencing no longer applies; the copied
-  DB-fallback scenarios are dropped under task 2.5 (bu-60pwv6.27).
+- **Folded `core-skills` delta**: General now owns `REQ-core-skills-004`, combining the five
+  shared helper/content/workflow scenarios, both former [TARGET-STATE] scenarios and its existing
+  goal/sandbox scenario. This source no longer carries or later archives that block. The unarchived
+  `k3s-deployment-helm-chart` change was abandoned and removed (bu-60pwv6.3), so no cross-change
+  sequencing applies; the DB-fallback text once copied from it was dropped under task 2.5
+  (bu-60pwv6.27).
 - **QA publisher primitives**: remain QA-owned. This draft names the exact primitives (managed
   clone, isolated worktree, path allowlist, minimal-credential environment,
   anonymize/validate_anonymized, GitHub publish-and-reconcile) as substrate a future PR adapter

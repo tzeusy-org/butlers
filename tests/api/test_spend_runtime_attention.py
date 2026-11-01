@@ -14,7 +14,7 @@ import pytest
 
 from butlers.api.app import create_app as create_guarded_app
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.spend import _get_db_manager
+from butlers.api.deps import get_db_optional
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 pytestmark = pytest.mark.unit
@@ -31,7 +31,7 @@ async def test_spend_attention_preserves_empty_vs_unavailable(app, monkeypatch, 
     pool.fetchrow = AsyncMock(return_value=None)
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
     headers = {"X-API-Key": "owner-key"}
 
     async with httpx.AsyncClient(
@@ -68,7 +68,7 @@ async def test_spend_attention_is_sanitized_and_owner_gated(monkeypatch) -> None
     )
     db = MagicMock(spec=DatabaseManager)
     db.credential_shared_pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db_optional] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"

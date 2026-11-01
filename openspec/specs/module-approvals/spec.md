@@ -191,6 +191,10 @@ Scope: v1-mandatory
 
 Standing approval rules MUST enable auto-approval of repeatable safe invocations. Each rule has `id`, `tool_name`, `arg_constraints` (JSONB), `description`, `created_at`, `active`, and optional `created_from`, `expires_at`, `max_uses`, `use_count`. A rule's `created_from` is historical action provenance rather than a deletion-blocking foreign key, so action retention does not mutate or delete a retained rule.
 
+ID: REQ-module-approvals-003
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses
+Scope: v1-mandatory
+
 #### Scenario: Create a standing rule
 
 - **WHEN** `create_approval_rule` is called with authenticated human actor, tool name, constraints, and description
@@ -225,6 +229,29 @@ Standing approval rules MUST enable auto-approval of repeatable safe invocations
 - **AND** expired rules (`expires_at < now`) are excluded
 - **AND** exhausted rules (`use_count >= max_uses`) are excluded
 
+#### Scenario: Concurrent use of a bounded rule
+
+- **WHEN** several gated invocations race for a rule that has fewer remaining uses than callers (`max_uses` minus `use_count`)
+- **THEN** each use is claimed atomically with the insert of its `approved` action, so exactly the remaining uses are admitted
+- **AND** the remaining invocations are parked as `pending` actions
+- **AND** `use_count` never exceeds `max_uses`
+- **AND** an inactive, expired, or exhausted rule claims nothing and parks the invocation
+
+#### Scenario: A rule use is consumed at admission
+
+- **WHEN** a rule-matched invocation is admitted
+- **THEN** the rule's `use_count` is incremented by the admission claim, before the tool executes
+- **AND** the executor does not increment `use_count` again
+- **AND** a failed execution leaves the use consumed, because an approved action was issued
+- **AND** the email recipient guard claims its rule use through the same helper and parks when the rule cannot be claimed
+
+#### Scenario: Dashboard rule creation names its butler and is validated like the MCP tool
+
+- **WHEN** `POST /api/approvals/rules` is called
+- **THEN** `butler` is required (missing returns 422), an unknown butler returns 404, and a butler whose approvals pool is unavailable returns 503
+- **AND** the rule is written into that butler's schema
+- **AND** the same risk-tier validation as `create_approval_rule` runs first, so a high-risk tool without an `exact` or `pattern` constraint, or without `expires_at` or `max_uses`, returns 400 with the same message
+
 #### Scenario: Revoke a standing rule
 
 - **WHEN** `revoke_approval_rule` is called with authenticated human actor
@@ -257,13 +284,17 @@ The module MUST classify tools into explicit risk tiers (`low`, `medium`, `high`
 
 ### Requirement: Shared Executor Path
 
-All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, immutable success audit event, and any auto-approval `use_count` increment. The terminal state and audit append are atomic when the runtime provides a transaction.
+All actual execution — auto-approved actions and manually approved actions dispatched by their owning butler — MUST go through `execute_approved_action()`. The executor calls the original tool function, normalizes non-dict return values to `{"value": ...}`, and only then persists a successful `execution_result`, `executed` status, and immutable success audit event. An auto-approval `use_count` increment is not made here: the use is claimed at admission. The terminal state and audit append are atomic when the runtime provides a transaction.
 
 Direct non-Messenger producers covered by the executable-command contract MUST
 persist a declared executable command: the owning daemon, registered original
 tool name, and exact handler kwargs are validated before the row can be
 parked. The owning daemon validates its declared command contracts against the
 registered MCP surface during startup.
+
+ID: REQ-module-approvals-004
+Source: RFC-0021; bu-s11n0s.17 bounded standing-rule uses
+Scope: v1-mandatory
 
 #### Scenario: Tool execution succeeds
 
@@ -681,3 +712,61 @@ immediate execution when approval is not required.
 - **THEN** dispatch MUST fail without rewriting or guessing its executable arguments
 - **AND** the action MUST remain `approved` with `execution_result = null`
 - **AND** an immutable `action_execution_failed` event MUST be recorded
+
+### Requirement: Approval Cards Show the Exact Stored Call
+
+An owner-targeted `approval_request` card for a single parked action SHALL render
+its recipients and content from the stored, unredacted `pending_actions.tool_args`
+through a deterministic per-tool preview registry, never from model-written text.
+The model-written `why`, `blast_radius` and `reversibility` fields SHALL appear
+only under an "Assistant says" label as claims, with URLs defanged and the text
+rendered inert. The "Started by" line SHALL come from server rows, not from
+message text. The card SHALL offer Approve and Reject only when the whole stored
+call is shown and fits within about 3,500 rendered characters; in every other
+case it SHALL offer Open only: no registered preview, a renderer error, an
+argument or recipient the preview cannot enumerate, a shown value containing a C0/C1
+control character (other than a newline) or a Unicode format character, an
+over-budget call, and any tool whose effect class is `administer` or protected or
+consequential actuation. The budget SHALL be measured in UTF-16 code units.
+The RFC 0023 `presentation_key` and the HMAC callback token SHALL be unchanged.
+
+Each presentation SHALL record `args_digest`, the SHA-256 of the canonical JSON
+(sorted keys, no whitespace) of the stored `tool_args` it rendered, under the
+pending action's row lock when the handoff starts. If the stored call no longer
+matches the rendered digest, the handoff SHALL NOT start, and a card SHALL NOT be
+handed off with a NULL digest. A connector-authenticated card decision SHALL take
+the pending action's row lock and refuse with HTTP 409 "changed since shown" when
+any recorded presentation digest differs from the digest of the stored call,
+executing nothing; a dashboard approval binds to the call the dashboard displayed
+and does not use that check. Both dashboard approval routes SHALL compare the
+owner-safe displayed tool identity and argument digest against the locked pending
+row before edits, approval, audit or dispatch. Summary-only surfaces SHALL show
+the complete safe stored-call preview before enabling approval, and delayed undo
+callbacks SHALL retain that reviewed snapshot rather than substitute a refreshed
+call. Missing, stale, malformed or unshowable snapshots SHALL execute nothing.
+Downgrading the migration that adds the digest column
+SHALL refuse while any presentation carries a digest.
+
+#### Scenario: Email card shows the call
+
+- **WHEN** an email send is parked and its card is rendered
+- **THEN** the card lists every To and Cc address, the subject and the full body from stored `tool_args`
+- **AND** the assistant's explanation appears only under "Assistant says"
+- **AND** Approve, Reject and Open are offered
+
+#### Scenario: Call cannot be shown whole
+
+- **WHEN** the body exceeds the fit budget, the tool has no registered preview, or the tool is `administer`
+- **THEN** the card offers Open only
+
+#### Scenario: Telegram reaction card shows the exact native call
+
+- **WHEN** a `telegram_react_to_message` call is parked with nonempty text `chat_id` and `emoji` and a positive integer `message_id` excluding booleans
+- **THEN** Telegram and dashboard previews show all three exact stored arguments through the shared registry
+- **AND** a Telegram card that passes the existing safety and fit checks offers Approve, Reject and Open
+- **AND** missing or malformed arguments or unknown reaction kwargs, including empty future arguments, offer Open only
+
+#### Scenario: Stored call changed after presentation
+
+- **WHEN** the stored `tool_args` change after a card was presented and the owner taps Approve
+- **THEN** nothing executes, the action stays pending, and the reply says the call changed since shown

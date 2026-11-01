@@ -44,7 +44,7 @@ import asyncio
 import logging
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Thread
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -56,12 +56,14 @@ import uvicorn
 from fastapi import FastAPI
 from prometheus_client import REGISTRY, generate_latest
 
+from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.discretion import (
     DiscretionEvaluator,
     DiscretionResult,
     classify_ignore_kind,
 )
 from butlers.connectors.discretion_dispatcher import DiscretionDispatcher
+from butlers.connectors.email_spans import email_untrusted_spans
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.live_listener.checkpoint import (
@@ -98,13 +100,33 @@ from butlers.connectors.metrics import ConnectorMetrics
 from butlers.core.logging import configure_logging
 from butlers.credential_store import CredentialStore, create_system_global_credential_store_from_env
 
+_DESCRIPTOR = connector_descriptor("live_listener")
+
 logger = logging.getLogger(__name__)
+
+
+def wall_clock_observed_at(
+    offset_ts: float,
+    *,
+    wall_now: datetime | None = None,
+    monotonic_now: float | None = None,
+) -> datetime:
+    """Return the UTC wall-clock time of a speech offset taken on the monotonic clock.
+
+    ``offset_ts`` is a ``time.monotonic()`` reading, which has no relation to the Unix epoch, so it
+    is never converted directly. The segment's age on the monotonic clock is subtracted from the
+    current wall time instead; the result is connector-derived, not source-stated. A reading from
+    the future is treated as age zero.
+    """
+    age_s = max(0.0, (time.monotonic() if monotonic_now is None else monotonic_now) - offset_ts)
+    return (wall_now or datetime.now(UTC)) - timedelta(seconds=age_s)
+
 
 # Default health server port for the live-listener connector
 DEFAULT_HEALTH_PORT = 40091
 
 # Connector identity constants
-CONNECTOR_TYPE = "live_listener"
+CONNECTOR_TYPE = _DESCRIPTOR.connector_type
 
 # connector_type value for connectors.filtered_events rows. Deliberately
 # distinct from the underscore-spelled `CONNECTOR_TYPE` above (which is
@@ -112,7 +134,7 @@ CONNECTOR_TYPE = "live_listener"
 # `connectors.*` identity space as checkpoint.py / filter_gate.py, which both
 # use this hyphenated "live-listener" spelling (see
 # butlers.connectors.live_listener.envelope.endpoint_identity).
-_FILTERED_EVENTS_CONNECTOR_TYPE = "live-listener"
+_FILTERED_EVENTS_CONNECTOR_TYPE = _DESCRIPTOR.stored_event_type
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +330,7 @@ class LiveListenerConnector:
         logger.info("live-listener: stopping connector")
 
         # Cancel pipeline tasks
-        for mic, task in self._pipeline_tasks.items():
+        for task in self._pipeline_tasks.values():
             task.cancel()
         for mic, task in self._pipeline_tasks.items():
             try:
@@ -470,8 +492,7 @@ class LiveListenerConnector:
             mic_state.last_error = None
             logger.info("live-listener: mic=%s pipeline running", mic)
             # Keep running until cancelled
-            while True:
-                await asyncio.sleep(1.0)
+            await asyncio.Event().wait()
 
         mic_state.connected = False
 
@@ -538,16 +559,16 @@ class LiveListenerConnector:
 
         self._mic_states[mic].transcription_healthy = True
         logger.info(
-            "live-listener: transcription mic=%s confidence=%.2f text=%r",
+            "live-listener: transcription mic=%s confidence=%.2f chars=%d",
             mic,
             result.confidence,
-            result.text,
+            len(result.text),
         )
 
         # Computed once here (from the immutable speech segment) and reused by
         # both the discretion-IGNORE filtered_events path and the FORWARD
         # envelope-construction path below.
-        observed_at = datetime.fromtimestamp(segment.offset_ts, tz=UTC)
+        observed_at = wall_clock_observed_at(segment.offset_ts)
         unix_ms = unix_ms_from_datetime(observed_at)
 
         # --- Filter gate ---
@@ -686,9 +707,9 @@ class LiveListenerConnector:
         ll_metrics.observe_e2e_latency(e2e_elapsed)
 
         logger.debug(
-            "live-listener: submitted utterance mic=%s text=%r e2e=%.3fs",
+            "live-listener: submitted utterance mic=%s chars=%d e2e=%.3fs",
             mic,
-            result.text[:60],
+            len(result.text),
             e2e_elapsed,
         )
 
@@ -748,7 +769,7 @@ class LiveListenerConnector:
 
         buffer.record(
             external_message_id=event_id,
-            source_channel="voice",
+            source_channel=_DESCRIPTOR.channel,
             sender_identity="ambient",
             subject_or_preview=text[:200] if text else None,
             filter_reason=FilteredEventBuffer.reason_discretion_ignore(kind),
@@ -760,6 +781,8 @@ class LiveListenerConnector:
                 external_thread_id=None,
                 observed_at=observed_at.astimezone(UTC).isoformat(),
                 sender_identity="ambient",
+                untrusted_spans=email_untrusted_spans(text, subject="", has_attached_message=False)
+                or None,
                 raw={},
             ),
         )

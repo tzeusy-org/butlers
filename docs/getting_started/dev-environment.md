@@ -124,6 +124,13 @@ migrations create per-butler database roles (`butler_{schema}_rw` and
 calls can succeed.  `scripts/init-db.sql` handles this step.  If you skip it,
 runtime role switches will fail with a "permission denied to set role" error.
 
+The supported online runner now refuses missing or untrusted reviewed bootstrap
+before its first database side effect, including ordinary dev startup. Direct
+runtime connection fallback does not waive this ordering. See the
+[reviewed bootstrap procedure](../data_and_storage/reviewed-bootstrap.md) for an
+existing core195 database, configured authentication and managed-surface reruns.
+Bootstrap does not select or enable the protected restore executor.
+
 ### Step 3: Start Butler Daemons
 
 Start all butlers:
@@ -202,7 +209,7 @@ uv run pytest tests/test_foo.py -q --tb=short
 
 For agent work, run `make test-plan` before widening a scope. It prints a
 dirty-worktree-aware suggestion but does not execute pytest. The exact test
-ladder and CI-shaped final commands live in `AGENTS.md`.
+ladder and CI-shaped final commands live in [CI and test scope policy](../testing/ci.md).
 
 ## Verification
 

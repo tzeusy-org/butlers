@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from butlers.testing.clock import FakeClock
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
@@ -1107,13 +1109,14 @@ async def test_insight_scan_pretrip_survives_wall_clock_crossing_utc_midnight(
 
     scan_instant = datetime(2026, 8, 23, 23, 58, 35, tzinfo=UTC)
     broker_instant = datetime(2026, 8, 24, 0, 16, 40, tzinfo=UTC)
+    broker_clock = FakeClock(broker_instant)
 
     class _BrokerClock(datetime, metaclass=_RealInstanceCheck):
         """The broker's own clock, already on the far side of UTC midnight."""
 
         @classmethod
         def now(cls, tz=None) -> datetime:
-            return broker_instant
+            return broker_clock.now()
 
     # The autouse fixture already points the job module's date/datetime at the
     # frozen classes; both read ``_NOW`` at call time, so rebinding it here moves

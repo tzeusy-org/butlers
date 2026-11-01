@@ -134,10 +134,13 @@ export interface ConnectorDetailViewProps {
   onReauth?: () => void
   /** Explicit recovery capability resolved from the connector type. */
   recovery?: ConnectorRecovery
-  /** Called when user clicks "pause poll". */
+  /** Pause the confirmed non-paused connector through the audited server route. */
   onPause?: () => void
-  /** Called when user clicks "run now". */
+  /** Resume from pause only; this does not request an immediate poll. */
   onRunNow?: () => void
+  /** Covers the lifecycle POST and its awaited reader refreshes only. */
+  lifecyclePending?: boolean
+  lifecycleError?: string | null
 }
 
 /** Minimal query state a secondary reader needs to render loading/error honestly. */
@@ -169,6 +172,8 @@ export function ConnectorDetailView({
   recovery,
   onPause,
   onRunNow,
+  lifecyclePending = false,
+  lifecycleError,
 }: ConnectorDetailViewProps) {
   const info = deriveConnectorDispatchInfo(connector)
   const displayName = connector.connector_type.replace(/_/g, ' ')
@@ -437,25 +442,37 @@ export function ConnectorDetailView({
               }
             />
             {onPause || onRunNow ? (
-              <div className="mt-3.5 flex gap-2">
-                {onPause && (
-                  <button
-                    type="button"
-                    onClick={onPause}
-                    className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors"
-                  >
-                    pause poll
-                  </button>
+              <div className="mt-3.5" role="group" aria-label="Connector lifecycle" aria-busy={lifecyclePending}>
+                <div className="flex gap-2">
+                  {onPause && (
+                    <button
+                      type="button"
+                      onClick={onPause}
+                      disabled={lifecyclePending || connector.state === 'paused'}
+                      className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      Pause
+                    </button>
+                  )}
+                  {onRunNow && (
+                    <button
+                      type="button"
+                      onClick={onRunNow}
+                      disabled={lifecyclePending || connector.state !== 'paused'}
+                      className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      Resume
+                    </button>
+                  )}
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Resume clears pause; state stays unknown until the next heartbeat.
+                </p>
+                {connector.state !== 'paused' && (
+                  <p className="mt-1 text-xs text-muted-foreground">Resume is available only while paused.</p>
                 )}
-                {onRunNow && (
-                  <button
-                    type="button"
-                    onClick={onRunNow}
-                    className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors"
-                  >
-                    run now
-                  </button>
-                )}
+                {lifecyclePending && <p role="status" className="mt-2 text-xs text-muted-foreground">Updating connector state.</p>}
+                {lifecycleError && <p role="alert" className="mt-2 text-xs text-muted-foreground">{lifecycleError}</p>}
               </div>
             ) : null}
           </div>

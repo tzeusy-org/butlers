@@ -2,6 +2,8 @@
 
 Status: adopted target; implementation and live execution remain outstanding.
 
+Governing doctrine: [vision.md rule 5, model selection is resolved from `public.model_catalog` and edited via the dashboard Models tab](../../heart-and-soul/vision.md#non-negotiable-rules) and [v1.md, Dashboard](../../heart-and-soul/v1.md#dashboard) (the settings console includes the model catalog).
+
 The storage/API, restricted ingress/retention, and diagnostic executor sections below are part of this RFC's normative contract. Exact original adoption SHA256: `d46d758108064d4ea5d00cab2a94a8ebc82a18f54dea5a2b9393b7f1cc25e11e`.
 
 This publication incorporates the exact adopted contract sections User experience and state model through Specification scenarios, preserving all clauses. Historical funnel/review text stays provenance, not future implementation authority.

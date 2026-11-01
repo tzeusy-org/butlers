@@ -391,14 +391,6 @@
       "excerpt": "Health Status"
     }
   ],
-  "2026-02-24-alpha-release-mvp/connector-gmail/[TARGET-STATE] Email Metadata Storage for Tier 2": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9cf1345d9d33",
-      "excerpt": "[TARGET-STATE] Email Metadata Storage for Tier 2"
-    }
-  ],
   "2026-02-24-alpha-release-mvp/core-daemon/Configuration Loading and Validation": [
     {
       "kind": "requirement",
@@ -1015,22 +1007,6 @@
       "excerpt": "Missing channel identifier fallback"
     }
   ],
-  "2026-02-24-contacts-identity-model/core-notify/Notify tool registration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0b666cda436a",
-      "excerpt": "Notify tool registration"
-    }
-  ],
-  "2026-02-24-contacts-identity-model/core-notify/Role-based approval gating for notify": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "680d03f3dd53",
-      "excerpt": "Role-based approval gating for notify"
-    }
-  ],
   "2026-02-24-contacts-identity-model/dashboard-approvals/Approvals queue dashboard page": [
     {
       "kind": "requirement",
@@ -1583,44 +1559,6 @@
       "excerpt": "- **AND** existing scores MUST remain identical to pre-change behavior for facts without enriched metadata"
     }
   ],
-  "2026-04-16-dunbar-group-aware-interaction-scoring/passive-interaction-sync/Message-based interaction detection": [
-    {
-      "kind": "clause",
-      "scenario": "Group-aware pre-grouping by chat identity",
-      "digest": "b271d6b6a0b7",
-      "excerpt": "- **AND** it SHALL collect DISTINCT `source_sender_identity` values per chat per day"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Detect email conversations",
-      "digest": "02d3a9bb888d",
-      "excerpt": "- **AND** sender resolution SHALL match the sender email address against `public.contact_info` entries of type `'email'`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Interaction fact creation",
-      "digest": "2a0215184f8c",
-      "excerpt": "- `contact_id` = the resolved contact UUID"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Unresolved senders are skipped",
-      "digest": "5d7dde0d5511",
-      "excerpt": "- **WHEN** `source_sender_identity` does not match any row in `public.contact_info` for the expected type"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Unresolved senders are skipped",
-      "digest": "bd9359849ecd",
-      "excerpt": "- **AND** it SHALL increment an `unresolved_senders` counter in the return stats"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Owner messages are excluded from contact resolution",
-      "digest": "71e6418df7f9",
-      "excerpt": "- **WHEN** the resolved contact has role `'owner'` in `public.contacts.roles`"
-    }
-  ],
   "2026-04-17-reminders-as-calendar-native-events/module-calendar/Calendar event authorship tracking": [
     {
       "kind": "requirement",
@@ -1691,14 +1629,6 @@
       "scenario": null,
       "digest": "5281b63190f8",
       "excerpt": "Tests are classified into four tiers with increasing scope, cost, and infrastructure requirements. Markers control wh..."
-    }
-  ],
-  "2026-04-25-batch-conversation-connectors/telegram-user-client-conversation-history/Batch Envelope Format": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "92fb5071f85d",
-      "excerpt": "Flushed conversation snippets SHALL be submitted as a single ingest.v1 envelope with conversation history in the payl..."
     }
   ],
   "2026-04-25-credential-authority-model/core-credentials/Owner entity_info resolution utility": [
@@ -1987,14 +1917,6 @@
       "scenario": null,
       "digest": "0f0197a49273",
       "excerpt": "Spawner reads hot config fields per-spawn"
-    }
-  ],
-  "2026-04-25-runtime-config-seed-and-manage/runtime-config-dashboard-ui/Config tab displays runtime config from DB": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1dc232e76d61",
-      "excerpt": "Config tab displays runtime config from DB"
     }
   ],
   "2026-04-25-s3-blob-storage/core-daemon/Configuration Loading and Validation": [
@@ -2405,14 +2327,6 @@
       "excerpt": "Sidebar Navigation"
     }
   ],
-  "2026-05-13-extend-butler-detail-status-board-chrome/dashboard-butler-management/Butler detail page outer chrome conforms to the status-board archetype": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "11c70e12444c",
-      "excerpt": "Butler detail page outer chrome conforms to the status-board archetype"
-    }
-  ],
   "2026-05-13-extend-butler-detail-status-board-chrome/dashboard-butler-management/Chrome components SHALL comply with the token policy": [
     {
       "kind": "requirement",
@@ -2659,100 +2573,12 @@
       "excerpt": "\"Degraded mode when Prometheus unreachable\" is not in the block"
     }
   ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Audit emission for all lifecycle actions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1bd376ebcf0d",
-      "excerpt": "Audit emission for all lifecycle actions"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Connector soft-delete semantics": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a3e5c02a97e2",
-      "excerpt": "Connector soft-delete semantics"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Credential masking on rotate-token": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c2c2dd879fb1",
-      "excerpt": "Credential masking on rotate-token"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/No credentials in lifecycle API responses": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "4aca669a5492",
-      "excerpt": "No credentials in lifecycle API responses"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Per-action lifecycle gate matrix": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b918ea8578d3",
-      "excerpt": "Per-action lifecycle gate matrix"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-lifecycle-ceremony/Run-now semantics": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2a048cec3577",
-      "excerpt": "Run-now semantics"
-    }
-  ],
   "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/90-day replay history retention": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "c83ce8735e0f",
       "excerpt": "90-day replay history retention"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/Audit emission on bulk replay": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2523eded0e4e",
-      "excerpt": "Audit emission on bulk replay"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/Bulk replay concurrency contract": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9001d5b0fe68",
-      "excerpt": "Bulk replay concurrency contract"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/HTTP 409 on unsafe-channel replay attempt": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "e1b8485cb3d3",
-      "excerpt": "HTTP 409 on unsafe-channel replay attempt"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/Per-channel replay safety classification": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c894bca9c705",
-      "excerpt": "Per-channel replay safety classification"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-idempotency-policy/connector_registry.replay_safe column": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "623e44cb7067",
-      "excerpt": "connector_registry.replay_safe column"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/connector-replay-queue/Bulk Replay Endpoint": [
@@ -2769,46 +2595,6 @@
       "scenario": null,
       "digest": "492e0076bb42",
       "excerpt": "Replay History Endpoint"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/60-second TTL cache": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9c4f617dd74c",
-      "excerpt": "60-second TTL cache"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Aggregate response field shape": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c2a4e3212df7",
-      "excerpt": "Aggregate response field shape"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Degraded-mode response shape": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "bf95644d090d",
-      "excerpt": "Degraded-mode response shape"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Pipeline endpoint uses TTL cache or materialized view": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "fc19df2869ce",
-      "excerpt": "Pipeline endpoint uses TTL cache or materialized view"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/connector-state-aggregates/Prometheus PromQL is the aggregate source of truth": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2c0e0c48484a",
-      "excerpt": "Prometheus PromQL is the aggregate source of truth"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/ingestion-event-registry/Available Connectors Discovery Endpoint": [
@@ -2907,22 +2693,6 @@
       "excerpt": "\"Audit log entry on mutation\" is not in the block"
     }
   ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Audit emission for priority contact mutations": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "4dc1a17aa7f3",
-      "excerpt": "Audit emission for priority contact mutations"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Cascade-delete emits audit entry": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b67dd5b9cc65",
-      "excerpt": "Cascade-delete emits audit entry"
-    }
-  ],
   "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/GMAIL_KNOWN_CONTACTS_PATH deprecation": [
     {
       "kind": "requirement",
@@ -2937,38 +2707,6 @@
       "scenario": null,
       "digest": "ec953a5b8990",
       "excerpt": "GmailPolicyEvaluator wiring"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Indefinite retention": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b56507b9421a",
-      "excerpt": "Indefinite retention"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/No credentials in priority-contact API responses": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c58f73f1e355",
-      "excerpt": "No credentials in priority-contact API responses"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Priority contacts REST API": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7746e5d1f225",
-      "excerpt": "Priority contacts REST API"
-    }
-  ],
-  "2026-05-19-redesign-ingestion-dispatch-console/ingestion-priority-contacts/Priority contacts data model": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "ed0c7fe533a4",
-      "excerpt": "Priority contacts data model"
     }
   ],
   "2026-05-19-redesign-ingestion-dispatch-console/ingestion-ui-information-architecture/301 redirects from legacy tab parameters": [
@@ -3065,14 +2803,6 @@
       "scenario": null,
       "digest": "6d32b47d7ced",
       "excerpt": "Entity Hop view (`/entities/hop`)"
-    }
-  ],
-  "2026-05-20-relationship-tabs-to-entities/dashboard-relationship/Entity index page (`/entities`)": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a75ab859a7f6",
-      "excerpt": "Entity index page (`/entities`)"
     }
   ],
   "2026-05-20-relationship-tabs-to-entities/dashboard-relationship/Social Map preservation": [
@@ -3631,36 +3361,12 @@
       "excerpt": "- **AND** when MTTR is computed over an empty sample, the cell shows `—` and the sub-label reads `no terminal cases i..."
     }
   ],
-  "2026-06-13-redesign-qa-dossier/qa-triage/Journal Event Emission — Triage": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b6764c75949a",
-      "excerpt": "Journal Event Emission — Triage"
-    }
-  ],
-  "2026-06-13-redesign-secrets-passport/core-credentials/Audit Action Enum Extension for Credential Lifecycle": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2077c1fe6c55",
-      "excerpt": "Audit Action Enum Extension for Credential Lifecycle"
-    }
-  ],
   "2026-06-13-redesign-secrets-passport/dashboard-api/Audit Log Filter by Credential Key": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "c70786da9f0b",
       "excerpt": "Audit Log Filter by Credential Key"
-    }
-  ],
-  "2026-06-13-redesign-secrets-passport/dashboard-api/Audit-History and Breaks-Catalogue Endpoints": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9b812277d597",
-      "excerpt": "Audit-History and Breaks-Catalogue Endpoints"
     }
   ],
   "2026-06-13-redesign-secrets-passport/dashboard-api/Generic Butler Secrets CRUD (compatibility)": [
@@ -3671,28 +3377,12 @@
       "excerpt": "Generic Butler Secrets CRUD (compatibility)"
     }
   ],
-  "2026-06-13-redesign-secrets-passport/dashboard-api/Response Envelope Conformance for `/api/secrets/*` and `/api/oauth/*`": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d884b013b1a2",
-      "excerpt": "Response Envelope Conformance for `/api/secrets/*` and `/api/oauth/*`"
-    }
-  ],
   "2026-06-13-redesign-settings-dispatch-console/dashboard-approvals/Approvals Policy (Quiet Hours)": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "86d32c0806dc",
       "excerpt": "Approvals Policy (Quiet Hours)"
-    }
-  ],
-  "2026-06-13-redesign-settings-dispatch-console/dashboard-model-settings/Model Catalog Settings API": [
-    {
-      "kind": "clause",
-      "scenario": "List catalog entries (server-sorted)",
-      "digest": "9b6331bbe6df",
-      "excerpt": "- **AND** each entry includes `id`, `alias`, `runtime_type`, `model_id`, `extra_args`, `complexity_tier`, `enabled`, ..."
     }
   ],
   "2026-06-13-redesign-settings-dispatch-console/dashboard-model-settings/Routing Selection Contract": [
@@ -3763,14 +3453,6 @@
       "scenario": null,
       "digest": "ac1544449998",
       "excerpt": "Meeting-Prep Rail Read"
-    }
-  ],
-  "2026-06-24-calendar-prep-rail/calendar-overlay-aggregation/Relationship Prep Contribution Job Registration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7ca8e9b067bb",
-      "excerpt": "Relationship Prep Contribution Job Registration"
     }
   ],
   "2026-06-24-health-dashboard-overview-redesign/butler-health/Health Insight Scan Job": [
@@ -3871,22 +3553,6 @@
       "excerpt": "Context-Bus Gating at the notify() Owner-Default Path"
     }
   ],
-  "2026-07-11-attention-ledger-broker/proactive-insight-engine/Attention Ledger Recording of Delivered/Coalesced Candidates": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c0bfd3e20a33",
-      "excerpt": "Attention Ledger Recording of Delivered/Coalesced Candidates"
-    }
-  ],
-  "2026-07-11-spawner-undelivered-reply-failed-session/core-spawner/Spawner Session Lifecycle": [
-    {
-      "kind": "scenario",
-      "scenario": "Failed session - spawner fallback dispatch",
-      "digest": "9627fda91da7",
-      "excerpt": "\"Failed session - spawner fallback dispatch\" is not in the block"
-    }
-  ],
   "2026-07-14-entity-keyed-preferred-channel/core-notify/Preferred-channel resolution for contact-targeted notifications": [
     {
       "kind": "requirement",
@@ -3971,76 +3637,6 @@
       "scenario": "Ledger write failure never discards delivery or a queued row",
       "digest": "564e12ed984c",
       "excerpt": "\"Ledger write failure never discards delivery or a queued row\" is not in the block"
-    }
-  ],
-  "2026-07-19-park-owner-default-notifications/core-scheduler/Tick Handler": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b930417dfde1",
-      "excerpt": "Additionally, `tick()` SHALL perform deadline evaluation, event-chain trigger detection, and a deferred-notification ..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Deferred notification flush runs each tick",
-      "digest": "2b18e52a42a8",
-      "excerpt": "- **THEN** pending deferred notifications with `deliver_at <= now()` are sent through the standard delivery path"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Seasonal context remains injected during task dispatch",
-      "digest": "430492503b68",
-      "excerpt": "\"Seasonal context remains injected during task dispatch\" is not in the block"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Legacy schema without until_at continues cron dispatch",
-      "digest": "593be00b99d3",
-      "excerpt": "- **WHEN** `tick()` runs against a legacy `scheduled_tasks` table without `until_at`"
-    },
-    {
-      "kind": "clause",
-      "scenario": "Legacy schema without until_at continues cron dispatch",
-      "digest": "38a4119f2bd2",
-      "excerpt": "- **THEN** due cron tasks continue dispatching with the existing safe fallback"
-    }
-  ],
-  "2026-07-19-park-owner-default-notifications/core-spawner/Interactive Reply Delivery Accounting": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b5befe208d39",
-      "excerpt": "On the normal-completion path, the spawner SHALL evaluate whether a route-triggered interactive session attempted a r..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "b30609ec46d4",
-      "excerpt": "A captured notify result counts as delivered only when it is a dict with status in `{ok, deferred}`. `deferred` count..."
-    },
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "89b636d4f699",
-      "excerpt": "Accounting SHALL run only for `route`-triggered sessions from an interactive source channel, shall leave zero-notify ..."
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Undelivered interactive reply is recorded without healing",
-      "digest": "087ecd83bac8",
-      "excerpt": "\"Undelivered interactive reply is recorded without healing\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Null-result notify attempt is undelivered",
-      "digest": "ca1a0247b796",
-      "excerpt": "\"Null-result notify attempt is undelivered\" is not in the block"
-    },
-    {
-      "kind": "scenario",
-      "scenario": "Zero or exempt sessions remain unchanged",
-      "digest": "dad0b311cd43",
-      "excerpt": "\"Zero or exempt sessions remain unchanged\" is not in the block"
     }
   ],
   "2026-07-19-park-owner-default-notifications/dashboard-approvals/Approvals Policy (Quiet Hours)": [
@@ -4153,34 +3749,12 @@
       "excerpt": "LLM-Driven Routing Contract"
     }
   ],
-  "connector-google-calendar/connector-base-spec/ingest.v1 Envelope Schema": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f7dc951b50a2",
-      "excerpt": "The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic mod..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Source identity (IngestSourceV1)",
-      "digest": "48f43f4ce68d",
-      "excerpt": "- **THEN** `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`, `voice`, `google_ca..."
-    }
-  ],
   "connector-ingestion-request-id/connector-base-spec/Deduplication Strategy": [
     {
       "kind": "prose",
       "scenario": null,
       "digest": "06dbf45a816c",
       "excerpt": "The Switchboard computes a stable deduplication key for each ingest submission using a priority-based strategy. Advis..."
-    }
-  ],
-  "connector-ingestion-request-id/connector-base-spec/Request Context Assignment": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "ba2e3c11d24b",
-      "excerpt": "The Switchboard builds an immutable request context from each accepted ingest envelope. This context travels with the..."
     }
   ],
   "connector-ingestion-request-id/core-sessions/Minimum Persisted Session Fields": [
@@ -4207,40 +3781,12 @@
       "excerpt": "Sidebar Navigation"
     }
   ],
-  "connector-live-listener/connector-base-spec/ingest.v1 Envelope Schema": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f7dc951b50a2",
-      "excerpt": "The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic mod..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Source identity (IngestSourceV1)",
-      "digest": "c5b8a904869b",
-      "excerpt": "- **THEN** `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`, `voice`), `provider..."
-    }
-  ],
   "connector-live-listener/connector-source-filter-enforcement/Voice Connector Key Extraction": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "a7bf5868bf98",
       "excerpt": "Voice Connector Key Extraction"
-    }
-  ],
-  "connector-owntracks/connector-base-spec/ingest.v1 Envelope Schema": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f7dc951b50a2",
-      "excerpt": "The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic mod..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Source identity (IngestSourceV1)",
-      "digest": "acb4887f9147",
-      "excerpt": "- **THEN** `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`, `voice`, `owntracks..."
     }
   ],
   "connector-source-filters/connector-base-spec/Connector as Ingestion Primitive": [
@@ -4331,20 +3877,6 @@
       "excerpt": "- **THEN** it executes: `memory-consolidation` (0 */6 * * *, job), `memory-episode-cleanup` (0 4 * * *, job), `collec..."
     }
   ],
-  "dashboard-conversational-input/connector-base-spec/ingest.v1 Envelope Schema": [
-    {
-      "kind": "prose",
-      "scenario": null,
-      "digest": "f7dc951b50a2",
-      "excerpt": "The `ingest.v1` envelope is the canonical format for all messages entering the butler ecosystem. It is a Pydantic mod..."
-    },
-    {
-      "kind": "clause",
-      "scenario": "Source identity (IngestSourceV1)",
-      "digest": "c781a6630209",
-      "excerpt": "- **THEN** `channel` is a `SourceChannel` enum value (`telegram`, `slack`, `email`, `api`, `mcp`, `voice`, `dashboard..."
-    }
-  ],
   "dashboard-conversational-input/core-sessions/Trigger Source Tracking": [
     {
       "kind": "requirement",
@@ -4399,796 +3931,12 @@
       "excerpt": "\"Claude Code adapter invocation\" is not in the block"
     }
   ],
-  "education-butler/education-butler-identity/CLAUDE.md System Prompt": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0205aed81777",
-      "excerpt": "CLAUDE.md System Prompt"
-    }
-  ],
-  "education-butler/education-butler-identity/Database Schema Configuration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "09f3ff924b91",
-      "excerpt": "Database Schema Configuration"
-    }
-  ],
-  "education-butler/education-butler-identity/Education Butler Identity and Runtime": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1f3d7f723d8c",
-      "excerpt": "Education Butler Identity and Runtime"
-    }
-  ],
-  "education-butler/education-butler-identity/MANIFESTO.md Content": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1638de549849",
-      "excerpt": "MANIFESTO.md Content"
-    }
-  ],
   "education-butler/education-butler-identity/Model and Runtime Configuration": [
     {
       "kind": "requirement",
       "scenario": null,
       "digest": "eb20eb717386",
       "excerpt": "Model and Runtime Configuration"
-    }
-  ],
-  "education-butler/education-butler-identity/Module Profile": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "4afafa76b3c8",
-      "excerpt": "Module Profile"
-    }
-  ],
-  "education-butler/education-butler-identity/Roster Directory Structure Compliance": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "721b265e49ed",
-      "excerpt": "Roster Directory Structure Compliance"
-    }
-  ],
-  "education-butler/education-butler-identity/Scheduled Tasks": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "8a9c2a741bc6",
-      "excerpt": "Scheduled Tasks"
-    }
-  ],
-  "education-butler/education-butler-identity/Skill Definitions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "57cc1cfb54b5",
-      "excerpt": "Skill Definitions"
-    }
-  ],
-  "education-butler/education-butler-identity/Switchboard Routing Registration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9407c2331848",
-      "excerpt": "Switchboard Routing Registration"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Diagnostic results inform sequence ordering": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "08fb7a73c040",
-      "excerpt": "Diagnostic results inform sequence ordering"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Goal-directed planning optimizes path to stated goal": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c5ae380ce0f1",
-      "excerpt": "Goal-directed planning optimizes path to stated goal"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Next-node selection returns highest-priority frontier node": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "057c987cbe42",
-      "excerpt": "Next-node selection returns highest-priority frontier node"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Re-planning updates sequence without destroying structure": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "14c7ba56a539",
-      "excerpt": "Re-planning updates sequence without destroying structure"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Sequence numbering on nodes": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "332649c47abc",
-      "excerpt": "Sequence numbering on nodes"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Structural constraints on concept graph": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "48b8ac5e39f5",
-      "excerpt": "Structural constraints on concept graph"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Syllabus lifecycle governs mind map state transitions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b713e3bea1ad",
-      "excerpt": "Syllabus lifecycle governs mind map state transitions"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Topic decomposition into concept graph": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d84011254b34",
-      "excerpt": "Topic decomposition into concept graph"
-    }
-  ],
-  "education-butler/education-curriculum-planning/Topological sort with tie-breaking": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "39cea5968277",
-      "excerpt": "Topological sort with tie-breaking"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Adaptive Probe Sequencing": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0aa5076ed5ea",
-      "excerpt": "Adaptive Probe Sequencing"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Concept Inventory Generation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1a4d9fab1caa",
-      "excerpt": "Concept Inventory Generation"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Diagnostic Summary Generation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "86629748a75b",
-      "excerpt": "Diagnostic Summary Generation"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Flow State Integration": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "05f1bd95ed4d",
-      "excerpt": "Flow State Integration"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Mastery Score Seeding": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "39c443dfcc91",
-      "excerpt": "Mastery Score Seeding"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Probe Result Recording": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "8386bc6ee30e",
-      "excerpt": "Probe Result Recording"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Question Format Constraints": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d5c6e138990e",
-      "excerpt": "Question Format Constraints"
-    }
-  ],
-  "education-butler/education-diagnostic-assessment/Self-Correction of Diagnosed Mastery": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "5d814ddeaaa7",
-      "excerpt": "Self-Correction of Diagnosed Mastery"
-    }
-  ],
-  "education-butler/education-learning-analytics/Cross-Topic Comparison": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "dd6ff11e2fd6",
-      "excerpt": "Cross-Topic Comparison"
-    }
-  ],
-  "education-butler/education-learning-analytics/Estimated Completion Days": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "c05a3b8bf090",
-      "excerpt": "Estimated Completion Days"
-    }
-  ],
-  "education-butler/education-learning-analytics/Feedback Loop Trigger": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7ded9f4fe89f",
-      "excerpt": "Feedback Loop Trigger"
-    }
-  ],
-  "education-butler/education-learning-analytics/Learning Velocity Calculation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "db08162c854f",
-      "excerpt": "Learning Velocity Calculation"
-    }
-  ],
-  "education-butler/education-learning-analytics/Metrics Calculation Correctness": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d8a6fd555098",
-      "excerpt": "Metrics Calculation Correctness"
-    }
-  ],
-  "education-butler/education-learning-analytics/Nightly Snapshot Computation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "6e75671570c3",
-      "excerpt": "Nightly Snapshot Computation"
-    }
-  ],
-  "education-butler/education-learning-analytics/Retention Rate Computation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "3d684f61dd2b",
-      "excerpt": "Retention Rate Computation"
-    }
-  ],
-  "education-butler/education-learning-analytics/Snapshot Uniqueness and Upsert": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7db2a6ccc279",
-      "excerpt": "Snapshot Uniqueness and Upsert"
-    }
-  ],
-  "education-butler/education-learning-analytics/Time-of-Day Distribution Bucketing": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "377d55ec2fb7",
-      "excerpt": "Time-of-Day Distribution Bucketing"
-    }
-  ],
-  "education-butler/education-learning-analytics/Trend Retrieval": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b93f7eaa0c6b",
-      "excerpt": "Trend Retrieval"
-    }
-  ],
-  "education-butler/education-learning-analytics/Weekly Progress Digest": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "53cb3f2125de",
-      "excerpt": "Weekly Progress Digest"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Diagnosed node self-correction": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0ca3e57879dd",
-      "excerpt": "Diagnosed node self-correction"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Map-level mastery summary": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b3dbc565109b",
-      "excerpt": "Map-level mastery summary"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Mastery score computation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b693f8824d3d",
-      "excerpt": "Mastery score computation"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Mastery status state machine": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a6128c9aacdb",
-      "excerpt": "Mastery status state machine"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Mastery threshold for graduation to mastered": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "cbd8a675170a",
-      "excerpt": "Mastery threshold for graduation to mastered"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Node history retrieval": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "1e1942b08287",
-      "excerpt": "Node history retrieval"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Quiz response recording": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b0f5c0c69b6d",
-      "excerpt": "Quiz response recording"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Response type classification": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "6097d019bb43",
-      "excerpt": "Response type classification"
-    }
-  ],
-  "education-butler/education-mastery-tracking/Struggle detection": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "8a26a3148fb7",
-      "excerpt": "Struggle detection"
-    }
-  ],
-  "education-butler/education-mind-map/DAG acyclicity invariant": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d663ab253c18",
-      "excerpt": "DAG acyclicity invariant"
-    }
-  ],
-  "education-butler/education-mind-map/Depth recomputation on edge changes": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9d73afa87b7c",
-      "excerpt": "Depth recomputation on edge changes"
-    }
-  ],
-  "education-butler/education-mind-map/Edge creation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "ca308a4c5f21",
-      "excerpt": "Edge creation"
-    }
-  ],
-  "education-butler/education-mind-map/Edge deletion": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2a835b831995",
-      "excerpt": "Edge deletion"
-    }
-  ],
-  "education-butler/education-mind-map/Frontier computation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9faa4599acfe",
-      "excerpt": "Frontier computation"
-    }
-  ],
-  "education-butler/education-mind-map/Mastery status state machine": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a6128c9aacdb",
-      "excerpt": "Mastery status state machine"
-    }
-  ],
-  "education-butler/education-mind-map/Mind map creation": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "59b10ec0dd60",
-      "excerpt": "Mind map creation"
-    }
-  ],
-  "education-butler/education-mind-map/Mind map lifecycle — auto-completion": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9d392a3d94bb",
-      "excerpt": "Mind map lifecycle — auto-completion"
-    }
-  ],
-  "education-butler/education-mind-map/Mind map lifecycle — staleness abandonment": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0e9136c1a99e",
-      "excerpt": "Mind map lifecycle — staleness abandonment"
-    }
-  ],
-  "education-butler/education-mind-map/Mind map listing": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "89ae4d8b6376",
-      "excerpt": "Mind map listing"
-    }
-  ],
-  "education-butler/education-mind-map/Mind map retrieval": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d5c7496d5dd6",
-      "excerpt": "Mind map retrieval"
-    }
-  ],
-  "education-butler/education-mind-map/Mind map status transitions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "ff007825f6b5",
-      "excerpt": "Mind map status transitions"
-    }
-  ],
-  "education-butler/education-mind-map/Node creation with auto-depth": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "18bf7674640a",
-      "excerpt": "Node creation with auto-depth"
-    }
-  ],
-  "education-butler/education-mind-map/Node field update": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "953b6e1d04cd",
-      "excerpt": "Node field update"
-    }
-  ],
-  "education-butler/education-mind-map/Node listing with optional mastery filter": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "ec15bf42be44",
-      "excerpt": "Node listing with optional mastery filter"
-    }
-  ],
-  "education-butler/education-mind-map/Node retrieval": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a4009041a01d",
-      "excerpt": "Node retrieval"
-    }
-  ],
-  "education-butler/education-mind-map/Subtree queries": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "256c47034bd7",
-      "excerpt": "Subtree queries"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Batch Review Cap — Maximum 20 Pending Schedules Per Mind Map": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "58b9e4bd655b",
-      "excerpt": "Batch Review Cap — Maximum 20 Pending Schedules Per Mind Map"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Ease Factor Adjustment": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "3baa0db5e4c0",
-      "excerpt": "Ease Factor Adjustment"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Failed Recall Reset": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9ca1820258cb",
-      "excerpt": "Failed Recall Reset"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Node State Updates and Mastery Status Transitions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "3b7c74d81908",
-      "excerpt": "Node State Updates and Mastery Status Transitions"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Review Delivery via notify()": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b74c0fea2c17",
-      "excerpt": "Review Delivery via notify()"
-    }
-  ],
-  "education-butler/education-spaced-repetition/SM-2 Interval Calculation — Successful Recall": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "a0c777dde44a",
-      "excerpt": "SM-2 Interval Calculation — Successful Recall"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Schedule Cleanup on Mind Map Completion or Abandonment": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "7122a91a51e9",
-      "excerpt": "Schedule Cleanup on Mind Map Completion or Abandonment"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Schedule Creation via Core Scheduler": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "69f86bd2567a",
-      "excerpt": "Schedule Creation via Core Scheduler"
-    }
-  ],
-  "education-butler/education-spaced-repetition/Schedule Naming Convention": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "8f722af4ceb7",
-      "excerpt": "Schedule Naming Convention"
-    }
-  ],
-  "education-butler/education-teaching-flows/Cross-Session Coherence": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "fb4fd6e9fa02",
-      "excerpt": "Cross-Session Coherence"
-    }
-  ],
-  "education-butler/education-teaching-flows/Curriculum Planning — PLANNING": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2d4549ba1e4e",
-      "excerpt": "Curriculum Planning — PLANNING"
-    }
-  ],
-  "education-butler/education-teaching-flows/Flow Initialization — PENDING and DIAGNOSING": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "3cd298ef379c",
-      "excerpt": "Flow Initialization — PENDING and DIAGNOSING"
-    }
-  ],
-  "education-butler/education-teaching-flows/Flow Listing and Management": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "713435f23e7a",
-      "excerpt": "Flow Listing and Management"
-    }
-  ],
-  "education-butler/education-teaching-flows/Flow State Machine — Valid Transitions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "145461985093",
-      "excerpt": "Flow State Machine — Valid Transitions"
-    }
-  ],
-  "education-butler/education-teaching-flows/Flow State Persistence in KV Store": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "abac0cb2c439",
-      "excerpt": "Flow State Persistence in KV Store"
-    }
-  ],
-  "education-butler/education-teaching-flows/Flow Tool API — Start, Get, Advance, Abandon": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "f96271a9bdca",
-      "excerpt": "Flow Tool API — Start, Get, Advance, Abandon"
-    }
-  ],
-  "education-butler/education-teaching-flows/Mid-Flow User Questions — Contextual Help": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "665b0d26ed98",
-      "excerpt": "Mid-Flow User Questions — Contextual Help"
-    }
-  ],
-  "education-butler/education-teaching-flows/Multi-Channel Delivery via notify()": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0e0ef29eadbb",
-      "excerpt": "Multi-Channel Delivery via notify()"
-    }
-  ],
-  "education-butler/education-teaching-flows/Quizzing Phase — Comprehension Testing": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "2db2a7586c84",
-      "excerpt": "Quizzing Phase — Comprehension Testing"
-    }
-  ],
-  "education-butler/education-teaching-flows/Reviewing Phase — Spaced Repetition Sessions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "3d6bfa7badf8",
-      "excerpt": "Reviewing Phase — Spaced Repetition Sessions"
-    }
-  ],
-  "education-butler/education-teaching-flows/Session Context Assembly": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "923a2ece02c6",
-      "excerpt": "Session Context Assembly"
-    }
-  ],
-  "education-butler/education-teaching-flows/Staleness Detection and Auto-Abandonment": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "e04d1a020c0e",
-      "excerpt": "Staleness Detection and Auto-Abandonment"
-    }
-  ],
-  "education-butler/education-teaching-flows/Teaching Phase — Explain, Question, Evaluate": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "840fffe31fc3",
-      "excerpt": "Teaching Phase — Explain, Question, Evaluate"
-    }
-  ],
-  "education-dashboard/education-api-write/Curriculum request submission endpoint": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "619bba19a51d",
-      "excerpt": "Curriculum request submission endpoint"
-    }
-  ],
-  "education-dashboard/education-api-write/Mastery summary endpoint": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "64fb0fe17af1",
-      "excerpt": "Mastery summary endpoint"
-    }
-  ],
-  "education-dashboard/education-api-write/Mind map status update endpoint": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "baa8256c7f42",
-      "excerpt": "Mind map status update endpoint"
-    }
-  ],
-  "education-dashboard/education-api-write/Pending reviews endpoint": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "96365477e5b2",
-      "excerpt": "Pending reviews endpoint"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Curriculum management actions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "e4325f4a6c8d",
-      "excerpt": "Curriculum management actions"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Education page layout with tab panels": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "ce3879a82618",
-      "excerpt": "Education page layout with tab panels"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Education page route and sidebar entry": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "4e0a6d01aab0",
-      "excerpt": "Education page route and sidebar entry"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Frontend API client and type definitions": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "b4f8f4763011",
-      "excerpt": "Frontend API client and type definitions"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Mastery analytics in Analytics tab": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "bff194159388",
-      "excerpt": "Mastery analytics in Analytics tab"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Mind map graph visualization in Curriculum tab": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "d4e7b3a1c86f",
-      "excerpt": "Mind map graph visualization in Curriculum tab"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Quiz interaction history": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "9f780e129fdb",
-      "excerpt": "Quiz interaction history"
-    }
-  ],
-  "education-dashboard/education-dashboard-ui/Spaced repetition review timeline in Reviews tab": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "563779a92dd3",
-      "excerpt": "Spaced repetition review timeline in Reviews tab"
     }
   ],
   "error-recovery-corrections/core-daemon/Core Tool Surface": [
@@ -5211,30 +3959,6 @@
       "scenario": null,
       "digest": "1623c1f59e9d",
       "excerpt": "The finance butler SHALL run bill checks, subscription alerts, monthly summaries, and intelligence-driven digests"
-    }
-  ],
-  "home-butler-enhancements/home-deterministic-jobs/Entity State Access and HA REST Fallback for Jobs": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "f26e507d0858",
-      "excerpt": "Entity State Access and HA REST Fallback for Jobs"
-    }
-  ],
-  "memory-spec-alignment/memory-discovery-catalog/Butler roles have narrow grants on shared.memory_catalog": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "df5bb65eaa0a",
-      "excerpt": "Butler roles have narrow grants on shared.memory_catalog"
-    }
-  ],
-  "memory-spec-alignment/memory-discovery-catalog/Shared memory discovery catalog table": [
-    {
-      "kind": "requirement",
-      "scenario": null,
-      "digest": "0de661e037d7",
-      "excerpt": "Shared memory discovery catalog table"
     }
   ],
   "memory-spec-alignment/module-memory/Composite scoring for recall": [
@@ -5717,6 +4441,96 @@
       "scenario": "Telegram contact removal with Google contact surviving",
       "digest": "46df9085188c",
       "excerpt": "- **AND** a `contact_sync_deleted_source` activity feed entry is logged for the Telegram source"
+    }
+  ],
+  "2026-06-27-calendar-cross-source-duplicate-review/dashboard-api/Calendar Dedup Rules": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "fe173c06f447",
+      "excerpt": "Calendar Dedup Rules"
+    }
+  ],
+  "2026-06-27-calendar-cross-source-duplicate-review/dashboard-api/Calendar Duplicate-Cluster Review": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "9c6921dd6a9c",
+      "excerpt": "Calendar Duplicate-Cluster Review"
+    }
+  ],
+  "2026-06-27-calendar-cross-source-duplicate-review/dashboard-api/Calendar Keep-Separate Override": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "19f6aece4e10",
+      "excerpt": "Calendar Keep-Separate Override"
+    }
+  ],
+  "2026-06-27-calendar-ics-export-and-printable-agenda/dashboard-api/Calendar ICS Export": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "6f021f4a84fe",
+      "excerpt": "Calendar ICS Export"
+    }
+  ],
+  "2026-06-27-calendar-ics-subscribe-and-import/dashboard-api/Calendar ICS Import With Dedup": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "d6e3616e4ef8",
+      "excerpt": "Calendar ICS Import With Dedup"
+    }
+  ],
+  "2026-06-27-calendar-ics-subscribe-and-import/dashboard-api/Calendar ICS Subscribe Feed": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "a02d53faa1b6",
+      "excerpt": "Calendar ICS Subscribe Feed"
+    }
+  ],
+  "2026-07-10-calendar-mutation-audit-and-undo/dashboard-api/Calendar Mutation Undo Endpoint": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "4a5a3bc8394f",
+      "excerpt": "Calendar Mutation Undo Endpoint"
+    }
+  ],
+  "2026-09-27-calendar-find-time-error-envelope/dashboard-domain-pages/Calendar workspace page with dual-view architecture": [
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "1a576b942676",
+      "excerpt": "- A header with title \"Calendar Workspace\", timezone badge, entry count badge, \"Sync now\" button, and context-appropr..."
+    },
+    {
+      "kind": "prose",
+      "scenario": null,
+      "digest": "471eddf7b391",
+      "excerpt": "- A read-only \"Find time\" panel that consumes `POST /api/calendar/workspace/find-time` and distinguishes unavailable ..."
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Find-time provider failure is visibly unavailable",
+      "digest": "94f196027424",
+      "excerpt": "\"Find-time provider failure is visibly unavailable\" is not in the block"
+    },
+    {
+      "kind": "scenario",
+      "scenario": "Find-time successful zero-slot result remains empty, not degraded",
+      "digest": "d6aabe2d382f",
+      "excerpt": "\"Find-time successful zero-slot result remains empty, not degraded\" is not in the block"
+    }
+  ],
+  "2026-10-11-calendar-invitation-response/dashboard-api/Calendar Mutation Undo Endpoint": [
+    {
+      "kind": "requirement",
+      "scenario": null,
+      "digest": "4a5a3bc8394f",
+      "excerpt": "Calendar Mutation Undo Endpoint"
     }
   ]
 }

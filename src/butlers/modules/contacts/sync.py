@@ -40,6 +40,10 @@ DEFAULT_FORCED_FULL_SYNC_DAYS = 6
 ContactsSyncMode = Literal["incremental", "full"]
 
 
+DEFAULT_FAILURE_ERROR = "contacts sync failed"
+ANCHOR_STALL_ERROR = "contacts source anchor unavailable"
+
+
 class ContactsSyncError(RuntimeError):
     """Base contacts sync error."""
 
@@ -1052,12 +1056,20 @@ class ContactsSyncStateStore:
         self._pool = pool
         self._key_prefix = key_prefix
 
-    async def load(self, *, provider: str, account_id: str) -> ContactsSyncState:
+    async def load(
+        self,
+        *,
+        provider: str,
+        account_id: str,
+        executor: Any | None = None,
+        for_update: bool = False,
+    ) -> ContactsSyncState:
         """Load sync state from the ``contacts_sync_state`` table.
 
         Returns an empty :class:`ContactsSyncState` if no row exists yet.
         """
-        row = await self._pool.fetchrow(
+        db = executor if executor is not None else self._pool
+        row = await db.fetchrow(
             """
             SELECT
                 sync_cursor,
@@ -1069,7 +1081,8 @@ class ContactsSyncStateStore:
                 contact_versions
             FROM contacts_sync_state
             WHERE provider = $1 AND account_id = $2
-            """,
+            """
+            + (" FOR UPDATE" if for_update else ""),
             provider.strip().lower(),
             account_id.strip(),
         )
@@ -1083,7 +1096,7 @@ class ContactsSyncStateStore:
             # future readers see a correct object again. Guarded on
             # jsonb_typeof so this stays idempotent under a racing repair of
             # the same row.
-            await self._pool.execute(
+            await db.execute(
                 """
                 UPDATE contacts_sync_state
                 SET contact_versions = $3
@@ -1120,11 +1133,13 @@ class ContactsSyncStateStore:
         provider: str,
         account_id: str,
         state: ContactsSyncState,
+        executor: Any | None = None,
     ) -> None:
         """Upsert sync state into the ``contacts_sync_state`` table."""
         provider_key = provider.strip().lower()
         account_key = account_id.strip()
-        await self._pool.execute(
+        db = executor if executor is not None else self._pool
+        await db.execute(
             """
             INSERT INTO contacts_sync_state (
                 provider,
@@ -1163,6 +1178,47 @@ class ContactsSyncStateStore:
             # anti-pattern as bu-cymc4/bu-x92jw).
             json.loads(json.dumps(state.contact_versions, default=str)),
         )
+
+    async def lock_state(
+        self, *, provider: str, account_id: str, executor: Any
+    ) -> ContactsSyncState:
+        """Lock/initialize the existing unique state key in the caller's transaction."""
+        await executor.execute(
+            "INSERT INTO contacts_sync_state(provider,account_id) VALUES($1,$2) "
+            "ON CONFLICT(provider,account_id) DO NOTHING",
+            provider,
+            account_id,
+        )
+        return await self.load(
+            provider=provider, account_id=account_id, executor=executor, for_update=True
+        )
+
+    async def record_failure(
+        self,
+        *,
+        provider: str,
+        account_id: str,
+        expected_state: ContactsSyncState,
+        expired_cursor: bool = False,
+        last_error: str = DEFAULT_FAILURE_ERROR,
+    ) -> None:
+        """Record a bounded failure without replacing another cycle's progress."""
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                current = await self.lock_state(
+                    provider=provider, account_id=account_id, executor=conn
+                )
+                if current != expected_state:
+                    return
+                await conn.execute(
+                    "UPDATE contacts_sync_state SET last_error=$4, "
+                    "sync_cursor=CASE WHEN $3 THEN NULL ELSE sync_cursor END "
+                    "WHERE provider=$1 AND account_id=$2",
+                    provider,
+                    account_id,
+                    expired_cursor,
+                    last_error,
+                )
 
 
 def _normalize_contact_versions(value: Any) -> dict[str, Any]:
@@ -1210,6 +1266,31 @@ class ContactApplyFn(Protocol):
         ...
 
 
+class ContactsBatchFinalizer(Protocol):
+    """Connected local custody work before the engine commits successful state."""
+
+    async def begin_sync(self, *, provider: str, account_id: str) -> dict[str, dict[str, Any]]: ...
+
+    async def finalize_sync(
+        self,
+        *,
+        contacts: list[CanonicalContact],
+        mode: ContactsSyncMode,
+        baseline: dict[str, dict[str, Any]],
+        expected_state: ContactsSyncState,
+        next_state: ContactsSyncState,
+        state_store: ContactsSyncStateRepository,
+    ) -> int: ...
+
+    async def record_failure(
+        self,
+        *,
+        state_store: ContactsSyncStateRepository,
+        expected_state: ContactsSyncState,
+        expired_cursor: bool,
+    ) -> None: ...
+
+
 class ContactsSyncEngine:
     """Runs full/incremental sync cycles with idempotent application."""
 
@@ -1219,10 +1300,13 @@ class ContactsSyncEngine:
         provider: ContactsProvider,
         state_store: ContactsSyncStateRepository,
         apply_contact: ContactApplyFn,
+        batch_finalizer: ContactsBatchFinalizer | None = None,
     ) -> None:
         self._provider = provider
         self._state_store = state_store
         self._apply_contact = apply_contact
+        self._batch_finalizer = batch_finalizer
+        self._account_locks: dict[str, asyncio.Lock] = {}
 
     async def sync(
         self,
@@ -1230,8 +1314,22 @@ class ContactsSyncEngine:
         account_id: str,
         mode: ContactsSyncMode = "incremental",
     ) -> ContactsSyncResult:
+        if self._batch_finalizer is None:
+            return await self._sync(account_id=account_id, mode=mode)
+        async with self._account_locks.setdefault(account_id, asyncio.Lock()):
+            return await self._sync(account_id=account_id, mode=mode)
+
+    async def _sync(self, *, account_id: str, mode: ContactsSyncMode) -> ContactsSyncResult:
         provider_name = self._provider.name
         state = await self._state_store.load(provider=provider_name, account_id=account_id)
+        expected_state = state.model_copy(deep=True)
+        baseline = (
+            await self._batch_finalizer.begin_sync(provider=provider_name, account_id=account_id)
+            if self._batch_finalizer
+            else {}
+        )
+        forced_ids = {key for key, row in baseline.items() if row["deleted_at"] is not None}
+        expired_cursor = False
         effective_mode = "full" if mode == "full" or state.sync_cursor is None else "incremental"
         cursor = state.sync_cursor
 
@@ -1257,6 +1355,7 @@ class ContactsSyncEngine:
                         account_id,
                     )
                     effective_mode = "full"
+                    expired_cursor = True
                     state.sync_cursor = None
                     contacts, next_cursor, provider_total = await self._collect_full(
                         account_id=account_id,
@@ -1272,13 +1371,44 @@ class ContactsSyncEngine:
                 next_cursor=next_cursor,
                 mode=effective_mode,
                 provider_total=provider_total,
+                force_apply_ids=forced_ids,
             )
+            if self._batch_finalizer is not None:
+                result.deleted_contacts += await self._batch_finalizer.finalize_sync(
+                    contacts=contacts,
+                    mode=effective_mode,
+                    baseline=baseline,
+                    expected_state=expected_state,
+                    next_state=state,
+                    state_store=self._state_store,
+                )
+        except asyncio.CancelledError:
+            if self._batch_finalizer is not None:
+                logger.warning(
+                    "contact_sync_absence_refused",
+                    extra={
+                        "reason": "cancelled",
+                        "provider": provider_name,
+                        "account_id": account_id,
+                    },
+                )
+            raise
         except Exception as exc:
-            state.last_error = str(exc)[:300]
-            await self._state_store.save(provider=provider_name, account_id=account_id, state=state)
+            if self._batch_finalizer is not None:
+                await self._batch_finalizer.record_failure(
+                    state_store=self._state_store,
+                    expected_state=expected_state,
+                    expired_cursor=expired_cursor,
+                )
+            else:
+                state.last_error = str(exc)[:300]
+                await self._state_store.save(
+                    provider=provider_name, account_id=account_id, state=state
+                )
             raise
 
-        await self._state_store.save(provider=provider_name, account_id=account_id, state=state)
+        if self._batch_finalizer is None:
+            await self._state_store.save(provider=provider_name, account_id=account_id, state=state)
         return result
 
     async def _collect_full(
@@ -1289,8 +1419,17 @@ class ContactsSyncEngine:
         next_cursor: str | None = None
         provider_total: int | None = None
 
+        seen_tokens: set[str] = set()
+        seen_ids: set[str] = set()
         while True:
             batch = await self._provider.full_sync(account_id=account_id, page_token=page_token)
+            if self._batch_finalizer is not None:
+                if not batch.checkpoint or batch.checkpoint.get("complete_full_fetch") is not True:
+                    raise ContactsSyncError("full fetch completeness unavailable")
+                for contact in batch.contacts:
+                    if contact.external_id in seen_ids or contact.deleted:
+                        raise ContactsSyncError("full fetch has contradictory contact ids")
+                    seen_ids.add(contact.external_id)
             contacts.extend(batch.contacts)
             if batch.next_sync_cursor is not None:
                 next_cursor = batch.next_sync_cursor
@@ -1298,7 +1437,14 @@ class ContactsSyncEngine:
                 provider_total = batch.checkpoint["provider_total"]
             page_token = batch.next_page_token
             if page_token is None:
+                if self._batch_finalizer is not None and not batch.next_sync_cursor:
+                    raise ContactsSyncError(
+                        "Provider full sync did not return terminal next_sync_cursor"
+                    )
                 break
+            if self._batch_finalizer is not None and page_token in seen_tokens:
+                raise ContactsSyncError("full fetch repeated a pagination token")
+            seen_tokens.add(page_token)
 
         if next_cursor is None:
             raise ContactsSyncError("Provider full sync did not return next_sync_cursor")
@@ -1345,6 +1491,7 @@ class ContactsSyncEngine:
         next_cursor: str,
         mode: ContactsSyncMode,
         provider_total: int | None = None,
+        force_apply_ids: set[str] | None = None,
     ) -> ContactsSyncResult:
         versions = dict(state.contact_versions)
         applied = 0
@@ -1354,7 +1501,7 @@ class ContactsSyncEngine:
         for contact in contacts:
             version = _contact_version(contact)
             previous = versions.get(contact.external_id)
-            if previous == version:
+            if previous == version and contact.external_id not in (force_apply_ids or set()):
                 skipped += 1
                 continue
 

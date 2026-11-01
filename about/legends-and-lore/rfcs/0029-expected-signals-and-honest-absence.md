@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-09-03
 
+Governing doctrine: [vision.md rule 4, the daemon is deterministic infrastructure](../../heart-and-soul/vision.md#non-negotiable-rules) (expected-signal and gap checks are deterministic, testable daemon logic) and [architecture.md, Why Single PostgreSQL with Schema Isolation](../../heart-and-soul/architecture.md#why-single-postgresql-with-schema-isolation) (`public.expected_signals` is a controlled shared `public` table; row-level security binds each key's updates to the role that claimed it).
+
 ## Context
 
 Elapsed time is not evidence of owner behavior when the instrument that would
