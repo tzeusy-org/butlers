@@ -2,13 +2,14 @@
 
 REQ-ambient-projections-001 (owner-minted grants), REQ-ambient-projections-002
 (route-scoped grant boundary), REQ-ambient-projections-003 (deterministic glance),
-REQ-ambient-projections-004 (consumer liveness).
+REQ-ambient-projections-004 (consumer liveness), REQ-ambient-projections-005 (glance formats).
 The real ``create_app()`` owner-auth middleware runs; only its persistence
 (owner-auth service, grant store) and the dashboard state sources are synthetic.
 """
 
 from __future__ import annotations
 
+import io
 import uuid
 from contextlib import ExitStack
 from dataclasses import replace
@@ -17,10 +18,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
+from PIL import Image, ImageChops, ImageOps
 
 from butlers.api.app import create_app
 from butlers.api.briefing.cache import BriefingCache
-from butlers.api.briefing.glance import compose_glance
+from butlers.api.briefing.glance import (
+    GlanceCache,
+    compose_glance,
+    glance_lines,
+    glance_png,
+)
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_butler_configs, get_db, get_mcp_manager, get_pricing
 from butlers.api.projection_grants import ProjectionGrant, new_token, token_digest
@@ -305,6 +312,94 @@ async def test_unreadable_projection_store_is_a_failed_source(harness):
         resp = await client.get(minted["path"], headers={"x-api-key": KEY})
     assert resp.json()["data"]["coverage"]["failed"] == ["projections"]
     assert resp.json()["data"]["state_class"] == "degraded"
+
+
+async def test_text_and_png_glances_print_valid_until_and_stay_household_safe(harness):
+    client, _ = harness
+    household = await _mint(client, audience="household")
+    grant = {"x-projection-token": household["token"]}
+    items = [_item("high", "approval", f"Pay {PII[0]} {PII[1]} for {PII[2]}")]
+    with _seed(items=items)[0]:
+        glance = (await client.get(household["path"], headers=grant)).json()["data"]
+        text = await client.get(household["path"], headers=grant, params={"format": "text"})
+        png = await client.get(
+            household["path"], headers=grant, params={"format": "png", "width": 296}
+        )
+        bad = await client.get(household["path"], headers=grant, params={"format": "gif"})
+    assert text.headers["content-type"].startswith("text/plain")
+    assert text.text.splitlines() == glance_lines(glance)
+    assert glance["line"] in text.text and "An approval is waiting" in text.text
+    valid_until = datetime.fromisoformat(glance["valid_until"]).strftime("%Y-%m-%d %H:%M")
+    assert f"Valid until {valid_until} UTC" in text.text
+    assert not [pii for pii in PII if pii in text.text]
+    assert png.headers["content-type"] == "image/png"
+    image = Image.open(io.BytesIO(png.content))
+    assert (image.mode, image.size) == ("1", (296, 300))
+    assert image.getextrema() == (0, 255)  # ink on paper, not a blank panel
+    assert bad.status_code == 422
+
+
+def test_png_glance_keeps_valid_until_whole_on_the_bottom_edge_of_a_full_panel():
+    def glance(state):
+        as_of = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
+        return compose_glance(
+            state, audience_class="owner_private", as_of=as_of, refresh=timedelta(minutes=5)
+        )
+
+    def render(payload):
+        return Image.open(io.BytesIO(glance_png(payload, 128, 128))).convert("L")
+
+    full = glance(
+        {
+            "attention_items": [_item("high", "approval", "a " * 60)],
+            "degraded_sources": ["qa", "board"],
+        }
+    )
+    later = {**full, "valid_until": "2026-11-02T21:47:00+00:00"}
+    # Only the printed expiry differs, so the differing pixels are where it is drawn:
+    # on the bottom edge and inside the panel, though the top item overflows it.
+    top = ImageChops.difference(render(full), render(later)).getbbox()[1]
+    assert top >= 128 * 3 // 4
+    # The whole line fits: its ink stops short of the right edge, so "UTC" is printed.
+    band = (0, top - 1, 128, 128)
+    assert ImageOps.invert(render(full).crop(band)).getbbox()[2] <= 128 - 4  # margin
+    # Nothing overprints it: its band matches the band of a glance with little text.
+    assert render(full).crop(band).tobytes() == render(glance({})).crop(band).tobytes()
+    assert glance_png(full, 128, 128) == glance_png(dict(full), 128, 128)
+
+
+async def test_grant_fetches_share_one_composition_per_cache_window(harness):
+    client, store = harness
+    minted = await _mint(client)
+    grant = {"x-projection-token": minted["token"]}
+    with _seed()[0]:
+        with patch(
+            f"{BRIEFING}._fetch_audit_issues", new=AsyncMock(return_value=([], [], False))
+        ) as composed:
+            first = await client.get(minted["path"], headers=grant)
+            await client.get(minted["path"], headers=grant, params={"format": "png"})
+            assert composed.await_count == 1
+            # Each fetch still proves the surface is alive.
+            assert len(store.fetches) == 2
+            # An owner preview always recomposes and never fills the grant's cache.
+            await client.get(minted["path"], headers={"x-api-key": KEY})
+            assert composed.await_count == 2
+            other = await _mint(client)
+            await client.get(other["path"], headers={"x-projection-token": other["token"]})
+            assert composed.await_count == 3
+            again = await client.get(minted["path"], headers=grant)
+    assert again.json()["data"]["as_of"] == first.json()["data"]["as_of"]
+
+
+def test_glance_cache_entries_expire():
+    now = [100.0]
+    cache = GlanceCache(ttl_seconds=30, clock=lambda: now[0])
+    key = uuid.uuid4()
+    cache.put(key, {"line": "x"})
+    now[0] += 29.9
+    assert cache.get(key) == {"line": "x"}
+    now[0] += 0.2
+    assert cache.get(key) is None
 
 
 def test_classifier_failure_composes_degraded_not_quiet():
