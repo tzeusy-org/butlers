@@ -10,10 +10,14 @@ import ast
 import asyncio
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 import asyncpg
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from sqlalchemy import create_engine
 from sqlalchemy.exc import DBAPIError
 
 from alembic import command
@@ -179,6 +183,66 @@ def _restore_finalized_interface_sql() -> str:
     )
 
 
+def _assert_old_namespace_predicate_removes_empty_boundary(url: str, expected_oid: int) -> None:
+    """Run the actual downgrade with only its old predicate, then roll back."""
+    source = Path(__file__).resolve().parents[2] / (
+        "alembic/versions/core/core_291_ambient_projections.py"
+    )
+    module = ast.parse(source.read_text())
+    downgrade = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "downgrade"
+    )
+    lock = next(
+        ast.literal_eval(node.value)
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "_LOCK" for target in node.targets)
+    )
+    current = "left(namespace.nspname, 3) <> 'pg_'"
+    old = "namespace.nspname NOT LIKE 'pg_%%'"
+    query = next(
+        node
+        for node in ast.walk(downgrade)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and current in node.value
+    )
+    assert query.value.count(current) == 1
+    predicate = query.value.rsplit("AND ", 1)[1].strip()
+    query.value = query.value.replace(current, old)
+    code = compile(ast.Module(body=[downgrade], type_ignores=[]), str(source), "exec")
+    engine = create_engine(url)
+    try:
+        with engine.connect() as conn:
+            transaction = conn.begin()
+            try:
+                # PostgreSQL interprets the actual source clause. Supported pg
+                # names survive; only the literal reserved pg_ prefix is excluded.
+                names = conn.exec_driver_sql(
+                    "SELECT namespace.nspname FROM (VALUES ('general'), ('pga'), "
+                    "('pgpeer'), ('pg_catalog'), ('pg_toast')) AS namespace(nspname) "
+                    f"WHERE {predicate} ORDER BY 1"
+                ).scalars()
+                assert list(names) == ["general", "pga", "pgpeer"]
+                namespace: dict[str, Any] = {
+                    "op": Operations(MigrationContext.configure(conn)),
+                    "_LOCK": lock,
+                }
+                exec(code, namespace)
+                namespace["downgrade"]()
+                with pytest.raises(AssertionError, match="ambient grant boundary was removed"):
+                    assert (
+                        conn.exec_driver_sql(
+                            "SELECT to_regclass('public.ambient_projections')::oid"
+                        ).scalar()
+                        == expected_oid
+                    ), "ambient grant boundary was removed"
+            finally:
+                transaction.rollback()
+    finally:
+        engine.dispose()
+
+
 async def test_schema_downgrade_preserves_grants_until_final_empty_consumer(
     postgres_container, record_property
 ):
@@ -335,6 +399,55 @@ async def test_schema_downgrade_preserves_grants_until_final_empty_consumer(
             await resolve_grant(store, replacement.id, "glance", replacement_token) == replacement
         )
         record_property("ambient_final_empty_reupgrade", "PASS:authority_and_owner_mint_restored")
+
+        # Keep the complete general-peer path above. A supported pg-prefixed
+        # peer adds the separate empty-store case that a LIKE pg_ wildcard missed.
+        await pool.execute("DELETE FROM public.ambient_projections WHERE id=$1", replacement.id)
+        assert await pool.fetchval("SELECT count(*) FROM public.ambient_projections") == 0
+        pgpeer = _build_alembic_config(url, chains=["core"], target_schema="pgpeer")
+        await asyncio.to_thread(command.upgrade, pgpeer, "core_291")
+        # pinned-revision: the bounded supported-schema 291/290 lifetime boundary.
+        assert await pool.fetchval("SELECT version_num FROM pgpeer.alembic_version") == "core_291"
+        async with pool.acquire() as conn:
+            empty_boundary = await _grant_boundary(conn)
+        assert empty_boundary["rows"] == "[]"
+        await asyncio.to_thread(
+            _assert_old_namespace_predicate_removes_empty_boundary, url, empty_boundary["oid"]
+        )
+        record_property("ambient_old_namespace_predicate", "ASSERTION_RED:boundary_removed")
+        async with pool.acquire() as conn:
+            await _assert_grant_boundary(conn, empty_boundary)
+        record_property("ambient_namespace_rollback", "PASS:exact_empty_boundary_restored")
+        await asyncio.to_thread(command.downgrade, ordinary, "core_290")
+        async with pool.acquire() as conn:
+            await _assert_grant_boundary(conn, empty_boundary)
+        # pinned-revision: genuine pgpeer remains the last 291 consumer.
+        assert await pool.fetchval("SELECT version_num FROM pgpeer.alembic_version") == "core_291"
+        # pinned-revision: the actual public departure completed below 291.
+        assert await pool.fetchval("SELECT version_num FROM public.alembic_version") == "core_290"
+        record_property("ambient_pgpeer_preservation", "PASS:empty_boundary_and_authority_retained")
+        await asyncio.to_thread(command.downgrade, pgpeer, "core_290")
+        assert await pool.fetchval("SELECT to_regclass('public.ambient_projections')") is None
+        # pinned-revision: the genuine last pgpeer departure removes only an empty store.
+        assert await pool.fetchval("SELECT version_num FROM pgpeer.alembic_version") == "core_290"
+        assert await pool.fetchval("SELECT to_regclass('public.model_served_usage')::oid") == served
+        await asyncio.to_thread(command.upgrade, pgpeer, "core_291")
+        async with pool.acquire() as conn:
+            pgpeer_restored = await _grant_boundary(conn)
+        assert pgpeer_restored["rows"] == "[]"
+        for key in ("authority", "columns", "constraints", "indexes", "policies", "privileges"):
+            assert pgpeer_restored[key] == empty_boundary[key]
+        pg_grant, pg_token = await store.mint(
+            label="Supported peer sentinel",
+            surface_kind="eink",
+            audience_class="household",
+            route_scope="glance",
+            expected_fetch_interval=timedelta(minutes=5),
+        )
+        assert await resolve_grant(store, pg_grant.id, "glance", pg_token) == pg_grant
+        record_property(
+            "ambient_pgpeer_final_reupgrade", "PASS:last_peer_empty_owner_mint_restored"
+        )
     finally:
         if control is not None:
             await control.close()

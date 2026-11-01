@@ -173,7 +173,10 @@ transaction advisory lock serializes the schema-version census with other
 291 upgrades and downgrades. A schema leaving 291 retains the entire table,
 rows, owner, RLS, policies and ACLs while another schema is still at 291 or
 later. An unknown core revision or missing current consumer refuses rollback
-with migration-history remediation. The last consumer takes an exclusive table
+with migration-history remediation. Exclude only the literal reserved `pg_`
+namespace prefix from the census: supported user schemas such as `pgpeer` and
+`pga` remain consumers. SQL `LIKE 'pg_%'` also matches those user schemas because
+its underscore is a wildcard. The last consumer takes an exclusive table
 lock before checking emptiness, so minting cannot race an empty-store drop.
 Any row, including a revoked grant, refuses rollback with roll-forward guidance;
 revoking grants does not erase their history or authorize deletion. Only a
