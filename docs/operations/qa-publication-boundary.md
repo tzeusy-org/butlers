@@ -21,7 +21,10 @@ The package `butlers.core.qa.publication` has four parts. The dispatcher calls
    descriptor with `O_NOFOLLOW | O_NONBLOCK` and must be a bounded regular file. A planted
    `objects/info/alternates` or `http-alternates`, or a symlinked object, fan-out directory, pack or
    object directory, or a FIFO, refuses (`object_store_unsafe`) instead of widening which files the
-   reader opens or hanging it. Every object is re-hashed against its id, so a rewritten loose object
+   reader opens or hanging it. Delta chains (including `REF_DELTA` cycles) resolve
+   iteratively under a depth cap and one per-read byte budget, and pack offsets and delta opcodes
+   are bounds-checked, so hostile pack bytes refuse (`malformed_object`) instead of exhausting
+   memory or escaping as an uncaught error. Every object is re-hashed against its id, so a rewritten loose object
    is refused (`object_hash_mismatch`). The walk from head to the trusted base commit
    accepts only single-parent commits with plain `tree`/`parent`/`author`/`committer` headers. Author
    and committer must equal the configured QA identity (`BUTLERS_QA_GIT_AUTHOR_*`). The message,

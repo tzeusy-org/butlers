@@ -41,8 +41,14 @@ _CHUNK = 64 * 1024
 MAX_DELTA_DEPTH = 4096
 #: Largest object (or intermediate delta base) materialised in memory.
 MAX_OBJECT_BYTES = 64 << 20
-#: Largest single object-store file opened; bounds a planted oversized loose object.
+#: Most bytes one read may inflate or materialise across its whole delta chain, so a
+#: long (or cyclic) chain of large deltas costs bounded memory and CPU, not depth x size.
+MAX_CHAIN_BYTES = 256 << 20
+#: Largest single object-store file opened (packs are read in place, never loaded).
 MAX_FILE_BYTES = 4 << 30
+#: Largest loose object file read into memory: zlib's worst-case expansion of the
+#: largest allowed object plus its header, so no in-bound object is refused.
+MAX_LOOSE_FILE_BYTES = MAX_OBJECT_BYTES + (MAX_OBJECT_BYTES >> 8) + 4096
 
 
 class ObjectStoreError(RuntimeError):
@@ -131,6 +137,16 @@ def _apply_delta(base: bytes, delta: bytes) -> bytes:
     if source_size != len(base) or target_size > MAX_OBJECT_BYTES:
         raise _malformed()
     out = bytearray()
+    try:
+        _apply_ops(base, delta, position, out, target_size)
+    except IndexError as exc:  # a copy opcode truncated mid-argument
+        raise _malformed() from exc
+    if len(out) != target_size:
+        raise _malformed()
+    return bytes(out)
+
+
+def _apply_ops(base: bytes, delta: bytes, position: int, out: bytearray, target_size: int) -> None:
     while position < len(delta):
         op = delta[position]
         position += 1
@@ -149,21 +165,21 @@ def _apply_delta(base: bytes, delta: bytes) -> bytes:
                 raise _malformed()
             out += base[offset : offset + size]
         elif op:
+            if position + op > len(delta):
+                raise _malformed()
             out += delta[position : position + op]
             position += op
         else:
             raise _malformed()
         if len(out) > target_size:
             raise _malformed()
-    if len(out) != target_size:
-        raise _malformed()
-    return bytes(out)
 
 
 @dataclass(slots=True)
 class _Pack:
     index_fd: int
     pack_fd: int
+    pack_size: int
     count: int
     fanout: tuple[int, ...]
 
@@ -190,7 +206,13 @@ class _Pack:
         if offset & 0x80000000:
             large_at = offsets_at + 4 * self.count + 8 * (offset & 0x7FFFFFFF)
             (offset,) = struct.unpack(">Q", _pread_exact(self.index_fd, 8, large_at))
+        self.check_offset(offset)
         return offset
+
+    def check_offset(self, offset: int) -> None:
+        """Refuse an entry offset outside the pack's entries (header and trailer excluded)."""
+        if not 12 <= offset < self.pack_size - 20:
+            raise _malformed()
 
 
 class ObjectStore:
@@ -258,14 +280,15 @@ class ObjectStore:
             pack_header = _pread_exact(pack_fd, 12, 0)
             if pack_header[:4] != b"PACK" or pack_header[4:8] not in (b"\0\0\0\2", b"\0\0\0\3"):
                 raise _malformed()
-            self._packs.append(_Pack(index_fd, pack_fd, fanout[255], fanout))
+            pack_size = os.fstat(pack_fd).st_size
+            self._packs.append(_Pack(index_fd, pack_fd, pack_size, fanout[255], fanout))
 
     def read(self, oid: str) -> tuple[str, bytes]:
         """Return ``(kind, data)`` for ``oid``; ``object_missing`` when the store lacks it."""
         loose = self._read_loose(oid)
         if loose is not None:
             return loose
-        return self._read_packed(bytes.fromhex(oid), depth=0)
+        return self._read_entry(*self._locate(bytes.fromhex(oid)))
 
     def _read_loose(self, oid: str) -> tuple[str, bytes] | None:
         if not _FANOUT.fullmatch(oid[:2]):
@@ -284,9 +307,12 @@ class ObjectStore:
             os.close(fanout)
         try:
             with os.fdopen(fd, "rb") as handle:
-                return self._inflate_loose(handle.read(MAX_FILE_BYTES + 1))
+                raw = handle.read(MAX_LOOSE_FILE_BYTES + 1)
         except OSError as exc:
             raise _unsafe(exc) from exc
+        if len(raw) > MAX_LOOSE_FILE_BYTES:
+            raise _malformed()
+        return self._inflate_loose(raw)
 
     @staticmethod
     def _inflate_loose(raw: bytes) -> tuple[str, bytes]:
@@ -326,17 +352,25 @@ class ObjectStore:
                 return pack, offset
         raise ObjectStoreError("object_missing")
 
-    def _read_packed(self, oid: bytes, depth: int) -> tuple[str, bytes]:
-        pack, offset = self._locate(oid)
-        return self._read_entry(pack, offset, depth)
+    def _read_entry(self, pack: _Pack, offset: int) -> tuple[str, bytes]:
+        """Resolve the entry at ``offset``, following its delta chain iteratively.
 
-    def _read_entry(self, pack: _Pack, offset: int, depth: int) -> tuple[str, bytes]:
-        """Resolve the entry at ``offset``, following its delta chain iteratively."""
-        deltas: list[bytes] = []
+        The walk records only where each delta lives, then inflates and applies them one
+        at a time from the base outward, so memory stays near three objects whatever the
+        depth.  ``REF_DELTA`` links (which may form a cycle) are followed in the same loop
+        under the same depth cap, and every inflated and materialised byte is charged to
+        one ``MAX_CHAIN_BYTES`` budget.
+        """
+        links: list[tuple[_Pack, int, int]] = []
+        budget = MAX_CHAIN_BYTES
         while True:
-            if depth + len(deltas) > MAX_DELTA_DEPTH:
+            if len(links) > MAX_DELTA_DEPTH:
                 raise _malformed()
+            pack.check_offset(offset)
             kind_code, size, position = self._entry_header(pack, offset)
+            budget -= size
+            if budget < 0:
+                raise _malformed()
             if kind_code in _PACK_KINDS:
                 base = self._inflate_at(pack, position, size)
                 kind = _PACK_KINDS[kind_code]
@@ -345,17 +379,20 @@ class ObjectStore:
                 distance, position = self._ofs_distance(pack, position)
                 if distance <= 0 or distance > offset:
                     raise _malformed()
-                deltas.append(self._inflate_at(pack, position, size))
+                links.append((pack, position, size))
                 offset -= distance
                 continue
             if kind_code == _REF_DELTA:
                 base_oid = _pread_exact(pack.pack_fd, 20, position)
-                deltas.append(self._inflate_at(pack, position + 20, size))
-                kind, base = self._read_packed(base_oid, depth + len(deltas))
-                break
+                links.append((pack, position + 20, size))
+                pack, offset = self._locate(base_oid)
+                continue
             raise _malformed()
-        for delta in reversed(deltas):
-            base = _apply_delta(base, delta)
+        for delta_pack, position, size in reversed(links):
+            base = _apply_delta(base, self._inflate_at(delta_pack, position, size))
+            budget -= len(base)
+            if budget < 0:
+                raise _malformed()
         return kind, base
 
     @staticmethod
