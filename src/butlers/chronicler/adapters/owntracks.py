@@ -679,7 +679,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             if merged is not None:
                 # Never emit a second chunk over the same span: widen the
                 # already-stored episode instead (late or replayed fixes).
-                seg_source_ref = str(merged["source_ref"])
+                seg_source_ref = cast(str, merged["source_ref"])
                 if merged["start_at"] < effective_start_at:
                     effective_start_at = merged["start_at"]
                     effective_start_lat = merged["start_lat"]
