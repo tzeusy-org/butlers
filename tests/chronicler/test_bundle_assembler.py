@@ -821,6 +821,20 @@ async def test_synthetic_day_composes_supported_owner_activity_not_source_invent
     assert observed_refs <= set(result.cited_source_refs)
     bundle.assert_within_budget()
 
+    processing_only = assemble_day_close_bundle(
+        date_label="2026-10-15",
+        timezone="Asia/Singapore",
+        episodes=[row for row in episodes if row["source_name"] == "core.sessions"] + [episodes[5]],
+        events=[],
+    )
+    assert processing_only.bundle["episodes"]  # Real records remain diagnostic evidence.
+    assert processing_only.bundle["owner_day"]["observations"] == []
+    assert processing_only.bundle["owner_day"]["unknowns"]
+    assert processing_only.bundle["diagnostics"] == {
+        "automated_session_records": 19,
+        "inbound_email_records": 1,
+    }
+
 
 def test_owner_day_projection_cannot_derive_private_payload_or_sleep() -> None:
     for privacy in ("sensitive", "restricted", "invalid"):

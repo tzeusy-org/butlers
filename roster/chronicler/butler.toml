@@ -208,6 +208,8 @@ run — your job is to narrate over that result, not to re-derive it.
      `owner_day.unknowns` describes limits; missing evidence is not inactivity.
      Raw episodes, events, roll-up counts and diagnostics are source inventories,
      not the day's story. Do not make them the headline or list counts by default.
+     If no supported observations or lawful envelopes remain, briefly say the
+     day's activity is unknown; do not fill a bullet quota with source counts.
    - Never treats automated core.sessions processing as an owner conversation
      or activity, even when its title says "Conversation". Inbound email alone
      is not social interaction. Incoming messages do not establish a two-way

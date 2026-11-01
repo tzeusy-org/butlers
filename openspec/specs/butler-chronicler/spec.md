@@ -353,25 +353,6 @@ Chronicler projection adapters SHALL NOT invoke an LLM on a per-event basis.
   to admit only owner-facing retrospective prose, not a model judgment or a
   second LLM call
 
-#### Scenario: Day-close describes supported owner activity
-
-- **WHEN** the bounded day-close bundle contains source inventories alongside
-  supported owner-day observations
-- **THEN** the recap SHALL foreground supported place, movement, sleep and
-  interaction evidence with explicit uncertainty rather than raw source counts
-- **AND** automated Butler processing SHALL NOT be narrated as owner activity
-- **AND** inbound email alone SHALL NOT establish social interaction, and an
-  owner outbound message alone SHALL NOT establish a two-way exchange
-- **AND** playback overlapping recorded sleep SHALL be background or uncertain
-  playback, never confirmed listening
-- **AND** unknown places, destinations, travel modes and evidence gaps SHALL
-  remain unknown, with machine provenance retained independently of prose
-- **AND** this narration view SHALL NOT alter the underlying source producers,
-  time aggregates, privacy projection or local-day coverage authority
-- **AND** recognized delivery-status/tool-summary bookkeeping from the exact
-  scheduled day-close SHALL NOT enter automatic session-episode memory; session
-  audit and legitimate corrections or retrospective interactions SHALL remain intact
-
 #### Scenario: Execution trace or date mismatch is not cacheable prose
 
 - **WHEN** a day-close candidate is empty, lacks or mismatches its structured
@@ -392,6 +373,30 @@ Chronicler projection adapters SHALL NOT invoke an LLM on a per-event basis.
   to an owner-facing caller
 - **AND** a covered, available briefing SHALL use deterministic fallback copy
   instead of the invalid prose
+
+### Requirement: Owner-Day Narrative Composition
+
+Chronicler SHALL compose bounded day-close recaps from supported owner activity
+with explicit uncertainty, preserving producer ownership and machine provenance.
+
+#### Scenario: Day-close describes supported owner activity
+
+- **WHEN** the bounded day-close bundle contains source inventories alongside
+  supported owner-day observations
+- **THEN** the recap SHALL foreground supported place, movement, sleep and
+  interaction evidence with explicit uncertainty rather than raw source counts
+- **AND** automated Butler processing SHALL NOT be narrated as owner activity
+- **AND** inbound email alone SHALL NOT establish social interaction, and an
+  owner outbound message alone SHALL NOT establish a two-way exchange
+- **AND** playback overlapping recorded sleep SHALL be background or uncertain
+  playback, never confirmed listening
+- **AND** unknown places, destinations, travel modes and evidence gaps SHALL
+  remain unknown, with machine provenance retained independently of prose
+- **AND** this narration view SHALL NOT alter the underlying source producers,
+  time aggregates, privacy projection or local-day coverage authority
+- **AND** recognized delivery-status/tool-summary bookkeeping from the exact
+  scheduled day-close SHALL NOT enter automatic session-episode memory; session
+  audit and legitimate corrections or retrospective interactions SHALL remain intact
 
 ### Requirement: API Surface Distinct from /api/timeline
 
