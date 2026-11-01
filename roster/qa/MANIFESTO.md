@@ -147,7 +147,8 @@ Investigation agents receive `PATH` and build-tool variables, never GitHub publi
 ## PR Creation Standards
 
 - Labels: `["self-healing", "automated"]`
-- GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` by the trusted dispatcher only (PR-status polling); agents never receive it, and automated PR creation is currently unavailable
+- GitHub token: retrieved via `CredentialStore.resolve("BUTLERS_QA_GH_TOKEN")` by the trusted dispatcher only (PR-status polling); agents never receive it
+- Publication: only the trusted deterministic publisher publishes, and only a sealed export. Every commit, path, added line, commit message and author identity newly reachable from the QA branch is validated before the first push, and the validated bytes are frozen. The publisher never runs agent git hooks, config or helpers. The transport has a fixed origin, never forces, and reaches only the bound `qa/` branch and the bound PR's create, update and fixed labels. An ambiguous outcome is held for read-only reconciliation, never retried or deleted. The publisher stays disabled in production until process isolation is proven (bu-mc01y5.7).
 - Effective publication surface: validated attempt-bound branch and PR publication plus fixed sanitized labels; **no merge, review, approval or queue**. Coarse provider permissions may be broader; publisher compromise is a residual risk, not an absent GitHub permission.
 - Anonymization: all event summaries and agent context passed through
   `anonymize()` before inclusion in PRs
@@ -191,7 +192,8 @@ access.
 | DB pool exhaustion | Patrol hangs or fails | Daemon restart; stale `running` patrol rows recovered on startup |
 | GitHub API rate limiting | PR creation fails; attempt transitions to `failed` | Next patrol cycle for the same fingerprint will retry after cooldown |
 | Worktree creation failure | Investigation not dispatched; attempt marked `failed` | Next patrol cycle retries if fingerprint recurs |
-| Publication unavailable (always, until the isolated publisher lands) | Investigation completes but transitions to `failed` with `"publication_unavailable"`; nothing is pushed and no PR is opened. A follow-up on an open PR records the same reason and leaves the PR untouched | Wait for the isolated publisher (bu-mc01y5.5-.7) |
+| Publication unavailable (production default: no publisher configured) | Investigation completes but transitions to `failed` with `"publication_unavailable"`; nothing is pushed and no PR is opened. A follow-up on an open PR records the same reason and leaves the PR untouched | Wait for publisher activation after isolation (bu-mc01y5.7) |
+| Publication refused or ambiguous | Attempt `failed` with `publication_refused`, `publication_failed` or `publication_ambiguous` and a content-free category; an ambiguous operation holds the fingerprint lineage | Reconcile the bound branch/PR read-only, then record the reconciliation (`docs/operations/qa-publication-boundary.md`) |
 | Circuit breaker tripped | All dispatch halted after N consecutive failures | Investigate and fix underlying cause; circuit breaker resets on next success |
 | Repeated anonymization failures | PR pipeline halted | Manual review required; operator clears via dashboard |
 
@@ -204,7 +206,7 @@ access.
 - **PostgreSQL (`butlers.qa` schema):** State store, session log
 - **PostgreSQL (`public` schema):** `qa_patrols`, `qa_findings`, `qa_dismissals`, `healing_attempts`, `v_qa_recent_failures`
 - **Switchboard:** Registration and routing of `report_finding` calls from butlers; receiver-derived liveness is observed by the control plane
-- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** read-only PR-status polling by the dispatcher; PR creation is unavailable until the isolated publisher lands
+- **GitHub API (`BUTLERS_QA_GH_TOKEN`):** read-only PR-status polling by the dispatcher; publication runs only through the trusted publisher, which is disabled until isolation is proven
 
 ### Depends On QA Staffer
 

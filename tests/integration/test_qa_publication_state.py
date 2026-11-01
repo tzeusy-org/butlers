@@ -233,3 +233,32 @@ async def test_ambiguous_outcome_holds_until_exact_reconciliation(pool, attempt)
         )
         == "pr:17"
     )
+
+
+@pytest.mark.parametrize("terminal_status", ["timeout", "failed"])
+async def test_inactive_attempt_cannot_enter_egress(pool, attempt, terminal_status) -> None:
+    attempt_id, fingerprint = attempt
+    operation = await begin_operation(
+        pool,
+        attempt_id=attempt_id,
+        kind=OperationKind.BRANCH_PUSH,
+        binding=_binding(),
+        request_digest=_PAYLOAD,
+    )
+    await pool.execute(
+        "UPDATE public.healing_attempts SET status = $2, closed_at = now() WHERE id = $1",
+        attempt_id,
+        terminal_status,
+    )
+
+    with pytest.raises(PublicationRefused) as refused:
+        await mark_egress_started(pool, operation.id)
+
+    assert refused.value.code == "attempt_not_active"
+    assert (
+        await pool.fetchval(
+            "SELECT stage FROM public.qa_publication_operations WHERE id = $1", operation.id
+        )
+        == "bound"
+    )
+    assert not await get_publication_hold(pool, fingerprint)
