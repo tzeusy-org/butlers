@@ -429,6 +429,12 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             if api_key:
                 env = {**env, _ANTHROPIC_KEY: api_key}
 
+        # Claude Code refuses bypassPermissions under root unless the process
+        # declares a sandbox. The butlers image runs as root inside its own
+        # container, which is that sandbox; a non-root host keeps the CLI's guard.
+        if os.geteuid() == 0:
+            env = {**env, "IS_SANDBOX": "1"}
+
         # Open per-butler stderr log file for Claude CLI diagnostics
         stderr_log_file = None
         if self._butler_name and self._log_root is not None:
