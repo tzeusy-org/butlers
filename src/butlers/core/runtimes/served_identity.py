@@ -267,6 +267,9 @@ def stream_evidence(
             if isinstance(raw_models, dict):
                 _add_models(final, raw_models, runtime)
         elif runtime == "codex" and kind == "turn.completed":
+            # A Codex ``error`` event is transient (e.g. stream reconnects); a
+            # later completed turn supersedes it. ``turn.failed`` stays fatal.
+            finals = [item for item in finals if not item.get("_transient")]
             raw = obj.get("usage")
             raw = raw if isinstance(raw, dict) else {}
             inclusive, cached = (
@@ -288,6 +291,8 @@ def stream_evidence(
         elif runtime == "codex" and kind in {"turn.failed", "error"}:
             final["completion_state"] = "error"
             final["error"].update({"is_error": True, "code": "execution_error"})
+            if kind == "error":
+                final["_transient"] = True
         elif runtime == "gemini" and kind == "result":
             stats = obj.get("stats")
             stats = stats if isinstance(stats, dict) else {}
@@ -309,6 +314,8 @@ def stream_evidence(
         else:
             continue
         finals.append(final)
+    for item in finals:
+        item.pop("_transient", None)
     if finals:
         # Compare normalized evidence only, not content/result/session identifiers.
         selected = finals[-1]
