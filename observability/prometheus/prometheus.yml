@@ -20,6 +20,7 @@
 #   connector-owntracks:       40086  (compose CONNECTOR_HEALTH_PORT override)
 #   connector-home-assistant:  40087  (compose CONNECTOR_HEALTH_PORT override)
 #   connector-google-drive:    40088  (compose CONNECTOR_HEALTH_PORT override)
+#   connector-google-health:   40090  (compose CONNECTOR_HEALTH_PORT override)
 #   connector-live-listener:   40091  (compose CONNECTOR_HEALTH_PORT override)
 #
 # Each connector runs in its own container with its own network namespace,
@@ -94,6 +95,14 @@ scrape_configs:
       - targets: ["connector-google-drive:40088"]
         labels:
           connector: google_drive
+
+  # ── Connector: Google Health ──────────────────────────────────────────
+  # Feeds observability/grafana-alerting/connector-google-health.json.
+  - job_name: connector-google-health
+    static_configs:
+      - targets: ["connector-google-health:40090"]
+        labels:
+          connector: google_health
 
   # ── Connector: Live Listener (audio profile only) ─────────────────────
   - job_name: connector-live-listener

@@ -1,0 +1,336 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "butlers-connector-google-health",
+      "folder": "Butlers",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "butlers-google-health-resource-failing",
+          "title": "Google Health resource failing persistently",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "editorMode": "code",
+                "expr": "max by(endpoint_identity, resource) (connector_google_health_resource_consecutive_failures)",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": true,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        2
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "1h",
+          "annotations": {
+            "summary": "Google Health resource has failed 3+ consecutive polls for an hour",
+            "description": "A Google Health resource's consecutive-failure streak stayed at or above the resource_degraded threshold (3) for 1h; its checkpoint is held and no new samples for it are ingested. The gauge is an integer, so > 2 means >= 3.",
+            "no_data": "NoData resolves to OK: a missing series means the connector is not running or has not yet observed the condition; connector liveness is covered by its heartbeat, not this rule. The policy takes effect only after an owner explicitly enables evaluation.",
+            "exec_error": "The configured Error policy takes effect only after an owner explicitly enables evaluation; it then surfaces rule execution failures.",
+            "deduplication": "The query preserves endpoint_identity and resource; Grafana creates one alert instance per (account, resource) pair.",
+            "disabled": "isPaused=true: Grafana performs no evaluation and creates no alert instances, receiver, notification policy, or route."
+          },
+          "labels": {
+            "severity": "warning",
+            "connector": "google_health"
+          },
+          "isPaused": true
+        },
+        {
+          "uid": "butlers-google-health-window-page-cap",
+          "title": "Google Health poll window exceeded the page cap",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "editorMode": "code",
+                "expr": "sum by(endpoint_identity, resource) (increase(connector_google_health_window_page_cap_exceeded_total[15m]))",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": true,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "Google Health poll window abandoned at the page cap",
+            "description": "A poll window needed more provider pages than the connector's cap, so the poll failed without advancing the checkpoint. An always-oversized window never commits.",
+            "no_data": "NoData resolves to OK: a missing series means the connector is not running or has not yet observed the condition; connector liveness is covered by its heartbeat, not this rule. The policy takes effect only after an owner explicitly enables evaluation.",
+            "exec_error": "The configured Error policy takes effect only after an owner explicitly enables evaluation; it then surfaces rule execution failures.",
+            "deduplication": "The query preserves endpoint_identity and resource; Grafana creates one alert instance per (account, resource) pair.",
+            "reset": "increase() treats an exporter counter reset (connector restart) as zero, not a new event.",
+            "disabled": "isPaused=true: Grafana performs no evaluation and creates no alert instances, receiver, notification policy, or route."
+          },
+          "labels": {
+            "severity": "warning",
+            "connector": "google_health"
+          },
+          "isPaused": true
+        },
+        {
+          "uid": "butlers-google-health-quarantine",
+          "title": "Google Health envelope quarantined",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 900,
+                "to": 0
+              },
+              "datasourceUid": "prometheus",
+              "model": {
+                "editorMode": "code",
+                "expr": "sum by(endpoint_identity, resource) (increase(connector_google_health_quarantined_envelopes_total[15m]))",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "range": true,
+                "refId": "A"
+              }
+            },
+            {
+              "refId": "B",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "A",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "reducer": "last",
+                "refId": "B",
+                "settings": {
+                  "mode": "dropNN"
+                },
+                "type": "reduce"
+              }
+            },
+            {
+              "refId": "C",
+              "queryType": "",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "params": [
+                        0
+                      ],
+                      "type": "gt"
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    },
+                    "reducer": {
+                      "params": [],
+                      "type": "last"
+                    },
+                    "type": "query"
+                  }
+                ],
+                "datasource": {
+                  "type": "__expr__",
+                  "uid": "__expr__"
+                },
+                "expression": "B",
+                "intervalMs": 1000,
+                "maxDataPoints": 43200,
+                "refId": "C",
+                "type": "threshold"
+              }
+            }
+          ],
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "for": "0s",
+          "annotations": {
+            "summary": "Google Health envelope quarantined after repeated ingest rejections",
+            "description": "The Switchboard rejected an envelope on repeated attempts and the connector quarantined it (connectors.filtered_events, filter_reason=poison_quarantine). Replay it from that row once the rejection cause is fixed.",
+            "no_data": "NoData resolves to OK: a missing series means the connector is not running or has not yet observed the condition; connector liveness is covered by its heartbeat, not this rule. The policy takes effect only after an owner explicitly enables evaluation.",
+            "exec_error": "The configured Error policy takes effect only after an owner explicitly enables evaluation; it then surfaces rule execution failures.",
+            "deduplication": "The query preserves endpoint_identity and resource; Grafana creates one alert instance per (account, resource) pair.",
+            "reset": "increase() treats an exporter counter reset (connector restart) as zero, not a new event.",
+            "disabled": "isPaused=true: Grafana performs no evaluation and creates no alert instances, receiver, notification policy, or route."
+          },
+          "labels": {
+            "severity": "warning",
+            "connector": "google_health"
+          },
+          "isPaused": true
+        }
+      ]
+    }
+  ]
+}
