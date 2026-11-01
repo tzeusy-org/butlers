@@ -24,19 +24,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # A scrape is a few hundred series; refuse to buffer anything pathological.
 MAX_BODY_BYTES = 8 * 1024 * 1024
 DEFAULT_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
+# Seconds a scraper connection may sit idle before the proxy drops it.
+CLIENT_TIMEOUT_S = 10
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None  # Relay nothing but the upstream's own /metrics.
+
+
+# No environment proxies (HTTP_PROXY would divert the loopback fetch) and no
+# redirects: a 3xx surfaces as an HTTPError and becomes a 502.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def make_handler(upstream_url: str, timeout_s: float) -> type[BaseHTTPRequestHandler]:
     class MetricsProxyHandler(BaseHTTPRequestHandler):
         server_version = "connector-metrics-proxy"
         sys_version = ""
+        timeout = CLIENT_TIMEOUT_S
 
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
             if self.path.split("?", 1)[0] != "/metrics":
                 self._reply(HTTPStatus.NOT_FOUND, b"not found\n")
                 return
             try:
-                with urllib.request.urlopen(upstream_url, timeout=timeout_s) as upstream:
+                with _OPENER.open(upstream_url, timeout=timeout_s) as upstream:
                     body = upstream.read(MAX_BODY_BYTES + 1)
                     content_type = upstream.headers.get("Content-Type", DEFAULT_CONTENT_TYPE)
             except (urllib.error.URLError, OSError) as exc:

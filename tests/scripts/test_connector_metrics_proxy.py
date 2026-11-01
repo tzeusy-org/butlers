@@ -89,6 +89,28 @@ def test_proxy_relays_metrics_and_refuses_every_other_route():
     assert _FakeHealthServer.hits == [("GET", "/metrics")]
 
 
+class _RedirectingHealthServer(_FakeHealthServer):
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path != "/metrics":
+            return self._serve()
+        self.hits.append((self.command, self.path))
+        self.send_response(302)
+        self.send_header("Location", "/health")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+def test_proxy_does_not_follow_upstream_redirects(monkeypatch):
+    # An env proxy must not divert the loopback fetch either.
+    monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+    _FakeHealthServer.hits = []
+    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectingHealthServer)
+    with _serving(upstream) as upstream_port, _proxy_to(upstream_port) as base:
+        assert _request(f"{base}/metrics")[0] == 502
+
+    assert _FakeHealthServer.hits == [("GET", "/metrics")]
+
+
 def test_proxy_reports_bad_gateway_while_connector_is_down():
     closed = ThreadingHTTPServer(("127.0.0.1", 0), _FakeHealthServer)
     dead_port = closed.server_address[1]
