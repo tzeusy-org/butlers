@@ -1585,7 +1585,7 @@ class TestEntityActivity:
 
         app = _wire_app(mock_pool)
         app.dependency_overrides[get_mcp_manager] = lambda: mock_mcp_manager
-        self.mcp_manager = mock_mcp_manager
+        self.chronicler_access = mock_mcp_manager
         return app, mock_pool
 
     async def test_happy_path_returns_200_with_items(self):
@@ -1608,7 +1608,7 @@ class TestEntityActivity:
         resp = await _get(app, _ACTIVITY_PATH, **({"source": source} if source else {}))
         _assert_owner_required(resp)
         pool.fetch.assert_not_awaited()
-        self.mcp_manager.get_client.assert_not_awaited()
+        self.chronicler_access.get_client.assert_not_awaited()
 
     @pytest.mark.parametrize("source", [None, "chronicler"])
     async def test_missing_entity_returns_404(self, source: str | None):
@@ -1617,7 +1617,7 @@ class TestEntityActivity:
         resp = await _get(app, _ACTIVITY_PATH, **({"source": source} if source else {}))
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Entity not found"
-        self.mcp_manager.get_client.assert_not_awaited()
+        self.chronicler_access.get_client.assert_not_awaited()
 
     @pytest.mark.parametrize(
         ("source", "relationship_reads", "chronicler_called", "srcs"),
@@ -1648,7 +1648,7 @@ class TestEntityActivity:
         assert body["total"] == len(body["items"])
         assert body["degraded"] is False
         assert pool.fetch.await_count == relationship_reads
-        assert self.mcp_manager.get_client.await_count == int(chronicler_called)
+        assert self.chronicler_access.get_client.await_count == int(chronicler_called)
 
     async def test_relationship_source_cannot_inherit_chronicler_outage(self):
         """source=relationship stays healthy while Chronicler is unreachable."""
@@ -1660,7 +1660,7 @@ class TestEntityActivity:
         assert body["total"] == 1
         assert body["degraded"] is False
         assert body["degraded_reason"] is None
-        self.mcp_manager.get_client.assert_not_awaited()
+        self.chronicler_access.get_client.assert_not_awaited()
 
     @pytest.mark.parametrize("source", ["all", "relationship"])
     async def test_relationship_fetch_failure_is_never_empty_success(self, source: str):
@@ -1701,7 +1701,7 @@ class TestEntityActivity:
         assert resp.status_code == 422
         pool.fetch.assert_not_awaited()
         pool.fetchrow.assert_not_awaited()
-        self.mcp_manager.get_client.assert_not_awaited()
+        self.chronicler_access.get_client.assert_not_awaited()
 
     async def test_source_selection_precedes_total_bins_and_pagination(self):
         """source=chronicler&bins=daily&limit=2&offset=1 counts and bins only episodes."""
@@ -1946,6 +1946,7 @@ class TestEntityCommitments:
             (_COMMITMENTS_PATH, {"offset": -1}),
             ("/api/relationship/entities/not-a-uuid/commitments", {}),
         ],
+        ids=["limit-zero", "limit-over-max", "negative-offset", "invalid-uuid"],
     )
     async def test_invalid_request_is_422_before_source_read(self, path: str, params: dict):
         app, pool = self._make_app()

@@ -32,6 +32,7 @@ import { FetchingDim } from "@/components/ui/fetching-dim";
 import { Time } from "@/components/ui/time";
 import { cn } from "@/lib/utils.ts";
 import { useCalendarMeetingPrep } from "@/hooks/use-calendar-workspace.ts";
+import { Link, useLocation } from "react-router";
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -115,7 +116,8 @@ function commitmentEscalationLevel(level: string): number {
   return match ? Number.parseInt(match[1], 10) : -1;
 }
 
-function CommitmentRow({ commitment }: { commitment: CalendarPrepCommitment }) {
+/** One commitment row; shared by Meeting Prep and the entity page Commitments section. */
+export function CommitmentRow({ commitment }: { commitment: CalendarPrepCommitment }) {
   const kind = COMMITMENT_KIND_META[commitment.kind];
   const direction = COMMITMENT_DIRECTION_META[commitment.direction];
   const isEscalated = commitmentEscalationLevel(commitment.escalation_level) >= 2;
@@ -210,6 +212,28 @@ function CommitmentSection({ attendee }: { attendee: CalendarPrepAttendee }) {
   );
 }
 
+/**
+ * The attendee name: a door to the canonical entity page that carries the
+ * complete current Calendar query verbatim (repeated and unknown pairs, in
+ * order), so Back and the entity page keep the workspace context. Retained or
+ * legacy data without a nonblank entity id stays plain text, never a broken link.
+ */
+function AttendeeName({ attendee }: { attendee: CalendarPrepAttendee }) {
+  const { search } = useLocation();
+  const className = "truncate text-sm font-medium text-fg";
+  const entityId = typeof attendee.entity_id === "string" ? attendee.entity_id.trim() : "";
+  if (!entityId) return <span className={className}>{attendee.name}</span>;
+  return (
+    <Link
+      to={`/entities/${encodeURIComponent(entityId)}${search}`}
+      data-testid="prep-attendee-link"
+      className={cn(className, "underline-offset-2 hover:underline")}
+    >
+      {attendee.name}
+    </Link>
+  );
+}
+
 /** One attendee card: name + tier letter-mark, commitments, last-met, notes, message context. */
 function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
   const hasTier = attendee.dunbar_tier != null;
@@ -220,7 +244,7 @@ function PrepAttendeeCard({ attendee }: { attendee: CalendarPrepAttendee }) {
       className="flex flex-col gap-1.5 rounded-[3px] border border-[var(--border)] bg-foreground/[0.015] p-2"
     >
       <div className="flex items-center gap-1.5">
-        <span className="truncate text-sm font-medium text-fg">{attendee.name}</span>
+        <AttendeeName attendee={attendee} />
         {hasTier ? (
           <TierBadge
             tier={attendee.dunbar_tier as number}

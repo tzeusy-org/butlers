@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useSearchParams } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -24,11 +24,19 @@ import EntityDetailPage from "@/pages/EntityDetailPage";
 import { useEntity } from "@/hooks/use-memory";
 import {
   useEntityActivity,
+  useEntityCommitments,
   useEntityGifts,
+  useEntitySharedChronicles,
   useEntityMessageThreads,
   useEntityNeighbours,
 } from "@/hooks/use-entities";
-import type { EntityActivityItem, EntityDetail } from "@/api/types";
+import type {
+  EntityActivityItem,
+  EntityActivityResponse,
+  EntityCommitment,
+  EntityCommitmentsResponse,
+  EntityDetail,
+} from "@/api/types";
 
 vi.mock("react-router", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router")>();
@@ -96,6 +104,8 @@ vi.mock("@/hooks/use-entities", () => ({
   useEntityLinkedContacts: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityDates: vi.fn(() => ({ data: [], isLoading: false })),
   useEntityActivityBins: vi.fn(() => ({ data: { bins: [] }, isLoading: false, isError: false })),
+  useEntitySharedChronicles: vi.fn(() => ({ data: { items: [], total: 0, limit: 5, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn() })),
+  useEntityCommitments: vi.fn(() => ({ data: { items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn() })),
   useEntityDeltaFacts: vi.fn(() => ({ data: { marked_at: null, items: [] }, isSuccess: true })),
   useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false, isError: false })),
@@ -177,11 +187,148 @@ beforeEach(() => {
     isLoading: false, isError: false, isRefetching: false, refetch: vi.fn(),
     fetchNextPage: vi.fn(), hasNextPage: false, isFetchingNextPage: false,
   } as unknown as ReturnType<typeof useEntityActivity>);
+  // Healthy defaults; a test overrides one section at a time.
+  mockSharedChronicles({});
+  mockCommitments({});
 });
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+function episodeRow(index: number, overrides: Partial<EntityActivityItem> = {}): EntityActivityItem {
+  const id = `00000000-0000-4000-8000-00000000000${index}`;
+  return {
+    id, ts: `2026-05-0${index + 1}T23:30:00Z`, kind: "episode", src: "chronicler",
+    store: null, predicate: null, episode_id: id, summary: `Episode ${index}`, ...overrides,
+  };
+}
+
+function mockSharedChronicles(
+  result: Partial<EntityActivityResponse> | undefined,
+  state: { isError?: boolean; refetch?: () => void } = {},
+) {
+  vi.mocked(useEntitySharedChronicles).mockReturnValue({
+    data: result === undefined ? undefined : {
+      items: [], total: 0, limit: 5, offset: 0, degraded: false, degraded_reason: null, ...result,
+    },
+    isLoading: false, isError: state.isError ?? false, isRefetching: false,
+    refetch: state.refetch ?? vi.fn(),
+  } as unknown as ReturnType<typeof useEntitySharedChronicles>);
+}
+
+function mockCommitments(
+  result: Partial<EntityCommitmentsResponse> | undefined,
+  state: { isError?: boolean; refetch?: () => void } = {},
+) {
+  vi.mocked(useEntityCommitments).mockReturnValue({
+    data: result === undefined ? undefined : {
+      items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null, ...result,
+    },
+    isLoading: false, isError: state.isError ?? false, isRefetching: false,
+    refetch: state.refetch ?? vi.fn(),
+  } as unknown as ReturnType<typeof useEntityCommitments>);
+}
+
+describe("EntityDetailPage — Shared Chronicles and Commitments doors", () => {
+  it("renders at most five dated episode doors with the title fallback", () => {
+    const rows = Array.from({ length: 6 }, (_, i) => episodeRow(i));
+    rows[1] = episodeRow(1, { summary: null });
+    mockSharedChronicles({ items: rows, total: 6 });
+    renderPage();
+
+    const section = screen.getByTestId("entity-shared-chronicles");
+    const links = within(section).getAllByRole("link");
+    expect(links).toHaveLength(5);
+    expect(links[1].textContent).toBe("Untitled episode");
+    // The door targets the Chronicles day in the owner timezone plus the exact episode.
+    const door = new URL(links[0].getAttribute("href") ?? "", "http://x");
+    expect(door.pathname).toBe("/chronicles");
+    expect(door.searchParams.get("episode")).toBe(rows[0].episode_id);
+    expect(door.searchParams.get("date")).toMatch(/^2026-05-0[12]$/);
+    expect(within(section).queryByText("No shared episodes yet.")).toBeNull();
+    expect(useEntitySharedChronicles).toHaveBeenCalledWith("entity-001");
+  });
+
+  it("shows the empty copy only for a healthy zero-row read", () => {
+    renderPage();
+    const section = screen.getByTestId("entity-shared-chronicles");
+    expect(within(section).getByText("No shared episodes yet.")).toBeTruthy();
+    expect(screen.queryByTestId("entity-shared-chronicles-degraded")).toBeNull();
+  });
+
+  it.each([
+    ["degraded empty", { degraded: true, degraded_reason: "chronicler_activity_unavailable" as const }, {}],
+    ["request failure", undefined, { isError: true }],
+    ["unreadable envelope", { items: "nope" as unknown as EntityActivityItem[] }, {}],
+  ])("renders a degraded note, never empty history, for %s", (_label, result, state) => {
+    mockSharedChronicles(result, state);
+    renderPage();
+    const section = screen.getByTestId("entity-shared-chronicles");
+    expect(within(section).getByTestId("entity-shared-chronicles-degraded").textContent)
+      .toContain("Shared Chronicles");
+    expect(within(section).queryByText("No shared episodes yet.")).toBeNull();
+    // The unified timeline and other sections keep rendering.
+    expect(screen.getByTestId("entity-commitments")).toBeTruthy();
+    expect(useEntityActivity).toHaveBeenCalled();
+  });
+
+  it("keeps valid rows beside the degraded note for a partial read", () => {
+    mockSharedChronicles({
+      items: [episodeRow(0)], total: 1, degraded: true,
+      degraded_reason: "chronicler_activity_unavailable",
+    });
+    renderPage();
+    const section = screen.getByTestId("entity-shared-chronicles");
+    expect(within(section).getByTestId("entity-shared-chronicles-degraded")).toBeTruthy();
+    expect(within(section).getAllByRole("link")).toHaveLength(1);
+  });
+
+  it("retries only the failed section's own read", async () => {
+    const user = userEvent.setup();
+    const chroniclesRefetch = vi.fn();
+    const commitmentsRefetch = vi.fn();
+    mockSharedChronicles(undefined, { isError: true, refetch: chroniclesRefetch });
+    mockCommitments({}, { refetch: commitmentsRefetch });
+    renderPage();
+    const section = screen.getByTestId("entity-shared-chronicles");
+    await user.click(within(section).getByRole("button", { name: "Retry" }));
+    expect(chroniclesRefetch).toHaveBeenCalledWith({ cancelRefetch: false });
+    expect(commitmentsRefetch).not.toHaveBeenCalled();
+  });
+
+  it("renders both commitment directions read-only, outside any calendar event", () => {
+    const owed: EntityCommitment = {
+      kind: "promise", direction: "owner_to_other", summary: "Send the book",
+      deadline: "2026-09-08T00:00:00Z", escalation_level: "L2", fingerprint: "fp-1",
+    };
+    const owedToOwner: EntityCommitment = {
+      kind: "obligation", direction: "other_to_owner", summary: "Repay the deposit",
+      deadline: null, escalation_level: "L0", fingerprint: "fp-2",
+    };
+    mockCommitments({ items: [owed, owedToOwner], total: 2 });
+    renderPage();
+    const section = screen.getByTestId("entity-commitments");
+    const rows = within(section).getAllByTestId("prep-commitment");
+    expect(rows[0].textContent).toContain("Owner owes");
+    expect(rows[1].textContent).toContain("Counterparty owes owner");
+    expect(within(rows[0]).getByTestId("prep-commitment-deadline")).toBeTruthy();
+    expect(within(rows[0]).getByTestId("prep-commitment-escalation").textContent).toBe("L2");
+    expect(within(section).queryByRole("button")).toBeNull();
+  });
+
+  it.each([
+    ["honest empty", {}, {}, false],
+    ["degraded source", { degraded: true, degraded_reason: "commitment_source_unavailable" as const }, {}, true],
+    ["request failure", undefined, { isError: true }, true],
+  ])("Commitments %s", (_label, result, state, degraded) => {
+    mockCommitments(result, state);
+    renderPage();
+    const section = screen.getByTestId("entity-commitments");
+    expect(within(section).queryByTestId("entity-commitments-degraded") !== null).toBe(degraded);
+    expect(within(section).queryByText("No open commitments.") !== null).toBe(!degraded);
+  });
 });
 
 describe("EntityDetailPage — supplementary section degraded states", () => {

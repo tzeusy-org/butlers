@@ -105,7 +105,7 @@ def _relationship_app(core_pool: asyncpg.Pool, mcp_manager: object | None = None
     return app
 
 
-async def _get(app: FastAPI, path: str, **params: object) -> httpx.Response:
+async def _get(app: FastAPI, path: str, **params: str | int) -> httpx.Response:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -181,9 +181,9 @@ async def test_organizer_and_participant_episodes_reach_source_chronicler(
         calls: list[tuple[str, dict]] = []
         real_call_tool = chronicler_client.call_tool
 
-        async def recording_call_tool(name: str, arguments: dict, **kwargs: object):
+        async def recording_call_tool(name: str, arguments: dict):
             calls.append((name, arguments))
-            return await real_call_tool(name, arguments, **kwargs)
+            return await real_call_tool(name, arguments)
 
         chronicler_client.call_tool = recording_call_tool  # type: ignore[method-assign]
         mcp_manager = MagicMock()

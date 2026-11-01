@@ -333,6 +333,8 @@ import type {
   CreateEntityInteractionRequest,
   CreateEntityGiftRequest,
   EntityActivityResponse,
+  EntityActivitySource,
+  EntityCommitmentsResponse,
   ActivityBinsResponse,
   DeltaFactsResponse,
   ViewMarkResponse,
@@ -3057,15 +3059,35 @@ export function getEntityTimeline(
 /** Fetch the canonical merged entity activity stream with cancellable pagination. */
 export function getEntityActivity(
   entityId: string,
-  params?: { limit?: number; offset?: number; signal?: AbortSignal },
+  params?: {
+    limit?: number;
+    offset?: number;
+    source?: EntityActivitySource;
+    signal?: AbortSignal;
+  },
 ): Promise<EntityActivityResponse> {
   const qs = new URLSearchParams();
+  if (params?.source != null) qs.set("source", params.source);
   if (params?.limit != null) qs.set("limit", String(params.limit));
   if (params?.offset != null) qs.set("offset", String(params.offset));
   const path = qs.size
     ? `/relationship/entities/${encodeURIComponent(entityId)}/activity?${qs}`
     : `/relationship/entities/${encodeURIComponent(entityId)}/activity`;
   return apiFetch<EntityActivityResponse>(path, { signal: params?.signal });
+}
+
+/** Fetch the owner's active commitments with one entity, in both directions. */
+export function getEntityCommitments(
+  entityId: string,
+  params?: { limit?: number; offset?: number },
+): Promise<EntityCommitmentsResponse> {
+  const qs = new URLSearchParams();
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
+  const path = qs.size
+    ? `/relationship/entities/${encodeURIComponent(entityId)}/commitments?${qs}`
+    : `/relationship/entities/${encodeURIComponent(entityId)}/commitments`;
+  return apiFetch<EntityCommitmentsResponse>(path);
 }
 
 /** Fetch completeness-tagged interaction evidence for a rolling window. */

@@ -88,6 +88,7 @@ export {
   createEntityGift,
   getEntityTimeline,
   getEntityActivity,
+  getEntityCommitments,
   getEntityCadence,
   getEntityMessageThreads,
   getEntityActivityBins,

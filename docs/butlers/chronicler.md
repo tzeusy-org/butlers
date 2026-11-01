@@ -13,6 +13,11 @@ Moved verbatim from `AGENTS.md` (Butler-specific rules without a docs page). Ide
 - Chronicler editorial endpoints (`/api/chronicler/briefing|attention|kpi`) already accept any
   `?date=&tz=` deterministically via `editorial.compose_briefing_payload`; date navigation is a
   frontend concern.
+- The Chronicles page (`/chronicles`) also accepts `?episode=<episode-id>`, which opens the
+  existing `EpisodeDrawer` for that exact episode over the selected day. Closing the drawer
+  removes only `episode`; an unknown episode fails inside the drawer, and a date-only link is
+  unchanged. In-page episode clicks use the same parameter. The entity page's Shared Chronicles
+  rows link here.
 
 ### Late material and missingness
 

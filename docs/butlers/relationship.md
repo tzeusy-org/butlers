@@ -116,6 +116,40 @@ pinned dashboard conversation, so it reaches the `meeting-debrief` skill without
 Not built yet: a "work commitments" filter on the condition ledger, and deriving `sphere` from
 endpoint custody.
 
+## Entity life-graph reads
+
+Two owner-only reads back the entity page's "what do I owe them, when did we last meet" doors
+(`openspec/changes/entity-chronicles-and-commitment-doors`). Both run `_assert_owner_role` (403
+`owner_required`) and then `_assert_entity_exists` (404 `Entity not found`) before any source read,
+and neither writes, calls an LLM or notifies.
+
+- `GET /api/relationship/entities/{id}/activity?source=all|relationship|chronicler` selects which
+  contributions execute; omitted means `all`, and any other value is a 422 before either fetch.
+  `relationship` reads both local stores (narrative and identity) and never acquires a Chronicler
+  client, so it cannot inherit Chronicler degradation. `chronicler` runs no Relationship fact
+  query. Selection happens before `total`, daily bins, ordering
+  (`ts DESC NULLS LAST, (src, COALESCE(store, ''), id) ASC`) and the `limit`/`offset` slice.
+  A Chronicler row that is not an object, lacks a valid episode UUID, or lacks a parseable
+  `canonical_start_at`/`start_at` is excluded, the readable rows stay, and the response is
+  `degraded=true` with `chronicler_activity_unavailable`. Chronicler rows still arrive only
+  through `chronicler_list_episodes(participant_entity_id=...)` over MCP, so organizer and
+  participant links count.
+- `GET /api/relationship/entities/{id}/commitments?limit=1..200&offset>=0` returns open or aging
+  commitment-class `public.owner_conditions` rows whose counterparty is the entity and whose
+  direction is `owner_to_other` or `other_to_owner`, across every originating source, ordered
+  `first_detected_at DESC, fingerprint ASC`. It reads through
+  `butlers.core.commitments.list_entity_commitment_page`, which returns the page and the total
+  from one statement. Items carry only `kind`, `direction`, `summary`, `deadline`,
+  `escalation_level` and `fingerprint`. Any source failure returns 200 with `items=[]`,
+  `total=0`, `degraded=true` and `commitment_source_unavailable`, never a zero.
+
+The entity page renders a Commitments section from the second read (Meeting Prep row vocabulary,
+no mutation affordance) and a Shared Chronicles preview from
+`activity?source=chronicler&limit=5&offset=0`. The preview duplicates, and does not replace, the
+unified activity timeline. Each preview row opens `/chronicles?date=<owner-local day>&episode=<id>`.
+Meeting Prep attendee names link to `/entities/{entity_id}` with the full current Calendar query
+appended verbatim; an attendee without a nonblank id stays plain text.
+
 ## Implementation Notes
 
 ### Meeting debrief answer transactions
