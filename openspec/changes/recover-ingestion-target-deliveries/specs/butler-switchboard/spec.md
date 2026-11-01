@@ -10,7 +10,7 @@ Scope: v1-mandatory
 
 #### Scenario: A duplicate envelope returns the original receipt
 
-- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, a connector resubmits an envelope whose source key already has an admission decision
+- **WHEN** in ISOLATED_CANDIDATE or SWITCHED_RELEASE, a connector resubmits an envelope whose source key already has a terminal admission decision
 - **THEN** Switchboard SHALL return the original admission receipt
 - **AND** no second goal SHALL be admitted and no classifier or route dispatch SHALL run
 

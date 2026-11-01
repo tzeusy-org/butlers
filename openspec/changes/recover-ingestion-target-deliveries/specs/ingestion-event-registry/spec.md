@@ -10,8 +10,8 @@ Scope: v1-mandatory
 
 #### Scenario: Admission state is visible
 
-- **WHEN** an event's envelope is buffered, admitted, recorded without a goal, refused, or failed admission
-- **THEN** its list and detail APIs SHALL expose that state, the decision identity and any admitted goal identity
+- **WHEN** an event's envelope is buffered, admitted, joined to an existing goal, recorded without a goal, refused, or failed admission
+- **THEN** its list and detail APIs SHALL expose that state, the decision identity and any admitted or joined goal identity
 - **AND** an admitted goal SHALL link to its goal lineage without claiming the goal completed
 
 #### Scenario: Recovery pending requires durable work
