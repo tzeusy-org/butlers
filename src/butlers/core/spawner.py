@@ -1567,6 +1567,9 @@ class Spawner:
         runtime_session_id: str | None = None
         spawner_result: SpawnerResult | None = None
         runtime_invoked = False
+        # Set once the current attempt's invoked row is written, so the
+        # cancellation handler never double-records it.
+        _invoked_attempt_recorded = False
         dashboard_turn_session_registered = False
         # Direct cancellation of trigger() normally means daemon drain and
         # must propagate.  A route-inbox worker instead gives us this explicit
@@ -3476,20 +3479,28 @@ class Spawner:
             is_owner_cancel = bool(runtime_session_id) and (
                 runtime_session_id in self._owner_cancelled_sessions
             )
+            # A direct cancel of this task (drain/shutdown) wins over a
+            # concurrent owner Stop: it is what actually ends the attempt.
+            if outer_task_cancelled_directly:
+                cancel_outcome, cancel_reason = "suppressed", "drain_cancelled"
+            elif is_owner_cancel:
+                cancel_outcome, cancel_reason = "owner_cancelled", "owner_cancelled"
+            else:
+                cancel_outcome, cancel_reason = "suppressed", "runtime_cancelled"
             if (
                 runtime_invoked
                 and self._pool is not None
                 and catalog_entry_id is not None
-                and not locals().get("_invoked_attempt_recorded", False)
+                and not _invoked_attempt_recorded
             ):
                 await _write_dispatch_attempt(
                     self._pool,
                     catalog_entry_id=catalog_entry_id,
                     butler=self._config.name,
-                    outcome="owner_cancelled" if is_owner_cancel else "suppressed",
+                    outcome=cancel_outcome,
                     attempt_index=_current_attempt_index,
                     session_id=session_id,
-                    failure_reason="owner_cancelled" if is_owner_cancel else "runtime_cancelled",
+                    failure_reason=cancel_reason,
                     logical_session_id=effective_request_id,
                     purpose_lane=purpose_lane,
                     invoked=True,
