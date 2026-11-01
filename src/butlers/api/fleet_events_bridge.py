@@ -21,6 +21,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.job_health import record_connection
 from butlers.db import database_name_from_env, db_params_from_env, should_retry_with_ssl_disable
 from butlers.fleet_events import FLEET_EVENTS_CHANNEL
 
@@ -133,12 +134,14 @@ async def run_fleet_events_listener(
         try:
             conn = await connect_fn()
             await conn.add_listener(FLEET_EVENTS_CHANNEL, notify_cb)
+            await record_connection(connected=True)
             logger.info("fleet_events_bridge: LISTEN active on channel %r", FLEET_EVENTS_CHANNEL)
             # asyncpg has no awaitable close signal for a LISTEN connection, so
             # probe it on the health interval.
             while True:
                 if conn.is_closed():
                     break
+                await record_connection(connected=True)
                 await asyncio.sleep(health_poll_interval_s)
             logger.warning("fleet_events_bridge: LISTEN connection closed; reconnecting")
         except asyncio.CancelledError:
@@ -159,4 +162,5 @@ async def run_fleet_events_listener(
                 if conn is not None and not conn.is_closed():
                     await conn.close()
 
+        await record_connection(connected=False)
         await asyncio.sleep(reconnect_backoff_s)

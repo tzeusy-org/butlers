@@ -133,6 +133,9 @@ def _spy_on_supervisor(monkeypatch) -> list[tuple[str, asyncio.Task]]:
     calls: list[tuple[str, asyncio.Task]] = []
 
     def _spy(name, coro_factory, **kwargs):
+        assert kwargs["health"].spec.name == name
+        expected_class = "continuous" if name == "fleet_events_bridge" else "periodic"
+        assert kwargs["health"].spec.job_class == expected_class
         task = real_supervise(name, coro_factory, **kwargs)
         calls.append((name, task))
         return task

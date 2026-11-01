@@ -222,7 +222,6 @@ async def test_export_runs_no_git_process_against_the_agent_store(
         pytest.param(b"not zlib at all", id="not-zlib"),
         pytest.param(zlib.compress(b"blob 99\0value = 2\n"), id="size-lie"),
         pytest.param(zlib.compress(b"blob 9\0value = 2\n"), id="trailing-bytes"),
-        pytest.param(zlib.compress(b"blob 99999999999\0x"), id="oversized"),
         pytest.param(zlib.compress(b"blob 10\0value = 2\n")[:-6], id="truncated"),
     ],
 )
@@ -377,3 +376,177 @@ def test_oversized_loose_file_refuses_before_loading(
     with pytest.raises(ObjectStoreError, match="malformed_object"):
         with ObjectStore(tmp_path / "objects") as store:
             store.read(oid)
+
+
+# --- Declared-size refusal and the export-wide work budget (bu-mc01y5.27) -----------
+
+
+def _loose_object(objects: Path, raw: bytes) -> str:
+    oid = "ab" + "c" * 38
+    (objects / "ab").mkdir(parents=True)
+    (objects / "ab" / oid[2:]).write_bytes(zlib.compress(raw))
+    return oid
+
+
+def _record_inflates(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    inflated: list[int] = []
+    original = object_store._inflate
+    monkeypatch.setattr(
+        object_store, "_inflate", lambda read, size: inflated.append(size) or original(read, size)
+    )
+    return inflated
+
+
+def test_oversized_loose_object_refuses_from_its_declared_size(tmp_path: Path) -> None:
+    # The body is truncated, so only the header is ever trusted: a read that inflated
+    # past it would refuse as malformed instead.
+    oid = _loose_object(tmp_path / "objects", b"blob 100\0abc")
+
+    with ObjectStore(tmp_path / "objects") as store:
+        with pytest.raises(ObjectStoreError, match="object_too_large"):
+            store.read(oid, max_size=10)
+        with pytest.raises(ObjectStoreError, match="malformed_object"):
+            store.read(oid)
+
+
+@pytest.mark.parametrize("kind", ["base", "ofs-delta", "ref-delta"])
+def test_oversized_packed_object_refuses_before_inflating_or_resolving(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    hello = _entry_header(3, 5) + zlib.compress(b"hello")
+    delta = _delta_size(5) + _delta_size(11) + b"\x90\x05" + b"\x06 world"
+    if kind == "base":
+        entries = [(_B, _entry_header(3, 100) + b"not zlib")]
+    elif kind == "ofs-delta":
+        ofs = _entry_header(6, len(delta)) + bytes([len(hello)]) + zlib.compress(delta)
+        entries = [(_A, hello), (_B, ofs)]
+    else:
+        entries = [(_A, hello), (_B, _ref_delta(_A, delta))]
+    _write_pack(tmp_path / "objects", entries)
+    inflated = _record_inflates(monkeypatch)
+
+    with ObjectStore(tmp_path / "objects") as store:
+        with pytest.raises(ObjectStoreError, match="object_too_large"):
+            store.read(_B.hex(), max_size=10)
+    assert inflated == []
+
+
+def test_work_budget_is_charged_across_reads(tmp_path: Path) -> None:
+    entries = [(_A, _entry_header(3, 5) + zlib.compress(b"hello"))]
+    _write_pack(tmp_path / "objects", entries)
+    oid = _loose_object(tmp_path / "objects", b"blob 5\0hello")
+    # Each read pays for the compressed bytes it consumed as well as the bytes it inflated.
+    budget = 2 * 5 + len(zlib.compress(b"hello")) + len(zlib.compress(b"blob 5\0hello"))
+
+    with ObjectStore(tmp_path / "objects", work_budget=budget) as store:
+        assert store.read(_A.hex()) == ("blob", b"hello")
+        assert store.read(oid) == ("blob", b"hello")
+        with pytest.raises(ObjectStoreError, match="work_budget_exhausted"):
+            store.read(_A.hex())
+
+
+async def test_export_refuses_once_its_total_work_budget_is_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = commit_file(repo, "src/notes.py", "value = 1\n" * 50, "feat: add notes")
+    monkeypatch.setattr(export_module, "MAX_EXPORT_WORK_BYTES", 64)
+
+    with pytest.raises(ExportRefused, match="export_too_large"):
+        await _export(repo, base, head)
+
+
+async def test_export_refuses_an_oversized_blob_from_its_declared_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = commit_file(repo, "src/notes.py", "value = 1\n" * 50, "feat: add notes")
+    monkeypatch.setattr(export_module, "MAX_BLOB_BYTES", 64)
+    sizes: list[int | None] = []
+    original = ObjectStore.read
+    monkeypatch.setattr(
+        ObjectStore,
+        "read",
+        lambda self, oid, *, max_size=None: (
+            sizes.append(max_size) or original(self, oid, max_size=max_size)
+        ),
+    )
+
+    with pytest.raises(ExportRefused, match="export_too_large"):
+        await _export(repo, base, head)
+    assert 64 in sizes
+
+
+def test_object_cap_does_not_exceed_the_export_cap() -> None:
+    assert object_store.MAX_OBJECT_BYTES <= export_module.MAX_EXPORT_BYTES
+
+
+# --- Compressed input is bounded and charged; honest big objects refuse as too large ---
+
+
+def _padded_zlib(data: bytes, empty_blocks: int) -> bytes:
+    """A valid zlib stream of ``data`` behind ``empty_blocks`` empty stored blocks."""
+    stored = b"\x01" + len(data).to_bytes(2, "little") + (len(data) ^ 0xFFFF).to_bytes(2, "little")
+    padding = b"\x00\x00\x00\xff\xff" * empty_blocks
+    return b"\x78\x01" + padding + stored + data + zlib.adler32(data).to_bytes(4, "big")
+
+
+@pytest.mark.parametrize("kind", ["base", "delta"])
+def test_empty_stored_block_stream_refuses_instead_of_scanning_the_pack(
+    tmp_path: Path, kind: str
+) -> None:
+    # Empty stored blocks inflate to nothing, so only a cap on compressed input stops a
+    # stream of them from being read up to the file-size cap.
+    delta = _delta_size(5) + _delta_size(11) + b"\x90\x05" + b"\x06 world"
+    hello = _entry_header(3, 5) + zlib.compress(b"hello")
+    if kind == "base":
+        entries = [(_A, _entry_header(3, 5) + _padded_zlib(b"hello", 100_000))]
+    else:
+        padded = _entry_header(7, len(delta)) + _A + _padded_zlib(delta, 100_000)
+        entries = [(_A, hello), (_B, padded)]
+    assert zlib.decompress(_padded_zlib(b"hello", 100_000)) == b"hello"
+    _write_pack(tmp_path / "objects", entries)
+
+    with pytest.raises(ObjectStoreError, match="malformed_object"):
+        _read(tmp_path / "objects", _A if kind == "base" else _B)
+
+
+def test_oids_sharing_one_entry_each_pay_for_its_compressed_bytes(tmp_path: Path) -> None:
+    # One padded delta (just inside the input caps) listed under several oids: each read
+    # re-inflates it, so each must be charged for the compressed bytes, not just the
+    # few bytes it yields.
+    delta = _delta_size(5) + _delta_size(11) + b"\x90\x05" + b"\x06 world"
+    padded = _entry_header(7, len(delta)) + _A + _padded_zlib(delta, 700)
+    hello = _entry_header(3, 5) + zlib.compress(b"hello")
+    shared = b"\x33" * 20
+    _write_pack(
+        tmp_path / "objects", [(_A, hello), (_B, padded)], offsets={shared: 12 + len(hello)}
+    )
+
+    with ObjectStore(tmp_path / "objects", work_budget=10_000) as store:
+        assert store.read(_B.hex()) == ("blob", b"hello world")
+        with pytest.raises(ObjectStoreError, match="work_budget_exhausted"):
+            store.read(shared.hex())
+
+
+@pytest.mark.parametrize("packed", [False, True], ids=["loose", "packed"])
+async def test_honest_object_over_the_cap_refuses_as_too_large(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, packed: bool
+) -> None:
+    # Over the object cap but well formed: a size refusal, never "malformed" (tampering).
+    # The blob is incompressible, so its loose file also passes the raw-file cap.
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = commit_file(repo, "src/blob.txt", os.urandom(2048).hex(), "feat: add blob")
+    if packed:
+        _repack(repo)
+    monkeypatch.setattr(object_store, "MAX_OBJECT_BYTES", 1024)
+    monkeypatch.setattr(object_store, "MAX_LOOSE_FILE_BYTES", 1024)
+
+    with ObjectStore(repo / ".git" / "objects") as store:
+        with pytest.raises(ObjectStoreError, match="object_too_large"):
+            store.read(_blob(repo, head, "src/blob.txt"))
+    with pytest.raises(ExportRefused, match="export_too_large"):
+        await _export(repo, base, head)
