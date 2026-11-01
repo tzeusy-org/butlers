@@ -86,6 +86,9 @@ class GithubPublicationReader:
                 base_url=self._base_url,
                 timeout=_REQUEST_TIMEOUT_SECONDS,
                 follow_redirects=False,
+                # No proxy, netrc or CA overrides from the environment: the token
+                # goes only to the fixed API origin over the default trust store.
+                trust_env=False,
                 transport=self._transport,
             ) as client:
                 response = await client.get(
