@@ -419,6 +419,28 @@ async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -
     assert info["is_pre_tool_call"] is False and info["exit_code"] == 53
 
 
+def test_catalog_gemini_model_ids_were_probed_against_the_pinned_cli() -> None:
+    """The CLI rewrites some ``-m`` values (0.46.0 sends any ``*flash`` id as
+    gemini-3.5-flash), and its usage labels never raise ``requested_not_served``. So
+    every Gemini catalog id needs a recorded probe for the pinned CLI (see the fixture
+    README), and an entry may be enabled only if the CLI serves its id unchanged."""
+    import re
+    import tomllib
+
+    root = Path(__file__).parents[2]
+    dockerfile = (root / "Dockerfile.base").read_text()
+    match = re.search(r"@google/gemini-cli@([0-9.]+)", dockerfile)
+    assert match
+    probes = json.loads((_RECORDED / "model_resolution.json").read_text())
+    served = probes.get(match.group(1))
+    assert served is not None, f"record a model probe for gemini-cli {match.group(1)}"
+    catalog = tomllib.loads((root / "model_catalog_defaults.toml").read_text())["models"]
+    for entry in (e for e in catalog if e["runtime_type"] == "gemini"):
+        assert entry["model_id"] in served, f"probe {entry['model_id']} on the pinned CLI"
+        if entry["enabled"]:
+            assert served[entry["model_id"]] == entry["model_id"], entry["alias"]
+
+
 async def test_invoke_staging_failure_removes_the_temp_dir(tmp_path: Path) -> None:
     """A failure while staging system.md or settings never leaks the per-invocation dir."""
     adapter = GeminiAdapter(gemini_binary="/usr/bin/gemini")
