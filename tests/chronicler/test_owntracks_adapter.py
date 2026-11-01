@@ -16,8 +16,10 @@ Covers:
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import asyncpg
 import pytest
@@ -674,6 +676,10 @@ async def test_buffered_offline_points_keep_device_ts_and_split_by_ts() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _event_id(idempotency_key: str) -> UUID:
+    return uuid5(NAMESPACE_URL, idempotency_key)
+
+
 async def _project_capturing(
     rows: list[dict], *, carryover: dict | None = None, stored: dict | None = None
 ) -> tuple[object, list[PointEvent], list[Episode], dict]:
@@ -683,7 +689,7 @@ async def _project_capturing(
 
     async def _fake_pe(conn: object, event: PointEvent) -> PointEvent:
         events.append(event)
-        return event
+        return replace(event, id=_event_id(event.payload["idempotency_key"]))
 
     async def _fake_ep(conn: object, episode: Episode) -> Episode:
         episodes.append(episode)
@@ -762,6 +768,7 @@ async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates
         "start_at": _NOW - timedelta(minutes=11),
         "end_at": _NOW + timedelta(hours=3),
         "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+        "linked_event_ids": [],  # legacy episode: no linked evidence yet
     }
     rows = [
         _make_row(ts=_NOW, idempotency_key="a"),
@@ -775,3 +782,32 @@ async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates
     assert (ep.start_at, ep.end_at) == (stored["start_at"], stored["end_at"])
     assert ep.payload["point_count"] == 42
     assert saved[_ENDPOINT]["source_ref"] == stored["source_ref"]
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_merged_batch_keeps_the_point_count_stable() -> None:
+    """point_count counts distinct linked evidence, so a replay never re-adds it."""
+    others = [_event_id(f"earlier-{i}") for i in range(40)]
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:stored",
+        "start_at": _NOW - timedelta(minutes=11),
+        "end_at": _NOW + timedelta(hours=3),
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 40},
+        "linked_event_ids": others,
+    }
+    rows = [
+        _make_row(ts=_NOW, idempotency_key="a"),
+        _make_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+    ]
+    _, _, first, _ = await _project_capturing(rows, stored=stored)
+    assert first[0].payload["point_count"] == 42
+
+    # Replay: the stored episode now carries this batch's fixes as evidence.
+    replay_stored = {
+        **stored,
+        "payload": {**stored["payload"], "point_count": 42},
+        "linked_event_ids": [*others, _event_id("a"), _event_id("b")],
+    }
+    _, _, replayed, saved = await _project_capturing(rows, stored=replay_stored)
+    assert replayed[0].payload["point_count"] == 42
+    assert saved[_ENDPOINT]["point_count"] == 42

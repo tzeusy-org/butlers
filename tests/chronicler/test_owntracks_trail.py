@@ -94,3 +94,20 @@ def test_anchor_carryover_round_trip_and_malformed_entries_dropped() -> None:
     carry = {TRAIL_ANCHORS_CARRYOVER_KEY: {**dump_anchors(anchors), "bad": {"ts": "x"}}}
     assert load_anchors(carry) == anchors
     assert load_anchors({}) == {}
+
+
+def test_replaying_a_batch_reproduces_its_outlier_verdicts() -> None:
+    # A replay (watermark not checkpointed, reset, or backfill) sees the
+    # anchors the first run saved; it must flag the same fixes, every time.
+    rows = [
+        _fix(0, BEIJING),
+        _fix(5, BEIJING),
+        _fix(10, POLAND),
+        _fix(15, BEIJING),
+        _fix(20, BEIJING),
+    ]
+    first, anchors = classify_trail(rows)
+    assert set(first) == {2}
+    for _ in range(2):
+        replayed, anchors = classify_trail(rows, prior_anchors=anchors)
+        assert set(replayed) == set(first)

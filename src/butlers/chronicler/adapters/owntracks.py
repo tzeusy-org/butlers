@@ -654,6 +654,16 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             if point_count < MIN_MOVEMENT_POINTS:
                 continue
 
+            # Evidence chain: the GPS location point events that make up this
+            # segment (those projected in THIS batch — cross-batch carryover
+            # points were linked on their own run). De-duplicated, ordered by
+            # occurrence via the row order.
+            seg_event_ids = [
+                event_id_by_key[r["idempotency_key"]]
+                for r in seg_rows
+                if r["idempotency_key"] in event_id_by_key
+            ]
+
             merged = None
             if seg["source_ref"] is None:
                 # Only a segment that starts fresh this batch can duplicate a
@@ -675,7 +685,14 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     effective_start_lat = merged["start_lat"]
                     effective_start_lon = merged["start_lon"]
                 end_at = max(end_at, merged["end_at"])
-                point_count += merged["point_count"]
+                # Count distinct evidence, never a sum: a replayed batch's
+                # fixes are already linked to the stored episode.
+                linked = merged["linked_event_ids"]
+                if linked:
+                    point_count = len(linked | set(seg_event_ids))
+                else:
+                    # Legacy episode without linked evidence: extend its stored count.
+                    point_count += merged["point_count"]
                 new_carryover[endpoint_identity].update(
                     source_ref=seg_source_ref,
                     start_at=effective_start_at.isoformat(),
@@ -696,15 +713,6 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "end_lon": float(last["lon"]),
             }
 
-            # Evidence chain: the GPS location point events that make up this
-            # segment (those projected in THIS batch — cross-batch carryover
-            # points were linked on their own run). De-duplicated, ordered by
-            # occurrence via the row order.
-            seg_event_ids = [
-                event_id_by_key[r["idempotency_key"]]
-                for r in seg_rows
-                if r["idempotency_key"] in event_id_by_key
-            ]
             evidence_refs = evidence_refs_from_event_ids(seg_event_ids)
 
             # Confidence: a movement episode rests on a single, weak evidence
@@ -766,7 +774,11 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         """
         row = await conn.fetchrow(
             """
-            SELECT source_ref, start_at, end_at, payload
+            SELECT source_ref, start_at, end_at, payload,
+                   ARRAY(
+                       SELECT l.event_id FROM episode_event_links l
+                       WHERE l.episode_id = episodes.id
+                   ) AS linked_event_ids
             FROM episodes
             WHERE source_name = $1
               AND episode_type = $2
@@ -806,6 +818,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             "start_lat": start_lat if start_lat is not None else 0.0,
             "start_lon": start_lon if start_lon is not None else 0.0,
             "point_count": stored_count,
+            "linked_event_ids": set(row["linked_event_ids"] or ()),
         }
 
     @staticmethod

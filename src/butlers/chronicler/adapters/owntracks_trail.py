@@ -28,6 +28,9 @@ Anchors persist across batches in each adapter's projection carryover under
 :data:`TRAIL_ANCHORS_CARRYOVER_KEY`. Candidate runs do not: a run that spans a
 batch boundary restarts in the next batch (its already-projected fixes stay
 flagged), which is acceptable because batches are 1000 fixes, roughly days.
+A batch whose first fix for an endpoint predates that endpoint's anchor is a
+replay, so the anchor is dropped and the batch is judged from scratch:
+replaying a batch reproduces its verdicts.
 
 Pure functions only: no I/O, no LLM, no external geocoding.
 """
@@ -171,14 +174,25 @@ def classify_trail(
     pending: dict[str, list[int]] = {}
     outliers: dict[int, TrailOutlier] = {}
 
+    # A batch whose first fix predates the endpoint's anchor is a replay
+    # (unsaved watermark, reset or backfill): the anchor came from these very
+    # rows or later ones, so judging against it would wave every fix through.
+    # Judge the batch from scratch instead, so the verdicts do not depend on
+    # how many times it was projected.
+    first_ts: dict[str, datetime] = {}
+    for row in rows:
+        first_ts.setdefault(row["endpoint_identity"], row["ts"])
+    for endpoint, ts in first_ts.items():
+        prior = anchors.get(endpoint)
+        if prior is not None and ts < prior.ts:
+            del anchors[endpoint]
+
     for index, row in enumerate(rows):
         endpoint = row["endpoint_identity"]
         anchor = anchors.get(endpoint)
-        if anchor is None or row["ts"] < anchor.ts:
-            # No history yet, or a fix older than the anchor (cross-batch
-            # replay): nothing trustworthy to judge it against.
-            if anchor is None:
-                anchors[endpoint] = TrailAnchor(ts=row["ts"], lat=row["lat"], lon=row["lon"])
+        if anchor is None:
+            # No history yet: nothing trustworthy to judge the first fix against.
+            anchors[endpoint] = TrailAnchor(ts=row["ts"], lat=row["lat"], lon=row["lon"])
             continue
 
         distance_m, speed_kmh = _jump(anchor.ts, anchor.lat, anchor.lon, row)
