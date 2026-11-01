@@ -165,6 +165,8 @@ class TestToolCallsSuppressFailover:
             "authentication failed",
             "503 service unavailable",
             "Runtime returned no response",
+            # Generic runtime-config wording inside embedded tool output.
+            'Claude CLI exited with code 1: {"type":"tool_result","content":"invalid runtime"}',
         ],
     )
     @pytest.mark.parametrize(("pre_tool_call", "eligible"), [(False, False), (True, True)])

@@ -201,8 +201,10 @@ config/MCP/empty-response buckets). No marker may appear in more than one bucket
   (tool output included) and the tools that ran could repeat their side effects
 - **AND** when `is_pre_tool_call` is absent or `True`, the marker match SHALL keep its
   normal eligibility, so a genuine pre-tool rate-limit or usage-limit still fails over
-- **AND** a runtime config marker SHALL keep its eligibility, since it fails before
-  invocation by construction
+- **AND** a runtime config marker in the message SHALL NOT reopen failover either:
+  adapters report `is_pre_tool_call=False` only after the runtime process ran, so a
+  genuine config error never carries it, while generic config wording can appear in
+  embedded tool output
 
 ## Source References
 - Non-Negotiable Rule 4 (The daemon is deterministic infrastructure; intelligence is in ephemeral LLM CLI instances — failover orchestration is deterministic daemon behavior wrapping the ephemeral runtime invocation)

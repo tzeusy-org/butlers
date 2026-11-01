@@ -313,7 +313,7 @@ The `classify_failover_eligibility()` function (in `failover_classifier.py`) dec
 
 **Suppressed (default-closed):**
 - Any captured MCP tool call — world may have been touched
-- A marker-matched `RuntimeError` whose adapter reported `is_pre_tool_call=False` — tools ran natively, and the message may embed the transcript (runtime config errors excepted)
+- A marker-matched `RuntimeError` whose adapter reported `is_pre_tool_call=False` — tools ran natively, and the message may embed the transcript (runtime config markers included: a genuine config error never carries `False`)
 - Guardrail terminations (`degenerate_tool_loop`, `tool_call_budget_exceeded`, `token_budget_exceeded`)
 - Unknown error classes — cannot confirm no side effect occurred
 - Business / validation errors (`ValueError`, `TypeError`)
