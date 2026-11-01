@@ -168,6 +168,21 @@ outbox must refuse rollback with forward-remediation guidance. Avoid foreign
 keys/cascades to mutable source records when the evidence must survive source
 catalog or attempt deletion.
 
+`core_291` applies this rule to the shared ambient projection grant store. Its
+transaction advisory lock serializes the schema-version census with other
+291 upgrades and downgrades. A schema leaving 291 retains the entire table,
+rows, owner, RLS, policies and ACLs while another schema is still at 291 or
+later. An unknown core revision or missing current consumer refuses rollback
+with migration-history remediation. The last consumer takes an exclusive table
+lock before checking emptiness, so minting cannot race an empty-store drop.
+Any row, including a revoked grant, refuses rollback with roll-forward guidance;
+revoking grants does not erase their history or authorize deletion. Only a
+genuinely empty store without another migrated consumer can be removed. Reapply
+291 as the established ordinary migration owner to recreate an empty store with
+its existing creator ACLs. Managed full-chain peer-schema replay uses the
+bootstrap interface for its fixed installers; do not stamp past those installers
+or broaden the ordinary login to make a fixture pass.
+
 A string literal inside a stored function body is not reachable the way a schema
 object is. `ALTER ... RENAME` is expressible against an existing object, so a
 rename converges through a finalizer that re-runs; a literal baked into the text
