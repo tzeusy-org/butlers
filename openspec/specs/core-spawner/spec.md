@@ -54,6 +54,8 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the `stream-json` output contains assistant message events with `tool_use` content blocks
 - **THEN** the adapter SHALL extract each tool call's `id`, `name`, and `input` fields
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
+- **AND** read the CLI's native shape, where content blocks nest under the event's `message`
+- **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess

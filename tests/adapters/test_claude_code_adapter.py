@@ -19,7 +19,11 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from butlers.core.runtimes import ClaudeCodeAdapter
-from butlers.core.runtimes.claude_code import _extract_claude_session_id, _find_claude_binary
+from butlers.core.runtimes.claude_code import (
+    _extract_claude_session_id,
+    _find_claude_binary,
+    _parse_claude_output,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -203,6 +207,51 @@ async def test_invoke_captures_none_provider_session_id_when_absent():
         await adapter.invoke(prompt="hi", system_prompt="", mcp_servers={}, env={})
 
     assert adapter.last_process_info["provider_session_id"] is None
+
+
+_STREAM_RECORDINGS = Path(__file__).parents[1] / "fixtures" / "claude_stream_json"
+
+
+async def test_recorded_native_stream_reports_tool_use_and_result_text():
+    """A real CLI stream nests content under ``message``; the adapter reports it itself.
+
+    The final answer appears both as an assistant text block and as the result
+    text; the result stays the single source so the answer is not doubled.
+    """
+    stdout = (_STREAM_RECORDINGS / "tool_use_success.jsonl").read_bytes()
+    adapter = ClaudeCodeAdapter(claude_binary="/usr/bin/claude")
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(stdout, b""))
+    mock_proc.returncode = 0
+    mock_proc.pid = 1
+
+    with patch(_EXEC, return_value=mock_proc):
+        result_text, tool_calls, usage = await adapter.invoke(
+            prompt="hi", system_prompt="", mcp_servers={}, env={}
+        )
+
+    assert result_text == "done"
+    assert tool_calls == [
+        {
+            "id": "toolu_01RMdcsGjy5bCCSfrXAj1eJv",
+            "name": "Bash",
+            "input": {"command": "true", "description": "Run the no-op shell command true once"},
+        }
+    ]
+    assert usage is not None and usage["output_tokens"] == 252
+
+
+def test_native_assistant_text_is_the_answer_only_without_a_result_event():
+    """A stream cut before its result event still yields the assistant's text."""
+    lines = [
+        line
+        for line in (_STREAM_RECORDINGS / "tool_use_success.jsonl").read_text().splitlines()
+        if json.loads(line)["type"] != "result"
+    ]
+    result_text, tool_calls, usage = _parse_claude_output("\n".join(lines), "", 0)
+    assert result_text == "done"
+    assert [call["name"] for call in tool_calls] == ["Bash"]
+    assert usage is None
 
 
 def test_extract_claude_session_id_scans_any_event_type():
