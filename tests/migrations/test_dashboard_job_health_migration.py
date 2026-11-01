@@ -278,6 +278,8 @@ async def test_job_health_ordinary_backup_preserves_typed_history_and_fresh_proc
     root = _REPO_ROOT
     pool = await asyncpg.create_pool(url.replace("postgresql+psycopg2://", "postgresql://"))
     target = migration_db_name()
+    capture_epoch_path = tmp_path / f"{target}.json"
+    assert not capture_epoch_path.exists()
     restored_pool = None
     try:
         store = JobHealthStore(lambda: pool)
@@ -319,14 +321,16 @@ async def test_job_health_ordinary_backup_preserves_typed_history_and_fresh_proc
         restored = await asyncio.to_thread(
             client,
             postgres_container,
-            f'export POSTGRES_PASSWORD="$SYNTHETIC_PASSWORD"; bash /restore.sh /backup.sql.gz --host host.docker.internal --port {postgres_container.get_exposed_port(5432)} --user {admin.username} --target-db {target} --drop-existing',
+            f'export POSTGRES_PASSWORD="$SYNTHETIC_PASSWORD"; bash /restore.sh /backup.sql.gz --host host.docker.internal --port {postgres_container.get_exposed_port(5432)} --user {admin.username} --target-db {target} --drop-existing --capture-epoch-file /capture-host/{target}.json',
             admin.password,
             mounts=(
                 f"{root / 'scripts/pg_restore.sh'}:/restore.sh:ro",
                 f"{artifacts[0]}:/backup.sql.gz:ro",
+                f"{tmp_path}:/capture-host",
             ),
         )
         assert restored.returncode == 0, "health-history restore must preserve owner and rows"
+        assert capture_epoch_path.is_file()
         target_url = source.set(database=target).render_as_string(hide_password=False)
         restored_pool = await asyncpg.create_pool(
             target_url.replace("postgresql+psycopg2://", "postgresql://")
