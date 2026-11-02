@@ -77,3 +77,39 @@ async def test_an_unbound_ref_is_refused_before_the_database(
         "hint": "Only attachments of the message this session is handling can be fetched.",
     }
     assert pool.mock_calls == []
+
+
+async def test_the_registered_switchboard_tool_refuses_an_unbound_ref() -> None:
+    """The tool Switchboard registers goes through the binding, not the bare fetch."""
+    from types import SimpleNamespace
+
+    from butlers.core_tools._base import ToolContext
+    from butlers.core_tools._switchboard import register_switchboard_tools
+
+    registered: dict[str, Any] = {}
+
+    def core_tool(_group: str, **_kwargs):
+        def decorator(fn):
+            registered[fn.__name__] = fn
+            return fn
+
+        return decorator
+
+    pool = AsyncMock()
+    pool.fetchrow.return_value = _FETCHED
+    ctx = ToolContext(
+        daemon=SimpleNamespace(_pipeline=None, _buffer=None),
+        pool=pool,
+        spawner=None,
+        butler_name="switchboard",
+        butler_type=None,
+        is_switchboard=True,
+        is_messenger=False,
+        route_metrics=None,
+    )
+    register_switchboard_tools(ctx, SimpleNamespace(), core_tool)
+
+    result = await registered["attachment_materialize"](message_id="m1", attachment_id="a1")
+
+    assert result["reason"] == "attachment_not_in_request"
+    assert pool.mock_calls == []
