@@ -33,8 +33,7 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db import open_pool
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.rule_promotion import _fetch_evidence_headers
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
@@ -46,48 +45,31 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
+@pytest.fixture
+def routing_url(fresh_db) -> str:
     # Faithful topology: switchboard chain provisioned into its own schema
     # (bu-9auxy), so a public-only pool genuinely cannot see its tables
     # unqualified -- which is what makes the qualification teeth meaningful.
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-    )
+    return fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
 
 
 @pytest.fixture
-async def public_pool(migrated_db_url: str) -> asyncpg.Pool:
+async def public_pool(routing_url: str) -> asyncpg.Pool:
     """Pool whose ``search_path`` is scoped to ``public`` only.
 
     Mirrors the production shared/public-scoped caller shape (e.g. the shared
     credential pool in ``deps.py``, ``shared_db_schema = "public"``) that
     ``test_deliver_search_path_integration.py`` reproduces for ``deliver()``.
     """
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "public"},
-    )
+    p = await open_pool(routing_url, schema="public")
     yield p
     await p.close()
 
 
 @pytest.fixture
-async def switchboard_pool(migrated_db_url: str) -> asyncpg.Pool:
+async def switchboard_pool(routing_url: str) -> asyncpg.Pool:
     """Pool scoped to the switchboard schema, used only to seed/read-back rows."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-        server_settings={"search_path": "switchboard,public"},
-    )
+    p = await open_pool(routing_url, schema="switchboard")
     yield p
     await p.close()
 
