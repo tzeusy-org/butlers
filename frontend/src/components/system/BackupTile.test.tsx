@@ -463,3 +463,55 @@ describe("BackupTile -- last run outcome (bu-u41p0)", () => {
     expect(html).toContain("backup-tile-run-success")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Off-node copy row (bu-ivuf9u)
+// ---------------------------------------------------------------------------
+
+describe("BackupTile -- off-node copy row (bu-ivuf9u)", () => {
+  function renderCopy(offsite_copy: BackupFacts["offsite_copy"]): string {
+    mockResult = {
+      isPending: false,
+      data: makeBackupFacts({ last_backup_status: "healthy", backup_stale: false, offsite_copy }),
+    }
+    return render()
+  }
+
+  it("says the copy is not configured when disabled or absent", () => {
+    expect(renderCopy(undefined)).toContain("backup-tile-offsite-disabled")
+    const html = renderCopy({
+      result: "disabled", finished_at: null, reason: null, snapshot_id: null, stale: false,
+    })
+    expect(html).toContain("backup-tile-offsite-disabled")
+    expect(html).toContain("Not configured")
+  })
+
+  it("reports a fresh successful copy with its snapshot id", () => {
+    const html = renderCopy({
+      result: "success", finished_at: "2026-05-01T03:00:00Z", reason: "ok",
+      snapshot_id: "0a1b2c3d", stale: false,
+    })
+    expect(html).toContain("backup-tile-offsite-success")
+    expect(html).toContain("0a1b2c3d")
+  })
+
+  it("reports a failed copy with its fixed-vocabulary reason", () => {
+    const html = renderCopy({
+      result: "failed", finished_at: "2026-05-01T03:00:00Z", reason: "repo_unreachable",
+      snapshot_id: null, stale: false,
+    })
+    expect(html).toContain("backup-tile-offsite-problem")
+    expect(html).toContain("repository unreachable")
+  })
+
+  it("flags a stale or never-recorded copy as a problem, never as copied", () => {
+    for (const copy of [
+      { result: "success", finished_at: "2026-04-01T03:00:00Z", reason: "ok", snapshot_id: "0a1b", stale: true },
+      { result: "unknown", finished_at: null, reason: "no copy outcome recorded", snapshot_id: null, stale: true },
+    ] as const) {
+      const html = renderCopy(copy)
+      expect(html).toContain("backup-tile-offsite-problem")
+      expect(html).not.toContain("backup-tile-offsite-success")
+    }
+  })
+})
