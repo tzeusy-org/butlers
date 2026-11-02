@@ -732,6 +732,7 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **THEN** the consecutive-identical streak SHALL count only calls of the same thread
 - **AND** a subagent repeating one call to the threshold SHALL trip the loop detector even when its parent's calls interleave
 - **AND** parallel subagents that each stay under the threshold SHALL NOT trip it, however their calls interleave
+- **AND** merging daemon-captured MCP records into the adapter-reported list SHALL keep the adapter's stream order, so a thread alternating a runtime built-in with one MCP call SHALL NOT read as consecutive identical calls
 
 #### Scenario: Tool-call budget exceeded
 - **WHEN** the cumulative tool-call count for a session exceeds a configured non-zero `max_tool_calls`
