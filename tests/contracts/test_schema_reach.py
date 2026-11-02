@@ -407,10 +407,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "switchboard.message_inbox",
     ): "burn-down: existing switchboard.message_inbox coupling; route through owning service or make local schema authority explicit",
     (
-        "roster/relationship/tests/test_commitment_extraction_db.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: closed public table cleanup tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
         "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
         "<dynamic:{_child}>",
     ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
