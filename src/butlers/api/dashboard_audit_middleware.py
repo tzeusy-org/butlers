@@ -213,6 +213,10 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
 
         # Build a human-readable operation string.
         operation = f"{request.method} {path}"
+        # The metric attribute must stay bounded: matched route template, never the raw path.
+        route = request.scope.get("route")
+        template = route.path_format if isinstance(route, APIRoute) else "unmatched"
+        metric_action = f"{request.method} {template}"
 
         # Emit — fire and forget (emit_dashboard_audit swallows all errors).
         try:
@@ -234,6 +238,7 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             result=result,
             error=f"HTTP {status_code}" if result == "error" else None,
             request=request,
+            metric_action=metric_action,
         )
 
         # Invalidate the briefing cache when the audit row has result='error'

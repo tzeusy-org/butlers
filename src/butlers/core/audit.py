@@ -128,10 +128,13 @@ async def append(
     result: str | None = None,
     error: str | None = None,
     failure_category: str | None = None,
+    metric_action: str | None = None,
 ) -> int:
     """Append one row to ``public.audit_log`` and return the new row id.
 
     Adds 1 to the OTel counter ``butlers.audit.log.appended{action}`` on success.
+    The attribute is ``metric_action`` when given, else ``action``; callers whose
+    ``action`` embeds request-derived text must pass a bounded ``metric_action``.
 
     Accepts either an asyncpg pool or an already-acquired connection so that
     callers can run the audit insert inside the same SQL transaction as the
@@ -263,7 +266,7 @@ async def append(
         ) from exc
     if type(row_id) is not int or row_id <= 0:
         raise AuditTableNotAvailableError("Required audit storage returned no receipt")
-    _record_appended(action)
+    _record_appended(metric_action or action)
 
     # Notify listeners (the dashboard's live "issue" event) whenever an
     # error-result row lands. Best-effort: never let a listener block or fail
