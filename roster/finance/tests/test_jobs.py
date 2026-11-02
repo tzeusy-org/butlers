@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, patch
@@ -15,6 +16,7 @@ import pytest
 # test selected alone does not depend on an earlier test having imported it.
 import butlers.jobs._roster.finance_jobs  # noqa: F401
 from butlers.core.owner_conditions import create_owner_conditions_table, get_active_condition
+from butlers.testing.db import open_pool
 from butlers.tools.switchboard.insight.broker import create_insight_tables
 
 docker_available = shutil.which("docker") is not None
@@ -41,117 +43,28 @@ def _today() -> date:
 
 
 # ---------------------------------------------------------------------------
-# Schema setup helper
+# Database fixture
 # ---------------------------------------------------------------------------
 
-CREATE_FINANCE_SCHEMA = "CREATE SCHEMA IF NOT EXISTS finance"
 
-CREATE_BILLS_SQL = """
-CREATE TABLE IF NOT EXISTS finance.bills (
-    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    payee                  TEXT NOT NULL,
-    amount                 NUMERIC(14, 2) NOT NULL,
-    currency               CHAR(3) NOT NULL,
-    due_date               DATE NOT NULL,
-    frequency              TEXT NOT NULL
-                               CHECK (frequency IN (
-                                   'one_time', 'weekly', 'monthly',
-                                   'quarterly', 'yearly', 'custom'
-                               )),
-    status                 TEXT NOT NULL
-                               CHECK (status IN ('pending', 'paid', 'overdue')),
-    payment_method         TEXT,
-    account_id             UUID,
-    source_message_id      TEXT,
-    statement_period_start DATE,
-    statement_period_end   DATE,
-    paid_at                TIMESTAMPTZ,
-    metadata               JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
+@pytest.fixture
+def finance_clone(fresh_db):
+    """Open pools on fresh core+finance clones (Finance in its own schema).
 
-CREATE_SUBSCRIPTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS finance.subscriptions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    service           TEXT NOT NULL,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    frequency         TEXT NOT NULL
-                          CHECK (frequency IN (
-                              'weekly', 'monthly', 'quarterly', 'yearly', 'custom'
-                          )),
-    next_renewal      DATE NOT NULL,
-    status            TEXT NOT NULL
-                          CHECK (status IN ('active', 'cancelled', 'paused')),
-    auto_renew        BOOLEAN NOT NULL DEFAULT true,
-    payment_method    TEXT,
-    account_id        UUID,
-    source_message_id TEXT,
-    cancellation_url    TEXT,
-    notice_period_days  INTEGER,
-    cancel_by           DATE,
-    cancellation_url_source TEXT NOT NULL DEFAULT 'extracted'
-                            CHECK (cancellation_url_source IN ('owner', 'extracted')),
-    status_source       TEXT NOT NULL DEFAULT 'extracted'
-                            CHECK (status_source IN ('owner', 'extracted')),
-    field_claims JSONB NOT NULL DEFAULT '[]'::jsonb,
-    date_epoch BIGINT NOT NULL DEFAULT 0,
-    renewal_source TEXT NOT NULL DEFAULT 'extracted',
-    price_source TEXT NOT NULL DEFAULT 'extracted',
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
+    The clone is made off the event loop and the pool opens on the test's own
+    loop, as the hand-provisioned pools did.
+    """
 
-CREATE_OBLIGATION_LEDGER_SQL = """
-CREATE TABLE IF NOT EXISTS finance.obligation_ledger (
-    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subscription_id         UUID NOT NULL REFERENCES finance.subscriptions(id) ON DELETE CASCADE,
-    period                  DATE NOT NULL,
-    warn_by                 DATE,
-    unknown_door            BOOLEAN NOT NULL DEFAULT false,
-    price_change_amount     NUMERIC(14, 2),
-    price_change_direction  TEXT
-                                 CHECK (price_change_direction IS NULL
-                                     OR price_change_direction IN ('increase', 'decrease')),
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT uq_obligation_ledger_subscription_period UNIQUE (subscription_id, period)
-)
-"""
+    @asynccontextmanager
+    async def _pool():
+        url = await asyncio.to_thread(fresh_db, "core", "finance", schemas={"finance": "finance"})
+        pool = await open_pool(url)
+        try:
+            yield pool
+        finally:
+            await pool.close()
 
-CREATE_TRANSACTIONS_SQL = """
-CREATE TABLE IF NOT EXISTS finance.transactions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id        UUID,
-    source_message_id TEXT,
-    posted_at         TIMESTAMPTZ NOT NULL,
-    merchant          TEXT NOT NULL,
-    description       TEXT,
-    amount            NUMERIC(14, 2) NOT NULL,
-    currency          CHAR(3) NOT NULL,
-    direction         TEXT NOT NULL CHECK (direction IN ('debit', 'credit')),
-    category          TEXT NOT NULL,
-    payment_method    TEXT,
-    receipt_url       TEXT,
-    external_ref      TEXT,
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    deleted_at        TIMESTAMPTZ
-)
-"""
-
-
-async def _setup_finance_schema(pool) -> None:
-    """Create the finance schema and all required tables."""
-    await pool.execute(CREATE_FINANCE_SCHEMA)
-    await pool.execute(CREATE_BILLS_SQL)
-    await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
-    await pool.execute(CREATE_TRANSACTIONS_SQL)
+    return _pool
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +110,7 @@ async def _insert_transaction(
 ) -> None:
     if posted_at is None:
         posted_at = _utcnow()
+    await _ensure_category(pool, category)
     await pool.execute(
         """
         INSERT INTO finance.transactions
@@ -216,29 +130,13 @@ async def _insert_transaction(
 # Schema additions for insight scan tests
 # ---------------------------------------------------------------------------
 
-CREATE_BUDGETS_SQL = """
-CREATE TABLE IF NOT EXISTS finance.budgets (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    category         TEXT NOT NULL,
-    period           TEXT NOT NULL CHECK (period IN ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
-    amount           NUMERIC(14, 2) NOT NULL,
-    currency         CHAR(3) NOT NULL DEFAULT 'USD',
-    warn_threshold   NUMERIC(5, 4) NOT NULL DEFAULT 0.8000,
-    alert_threshold  NUMERIC(5, 4) NOT NULL DEFAULT 1.0000,
-    is_active        BOOLEAN NOT NULL DEFAULT true,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
-
 
 async def _setup_insight_schema(pool) -> None:
-    """Create finance schema + insight tables for insight-scan tests."""
-    await pool.execute(CREATE_FINANCE_SCHEMA)
-    await pool.execute(CREATE_BILLS_SQL)
-    await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
-    await pool.execute(CREATE_TRANSACTIONS_SQL)
-    await pool.execute(CREATE_BUDGETS_SQL)
+    """Add the insight tables to a migrated finance clone for insight-scan tests.
+
+    The finance tables (bills, subscriptions, transactions, budgets and the
+    obligation ledger) come from the real core+finance migrations.
+    """
     # Reuse the canonical shared helper instead of a hand-copied inline DDL, so
     # the insight_cooldowns schema (dedup_key TEXT PRIMARY KEY, mirroring
     # alembic core_010) can never drift here into the synthetic-id divergence
@@ -249,14 +147,19 @@ async def _setup_insight_schema(pool) -> None:
     # so that side effect is exercised (not silently no-op'd by a missing
     # table) rather than added to a separate, divergent test setup helper.
     await create_owner_conditions_table(pool)
-    # bu-8cdl1.10 slice 2: run_insight_scan also registers a forward
-    # obligation ledger row per active subscription -- same rationale as the
-    # owner_conditions table above.
-    await pool.execute(CREATE_OBLIGATION_LEDGER_SQL)
     # Seed insight_settings with default verbosity (not 'off')
     await pool.execute(
         "INSERT INTO insight_settings (id, verbosity) "
         "VALUES (1, 'normal') ON CONFLICT (id) DO NOTHING"
+    )
+
+
+async def _ensure_category(pool, name: str) -> None:
+    """The real schema keys transactions and budgets to finance.categories(name)."""
+    await pool.execute(
+        "INSERT INTO finance.categories (name, display_name) VALUES ($1, $1) "
+        "ON CONFLICT (name) DO NOTHING",
+        name,
     )
 
 
@@ -271,6 +174,7 @@ async def _insert_budget(
     alert_threshold: str = "1.0000",
     is_active: bool = True,
 ) -> None:
+    await _ensure_category(pool, category)
     await pool.execute(
         """
         INSERT INTO finance.budgets
@@ -375,11 +279,11 @@ async def _fetch_candidates(pool) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
+async def test_insight_scan_empty_db_no_candidates(finance_clone):
     """No-op: empty finance tables produce no insight candidates."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await run_insight_scan(pool)
@@ -390,11 +294,11 @@ async def test_insight_scan_empty_db_no_candidates(provisioned_postgres_pool):
         assert await _count_candidates(pool) == 0
 
 
-async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgres_pool):
+async def test_insight_scan_bill_due_within_1_day_priority_92(finance_clone):
     """Bill due tomorrow gets priority 92 (time-critical)."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(
@@ -411,11 +315,11 @@ async def test_insight_scan_bill_due_within_1_day_priority_92(provisioned_postgr
         assert bill_candidates[0]["priority"] == 92
 
 
-async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postgres_pool):
+async def test_insight_scan_bill_due_within_3_days_priority_75(finance_clone):
     """Bill due in 3 days gets priority 75."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(
@@ -430,11 +334,11 @@ async def test_insight_scan_bill_due_within_3_days_priority_75(provisioned_postg
         assert bill_candidates[0]["priority"] == 75
 
 
-async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres_pool):
+async def test_insight_scan_bill_due_beyond_3_days_excluded(finance_clone):
     """Bills due more than 3 days away do not generate insight candidates."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(
@@ -447,11 +351,11 @@ async def test_insight_scan_bill_due_beyond_3_days_excluded(provisioned_postgres
         assert await _count_candidates(pool) == 0
 
 
-async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
+async def test_insight_scan_bill_paid_excluded(finance_clone):
     """Paid bills do not generate insight candidates."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(
@@ -467,7 +371,7 @@ async def test_insight_scan_bill_paid_excluded(provisioned_postgres_pool):
         assert result["submitted"] == 0
 
 
-async def test_insight_scan_overdue_bill_opens_owner_condition(provisioned_postgres_pool):
+async def test_insight_scan_overdue_bill_opens_owner_condition(finance_clone):
     """bu-ep4ks.6: a bill past due_date and still pending opens a standing
     owner condition -- a signal the pre-existing bill-due insight candidate
     never tracked (that category only ever fires while a bill is upcoming)."""
@@ -477,7 +381,7 @@ async def test_insight_scan_overdue_bill_opens_owner_condition(provisioned_postg
         run_insight_scan,
     )
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         bill_id = await _insert_bill_returning_id(
@@ -497,7 +401,7 @@ async def test_insight_scan_overdue_bill_opens_owner_condition(provisioned_postg
         assert "Electric Co" in active["summary"]
 
 
-async def test_insight_scan_overdue_bill_condition_resolves_once_paid(provisioned_postgres_pool):
+async def test_insight_scan_overdue_bill_condition_resolves_once_paid(finance_clone):
     """bu-ep4ks.6: paying an overdue bill resolves its owner condition on the
     next scan -- the ledger tracks "still true and unactioned", not a
     one-shot edge."""
@@ -507,7 +411,7 @@ async def test_insight_scan_overdue_bill_condition_resolves_once_paid(provisione
         run_insight_scan,
     )
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         bill_id = await _insert_bill_returning_id(
@@ -535,7 +439,7 @@ async def test_insight_scan_overdue_bill_condition_resolves_once_paid(provisione
 
 
 async def test_insight_scan_upcoming_bill_does_not_open_overdue_condition(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A bill due in the future (not yet overdue) must not open the
     bill-overdue owner condition -- only the existing bill-due insight
@@ -546,7 +450,7 @@ async def test_insight_scan_upcoming_bill_does_not_open_overdue_condition(
         run_insight_scan,
     )
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(
@@ -560,20 +464,16 @@ async def test_insight_scan_upcoming_bill_does_not_open_overdue_condition(
 
 
 async def test_insight_scan_missing_owner_conditions_table_does_not_break_scan(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """bu-ep4ks.6: owner_conditions reconciliation is best-effort -- an
     unmigrated pool (owner_conditions table absent) must not break insight
     candidate submission."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        # Deliberately skip create_owner_conditions_table here.
-        await pool.execute(CREATE_FINANCE_SCHEMA)
-        await pool.execute(CREATE_BILLS_SQL)
-        await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
-        await pool.execute(CREATE_TRANSACTIONS_SQL)
-        await pool.execute(CREATE_BUDGETS_SQL)
+    async with finance_clone() as pool:
+        # The core chain creates owner_conditions; drop it so the table is absent.
+        await pool.execute("DROP TABLE IF EXISTS public.owner_conditions CASCADE")
         await create_insight_tables(pool)
         await pool.execute(
             "INSERT INTO insight_settings (id, verbosity) "
@@ -588,13 +488,13 @@ async def test_insight_scan_missing_owner_conditions_table_does_not_break_scan(
         assert result["errors"] == 0
 
 
-async def test_insight_scan_registers_obligation_ledger_row(provisioned_postgres_pool):
+async def test_insight_scan_registers_obligation_ledger_row(finance_clone):
     """bu-8cdl1.10 slice 2: run_insight_scan registers a forward obligation
     ledger row (as a state side effect, not an insight candidate) for every
     active subscription's next renewal."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         sub_id = await _insert_subscription(
@@ -611,26 +511,17 @@ async def test_insight_scan_registers_obligation_ledger_row(provisioned_postgres
 
 
 async def test_insight_scan_missing_obligation_ledger_table_does_not_break_scan(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """bu-8cdl1.10 slice 2: obligation ledger registration is best-effort -- an
     unmigrated pool (obligation_ledger table absent) must not break insight
     candidate submission."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
-        # Deliberately skip creating finance.obligation_ledger here.
-        await pool.execute(CREATE_FINANCE_SCHEMA)
-        await pool.execute(CREATE_BILLS_SQL)
-        await pool.execute(CREATE_SUBSCRIPTIONS_SQL)
-        await pool.execute(CREATE_TRANSACTIONS_SQL)
-        await pool.execute(CREATE_BUDGETS_SQL)
-        await create_insight_tables(pool)
-        await create_owner_conditions_table(pool)
-        await pool.execute(
-            "INSERT INTO insight_settings (id, verbosity) "
-            "VALUES (1, 'normal') ON CONFLICT (id) DO NOTHING"
-        )
+    async with finance_clone() as pool:
+        await _setup_insight_schema(pool)
+        # Deliberately remove the migrated finance.obligation_ledger here.
+        await pool.execute("DROP TABLE finance.obligation_ledger")
 
         await _insert_subscription(
             pool, service="Netflix", next_renewal=_today() + timedelta(days=30)
@@ -641,7 +532,7 @@ async def test_insight_scan_missing_obligation_ledger_table_does_not_break_scan(
 
 
 async def test_insight_scan_registers_obligation_ledger_despite_verbosity_off_early_exit(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """bu-8cdl1.10 slice 2: the ledger write must run even when verbosity=off
     trips the very first candidate submission -- it is a STATE side effect
@@ -649,7 +540,7 @@ async def test_insight_scan_registers_obligation_ledger_despite_verbosity_off_ea
     the verbosity filter."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await pool.execute("UPDATE insight_settings SET verbosity = 'off' WHERE id = 1")
 
@@ -672,7 +563,7 @@ async def test_insight_scan_registers_obligation_ledger_despite_verbosity_off_ea
         assert row is not None
 
 
-async def test_insight_scan_spending_anomaly_opens_owner_condition(provisioned_postgres_pool):
+async def test_insight_scan_spending_anomaly_opens_owner_condition(finance_clone):
     """bu-ep4ks.6: an anomalous category also opens a standing owner
     condition, scoped to (category, month)."""
     from butlers.jobs._roster.finance_jobs import (
@@ -681,7 +572,7 @@ async def test_insight_scan_spending_anomaly_opens_owner_condition(provisioned_p
         run_insight_scan,
     )
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -728,11 +619,11 @@ async def test_insight_scan_spending_anomaly_opens_owner_condition(provisioned_p
         assert active["state"] == "open"
 
 
-async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_bill_dedup_key_format(finance_clone):
     """Bill insight dedup_key matches finance:bill-due:{bill_id}:{due_date}."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         due = _today() + timedelta(days=2)
@@ -757,11 +648,11 @@ async def test_insight_scan_bill_dedup_key_format(provisioned_postgres_pool):
         }
 
 
-async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
+async def test_insight_scan_bill_cooldown_days_is_1(finance_clone):
     """Bill insight has cooldown_days=1."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_bill_returning_id(pool, due_date=_today() + timedelta(days=1))
@@ -773,7 +664,7 @@ async def test_insight_scan_bill_cooldown_days_is_1(provisioned_postgres_pool):
         assert bill_cands[0]["cooldown_days"] == 1
 
 
-async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
+async def test_insight_scan_budget_90pct_priority_70(finance_clone):
     """Budget at 90%+ utilisation (per its own configured alert_threshold) gets priority 70.
 
     bu-rvz2o: insight_scan now reads each budget's configured warn_threshold/
@@ -782,7 +673,7 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         # Budget: $500 for groceries this month, exceeded at 90% (not the 100% default)
@@ -809,7 +700,7 @@ async def test_insight_scan_budget_90pct_priority_70(provisioned_postgres_pool):
         assert budget_cands[0]["priority"] == 70
 
 
-async def test_insight_scan_budget_pressure_published_on_crossing(provisioned_postgres_pool):
+async def test_insight_scan_budget_pressure_published_on_crossing(finance_clone):
     """bu-317s5 slice 3: a budget crossing its threshold best-effort publishes
     finance.budget_pressure as a TTL'd derived-advisory domain event, once per
     (category, window, severity) -- the same dedup identity as the owner
@@ -818,7 +709,7 @@ async def test_insight_scan_budget_pressure_published_on_crossing(provisioned_po
 
     publish_once_mock = AsyncMock(return_value={"status": "ok", "event_id": "e1", "deliveries": []})
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="groceries", amount="500.00", alert_threshold="0.9000")
         today = _today()
@@ -860,13 +751,13 @@ async def test_insight_scan_budget_pressure_published_on_crossing(provisioned_po
 
 
 async def test_insight_scan_budget_below_threshold_does_not_publish_pressure_event(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
     publish_once_mock = AsyncMock()
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="groceries", amount="500.00")
         today = _today()
@@ -891,11 +782,11 @@ async def test_insight_scan_budget_below_threshold_does_not_publish_pressure_eve
     publish_once_mock.assert_not_awaited()
 
 
-async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_pool):
+async def test_insight_scan_budget_80_to_90pct_priority_50(finance_clone):
     """Budget at 80–90% utilisation gets priority 50."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_budget(pool, category="dining", amount="300.00")
@@ -921,11 +812,11 @@ async def test_insight_scan_budget_80_to_90pct_priority_50(provisioned_postgres_
         assert budget_cands[0]["priority"] == 50
 
 
-async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres_pool):
+async def test_insight_scan_budget_below_80pct_no_candidate(finance_clone):
     """Budget below 80% does not generate an insight candidate."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_budget(pool, category="transport", amount="200.00")
@@ -951,7 +842,7 @@ async def test_insight_scan_budget_below_80pct_no_candidate(provisioned_postgres
 
 
 async def test_insight_scan_budget_default_thresholds_92pct_is_warning(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """bu-rvz2o: with DEFAULT thresholds (warn=80%, alert=100%), 92% utilisation
     is 'warning' (priority 50), not 'exceeded' — the old hardcoded 90% breakpoint
@@ -959,7 +850,7 @@ async def test_insight_scan_budget_default_thresholds_92pct_is_warning(
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_budget(pool, category="groceries", amount="500.00")
@@ -984,14 +875,14 @@ async def test_insight_scan_budget_default_thresholds_92pct_is_warning(
         assert budget_cands[0]["priority"] == 50
 
 
-async def test_insight_scan_budget_custom_warn_threshold_respected(provisioned_postgres_pool):
+async def test_insight_scan_budget_custom_warn_threshold_respected(finance_clone):
     """bu-rvz2o: a budget with a custom (lower) warn_threshold flags earlier
     than the 80% default — absorbing budget-status-check's per-category
     warn_threshold/alert_threshold semantics, not a hardcoded percentage.
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_budget(
@@ -1024,7 +915,7 @@ async def test_insight_scan_budget_custom_warn_threshold_respected(provisioned_p
         assert budget_cands[0]["priority"] == 50
 
 
-async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_budget_dedup_key_format(finance_clone):
     """Budget dedup_key = finance:budget-threshold:{category}:{year-month}-{status}.
 
     bu-qvs1o: severity is folded into the fourth (time-scope) segment so a
@@ -1033,7 +924,7 @@ async def test_insight_scan_budget_dedup_key_format(provisioned_postgres_pool):
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_budget(pool, category="subscriptions", amount="100.00")
@@ -1127,13 +1018,13 @@ def test_budget_period_scope_token_rejects_unknown_period():
         fj._budget_period_scope_token("biweekly", date(2026, 7, 1))
 
 
-async def test_insight_scan_weekly_budget_fires_with_week_scoped_key(provisioned_postgres_pool):
+async def test_insight_scan_weekly_budget_fires_with_week_scoped_key(finance_clone):
     """bu-hovqz: a weekly budget over threshold fires with an ISO-week-scoped key,
     and its cooldown spans the remainder of the current week.
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="coffee", period="weekly", amount="50.00")
 
@@ -1165,12 +1056,12 @@ async def test_insight_scan_weekly_budget_fires_with_week_scoped_key(provisioned
 
 
 async def test_insight_scan_quarterly_budget_fires_with_quarter_scoped_key(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """bu-hovqz: a quarterly budget over threshold fires with a quarter-scoped key."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="travel", period="quarterly", amount="1000.00")
 
@@ -1198,11 +1089,11 @@ async def test_insight_scan_quarterly_budget_fires_with_quarter_scoped_key(
         assert "quarterly budget" in cands[0]["message"]
 
 
-async def test_insight_scan_yearly_budget_fires_with_year_scoped_key(provisioned_postgres_pool):
+async def test_insight_scan_yearly_budget_fires_with_year_scoped_key(finance_clone):
     """bu-hovqz: a yearly budget over threshold fires with a year-scoped key."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="insurance", period="yearly", amount="1200.00")
 
@@ -1228,14 +1119,14 @@ async def test_insight_scan_yearly_budget_fires_with_year_scoped_key(provisioned
 
 
 async def test_insight_scan_monthly_and_yearly_same_category_no_collision(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """bu-hovqz: a monthly and a yearly budget for the same category both crossing
     threshold produce two candidates with distinct, non-colliding dedup keys.
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="shopping", period="monthly", amount="200.00")
         await _insert_budget(pool, category="shopping", period="yearly", amount="2000.00")
@@ -1266,13 +1157,13 @@ async def test_insight_scan_monthly_and_yearly_same_category_no_collision(
         )
 
 
-async def test_insight_scan_budget_dedup_key_stable_within_window(provisioned_postgres_pool):
+async def test_insight_scan_budget_dedup_key_stable_within_window(finance_clone):
     """bu-hovqz: repeated scans within the same period window emit the SAME dedup key,
     so the broker's dedup/cooldown collapses them (dedup holds within the window).
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="groceries", period="monthly", amount="500.00")
 
@@ -1307,7 +1198,7 @@ async def test_insight_scan_budget_dedup_key_stable_within_window(provisioned_po
     ],
 )
 async def test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys(
-    provisioned_postgres_pool, period, budget_amount, warn_spend, exceed_spend, scope_fn
+    finance_clone, period, budget_amount, warn_spend, exceed_spend, scope_fn
 ):
     """bu-qvs1o: a budget that crosses warn, then later exceeds within the SAME
     window, yields two candidates with distinct severity-scoped dedup keys — so
@@ -1317,7 +1208,7 @@ async def test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys(
     """
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         await _insert_budget(pool, category="dining", period=period, amount=budget_amount)
 
@@ -1362,12 +1253,12 @@ async def test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys(
 
 
 async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """Annual subscription renewing within 3 days gets priority 75."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1383,12 +1274,12 @@ async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
 
 
 async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """Annual subscription renewing in 4–14 days gets priority 55."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1406,11 +1297,11 @@ async def test_insight_scan_subscription_renewal_within_14_days_priority_55(
         assert sub_cands[0]["priority"] == 55
 
 
-async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_pool):
+async def test_insight_scan_monthly_subscription_excluded(finance_clone):
     """Monthly subscriptions do NOT generate insight candidates (only annual)."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1427,11 +1318,11 @@ async def test_insight_scan_monthly_subscription_excluded(provisioned_postgres_p
         assert len(sub_cands) == 0
 
 
-async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_postgres_pool):
+async def test_insight_scan_subscription_beyond_14_days_excluded(finance_clone):
     """Annual subscriptions renewing beyond 14 days are excluded."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1443,11 +1334,11 @@ async def test_insight_scan_subscription_beyond_14_days_excluded(provisioned_pos
         assert await _count_candidates(pool) == 0
 
 
-async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_subscription_dedup_key_format(finance_clone):
     """Subscription insight dedup_key matches finance:subscription-renewal:{id}:{date}."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         renewal_date = _today() + timedelta(days=5)
@@ -1469,14 +1360,14 @@ async def test_insight_scan_subscription_dedup_key_format(provisioned_postgres_p
 
 
 async def test_insight_scan_renewal_with_known_door_warns_with_days_remaining(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A subscription with a complete cancellation door (notice period + URL +
     cancel-by) carries the door fields and days-remaining-to-act on its
     renewal insight, not just the amount."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         renewal_date = _today() + timedelta(days=10)
@@ -1509,13 +1400,13 @@ async def test_insight_scan_renewal_with_known_door_warns_with_days_remaining(
 
 
 async def test_insight_scan_extracted_door_is_inert_and_unverified(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """An email-derived cancellation link reaches the owner as its registrable
     domain in plain text -- never as a URL in the message or the metadata."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         cancel_by = _today() + timedelta(days=3)
@@ -1549,12 +1440,12 @@ async def test_insight_scan_extracted_door_is_inert_and_unverified(
 
 
 async def test_insight_scan_extracted_cancelled_still_warns_and_asks_to_confirm(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """An email that reports a cancellation cannot silence the renewal warning."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1584,11 +1475,11 @@ async def test_insight_scan_extracted_cancelled_still_warns_and_asks_to_confirm(
 
 
 async def test_insight_scan_extracted_cancelled_without_email_source_says_unverified(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1607,11 +1498,11 @@ async def test_insight_scan_extracted_cancelled_without_email_source_says_unveri
 
 
 async def test_insight_scan_owner_set_cancelled_suppresses_the_renewal_warning(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(
@@ -1630,14 +1521,14 @@ async def test_insight_scan_owner_set_cancelled_suppresses_the_renewal_warning(
 
 
 async def test_insight_scan_renewal_missing_door_renders_enrichment_prompt(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A subscription with no cancellation door on file gets an explicit
     enrichment prompt on its renewal insight, not a silent omission of the
     door status."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         renewal_date = _today() + timedelta(days=10)
@@ -1656,13 +1547,13 @@ async def test_insight_scan_renewal_missing_door_renders_enrichment_prompt(
 
 
 async def test_insight_scan_renewal_with_pre_charge_price_change_flag(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A pre-charge price-change flag on the obligation ledger row surfaces on
     the renewal insight alongside the door fields."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         renewal_date = _today() + timedelta(days=10)
@@ -1689,12 +1580,12 @@ async def test_insight_scan_renewal_with_pre_charge_price_change_flag(
 
 
 async def test_insight_scan_deadline_candidates_include_event_date_metadata(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """Bills and renewals expose their source deadline for broker correlation."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         bill_due = _today() + timedelta(days=2)
         renewal_date = _today() + timedelta(days=5)
@@ -1716,12 +1607,12 @@ async def test_insight_scan_deadline_candidates_include_event_date_metadata(
 
 
 async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """Category spending >30% above 3-month average generates an insight."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -1766,11 +1657,11 @@ async def test_insight_scan_spending_anomaly_over_30pct_generates_candidate(
         assert anomaly_cands[0]["priority"] == 80
 
 
-async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_postgres_pool):
+async def test_insight_scan_spending_anomaly_30_50pct_priority_50(finance_clone):
     """Category 30–50% above average gets priority 50."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -1813,11 +1704,11 @@ async def test_insight_scan_spending_anomaly_30_50pct_priority_50(provisioned_po
         assert anomaly_cands[0]["priority"] == 50
 
 
-async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_postgres_pool):
+async def test_insight_scan_spending_anomaly_50_100pct_priority_65(finance_clone):
     """Category 50–100% above average gets priority 65."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -1860,11 +1751,11 @@ async def test_insight_scan_spending_anomaly_50_100pct_priority_65(provisioned_p
         assert anomaly_cands[0]["priority"] == 65
 
 
-async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisioned_postgres_pool):
+async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(finance_clone):
     """Category within 30% of average does NOT generate an insight."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -1907,12 +1798,12 @@ async def test_insight_scan_spending_anomaly_below_30pct_no_candidate(provisione
 
 
 async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """Categories with fewer than 3 months of history are excluded from anomaly detection."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -1955,11 +1846,11 @@ async def test_insight_scan_spending_anomaly_fewer_than_3_months_excluded(
         assert len(anomaly_cands) == 0
 
 
-async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_spending_anomaly_dedup_key_format(finance_clone):
     """Anomaly insight dedup_key matches finance:spending-anomaly:{category}:{year-month}."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         today = _today()
@@ -2001,11 +1892,11 @@ async def test_insight_scan_spending_anomaly_dedup_key_format(provisioned_postgr
         assert anomaly_cands[0]["dedup_key"] == f"finance:spending-anomaly:shopping:{year_month}"
 
 
-async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
+async def test_insight_scan_verbosity_off_early_exit(finance_clone):
     """When verbosity=off, the first submission is filtered and no more are submitted."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         # Set verbosity to 'off'
@@ -2023,11 +1914,11 @@ async def test_insight_scan_verbosity_off_early_exit(provisioned_postgres_pool):
         assert result["submitted"] == 1
 
 
-async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
+async def test_insight_scan_result_has_expected_keys(finance_clone):
     """Result dict contains all expected keys."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await run_insight_scan(pool)
@@ -2039,11 +1930,11 @@ async def test_insight_scan_result_has_expected_keys(provisioned_postgres_pool):
         assert "early_exit" in result
 
 
-async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgres_pool):
+async def test_insight_scan_multiple_categories_all_submitted(finance_clone):
     """Multiple categories (bill + subscription) each get a candidate submitted."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         # A bill due tomorrow
@@ -2065,11 +1956,11 @@ async def test_insight_scan_multiple_categories_all_submitted(provisioned_postgr
 # ---------------------------------------------------------------------------
 
 
-async def test_insight_scan_price_change_large_increase_priority_75(provisioned_postgres_pool):
+async def test_insight_scan_price_change_large_increase_priority_75(finance_clone):
     """A >=20% price increase on a tracked subscription generates priority 75."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(pool, service="Spotify", amount="10.00", frequency="monthly")
@@ -2090,11 +1981,11 @@ async def test_insight_scan_price_change_large_increase_priority_75(provisioned_
         assert price_cands[0]["priority"] == 75
 
 
-async def test_insight_scan_price_change_mid_increase_priority_60(provisioned_postgres_pool):
+async def test_insight_scan_price_change_mid_increase_priority_60(finance_clone):
     """A 10-20% price change generates priority 60."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(pool, service="Hulu", amount="10.00", frequency="monthly")
@@ -2115,11 +2006,11 @@ async def test_insight_scan_price_change_mid_increase_priority_60(provisioned_po
         assert price_cands[0]["priority"] == 60
 
 
-async def test_insight_scan_price_change_below_5pct_no_candidate(provisioned_postgres_pool):
+async def test_insight_scan_price_change_below_5pct_no_candidate(finance_clone):
     """A <=5% change is below detect_price_changes' own floor — no candidate."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(pool, service="Disney Plus", amount="10.00", frequency="monthly")
@@ -2140,12 +2031,12 @@ async def test_insight_scan_price_change_below_5pct_no_candidate(provisioned_pos
 
 
 async def test_insight_scan_price_change_no_matching_transaction_no_candidate(
-    provisioned_postgres_pool,
+    finance_clone,
 ):
     """A subscription with no matching charge in the lookback window is a no-op."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(pool, service="Paramount Plus", amount="10.00")
@@ -2157,11 +2048,11 @@ async def test_insight_scan_price_change_no_matching_transaction_no_candidate(
         assert len(price_cands) == 0
 
 
-async def test_insight_scan_price_change_dedup_key_format(provisioned_postgres_pool):
+async def test_insight_scan_price_change_dedup_key_format(finance_clone):
     """Price-change dedup_key matches finance:subscription-price-change:{slug}:{year-month}."""
     from butlers.jobs._roster.finance_jobs import run_insight_scan
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_subscription(pool, service="YouTube Premium", amount="12.00")
@@ -2196,9 +2087,7 @@ def _fj_module():
     return sys.modules["butlers.jobs._roster.finance_jobs"]
 
 
-async def test_bill_reconciliation_sweep_empty_no_candidates(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_bill_reconciliation_sweep_empty_no_candidates(finance_clone, monkeypatch):
     """No auto-settled/candidate/predicted results -> no insight candidates."""
     fj = _fj_module()
 
@@ -2211,7 +2100,7 @@ async def test_bill_reconciliation_sweep_empty_no_candidates(
     monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
     monkeypatch.setattr(fj, "predict_bills", _fake_predict)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_bill_reconciliation_sweep(pool)
@@ -2223,7 +2112,7 @@ async def test_bill_reconciliation_sweep_empty_no_candidates(
 
 
 async def test_bill_reconciliation_sweep_auto_settled_generates_candidate(
-    provisioned_postgres_pool, monkeypatch
+    finance_clone, monkeypatch
 ):
     """Auto-settled bills generate one low-priority informational candidate."""
     fj = _fj_module()
@@ -2242,7 +2131,7 @@ async def test_bill_reconciliation_sweep_auto_settled_generates_candidate(
     monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
     monkeypatch.setattr(fj, "predict_bills", _fake_predict)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_bill_reconciliation_sweep(pool)
@@ -2254,9 +2143,7 @@ async def test_bill_reconciliation_sweep_auto_settled_generates_candidate(
         assert settled_cands[0]["priority"] == 35
 
 
-async def test_bill_reconciliation_sweep_confirm_candidate_priority_55(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_bill_reconciliation_sweep_confirm_candidate_priority_55(finance_clone, monkeypatch):
     """Ambiguous matches needing confirmation generate an actionable candidate."""
     fj = _fj_module()
 
@@ -2274,7 +2161,7 @@ async def test_bill_reconciliation_sweep_confirm_candidate_priority_55(
     monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
     monkeypatch.setattr(fj, "predict_bills", _fake_predict)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_bill_reconciliation_sweep(pool)
@@ -2286,9 +2173,7 @@ async def test_bill_reconciliation_sweep_confirm_candidate_priority_55(
         assert confirm_cands[0]["priority"] == 55
 
 
-async def test_bill_reconciliation_sweep_predicted_untracked_only(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_bill_reconciliation_sweep_predicted_untracked_only(finance_clone, monkeypatch):
     """Only untracked (is_tracked=False) predictions become bill-predicted candidates."""
     fj = _fj_module()
 
@@ -2306,7 +2191,7 @@ async def test_bill_reconciliation_sweep_predicted_untracked_only(
     monkeypatch.setattr(fj, "reconcile_bills", _fake_reconcile)
     monkeypatch.setattr(fj, "predict_bills", _fake_predict)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_bill_reconciliation_sweep(pool)
@@ -2325,9 +2210,7 @@ async def test_bill_reconciliation_sweep_predicted_untracked_only(
 # ---------------------------------------------------------------------------
 
 
-async def test_anomaly_insight_scan_insufficient_data_no_candidates(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_anomaly_insight_scan_insufficient_data_no_candidates(finance_clone, monkeypatch):
     """status='insufficient_data' is a clean no-op, not an error."""
     fj = _fj_module()
 
@@ -2336,7 +2219,7 @@ async def test_anomaly_insight_scan_insufficient_data_no_candidates(
 
     monkeypatch.setattr(fj, "anomaly_scan", _fake_anomaly_scan)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_anomaly_insight_scan(pool)
@@ -2346,9 +2229,7 @@ async def test_anomaly_insight_scan_insufficient_data_no_candidates(
         assert await _count_candidates(pool) == 0
 
 
-async def test_anomaly_insight_scan_severity_priority_mapping(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_anomaly_insight_scan_severity_priority_mapping(finance_clone, monkeypatch):
     """Each anomaly's severity maps to its own priority: high=75, medium=55, low=35."""
     fj = _fj_module()
 
@@ -2385,7 +2266,7 @@ async def test_anomaly_insight_scan_severity_priority_mapping(
 
     monkeypatch.setattr(fj, "anomaly_scan", _fake_anomaly_scan)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_anomaly_insight_scan(pool)
@@ -2402,7 +2283,7 @@ async def test_anomaly_insight_scan_severity_priority_mapping(
         assert priorities == [75, 55, 35]
 
 
-async def test_anomaly_insight_scan_caps_at_max_per_run(provisioned_postgres_pool, monkeypatch):
+async def test_anomaly_insight_scan_caps_at_max_per_run(finance_clone, monkeypatch):
     """More than _MAX_ANOMALY_CANDIDATES_PER_RUN anomalies are truncated, not dropped silently."""
     fj = _fj_module()
 
@@ -2423,7 +2304,7 @@ async def test_anomaly_insight_scan_caps_at_max_per_run(provisioned_postgres_poo
 
     monkeypatch.setattr(fj, "anomaly_scan", _fake_anomaly_scan)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_anomaly_insight_scan(pool)
@@ -2438,9 +2319,7 @@ async def test_anomaly_insight_scan_caps_at_max_per_run(provisioned_postgres_poo
 # ---------------------------------------------------------------------------
 
 
-async def test_monthly_finance_digest_proposes_one_candidate(
-    provisioned_postgres_pool, monkeypatch
-):
+async def test_monthly_finance_digest_proposes_one_candidate(finance_clone, monkeypatch):
     """One consolidated monthly-finance-digest candidate is always proposed."""
     fj = _fj_module()
 
@@ -2453,7 +2332,7 @@ async def test_monthly_finance_digest_proposes_one_candidate(
     monkeypatch.setattr(fj, "budget_status", _fake_budget_status)
     monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         result = await fj.run_monthly_finance_digest(pool)
@@ -2467,7 +2346,7 @@ async def test_monthly_finance_digest_proposes_one_candidate(
 
 
 async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions(
-    provisioned_postgres_pool, monkeypatch
+    finance_clone, monkeypatch
 ):
     """The digest message surfaces flagged budget categories and subscription counts."""
     fj = _fj_module()
@@ -2492,7 +2371,7 @@ async def test_monthly_finance_digest_includes_flagged_budgets_and_subscriptions
     monkeypatch.setattr(fj, "budget_status", _pinned_budget_status)
     monkeypatch.setattr(fj, "subscription_audit", _fake_subscription_audit)
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
         # The digest consumes real daily status instead of a canned result.
         await _insert_budget(pool, category="dining", period="daily", amount="100.00")
@@ -2534,7 +2413,7 @@ def _digest_month_bounds() -> tuple[datetime, datetime]:
 
 
 async def test_monthly_finance_digest_includes_trend_when_prior_month_data_exists(
-    provisioned_postgres_pool, monkeypatch
+    finance_clone, monkeypatch
 ):
     """The digest surfaces month-over-month swings, new, and disappeared categories."""
     fj = _fj_module()
@@ -2550,7 +2429,7 @@ async def test_monthly_finance_digest_includes_trend_when_prior_month_data_exist
 
     prior_mid, covered_mid = _digest_month_bounds()
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         # Prior month: dining $100, travel $100 (travel disappears next month).
@@ -2583,7 +2462,7 @@ async def test_monthly_finance_digest_includes_trend_when_prior_month_data_exist
 
 
 async def test_monthly_finance_digest_omits_trend_when_no_prior_month_data(
-    provisioned_postgres_pool, monkeypatch
+    finance_clone, monkeypatch
 ):
     """With no prior-month spend, the digest still sends but omits the trend bullet."""
     fj = _fj_module()
@@ -2599,7 +2478,7 @@ async def test_monthly_finance_digest_omits_trend_when_no_prior_month_data(
 
     _prior_mid, covered_mid = _digest_month_bounds()
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         # Only covered-month spend; the month before it has no transactions.
@@ -2619,7 +2498,7 @@ async def test_monthly_finance_digest_omits_trend_when_no_prior_month_data(
 
 
 async def test_monthly_finance_digest_degrades_gracefully_on_trend_failure(
-    provisioned_postgres_pool, monkeypatch
+    finance_clone, monkeypatch
 ):
     """A trend-computation error never blocks the digest — it just drops the bullet."""
     fj = _fj_module()
@@ -2639,7 +2518,7 @@ async def test_monthly_finance_digest_degrades_gracefully_on_trend_failure(
 
     prior_mid, covered_mid = _digest_month_bounds()
 
-    async with provisioned_postgres_pool() as pool:
+    async with finance_clone() as pool:
         await _setup_insight_schema(pool)
 
         await _insert_transaction(
@@ -2660,16 +2539,9 @@ async def test_monthly_finance_digest_degrades_gracefully_on_trend_failure(
 
 
 @pytest.fixture
-def field_scan_db(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
+def field_scan_db(fresh_db):
     # Full real core/Finance shape before this test enters an async loop.
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance"],
-        schemas={"finance": "finance"},
-    )
+    return fresh_db("core", "finance", schemas={"finance": "finance"})
 
 
 @pytest.mark.parametrize(
@@ -2751,13 +2623,11 @@ async def test_scan_filters_each_claim_before_selecting_date_and_binds_ledger_pr
 
 
 @pytest.fixture
-def registered_field_pipeline_db(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "finance", "switchboard"],
+def registered_field_pipeline_db(fresh_db):
+    return fresh_db(
+        "core",
+        "finance",
+        "switchboard",
         schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
     )
 
@@ -3222,14 +3092,12 @@ _pipeline_mutation = ContextVar("finance_pipeline_product_mutation", default=Non
 
 
 @pytest.fixture
-def registered_field_mutation_dbs(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
+def registered_field_mutation_dbs(fresh_db):
     return [
-        create_migrated_test_db(
-            postgres_container,
-            migration_db_name(),
-            chains=["core", "finance", "switchboard"],
+        fresh_db(
+            "core",
+            "finance",
+            "switchboard",
             schemas={"core": "finance", "finance": "finance", "switchboard": "switchboard"},
         )
         for _ in range(3)
