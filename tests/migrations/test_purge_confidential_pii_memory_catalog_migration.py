@@ -183,7 +183,8 @@ class TestPurgeMigrationIntegration:
     async def _insert_source_fact(self, pool, *, sensitivity: str | None) -> uuid.UUID:
         row = await pool.fetchrow(
             "INSERT INTO health.facts (subject, predicate, content, sensitivity) "
-            "VALUES ('owner', 'note', 'source fact', $1) RETURNING id",
+            "VALUES ($1, 'note', 'source fact', $2) RETURNING id",
+            f"subject-{uuid.uuid4()}",
             sensitivity,
         )
         return row["id"]
