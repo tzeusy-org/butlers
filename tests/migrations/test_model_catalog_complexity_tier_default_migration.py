@@ -22,8 +22,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-_NEW_CHECK = "('reasoning', 'workhorse', 'cheap', 'specialty', 'local', 'legacy')"
-
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
     / "alembic"
@@ -58,30 +56,6 @@ async def _replay(pool: asyncpg.Pool, direction: str) -> None:
         await pool.execute(sql)
 
 
-async def _create_post_core_093_model_catalog(pool: asyncpg.Pool) -> None:
-    """Materialise model_catalog in its post-core_093 state: stale DEFAULT + new CHECK.
-
-    This is the exact bug state on main before core_147 -- column DEFAULT is the
-    legacy ``'medium'`` while the CHECK only accepts the canonical six.
-    """
-    await pool.execute(f"""
-        CREATE TABLE public.model_catalog (
-            id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            alias           TEXT NOT NULL UNIQUE,
-            runtime_type    TEXT NOT NULL DEFAULT 'codex',
-            model_id        TEXT NOT NULL DEFAULT 'dummy',
-            extra_args      JSONB NOT NULL DEFAULT '[]'::jsonb,
-            complexity_tier TEXT NOT NULL DEFAULT 'medium',
-            enabled         BOOLEAN NOT NULL DEFAULT true,
-            priority        INTEGER NOT NULL DEFAULT 0,
-            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-            CONSTRAINT chk_model_catalog_complexity_tier
-                CHECK (complexity_tier IN {_NEW_CHECK})
-        )
-    """)
-
-
 async def _column_default(pool: asyncpg.Pool) -> str:
     return await pool.fetchval(
         "SELECT column_default FROM information_schema.columns"
@@ -96,11 +70,13 @@ async def _column_default(pool: asyncpg.Pool) -> str:
 
 
 @pytest.fixture
-async def migration_pool(provisioned_postgres_pool):
-    """Fresh DB with model_catalog in its buggy post-core_093 state."""
-    async with provisioned_postgres_pool() as pool:
-        await _create_post_core_093_model_catalog(pool)
-        yield pool
+async def migration_pool(db):
+    """Core at core_146: model_catalog in its buggy post-core_093 state.
+
+    This is the exact bug state before core_147 -- column DEFAULT is the legacy
+    ``'medium'`` while the CHECK only accepts the canonical six.
+    """
+    return await db("core", revisions={"core": "core_146"})
 
 
 # ---------------------------------------------------------------------------

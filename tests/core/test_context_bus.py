@@ -30,8 +30,6 @@ from butlers.context_bus import (
     is_user_in_context,
     set_context,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -270,38 +268,18 @@ async def _clear_non_dnd_context(pool: asyncpg.Pool) -> None:
     )
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 class TestContextBusIntegration:
     """Full round-trip tests via testcontainers PostgreSQL."""
 
-    @pytest.fixture
-    async def pool(self, migrated_db_url: str):
-        """Return an asyncpg pool with user_context table cleared between tests."""
-        p = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=5, init=register_jsonb_codec
-        )
-        await _clear_non_dnd_context(p)
-        yield p
-        await p.close()
-
-    async def test_typed_calendar_roundtrip_under_general_role(self, pool):
+    async def test_typed_calendar_roundtrip_under_general_role(self, db_pool):
         """REQ-context-bus-009: real runtime-role RETURNING/read and independent readback."""
         from butlers.context_bus import set_calendar_context
 
         expiry = datetime.now(UTC) + timedelta(minutes=10)
-        async with pool.acquire() as conn:
+        async with db_pool.acquire() as conn:
             await conn.execute('SET ROLE "butler_general_rw"')
             try:
                 assert await conn.fetchval("SELECT current_user") == "butler_general_rw"
@@ -311,7 +289,7 @@ class TestContextBusIntegration:
                     assert f"{signal} ({value}, explicit)" in format_context_preamble(entries)
                 # An independent committed same-payload UPDATE changes xmin;
                 # matching content cannot reuse an earlier producer witness.
-                await pool.execute(
+                await db_pool.execute(
                     "UPDATE public.user_context SET value=value "
                     "WHERE signal_type='focused' AND set_by_butler='general'"
                 )
@@ -333,7 +311,7 @@ class TestContextBusIntegration:
             finally:
                 await conn.execute("RESET ROLE")
         # Independent acquisition observes durable data, not local provenance.
-        rows = await pool.fetch(
+        rows = await db_pool.fetch(
             "SELECT signal_type, value, metadata FROM public.user_context "
             "WHERE set_by_butler='general' AND signal_type IN ('meeting', 'focused')"
         )
@@ -341,39 +319,39 @@ class TestContextBusIntegration:
             "meeting": "busy",
             "focused": "focused",
         }
-        assert "focused (focused" not in format_context_preamble(await get_active_context(pool))
+        assert "focused (focused" not in format_context_preamble(await get_active_context(db_pool))
 
-    async def test_set_clear_get_context(self, pool):
+    async def test_set_clear_get_context(self, db_pool):
         """set_context inserts/upserts/reactivates; clear_context butler-scoped; get_active_context
         excludes expired/superseded; is_user_in_context filters confidence; metadata persisted."""
         # set_context inserts; upserts value; reactivates after supersede
-        await set_context(pool, butler_name="health", signal_type="exercising", value="run")
-        row = await pool.fetchrow(
+        await set_context(db_pool, butler_name="health", signal_type="exercising", value="run")
+        row = await db_pool.fetchrow(
             "SELECT value, superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row["value"] == "run" and row["superseded_at"] is None
 
-        await set_context(pool, butler_name="health", signal_type="exercising", value="swim")
-        rows = await pool.fetch(
+        await set_context(db_pool, butler_name="health", signal_type="exercising", value="swim")
+        rows = await db_pool.fetch(
             "SELECT * FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert len(rows) == 1 and rows[0]["value"] == "swim"
 
-        await pool.execute(
+        await db_pool.execute(
             "UPDATE public.user_context SET superseded_at = now() "
             "WHERE signal_type = 'exercising' AND set_by_butler = 'health'"
         )
-        await set_context(pool, butler_name="health", signal_type="exercising")
-        row2 = await pool.fetchrow(
+        await set_context(db_pool, butler_name="health", signal_type="exercising")
+        row2 = await db_pool.fetchrow(
             "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
         )
         assert row2["superseded_at"] is None
 
         # Metadata persisted
         payload = {"location": "gym", "activity": "weights"}
-        await set_context(pool, butler_name="health", signal_type="exercising", metadata=payload)
+        await set_context(db_pool, butler_name="health", signal_type="exercising", metadata=payload)
         raw = (
-            await pool.fetchrow(
+            await db_pool.fetchrow(
                 "SELECT metadata FROM public.user_context WHERE signal_type = 'exercising'"
             )
         )["metadata"]
@@ -382,39 +360,39 @@ class TestContextBusIntegration:
         assert raw == payload
 
         # clear_context: different butler noop; correct butler clears
-        await clear_context(pool, "general", "exercising")
+        await clear_context(db_pool, "general", "exercising")
         assert (
-            await pool.fetchrow(
+            await db_pool.fetchrow(
                 "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
             )
         )["superseded_at"] is None
-        await clear_context(pool, "health", "exercising")
+        await clear_context(db_pool, "health", "exercising")
         assert (
-            await pool.fetchrow(
+            await db_pool.fetchrow(
                 "SELECT superseded_at FROM public.user_context WHERE signal_type = 'exercising'"
             )
         )["superseded_at"] is not None
 
         # get_active_context: excludes expired; is_user_in_context checks confidence
-        await _clear_non_dnd_context(pool)
-        await set_context(pool, butler_name="general", signal_type="meeting")
-        await set_context(pool, butler_name="travel", signal_type="traveling", confidence=0.9)
+        await _clear_non_dnd_context(db_pool)
+        await set_context(db_pool, butler_name="general", signal_type="meeting")
+        await set_context(db_pool, butler_name="travel", signal_type="traveling", confidence=0.9)
 
-        results = await get_active_context(pool)
+        results = await get_active_context(db_pool)
         signal_types = {e.signal_type for e in results}
         assert "meeting" in signal_types and "traveling" in signal_types
 
-        await pool.execute(
+        await db_pool.execute(
             "UPDATE public.user_context SET expires_at = now() - interval '1 second' "
             "WHERE signal_type = 'meeting'"
         )
-        after = await get_active_context(pool)
+        after = await get_active_context(db_pool)
         assert not any(e.signal_type == "meeting" for e in after)
 
-        assert await is_user_in_context(pool, "traveling") is True
-        assert await is_user_in_context(pool, "traveling", min_confidence=0.95) is False
+        assert await is_user_in_context(db_pool, "traveling") is True
+        assert await is_user_in_context(db_pool, "traveling", min_confidence=0.95) is False
 
-    async def test_unchanged_reassertion_keeps_set_at(self, pool):
+    async def test_unchanged_reassertion_keeps_set_at(self, db_pool):
         """bu-r9mlu3: re-asserting an unchanged ACTIVE signal keeps set_at and refreshes
         expires_at; a changed value, a superseded row or an expired row restarts set_at."""
         key = "WHERE signal_type = 'traveling' AND set_by_butler = 'travel'"
@@ -423,8 +401,8 @@ class TestContextBusIntegration:
         restarted = past + timedelta(hours=6)
 
         async def seed(*, expires_in: timedelta, superseded: bool = False) -> None:
-            await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
-            await pool.execute(
+            await set_context(db_pool, butler_name="travel", signal_type="traveling", value="trip")
+            await db_pool.execute(
                 "UPDATE public.user_context SET set_at = $1, expires_at = now() + $2, "
                 f"superseded_at = CASE WHEN $3 THEN now() END {key}",
                 past,
@@ -434,24 +412,24 @@ class TestContextBusIntegration:
 
         # Active row, same value: set_at kept, expires_at refreshed.
         await seed(expires_in=timedelta(hours=1))
-        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
-        row = await pool.fetchrow(sql)
+        await set_context(db_pool, butler_name="travel", signal_type="traveling", value="trip")
+        row = await db_pool.fetchrow(sql)
         assert row["set_at"] == past
         assert row["expires_at"] > datetime.now(UTC) + timedelta(hours=1)
 
         # Changed value restarts.
-        await set_context(pool, butler_name="travel", signal_type="traveling", value="other")
-        assert (await pool.fetchrow(sql))["set_at"] > restarted
+        await set_context(db_pool, butler_name="travel", signal_type="traveling", value="other")
+        assert (await db_pool.fetchrow(sql))["set_at"] > restarted
 
         # Superseded row restarts.
         await seed(expires_in=timedelta(hours=1), superseded=True)
-        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
-        assert (await pool.fetchrow(sql))["set_at"] > restarted
+        await set_context(db_pool, butler_name="travel", signal_type="traveling", value="trip")
+        assert (await db_pool.fetchrow(sql))["set_at"] > restarted
 
         # Expired but unsuperseded row, same value, restarts (new activation).
         await seed(expires_in=timedelta(hours=-1))
-        await set_context(pool, butler_name="travel", signal_type="traveling", value="trip")
-        assert (await pool.fetchrow(sql))["set_at"] > restarted
+        await set_context(db_pool, butler_name="travel", signal_type="traveling", value="trip")
+        assert (await db_pool.fetchrow(sql))["set_at"] > restarted
 
 
 @pytest.mark.unit

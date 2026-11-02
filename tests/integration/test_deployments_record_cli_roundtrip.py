@@ -16,7 +16,6 @@ from click.testing import CliRunner
 
 from butlers.cli import cli
 from butlers.core.deployments import resolve_core_migration_head
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -26,14 +25,9 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+async def test_record_verb_writes_one_image_served_deploy_row(monkeypatch, fresh_db) -> None:
+    migrated_db_url = await asyncio.to_thread(fresh_db, "core")
 
-
-async def test_record_verb_writes_one_image_served_deploy_row(
-    monkeypatch, migrated_db_url: str
-) -> None:
     async def _make_pool() -> asyncpg.Pool:
         return await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=2)
 

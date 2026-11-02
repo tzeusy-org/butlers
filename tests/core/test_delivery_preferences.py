@@ -23,9 +23,6 @@ from unittest.mock import AsyncMock
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 pytestmark = [pytest.mark.unit]
 
 docker_available = shutil.which("docker") is not None
@@ -104,7 +101,6 @@ class TestDeliveryUnit:
 
     async def test_get_delivery_preferences_missing_table_returns_none(self):
         """Older schema-scoped DBs may not have delivery tables yet."""
-        import asyncpg
 
         from butlers.core.temporal.delivery_db import get_delivery_preferences
 
@@ -118,43 +114,13 @@ class TestDeliveryUnit:
         assert await get_delivery_preferences(pool, "chronicler") is None
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestDeliveryPreferencesDB:
-    @pytest.fixture
-    async def pool(self, migrated_db_url: str):
-        """Return an asyncpg pool with delivery tables cleared between tests."""
-        p = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-        )
-        await p.execute("TRUNCATE deferred_notifications, delivery_preferences CASCADE")
-        await p.execute("""
-            UPDATE public.user_context
-            SET superseded_at = now()
-            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
-        """)
-        await p.execute("""
-            INSERT INTO public.approvals_policy
-                (id, quiet_start_hour, quiet_end_hour, timezone)
-            VALUES (1, NULL, NULL, 'UTC')
-            ON CONFLICT (id) DO UPDATE
-                SET quiet_start_hour = NULL, quiet_end_hour = NULL, timezone = 'UTC'
-        """)
-        yield p
-        await p.close()
+    # Each test gets a fresh clone; the core chain seeds approvals_policy with no quiet hours.
 
-    async def test_upsert_and_get_delivery_preferences(self, pool):
+    async def test_upsert_and_get_delivery_preferences(self, db_pool):
         """upsert creates row; second upsert updates without dup; invalid tz raises; get returns row."""
         from butlers.core.temporal.delivery_db import (
             get_delivery_preferences,
@@ -162,11 +128,11 @@ class TestDeliveryPreferencesDB:
         )
 
         # None before upsert
-        assert await get_delivery_preferences(pool, "nonexistent-butler") is None
+        assert await get_delivery_preferences(db_pool, "nonexistent-butler") is None
 
         # Create
         result = await upsert_delivery_preferences(
-            pool,
+            db_pool,
             butler_name="test-butler",
             timezone="America/New_York",
             quiet_hours_start="22:00",
@@ -175,29 +141,31 @@ class TestDeliveryPreferencesDB:
         assert result["butler_name"] == "test-butler" and result["timezone"] == "America/New_York"
 
         # Update
-        await upsert_delivery_preferences(pool, butler_name="test-butler", timezone="Europe/London")
-        row_count = await pool.fetchval(
+        await upsert_delivery_preferences(
+            db_pool, butler_name="test-butler", timezone="Europe/London"
+        )
+        row_count = await db_pool.fetchval(
             "SELECT COUNT(*) FROM delivery_preferences WHERE butler_name = 'test-butler'"
         )
         assert row_count == 1
-        prefs = await get_delivery_preferences(pool, "test-butler")
+        prefs = await get_delivery_preferences(db_pool, "test-butler")
         assert prefs["timezone"] == "Europe/London"
 
         # Invalid tz raises
         with pytest.raises(ValueError, match="Unknown timezone"):
             await upsert_delivery_preferences(
-                pool, butler_name="tz-butler", timezone="Invalid/Zone"
+                db_pool, butler_name="tz-butler", timezone="Invalid/Zone"
             )
 
         # Per-channel overrides stored
         overrides = {"email": {"quiet_hours_start": "20:00", "quiet_hours_end": "09:00"}}
         await upsert_delivery_preferences(
-            pool, butler_name="butler-overrides", timezone="UTC", override_channels=overrides
+            db_pool, butler_name="butler-overrides", timezone="UTC", override_channels=overrides
         )
-        pref2 = await get_delivery_preferences(pool, "butler-overrides")
+        pref2 = await get_delivery_preferences(db_pool, "butler-overrides")
         assert pref2["override_channels"]["email"]["quiet_hours_start"] == "20:00"
 
-    async def test_deferred_notifications_lifecycle(self, pool):
+    async def test_deferred_notifications_lifecycle(self, db_pool):
         """insert persists pending row; list filters by status; cancel manages state; invalid inputs raise."""
         from butlers.core.temporal.delivery_db import (
             cancel_deferred_notification,
@@ -210,7 +178,7 @@ class TestDeliveryPreferencesDB:
 
         # Insert + status filter
         id1 = await insert_deferred_notification(
-            pool,
+            db_pool,
             butler_name=butler,
             channel="telegram",
             message="Pending 1",
@@ -219,7 +187,7 @@ class TestDeliveryPreferencesDB:
             deliver_at=now + timedelta(hours=5),
         )
         id2 = await insert_deferred_notification(
-            pool,
+            db_pool,
             butler_name=butler,
             channel="email",
             message="Pending 2",
@@ -227,23 +195,25 @@ class TestDeliveryPreferencesDB:
             envelope={},
             deliver_at=now + timedelta(hours=6),
         )
-        await pool.execute(
+        await db_pool.execute(
             "UPDATE deferred_notifications SET status = 'delivered' WHERE id = $1", uuid.UUID(id2)
         )
 
-        pending = await list_deferred_notifications(pool, butler_name=butler, status="pending")
+        pending = await list_deferred_notifications(db_pool, butler_name=butler, status="pending")
         assert len(pending) == 1 and pending[0]["id"] == id1
 
-        delivered = await list_deferred_notifications(pool, butler_name=butler, status="delivered")
+        delivered = await list_deferred_notifications(
+            db_pool, butler_name=butler, status="delivered"
+        )
         assert len(delivered) == 1 and delivered[0]["id"] == id2
 
-        all_notifs = await list_deferred_notifications(pool, butler_name=butler)
+        all_notifs = await list_deferred_notifications(db_pool, butler_name=butler)
         assert len(all_notifs) == 2
 
         # Invalid priority raises
         with pytest.raises(ValueError, match="Invalid priority"):
             await insert_deferred_notification(
-                pool,
+                db_pool,
                 butler_name=butler,
                 channel="telegram",
                 message="Bad",
@@ -254,11 +224,11 @@ class TestDeliveryPreferencesDB:
 
         # Invalid status filter raises
         with pytest.raises(ValueError, match="Invalid status filter"):
-            await list_deferred_notifications(pool, butler_name="test", status="unknown")
+            await list_deferred_notifications(db_pool, butler_name="test", status="unknown")
 
         # Cancel: success
         id3 = await insert_deferred_notification(
-            pool,
+            db_pool,
             butler_name=butler,
             channel="telegram",
             message="Cancel me",
@@ -266,18 +236,18 @@ class TestDeliveryPreferencesDB:
             envelope={},
             deliver_at=now + timedelta(hours=8),
         )
-        assert await cancel_deferred_notification(pool, id3, butler_name=butler) is True
-        row = await pool.fetchrow(
+        assert await cancel_deferred_notification(db_pool, id3, butler_name=butler) is True
+        row = await db_pool.fetchrow(
             "SELECT status FROM deferred_notifications WHERE id = $1", uuid.UUID(id3)
         )
         assert row["status"] == "cancelled"
 
         # Cancel: already delivered → False
-        assert await cancel_deferred_notification(pool, id2, butler_name=butler) is False
+        assert await cancel_deferred_notification(db_pool, id2, butler_name=butler) is False
 
         # Cancel: wrong butler → False
         id4 = await insert_deferred_notification(
-            pool,
+            db_pool,
             butler_name="owner",
             channel="telegram",
             message="Owned",
@@ -285,14 +255,14 @@ class TestDeliveryPreferencesDB:
             envelope={},
             deliver_at=now + timedelta(hours=3),
         )
-        assert await cancel_deferred_notification(pool, id4, butler_name="other") is False
+        assert await cancel_deferred_notification(db_pool, id4, butler_name="other") is False
 
         # Cancel: invalid UUID raises
         with pytest.raises(ValueError, match="Invalid notification_id"):
-            await cancel_deferred_notification(pool, "not-a-uuid", butler_name=butler)
+            await cancel_deferred_notification(db_pool, "not-a-uuid", butler_name=butler)
 
     async def test_scheduler_wrapper_keeps_nested_failed_delivery_pending_without_ledger(
-        self, pool
+        self, db_pool
     ):
         """A transport-successful nested delivery failure must remain retryable."""
         from butlers.core.scheduler import _tick_deferred_notification_pass
@@ -322,9 +292,11 @@ class TestDeliveryPreferencesDB:
                 )
             )
         )
-        notify_fn, scheduler_task, release_tick = await _capture_scheduler_notify_fn(pool, client)
+        notify_fn, scheduler_task, release_tick = await _capture_scheduler_notify_fn(
+            db_pool, client
+        )
         notification_id = await insert_deferred_notification(
-            pool,
+            db_pool,
             butler_name="health",
             channel="telegram",
             message="Retry the decision-dossier delivery.",
@@ -334,19 +306,19 @@ class TestDeliveryPreferencesDB:
         )
 
         try:
-            flushed = await _tick_deferred_notification_pass(pool, now, notify_fn=notify_fn)
+            flushed = await _tick_deferred_notification_pass(db_pool, now, notify_fn=notify_fn)
         finally:
             await _stop_scheduler_notify_capture(scheduler_task, release_tick)
 
         assert flushed == 0
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT status, delivered_at FROM deferred_notifications WHERE id = $1",
             uuid.UUID(notification_id),
         )
         assert row["status"] == "pending"
         assert row["delivered_at"] is None
         assert (
-            await pool.fetchval(
+            await db_pool.fetchval(
                 "SELECT COUNT(*) FROM public.attention_ledger WHERE notification_ref = $1",
                 notification_id,
             )
@@ -357,7 +329,7 @@ class TestDeliveryPreferencesDB:
             {"source_butler": "health", "notify_request": envelope},
         )
 
-    async def test_scheduler_wrapper_marks_sent_delivery_delivered_once(self, pool):
+    async def test_scheduler_wrapper_marks_sent_delivery_delivered_once(self, db_pool):
         """A successful nested delivery completes one deferred row and ledger event."""
         from butlers.core.scheduler import _tick_deferred_notification_pass
         from butlers.core.temporal.delivery_db import insert_deferred_notification
@@ -378,9 +350,11 @@ class TestDeliveryPreferencesDB:
                 return_value=SimpleNamespace(is_error=False, data={"status": "sent"}, content=[])
             )
         )
-        notify_fn, scheduler_task, release_tick = await _capture_scheduler_notify_fn(pool, client)
+        notify_fn, scheduler_task, release_tick = await _capture_scheduler_notify_fn(
+            db_pool, client
+        )
         notification_id = await insert_deferred_notification(
-            pool,
+            db_pool,
             butler_name="health",
             channel="telegram",
             message="Deliver the decision-dossier notification.",
@@ -390,19 +364,19 @@ class TestDeliveryPreferencesDB:
         )
 
         try:
-            flushed = await _tick_deferred_notification_pass(pool, now, notify_fn=notify_fn)
+            flushed = await _tick_deferred_notification_pass(db_pool, now, notify_fn=notify_fn)
         finally:
             await _stop_scheduler_notify_capture(scheduler_task, release_tick)
 
         assert flushed == 1
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT status, delivered_at FROM deferred_notifications WHERE id = $1",
             uuid.UUID(notification_id),
         )
         assert row["status"] == "delivered"
         assert row["delivered_at"] == now
         assert (
-            await pool.fetchval(
+            await db_pool.fetchval(
                 "SELECT COUNT(*) FROM public.attention_ledger "
                 "WHERE notification_ref = $1 AND outcome = 'delivered'",
                 notification_id,
@@ -414,7 +388,7 @@ class TestDeliveryPreferencesDB:
             {"source_butler": "health", "notify_request": envelope},
         )
 
-    async def test_cancel_pending_matching_line_boundaries_and_supersede(self, pool):
+    async def test_cancel_pending_matching_line_boundaries_and_supersede(self, db_pool):
         """bu-id0fh: cancel_pending_notifications_matching_line supersedes prior
         pending retry envelopes sharing a state-independent dedup token, with
         line-boundary anchoring so a shorter key never collides with a longer
@@ -433,7 +407,7 @@ class TestDeliveryPreferencesDB:
 
         async def _insert(butler, message, deliver_offset_h=1):
             return await insert_deferred_notification(
-                pool,
+                db_pool,
                 butler_name=butler,
                 channel="telegram",
                 message=message,
@@ -457,18 +431,18 @@ class TestDeliveryPreferencesDB:
         id_other = await _insert("finance", f"Credential 'SPOTIFY' has expired.\n{base}{spotify}")
         # An already-delivered switchboard row — only pending rows are cancellable.
         id_delivered = await _insert("switchboard", f"done.\n{base}{spotify}")
-        await pool.execute(
+        await db_pool.execute(
             "UPDATE deferred_notifications SET status = 'delivered' WHERE id = $1",
             uuid.UUID(id_delivered),
         )
 
         cancelled = await cancel_pending_notifications_matching_line(
-            pool, butler_name="switchboard", line_token=spotify
+            db_pool, butler_name="switchboard", line_token=spotify
         )
         assert cancelled == 2  # id_eos + id_mid only
 
         async def _status(nid):
-            return await pool.fetchval(
+            return await db_pool.fetchval(
                 "SELECT status FROM deferred_notifications WHERE id = $1", uuid.UUID(nid)
             )
 
@@ -481,13 +455,13 @@ class TestDeliveryPreferencesDB:
         # Empty token is a no-op — never a mass-cancel footgun.
         assert (
             await cancel_pending_notifications_matching_line(
-                pool, butler_name="switchboard", line_token=""
+                db_pool, butler_name="switchboard", line_token=""
             )
             == 0
         )
         assert await _status(id_sibling) == "pending"
 
-    async def test_multi_tick_outage_bounds_pending_to_one_then_zero(self, pool):
+    async def test_multi_tick_outage_bounds_pending_to_one_then_zero(self, db_pool):
         """bu-id0fh reproduction: emulate the secrets_lifecycle enqueue loop over
         a persistent multi-tick outage. Each tick supersedes-then-inserts, so the
         queue holds exactly ONE pending envelope (carrying the latest state) no
@@ -505,7 +479,7 @@ class TestDeliveryPreferencesDB:
         states = ["expiring", "expiring", "failing", "expired"]  # incl. a mid-outage change
 
         async def _pending_count():
-            return await pool.fetchval(
+            return await db_pool.fetchval(
                 "SELECT COUNT(*) FROM deferred_notifications "
                 "WHERE butler_name = 'switchboard' AND status = 'pending'"
             )
@@ -513,10 +487,10 @@ class TestDeliveryPreferencesDB:
         for tick, state in enumerate(states):
             # supersede then insert, mirroring _enqueue_delivery_retry
             await cancel_pending_notifications_matching_line(
-                pool, butler_name="switchboard", line_token=marker
+                db_pool, butler_name="switchboard", line_token=marker
             )
             await insert_deferred_notification(
-                pool,
+                db_pool,
                 butler_name="switchboard",
                 channel="telegram",
                 message=f"Credential 'SPOTIFY_ACCESS_TOKEN' is now '{state}'.\n{base}{marker}",
@@ -527,7 +501,7 @@ class TestDeliveryPreferencesDB:
             assert await _pending_count() == 1, f"tick {tick}: queue must never exceed one pending"
 
         # The single surviving envelope carries the LATEST state (expired).
-        surviving = await pool.fetchval(
+        surviving = await db_pool.fetchval(
             "SELECT message FROM deferred_notifications "
             "WHERE butler_name = 'switchboard' AND status = 'pending'"
         )
@@ -535,13 +509,13 @@ class TestDeliveryPreferencesDB:
 
         # Recovery: the direct delivery's post-success supersede drains it.
         drained = await cancel_pending_notifications_matching_line(
-            pool, butler_name="switchboard", line_token=marker
+            db_pool, butler_name="switchboard", line_token=marker
         )
         assert drained == 1
         assert await _pending_count() == 0
 
     @pytest.mark.parametrize("count", [1, 2])
-    async def test_terminal_telegram_flush_commits_failed_tail_without_replay(self, pool, count):
+    async def test_terminal_telegram_flush_commits_failed_tail_without_replay(self, db_pool, count):
         from butlers.core.scheduler import _tick_deferred_notification_pass
         from butlers.core.temporal.delivery_db import insert_deferred_notification
 
@@ -550,7 +524,7 @@ class TestDeliveryPreferencesDB:
         for _ in range(count):
             ids.append(
                 await insert_deferred_notification(
-                    pool,
+                    db_pool,
                     butler_name="health",
                     channel="telegram",
                     message="x" * 5000,
@@ -571,10 +545,10 @@ class TestDeliveryPreferencesDB:
         notify = AsyncMock(
             return_value={"status": "failed", "partial_delivery": True, "retryable": False}
         )
-        assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
-        assert await _tick_deferred_notification_pass(pool, now, notify_fn=notify) == 0
+        assert await _tick_deferred_notification_pass(db_pool, now, notify_fn=notify) == 0
+        assert await _tick_deferred_notification_pass(db_pool, now, notify_fn=notify) == 0
         notify.assert_awaited_once()
-        async with pool.acquire() as independent:
+        async with db_pool.acquire() as independent:
             rows = await independent.fetch(
                 "SELECT status, delivered_at FROM deferred_notifications WHERE id=ANY($1::uuid[])",
                 [uuid.UUID(str(item)) for item in ids],
