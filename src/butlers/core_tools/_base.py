@@ -11,6 +11,28 @@ if TYPE_CHECKING:
     pass
 
 
+class NotifyAttachmentInput(TypedDict):
+    """One notify() file: an existing blob or a small inline text file."""
+
+    filename: Annotated[str, Field(description="File name shown to the recipient.")]
+    media_type: Annotated[str, Field(description="MIME type, for example application/pdf.")]
+    storage_ref: NotRequired[
+        Annotated[str, Field(description="Existing blob ref (s3://bucket/key).")]
+    ]
+    content_text: NotRequired[
+        Annotated[str, Field(description="Inline generated text file content (max 256 KB).")]
+    ]
+    caption: NotRequired[
+        Annotated[str, Field(description="Optional caption for this file (max 1024 chars).")]
+    ]
+    sha256: NotRequired[
+        Annotated[str, Field(description="Pinned digest; set by approval replay, not callers.")]
+    ]
+    size_bytes: NotRequired[
+        Annotated[int, Field(description="Pinned size; set by approval replay, not callers.")]
+    ]
+
+
 class NotifyRequestContextInput(TypedDict):
     """notify.request_context contract passed through to notify.v1."""
 

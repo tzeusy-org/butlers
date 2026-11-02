@@ -22,7 +22,11 @@ from butlers.core.permissions import NOTIFY_PERMISSION, check_permission
 from butlers.core.scheduler import schedule_create as _schedule_create
 from butlers.core.telemetry import tool_span
 from butlers.core.tool_call_capture import get_current_runtime_session_id
-from butlers.core_tools._base import NotifyRequestContextInput, ToolContext
+from butlers.core_tools._base import (
+    NotifyAttachmentInput,
+    NotifyRequestContextInput,
+    ToolContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -304,6 +308,20 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 str | None,
                 Field(description="Optional subject line (email channel)."),
             ] = None,
+            attachments: Annotated[
+                list[NotifyAttachmentInput] | None,
+                Field(
+                    description=(
+                        "Optional files for telegram send/reply (max 10). Each item: "
+                        "filename, media_type, and exactly one of storage_ref (an existing "
+                        "s3:// blob, up to 50 MB) or content_text (inline text up to 256 KB; "
+                        "text/plain, text/csv, text/markdown, text/calendar or "
+                        "application/json); optional caption. Images are sent as photos, "
+                        "everything else as documents; message is the caption when it fits "
+                        "in 1024 characters. Email refuses attachments (unsupported_attachment)."
+                    )
+                ),
+            ] = None,
             intent: Annotated[
                 Literal["send", "reply", "react", "insight", "confirm"],
                 Field(description=("Delivery intent: send | reply | react | insight | confirm.")),
@@ -431,6 +449,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
               be read), notify() returns `{"status": "error", "code": "recipient_posture"}`
               before any identifier lookup, approval parking or delivery.
             - `subject` (string)
+            - `attachments` (list): telegram send/reply files; each item has `filename`,
+              `media_type` and exactly one of `storage_ref` or `content_text`, plus an
+              optional `caption`. Every file is fetched and validated before anything is
+              sent; a missing blob or an invalid item returns an error and sends nothing.
             - `intent` (string enum): `send` | `reply` | `react` | `insight` | `confirm`
             - `options` (list): required for `confirm`, 2-4 unique `{value,label}` choices
             - `timeout_seconds` (integer): confirm expiry, 30-86400 seconds (default 600)
@@ -638,6 +660,37 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         ),
                     }
 
+            # Attachments: validate shape, fetch every blob and pin its digest
+            # before any recipient gate, park or send. The pinned digests ride on
+            # approval args and the notify.v1 envelope; the delivering adapter
+            # re-verifies them, so an approved replay sends only reviewed bytes.
+            pinned_attachments: list[dict[str, Any]] | None = None
+            if attachments is not None:
+                from butlers.core.notify_attachments import (
+                    AttachmentError,
+                    pin_attachments,
+                    resolve_attachments,
+                    validate_attachment_specs,
+                )
+
+                try:
+                    if channel != "telegram":
+                        raise AttachmentError(
+                            "unsupported_attachment",
+                            f"{channel} delivery cannot carry attachments; use telegram",
+                        )
+                    if intent not in {"send", "reply"}:
+                        raise AttachmentError(
+                            "attachment_invalid", "attachments require send or reply intent"
+                        )
+                    _specs = validate_attachment_specs(attachments)
+                    _resolved = await resolve_attachments(
+                        _specs, getattr(daemon, "blob_store", None)
+                    )
+                except AttachmentError as exc:
+                    return {"status": "error", "code": exc.code, "error": str(exc)}
+                pinned_attachments = pin_attachments(_specs, _resolved)
+
             # Priority validation
             from butlers.core.temporal.delivery_db import _VALID_PRIORITIES as _VP
 
@@ -807,6 +860,11 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                                 "message": message,
                                 "entity_id": str(entity_id),
                                 "intent": intent,
+                                **(
+                                    {"attachments": pinned_attachments}
+                                    if pinned_attachments
+                                    else {}
+                                ),
                                 **(
                                     {
                                         "options": confirm_options,
@@ -982,6 +1040,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         "recipient": resolved_recipient,
                         "intent": intent,
                     }
+                    if pinned_attachments:
+                        _notify_args["attachments"] = pinned_attachments
                     if intent == "confirm":
                         _notify_args.update(
                             options=confirm_options,
@@ -1088,6 +1148,8 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                 notify_request["delivery"]["recipient"] = resolved_recipient
             if subject is not None:
                 notify_request["delivery"]["subject"] = subject
+            if pinned_attachments:
+                notify_request["delivery"]["attachments"] = pinned_attachments
             if request_context is not None:
                 notify_request["request_context"] = request_context
             if any(value is not None for value in (_why, _evidence, _blast_radius, _reversibility)):

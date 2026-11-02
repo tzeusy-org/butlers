@@ -475,6 +475,40 @@ class NotifyRequestContextV1(BaseModel):
         return _validate_rfc3339_timestamp_input(value, field_name="request_context.received_at")
 
 
+class NotifyAttachmentV1(BaseModel):
+    """One pinned file on a `notify.v1` delivery: a blob ref or inline text.
+
+    ``sha256`` and ``size_bytes`` are pinned by notify() after it fetched the
+    content; the delivering adapter re-verifies them before upload, so an
+    approved replay can only ever send the exact bytes that were reviewed.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    filename: NonEmptyStr
+    media_type: NonEmptyStr
+    storage_ref: NonEmptyStr | None = None
+    content_text: str | None = None
+    caption: str | None = None
+    sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    size_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_attachment(self) -> NotifyAttachmentV1:
+        from butlers.core.notify_attachments import (
+            AttachmentError,
+            validate_attachment_specs,
+        )
+
+        try:
+            validate_attachment_specs([self.model_dump(exclude_none=True)])
+        except AttachmentError as exc:
+            raise PydanticCustomError(
+                "attachment_invalid", "{reason}", {"reason": str(exc)}
+            ) from exc
+        return self
+
+
 class NotifyDeliveryV1(BaseModel):
     """Delivery payload for `notify.v1` requests."""
 
@@ -486,6 +520,30 @@ class NotifyDeliveryV1(BaseModel):
     recipient: NonEmptyStr | None = None
     subject: NonEmptyStr | None = None
     emoji: NonEmptyStr | None = None
+    attachments: tuple[NotifyAttachmentV1, ...] | None = None
+
+    @field_validator("attachments")
+    @classmethod
+    def _validate_attachments(
+        cls, value: tuple[NotifyAttachmentV1, ...] | None, info: ValidationInfo
+    ) -> tuple[NotifyAttachmentV1, ...] | None:
+        from butlers.core.notify_attachments import MAX_ATTACHMENTS
+
+        if value is None:
+            return value
+        if not value or len(value) > MAX_ATTACHMENTS:
+            raise PydanticCustomError(
+                "attachments_count",
+                "delivery.attachments must hold 1-{limit} items.",
+                {"limit": MAX_ATTACHMENTS},
+            )
+        if info.data.get("intent") not in ("send", "reply"):
+            raise PydanticCustomError(
+                "attachments_intent",
+                "delivery.attachments require send or reply intent.",
+                {},
+            )
+        return value
 
     @field_validator("message")
     @classmethod
@@ -810,6 +868,7 @@ __all__ = [
     "IngestUntrustedSpanV1",
     "ApprovalRequestActionV1",
     "ApprovalRecoveryV1",
+    "NotifyAttachmentV1",
     "NotifyDeliveryV1",
     "NotifyRequestContextV1",
     "NotifyRequestV1",

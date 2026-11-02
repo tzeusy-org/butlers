@@ -1643,6 +1643,49 @@ async def test_notify_delivery_and_failures(butler_dir: Path) -> None:
         r_tg2 = await notify_fn(channel="telegram", message="Update", intent="send")
     assert r_tg2["status"] == "error"
 
+    # Attachments: every file is fetched and pinned (sha256 + size) on the
+    # envelope; email refuses them and a missing blob sends nothing.
+    import hashlib
+
+    from butlers.storage.blobs import BlobNotFoundError
+
+    blobs = {"s3://butlers/finance/statement.pdf": b"%PDF statement"}
+
+    async def _get_blob(ref: str) -> bytes:
+        if ref not in blobs:
+            raise BlobNotFoundError(ref)
+        return blobs[ref]
+
+    daemon.blob_store = MagicMock(scheme="s3", bucket="butlers", get=_get_blob)
+    files = [
+        {
+            "filename": "statement.pdf",
+            "media_type": "application/pdf",
+            "storage_ref": "s3://butlers/finance/statement.pdf",
+        },
+        {"filename": "spend.csv", "media_type": "text/csv", "content_text": "a,b\n1,2\n"},
+    ]
+    mock_client.call_tool = AsyncMock(return_value=mock_call_result)
+    with patch("butlers.daemon.resolve_owner_entity_info", new=AsyncMock(return_value="123")):
+        r_files = await notify_fn(
+            channel="telegram", message="October", intent="send", attachments=files
+        )
+    assert r_files["status"] == "ok"
+    sent = mock_client.call_tool.await_args.args[1]["notify_request"]["delivery"]["attachments"]
+    assert sent[0]["sha256"] == hashlib.sha256(b"%PDF statement").hexdigest()
+    assert sent[1]["size_bytes"] == len(b"a,b\n1,2\n")
+    mock_client.call_tool.reset_mock()
+    r_email_files = await notify_fn(channel="email", message="October", attachments=files)
+    assert r_email_files["code"] == "unsupported_attachment"
+    with patch("butlers.daemon.resolve_owner_entity_info", new=AsyncMock(return_value="123")):
+        r_missing = await notify_fn(
+            channel="telegram",
+            message="October",
+            attachments=[{**files[0], "storage_ref": "s3://butlers/finance/gone.pdf"}],
+        )
+    assert r_missing["code"] == "attachment_unavailable"
+    mock_client.call_tool.assert_not_awaited()
+
     # Delivery failure surfaced
     mock_call_result_fail = MagicMock()
     mock_call_result_fail.is_error = False
@@ -1822,6 +1865,51 @@ async def test_route_execute_messenger_scenarios(tmp_path: Path, monkeypatch) ->
     nr = result2["result"]["notify_response"]
     assert nr["status"] == "ok"
     assert nr["delivery"]["channel"] == "telegram"
+
+    # Attachments: telegram delivers through _send_files with the pinned items;
+    # email refuses them with unsupported_attachment before any send.
+    attachment = {
+        "filename": "statement.pdf",
+        "media_type": "application/pdf",
+        "storage_ref": "s3://butlers/finance/statement.pdf",
+        "sha256": "a" * 64,
+        "size_bytes": 12,
+    }
+    telegram_module._send_files = AsyncMock(return_value={"result": {"message_id": 654}})
+    email_module = next(m for m in daemon2._modules if m.name == "email")
+    email_module._send_email = AsyncMock()
+    for channel, recipient in (("telegram", "12345"), ("email", "recipient@example.com")):
+        result_files = await fn2(
+            schema_version="route.v1",
+            request_context=_route_request_context(),
+            input={
+                "prompt": "Deliver.",
+                "context": {
+                    "notify_request": {
+                        "schema_version": "notify.v1",
+                        "origin_butler": "health",
+                        "delivery": {
+                            "intent": "send",
+                            "channel": channel,
+                            "message": "Your statement.",
+                            "recipient": recipient,
+                            "attachments": [attachment],
+                        },
+                    }
+                },
+            },
+        )
+        if channel == "telegram":
+            assert result_files["status"] == "ok"
+            assert result_files["result"]["notify_response"]["delivery"]["delivery_id"] == "654"
+            telegram_module._send_files.assert_awaited_once_with(
+                "12345", "[health] Your statement.", [attachment], None
+            )
+        else:
+            assert result_files["status"] == "error"
+            assert result_files["error"]["class"] == "validation_error"
+            assert "unsupported_attachment" in result_files["error"]["message"]
+            email_module._send_email.assert_not_awaited()
 
     # Missing required recipient → validation_error
     m3 = tmp_path / "m3"
