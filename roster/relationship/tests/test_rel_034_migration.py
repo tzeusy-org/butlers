@@ -14,7 +14,6 @@ disturbing the owner-facing dossier.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import uuid
@@ -24,6 +23,8 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+from butlers.testing.migration import load_migration
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1] / "migrations" / "034_fact_evidence_and_coverage.py"
 )
@@ -32,17 +33,9 @@ _docker = pytest.mark.skipif(not shutil.which("docker"), reason="Docker not avai
 _session_loop = pytest.mark.asyncio(loop_scope="session")
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_migration_rel_034", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 @pytest.mark.unit
 def test_revision_chain() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     assert mod.revision == "rel_034"
     assert mod.down_revision == "rel_033"
 
@@ -52,7 +45,7 @@ def test_evidence_text_bound_matches_the_writer() -> None:
     """The CHECK is the backstop for the writer's bound; a drift makes it a lie."""
     from butlers.tools.relationship import fact_evidence
 
-    assert _load_migration()._MAX_TEXT_CHARS == fact_evidence._MAX_TEXT_CHARS
+    assert load_migration(_MIGRATION_PATH)._MAX_TEXT_CHARS == fact_evidence._MAX_TEXT_CHARS
 
 
 class _CollectingOp:
@@ -66,7 +59,7 @@ class _CollectingOp:
 
 
 def _upgrade_statements() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     fake = _CollectingOp()
     mod.op = fake
     mod.upgrade()
@@ -74,7 +67,7 @@ def _upgrade_statements() -> list[str]:
 
 
 def _downgrade_statements() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     fake = _CollectingOp()
     mod.op = fake
     mod.downgrade()
