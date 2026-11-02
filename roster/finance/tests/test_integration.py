@@ -1577,13 +1577,14 @@ class TestImportTransactionsMetadataRoundtrip:
             "01/15/2024,01/16/2024,WHOLE FOODS #1,Food & Drink,Sale,-45.32,\n"
         )
 
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=csv_content.encode("utf-8"))
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/test.csv",
+            storage_ref="s3://bucket/finance/test.csv",
+            origin_butler="finance",
         )
         assert result["imported"] == 1, f"Expected 1 import, got: {result}"
 
