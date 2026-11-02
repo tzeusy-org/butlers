@@ -45,11 +45,12 @@ Semantics:
   delivered after newer fixes, or a cutover re-read). Late fixes always get
   their ``location`` point event, but never extend, replace or reorder the
   endpoint's carryover; the carryover with the newest ``end_at`` stays. A
-  late span that overlaps the open carryover episode or any stored movement
-  episode for that endpoint produces no episode write, so an already-emitted
-  episode is never duplicated or overlapped. A late span in a gap no episode
-  covers (with at least ``MIN_MOVEMENT_POINTS`` fixes) becomes its own
-  standalone movement episode.
+  late span within the movement gap (``movement_gap_minutes``) of the open
+  carryover episode or of any stored movement episode for that endpoint
+  produces no episode write, so a queue flush never splits or overlaps an
+  already-emitted trip. Only a late span more than the movement gap away from
+  every open or stored episode (with at least ``MIN_MOVEMENT_POINTS`` fixes)
+  becomes its own standalone movement episode.
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
@@ -913,20 +914,22 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             effective_start_lon = float(raw_start_lon)
 
             if seg.get("late"):
-                # Point events only when the late span touches the open
-                # carryover episode or any stored movement episode; otherwise
-                # a standalone episode. Either way the carryover stays put.
+                # Point events only when the late span lies within the
+                # movement gap of the open carryover episode or any stored
+                # movement episode (the live path would have joined them);
+                # otherwise a standalone episode. Either way the carryover
+                # stays put.
                 if point_count < MIN_MOVEMENT_POINTS:
                     continue
                 carry_start, carry_end = horizons[endpoint_identity]
-                if effective_start_at <= carry_end and end_at >= carry_start:
+                if effective_start_at <= carry_end + gap and end_at >= carry_start - gap:
                     continue
                 async with owntracks_connection(chronicler_pool) as pooled:
                     if await self._merge_overlapping_episode(
                         cast(asyncpg.Connection, pooled),
                         endpoint_identity=endpoint_identity,
-                        start_at=effective_start_at,
-                        end_at=end_at,
+                        start_at=effective_start_at - gap,
+                        end_at=end_at + gap,
                     ):
                         continue
             # Record carryover for every live segment (keyed by endpoint, so

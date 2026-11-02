@@ -603,6 +603,32 @@ async def test_late_fix_between_live_runs_keeps_one_movement_episode() -> None:
 
 
 @pytest.mark.asyncio
+async def test_queue_flush_within_movement_gap_does_not_split_the_trip() -> None:
+    """Live fix first, then queued fixes minutes older: one trip (review r4444931563)."""
+    table = _ArrivalTable(
+        *(
+            _arrived(_NOW + timedelta(minutes=m), _NOW + timedelta(minutes=m), f"live-{m}")
+            for m in (0, 1, 2)
+        ),
+        now=_NOW + timedelta(hours=1),
+    )
+    store: dict = {}
+    episodes: list[Episode] = []
+    await _project_run(table, store, episodes=episodes)
+    open_episode = dict(store[_ENDPOINT])
+
+    table.rows += [
+        _arrived(_NOW - timedelta(minutes=m), _NOW + timedelta(minutes=3), f"queued-{m}")
+        for m in (8, 6, 4)
+    ]
+    _, flushed = await _project_run(table, store, episodes=episodes)
+
+    assert sorted(flushed) == ["queued-4", "queued-6", "queued-8"]
+    assert {ep.source_ref for ep in episodes} == {open_episode["source_ref"]}
+    assert store[_ENDPOINT] == open_episode
+
+
+@pytest.mark.asyncio
 async def test_cutover_reread_inside_emitted_episode_writes_no_episode() -> None:
     """Re-read fixes already covered by stored episodes only re-project points."""
     covered = [

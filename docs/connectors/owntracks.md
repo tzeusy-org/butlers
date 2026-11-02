@@ -142,8 +142,9 @@ governs only the `public.ingestion_events` audit rows.
   newest device `ts`. A legacy ts-only checkpoint cuts over at the earliest-arrived row with
   `ts > watermark` (re-reading only rows that arrived since, idempotently), not a history rescan.
   A late fix (device `ts` at or before its endpoint's open-episode `end_at`) always gets its point
-  event but never replaces that carryover, and it never writes an episode over an open or stored
-  movement span; a late span in an uncovered gap becomes its own episode.
+  event but never replaces that carryover, and it writes no episode when it lies within the movement
+  gap of an open or stored movement episode; only a late span more than the gap away from every
+  episode becomes its own episode.
   Index: `connectors.idx_owntracks_points_recorded_at_id` (core_309).
 
 - The Chronicler `owntracks.ssid_presence` adapter keeps its cursor as `{watermark, uuid}` under the
