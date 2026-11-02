@@ -3,8 +3,8 @@
 bu-g27ib routed relationship_assert_fact()'s owner-carve-out and family-gate
 parks through the approvals choke point (park_pending_action), which commits
 its ``pending_actions`` row -- and fires the owner push -- on its OWN
-connection acquired from *pool*, independent of any caller-supplied
-``conn``/transaction (the push path needs real ``pool.acquire()`` semantics).
+connection acquired from *rel_pool*, independent of any caller-supplied
+``conn``/transaction (the push path needs real ``rel_pool.acquire()`` semantics).
 
 promote_entity() (POST /entities) asserts a BATCH of ``initial_facts`` inside
 one outer transaction, passing ``conn=`` so every fact write participates in
@@ -37,15 +37,6 @@ from uuid import UUID
 import asyncpg
 import pytest
 from fastapi import HTTPException
-
-from butlers.testing.approval_delivery_schema import install_approval_delivery_schema
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    APPROVAL_RULES,
-    ENTITY_PREDICATE_REGISTRY,
-    PENDING_ACTIONS,
-)
-from roster.relationship.tests.evidence_schema import apply_evidence_schema
 
 pytestmark = [
     pytest.mark.integration,
@@ -81,71 +72,13 @@ def _load_relationship_api_router() -> ModuleType:
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with entities, entity_facts, predicate_registry, pending_actions."""
-    async with provisioned_postgres_pool() as p:
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES
-                ('parent-of', 'relational', 'entity', 'Parent-child relationship.'),
-                ('has-email', 'contact',    'literal', 'Email address.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                observed_at TIMESTAMPTZ,
-                metadata    JSONB,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_ef_spo_active
-                ON relationship.entity_facts (subject, predicate, object)
-                WHERE validity = 'active'
-        """)
-        await p.execute(PENDING_ACTIONS.ddl())
-        await p.execute(APPROVAL_RULES.ddl())
-        await p.execute(APPROVAL_EVENTS.ddl())
-        await install_approval_delivery_schema(p)
-        # rel_034: the central writer persists evidence and a coverage receipt in
-        # the same transaction as the fact, so this schema is not optional.
-        await apply_evidence_schema(p)
-        yield p
+async def rel_pool(db):
+    """Core + memory + relationship + approvals chains (flat; entity_facts in ``relationship``)."""
+    return await db("core", "memory", "relationship", "approvals")
 
 
-async def _make_owner_entity(pool: asyncpg.Pool) -> UUID:
-    return await pool.fetchval(
+async def _make_owner_entity(rel_pool: asyncpg.Pool) -> UUID:
+    return await rel_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ('Owner', 'person', ARRAY['owner']) RETURNING id",
     )
@@ -161,9 +94,9 @@ class _FakeDatabaseManager:
         return self._real_pool
 
 
-async def _call_promote_entity(pool: asyncpg.Pool, body: Any):
+async def _call_promote_entity(rel_pool: asyncpg.Pool, body: Any):
     router_module = _load_relationship_api_router()
-    return await router_module.promote_entity(body, db=_FakeDatabaseManager(pool))
+    return await router_module.promote_entity(body, db=_FakeDatabaseManager(rel_pool))
 
 
 def _promote_entity_request(**kwargs: Any) -> Any:
@@ -184,7 +117,7 @@ def _promote_entity_request(**kwargs: Any) -> Any:
 
 
 async def test_parking_fact_followed_by_invalid_predicate_leaves_no_orphan(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
 ) -> None:
     """A parking fact + a later invalid-predicate fact must not orphan a park.
 
@@ -197,7 +130,7 @@ async def test_parking_fact_followed_by_invalid_predicate_leaves_no_orphan(
     therefore before any assert in the batch can park), so both the entity
     write AND any would-be park are cleanly avoided together.
     """
-    await _make_owner_entity(pool)
+    await _make_owner_entity(rel_pool)
 
     placeholder_child = str(uuid.uuid4())
     body = _promote_entity_request(
@@ -218,11 +151,11 @@ async def test_parking_fact_followed_by_invalid_predicate_leaves_no_orphan(
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await _call_promote_entity(pool, body)
+        await _call_promote_entity(rel_pool, body)
     assert exc_info.value.status_code == 422
 
     # No entity was persisted (the outer transaction rolled back).
-    entity_count = await pool.fetchval(
+    entity_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM public.entities WHERE canonical_name = 'Exploit Target'"
     )
     assert entity_count == 0, "entity row must not survive the rollback"
@@ -231,7 +164,7 @@ async def test_parking_fact_followed_by_invalid_predicate_leaves_no_orphan(
     # regression assertion: pre-validation must run before ANY assert in the
     # batch can park, so the family-gate fact never gets a chance to commit
     # its row on the separate connection in the first place.
-    pending_count = await pool.fetchval(
+    pending_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM pending_actions WHERE tool_name = 'relationship_assert_fact'"
     )
     assert pending_count == 0, (
@@ -241,14 +174,14 @@ async def test_parking_fact_followed_by_invalid_predicate_leaves_no_orphan(
 
 
 async def test_valid_batch_with_parking_fact_still_creates_entity_and_parks(
-    pool: asyncpg.Pool,
+    rel_pool: asyncpg.Pool,
 ) -> None:
     """Sanity: a batch with ONLY valid facts still creates the entity and parks.
 
     Guards against an overly-aggressive fix that blocks legitimate
     low-confidence-kinship-then-something-else batches.
     """
-    await _make_owner_entity(pool)
+    await _make_owner_entity(rel_pool)
 
     placeholder_child = str(uuid.uuid4())
     body = _promote_entity_request(
@@ -269,21 +202,21 @@ async def test_valid_batch_with_parking_fact_still_creates_entity_and_parks(
         ],
     )
 
-    summary = await _call_promote_entity(pool, body)
+    summary = await _call_promote_entity(rel_pool, body)
     assert summary.canonical_name == "Legit Target"
 
-    entity_count = await pool.fetchval(
+    entity_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM public.entities WHERE canonical_name = 'Legit Target'"
     )
     assert entity_count == 1
 
-    pending_count = await pool.fetchval(
+    pending_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM pending_actions WHERE tool_name = 'relationship_assert_fact'"
     )
     assert pending_count == 1, "the low-confidence kinship fact should still park"
 
     # has-email is not gated and not an owner write, so it commits directly.
-    fact_count = await pool.fetchval(
+    fact_count = await rel_pool.fetchval(
         "SELECT COUNT(*) FROM relationship.entity_facts "
         "WHERE subject = $1 AND predicate = 'has-email' AND validity = 'active'",
         summary.id,
