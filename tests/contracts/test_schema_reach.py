@@ -371,6 +371,10 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{schema}.collections>",
     ): "dynamic-local: quoted current General schema for trigger-owned collection tables; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
+        "roster/general/migrations/004_owner_projects.py",
+        "<dynamic:{schema}.projects>",
+    ): "dynamic-local: quoted current General schema for the owner-project freeze trigger (bu-jv1moa.12); not a foreign-schema exception",
+    (
         "roster/messenger/tests/test_delivery_tracking_retirement.py",
         "<dynamic:{table}>",
     ): "dynamic-local: closed retired local Messenger table tuple in a test fixture; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
