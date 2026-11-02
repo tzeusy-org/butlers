@@ -35,10 +35,11 @@ The producer invokes the existing owned `install_ci_uv.py` within its own confin
 with a private path-output sink. Ordinary workflow installer consumers remain unchanged by this control; installation is part
 of the control rather than a new workflow installer step.
 The executor-local `scripts/fact_source_capture_before_supervisor.py` owns every execution
-domain. It preserves the applied diagnostic-only supervisor from PR5082
-(`2e970c17a1708014f78394f14f184a483e9d9c3c`), with only the terminal module-level
-`raise SystemExit(2) from None` spelling required by current lint. Every supplier function
-and scanner/cleanup predicate is unchanged; the retired shared action is not restored. The aggregate 2480-second
+domain. Its base is the applied diagnostic-only supervisor from PR5082
+(`2e970c17a1708014f78394f14f184a483e9d9c3c`), including the terminal module-level
+`raise SystemExit(2) from None` spelling required by current lint. The local diagnostic
+extension observes only the already-selected task around a refused children-file operation;
+scanner/cleanup acceptance predicates remain unchanged; the retired shared action is not restored. The aggregate 2480-second
 budget starts before checkout and includes the preserved 640-second UV installer and
 640-second environment reserve, two 480-second node envelopes including cleanup, and 120
 seconds each for setup and evidence. The 45-minute job is provisional, not measured p95.
@@ -85,3 +86,17 @@ never changes the existing refusal latch, cleanup completeness, return status or
 Synthetic tuple controls establish the software projection only. The historical two scan
 refusals remain unlocalized: these new fields cannot retrospectively establish their cause,
 prove that a future refusal will recur, or claim PG CALL, BEFORE or paired AFTER completion.
+
+The preparation observer imports the fixed pinned `ci_environment` module through normal
+Python resolution, then calls its unchanged `main()` with the original `SystemExit` behavior.
+It refuses a preloaded module, missing/foreign source origin, or existing/symlinked active or
+legacy bytecode cache before import; it does not evict modules or delete caches to proceed.
+The imported file and spec origin are checked again. Healthy preparation and each existing
+refusal keep their direct-helper exit, output, metadata and closed stage observations.
+
+Optional `first_task_scan` contains only fixed phase/probe/classification categories and
+booleans or null: whether the selected task was known before/after, whether its start identity
+matched, and whether its observed state was departed. No PID, TID, path or start tick is exported.
+A task entry observed absent is diagnostic only: it never clears a refusal latch or permits an
+incomplete scan. The bounded synthetic thread-disappearance control proves one mechanism that
+can produce a refused tuple, not the historical hosted cause or any PG BEFORE/AFTER witness.

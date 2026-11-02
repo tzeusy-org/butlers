@@ -38,7 +38,7 @@ def count_refusal(diagnostics, key):
             diagnostics["counts_saturated"] = True
 
 
-def first_scan_refusal(diagnostics, site, operation, error, before, after):
+def first_scan_refusal(diagnostics, site, operation, error, before, after, task_scan=None):
     """Retain one closed classification, never an identity or exception value."""
     if diagnostics is None or diagnostics["first_scan_refusal"] is not None:
         return
@@ -55,6 +55,7 @@ def first_scan_refusal(diagnostics, site, operation, error, before, after):
     if before is not None and before[1] in ("Z", "X"):
         bits |= 16
     diagnostics["first_scan_refusal"] = {"s": site, "k": kind, "o": operation, "b": bits}
+    diagnostics["first_task_scan"] = task_scan
 
 
 def emit(value):
@@ -78,10 +79,56 @@ def process(pid):
         return None
 
 
+def task_identity(pid, task):
+    """Observe only one already-selected owned task; never export its identity."""
+    try:
+        with open(f"/proc/{pid}/task/{task}/stat") as stream:
+            value = stream.read(4096)
+        fields = value[value.rfind(")") + 2 :].split()
+        return (int(fields[19]), fields[0]), "known"
+    except OSError as error:
+        return None, {
+            errno.ENOENT: "absent",
+            errno.ESRCH: "absent",
+            errno.EACCES: "denied",
+            errno.EPERM: "denied",
+        }.get(error.errno, "other")
+    except (ValueError, IndexError):
+        return None, "invalid"
+
+
+def task_scan_observation(before, after, phase):
+    """Closed diagnostic only; no permission to accept an incomplete scan."""
+    first, first_category = before
+    last, last_category = after
+    return {
+        "phase": phase,
+        "before_probe": first_category,
+        "after_probe": last_category,
+        "before_known": first is not None,
+        "after_known": last is not None,
+        "same_task_start": first[0] == last[0] if first and last else None,
+        "before_dead": first[1] in ("Z", "X") if first else None,
+        "after_dead": last[1] in ("Z", "X") if last else None,
+        "classification": (
+            "task-entry-absent"
+            if last_category == "absent"
+            else "task-identity-changed"
+            if first and last and first[0] != last[0]
+            else "task-known"
+            if last
+            else "task-probe-unknown"
+        ),
+    }
+
+
 def children(pid, diagnostics=None, site=0):
     identity = process(pid)
     truncated = False
     operation = 1  # task list
+    selected_task = None
+    task_before = (None, "unknown")
+    task_phase = "task-list"
     try:
         # The supervisor is single-threaded. Other owned processes may not be.
         result = set()
@@ -91,19 +138,27 @@ def children(pid, diagnostics=None, site=0):
             count_refusal(diagnostics, "task_overflow")
         for task in tasks[:MAX_PROCESSES]:
             if task.isdecimal():
+                selected_task = task
+                task_before = task_identity(pid, task)
+                task_phase = "child-open"
                 operation = 2  # child-file open/context
-                with open(f"/proc/{pid}/task/{task}/children") as stream:
+                stream = open(f"/proc/{pid}/task/{task}/children")
+                task_phase = "child-context-enter"
+                with stream:
+                    task_phase = "child-read"
                     operation = 3  # child-file read
                     raw = stream.read(65536)
                     truncated = truncated or len(raw) == 65536
                     if len(raw) == 65536:
                         count_refusal(diagnostics, "children_overflow")
+                    task_phase = "child-parse"
                     for n in raw.split():
                         if len(result) >= MAX_PROCESSES:
                             count_refusal(diagnostics, "children_overflow")
                             return result, True
                         operation = 4  # child PID conversion
                         result.add(int(n))
+                    task_phase = "child-context-exit"
                     operation = 2  # child-file context exit
         return result, truncated
     except (OSError, ValueError) as error:
@@ -124,7 +179,12 @@ def children(pid, diagnostics=None, site=0):
         # Permission, malformed data, unknown/reused identity and live actors
         # remain unobserved/truncated; never turn them into a positive scan.
         count_refusal(diagnostics, "scan_refused")
-        first_scan_refusal(diagnostics, site, operation, error, identity, current)
+        task_scan = (
+            task_scan_observation(task_before, task_identity(pid, selected_task), task_phase)
+            if selected_task is not None
+            else None
+        )
+        first_scan_refusal(diagnostics, site, operation, error, identity, current, task_scan)
         return set(), True
 
 
@@ -178,6 +238,7 @@ def main():
         "counts": dict.fromkeys(REFUSAL_KEYS, 0),
         "counts_saturated": False,
         "first_scan_refusal": None,
+        "first_task_scan": None,
     }
 
     def diagnostic(reason, direct, no_children):

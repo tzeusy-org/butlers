@@ -335,6 +335,44 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
                 is None
             )
 
+        # Diagnostic-only task metadata retains refusal and never exports identities.
+        for stage, operation in (
+            ("child-open", 2),
+            ("child-context-enter", 2),
+            ("child-read", 3),
+            ("child-parse", 4),
+            ("child-context-exit", 2),
+        ):
+            for before, after in (
+                (((123, "R"), "known"), (None, "absent")),
+                (((123, "R"), "known"), ((123, "R"), "known")),
+                (((123, "R"), "known"), ((456, "R"), "known")),
+                (((123, "R"), "known"), ((123, "Z"), "known")),
+                ((None, "unknown"), (None, "denied")),
+                ((None, "invalid"), (None, "other")),
+            ):
+                task = supervisor.task_scan_observation(before, after, stage)
+                diagnostic = {
+                    "counts": {"scan_refused": 1},
+                    "first_scan_refusal": {"s": 2, "k": 1, "o": operation, "b": 7},
+                    "first_task_scan": task,
+                }
+                assert control.task_scan_observation(diagnostic) == task
+                assert "123" not in json.dumps(task) and "456" not in json.dumps(task)
+                for key, value in (
+                    ("phase", []),
+                    ("before_probe", {}),
+                    ("before_known", 1),
+                    ("same_task_start", 1),
+                    ("classification", "PRIVATE"),
+                    ("path", "PRIVATE"),
+                ):
+                    bad = copy.deepcopy(diagnostic)
+                    bad["first_task_scan"][key] = value
+                    assert control.task_scan_observation(bad) is None
+        assert control.task_scan_observation({}) is None
+        assert projected["first_task_scan"] == producer["first_task_scan"]
+
         # An absolute script path does not choose its editable-repair target.
         controller = tmp_path / "controller"
         controller.mkdir()
@@ -797,3 +835,70 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
             bad = {**data, key: value}
             diagnostic_path.write_text(json.dumps(bad))
             assert control.preparation_observation(diagnostic_path) is None
+
+    # Refuse before import: fixed-name preload, foreign/missing origin, and
+    # timestamp-valid bytecode (including an active symlink/legacy location).
+    import importlib.util
+    import py_compile
+    from types import ModuleType, SimpleNamespace
+
+    for mode in ("preloaded", "wrong-origin", "missing-spec", "cache", "cache-symlink", "legacy"):
+        parent = tmp_path / ("import-" + mode)
+        helper = parent / "workload/scripts/ci_environment.py"
+        helper.parent.mkdir(parents=True)
+        helper.write_bytes(helper_bytes)
+        config = parent / "prepare-config.json"
+        config.write_text(json.dumps({"root": str(helper.parents[1])}))
+        marker = parent / "executed"
+        expected = "prepare-helper-cache"
+        if mode in ("cache", "cache-symlink", "legacy"):
+            active = Path(importlib.util.cache_from_source(str(helper)))
+            active.parent.mkdir()
+            source = parent / "cache-source.py"
+            text = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed')\ndef main(): return 0\n"
+            source.write_text(text + "#" * (len(helper_bytes) - len(text.encode())))
+            stamp = helper.stat()
+            os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            target = parent / "cache.pyc" if mode == "cache-symlink" else active
+            if mode == "legacy":
+                target = helper.with_suffix(".pyc")
+            py_compile.compile(str(source), cfile=str(target), dfile=str(helper), doraise=True)
+            if mode == "cache-symlink":
+                active.symlink_to(target)
+            # A fresh interpreter exercises actual Python's cache selection.
+            result = subprocess.run(
+                [sys.executable, str(Path(control.__file__).resolve()), "--prepare-child"],
+                cwd=helper.parents[1],
+                env={**os.environ, "FACT_CAPTURE_PREPARE_CONFIG": str(config)},
+                capture_output=True,
+                timeout=10,
+            )
+            assert not marker.exists()
+            assert result.returncode != 0
+            assert expected.encode() in result.stderr
+        else:
+            with monkeypatch.context() as context:
+                context.setenv("FACT_CAPTURE_PREPARE_CONFIG", str(config))
+                context.setattr(sys, "argv", ["control", "--prepare-child"])
+                if mode == "preloaded":
+                    context.setitem(sys.modules, "ci_environment", ModuleType("ci_environment"))
+                    expected = "prepare-helper-preloaded"
+                else:
+                    context.setattr(
+                        control.util,
+                        "find_spec",
+                        lambda name, mode=mode, marker=marker: (
+                            None
+                            if mode == "missing-spec"
+                            else SimpleNamespace(
+                                origin=str(marker), submodule_search_locations=None
+                            )
+                        ),
+                    )
+                    expected = "prepare-helper-origin"
+                context.setattr(
+                    control, "import_module", lambda name: pytest.fail("refused import executed")
+                )
+                with pytest.raises(ValueError, match=expected):
+                    control.preparation_child()
+                assert not marker.exists()

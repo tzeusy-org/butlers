@@ -11,7 +11,6 @@ import os
 import platform
 import re
 import resource
-import runpy
 import secrets
 import selectors
 import signal
@@ -19,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from importlib import import_module, util
 from pathlib import Path
 
 CANDIDATE = "9b46e8e7342411cf3e8f2b75c139d077509233b0"
@@ -230,14 +230,35 @@ def preparation_child():
         ):
             observation["substage"] = "metadata-write"
 
-    # Match normal script execution's argv and import directory. runpy executes
-    # the admitted file unchanged, including its original main/catch/exit path.
+    # Preserve the pinned helper's script argv and original main/catch/exit path.
+    # Normal import must select its uncached source before any helper code runs.
     sys.argv = [str(helper), "prepare"]
     sys.path[0] = str(helper.parent)
     sys.addaudithook(audit)
     sys.settrace(trace)
     try:
-        runpy.run_path(str(helper), run_name="__main__")
+        if "ci_environment" in sys.modules:
+            raise ValueError("prepare-helper-preloaded")
+        spec = util.find_spec("ci_environment")
+        if (
+            spec is None
+            or not isinstance(spec.origin, str)
+            or spec.submodule_search_locations is not None
+            or Path(spec.origin).resolve() != helper
+        ):
+            raise ValueError("prepare-helper-origin")
+        caches = (Path(util.cache_from_source(str(helper))), helper.with_suffix(".pyc"))
+        if any(path.exists() or path.is_symlink() for path in caches):
+            raise ValueError("prepare-helper-cache")
+        module = import_module("ci_environment")
+        if (
+            Path(module.__file__).resolve() != helper
+            or module.__spec__ is None
+            or not isinstance(module.__spec__.origin, str)
+            or Path(module.__spec__.origin).resolve() != helper
+        ):
+            raise ValueError("prepare-helper-origin")
+        raise SystemExit(module.main())
     except SystemExit as error:
         if type(error.code) is int and 0 <= error.code <= 255:
             observation["helper_exit"] = error.code
@@ -479,6 +500,82 @@ def first_scan_refusal_observation(diagnostic):
     return {key: first[key] for key in ("s", "k", "o", "b")}
 
 
+def task_scan_observation(diagnostic):
+    """Validate optional closed task metadata without accepting a refused scan."""
+    value = diagnostic.get("first_task_scan")
+    keys = {
+        "phase",
+        "before_probe",
+        "after_probe",
+        "before_known",
+        "after_known",
+        "same_task_start",
+        "before_dead",
+        "after_dead",
+        "classification",
+    }
+    if type(value) is not dict or set(value) != keys:
+        return None
+    if any(
+        type(value[key]) is not str
+        for key in ("phase", "before_probe", "after_probe", "classification")
+    ):
+        return None
+    if value["phase"] not in {
+        "child-open",
+        "child-context-enter",
+        "child-read",
+        "child-parse",
+        "child-context-exit",
+    }:
+        return None
+    categories = {"known", "absent", "denied", "invalid", "other", "unknown"}
+    if any(value[key] not in categories for key in ("before_probe", "after_probe")):
+        return None
+    if any(type(value[key]) is not bool for key in ("before_known", "after_known")):
+        return None
+    if any(
+        value[key] is not None and type(value[key]) is not bool
+        for key in ("same_task_start", "before_dead", "after_dead")
+    ):
+        return None
+    if any(
+        value[f"{side}_known"] != (value[f"{side}_probe"] == "known")
+        for side in ("before", "after")
+    ):
+        return None
+    both = value["before_known"] and value["after_known"]
+    if (value["same_task_start"] is not None) != both:
+        return None
+    if any(
+        (value[f"{side}_dead"] is not None) != value[f"{side}_known"]
+        for side in ("before", "after")
+    ):
+        return None
+    expected = (
+        "task-entry-absent"
+        if value["after_probe"] == "absent"
+        else "task-identity-changed"
+        if both and value["same_task_start"] is False
+        else "task-known"
+        if value["after_known"]
+        else "task-probe-unknown"
+    )
+    if value["classification"] != expected:
+        return None
+    first = first_scan_refusal_observation(diagnostic)
+    expected_operation = {
+        "child-open": 2,
+        "child-context-enter": 2,
+        "child-read": 3,
+        "child-parse": 4,
+        "child-context-exit": 2,
+    }[value["phase"]]
+    if first is None or first["o"] != expected_operation:
+        return None
+    return dict(value)
+
+
 def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protocol_refused):
     """Project protocol observations, never child output or a new cleanup verdict."""
     outcomes = [value for value in events if value.get("event") == "outcome"]
@@ -539,6 +636,7 @@ def lifecycle_observation(events, supervisor_exit, timed_out, cancelled, protoco
         "counts_saturated": boolean(diagnostic.get("counts_saturated")),
         "kernel_children_closed": boolean(diagnostic.get("kernel_children_closed")),
         "first_scan_refusal": first_scan_refusal_observation(diagnostic),
+        "first_task_scan": task_scan_observation(diagnostic),
     }
 
 
