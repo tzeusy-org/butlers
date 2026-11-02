@@ -314,8 +314,10 @@ def test_only_qa_records_an_immutable_refusal_receipt_and_rollback_keeps_it(
 ) -> None:
     migration_user = urlparse(db_url).username
     assert migration_user is not None
+    _replay_refusals(db_url, "upgrade")  # idempotent re-apply on a migrated database
+    # init-db.sql re-grants public DML to every runtime role after migrations: the policy,
+    # not the grant, must still be the fence.
     _bootstrap_rerun(postgres_container, db_name, migration_user)
-    _replay_refusals(db_url, "upgrade")  # idempotent re-apply after init-db.sql re-grants
     attempt = _new_attempt(db_url)
 
     with pytest.raises(DBAPIError, match="row-level security|permission denied"):

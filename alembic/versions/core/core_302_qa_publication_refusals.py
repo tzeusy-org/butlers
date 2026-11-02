@@ -19,7 +19,9 @@ whether a PR can exist.
 
 A receipt may exist only for an attempt that never reached retention: the insert policy
 refuses one when the attempt already has a ledger operation, a retained export, or a PR
-number.  ``category`` is a snake_case code (``^[a-z][a-z0-9_]{0,63}$``), never prose.
+number (``qa_publication_refusal_admissible``, a plpgsql function so the policy takes no
+dependency on those tables and older downgrades still drop them).  ``category`` is a
+snake_case code (``^[a-z][a-z0-9_]{0,63}$``), never prose.
 
 The fence follows core_294.  ``scripts/init-db.sql`` re-grants public-schema DML to every
 runtime role, so forced row security is the durable fence: only ``butler_qa_rw`` inserts,
@@ -59,6 +61,7 @@ _OTHER_RUNTIME_ROLES = (
     "connector_writer",
 )
 _GUARD = "public.qa_publication_refusals_immutable"
+_ADMISSIBLE = "public.qa_publication_refusal_admissible"
 _LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_302:qa-refusals', 0))"
 
 _ROLLBACK_REFUSAL = (
@@ -155,6 +158,30 @@ def upgrade() -> None:
         """
     )
 
+    # A plpgsql body is not dependency-tracked, so the policy does not pin the ledger or
+    # exports tables: replaying an older revision's downgrade can still drop them.
+    op.execute(
+        f"""
+        CREATE OR REPLACE FUNCTION {_ADMISSIBLE}(p_attempt_id UUID) RETURNS boolean
+        LANGUAGE plpgsql STABLE AS $$
+        BEGIN
+            RETURN NOT EXISTS (
+                    SELECT 1 FROM public.qa_publication_operations AS op
+                    WHERE op.attempt_id = p_attempt_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.qa_publication_exports AS x
+                    WHERE x.attempt_id = p_attempt_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.healing_attempts AS a
+                    WHERE a.id = p_attempt_id AND a.pr_number IS NOT NULL
+                );
+        END
+        $$
+        """
+    )
+
     op.execute(f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM PUBLIC")
     for role in _OTHER_RUNTIME_ROLES:
         _for_existing_role(role, f"REVOKE ALL PRIVILEGES ON TABLE {_TABLE} FROM {role}")
@@ -171,20 +198,7 @@ def upgrade() -> None:
         f"""
         CREATE POLICY qa_publication_refusals_insert ON {_TABLE}
             FOR INSERT WITH CHECK (
-                current_user = '{_QA_ROLE}'
-                AND NOT EXISTS (
-                    SELECT 1 FROM public.qa_publication_operations AS op
-                    WHERE op.attempt_id = qa_publication_refusals.attempt_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM public.qa_publication_exports AS x
-                    WHERE x.attempt_id = qa_publication_refusals.attempt_id
-                )
-                AND NOT EXISTS (
-                    SELECT 1 FROM public.healing_attempts AS a
-                    WHERE a.id = qa_publication_refusals.attempt_id
-                      AND a.pr_number IS NOT NULL
-                )
+                current_user = '{_QA_ROLE}' AND {_ADMISSIBLE}(attempt_id)
             )
         """
     )
@@ -210,3 +224,4 @@ def downgrade() -> None:
     )
     op.execute(f"DROP TABLE IF EXISTS {_TABLE}")
     op.execute(f"DROP FUNCTION IF EXISTS {_GUARD}()")
+    op.execute(f"DROP FUNCTION IF EXISTS {_ADMISSIBLE}(UUID)")
