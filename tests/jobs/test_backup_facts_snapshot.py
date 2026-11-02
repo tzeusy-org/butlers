@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 from datetime import UTC, datetime
@@ -21,17 +22,23 @@ pytestmark = pytest.mark.unit
 
 
 class _StatePool:
-    """Minimal public.state: one upsert target, one read."""
+    """Minimal public.state over a pool WITHOUT the jsonb codec (as in CI).
+
+    asyncpg binds a dict to a codec-less jsonb parameter as a DataError, and a
+    JSON string to a codec'd one double-encodes. So JSON must cross as TEXT
+    both ways; this fake enforces that wire shape.
+    """
 
     def __init__(self) -> None:
-        self.rows: dict[str, object] = {}
+        self.rows: dict[str, str] = {}
 
     async def execute(self, sql: str, key: str, value: object) -> None:
-        assert "INSERT INTO public.state" in sql
-        self.rows[key] = value
+        assert "INSERT INTO public.state" in sql and "$2::text::jsonb" in sql
+        assert isinstance(value, str)
+        self.rows[key] = json.dumps(json.loads(value))  # what value::text returns
 
     async def fetchval(self, sql: str, key: str) -> object:
-        assert "FROM public.state" in sql
+        assert "SELECT value::text FROM public.state" in sql
         return self.rows.get(key)
 
 
@@ -87,4 +94,4 @@ async def test_loop_writes_through_the_public_schema_owner_pool(monkeypatch):
         await job.run_backup_facts_snapshot_loop(db, interval_s=600)
 
     db.pool.assert_not_called()
-    assert pool.rows[STATE_KEY]["configured"] is False
+    assert json.loads(pool.rows[STATE_KEY])["configured"] is False

@@ -19,6 +19,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -104,7 +105,8 @@ class _FakePool:
 
     async def fetchval(self, sql: str, *args):
         if "public.state" in sql:
-            return self._backup_snapshot
+            snap = self._backup_snapshot
+            return None if snap is None else json.dumps(snap)
         raise AssertionError(f"Unexpected fetchval: {sql}")
 
     async def fetchrow(self, sql: str, *args):

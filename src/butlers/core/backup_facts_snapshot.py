@@ -33,6 +33,7 @@ only, never file names, sizes, or dump content.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -44,7 +45,6 @@ import asyncpg
 
 from butlers.core.backup_facts import read_backup_facts_from_dir
 from butlers.core.liveness import CLOCK_SKEW_TOLERANCE
-from butlers.core.state import decode_jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +54,13 @@ STATE_KEY = "infra.backup_facts"
 #: Missed writer intervals tolerated before the snapshot counts as stale.
 STALE_MULTIPLIER = 3
 
+# JSON crosses as TEXT both ways (``$2::text::jsonb`` / ``value::text``), so
+# the statement behaves the same whether or not the pool registered
+# ``butlers.db.register_jsonb_codec``: a dict needs that codec, and a JSON
+# string bound to a codec'd jsonb parameter would be double-encoded.
 _UPSERT_SQL = """
     INSERT INTO public.state (key, value, updated_at, version)
-    VALUES ($1, $2, now(), 1)
+    VALUES ($1, $2::text::jsonb, now(), 1)
     ON CONFLICT (key) DO UPDATE
         SET value = EXCLUDED.value,
             updated_at = now(),
@@ -116,7 +120,7 @@ async def publish_backup_facts_snapshot(
 ) -> dict[str, Any]:
     """Upsert this tick's summary. Directory reads run off the event loop."""
     value = await asyncio.to_thread(build_snapshot_value, backup_dir_raw, interval_s=interval_s)
-    await pool.execute(_UPSERT_SQL, STATE_KEY, value)
+    await pool.execute(_UPSERT_SQL, STATE_KEY, json.dumps(value))
     return value
 
 
@@ -126,11 +130,11 @@ async def load_backup_facts_snapshot(pool: asyncpg.Pool) -> BackupFactsSnapshot 
     ``None`` means "the patrol cannot see backup facts"; callers treat it as a
     finding, never as "backups not configured".
     """
-    raw = await pool.fetchval("SELECT value FROM public.state WHERE key = $1", STATE_KEY)
+    raw = await pool.fetchval("SELECT value::text FROM public.state WHERE key = $1", STATE_KEY)
     if raw is None:
         return None
-    value = decode_jsonb(raw)
     try:
+        value = json.loads(raw)
         observed_at = datetime.fromisoformat(value["observed_at"])
         if observed_at.tzinfo is None:
             observed_at = observed_at.replace(tzinfo=UTC)
@@ -155,6 +159,6 @@ async def load_backup_facts_snapshot(pool: asyncpg.Pool) -> BackupFactsSnapshot 
             last_run_reason=last_run.get("reason"),
             last_run_finished_at=last_run.get("finished_at"),
         )
-    except (KeyError, TypeError, ValueError, AttributeError):
+    except (KeyError, TypeError, ValueError, AttributeError):  # JSONDecodeError is a ValueError
         logger.warning("backup facts snapshot: stored value is malformed")
         return None
