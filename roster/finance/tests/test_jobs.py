@@ -1372,10 +1372,9 @@ def _budget_month_tx_date() -> datetime:
 
 
 def _budget_condition_fp(category: str = "dining", period: str = "monthly") -> str:
-    from butlers.jobs._roster.finance_jobs import (
-        _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
-        owner_condition_fingerprint,
-    )
+    fj = _fj_module()
+    _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE = fj._OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE
+    owner_condition_fingerprint = fj.owner_condition_fingerprint
 
     today = _today()
     return owner_condition_fingerprint(
@@ -1390,7 +1389,8 @@ def _budget_condition_fp(category: str = "dining", period: str = "monthly") -> s
 
 
 async def _active_budget_condition(pool, fp: str):
-    from butlers.jobs._roster.finance_jobs import _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE
+    fj = _fj_module()
+    _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE = fj._OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE
 
     return await get_active_condition(
         pool, source=_OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE, fingerprint=fp
@@ -1404,7 +1404,8 @@ async def test_insight_scan_budget_warning_opens_then_exceeded_confirms_same_epi
     surface (category, period, utilisation, spent, budget); escalating to
     exceeded in the same window confirms that episode with the new status as
     evidence instead of opening a second one."""
-    from butlers.jobs._roster.finance_jobs import run_insight_scan
+    fj = _fj_module()
+    run_insight_scan = fj.run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1464,7 +1465,8 @@ async def test_insight_scan_budget_condition_resolves_on_complete_snapshot(
     """A later complete scan that no longer observes the crossing resolves it:
     a deleted transaction, a deactivated budget (empty budget_status result is
     a complete snapshot), or the period rolling over."""
-    from butlers.jobs._roster.finance_jobs import run_insight_scan
+    fj = _fj_module()
+    run_insight_scan = fj.run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1499,11 +1501,10 @@ async def test_insight_scan_budget_status_failure_skips_only_budget_source(
 ):
     """budget_status() raising never resolves an active budget condition, and
     the rest of the scan (overdue-bill ledger source, later candidates) runs."""
-    from butlers.jobs._roster.finance_jobs import (
-        _OWNER_CONDITION_BILL_OVERDUE_SOURCE,
-        owner_condition_fingerprint,
-        run_insight_scan,
-    )
+    fj = _fj_module()
+    _OWNER_CONDITION_BILL_OVERDUE_SOURCE = fj._OWNER_CONDITION_BILL_OVERDUE_SOURCE
+    owner_condition_fingerprint = fj.owner_condition_fingerprint
+    run_insight_scan = fj.run_insight_scan
 
     async with provisioned_postgres_pool() as pool:
         await _setup_insight_schema(pool)
@@ -1556,10 +1557,9 @@ async def test_insight_scan_budget_reconciliation_failure_does_not_break_scan(
 ):
     """A ledger failure for the budget source is logged and swallowed: the
     budget candidate is still submitted and the scan completes."""
-    from butlers.jobs._roster.finance_jobs import (
-        _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
-        run_insight_scan,
-    )
+    fj = _fj_module()
+    _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE = fj._OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE
+    run_insight_scan = fj.run_insight_scan
 
     real_reconcile = _fj_module().reconcile_owner_condition
 
