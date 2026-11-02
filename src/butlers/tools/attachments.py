@@ -23,8 +23,8 @@ import base64
 import json
 import logging
 import mimetypes
-import resource
 import sys
+import weakref
 from pathlib import Path
 from typing import Any
 
@@ -249,10 +249,18 @@ EXTRACT_TIMEOUT_SECONDS = 15.0
 # Run by path, not -m: importing the butlers package costs seconds per call.
 _EXTRACTOR_SCRIPT = Path(__file__).with_name("_pdf_extract.py")
 _MAX_EXTRACT_OUTPUT_BYTES = 4 * MAX_READ_CHARS * 6  # JSON escapes, with headroom
+# Concurrent children are capped so their memory caps stay well inside the
+# butler pod limit (4Gi); excess callers queue briefly, then are refused.
+EXTRACT_CONCURRENCY = 2
+EXTRACT_QUEUE_WAIT_SECONDS = 30.0
+_EXTRACT_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
 
 _REFUSAL_HINTS = {
     "encrypted_pdf": "The PDF is password-protected and cannot be read.",
     "corrupt_pdf": "The PDF is damaged or not a valid PDF.",
+    "extraction_busy": ("Too many documents are being read at once. Retry this read shortly."),
     "extraction_limit_exceeded": (
         "Reading these pages exceeded the memory or time limit (the PDF may be "
         "malformed or hostile). Try a smaller page_count, or treat it as unreadable."
@@ -264,16 +272,37 @@ def _refusal(reason: str, storage_ref: str, **extra: Any) -> dict[str, Any]:
     return {"status": "refused", "reason": reason, "storage_ref": storage_ref, **extra}
 
 
-def _limit_child() -> None:
-    limit = EXTRACT_MEMORY_LIMIT_BYTES
-    resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-    cpu = int(EXTRACT_TIMEOUT_SECONDS) + 1
-    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+def _extract_slots() -> asyncio.Semaphore:
+    """One extraction semaphore per event loop (a daemon runs one loop)."""
+    loop = asyncio.get_running_loop()
+    slots = _EXTRACT_SLOTS.get(loop)
+    if slots is None:
+        slots = _EXTRACT_SLOTS[loop] = asyncio.Semaphore(EXTRACT_CONCURRENCY)
+    return slots
 
 
 async def _extract_in_child(data: bytes, page_start: int, page_count: int) -> dict[str, Any]:
-    """Run bounded extraction in a resource-limited child; never raises for a breach."""
+    """Run bounded extraction in a child once a slot frees; never raises for a breach.
+
+    At most ``EXTRACT_CONCURRENCY`` children run at once. A caller queues up to
+    ``EXTRACT_QUEUE_WAIT_SECONDS`` for a slot and is otherwise refused with
+    ``extraction_busy``, so a burst of reads cannot multiply the per-child
+    memory cap past the pod limit.
+    """
+    slots = _extract_slots()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout=EXTRACT_QUEUE_WAIT_SECONDS)
+    except TimeoutError:
+        return {"refusal": "extraction_busy"}
+    try:
+        return await _run_extractor_child(data, page_start, page_count)
+    finally:
+        slots.release()
+
+
+async def _run_extractor_child(data: bytes, page_start: int, page_count: int) -> dict[str, Any]:
+    # The child applies its own rlimits before importing PDFium (no
+    # preexec_fn: it is unsafe in a multi-threaded parent).
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-I",  # isolated: no env vars, user site or script dir on sys.path
@@ -281,11 +310,12 @@ async def _extract_in_child(data: bytes, page_start: int, page_count: int) -> di
         str(page_start),
         str(page_count),
         str(MAX_READ_CHARS),
+        str(EXTRACT_MEMORY_LIMIT_BYTES),
+        str(int(EXTRACT_TIMEOUT_SECONDS) + 1),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
         env={},
-        preexec_fn=_limit_child,
     )
     try:
         stdout, _ = await asyncio.wait_for(

@@ -7,7 +7,9 @@ address-space limit and a wall-clock timeout, so a hostile page can kill only
 this child, never the daemon.
 
 Protocol: the PDF bytes arrive on stdin; argv carries ``page_start``,
-``page_count`` and ``char_budget``. One JSON object goes to stdout, either
+``page_count``, ``char_budget``, the address-space limit in bytes and the CPU
+limit in seconds. The limits are applied before PDFium is imported. One JSON
+object goes to stdout, either
 ``{"total": int, "pages": [{"page": int, "text": str, "truncated": bool}]}``
 or ``{"refusal": reason}``. The character budget is applied per page before
 any text is copied out, and no further page is opened once it is spent.
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+import resource
 import sys
 from typing import Any
 
@@ -68,8 +71,17 @@ def extract(data: bytes, page_start: int, page_count: int, char_budget: int) -> 
         document.close()
 
 
+def apply_limits(memory_bytes: int, cpu_seconds: int) -> None:
+    resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
 def main() -> None:
-    page_start, page_count, char_budget = (int(value) for value in sys.argv[1:4])
+    page_start, page_count, char_budget, memory_bytes, cpu_seconds = (
+        int(value) for value in sys.argv[1:6]
+    )
+    apply_limits(memory_bytes, cpu_seconds)  # before extract() imports pypdfium2
     result = extract(sys.stdin.buffer.read(), page_start, page_count, char_budget)
     sys.stdout.write(json.dumps(result))
 

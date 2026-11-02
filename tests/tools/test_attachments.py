@@ -1,5 +1,6 @@
 """Tests for the get_attachment and attachment_read shared tools."""
 
+import asyncio
 import base64
 import time
 import zlib
@@ -9,7 +10,9 @@ import pytest
 from moto.server import ThreadedMotoServer
 
 from butlers.storage import BlobNotFoundError, S3BlobStore
+from butlers.tools import attachments
 from butlers.tools.attachments import (
+    EXTRACT_CONCURRENCY,
     EXTRACT_TIMEOUT_SECONDS,
     MAX_ATTACHMENT_SIZE_BYTES,
     MAX_INLINE_BASE64_BYTES,
@@ -239,3 +242,30 @@ async def test_attachment_read_pages_and_refusals(
         # Injected text is returned as inert page data, never acted on.
         assert pages[2]["text"] == _INJECTION
         assert result["next_page_start"] is None
+
+
+async def test_attachment_read_caps_concurrent_extraction_children(monkeypatch):
+    """At most EXTRACT_CONCURRENCY children run at once; a saturated queue refuses."""
+    running = peak = 0
+
+    async def fake_child(data, page_start, page_count):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.05)
+        running -= 1
+        return {"total": 1, "pages": []}
+
+    monkeypatch.setattr(attachments, "_run_extractor_child", fake_child)
+    results = await asyncio.gather(
+        *(attachments._extract_in_child(b"%PDF-", 1, 1) for _ in range(3 * EXTRACT_CONCURRENCY))
+    )
+    assert peak == EXTRACT_CONCURRENCY
+    assert all(result == {"total": 1, "pages": []} for result in results)
+
+    monkeypatch.setattr(attachments, "EXTRACT_QUEUE_WAIT_SECONDS", 0.01)
+    results = await asyncio.gather(
+        *(attachments._extract_in_child(b"%PDF-", 1, 1) for _ in range(3 * EXTRACT_CONCURRENCY))
+    )
+    assert peak == EXTRACT_CONCURRENCY
+    assert {"refusal": "extraction_busy"} in results
