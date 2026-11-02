@@ -7,10 +7,9 @@
   current TOML membership is established before module-default recovery, without
   allowing the first scheduler tick before handlers are registered.
 - [ ] 1.3 Update `ensure_module_default_schedule()` and its registry callers to
-  recover only eligible registered, disabled `source='toml'` rows; preserve the
-  existing execution payload, leave every disabled `source='db'` row unchanged,
-  and exclude an existing disabled TOML-owned `memory_episode_cleanup` row from
-  automatic recovery.
+  recover only registered, disabled `source='toml'` rows, including
+  `memory_episode_cleanup`; preserve the existing execution payload and
+  `next_run_at`, and leave every `source='db'` row unchanged.
 - [ ] 1.4 Implement the reclaimed-row `RETURNING`/transaction boundary and
   canonical `scheduler.module_default_recovered` audit entry with only
   control-plane metadata, including non-empty owning-butler and owning-schema
@@ -18,8 +17,8 @@
 - [ ] 1.5 Add real-PostgreSQL failure and concurrency regressions proving audit
   failure rolls back recovery, two contenders yield one transition/audit, a
   restart is a no-op, same-name recoveries across two butlers remain
-  attributable, and disabled TOML cleanup with expired history produces no
-  recovery, dispatch, or deletion.
+  attributable, and a disabled TOML cleanup row is recovered with its cadence
+  and `next_run_at` preserved while a `source='db'` cleanup row stays untouched.
 - [ ] 1.6 Add goal-runtime boundary regressions: recovery admits no goal and
   starts no session; a recovered job-mode row keeps its dispatch mode; cleanup
   stays a deterministic job; and a recovered `memory_consolidation` row's next
@@ -60,16 +59,18 @@
 ## 4. Scope, review, and verification gates
 
 - [ ] 4.1 Review the final diff for the explicit fences: no migration,
-  historical drain, provenance/evidence mutation, cleanup recovery or
-  invocation, schedule toggle, notification, `source='db'` re-enable, or goal
+  historical drain, provenance/evidence mutation, cleanup invocation from
+  recovery or stats, schedule toggle, notification, `source='db'` re-enable, or goal
   admission from recovery, the retention observation or the Overture is
   introduced.
 - [ ] 4.2 Run the targeted scheduler, memory API, degraded-envelope, and
   frontend Overture/type suites; run the repository's required final quality
   gate once after targeted failures are resolved.
 - [ ] 4.3 Run `openspec validate harden-memory-retention-schedule-recovery --strict`
-  and reconcile the implementation with every scenario in this change.
+  and reconcile the implementation with every scenario in this change,
+  including cleanup recovery as the canonical `memory-retention-policy` spec
+  requires.
 - [ ] 4.4 Obtain review that specifically verifies atomic audit behavior and
   owning-butler/schema attribution, active-versus-removed TOML provenance,
-  cleanup-recovery exclusion, partial-fan-out honesty, and the continued
+  cleanup recovery without drain authority, partial-fan-out honesty, and the continued
   separate owner/provenance gates for any historical operation.

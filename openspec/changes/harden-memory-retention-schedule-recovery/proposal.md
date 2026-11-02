@@ -21,11 +21,12 @@ without changing schedule state or deleting retained data.
   declared obligation goal per tenant, source domain and taint partition when
   it next falls due. Recovery itself, the expired-retention observation and the
   Memory Overture admit no goal and start no session. No RFC decision changes.
-- Define the sole automatic TOML-orphan recovery: a registered module default
-  other than `memory_episode_cleanup` may reclaim and re-enable only its
+- Define the sole automatic TOML-orphan recovery: a registered module default,
+  including `memory_episode_cleanup`, may reclaim and re-enable only its
   matching `source='toml'` row. A disabled `source='db'` row remains
-  operator-owned and untouched, and a disabled TOML-owned cleanup row remains
-  fenced from automatic recovery.
+  operator-owned and untouched. Cleanup is not exempt because its sweep is
+  bounded and consolidation-aware (PR #3565), matching the canonical
+  `memory-retention-policy` recovery scenario.
 - Require the reclaim and its canonical audit entry to commit atomically, with
   exactly-once observable behavior under concurrent startup, rollback on audit
   failure, and owning-butler/schema attribution in the shared audit log. The
@@ -37,11 +38,10 @@ without changing schedule state or deleting retained data.
   healthy result.
 - Require `MemoryOverture` to name retention degradation and incomplete source
   coverage instead of rendering a clean all-clear.
-- Explicitly prohibit this change from draining, deleting, or automatically
-  re-enabling or dispatching a disabled TOML-owned cleanup schedule, including
-  one with a stale due time and expired history. Episode provenance/evidence
-  semantics and any owner-authorized switchboard drain are separately scoped
-  follow-on work.
+- Explicitly prohibit this change from performing or authorizing a
+  historical drain: a recovered cleanup row runs only its ordinary bounded
+  sweep. Episode provenance/evidence semantics and any owner-authorized
+  switchboard drain are separately scoped follow-on work.
 
 ## Capabilities
 

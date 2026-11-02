@@ -17,13 +17,12 @@ operator-disabled row, remains DB-owned and SHALL be left unchanged. In the
 distinct TOML-orphan case, after TOML synchronization has established that a
 registered default's same-named row is `source='toml'` and `enabled=false`,
 module-default recovery SHALL reclaim it as `source='db'` and `enabled=true`
-while preserving its stored cadence and execution payload, except that
-`memory_episode_cleanup` is excluded from automatic recovery. An existing
-disabled TOML-owned cleanup row SHALL remain TOML-owned and disabled regardless
-of its `next_run_at` or retained expired episodes; generic startup handling
-SHALL NOT recover, dispatch, or use it to delete episodes. This exception is
-limited to reclaiming an existing row and does not change ordinary
-missing-default creation. Recovery SHALL NOT replace a recovered row's last
+while preserving its stored cadence and execution payload. No registered
+default is exempt: a disabled TOML-orphaned `memory_episode_cleanup` row is
+recovered like any other, because its sweep deletes only reapable expired
+episodes in bounded batches and cannot perform an unbounded catch-up. A
+recovered cleanup row runs only that ordinary sweep; recovery confers no
+historical-drain authority. Recovery SHALL NOT replace a recovered row's last
 TOML cadence with the module-default cadence.
 
 Under the goal runtime (RFC 0038 D2 and D18), every memory maintenance schedule
@@ -37,7 +36,7 @@ pending set. Recovering a consolidation row therefore resumes those partitioned
 obligation goals at its preserved cadence; recovery itself admits no goal.
 
 ID: REQ-memory-retention-policy-010
-Source: bu-kqnum.13 module-default TOML-orphan recovery; RFC 0038 D2 and D18
+Source: bu-kqnum.13 module-default TOML-orphan recovery; PR #3565; RFC 0038 D2 and D18
 Scope: v1-mandatory
 
 #### Scenario: Decay sweep runs without any TOML schedule
@@ -86,18 +85,19 @@ Scope: v1-mandatory
   capability set, passing no Spawner
 - **AND** an empty pending-episode set MUST admit no goal
 
-#### Scenario: Disabled TOML cleanup cannot become a historical drain
+#### Scenario: Disabled TOML cleanup is recovered like any other default
 
 - **WHEN** a memory-enabled butler has removed its TOML
-  `memory_episode_cleanup` declaration, leaving a same-named
-  `source='toml'`, `enabled=false` row whose `next_run_at` is in the past
-- **AND** the butler has episodes matching `expires_at < now()`
-- **WHEN** startup synchronization, generic module-default registration, and a
-  due-schedule evaluation complete
-- **THEN** the cleanup row SHALL remain `source='toml'` and `enabled=false`
-- **AND** no recovery audit entry or cleanup dispatch SHALL occur
-- **AND** the expired episodes SHALL remain undeleted
-- **AND** no goal SHALL be admitted in place of the fenced cleanup
+  `memory_episode_cleanup` declaration and, after TOML synchronization, the
+  same-named row is `source='toml'` and `enabled=false`
+- **THEN** module-default recovery MUST change the row to `source='db'` and
+  `enabled=true` with one recovery audit entry
+- **AND** its cron, dispatch mode, job name, job arguments, complexity, and
+  `next_run_at` MUST remain unchanged
+- **AND** a same-named `source='db'` cleanup row, enabled or disabled, MUST be
+  left unchanged
+- **AND** the recovered row MUST run only the ordinary bounded sweep and admit
+  no goal
 
 #### Scenario: Every memory-enabled butler has a working consolidation path
 
