@@ -19,16 +19,13 @@ non-finite scalar, and an unusable sparkline matrix, both degrade the whole
 envelope (bu-0m31b).  A zero meaning "Prometheus said zero" and a zero meaning
 "we could not read Prometheus" must not be the same zero on the wire, so the
 only zeros published with ``aggregates_available: true`` are ones Prometheus
-actually reported — including an empty result set, which is a real observation
-of "no series, therefore no events".
+actually reported — including an empty result set when the other observations
+in the response do not contradict "no series, therefore no events".
 
-Spec: openspec/changes/restore-ingestion-console-spec-coverage/specs/
-      connector-state-aggregates/spec.md  (the capability; the archived
-      redesign-ingestion-dispatch-console path this used to cite no longer
-      exists)
+Spec: openspec/specs/connector-state-aggregates/spec.md
+      (Prometheus source of truth and degraded-mode response shape)
       openspec/changes/honest-ingestion-aggregate-availability/specs/
       connector-state-aggregates/spec.md  (degraded-mode contract, bu-0m31b)
-      openspec/specs/ingestion-event-registry/spec.md  (Pipeline Stats Endpoint)
 """
 
 from __future__ import annotations
@@ -102,13 +99,21 @@ _SPARK24H_QUERY = "sum(increase(ingestion_events_ingested_total[1h]))"
 _SPARK24H_STEP = "3600"  # 1 hour in seconds
 
 
-async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
+async def _query_spark24h_buckets(
+    prom_url: str, *, window: str, ingested: float, rate1h: float
+) -> list[int] | None:
     """Fetch true hourly buckets for the 24h sparkline via a Prometheus range query.
 
     Returns a list of exactly 24 ints (oldest bucket first, most-recent last)
     when the matrix is readable — including ``[0] * 24`` for an empty result
     set, because Prometheus answering "no series" for a
-    ``sum(increase(...))`` is a real observation of zero.
+    ``sum(increase(...))`` is a real observation of zero unless the same
+    response reports activity inside those 24 hours: a positive raw ``rate1h``
+    in any window, or ``int(ingested) > 0`` for ``1h``/``24h``. Such a
+    contradiction returns ``None`` so the caller uses the degraded envelope
+    rather than claiming both observations are available. A ``7d`` total may
+    reflect older events; sub-unit ``increase()`` extrapolation still reads
+    as zero. A nonempty matrix containing measured zeros remains readable.
 
     Returns ``None`` when the matrix is *unreadable*: a query error, an
     unexpected result shape, a series carrying no points, or a bucket value
@@ -134,8 +139,13 @@ async def _query_spark24h_buckets(prom_url: str) -> list[int] | None:
         return None
 
     if not results:
+        if rate1h > 0 or (window in ("1h", "24h") and int(ingested) > 0):
+            logger.warning(
+                "spark24h empty matrix contradicts observed ingestion activity [%s]", window
+            )
+            return None
         # No series at all: the counter has no samples in the window. That is a
-        # truthful zero, not an unreadable answer.
+        # truthful zero when the other observations agree.
         logger.debug("spark24h range query returned an empty matrix — reading as zero")
         return [0] * 24
 
@@ -225,8 +235,8 @@ async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
 
     Returns the stats dict on success, or the degraded-mode dict on any failure.
     A failure is any value the handler could not actually read — an errored
-    query, an unparseable scalar, or an unusable sparkline matrix — never a
-    substituted zero (bu-0m31b).
+    query, an unparseable scalar, an unusable sparkline matrix, or an empty
+    matrix contradicted by the other observations — never a substituted zero.
 
     Prometheus metric names expected:
     - ``ingestion_events_ingested_total``   — counter of ingested events
@@ -298,7 +308,9 @@ async def _fetch_pipeline_stats(prom_url: str, window: str) -> dict:
         return _degraded_response(window)
 
     # ---- spark24h — 24 hourly buckets (always 24h, regardless of window) ----
-    spark24h = await _query_spark24h_buckets(prom_url)
+    spark24h = await _query_spark24h_buckets(
+        prom_url, window=window, ingested=ingested, rate1h=rate1h
+    )
     if spark24h is None:
         return _degraded_response(window)
 
@@ -575,7 +587,8 @@ async def get_pipeline_stats(
     - ``filtered24h``: count of filtered events in the last 24 hours
     - ``aggregates_available``: false when any of the values above could not be
       observed — Prometheus unreachable or unconfigured, a query error, an
-      unparseable or non-finite scalar, or an unusable sparkline matrix. When
+      unparseable or non-finite scalar, or an unusable or contradictory empty
+      sparkline matrix. When
       it is true, every zero above is a zero Prometheus actually reported
       (an empty result set included); the endpoint never substitutes one
       (bu-0m31b)
