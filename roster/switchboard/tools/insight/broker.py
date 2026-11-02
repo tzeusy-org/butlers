@@ -1776,6 +1776,8 @@ def _build_delivery_ref(
     standalone: bool,
     digest_line_index: int | None,
     delivered_at: datetime,
+    line_text: str | None = None,
+    delivery_text: str | None = None,
 ) -> dict[str, Any]:
     """Describe where a delivered candidate landed, for later in-place amendment.
 
@@ -1789,6 +1791,11 @@ def _build_delivery_ref(
         "digest_line_index": digest_line_index,
         "delivered_at": delivered_at.isoformat(),
     }
+    if digest_line_index is not None:
+        # bu-q7vx1q.31: a digest edit re-renders the whole message with this
+        # line struck, so the sent text and the line's own text are kept.
+        ref["line_text"] = line_text
+        ref["delivery_text"] = delivery_text
     if isinstance(notify_result, dict):
         ref["notification_id"] = notify_result.get("notification_id")
         found = _find_provider_message(notify_result.get("result"))
@@ -1827,8 +1834,10 @@ async def apply_pending_amendments(
 
     ``amend_fn(delivery_ref, text)`` returns ``{"status": "edited" | "rejected"
     | "error"}``. A standalone Telegram delivery is edited to a struck-through
-    "Resolved HH:MM" form with no new ping. A delivery that cannot be edited
-    (email, a digest line, a rejected edit, three transport failures) becomes a
+    "Resolved HH:MM" form with no new ping. A Telegram digest is edited once per
+    message, striking every resolved line and keeping earlier strikes. A
+    delivery that cannot be edited (email, a rejected edit, three transport
+    failures) becomes a
     ``fold`` amendment instead: it rides the next delivery as a "since last
     digest" line, never a standalone message. Every state change is guarded on
     ``state = 'pending'``, so a replayed cycle neither double-edits nor
@@ -1847,11 +1856,25 @@ async def apply_pending_amendments(
         """,
         _AMENDMENT_BATCH,
     )
+    # Group pending digest-line amendments by the Telegram message they sit in:
+    # one edit per message carries every strike.
+    digest_groups: dict[tuple[str, int], list[Any]] = {}
+    units: list[tuple[Any, list[Any]]] = []
     for row in rows:
         ref = _json_object(row["delivery_ref"]) or {}
-        premise = _json_object(row["premise"])
-        note = await _resolution_note(pool, premise)
-        editable = bool(
+        if _is_editable_digest_ref(ref):
+            key = (str(ref["chat_id"]), int(ref["provider_message_id"]))
+            if key not in digest_groups:
+                digest_groups[key] = []
+                units.append((ref, digest_groups[key]))
+            digest_groups[key].append(row)
+        else:
+            units.append((ref, [row]))
+    for ref, group in units:
+        first = group[0]
+        notes = {r["id"]: await _resolution_note(pool, _json_object(r["premise"])) for r in group}
+        is_digest = _is_editable_digest_ref(ref)
+        editable = is_digest or bool(
             ref.get("standalone")
             and ref.get("channel") == "telegram"
             and ref.get("chat_id")
@@ -1859,56 +1882,112 @@ async def apply_pending_amendments(
         )
         next_state = "fold"
         if editable:
+            if is_digest:
+                text = await _render_struck_digest(pool, ref, group, notes)
+            else:
+                text = f"~~{first['message']}~~\n{notes[first['id']]}"
             try:
-                result = await amend_fn(ref, f"~~{row['message']}~~\n{note}")
+                result = await amend_fn(ref, text)
                 status = result.get("status") if isinstance(result, dict) else "error"
             except Exception:
                 logger.warning(
                     "insight-delivery-cycle: amend of candidate %s raised",
-                    row["candidate_id"],
+                    first["candidate_id"],
                     exc_info=True,
                 )
                 status = "error"
             if status == "edited":
                 next_state = "applied"
-            elif status == "error" and row["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
-                await pool.execute(
-                    "UPDATE insight_amendments SET attempts = attempts + 1 "
-                    "WHERE id = $1 AND state = 'pending'",
-                    row["id"],
-                )
-                counts["retry"] += 1
+            elif status == "error" and first["attempts"] + 1 < _MAX_AMEND_ATTEMPTS:
+                for row in group:
+                    await pool.execute(
+                        "UPDATE insight_amendments SET attempts = attempts + 1 "
+                        "WHERE id = $1 AND state = 'pending'",
+                        row["id"],
+                    )
+                counts["retry"] += len(group)
                 continue
-        updated = await pool.execute(
-            """
-            UPDATE insight_amendments
-            SET state = $2, summary = $3, resolved_at = $4
-            WHERE id = $1 AND state = 'pending'
-            """,
-            row["id"],
-            next_state,
-            note,
-            now,
-        )
-        if not str(updated).endswith(" 1"):
-            continue
-        if next_state == "applied":
-            counts["applied"] += 1
-            await record_attention_event(
-                pool,
-                origin_butler=row["origin_butler"],
-                source="insight",
-                outcome="amended",
-                channel="telegram",
-                intent="insight",
-                priority=row["priority"],
-                dedup_key=row["dedup_key"],
-                notification_ref=str(row["candidate_id"]),
-                reason="premise_resolved",
+        for row in group:
+            updated = await pool.execute(
+                """
+                UPDATE insight_amendments
+                SET state = $2, summary = $3, resolved_at = $4
+                WHERE id = $1 AND state = 'pending'
+                """,
+                row["id"],
+                next_state,
+                notes[row["id"]],
+                now,
             )
-        else:
-            counts["folded"] += 1
+            if not str(updated).endswith(" 1"):
+                continue
+            if next_state == "applied":
+                counts["applied"] += 1
+                await record_attention_event(
+                    pool,
+                    origin_butler=row["origin_butler"],
+                    source="insight",
+                    outcome="amended",
+                    channel="telegram",
+                    intent="insight",
+                    priority=row["priority"],
+                    dedup_key=row["dedup_key"],
+                    notification_ref=str(row["candidate_id"]),
+                    reason="premise_resolved",
+                )
+            else:
+                counts["folded"] += 1
     return counts
+
+
+def _is_editable_digest_ref(ref: dict[str, Any]) -> bool:
+    """A Telegram digest line whose sent text and line text were recorded."""
+    return bool(
+        not ref.get("standalone")
+        and ref.get("digest_line_index") is not None
+        and ref.get("channel") == "telegram"
+        and ref.get("chat_id")
+        and ref.get("provider_message_id")
+        and ref.get("delivery_text")
+        and ref.get("line_text")
+    )
+
+
+async def _render_struck_digest(
+    pool: asyncpg.Pool,
+    ref: dict[str, Any],
+    pending: list[Any],
+    notes: dict[Any, str],
+) -> str:
+    """Re-render a delivered digest with every resolved line struck through.
+
+    Earlier strikes come from already-applied amendments on the same message,
+    so a later edit keeps them and replays are idempotent.
+    """
+    applied = await pool.fetch(
+        """
+        SELECT a.summary, c.delivery_ref
+        FROM insight_amendments a
+        JOIN insight_candidates c ON c.id = a.candidate_id
+        WHERE a.state = 'applied'
+          AND c.delivery_ref ->> 'provider_message_id' = $1
+          AND c.delivery_ref ->> 'chat_id' = $2
+        """,
+        str(ref["provider_message_id"]),
+        str(ref["chat_id"]),
+    )
+    strikes = [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text"), r["summary"] or "Resolved")
+        for r in applied
+    ]
+    strikes += [
+        ((_json_object(r["delivery_ref"]) or {}).get("line_text"), notes[r["id"]]) for r in pending
+    ]
+    text = str(ref["delivery_text"])
+    for line, note in strikes:
+        if line:
+            text = text.replace(line, f"~~{line}~~ {note}", 1)
+    return text
 
 
 async def _pending_fold_lines(pool: asyncpg.Pool) -> list[tuple[Any, str]]:
@@ -2510,6 +2589,8 @@ async def delivery_cycle(
                                     standalone=deliver_count == 1,
                                     digest_line_index=None if deliver_count == 1 else line_index,
                                     delivered_at=delivered_at,
+                                    line_text=_c["message"],
+                                    delivery_text=delivery_message,
                                 ),
                             )
                         if fold_lines:
