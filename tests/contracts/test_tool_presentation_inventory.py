@@ -14,6 +14,7 @@ from butlers.config import ButlerType, load_config
 from butlers.core.tool_catalog import validate_presentation_inventory
 from butlers.core.tool_presentation_inventory import TOOL_PRESENTATION_INVENTORY
 from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
+from butlers.core_tools._temporal import TEMPORAL_DARK_TOOLS
 from butlers.daemon import ButlerDaemon
 from butlers.module_state import ModuleStartupStatus
 from butlers.modules.registry import default_registry
@@ -127,6 +128,7 @@ async def test_checked_in_inventory_equals_executable_provider_union() -> None:
             "get_attachment",
             "attachment_read",
             "deadline_create",
+            "paperwork_deadline_set",
             "delegate_ask",
             "publish_event",
         }
@@ -220,6 +222,22 @@ async def _core_catalog_and_listing(butler_name: str, groups: tuple[str, ...]):
             {"notify", "state_get"},
         ),
         (
+            "general",
+            ("temporal",),
+            {
+                "route.execute",
+                "cancel_session",
+                "report_error",
+                "get_healing_status",
+                *(f"deadline_{verb}" for verb in ("create", "update", "list", "delete")),
+                *(f"event_chain_{verb}" for verb in ("create", "update", "list", "delete")),
+                *(f"seasonal_period_{verb}" for verb in ("create", "update", "list", "delete")),
+                "seasonal_period_create_preset",
+                "paperwork_deadline_set",
+            },
+            {"notify", "state_get"},
+        ),
+        (
             "switchboard",
             ("delegation",),
             {"route.execute", "cancel_session", "report_error", "get_healing_status"},
@@ -240,7 +258,7 @@ async def test_actual_core_catalog_respects_group_name_and_type_gates(
     assert catalog.classification_complete is True
     # Dark-build capabilities are cataloged but never listed to today's
     # frozen classify-and-route sessions before the RFC 0038 cutover.
-    assert listed == set(catalog) - GOAL_RUNTIME_DARK_TOOLS
+    assert listed == set(catalog) - GOAL_RUNTIME_DARK_TOOLS - TEMPORAL_DARK_TOOLS
 
 
 @pytest.mark.parametrize(

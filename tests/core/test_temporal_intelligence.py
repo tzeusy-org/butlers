@@ -68,6 +68,56 @@ def test_deadline_validation_invalid_raises():
             )
 
 
+def test_document_deadline_plan_pins_the_template_and_refuses_bad_input():
+    """A document deadline is a prompt-free job keyed on (document, kind); bad input refuses."""
+    from butlers.core.temporal.document_deadlines import (
+        NOTICE_JOB_NAME,
+        DocumentDeadlineRefused,
+        plan_document_deadline,
+    )
+
+    today = datetime.now(UTC).date()
+
+    def plan(days: int | str = 30, **overrides: Any):
+        target = days if isinstance(days, str) else (today + timedelta(days=days)).isoformat()
+        args = {
+            "document_id": "s3://bucket/general/bill.pdf",
+            "kind": "due",
+            "target_date": target,
+            "preset": "two_weeks",
+            "issuer": "SP Group",
+        }
+        return plan_document_deadline(**{**args, **overrides})
+
+    bill = plan(issuer="SP Group <a href=x>\n[pay](http://evil.example)")
+    assert bill.job_name == NOTICE_JOB_NAME and not hasattr(bill, "prompt")
+    assert [t["days_before"] for t in bill.alert_thresholds] == [14, 3, 1]
+    assert bill.job_args["taint"] == "untrusted_document"
+    # The issuer is inert text: no markup, link or URL punctuation survives.
+    issuer = bill.job_args["issuer"]
+    assert issuer.startswith("SP Group ") and not set("<>[]()/:.=\n") & set(issuer)
+    # One deadline per (document, kind): a newer date keeps the key, another kind does not.
+    assert plan(60).name == bill.name != plan(kind="renewal").name
+    # Created late, thresholds already passed collapse to one notice now, not a burst.
+    assert [t["days_before"] for t in plan(2).alert_thresholds] == [3, 1]
+
+    refusals = [
+        ({"days": -3}, "past_date"),
+        ({"days": 0}, "past_date"),
+        ({"days": "28 Oct"}, "invalid_date"),
+        ({"days": 4000}, "invalid_date"),
+        ({"kind": "bogus"}, "invalid_kind"),
+        ({"preset": "forever"}, "invalid_preset"),
+        ({"document_id": " "}, "invalid_document_id"),
+        ({"document_id": "x" * 600}, "invalid_document_id"),
+    ]
+    for overrides, reason in refusals:
+        days = overrides.pop("days", 30)
+        with pytest.raises(DocumentDeadlineRefused) as refused:
+            plan(days, **overrides)
+        assert refused.value.reason == reason, overrides
+
+
 # ---------------------------------------------------------------------------
 # 12.2 — Deadline countdown and threshold firing
 # ---------------------------------------------------------------------------
@@ -713,6 +763,82 @@ class TestTickIntegration:
             "SELECT deadline_status, enabled FROM scheduled_tasks WHERE name = 'expired-dl'"
         )
         assert row["deadline_status"] == "expired" and row["enabled"] is False
+
+    async def test_document_deadline_is_set_idempotently_and_fires_as_a_job(self, tick_pool):
+        """paperwork_deadline_set upserts on (document, kind); a due threshold runs the
+        fixed notice job with threshold context and no prompt; prompt deadlines are untouched."""
+        from butlers.core.scheduler import tick
+        from butlers.core.temporal.deadlines_db import deadline_create
+        from butlers.core.temporal.document_deadlines import (
+            NOTICE_JOB_NAME,
+            DocumentDeadlineRefused,
+            document_deadline_set,
+            plan_document_deadline,
+        )
+
+        def plan(days: int, kind: str = "due"):
+            return plan_document_deadline(
+                document_id="s3://bucket/general/bill.pdf",
+                kind=kind,
+                target_date=_future_date(days).isoformat(),
+                preset="two_weeks",
+                issuer="SP Group",
+            )
+
+        first = await document_deadline_set(tick_pool, plan(30))
+        assert first["status"] == "created"
+        assert await document_deadline_set(tick_pool, plan(30)) == {**first, "status": "unchanged"}
+        name = plan(30).name
+        row = await tick_pool.fetchrow("SELECT * FROM scheduled_tasks WHERE name = $1", name)
+        assert (row["task_type"], row["dispatch_mode"], row["job_name"], row["prompt"]) == (
+            "deadline",
+            "job",
+            NOTICE_JOB_NAME,
+            None,
+        )
+        assert row["job_args"]["taint"] == "untrusted_document"
+
+        # A newer date supersedes in place and re-arms thresholds that had fired.
+        await tick_pool.execute(
+            """
+            UPDATE scheduled_tasks SET deadline_status = 'alerted',
+                fired_thresholds = '[{"days_before": 14, "severity": "info"}]'
+            WHERE name = $1
+            """,
+            name,
+        )
+        assert await document_deadline_set(tick_pool, plan(2)) == {**first, "status": "superseded"}
+
+        calls: list[dict[str, Any]] = []
+
+        async def capture(**kwargs):
+            calls.append(kwargs)
+
+        await tick(tick_pool, capture)
+        assert len(calls) == 1 and "prompt" not in calls[0]
+        assert calls[0]["job_name"] == NOTICE_JOB_NAME
+        assert calls[0]["trigger_source"] == f"deadline:{name}"
+        job_args = calls[0]["job_args"]
+        assert (job_args["kind"], job_args["issuer"]) == ("due", "SP Group")
+        assert job_args["deadline"]["days_remaining"] == 2
+        assert job_args["deadline"]["fired_threshold"] == {"days_before": 3, "severity": "warning"}
+        row = await tick_pool.fetchrow("SELECT * FROM scheduled_tasks WHERE name = $1", name)
+        assert row["deadline_status"] == "alerted"
+        assert row["fired_thresholds"] == [{"days_before": 3, "severity": "warning"}]
+
+        # A name held by a prompt-bearing deadline is never rewritten into a job.
+        renewal = plan(30, kind="renewal")
+        await deadline_create(
+            tick_pool,
+            name=renewal.name,
+            prompt="Renew",
+            target_date=_future_date(30),
+            lead_time_days=7,
+            alert_thresholds=[_make_threshold(7)],
+        )
+        with pytest.raises(DocumentDeadlineRefused) as refused:
+            await document_deadline_set(tick_pool, renewal)
+        assert refused.value.reason == "name_conflict"
 
     async def test_tick_deferred_notification_delivery_and_expiry(self, tick_pool):
         """tick() delivers pending notifications via notify_fn; failure/missing → pending;

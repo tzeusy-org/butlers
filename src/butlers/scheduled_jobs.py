@@ -2090,6 +2090,21 @@ def _retention_pruner_job_handlers(butler_name: str) -> dict[str, _Deterministic
 # ---------------------------------------------------------------------------
 
 
+def _paperwork_deadline_notice_job(butler_name: str) -> _DeterministicScheduleJobHandler:
+    """Document-deadline owner notice, bound to the butler whose deadline fired.
+
+    Every butler gets it because ``paperwork_deadline_set`` is a core temporal tool: a
+    job-mode document deadline names this job and the deadline pass dispatches it.
+    """
+
+    async def _run(pool: asyncpg.Pool, job_args: dict[str, Any] | None) -> Any:
+        from butlers.jobs.document_deadlines import run_paperwork_deadline_notice
+
+        return await run_paperwork_deadline_notice(pool, job_args, origin_butler=butler_name)
+
+    return _run
+
+
 def _build_deterministic_schedule_job_registry() -> dict[
     str, dict[str, _DeterministicScheduleJobHandler]
 ]:
@@ -2100,7 +2115,7 @@ def _build_deterministic_schedule_job_registry() -> dict[
     accidentally lost entries through mutation.
     """
 
-    return {
+    registry: dict[str, dict[str, _DeterministicScheduleJobHandler]] = {
         "general": {
             **_MEMORY_MAINTENANCE_JOB_HANDLERS,
             "collect_briefing_contributions": _run_collect_briefing_contributions_job,
@@ -2257,6 +2272,9 @@ def _build_deterministic_schedule_job_registry() -> dict[
             **_retention_pruner_job_handlers("qa"),
         },
     }
+    for butler_name, jobs in registry.items():
+        jobs["paperwork_deadline_notify"] = _paperwork_deadline_notice_job(butler_name)
+    return registry
 
 
 def get_deterministic_schedule_job_registry() -> dict[

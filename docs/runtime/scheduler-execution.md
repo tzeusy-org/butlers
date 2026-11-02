@@ -87,6 +87,17 @@ The task's `job_name` maps to a registered Python function that runs directly wi
 
 Job mode also fits owner reminders whose text has a fixed shape. Relationship `upcoming-dates-check` and `relationship-maintenance` render a template from an existing read, and Chronicler `chronicler_gap_interview` asks yesterday's gap interview through the same service as its MCP tool. A job reaches the owner through `butlers.jobs.owner_notify.send_owner_telegram`: the `notify.v1` send through Switchboard `deliver` on the client `dispatch_scheduled_task` binds for the handler call, with one attention-ledger row per outcome. Unlike `notify()`, a quiet-hours or context-bus suppression drops the send rather than deferring it.
 
+### Job-mode deadlines and document deadlines
+
+A deadline (`task_type='deadline'`) may also be job-mode. When it crosses a threshold, the deadline pass calls `dispatch_fn(job_name=..., job_args={...stored job_args, "deadline": {target_date, days_remaining, fired_threshold, deadline_status, all_thresholds}}, trigger_source="deadline:<name>")` and starts no session. The threshold is recorded as fired only after a successful dispatch, as for prompt-mode deadlines; provider allowance and seasonal context apply only to prompts.
+
+`paperwork_deadline_set` (core temporal group, `butlers.core.temporal.document_deadlines`) is the one writer of such deadlines today. It turns a date read from a document into one job-mode deadline per `(document_id, kind)`, named `paperwork:<kind>:<sha256(document_id)[:24]>`, whose job is the fixed `paperwork_deadline_notify` (`butlers.jobs.document_deadlines`, registered for every butler). The job sends the owner a templated reminder such as "Paperwork reminder (SP Group): payment due Wed 28 Oct 2026, in 3 days." through `send_owner_telegram`; the issuer is reduced to letters, digits, spaces and `& ' - ,` so no markup or link reaches the owner.
+
+- Same date and preset again: `unchanged` (fired thresholds and status kept). New date or preset: `superseded` in place, thresholds re-armed, status `pending`. A name held by any other task: refused `name_conflict`, untouched.
+- Presets: `two_weeks` 14/3/1, `one_month` 30/7/1, `three_days` 3/1 days before. Thresholds already passed at set time collapse to the most urgent one, so a late deadline sends one notice, not one per tick.
+- `job_args.taint = "untrusted_document"` is the RFC 0038 D6 taint stamp. The tool is catalogued `record` (no prompt, so it creates no obligation); `deadline_create` stays `administer`.
+- The tool is a dark build (`TEMPORAL_DARK_TOOLS` in `src/butlers/core_tools/_temporal.py`): cataloged, then disabled on FastMCP, so classify-and-route sessions cannot list or call it before the goal-runtime cutover.
+
 ## The Tick Loop
 
 The daemon calls `tick()` at a regular interval. Each tick:

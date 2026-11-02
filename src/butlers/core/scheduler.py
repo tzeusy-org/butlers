@@ -1189,14 +1189,13 @@ async def _tick_deadline_pass(
         build_deadline_prompt_context,
         compute_days_remaining,
         compute_expiry_transition,
-        compute_next_deadline_status,
         find_unfired_threshold,
         is_deadline_blocked,
     )
 
     deadline_rows = await pool.fetch(
         """
-        SELECT id, name, prompt, dispatch_mode, task_type,
+        SELECT id, name, prompt, dispatch_mode, job_name, job_args, task_type,
                target_date, lead_time_days, alert_thresholds,
                deadline_status, fired_thresholds, depends_on, complexity
         FROM scheduled_tasks
@@ -1273,6 +1272,55 @@ async def _tick_deadline_pass(
         if threshold is None:
             continue
 
+        # Step 4a: a job-mode deadline (e.g. a document deadline) runs its named
+        # deterministic job with the threshold context and starts no session.
+        if row["dispatch_mode"] == _DISPATCH_MODE_JOB:
+            if admission_refusal is not None:
+                refusal = await admission_refusal()
+                if refusal is not None:
+                    logger.info(
+                        "Scheduler: stopping deadline admission before %r — %s", name, refusal
+                    )
+                    break
+            try:
+                job_args = _jsonb_to_dict(row["job_args"], context=f"deadline {name!r}")
+                await dispatch_fn(
+                    job_name=row["job_name"],
+                    job_args={
+                        **(job_args or {}),
+                        "deadline": {
+                            "target_date": target_date.isoformat(),
+                            "days_remaining": days_remaining,
+                            "fired_threshold": threshold,
+                            "deadline_status": current_status,
+                            "all_thresholds": alert_thresholds,
+                        },
+                    },
+                    trigger_source=f"deadline:{name}",
+                )
+            except Exception:
+                logger.exception("Failed to dispatch deadline job: %s", name)
+                if metrics is not None:
+                    metrics.record_task_dispatched(
+                        butler=stagger_key or "unknown", task_name=name, outcome="failure"
+                    )
+                continue
+            dispatched += 1
+            if metrics is not None:
+                metrics.record_task_dispatched(
+                    butler=stagger_key or "unknown", task_name=name, outcome="success"
+                )
+            logger.info("Dispatched deadline job: %s (days_remaining=%d)", name, days_remaining)
+            await _record_deadline_threshold(
+                pool,
+                task_id=task_id,
+                current_status=current_status,
+                fired_thresholds=fired_thresholds,
+                threshold=threshold,
+                now=now,
+            )
+            continue
+
         # Step 4: dispatch the deadline prompt
         prompt = row["prompt"] or f"Deadline approaching: {name}"
         task_complexity = _parse_complexity_from_db_row(row)
@@ -1326,29 +1374,50 @@ async def _tick_deadline_pass(
             continue
 
         # Step 5: record the fired threshold and update status
-        new_fired = [*fired_thresholds, threshold]
-        new_status = compute_next_deadline_status(
+        await _record_deadline_threshold(
+            pool,
+            task_id=task_id,
             current_status=current_status,
-            fired_threshold=threshold,
-        )
-        # Bind fired_thresholds as a plain list, NOT a json.dumps() string: see
-        # _list_to_jsonb's docstring (bu-xfcpf). No ::jsonb cast in the SQL
-        # either -- Postgres infers the parameter's jsonb type from the target
-        # column.
-        await pool.execute(
-            """
-            UPDATE scheduled_tasks
-            SET deadline_status = $2, fired_thresholds = $3,
-                last_run_at = $4, updated_at = now()
-            WHERE id = $1
-            """,
-            task_id,
-            new_status,
-            _list_to_jsonb(new_fired),
-            now,
+            fired_thresholds=fired_thresholds,
+            threshold=threshold,
+            now=now,
         )
 
     return evaluated, dispatched
+
+
+async def _record_deadline_threshold(
+    pool: asyncpg.Pool,
+    *,
+    task_id: Any,
+    current_status: str,
+    fired_thresholds: list[dict[str, Any]],
+    threshold: dict[str, Any],
+    now: datetime,
+) -> None:
+    """Mark ``threshold`` fired and advance the deadline status after a dispatch."""
+    from butlers.core.temporal.deadlines import compute_next_deadline_status
+
+    new_status = compute_next_deadline_status(
+        current_status=current_status,
+        fired_threshold=threshold,
+    )
+    # Bind fired_thresholds as a plain list, NOT a json.dumps() string: see
+    # _list_to_jsonb's docstring (bu-xfcpf). No ::jsonb cast in the SQL
+    # either -- Postgres infers the parameter's jsonb type from the target
+    # column.
+    await pool.execute(
+        """
+        UPDATE scheduled_tasks
+        SET deadline_status = $2, fired_thresholds = $3,
+            last_run_at = $4, updated_at = now()
+        WHERE id = $1
+        """,
+        task_id,
+        new_status,
+        _list_to_jsonb([*fired_thresholds, threshold]),
+        now,
+    )
 
 
 async def _fire_chain(

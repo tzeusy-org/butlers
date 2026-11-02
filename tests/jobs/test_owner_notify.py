@@ -123,3 +123,54 @@ async def test_delivered_sends_notify_v1_to_owner_and_records_ref(boundary):
     assert (row["outcome"], row["notification_ref"]) == ("delivered", "n-1")
     boundary["suppression"].assert_awaited_once()
     assert boundary["suppression"].await_args.kwargs == {"log_context": "test.job"}
+
+
+@pytest.mark.parametrize(
+    ("job_args", "message"),
+    [
+        (
+            {
+                "kind": "due",
+                "issuer": "SP Group",
+                "deadline": {"target_date": "2026-10-28", "days_remaining": 3},
+            },
+            "Paperwork reminder (SP Group): payment due Wed 28 Oct 2026, in 3 days.",
+        ),
+        (
+            {
+                "kind": "cancel_by",
+                "issuer": "<b>AXA</b> http://x.io",
+                "deadline": {"target_date": "2026-11-03", "days_remaining": 1},
+            },
+            "Paperwork reminder (bAXAb httpxio): cancel by Tue 3 Nov 2026, tomorrow.",
+        ),
+        (
+            {
+                "kind": "expiry",
+                "issuer": None,
+                "deadline": {"target_date": "2026-11-02", "days_remaining": 0},
+            },
+            "Paperwork reminder: expires Mon 2 Nov 2026, today.",
+        ),
+        ({"kind": "pay_now", "issuer": "Evil", "deadline": {"target_date": "2026-11-02"}}, None),
+    ],
+    ids=["due", "inert_issuer", "no_issuer", "unknown_kind"],
+)
+async def test_paperwork_deadline_notice_sends_only_a_fixed_template_to_the_owner(
+    boundary, job_args, message
+):
+    """Every butler's registry runs the notice job under its own origin; text is templated."""
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    handler = get_deterministic_schedule_job_registry()["finance"]["paperwork_deadline_notify"]
+
+    result = await handler(MagicMock(), job_args)
+
+    if message is None:
+        assert result == {"outcome": "skipped", "reason": "invalid_kind"}
+        boundary["client"].call_tool.assert_not_awaited()
+        return
+    assert result == {"outcome": owner_notify.DELIVERED}
+    request = boundary["client"].call_tool.await_args.args[1]["notify_request"]
+    assert request["origin_butler"] == "finance"
+    assert request["delivery"]["message"] == message
