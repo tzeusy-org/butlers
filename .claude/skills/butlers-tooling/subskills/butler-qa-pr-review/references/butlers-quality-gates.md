@@ -5,9 +5,10 @@ reproduce the expected gates locally before calling the PR done.
 
 ## CI Gates In This Repo
 
-The active `main-merge-queue` ruleset (id 22281319) requires one context,
-`alls-green`, from [.github/workflows/ci.yml](../../../../../../.github/workflows/ci.yml).
-It is the fail-closed fan-in over every job: `guards` (structural and privacy
+The active `main-merge-queue` ruleset (id 22281319) requires `check`, `guards` and
+`frontend` from [.github/workflows/ci.yml](../../../../../../.github/workflows/ci.yml);
+`check` and `frontend` only mirror `alls-green` until the owner switches the ruleset to
+`alls-green` alone. `alls-green` is the fail-closed fan-in over every job: `guards` (structural and privacy
 gates, including `session-link-guard`, bu-mr5t5, plus frontend lint, knip and
 build), `smoke`, five unit and six integration groups, `check-totals`, both
 Vitest children, `frontend-assurance`, Playwright `frontend-e2e` and `go-bridge`.

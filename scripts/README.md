@@ -196,7 +196,10 @@ Optional environment variable:
 
 `setup_main_ruleset.sh` installs the `main-merge-queue` ruleset for
 `tzeusy-org/butlers`. The live rule uses squash merges, ALLGREEN grouping, and
-one non-strict required context, `alls-green`, the fan-in over every CI job.
+the non-strict required contexts `check`, `guards` and `frontend`; `check` and
+`frontend` now only mirror `alls-green`, the fan-in over every CI job. The script
+already writes the single `alls-green` context: running it is the owner's
+cutover act, after which the two mirror jobs are deleted.
 
 After review and the PR-head gates are complete, add the PR to the queue:
 
@@ -269,6 +272,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`check_ci_coverage.py`](check_ci_coverage.py) | `nightly.yml` | Binds and validates the complete same-run coverage population before reporting. |
 | [`ci_group_count.py`](ci_group_count.py) | `ci_lanes.py` (pytest plugin) | Records each backend group's actual collection count and test durations. |
 | [`ci_lanes.py`](ci_lanes.py) | `ci.yml`, `nightly.yml` | Runs pytest-split backend groups, reconciles their counts against fresh collection, and merges measured durations. |
+| [`ci_latency.py`](ci_latency.py) | `ci-latency.yml` | Bounded, read-only Actions timestamp report; never a required merge gate. |
 | [`ci_smoke.py`](ci_smoke.py) | `ci.yml` (`smoke` job) | Runs the dedicated smoke tier and writes its release evidence. |
 | [`pyright_runtime.py`](pyright_runtime.py) | `make typecheck`, `make prepare-typecheck`, `make update-type-baseline` | Pinned offline checker supervision, immutable-public bootstrap and atomic baseline shrink. |
 | [`ci_environment.py`](ci_environment.py) | `ci.yml`, `ci-python-environment` action, watchdog workflow | Advisory CI environment cache with mandatory frozen repair on every restore. |

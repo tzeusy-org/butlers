@@ -26,6 +26,8 @@
 
 - [x] 5.1 Replace the `check` and `frontend` heredoc verdicts with one `alls-green` needs fan-in; run every job on every event and delete the `route` and `check-affected` jobs.
 - [x] 5.2 Rename check-preflight to `smoke` and move its release-evidence writer to `scripts/ci_smoke.py`.
-- [x] 5.3 Delete the routing, affected, evidence, observer, comparison and latency scripts, the `ci-latency.yml` workflow and their tests; remove the ci-latency capability.
+- [x] 5.3 Delete the routing, affected, evidence, observer and comparison scripts and their tests; keep thin `check`/`frontend` jobs that mirror `alls-green` for the current ruleset contexts.
 - [x] 5.4 Replace `tests/contracts/test_ci_test_targets.py` with `tests/contracts/test_required_checks.py` plus the relocated behavioral survivors.
-- [ ] 5.5 Switch the `main-merge-queue` required contexts to `alls-green` with `scripts/setup_main_ruleset.sh` as the PR enters the queue, and prove a deliberately failing unit test fails `alls-green` on a throwaway branch.
+- [ ] 5.5 Prove a deliberately failing unit test fails `alls-green` on a throwaway branch.
+- [ ] 5.6 Owner act: switch the `main-merge-queue` required contexts to `alls-green` with `scripts/setup_main_ruleset.sh`, then delete the `check`/`frontend` mirrors.
+- [ ] 5.7 After twenty natural first-attempt merge groups with p95 under 420 s, repoint or retire `ci_latency.py` and `ci-latency.yml`.

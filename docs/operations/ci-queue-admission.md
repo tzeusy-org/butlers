@@ -4,8 +4,7 @@
 > demand, no ruleset change was ever applied, and `scripts/ci_queue_admission.py`
 > (with its test) was deleted in `bu-99t5s3.2`. The commands below are kept as a
 > historical record; recover the tooling from commit `d4dd952ed` if the trial is
-> ever reopened. The `ci_latency.py` observer it cites was retired in bu-29wkwj.3, and the
-> required contexts are now the single `alls-green` check.
+> ever reopened.
 
 `bu-q1hzqn.8` owns a reversible capacity trial after pipeline PR #4530 lands.
 No setting changes with this source. The setup script still defaults to five
@@ -222,7 +221,7 @@ and union identities without dropping cross-window queue episodes. Missing
 captures or absent completion are UNKNOWN. Retain unfinished entry ages and
 arm-boundary censoring. Attempt `updated_at` is retained metadata, never a
 completion timestamp. Raw job timestamps retain failure/retry cost and ordinary PR impact without
-downloading logs. The (since retired) latency observer owned run/job timing;
+downloading logs. The [existing observer](ci-latency.md) owns run/job timing;
 this tool does not redefine its success-only objective or impose a new gate.
 
 Compare first enqueue to actual merge p50/p95, completed merges per wall hour

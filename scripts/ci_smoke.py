@@ -70,6 +70,7 @@ def run(output: Path, sha: str, command: tuple[str, ...] = SMOKE_COMMAND) -> int
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="replace",  # test output is not guaranteed UTF-8; keep teeing it
         )
         assert process.stdout is not None
         for line in process.stdout:
