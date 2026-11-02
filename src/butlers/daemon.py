@@ -1374,6 +1374,7 @@ class ButlerDaemon:
         and _core_tool factory, then delegates to register_all_core_tools.
         """
         from butlers.core_tools import ToolContext, register_all_core_tools
+        from butlers.core_tools._media import GOAL_RUNTIME_DARK_TOOLS
 
         # Registration owns this snapshot state. Some focused integration
         # seams construct a daemon without calling __init__, so initialise it
@@ -1446,6 +1447,9 @@ class ButlerDaemon:
             route_metrics=_route_metrics,
         )
         register_all_core_tools(ctx, mcp, _core_tool)
+        # Dark build (RFC 0038): _finalize_tool_catalog catalogs these, then
+        # hides them from today's classify-and-route sessions.
+        self._goal_runtime_dark_tools = GOAL_RUNTIME_DARK_TOOLS & mcp._registered_tool_names
         direct_names = mcp._registered_tool_names - _effective_core_names
         self._declared_tool_names.update(_declared_core_names | direct_names)
         self._effective_tool_names.update(_effective_core_names | direct_names)
@@ -1573,12 +1577,25 @@ class ButlerDaemon:
         return resolved
 
     async def _finalize_tool_catalog(self) -> ToolCatalog:
-        """Publish an all-or-nothing snapshot of final post-approval definitions."""
-        candidate = await build_tool_catalog(
-            self.mcp,
-            tool_owners=self._tool_module_map,
-            tool_metadata=self._resolved_tool_metadata or self._collect_tool_metadata(),
-        )
+        """Publish an all-or-nothing snapshot of final post-approval definitions.
+
+        Goal-runtime dark tools (RFC 0038 dark build) are in the snapshot with
+        their declared metadata, then disabled on FastMCP: today's
+        classify-and-route sessions can neither list nor call them.
+        """
+        dark: set[str] = set(getattr(self, "_goal_runtime_dark_tools", ()))
+        server = self.mcp
+        if dark and server is not None:
+            server.enable(names=dark, components={"tool"})
+        try:
+            candidate = await build_tool_catalog(
+                server,
+                tool_owners=self._tool_module_map,
+                tool_metadata=self._resolved_tool_metadata or self._collect_tool_metadata(),
+            )
+        finally:
+            if dark and server is not None:
+                server.disable(names=dark, components={"tool"})
         current = getattr(self, "_tool_catalog", None)
         if current is not None and current.generation_digest == candidate.generation_digest:
             return current
