@@ -288,7 +288,7 @@ refuses rather than reporting ctrace as sysmon. The default remains 3/ctrace
 until genuine complete comparable hosted/no-OOM results select another setting.
 The miniature real subprocess controls prove mechanism conformance only.
 
-`ci_shard_comparison.py before.json after.json` compares complete identity and
+The retired `ci_shard_comparison.py before.json after.json` (deleted in bu-29wkwj.3) compared complete identity and
 phase outcomes without count-only or incomplete gain claims. Its coverage
 comparison normalizes complete filenames/lines/branches/contexts. At the original experiment stage, the coverage validator required ten unique
 current source/attempt/lane shards and merge-group coverage remained enabled.
