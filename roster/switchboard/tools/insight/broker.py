@@ -15,10 +15,12 @@ Database tables used (all in the ``public`` schema):
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -1260,6 +1262,223 @@ def _cluster_candidates(candidates: list[dict[str, Any]]) -> list[list[dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Tension clusters (bu-7dpw8 — producer-declared conflicting choices become one
+# owner question instead of several digest lines)
+# ---------------------------------------------------------------------------
+
+TENSION_PRODUCER = "insight_broker"
+TENSION_SINK = "insight_tension"
+_TENSION_MAX_OPTIONS = 4  # ConfirmPrompt allows 2-4 options
+_TENSION_OPTION_LABEL_CHARS = 80
+_TENSION_TIMEOUT_SECONDS = 86400
+
+
+@dataclass(frozen=True, slots=True)
+class TensionOption:
+    value: str  # closed vocabulary ``o0``..``o3``; the label is producer text
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
+class TensionQuestion:
+    """One owner question for a tension cluster; built by code, never a model."""
+
+    ref: str
+    question: str
+    options: tuple[TensionOption, ...]
+    member_ids: tuple[str, ...]
+
+
+def _candidate_choice(candidate: dict[str, Any]) -> tuple[str, str] | None:
+    """Return a candidate's declared ``metadata.choice`` as ``(key, option)``."""
+    metadata = _json_object(candidate.get("metadata"))
+    choice = metadata.get("choice") if metadata else None
+    if not isinstance(choice, dict):
+        return None
+    key, option = choice.get("key"), choice.get("option")
+    if not isinstance(key, str) or not isinstance(option, str):
+        return None
+    key, option = key.strip(), option.strip()
+    return (key, option) if key and option else None
+
+
+def _tension_choices(cluster: list[dict[str, Any]]) -> dict[str, set[str]]:
+    """Group declared options by choice key, keeping only conflicting keys."""
+    by_key: dict[str, set[str]] = {}
+    for candidate in cluster:
+        if (choice := _candidate_choice(candidate)) is not None:
+            by_key.setdefault(choice[0], set()).add(choice[1])
+    return {key: options for key, options in by_key.items() if len(options) > 1}
+
+
+def _is_tension(cluster: list[dict[str, Any]]) -> bool:
+    """True when two or more members declare one choice key with different options."""
+    return bool(_tension_choices(cluster))
+
+
+def _tension_ref(cluster: list[dict[str, Any]]) -> str:
+    """Stable identity of a tension: the sorted member dedup keys, hashed."""
+    keys = "\n".join(sorted(str(c.get("dedup_key")) for c in cluster))
+    return hashlib.sha256(keys.encode()).hexdigest()[:32]
+
+
+def tension_question(cluster: list[dict[str, Any]]) -> TensionQuestion | None:
+    """Build the owner question for a tension cluster, or None if it cannot be asked.
+
+    Only the first conflicting key is asked; its distinct options (sorted, so the
+    option vocabulary is stable across cycles) must fit the 2-4 option card.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return None
+    options = sorted(conflicts[sorted(conflicts)[0]])
+    if len(options) > _TENSION_MAX_OPTIONS:
+        return None
+    labels = [option[:_TENSION_OPTION_LABEL_CHARS] for option in options]
+    if len(set(labels)) != len(labels):
+        return None
+    butlers = sorted({str(c.get("origin_butler") or "") for c in cluster} - {""})
+    source = ", ".join(b.capitalize() for b in butlers) or "Your butlers"
+    return TensionQuestion(
+        ref=_tension_ref(cluster),
+        question=f"{source} suggested {len(options)} options that can't all happen. Which one?",
+        options=tuple(TensionOption(f"o{i}", label) for i, label in enumerate(labels)),
+        member_ids=tuple(sorted(str(c["id"]) for c in cluster)),
+    )
+
+
+async def absorb_tensions(
+    pool: Any,
+    candidates: list[dict[str, Any]],
+    confirm_fn: Any | None,
+    *,
+    budget: int,
+    now: datetime | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Ask one owner question per tension cluster and remove its members.
+
+    ``confirm_fn(question) -> {"status": "asked" | "open" | ...}`` is the owner
+    confirm transport (``None`` when none is wired). ``asked`` is a new question and
+    ``open`` an already-open identical one; both absorb the members, which settle as
+    delivered with ``tension_ref`` stamped so the answer path can find them. Any
+    other result, an exception or a missing transport leaves the members in
+    ``candidates`` so they ride the normal digest (never silent). Each question
+    spends one slot of ``budget``. Returns ``(remaining, questions_absorbed)``.
+    """
+    if confirm_fn is None or budget <= 0:
+        return candidates, 0
+    if now is None:
+        now = datetime.now(UTC)
+    absorbed_ids: set[str] = set()
+    absorbed = 0
+    for cluster in _cluster_candidates(candidates):
+        if absorbed >= budget or not _is_tension(cluster):
+            continue
+        question = tension_question(cluster)
+        if question is None:
+            continue
+        try:
+            outcome = await confirm_fn(question)
+        except Exception:
+            logger.warning("insight tension question transport raised", exc_info=True)
+            continue
+        if not isinstance(outcome, dict) or outcome.get("status") not in {"asked", "open"}:
+            continue
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                """
+                UPDATE insight_candidates
+                SET status = 'delivered', delivered_at = $2, delivery_attempt_count = 0,
+                    metadata = COALESCE(metadata, '{}'::jsonb)
+                               || jsonb_build_object('tension_ref', $3::text)
+                WHERE id = ANY($1::uuid[])
+                """,
+                list(question.member_ids),
+                now,
+                question.ref,
+            )
+            await record_cooldowns(conn, cluster, now=now)
+            await record_engagement_rows(conn, cluster, delivered_at=now)
+        absorbed_ids.update(question.member_ids)
+        absorbed += 1
+    return [c for c in candidates if str(c["id"]) not in absorbed_ids], absorbed
+
+
+async def apply_tension_answer(
+    pool: Any, tension_ref: str, value: str, *, confirm_id: Any = None
+) -> dict[str, Any]:
+    """Record the owner's pick as ``useful`` feedback on every member of the tension.
+
+    The options are the cluster's sorted distinct declared options, so ``o<i>`` maps
+    back to one of them. Safe to retry: a member already carrying this confirm's
+    evidence is skipped (the confirm service re-applies after loss or restart).
+    """
+    rows = await pool.fetch(
+        "SELECT id, metadata FROM insight_candidates "
+        "WHERE metadata->>'tension_ref' = $1 ORDER BY id",
+        tension_ref,
+    )
+    members = [{"id": row["id"], "metadata": row["metadata"]} for row in rows]
+    question = tension_question(members)
+    if question is None or value not in {o.value for o in question.options}:
+        raise ValueError("tension answer does not match the recorded options")
+    chosen = next(o.label for o in question.options if o.value == value)
+    evidence = f"tension:{tension_ref}:{chosen}"
+    for member in members:
+        result = await record_insight_feedback(
+            pool,
+            insight_id=str(member["id"]),
+            verdict="useful",
+            actor="owner",
+            evidence_ref=evidence,
+        )
+        if result.get("status") != "recorded":
+            raise ValueError("tension feedback was not recorded")
+    return {"status": "applied", "members": len(members), "chosen": chosen}
+
+
+def tension_sink_registration(pool: Any) -> Any:
+    """Confirm-service sink that turns a tension answer into member feedback."""
+    from butlers.core.confirm_service import SinkRegistration
+
+    async def apply(confirm_id: Any, sink_ref: str, value: str) -> dict[str, Any]:
+        return await apply_tension_answer(pool, sink_ref, value, confirm_id=confirm_id)
+
+    return SinkRegistration(
+        producer=TENSION_PRODUCER,
+        values=frozenset(f"o{i}" for i in range(_TENSION_MAX_OPTIONS)),
+        apply=apply,
+    )
+
+
+def make_tension_confirm_fn(service: Any, recipient: Any) -> Any:
+    """Adapt a ``ConfirmService`` and resolved owner ``Recipient`` into ``confirm_fn``.
+
+    The service's per-producer key makes a repeated identical tension return the
+    existing row, so a pending row reports ``open`` rather than a second question.
+    """
+    from butlers.core.confirm_models import ConfirmOption, ConfirmPrompt
+
+    async def confirm_fn(question: TensionQuestion) -> dict[str, Any]:
+        prompt = ConfirmPrompt(
+            question=question.question,
+            options=tuple(ConfirmOption(o.value, o.label) for o in question.options),
+            recipient=recipient,
+            timeout_seconds=_TENSION_TIMEOUT_SECONDS,
+        )
+        row = await service.create(
+            TENSION_PRODUCER,
+            question.ref,
+            prompt,
+            sink=TENSION_SINK,
+            sink_ref=question.ref,
+        )
+        return {"status": "open" if row["status"] == "pending" else "settled"}
+
+    return confirm_fn
+
+
+# ---------------------------------------------------------------------------
 # LLM cluster synthesis (bu-ep4ks.9 slice 3 — one sentence per correlated
 # cluster, best-effort, no new budget knob)
 # ---------------------------------------------------------------------------
@@ -1940,8 +2159,13 @@ async def delivery_cycle(
     credential_store: Any | None = None,
     amend_fn: Any | None = None,
     finance_warning_reader: Any | None = None,
+    tension_confirm_fn: Any | None = None,
 ) -> dict[str, Any]:
     """Orchestrate the full insight delivery pipeline.
+
+    ``tension_confirm_fn`` (bu-7dpw8): optional owner-confirm transport; a cluster
+    whose members declare conflicting ``metadata.choice`` options becomes one owner
+    question (one budget slot) instead of digest lines. ``None`` keeps the digest.
 
     Steps (per spec §Delivery cycle execution order):
     1. Check quiet hours — if active, skip and return
@@ -2237,6 +2461,14 @@ async def delivery_cycle(
         eligible_ids,
     )
     candidates = [dict(row) for row in rows]
+    candidates, tensions_asked = await absorb_tensions(
+        pool, candidates, tension_confirm_fn, budget=effective_budget, now=now
+    )
+    if tensions_asked:
+        result["tensions_asked"] = tensions_asked
+        effective_budget -= tensions_asked
+        if effective_budget <= 0 or not candidates:
+            return result
     weights = await compute_category_budget_weights(
         pool,
         [candidate["category"] for candidate in candidates],

@@ -737,6 +737,12 @@ async def run_insight_scan(db_pool: asyncpg.Pool) -> dict[str, Any]:
                     metadata={
                         "entity_id": entity_id,
                         "event_date": upcoming_date.isoformat(),
+                        # Two pending gifts for one person and date are exclusive
+                        # options; the broker turns that tension into one question.
+                        "choice": {
+                            "key": f"gift:{entity_id}:{upcoming_date.isoformat()}",
+                            "option": description[:80],
+                        },
                     },
                 )
                 if not should_continue:
