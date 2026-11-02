@@ -151,6 +151,8 @@ def refusal(error, progress, binding):
     }
     if progress.get("stage") == "environment-prepare":
         data["preparation"] = progress.get("preparation")
+    if progress.get("stage") == "uv-install":
+        data["uv_install"] = progress.get("uv_install")
     return data
 
 
@@ -735,13 +737,42 @@ def run_owned(command, environment, seconds, *, cwd=None):
     }
 
 
-def prepare_uv(root, private, environment, seconds):
+def uv_install_observation(installed):
+    """Only closed values from the existing owned installer result; never a verdict."""
+
+    def number(value, lower=0, upper=255):
+        return value if type(value) is int and lower <= value <= upper else None
+
+    def boolean(value):
+        return value if type(value) is bool else None
+
+    observed = installed.get("observation")
+    observed = observed if type(observed) is dict else {}
+    return {
+        "exit": number(installed.get("exit"), -64, 255),
+        "cleanup_complete": boolean(installed.get("cleanup_complete")),
+        "timed_out": boolean(installed.get("timed_out")),
+        "cancelled": boolean(installed.get("cancelled")),
+        "lifecycle": {
+            "child_exit": number(observed.get("child_exit"), -64, 255),
+            "supervisor_exit": number(observed.get("supervisor_exit"), -64, 255),
+            "protocol_refused": boolean(observed.get("protocol_refused")),
+            "outcome_records": number(observed.get("outcome_records"), upper=8),
+            "settled_records": number(observed.get("settled_records"), upper=8),
+            "settled_complete": boolean(observed.get("settled_complete")),
+        },
+    }
+
+
+def prepare_uv(root, private, environment, seconds, *, progress=None):
     """Invoke the unchanged installer under our aggregate and owned subreaper."""
     installed = run_owned(
         [sys.executable, str(root / "scripts/install_ci_uv.py")],
         {**environment, "GITHUB_PATH": str(private / "installer-path")},
         seconds,
     )
+    if progress is not None:
+        progress["uv_install"] = uv_install_observation(installed)
     if (
         installed["exit"] != 0
         or not installed["cleanup_complete"]
@@ -898,7 +929,7 @@ def execute(root, output, progress=None):
             (root / "scripts/fact_source_capture_before_observer.py").read_bytes()
         ).hexdigest()
         progress["stage"] = "uv-install"
-        environment = prepare_uv(root, private, environment, remaining(640))
+        environment = prepare_uv(root, private, environment, remaining(640), progress=progress)
         progress["stage"] = "environment-prepare"
         prepare_config = private / "prepare-config.json"
         atomic(prepare_config, {"root": str(workload)})

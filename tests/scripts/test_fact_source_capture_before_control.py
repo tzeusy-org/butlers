@@ -900,7 +900,7 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
 
     # Execute the real prephase sequence with closed software dependencies. Neither
     # installer failure nor frozen-environment failure may reach the PG child.
-    def install(*args):
+    def install(*args, **kwargs):
         calls.append("installer")
         if stage == "uv-install":
             raise ValueError("uv-install")
@@ -1202,3 +1202,120 @@ target=root/'src' if mode!='own-source-refused' else root/'outside'
                 with pytest.raises(ValueError, match=expected):
                     control.preparation_child()
                 assert not marker.exists()
+
+    # Exercise actual prepare_uv through real execute; malformed private values
+    # cannot escape its diagnostic, and no failed installer may reach PG.
+    for index, (code, complete, timed, cancelled, failed) in enumerate(
+        [
+            (2, True, False, False, True),
+            (0, False, False, False, True),
+            (0, True, True, False, True),
+            (0, True, False, True, True),
+            (-15, True, False, False, True),
+            (0, True, False, False, False),
+        ]
+    ):
+        parent = tmp_path / ("uv-diagnostic-" + str(index))
+        root = parent / "controller"
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts/fact_source_capture_before_observer.py").write_text("# fixture")
+        progress = {}
+        calls = []
+        observed = control.lifecycle_observation([], 0, timed, cancelled, False)
+        if code < 0:
+            observed["child_exit"] = code
+        installed = {
+            "exit": code,
+            "cleanup_complete": complete,
+            "timed_out": timed,
+            "cancelled": cancelled,
+            "observation": observed,
+            "PRIVATE": "never-export",
+        }
+
+        def own(
+            command,
+            environment,
+            seconds,
+            *,
+            calls=calls,
+            installed=installed,
+            observed=observed,
+            **kwargs,
+        ):
+            if command[-1].endswith("install_ci_uv.py"):
+                calls.append("installer")
+                return copy.deepcopy(installed)
+            calls.append("prepare")
+            return {
+                "exit": 2,
+                "cleanup_complete": True,
+                "timed_out": False,
+                "cancelled": False,
+                "observation": observed,
+            }
+
+        with monkeypatch.context() as context:
+            context.setenv("FACT_CAPTURE_CONTROL_STARTED", str(control.time.monotonic()))
+            context.setattr(control, "git", lambda *args, **kwargs: "")
+            context.setattr(control, "workload_state", lambda *args: {})
+            context.setattr(control, "overlay", lambda *args: None)
+            context.setattr(control, "run_owned", own)
+            context.setattr(
+                control.subprocess,
+                "run",
+                lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
+            )
+            context.setattr(
+                control.subprocess,
+                "Popen",
+                lambda *args, **kwargs: pytest.fail("prephase must not reach PG"),
+            )
+            with pytest.raises(ValueError) as caught:
+                real_execute(root, parent, progress)
+        assert calls == (["installer"] if failed else ["installer", "prepare"])
+        assert progress["stage"] == ("uv-install" if failed else "environment-prepare")
+        data = control.refusal(caught.value, progress, binding)
+        expected = {
+            "exit": code,
+            "cleanup_complete": complete,
+            "timed_out": timed,
+            "cancelled": cancelled,
+            "lifecycle": {
+                key: observed[key]
+                for key in (
+                    "child_exit",
+                    "supervisor_exit",
+                    "protocol_refused",
+                    "outcome_records",
+                    "settled_records",
+                    "settled_complete",
+                )
+            },
+        }
+        if failed:
+            assert data.get("uv_install") == expected
+        else:
+            assert "uv_install" not in data
+        assert data["complete"] is False and data["control_verdict"] == "UNKNOWN"
+        assert data["pg_call"] == data["cleanup"] == "UNKNOWN"
+        assert "PRIVATE" not in json.dumps(data) and "never-export" not in json.dumps(data)
+
+    malformed = control.uv_install_observation(
+        {
+            "exit": True,
+            "cleanup_complete": 1,
+            "timed_out": "PRIVATE",
+            "cancelled": None,
+            "observation": {
+                "child_exit": -65,
+                "supervisor_exit": 256,
+                "outcome_records": True,
+                "settled_records": 9,
+                "settled_complete": "PRIVATE",
+                "protocol_refused": 0,
+            },
+        }
+    )
+    assert all(value is None for key, value in malformed.items() if key != "lifecycle")
+    assert all(value is None for value in malformed["lifecycle"].values())

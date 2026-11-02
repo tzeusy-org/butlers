@@ -109,3 +109,12 @@ descendant is retained. Any denial, malformed data, reuse, overflow, deadline or
 refuses and latches normally. No prior refusal is cleared. Final completion still requires
 owned-descendant settlement, genuine kernel ECHILD and empty direct/adopted ownership.
 This synthetic mechanism proof does not establish a PG CALL or historical hosted cause.
+
+An optional `uv_install` field on an installer-stage refusal contains only bounded exit
+integers, strict booleans or null and a six-field closed lifecycle projection from the
+existing owned result. It distinguishes the installer-result predicates without publishing
+installer output, commands, paths or environment. The refusal still reports UNKNOWN for
+control, PostgreSQL CALL and cleanup; it never supplies a complete phase/witness. A healthy
+installer proceeds under the existing unchanged predicates and deadlines. Missing or
+malformed fields remain unknown. These future diagnostics cannot identify the failed
+predicate in an older receipt which discarded the result.
