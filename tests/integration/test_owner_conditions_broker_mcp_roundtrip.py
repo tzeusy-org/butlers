@@ -27,7 +27,6 @@ from butlers.core.tool_call_capture import (
     reset_current_runtime_session_id,
     set_current_runtime_session_id,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -39,20 +38,13 @@ pytestmark = [
 SESSION_ID = "9f1d0c2e-0000-4000-8000-000000000abc"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+@pytest.fixture
+async def core_pool(db) -> asyncpg.Pool:
+    return await db("core", min_size=2, max_size=5)
 
 
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=5)
-    yield p
-    await p.close()
-
-
-@pytest.fixture
-async def tools(pool: asyncpg.Pool) -> dict[str, Any]:
+async def tools(core_pool: asyncpg.Pool) -> dict[str, Any]:
     """Register the broker's MCP tools against the real pool and return them."""
     import sys
 
@@ -76,7 +68,7 @@ async def tools(pool: asyncpg.Pool) -> dict[str, Any]:
 
     mcp.tool = tool_decorator
     db = MagicMock()
-    db.pool = pool
+    db.pool = core_pool
     await module.register_tools(mcp=mcp, config={}, db=db, butler_name="switchboard")
     return registered
 
@@ -101,7 +93,7 @@ async def _open_condition(
 
 class TestResolveOwnerConditionMcpRoundTrip:
     async def test_req_owner_condition_ledger_005_reconcile_then_resolve_round_trip(
-        self, tools: dict[str, Any], pool: asyncpg.Pool
+        self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
         """AC6/REQ-005: open via the MCP tool, close via the MCP tool, verify the row."""
         source = "finance:bill-overdue"
@@ -137,7 +129,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
             "resolution_reason": "satisfied",
         }
 
-        row = await pool.fetchrow(
+        row = await core_pool.fetchrow(
             "SELECT state, resolved_at, recovered_after_s, metadata FROM public.owner_conditions "
             "WHERE source = $1 AND fingerprint = $2",
             source,
@@ -176,21 +168,21 @@ class TestResolveOwnerConditionMcpRoundTrip:
         assert second == {"status": "not_found"}
 
     async def test_req_owner_condition_ledger_005_never_observed_identity_is_not_found(
-        self, tools: dict[str, Any], pool: asyncpg.Pool
+        self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
         """REQ-005: a fingerprint that was never observed answers not_found and writes nothing."""
         source = "finance:bill-overdue"
         fingerprint = compute_fingerprint(source, 1, {"bill_id": "never-observed"})
 
-        before = await pool.fetchval("SELECT count(*) FROM public.owner_conditions")
+        before = await core_pool.fetchval("SELECT count(*) FROM public.owner_conditions")
         result = await tools["resolve_owner_condition"](
             source=source, fingerprint=fingerprint, resolution_reason="expired"
         )
         assert result == {"status": "not_found"}
-        assert await pool.fetchval("SELECT count(*) FROM public.owner_conditions") == before
+        assert await core_pool.fetchval("SELECT count(*) FROM public.owner_conditions") == before
 
     async def test_req_owner_condition_ledger_005_invalid_reason_leaves_the_row_untouched(
-        self, tools: dict[str, Any], pool: asyncpg.Pool
+        self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
         """REQ-005: an unknown reason is an error AND the active row is byte-identical after."""
         source = "finance:bill-overdue"
@@ -203,7 +195,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
             "SELECT to_jsonb(c) AS snapshot FROM public.owner_conditions c "
             "WHERE source = $1 AND fingerprint = $2"
         )
-        before = await pool.fetchval(select, source, fingerprint)
+        before = await core_pool.fetchval(select, source, fingerprint)
 
         result = await tools["resolve_owner_condition"](
             source=source, fingerprint=fingerprint, resolution_reason="handled"
@@ -211,9 +203,9 @@ class TestResolveOwnerConditionMcpRoundTrip:
         assert result["status"] == "error"
         assert "resolution_reason" in result["reason"]
 
-        after = await pool.fetchval(select, source, fingerprint)
+        after = await core_pool.fetchval(select, source, fingerprint)
         assert after == before
-        state = await pool.fetchval(
+        state = await core_pool.fetchval(
             "SELECT state FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
             source,
             fingerprint,
@@ -222,7 +214,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
 
     @pytest.mark.parametrize("reserved_key", ["resolution_reason", "evidence_closed"])
     async def test_req_owner_condition_ledger_006_reserved_key_is_rejected_without_a_write(
-        self, tools: dict[str, Any], pool: asyncpg.Pool, reserved_key: str
+        self, tools: dict[str, Any], core_pool: asyncpg.Pool, reserved_key: str
     ) -> None:
         """A producer may not claim the keys the resolver writes (REQ-006).
 
@@ -258,7 +250,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
 
         # "Without a write" is the load-bearing half: a rejected snapshot must
         # leave no row behind, not a row missing one key.
-        row = await pool.fetchrow(
+        row = await core_pool.fetchrow(
             "SELECT id FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
             source,
             fingerprint,
@@ -266,7 +258,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
         assert row is None
 
     async def test_req_owner_condition_ledger_006_reserves_two_names_not_a_namespace(
-        self, tools: dict[str, Any], pool: asyncpg.Pool
+        self, tools: dict[str, Any], core_pool: asyncpg.Pool
     ) -> None:
         """The reservation is two exact key names, not a prefix or a schema.
 
@@ -302,7 +294,7 @@ class TestResolveOwnerConditionMcpRoundTrip:
 
         assert resolved["status"] == "resolved"
 
-        row = await pool.fetchrow(
+        row = await core_pool.fetchrow(
             "SELECT metadata FROM public.owner_conditions WHERE source = $1 AND fingerprint = $2",
             source,
             fingerprint,
