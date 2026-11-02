@@ -3553,13 +3553,11 @@ class GmailConnectorRuntime:
             # Determine media_type from DB row if available.
             media_type = "application/octet-stream"
             filename = None
-            size_bytes = len(attachment_bytes)
             if self._db_pool:
                 try:
                     async with self._db_pool.acquire() as conn:
                         row = await conn.fetchrow(
-                            "SELECT filename, media_type, size_bytes "
-                            "FROM switchboard.attachment_refs "
+                            "SELECT filename, media_type FROM switchboard.attachment_refs "
                             "WHERE message_id = $1 AND attachment_id = $2",
                             message_id,
                             attachment_id,
@@ -3567,7 +3565,6 @@ class GmailConnectorRuntime:
                     if row:
                         media_type = row["media_type"]
                         filename = row["filename"]
-                        size_bytes = row["size_bytes"]
                 except Exception:
                     pass
 
@@ -3577,16 +3574,13 @@ class GmailConnectorRuntime:
                 filename=filename,
             )
 
-            # Persist updated ref.
-            await self._write_attachment_ref(
-                message_id=message_id,
-                attachment_id=attachment_id,
-                filename=filename,
-                media_type=media_type,
-                size_bytes=size_bytes,
-                fetched=True,
-                blob_ref=blob_ref,
-            )
+            try:
+                await self._record_fetched_blob(message_id, attachment_id, blob_ref)
+            except BaseException:
+                # Unrecorded bytes are unreachable: delete them rather than
+                # orphan them. A retry downloads again.
+                await self._discard_blob(blob_ref)
+                raise
 
             self._metrics.record_attachment_fetched(
                 media_type=media_type, fetch_mode="lazy", result="success"
@@ -3612,13 +3606,76 @@ class GmailConnectorRuntime:
             )
             return None
 
+    async def _record_fetched_blob(
+        self, message_id: str, attachment_id: str, blob_ref: str
+    ) -> None:
+        """Mark a lazy ref fetched; raise unless this call recorded ``blob_ref``.
+
+        Unlike the best-effort ``_write_attachment_ref``, a failure here must
+        reach the caller: a fetched blob the row does not name is lost. A row
+        that is gone or was fetched meanwhile (a reclaimed stale claim) also
+        raises, so the caller drops its duplicate bytes.
+        """
+        if not self._db_pool:
+            raise RuntimeError("attachment_refs: db_pool unavailable")
+        async with self._db_pool.acquire() as conn:
+            recorded = await conn.fetchval(
+                """
+                UPDATE switchboard.attachment_refs
+                SET fetched = true, blob_ref = $3, fetch_claimed_at = NULL
+                WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
+                RETURNING true
+                """,
+                message_id,
+                attachment_id,
+                blob_ref,
+            )
+        if not recorded:
+            raise LookupError("attachment ref missing or already fetched")
+
+    async def _discard_blob(self, blob_ref: str) -> None:
+        """Best-effort delete of bytes no attachment ref names."""
+        if self._blob_store is None:
+            return
+        try:
+            await self._blob_store.delete(blob_ref)
+        except Exception as exc:
+            logger.warning(
+                "fetch_attachment: could not delete unrecorded blob %s: %s", blob_ref, exc
+            )
+
+    async def _release_materialize_claims(self, refs: list[tuple[str, str]]) -> None:
+        """Clear claims an interrupted batch never finished, so the next poll retries them."""
+        if not self._db_pool:
+            return
+        try:
+            async with self._db_pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    UPDATE switchboard.attachment_refs r
+                    SET fetch_claimed_at = NULL
+                    FROM unnest($1::text[], $2::text[]) AS u(message_id, attachment_id)
+                    WHERE r.message_id = u.message_id AND r.attachment_id = u.attachment_id
+                      AND NOT r.fetched
+                    """,
+                    [message_id for message_id, _ in refs],
+                    [attachment_id for _, attachment_id in refs],
+                )
+        except Exception as exc:
+            # The stale-claim window still reclaims them; keep the original error.
+            logger.warning(
+                "attachment materialize: could not release %d claims: %s", len(refs), exc
+            )
+
     async def materialize_requested_once(self) -> int:
         """Fetch lazy refs Switchboard's ``attachment_materialize`` requested; return the count.
 
         Claims up to ``_MATERIALIZE_BATCH`` requested rows written by this account
         (or by no recorded account), downloads each through ``fetch_attachment``
         and records a failure as ``fetch_error`` so the waiting caller is told.
-        A claim older than ``_MATERIALIZE_CLAIM_STALE_S`` is reclaimed.
+        If the batch is interrupted, its unfinished claims are released for the
+        next poll. A claim older than ``_MATERIALIZE_CLAIM_STALE_S`` (a crashed
+        runtime's) is reclaimed.
         """
         if not self._db_pool or not self._blob_store:
             return 0
@@ -3648,20 +3705,27 @@ class GmailConnectorRuntime:
                 _MATERIALIZE_BATCH,
                 float(_MATERIALIZE_CLAIM_STALE_S),
             )
-        for row in claimed:
-            message_id, attachment_id = row["message_id"], row["attachment_id"]
-            if await self.fetch_attachment(message_id, attachment_id) is not None:
-                continue
-            async with self._db_pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    UPDATE switchboard.attachment_refs
-                    SET fetch_error = 'fetch_failed', fetch_claimed_at = NULL
-                    WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
-                    """,
-                    message_id,
-                    attachment_id,
-                )
+        unfinished = [(row["message_id"], row["attachment_id"]) for row in claimed]
+        try:
+            while unfinished:
+                message_id, attachment_id = unfinished[0]
+                if await self.fetch_attachment(message_id, attachment_id) is None:
+                    async with self._db_pool.acquire() as conn:
+                        await conn.execute(
+                            """
+                            UPDATE switchboard.attachment_refs
+                            SET fetch_error = 'fetch_failed', fetch_claimed_at = NULL
+                            WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
+                            """,
+                            message_id,
+                            attachment_id,
+                        )
+                unfinished.pop(0)
+        finally:
+            # An exception or cancellation mid-batch must not strand the
+            # remaining claims for the stale window.
+            if unfinished:
+                await self._release_materialize_claims(unfinished)
         return len(claimed)
 
     async def _run_materialize_loop(self) -> None:

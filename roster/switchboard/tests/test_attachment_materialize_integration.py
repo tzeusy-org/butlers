@@ -28,6 +28,7 @@ _OTHER = "gmail:user:other@example.com"
 class _Blobs:
     def __init__(self) -> None:
         self.puts: list[tuple[bytes, str, str | None]] = []
+        self.deleted: list[str] = []
 
     async def put(self, data: bytes, *, content_type: str, filename: str | None = None) -> str:
         self.puts.append((data, content_type, filename))
@@ -37,7 +38,7 @@ class _Blobs:
         raise NotImplementedError
 
     async def delete(self, storage_ref: str) -> None:
-        raise NotImplementedError
+        self.deleted.append(storage_ref)
 
     async def exists(self, storage_ref: str) -> bool:
         raise NotImplementedError
@@ -128,3 +129,43 @@ async def test_materialize_refuses_unknown_and_failed_refs_and_waits_for_the_own
     retried = await attachment_materialize(switchboard, "m2", "a2", wait_s=0.2, poll_s=0.05)
     assert retried["status"] == "pending"
     assert await other.materialize_requested_once() == 1
+
+
+@session_loop
+async def test_a_failed_ref_write_is_a_fetch_error_and_drops_the_blob(db, fresh_db) -> None:
+    switchboard, connector = await _pools(db, fresh_db)
+    blobs = _Blobs()
+    owner = _runtime(connector, blobs, _OWNER, AsyncMock(return_value=b"%PDF"))
+    owner._record_fetched_blob = AsyncMock(  # type: ignore[method-assign]
+        side_effect=ConnectionError("db went away")
+    )
+    await owner._write_attachment_ref("m3", "a3", "x.pdf", "application/pdf", 4)
+
+    failed = await _materialize_while_connector_runs(switchboard, owner, "m3", "a3")
+    assert failed["reason"] == "fetch_failed"
+    # The stored bytes are deleted, not orphaned; a retry downloads again.
+    assert blobs.deleted == ["s3://butlers/connectors/2026/11/02/1.pdf"]
+
+
+@session_loop
+async def test_an_interrupted_batch_releases_its_unfinished_claims(db, fresh_db) -> None:
+    switchboard, connector = await _pools(db, fresh_db)
+    stopping = _runtime(connector, _Blobs(), _OWNER, AsyncMock(side_effect=asyncio.CancelledError))
+    for attachment_id in ("a4", "a5"):
+        await stopping._write_attachment_ref("m4", attachment_id, None, "application/pdf", 4)
+        pending = await attachment_materialize(
+            switchboard, "m4", attachment_id, wait_s=0, poll_s=0.05
+        )
+        assert pending["status"] == "pending"
+
+    with pytest.raises(asyncio.CancelledError):
+        await stopping.materialize_requested_once()
+
+    # Both claims are released at once, not left for the stale window.
+    restarted = _runtime(connector, _Blobs(), _OWNER, AsyncMock(return_value=b"%PDF"))
+    assert await restarted.materialize_requested_once() == 2
+    for attachment_id in ("a4", "a5"):
+        ready = await attachment_materialize(
+            switchboard, "m4", attachment_id, wait_s=0, poll_s=0.05
+        )
+        assert ready["status"] == "ready"
