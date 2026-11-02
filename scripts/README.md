@@ -247,6 +247,7 @@ changes infrastructure or historical data.
 | [`check_spec_overwrites.py`](check_spec_overwrites.py) | `ci.yml`, `make check-spec-overwrites`, `pre_push.py` | Compares active OpenSpec MODIFIED blocks against current canonical bodies. |
 | [`check_pyright_baseline.py`](check_pyright_baseline.py) | `pyright_runtime.py`, `make typecheck` | Strict diagnostic JSON and shrinking error-Counter comparison. |
 | [`check_test_budget.py`](check_test_budget.py) | Make, `ci.yml` preflight | Per-lane collected-test budget ratchet against `test-budget-baseline.json`. |
+| [`check_test_db_fixtures.py`](check_test_db_fixtures.py) | `tests/scripts/test_check_test_db_fixtures.py` (unit lane) | Ratchet against per-file `pool`/`migrated_db_url` fixtures and hand-written `CREATE TABLE` in tests (`test-db-fixtures-baseline.json`). |
 | [`check_test_kit_copies.py`](check_test_kit_copies.py) | `tests/scripts/test_check_test_kit_copies.py` (unit lane) | Ratchet against per-file copies of the `src/butlers/testing/` kit (`_make_row`, `_FakePool`, `_load_migration`, ...) frozen in `test-kit-copies-baseline.json`. |
 | [`extract-frontend-copy.py`](extract-frontend-copy.py) | Manual, on demand | Writes the bounded frontend copy report to stdout and diagnostics to stderr; redirect to ignored `.tmp/` for a local copy. |
 | [`frontend_guards.py`](frontend_guards.py) | Make, `pre_push.py` | Runs the frontend guard steps locally in the order CI runs them. |

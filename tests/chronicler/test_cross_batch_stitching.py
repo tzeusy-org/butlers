@@ -31,6 +31,7 @@ from butlers.chronicler.adapters.owntracks import (
     OwnTracksPointAdapter,
 )
 from butlers.chronicler.models import Episode
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
 _PERSON = "person.alice"
@@ -40,17 +41,6 @@ _ENDPOINT = "owntracks:alice"
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 class _NullCtx:
@@ -128,7 +118,7 @@ def _pool_returning(*rows: dict) -> AsyncMock:
     conn.fetchval = _fetchval
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -138,7 +128,7 @@ def _pool_empty() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -149,7 +139,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=None)  # carryover fetch returns None
     conn.execute = AsyncMock()
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 

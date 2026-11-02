@@ -8,6 +8,7 @@ Canonical shared fixture definitions live in
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -684,3 +685,50 @@ def provisioned_postgres_pool(
                 raise
 
     return _provision
+
+
+@pytest.fixture
+async def db(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..., Any]]:
+    """Async factory for pools on fresh migrated clones (``butlers.testing.db``).
+
+    ``pool = await db("core", "relationship", schemas={"relationship": "relationship"},
+    schema="relationship")``. Every pool it opened closes at teardown.
+    """
+    from butlers.testing.db import migrated_pool
+
+    pools: list[Pool] = []
+
+    async def _make(*chains: str, **kwargs: Any) -> Pool:
+        pool = await migrated_pool(postgres_container, *chains, **kwargs)
+        pools.append(pool)
+        return pool
+
+    try:
+        yield _make
+    finally:
+        for pool in reversed(pools):
+            try:
+                await asyncio.wait_for(pool.close(), timeout=10)
+            except BaseException:
+                pool.terminate()
+                raise
+
+
+@pytest.fixture
+async def db_pool(db: Callable[..., Any]) -> Pool:
+    """A pool on a fresh core-migrated clone."""
+    return await db("core")
+
+
+@pytest.fixture
+def fresh_db(postgres_container: PostgresContainer) -> Callable[..., str]:
+    """Sync factory returning a fresh migrated database URL, for migration-subject tests.
+
+    ``url = fresh_db("core", revisions={"core": "core_170"})``.
+    """
+    from butlers.testing.db import migrated_url
+
+    def _make(*chains: str, **kwargs: Any) -> str:
+        return migrated_url(postgres_container, *chains, **kwargs)
+
+    return _make

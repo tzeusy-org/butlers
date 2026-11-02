@@ -30,6 +30,8 @@ from butlers.chronicler.adapters.home_assistant import (
     HomeAssistantHistoryAdapter,
 )
 from butlers.chronicler.models import Episode, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _ENTITY_ID_ALICE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
@@ -47,7 +49,7 @@ _UUID_4 = uuid.UUID("44444444-4444-4444-4444-444444444444")
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _state_row(
     entity_id: str = _PERSON,
     state: str = "home",
     recorded_at: datetime = _NOW,
@@ -61,11 +63,6 @@ def _make_row(
         "attributes": attributes or {},
         "recorded_at": recorded_at,
     }
-
-
-def _make_mock_row(r: dict) -> MagicMock:
-    """Build a MagicMock that supports dict-style access via __getitem__."""
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
 
 
 def _pool_returning(*rows: dict) -> AsyncMock:
@@ -87,9 +84,9 @@ def _pool_returning(*rows: dict) -> AsyncMock:
 
     conn = AsyncMock()
     conn.fetchval = _fetchval
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -109,14 +106,14 @@ def _tie_boundary_pool(*rows: dict) -> AsyncMock:
             candidates = list(rows)
         limit = args[-1]
         assert isinstance(limit, int)
-        return [_make_mock_row(row) for row in candidates[:limit]]
+        return [Record(row) for row in candidates[:limit]]
 
     conn = AsyncMock()
     conn.fetchval = _fetchval
     conn.fetch = _fetch
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -126,21 +123,8 @@ def _pool_table_missing() -> AsyncMock:
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
-
-
-class _AsyncCtx:
-    """Async context manager that yields ``obj``."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 def _chronicler_pool() -> AsyncMock:
@@ -150,7 +134,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchrow = AsyncMock(return_value=None)
 
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -202,7 +186,7 @@ def test_no_llm_imports_in_home_assistant_adapter() -> None:
 @pytest.mark.asyncio
 async def test_single_home_row_produces_one_presence_episode() -> None:
     """A single 'home' state row collapses into one presence episode."""
-    row = _make_row(state="home", recorded_at=_NOW)
+    row = _state_row(state="home", recorded_at=_NOW)
     adapter = HomeAssistantHistoryAdapter()
 
     upserted: list[Episode] = []
@@ -240,9 +224,9 @@ async def test_away_home_away_produces_one_episode_for_home_span() -> None:
     t1 = _NOW + timedelta(hours=2)
     t2 = _NOW + timedelta(hours=5)
     rows = [
-        _make_row(state="away", recorded_at=t0, row_id=_UUID_1),
-        _make_row(state="home", recorded_at=t1, row_id=_UUID_2),
-        _make_row(state="away", recorded_at=t2, row_id=_UUID_3),
+        _state_row(state="away", recorded_at=t0, row_id=_UUID_1),
+        _state_row(state="home", recorded_at=t1, row_id=_UUID_2),
+        _state_row(state="away", recorded_at=t2, row_id=_UUID_3),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -274,10 +258,10 @@ async def test_home_away_home_produces_two_episodes() -> None:
     t2 = _NOW + timedelta(hours=4)
     t3 = _NOW + timedelta(hours=6)
     rows = [
-        _make_row(state="home", recorded_at=t0, row_id=_UUID_1),
-        _make_row(state="away", recorded_at=t1, row_id=_UUID_2),
-        _make_row(state="home", recorded_at=t2, row_id=_UUID_3),
-        _make_row(state="away", recorded_at=t3, row_id=_UUID_4),
+        _state_row(state="home", recorded_at=t0, row_id=_UUID_1),
+        _state_row(state="away", recorded_at=t1, row_id=_UUID_2),
+        _state_row(state="home", recorded_at=t2, row_id=_UUID_3),
+        _state_row(state="away", recorded_at=t3, row_id=_UUID_4),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
@@ -303,8 +287,8 @@ async def test_home_away_home_produces_two_episodes() -> None:
 async def test_non_person_entities_are_ignored() -> None:
     """Rows for non-person entities (e.g. light.*) produce no episodes."""
     rows = [
-        _make_row(entity_id="light.kitchen", state="on", recorded_at=_NOW, row_id=_UUID_1),
-        _make_row(entity_id="sensor.temperature", state="22.5", recorded_at=_NOW, row_id=_UUID_2),
+        _state_row(entity_id="light.kitchen", state="on", recorded_at=_NOW, row_id=_UUID_1),
+        _state_row(entity_id="sensor.temperature", state="22.5", recorded_at=_NOW, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
 
@@ -350,7 +334,7 @@ async def test_undefined_table_exception_returns_skipped_result() -> None:
         )
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     adapter = HomeAssistantHistoryAdapter()
     cp = _chronicler_pool()
@@ -375,8 +359,8 @@ async def test_watermark_advances_to_max_recorded_at() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=4)
     rows = [
-        _make_row(state="home", recorded_at=t1, row_id=_UUID_1),
-        _make_row(entity_id="light.kitchen", state="on", recorded_at=t2, row_id=_UUID_2),
+        _state_row(state="home", recorded_at=t1, row_id=_UUID_1),
+        _state_row(entity_id="light.kitchen", state="on", recorded_at=t2, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
 
@@ -406,9 +390,9 @@ async def test_single_column_recorded_at_watermark_skips_equal_tie_after_split_b
     """
     tied_at = _NOW
     rows = [
-        _make_row(state="home", recorded_at=tied_at, row_id=_UUID_1),
-        _make_row(state="away", recorded_at=tied_at, row_id=_UUID_2),
-        _make_row(state="home", recorded_at=tied_at, row_id=_UUID_3),
+        _state_row(state="home", recorded_at=tied_at, row_id=_UUID_1),
+        _state_row(state="away", recorded_at=tied_at, row_id=_UUID_2),
+        _state_row(state="home", recorded_at=tied_at, row_id=_UUID_3),
     ]
     adapter = HomeAssistantHistoryAdapter(batch_limit=2)
     pool = _tie_boundary_pool(*rows)
@@ -448,7 +432,7 @@ def test_home_assistant_adapter_exported_from_package() -> None:
 @pytest.mark.asyncio
 async def test_episode_title_derived_from_entity_id() -> None:
     """Episode title is derived from the entity_id short name."""
-    row = _make_row(entity_id="person.alice_smith", state="home", recorded_at=_NOW)
+    row = _state_row(entity_id="person.alice_smith", state="home", recorded_at=_NOW)
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
 
@@ -477,7 +461,7 @@ async def test_home_lane_taxonomy_path_source_name_and_episode_type() -> None:
     Uses string literals (not constants) so a rename of the constants without
     updating the taxonomy contract fails loudly here.
     """
-    row = _make_row(entity_id="person.alice", state="home", recorded_at=_NOW)
+    row = _state_row(entity_id="person.alice", state="home", recorded_at=_NOW)
     adapter = HomeAssistantHistoryAdapter()
     upserted: list[Episode] = []
 
@@ -525,9 +509,9 @@ async def test_projection_with_uuid_id_rows_does_not_set_watermark_id() -> None:
     t2 = _NOW + timedelta(hours=3)
 
     rows = [
-        _make_row(state="home", recorded_at=t0, row_id=_UUID_1),
-        _make_row(state="home", recorded_at=t1, row_id=_UUID_2),
-        _make_row(state="away", recorded_at=t2, row_id=_UUID_3),
+        _state_row(state="home", recorded_at=t0, row_id=_UUID_1),
+        _state_row(state="home", recorded_at=t1, row_id=_UUID_2),
+        _state_row(state="away", recorded_at=t2, row_id=_UUID_3),
     ]
 
     adapter = HomeAssistantHistoryAdapter()
@@ -575,10 +559,10 @@ def _pool_with_person_mapping(
 
     def _make_mapping_row(ha_id: str, entity_id: uuid.UUID) -> MagicMock:
         d = {"ha_entity_id": ha_id, "entity_id": entity_id}
-        return MagicMock(**d, **{"__getitem__": lambda s, k, _d=d: _d[k]})
+        return Record(d)
 
     mapping_rows = [_make_mapping_row(k, v) for k, v in mapping.items()]
-    history_rows = [_make_mock_row(r) for r in rows]
+    history_rows = [Record(r) for r in rows]
 
     fetch_calls: list[int] = [0]
 
@@ -593,7 +577,7 @@ def _pool_with_person_mapping(
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = _fetch
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -639,8 +623,8 @@ async def test_entity_id_resolved_per_entity_multi_person() -> None:
     t0 = _NOW
     t1 = _NOW + timedelta(hours=1)
     rows = [
-        _make_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=_UUID_1),
-        _make_row(entity_id="person.bob", state="home", recorded_at=t1, row_id=_UUID_2),
+        _state_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=_UUID_1),
+        _state_row(entity_id="person.bob", state="home", recorded_at=t1, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
@@ -674,8 +658,8 @@ async def test_entity_id_mixed_mapped_and_unmapped() -> None:
     t0 = _NOW
     t1 = _NOW + timedelta(hours=1)
     rows = [
-        _make_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=_UUID_1),
-        _make_row(entity_id="person.guest", state="home", recorded_at=t1, row_id=_UUID_2),
+        _state_row(entity_id="person.alice", state="home", recorded_at=t0, row_id=_UUID_1),
+        _state_row(entity_id="person.guest", state="home", recorded_at=t1, row_id=_UUID_2),
     ]
     adapter = HomeAssistantHistoryAdapter()
     upserted, owner_calls, fake_upsert, fake_upsert_owner = _capture_entity_writes()
@@ -703,7 +687,7 @@ async def test_entity_id_mixed_mapped_and_unmapped() -> None:
 @pytest.mark.asyncio
 async def test_episode_entities_row_written_when_entity_id_resolved() -> None:
     """When entity_id is resolved, upsert_owner_episode_entity is called for the episode."""
-    row = _make_row(entity_id="person.alice", state="home", recorded_at=_NOW)
+    row = _state_row(entity_id="person.alice", state="home", recorded_at=_NOW)
     adapter = HomeAssistantHistoryAdapter()
 
     upserted_episodes: list[Episode] = []

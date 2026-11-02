@@ -32,6 +32,7 @@ from butlers.core.qa.publication.binding import (
     expected_object_id,
     labels_payload,
     pr_text_payload,
+    pull_request_url,
     request_digest,
 )
 from butlers.core.qa.publication.export import ExportRefused, SealedExport
@@ -156,10 +157,6 @@ def _sanitize(title: str, body: str, labels: list[str], repo_root: Path) -> _San
     return _Sanitized(clean_title, clean_body, tuple(clean_labels))
 
 
-def _pr_url(repository: str, number: int) -> str:
-    return f"https://github.com/{repository}/pull/{number}"
-
-
 class QaPublisher:
     """Publishes one attempt's sealed export through a closed transport."""
 
@@ -251,14 +248,16 @@ class QaPublisher:
                 return dataclasses.replace(
                     failure,
                     pr_number=transport.bound_pr,
-                    pr_url=_pr_url(repository, transport.bound_pr) if transport.bound_pr else None,
+                    pr_url=pull_request_url(repository, transport.bound_pr)
+                    if transport.bound_pr
+                    else None,
                 )
         assert transport.bound_pr is not None
         return PublicationResult(
             PublicationStatus.PUBLISHED,
             "published",
             pr_number=transport.bound_pr,
-            pr_url=_pr_url(repository, transport.bound_pr),
+            pr_url=pull_request_url(repository, transport.bound_pr),
         )
 
     async def record_refusal(
