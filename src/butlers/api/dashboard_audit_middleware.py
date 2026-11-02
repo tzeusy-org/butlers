@@ -38,6 +38,7 @@ Design constraints
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -71,6 +72,19 @@ _EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset({("POST", "/api/home/
 # one explicit allowlisted audit row per write, so the generic middleware never reads these
 # bodies: matched by path before the body is touched, for every method and outcome.
 _PRIVATE_SUBTREES: tuple[str, ...] = ("/api/home/places",)
+
+
+# Capture intake (RFC0037): a server-owned, exact method+route no-body policy chosen
+# before any body read. The route records only a fixed category and opaque capture id
+# in ``request.state.capture_audit``; this middleware still writes the normal audit
+# row (actor, fixed operation, outcome) on success, error, timeout and cancellation.
+# No caller header, body flag or model argument can select or bypass this policy.
+def _capture_operation(method: str, path: str) -> tuple[str, str] | None:
+    from butlers.api.routers.captures import AUDIT_OPERATIONS, POST_DOORS
+
+    exact = path.rstrip("/")
+    door = POST_DOORS.get(exact) if method == "POST" else None
+    return (AUDIT_OPERATIONS[door], exact) if door is not None else None
 
 
 def _in_private_subtree(path: str) -> bool:
@@ -141,6 +155,10 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             request.url.path
         ):
             return await call_next(request)
+
+        capture = _capture_operation(request.method, request.url.path)
+        if capture is not None:
+            return await self._dispatch_capture(request, call_next, *capture)
 
         path = request.url.path
 
@@ -245,3 +263,55 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
             get_cache().invalidate_all()
 
         return response
+
+    async def _dispatch_capture(
+        self, request: Request, call_next, operation: str, path: str
+    ) -> Response:
+        """Content-blind audit for capture intake: never reads or retains the body."""
+        trace_id: str = request.scope.get("trace_id") or str(uuid.uuid4())
+        try:
+            response: Response = await call_next(request)
+        except asyncio.CancelledError:
+            # Audit, then propagate: a cancelled request is never a successful admission.
+            await asyncio.shield(self._emit_capture(request, operation, path, None, trace_id))
+            raise
+        except Exception:
+            await self._emit_capture(request, operation, path, 500, trace_id)
+            raise
+        response.headers["X-Trace-Id"] = trace_id
+        await self._emit_capture(request, operation, path, response.status_code, trace_id)
+        return response
+
+    async def _emit_capture(
+        self,
+        request: Request,
+        operation: str,
+        path: str,
+        status_code: int | None,
+        trace_id: str,
+    ) -> None:
+        recorded = getattr(request.state, "capture_audit", None) or {}
+        category = recorded.get("category", "not_routed")
+        if status_code is None:
+            category = "cancelled"
+        capture_id = recorded.get("capture_id")
+        result = "success" if status_code is not None and status_code < 400 else "error"
+        try:
+            db_manager = get_db_manager()
+        except RuntimeError:
+            return
+        await emit_dashboard_audit(
+            db_manager,
+            butler="general",
+            operation=operation,
+            method=request.method,
+            path=path,
+            path_params={"capture_id": capture_id} if capture_id else None,
+            body=None,
+            response_status=status_code,
+            trace_id=trace_id,
+            result=result,
+            error=f"capture:{category}" if result == "error" else None,
+            request=request,
+            outcome={"category": category},
+        )
