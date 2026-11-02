@@ -1814,6 +1814,15 @@ class TestEntityActivity:
         assert body["degraded"] is True
         assert body["chronicler_truncated"] is False
 
+    async def test_truncation_flag_is_false_when_a_full_page_is_partially_malformed(self):
+        """A full 500-row page with one malformed row is degraded, not truncated."""
+        episodes = [self._episode(uuid4(), _NOW - timedelta(minutes=i)) for i in range(499)]
+        episodes.append({"id": "not-a-uuid"})
+        app, _ = self._make_app(chronicler_episodes=episodes)
+        body = (await _get(app, _ACTIVITY_PATH)).json()
+        assert body["degraded"] is True
+        assert body["chronicler_truncated"] is False
+
     async def test_genuine_empty_activity_is_healthy(self):
         """A successful zero-row Chronicler read remains distinct from failure."""
         app, _ = self._make_app(fact_rows=[], chronicler_episodes=[])

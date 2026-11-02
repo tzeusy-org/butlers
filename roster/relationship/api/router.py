@@ -6773,7 +6773,7 @@ async def _fetch_chronicler_activity(
             len(episodes),
             entity_id,
         )
-        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE, truncated
+        return entries, _CHRONICLER_ACTIVITY_UNAVAILABLE, False
     return entries, None, truncated
 
 
