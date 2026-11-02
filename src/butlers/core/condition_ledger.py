@@ -86,7 +86,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import asyncpg
 
@@ -438,7 +438,7 @@ async def resolve_condition(
     source: str,
     fingerprint: str,
     resolution_metadata: dict[str, Any] | None = None,
-    post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[None]]
+    post_write: Callable[[asyncpg.Connection, list[ConditionTransition]], Awaitable[object]]
     | None = None,
 ) -> ConditionTransition | None:
     """Explicitly resolve the active episode for one condition identity.
@@ -495,7 +495,7 @@ async def resolve_condition(
                 resolution_metadata=resolution_metadata,
             )
             if post_write is not None:
-                await post_write(conn, [transition])
+                await post_write(cast(asyncpg.Connection, conn), [transition])
             return transition
 
 
