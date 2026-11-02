@@ -257,7 +257,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.ingestion_bearer_scrub import scrub_message_text
-    from butlers.tools.switchboard.attachment_materialize import (
+    from butlers.tools.attachment_materialize import (
         attachment_materialize as _attachment_materialize,
     )
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll

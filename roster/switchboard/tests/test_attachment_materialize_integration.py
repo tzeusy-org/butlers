@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from butlers.connectors.gmail import GmailConnectorConfig, GmailConnectorRuntime
-from butlers.tools.switchboard.attachment_materialize import attachment_materialize
+from butlers.tools.attachment_materialize import attachment_materialize
 
 pytestmark = pytest.mark.integration
 session_loop = pytest.mark.asyncio(loop_scope="session")
@@ -32,6 +32,15 @@ class _Blobs:
     async def put(self, data: bytes, *, content_type: str, filename: str | None = None) -> str:
         self.puts.append((data, content_type, filename))
         return f"s3://butlers/connectors/2026/11/02/{len(self.puts)}.pdf"
+
+    async def get(self, storage_ref: str) -> bytes:
+        raise NotImplementedError
+
+    async def delete(self, storage_ref: str) -> None:
+        raise NotImplementedError
+
+    async def exists(self, storage_ref: str) -> bool:
+        raise NotImplementedError
 
 
 def _runtime(pool: Any, blobs: _Blobs, identity: str, download: AsyncMock) -> GmailConnectorRuntime:
