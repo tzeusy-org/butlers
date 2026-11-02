@@ -28,14 +28,15 @@ UNTIL = SINCE + timedelta(hours=1)
 
 
 @pytest.fixture
-async def timeline_db(fresh_db):
-    parsed = urlparse(
-        fresh_db(
-            "core",
-            "switchboard",
-            schemas={"core": "switchboard", "switchboard": "switchboard"},
-        )
+def timeline_url(fresh_db) -> str:
+    return fresh_db(
+        "core", "switchboard", schemas={"core": "switchboard", "switchboard": "switchboard"}
     )
+
+
+@pytest.fixture
+async def timeline_db(timeline_url: str):
+    parsed = urlparse(timeline_url)
     manager = DatabaseManager(
         host=parsed.hostname or "localhost",
         port=parsed.port or 5432,

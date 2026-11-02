@@ -47,13 +47,19 @@ _DOWN = "finance"
 
 
 @pytest.fixture
-async def db_manager(fresh_db):
+def sessions_url(fresh_db) -> str:
+    """Provision the core chain — per-butler schemas each with a `sessions` table."""
+    return fresh_db("core")
+
+
+@pytest.fixture
+async def db_manager(sessions_url: str):
     """A real DatabaseManager with two butler pools over distinct schemas.
 
     ``general`` and ``finance`` are real role schemas from core_001, each with
     its own ``sessions`` table (schema-scoped via the pool's search_path).
     """
-    parsed = urlparse(fresh_db("core"))
+    parsed = urlparse(sessions_url)
     mgr = DatabaseManager(
         host=parsed.hostname or "localhost",
         port=parsed.port or 5432,
