@@ -49,6 +49,11 @@ logger = logging.getLogger(__name__)
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+# ``--allowed-mcp-server-names`` value for a session with no butler MCP server. Without an
+# allowlist the CLI starts every user- and project-level MCP server it finds, and the CLI
+# rejects an empty name ("mcpName is required"), so a name no server uses admits none.
+_NO_MCP_SERVERS_ALLOWLIST = "butlers-no-mcp-servers"
+
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
 # butler prompt's literal text from being replaced by the CLI's tool or skill listings.
@@ -415,9 +420,10 @@ class GeminiAdapter(RuntimeAdapter):
         are written through :meth:`build_config_file` into that directory, which the
         CLI is pointed at as its system settings file
         (``GEMINI_CLI_SYSTEM_SETTINGS_PATH``, which Gemini ranks above user and
-        project settings). When ``mcp_servers`` is non-empty,
-        ``--allowed-mcp-server-names`` limits the session to the configured servers
-        so user- or project-level MCP servers are not reachable. That confinement
+        project settings). ``--allowed-mcp-server-names`` limits the session to the
+        configured servers, or to none when ``mcp_servers`` is empty, so user- or
+        project-level MCP servers are not reachable even though ``--skip-trust``
+        trusts the working directory. That confinement
         covers MCP servers only: Gemini's built-in shell, file and web tools are not confined
         (``--sandbox=false``). The user home is left alone so the CLI's
         OAuth credentials keep working.
@@ -496,8 +502,8 @@ class GeminiAdapter(RuntimeAdapter):
                 gemini_servers, Path(config_dir.name), max_session_turns=max_turns
             )
             staged_env["GEMINI_CLI_SYSTEM_SETTINGS_PATH"] = str(config_path)
-            if gemini_servers:
-                cmd.extend(["--allowed-mcp-server-names", ",".join(gemini_servers)])
+            allowed_servers = ",".join(gemini_servers) or _NO_MCP_SERVERS_ALLOWLIST
+            cmd.extend(["--allowed-mcp-server-names", allowed_servers])
             child_env = {
                 **(filtered_env if filtered_env is not None else os.environ),
                 **staged_env,
