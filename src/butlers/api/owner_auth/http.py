@@ -225,6 +225,17 @@ class OwnerAuthMiddleware:
                     await self.app(scope, receive, send)
                     return
                 if (
+                    method == "POST"
+                    and path == "/api/chronicler/gap-interview/resolve"
+                    and expected
+                    and supplied
+                    and hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+                ):
+                    # Exact gap-interview tap route (bu-whhll.12); no owner principal.
+                    scope.setdefault("state", {})["gap_interview_callback_authenticated"] = True
+                    await self.app(scope, receive, send)
+                    return
+                if (
                     expected
                     and supplied
                     and _is_approval_callback_route(Request(scope))
