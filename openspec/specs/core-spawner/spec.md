@@ -596,11 +596,12 @@ When spawning a healing agent session (`trigger_source = "healing"`), the spawne
 - **WHEN** the spawner builds the MCP config for a `trigger_source = "healing"` session
 - **THEN** the `mcp_servers` dict is empty
 
-#### Scenario: Healing session receives GitHub token
-- **WHEN** the spawner builds the environment for a healing session
-- **THEN** the env includes `GH_TOKEN` resolved from the credential store
-- **AND** includes `PATH` for tool discovery
+#### Scenario: Healing session receives no GitHub credential
+- **WHEN** the spawner builds the environment for a session carrying historical `trigger_source = "healing"` provenance
+- **THEN** the env includes only `PATH` for tool discovery and trace-context propagation
+- **AND** it includes no `GH_TOKEN` or other GitHub credential, even when one is resolvable from the credential store or host environment
 - **AND** no other butler-specific credentials or env vars are passed
+- **AND** QA publication remains only through the restricted QA publisher (REQ-qa-investigation-dispatch-001)
 
 ### Requirement: Core QA Relay Availability
 The daemon SHALL register `report_error` and `get_healing_status` as logged core tools on every roster, independently of module declarations and `core_groups`. The retired `self_healing` module, its configuration and its skill SHALL NOT be required or registered. The Spawner SHALL have no local healing fallback.
