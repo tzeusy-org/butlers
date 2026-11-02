@@ -9,7 +9,6 @@ each parked action, renders fixed dossier text, and routes the resulting
 from __future__ import annotations
 
 import logging
-import os
 import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -31,7 +30,6 @@ from butlers.modules.approvals.previews import defang_urls, resolve_call_preview
 logger = logging.getLogger(__name__)
 
 _BURST_WINDOW = timedelta(minutes=10)
-_DASHBOARD_PORT_DEFAULT = "41200"
 
 ApprovalPushMode = Literal["single", "burst_digest", "collapsed", "duplicate"]
 ApprovalPushOutcome = Literal["delivered", "deferred", "collapsed", "duplicate", "failed"]
@@ -59,20 +57,6 @@ class ApprovalPushReservation:
     mode: ApprovalPushMode
     park_count: int
     pending_count: int
-
-
-def _dashboard_base_url(override: str | None = None) -> str:
-    """Return the dashboard origin used by owner-facing approval links."""
-    value = override or os.environ.get(
-        "DASHBOARD_URL",
-        f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
-    )
-    return value.rstrip("/")
-
-
-def dashboard_base_url(override: str | None = None) -> str:
-    """Public form of :func:`_dashboard_base_url` for other owner-facing links."""
-    return _dashboard_base_url(override)
 
 
 def _as_aware_datetime(value: Any, *, field_name: str) -> datetime:

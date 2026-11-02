@@ -358,6 +358,17 @@ def test_compose_message_embeds_no_api_url():
     assert "https://host.example/butlers-dev/secrets?focus=u%3Aspotify" in message
 
 
+def test_compose_message_without_dashboard_origin_carries_no_link():
+    """With DASHBOARD_URL unset the message still sends, minus a dead link."""
+    snapshot = CredentialSnapshot(
+        key="u:google", family="user", label="Google", state="expired", provider="google"
+    )
+    message = _compose_message(snapshot, None)
+    assert "http" not in message and "/secrets" not in message
+    assert "has expired" in message
+    assert "Re-authorize from the credential card" in message
+
+
 def test_compose_message_omits_reauthorize_for_non_oauth():
     snapshot = CredentialSnapshot(
         key="c:claude-cli-token", family="cli", label="claude-cli-token", state="failing"
@@ -403,8 +414,9 @@ async def test_run_secrets_lifecycle_check_debounces_same_state():
     }
 
 
-async def test_run_secrets_lifecycle_check_delivers_on_new_transition():
+async def test_run_secrets_lifecycle_check_delivers_on_new_transition(monkeypatch):
     """A genuinely new transition delivers, records the ledger, and writes the debounce marker."""
+    monkeypatch.setenv("DASHBOARD_URL", "https://dash.example")
     shared_pool = object()
     db = _FakeDatabaseManager(butler_pools={}, shared_pool=shared_pool)
     snapshot = CredentialSnapshot(

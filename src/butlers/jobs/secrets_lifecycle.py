@@ -114,7 +114,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -138,6 +137,7 @@ from butlers.core.attention_ledger import (
     record_attention_event,
 )
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.core.dashboard_links import dashboard_base_url
 from butlers.core.job_health import mark_tick_incomplete, record_tick
 from butlers.core.temporal.delivery import compute_deliver_at, should_defer_notification
 from butlers.core.temporal.delivery_db import (
@@ -186,7 +186,6 @@ _STATE_DESCRIPTIONS: dict[str, str] = {
     "expired": "has expired",
 }
 
-_DASHBOARD_PORT_DEFAULT = "41200"
 
 # bu-hmdqz.3 slice 2: how long to wait before retrying a transport-failed
 # delivery via the deferred_notifications flusher. The retry envelope is
@@ -196,19 +195,6 @@ _DASHBOARD_PORT_DEFAULT = "41200"
 # resolve_cross_container_mcp_url()), the retry is never subject to the
 # cross-container transport bug in the first place.
 _RETRY_BACKOFF = timedelta(minutes=30)
-
-
-def _dashboard_url() -> str:
-    """Resolve the dashboard base URL from the environment.
-
-    Mirrors the lookup in ``butlers.startup_guard._default_dashboard_url``
-    (kept local rather than imported — that module is about a distinct
-    concern, the Google-credential startup guard).
-    """
-    return os.environ.get(
-        "DASHBOARD_URL",
-        f"http://localhost:{os.environ.get('DASHBOARD_PORT', _DASHBOARD_PORT_DEFAULT)}",
-    )
 
 
 @dataclass(frozen=True)
@@ -398,7 +384,7 @@ def _focus_fragment(key: str) -> str:
     return f"/secrets?focus={quote(key, safe='')}"
 
 
-def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
+def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str | None) -> str:
     """Build the owner-facing notification body for one lifecycle transition.
 
     Always includes a deep link to the exact card on /secrets
@@ -413,9 +399,11 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str) -> str:
     except a bare-root deployment. The /secrets deep link already lands on the
     card whose re-authorize button starts the same dance.
     """
-    focus_url = f"{dashboard_url}{_focus_fragment(snapshot.key)}"
     description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
-    lines = [f"Credential '{snapshot.label}' {description}.", focus_url]
+    lines = [f"Credential '{snapshot.label}' {description}."]
+    if dashboard_url:
+        # No configured dashboard origin means no link: a localhost URL is dead on a phone.
+        lines.append(f"{dashboard_url.rstrip('/')}{_focus_fragment(snapshot.key)}")
 
     if snapshot.provider is not None:
         provider_meta = PROVIDER_CATALOG.get(snapshot.provider)
@@ -713,7 +701,7 @@ async def run_secrets_lifecycle_check(db: DatabaseManager) -> dict[str, Any]:
     snapshots = await _collect_snapshots(db, tracker=tracker)
     attention = [s for s in snapshots if s.state in _ATTENTION_STATES]
 
-    dashboard_url = _dashboard_url()
+    dashboard_url = dashboard_base_url()
     delivered = deferred = suppressed = errors = 0
 
     for snapshot in attention:
