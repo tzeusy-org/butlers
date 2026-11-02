@@ -122,6 +122,59 @@ def task_scan_observation(before, after, phase):
     }
 
 
+def retired_task_rescan(pid, identity, retired_task, observed):
+    """Two bounded complete stable censuses; retirement alone proves nothing."""
+    retained = set(observed)
+    deadline = time.monotonic() + TERM_GRACE
+    previous = None
+    try:
+        for _ in range(2):
+            if time.monotonic() >= deadline or process(pid) != identity:
+                return retained, True
+            tasks = os.listdir(f"/proc/{pid}/task")
+            if (
+                not tasks
+                or len(tasks) > MAX_PROCESSES
+                or retired_task in tasks
+                or any(not task.isdecimal() for task in tasks)
+            ):
+                return retained, True
+            starts = {}
+            found = set()
+            for task in tasks:
+                if time.monotonic() >= deadline:
+                    return retained, True
+                before, category = task_identity(pid, task)
+                if category != "known" or before[1] in ("Z", "X"):
+                    return retained, True
+                with open(f"/proc/{pid}/task/{task}/children") as stream:
+                    raw = stream.read(65536)
+                if len(raw) == 65536:
+                    return retained, True
+                for value in raw.split():
+                    child = int(value)
+                    if child <= 1 or len(found | retained) >= MAX_PROCESSES:
+                        return retained, True
+                    found.add(child)
+                    retained.add(child)
+                after, category = task_identity(pid, task)
+                if category != "known" or after != before:
+                    return retained, True
+                starts[task] = before
+            final_tasks = os.listdir(f"/proc/{pid}/task")
+            if set(final_tasks) != set(tasks) or process(pid) != identity:
+                return retained, True
+            if any(task_identity(pid, task) != (start, "known") for task, start in starts.items()):
+                return retained, True
+            snapshot = (starts, found)
+            if previous is not None and snapshot != previous:
+                return retained, True
+            previous = snapshot
+        return retained, time.monotonic() >= deadline
+    except (OSError, ValueError, IndexError):
+        return retained, True
+
+
 def children(pid, diagnostics=None, site=0):
     identity = process(pid)
     truncated = False
@@ -176,6 +229,26 @@ def children(pid, diagnostics=None, site=0):
         ):
             # Departure cannot erase overflow already observed in this scan.
             return set(), truncated
+        task_after = (
+            task_identity(pid, selected_task) if selected_task is not None else (None, "unknown")
+        )
+        if (
+            isinstance(error, OSError)
+            and error.errno == errno.ENOENT
+            and task_phase == "child-open"
+            and not truncated
+            and identity
+            and current == identity
+            and current[1] not in ("Z", "X")
+            and task_before[1] == "known"
+            and task_before[0][1] not in ("Z", "X")
+            and task_after == (None, "absent")
+        ):
+            recovered, incomplete = retired_task_rescan(pid, identity, selected_task, result)
+            if not incomplete:
+                return recovered, False
+            # A failed rescan retains every observed descendant but still latches refusal.
+            result = recovered
         # Permission, malformed data, unknown/reused identity and live actors
         # remain unobserved/truncated; never turn them into a positive scan.
         count_refusal(diagnostics, "scan_refused")
@@ -185,7 +258,7 @@ def children(pid, diagnostics=None, site=0):
             else None
         )
         first_scan_refusal(diagnostics, site, operation, error, identity, current, task_scan)
-        return set(), True
+        return result, True
 
 
 def main():

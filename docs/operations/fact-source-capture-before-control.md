@@ -100,3 +100,12 @@ matched, and whether its observed state was departed. No PID, TID, path or start
 A task entry observed absent is diagnostic only: it never clears a refusal latch or permits an
 incomplete scan. The bounded synthetic thread-disappearance control proves one mechanism that
 can produce a refused tuple, not the historical hosted cause or any PG BEFORE/AFTER witness.
+
+A selected task's disappearance is never an empty successful scan. Only child-open ENOENT
+for a previously known live task, positively absent afterward under the same live owner,
+may attempt two complete fresh task/children censuses within the existing TERM_GRACE.
+Both censuses must have identical task start identities and child sets; every observed
+descendant is retained. Any denial, malformed data, reuse, overflow, deadline or instability
+refuses and latches normally. No prior refusal is cleared. Final completion still requires
+owned-descendant settlement, genuine kernel ECHILD and empty direct/adopted ownership.
+This synthetic mechanism proof does not establish a PG CALL or historical hosted cause.

@@ -373,6 +373,305 @@ def test_owned_domain_settles_resistant_descendant_and_preserves_unrelated_senti
         assert control.task_scan_observation({}) is None
         assert projected["first_task_scan"] == producer["first_task_scan"]
 
+        # Complete rescan retains known descendants; every ambiguous case refuses.
+        import io
+        from unittest.mock import patch
+
+        for mode in (
+            "complete",
+            "empty-tasks",
+            "owner-reuse",
+            "task-reuse",
+            "denied",
+            "malformed",
+            "overflow",
+            "deadline",
+            "retired-reappears",
+        ):
+            calls = [0]
+
+            def task(pid, tid, mode=mode, calls=calls):
+                calls[0] += 1
+                return ((202 if mode != "task-reuse" or calls[0] == 1 else 203, "S"), "known")
+
+            def opening(*a, mode=mode):
+                if mode == "denied":
+                    raise PermissionError(13, "controlled")
+                return io.StringIO(
+                    "x" if mode == "malformed" else "1" * 65536 if mode == "overflow" else "41"
+                )
+
+            names = (
+                [] if mode == "empty-tasks" else ["99"] if mode == "retired-reappears" else ["37"]
+            )
+            clock = iter((0, 1)) if mode == "deadline" else None
+            with (
+                patch.object(
+                    supervisor,
+                    "process",
+                    lambda pid, mode=mode: (102 if mode == "owner-reuse" else 101, "S"),
+                ),
+                patch.object(supervisor, "task_identity", task),
+                patch.object(supervisor.os, "listdir", lambda path, names=names: names),
+                patch.object(supervisor, "open", opening, create=True),
+                patch.object(
+                    supervisor.time, "monotonic", lambda clock=clock: next(clock) if clock else 0
+                ),
+            ):
+                retained, incomplete = supervisor.retired_task_rescan(37, (101, "S"), "99", {43})
+            assert 43 in retained
+            assert incomplete is (mode != "complete")
+            if mode == "complete":
+                assert retained == {41, 43}
+
+        for mode in ("second-tasks", "second-children", "later-denied"):
+            opens = [0]
+            lists = [0]
+
+            def listing(path, mode=mode, lists=lists):
+                lists[0] += 1
+                return ["38"] if mode == "second-tasks" and lists[0] >= 3 else ["37"]
+
+            def reading(*args, mode=mode, opens=opens):
+                opens[0] += 1
+                if mode == "later-denied" and opens[0] == 2:
+                    raise PermissionError(13, "controlled")
+                return io.StringIO("42" if mode == "second-children" and opens[0] == 2 else "41")
+
+            with (
+                patch.object(supervisor, "process", lambda pid: (101, "S")),
+                patch.object(supervisor, "task_identity", lambda pid, tid: ((202, "S"), "known")),
+                patch.object(supervisor.os, "listdir", listing),
+                patch.object(supervisor, "open", reading, create=True),
+                patch.object(supervisor.time, "monotonic", lambda: 0),
+            ):
+                retained, incomplete = supervisor.retired_task_rescan(37, (101, "S"), "99", {43})
+            assert incomplete is True
+            assert {41, 43} <= retained
+            if mode == "second-children":
+                assert 42 in retained
+
+        timeout_checker = tmp_path / "owned-timeout-checker.py"
+        timeout_checker.write_text(
+            "import importlib.util,pathlib,os,sys,subprocess,json\nspec=importlib.util.spec_from_file_location('_checker_control',os.environ['CONTROL_SOURCE']);control=importlib.util.module_from_spec(spec);spec.loader.exec_module(control)\ncontrol.SUPERVISOR=pathlib.Path(os.environ['INNER_SUPERVISOR'])\nsentinel=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)\nrow={'stage':'timeout-check','assertion_RED':False,'sentinel_preserved':False}\ntry:\n    code='import os,signal,time; p=os.fork(); os.setsid() if p==0 else None; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(30)'\n    result=control.run_owned([sys.executable,'-c',code],os.environ.copy(),0.2)\n    row.update(timed_out=result['timed_out'],cleanup_complete=result['cleanup_complete'],kernel_children_closed=result['observation']['kernel_children_closed'],settled_complete=result['observation']['settled_complete'])\n    row['sentinel_preserved']=sentinel.poll() is None\n    try:\n        assert result['timed_out'] is True\n        assert result['cleanup_complete'] is True\n        assert result['observation']['kernel_children_closed'] is True\n        assert result['observation']['settled_complete'] is True\n        assert sentinel.poll() is None\n    except AssertionError:\n        row['assertion_RED']=True\n        raise\nfinally:\n    sentinel.terminate();sentinel.wait(timeout=5)\n    row['sentinel_reaped']=sentinel.returncode is not None\n    fd=os.open(os.environ['TIMEOUT_CLOSED'],os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\n    with os.fdopen(fd,'w') as stream:json.dump(row,stream)\n"
+        )
+        timeout_omission = tmp_path / "omitted-cleanup-supervisor.py"
+        supervisor_bytes = control.SUPERVISOR.read_text()
+        assert supervisor_bytes.count("os.kill(pid, signum)") == 1
+        timeout_omission.write_text(
+            supervisor_bytes.replace(
+                "os.kill(pid, signum)", "os.kill(pid, signum) if pid == child.pid else None"
+            )
+        )
+        for timeout_name, timeout_supervisor in (
+            ("positive", control.SUPERVISOR),
+            ("inverse", timeout_omission),
+            ("restored", control.SUPERVISOR),
+        ):
+            timeout_closed = tmp_path / (timeout_name + "-closed.json")
+            timeout_result = control.run_owned(
+                [sys.executable, str(timeout_checker)],
+                {
+                    **os.environ,
+                    "CONTROL_SOURCE": str(Path(control.__file__)),
+                    "INNER_SUPERVISOR": str(timeout_supervisor),
+                    "TIMEOUT_CLOSED": str(timeout_closed),
+                },
+                10,
+            )
+            assert timeout_result["cleanup_complete"] is True
+            assert timeout_result["timed_out"] is False and timeout_result["cancelled"] is False
+            timeout_facts = json.loads(timeout_closed.read_text())
+            assert timeout_facts["sentinel_reaped"] is True
+            assert timeout_facts["sentinel_preserved"] is True
+            if timeout_name == "inverse":
+                assert timeout_result["exit"] == 1
+                assert timeout_facts["assertion_RED"] is True
+                assert timeout_facts["cleanup_complete"] is False
+            else:
+                assert timeout_result["exit"] == 0
+                assert timeout_facts["assertion_RED"] is False
+                assert timeout_facts["cleanup_complete"] is True
+        kernel_fixture = tmp_path / "owned-retirement-kernel.py"
+        kernel_fixture.write_text(
+            "\"\"\"Owned synthetic actors only; all process identities stay in RAM.\"\"\"\nimport ctypes\nimport importlib.util\nimport importlib.machinery\nimport json\nimport os\nimport pathlib\nimport selectors\nimport signal\nimport socket\nimport subprocess\nimport sys\nimport tempfile\nimport threading\nimport time\n\nHERE = pathlib.Path(__file__).resolve()\nOLD = NEW = pathlib.Path(os.environ['OWNED_SUPERVISOR'])\n\nCLOSED_EVENTS = []\nSTAGE = 'root-start'\nCOUNTS = None\nPRIMARY = None\nPRIMARY_ERROR = None\nALLOWED_LINES = frozenset(json.loads(os.environ['KERNEL_ALLOWED_LINES']))\nSTAGES = frozenset(('root-start','before-wait','after-wait','before-cardinality','after-cardinality','cleanup','kernel-finished','canary','wrapper-import','wrapper-bind','wrapper-main','wrapper-verdict'))\ndef fault(error):\n    line = None\n    frame = error.__traceback__ if isinstance(error, BaseException) else None\n    count = 0\n    while frame is not None and count < 48:\n        if frame.tb_frame.f_code.co_filename == str(HERE) and type(frame.tb_lineno) is int and frame.tb_lineno in ALLOWED_LINES:\n            line = frame.tb_lineno\n        frame = frame.tb_next\n        count += 1\n    if frame is not None:\n        line = None\n    return {'class': type(error).__name__ if type(error).__name__ in {'AssertionError','TimeoutError','OSError','ValueError','KeyError'} else 'other',\n            'line': line, 'stage': STAGE if STAGE in STAGES else None}\ndef diagnostic_canary():\n    private_local = 'PRIVATE_CANARY_LOCAL'\n    assert False, 'PRIVATE_CANARY_MESSAGE'\ndef cardinality(values):\n    return '0' if len(values) == 0 else '1' if len(values) == 1 else 'many'\n\ndef send(value):\n    if sys.argv[1] == 'run':\n        CLOSED_EVENTS.append(value)\n    os.write(1, (json.dumps(value, separators=(',', ':'))+'\\n').encode())\n\ndef owner(address):\n    channel = socket.socket(socket.AF_UNIX)\n    channel.settimeout(55)\n    channel.connect(address)\n    ready, leave = threading.Event(), threading.Event()\n    actor = {}\n    def worker():\n        child = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(50)'],\n                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n                                 stderr=subprocess.DEVNULL, start_new_session=True)\n        actor.update(pid=os.getpid(), tid=threading.get_native_id(), child=child.pid)\n        ready.set()\n        leave.wait(50)\n    thread = threading.Thread(target=worker)\n    thread.start()\n    assert ready.wait(5)\n    channel.sendall(json.dumps(actor).encode()+b'\\n')\n    while True:\n        command = channel.recv(64)\n        if command == b'exit-thread':\n            leave.set()\n            thread.join(5)\n            assert not thread.is_alive()\n            channel.sendall(b'thread-exited')\n        elif not command:\n            break\n    leave.set()\n    thread.join(5)\n\n\ndef await_retirement(owner_probe, task_probe, owner_start, task_start, clock, pause):\n    assert type(owner_start) is int and owner_start > 0\n    assert type(task_start) is int and task_start > 0\n    until = clock() + 0.05\n    for _ in range(64):\n        owner = owner_probe()\n        assert isinstance(owner, tuple) and len(owner) == 2\n        assert type(owner[0]) is int and owner[0] == owner_start\n        assert type(owner[1]) is str and owner[1] in 'RSDTtPIWK' and owner[1] not in 'ZX'\n        task, category = task_probe()\n        if category == 'absent':\n            assert task is None\n            return\n        assert category == 'known' and isinstance(task, tuple) and len(task) == 2\n        assert type(task[0]) is int and task[0] == task_start\n        assert type(task[1]) is str and task[1] in 'RSDTtXZPIWK'\n        assert clock() < until\n        pause(0.001)\n    raise AssertionError('bounded retirement')\n\ndef wrapper(case, address, parent, parent_start):\n    global STAGE\n    STAGE = 'wrapper-import'\n    module_path = OLD if case == 'original-gap' else NEW\n    loader = importlib.machinery.SourceFileLoader('owned_synthetic_supervisor', str(module_path))\n    spec = importlib.util.spec_from_loader(loader.name, loader)\n    module = importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    STAGE = 'wrapper-bind'\n    server = socket.socket(socket.AF_UNIX)\n    server.bind(address)\n    server.listen(1)\n    server.settimeout(5)\n    connection = None\n    actor = None\n    positioned = False\n    adopted = False\n    original_listdir, original_open, original_waitpid = os.listdir, open, os.waitpid\n    def get_actor():\n        nonlocal actor, connection\n        if actor is None:\n            connection, _ = server.accept()\n            connection.settimeout(5)\n            raw = connection.recv(512)\n            actor = json.loads(raw)\n            assert set(actor) == {'pid', 'tid', 'child'}\n            assert all(type(n) is int and n > 1 for n in actor.values())\n            # Private controller pipe only; never retained or printed by outer runner.\n            send({'fixture': 'owned-actors', 'actor': actor})\n        return actor\n    def listing(path):\n        a = get_actor()\n        result = original_listdir(path)\n        if path == f\"/proc/{a['pid']}/task\" and not positioned:\n            assert str(a['tid']) in result\n        return result\n    def opening(path, *args, **kwargs):\n        nonlocal positioned\n        if not str(path).endswith('/children'):\n            return original_open(path, *args, **kwargs)\n        a = get_actor()\n        target = f\"/proc/{a['pid']}/task/{a['tid']}/children\"\n        if str(path) == target and not positioned:\n            if case != 'candidate-live':\n                bound_owner = module.process(a['pid'])\n                bound_task, bound_category = module.task_identity(a['pid'], str(a['tid']))\n                assert bound_owner is not None and bound_owner[1] not in ('Z', 'X')\n                assert bound_category == 'known' and bound_task is not None and bound_task[1] not in ('Z', 'X')\n                connection.sendall(b'exit-thread')\n                assert connection.recv(64) == b'thread-exited'\n                await_retirement(lambda: module.process(a['pid']),\n                                 lambda: module.task_identity(a['pid'], str(a['tid'])),\n                                 bound_owner[0], bound_task[0], time.monotonic, time.sleep)\n                assert not os.path.exists(f\"/proc/{a['pid']}/task/{a['tid']}\")\n            positioned = True\n            send({'fixture': 'positioned', 'thread_entry_absent': case != 'candidate-live'})\n        return original_open(path, *args, **kwargs)\n    def waiting(*args):\n        nonlocal adopted\n        result = original_waitpid(*args)\n        if actor is not None and result[0] == actor['child']:\n            adopted = True\n        return result\n    if hasattr(module, 'retired_task_rescan'):\n        actual_rescan = module.retired_task_rescan\n        def recovery(*args):\n            result, incomplete = actual_rescan(*args)\n            send({'fixture': 'rescan', 'complete': not incomplete,\n                  'observed_descendant_retained': actor['child'] in result})\n            return result, incomplete\n        module.retired_task_rescan = recovery\n    module.os.listdir = listing\n    module.open = opening\n    module.os.waitpid = waiting\n    sys.argv = [str(module_path), parent, parent_start, sys.executable, str(HERE), 'owner', address]\n    code = 2\n    try:\n        STAGE = 'wrapper-main'\n        code = module.main()\n        STAGE = 'wrapper-verdict'\n        try:\n            original_waitpid(-1, os.WNOHANG)\n            echild = False\n        except ChildProcessError:\n            echild = True\n        send({'fixture': 'kernel-closure', 'ECHILD': echild,\n              'adopted_descendant_reaped': adopted,\n              'descendant_absent': actor is not None and module.process(actor['child']) is None,\n              'positioned': positioned})\n    finally:\n        if connection is not None:\n            connection.close()\n        server.close()\n    return code\n\n\ndef start_ticks(pid):\n    value = pathlib.Path(f'/proc/{pid}/stat').read_text()\n    return int(value[value.rfind(')')+2:].split()[19])\n\n\ndef run():\n    global STAGE, COUNTS, PRIMARY, PRIMARY_ERROR\n    assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0\n    sentinel = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'],\n                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,\n                                stderr=subprocess.DEVNULL, start_new_session=True)\n    rows = []\n    known = {}\n    active = None\n    try:\n        with tempfile.TemporaryDirectory(prefix='owned-task-gap-') as directory:\n            for case in ('candidate-gap',):\n                events = []\n                begin = time.monotonic()\n                active = subprocess.Popen([sys.executable, str(HERE), 'wrapper', case,\n                                           str(pathlib.Path(directory)/(case+'.sock')),\n                                           str(os.getpid()), str(start_ticks(os.getpid()))],\n                                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,\n                                          stderr=subprocess.DEVNULL, start_new_session=True)\n                known[active.pid] = start_ticks(active.pid)\n                selector = selectors.DefaultSelector()\n                selector.register(active.stdout, selectors.EVENT_READ)\n                wire = bytearray()\n                stopped = False\n                while selector.get_map() or active.poll() is None:\n                    assert time.monotonic()-begin < 60, 'owned child bound'\n                    for key, _ in selector.select(0.05):\n                        chunk = os.read(key.fileobj.fileno(), 4096)\n                        if not chunk:\n                            selector.unregister(key.fileobj)\n                            continue\n                        wire.extend(chunk)\n                        assert len(wire) <= 16384\n                        while b'\\n' in wire:\n                            line, _, tail = wire.partition(b'\\n')\n                            wire[:] = tail\n                            value = json.loads(line)\n                            if value.get('fixture') == 'owned-actors':\n                                for owned in (value['actor']['pid'], value['actor']['child']):\n                                    known[owned] = start_ticks(owned)\n                            else:\n                                events.append(value)\n                                if value.get('fixture') == 'wrapper-fault':\n                                    CLOSED_EVENTS.append(value)\n                            if value.get('fixture') == 'positioned' and not stopped:\n                                active.send_signal(signal.SIGTERM)\n                                stopped = True\n                STAGE = 'before-wait'\n                active.wait(timeout=5)\n                STAGE = 'after-wait'\n                selector.close()\n                active.stdout.close()\n                assert not wire\n                diagnostics = [x for x in events if x.get('event') == 'diagnostic']\n                settled = [x for x in events if x.get('event') == 'settled']\n                closures = [x for x in events if x.get('fixture') == 'kernel-closure']\n                STAGE = 'before-cardinality'\n                COUNTS = [cardinality(x) for x in (diagnostics, settled, closures)]\n                assert len(diagnostics) == len(settled) == len(closures) == 1\n                STAGE = 'after-cardinality'\n                d, s, closure = diagnostics[0], settled[0], closures[0]\n                send({'fixture': 'case-summary', 'case': case, 'stage': 'kernel-verdict', 'exit': active.returncode, 'diagnostic': d, 'settled': s, 'closure': closure})\n                assert closure['ECHILD'] and closure['adopted_descendant_reaped']\n                assert closure['descendant_absent'] and closure['positioned']\n                assert sentinel.poll() is None\n                row = {'case': case, 'exit': active.returncode,\n                       'elapsed_s': time.monotonic()-begin,\n                       'first_scan_refusal': d.get('first_scan_refusal'),\n                       'first_task_scan': d.get('first_task_scan'),\n                       'counts': d['counts'], 'reason': d['reason'],\n                       'kernel_children_closed': d['kernel_children_closed'],\n                       'settled_complete': s['complete'],\n                       'adopted_descendant_reaped': True, 'real_ECHILD': True,\n                       'sentinel_preserved': True}\n                if case == 'original-gap':\n                    assert row['first_scan_refusal'] == {'s': 2, 'k': 1, 'o': 2, 'b': 7}\n                    assert active.returncode == 2 and not s['complete']\n                    assert d['reason'] == 'latched_refusal'\n                    try:\n                        assert s['complete'], 'complete owned scan required'\n                    except AssertionError:\n                        row['omission_assertion_RED'] = True\n                else:\n                    assert active.returncode == 0 and s['complete']\n                    assert d['first_scan_refusal'] is None and d['reason'] == 'settled'\n                scans = [x for x in events if x.get('fixture') == 'rescan']\n                if case == 'candidate-gap':\n                    assert scans and all(x['complete'] and x['observed_descendant_retained'] for x in scans)\n                    row['real_rescan_complete_and_descendant_retained'] = True\n                if case == 'candidate-live':\n                    assert not scans\n                rows.append(row)\n                active = None\n        return {'cases': rows, 'real_P0_PG_UV_workload': False}\n    except BaseException as error:\n        PRIMARY = fault(error)\n        PRIMARY_ERROR = error\n        raise\n    finally:\n        STAGE = 'cleanup'\n        if active is not None and active.poll() is None:\n            active.kill()\n            active.wait(timeout=5)\n        for pid, identity in known.items():\n            try:\n                if start_ticks(pid) == identity:\n                    os.kill(pid, signal.SIGKILL)\n            except (FileNotFoundError, ProcessLookupError):\n                pass\n        # Only this freshly created subreaper's direct children: all are owned\n        # synthetic actors, including adopted session-escaping descendants.\n        direct = pathlib.Path(f\"/proc/{os.getpid()}/task/{threading.get_native_id()}/children\")\n        for value in direct.read_text().split():\n            pid = int(value)\n            if pid == sentinel.pid:\n                continue\n            try:\n                identity = start_ticks(pid)\n                if start_ticks(pid) == identity:\n                    os.kill(pid, signal.SIGKILL)\n            except (FileNotFoundError, ProcessLookupError):\n                pass\n        sentinel.terminate()\n        sentinel.wait(timeout=5)\n        until = time.monotonic()+5\n        while True:\n            try:\n                child, _ = os.waitpid(-1, os.WNOHANG)\n            except ChildProcessError:\n                break\n            if not child:\n                assert time.monotonic() < until\n                time.sleep(0.01)\n        # This process owns no children after its bounded cleanup.\n        groups_absent = True\n        for group in (*known, sentinel.pid):\n            try:\n                os.killpg(group, 0)\n                groups_absent = False\n            except ProcessLookupError:\n                pass\n        send({'fixture': 'final-cleanup', 'all_owned_groups_absent': groups_absent,\n              'real_ECHILD': True, 'sentinel_reaped': sentinel.returncode is not None})\n        assert groups_absent\n\nif __name__ == '__main__':\n    if sys.argv[1] == 'owner':\n        owner(sys.argv[2])\n    elif sys.argv[1] == 'wrapper':\n        try:\n            code = wrapper(*sys.argv[2:])\n        except BaseException as error:\n            send({'fixture': 'wrapper-fault', 'fault': fault(error)})\n            code = 2\n        raise SystemExit(code)\n    else:\n        failure = None\n        cleanup_failure = None\n        result = None\n        try:\n            result = run()\n        except BaseException as error:\n            failure = fault(error)\n            cleanup_failure = failure if PRIMARY and error is not PRIMARY_ERROR else None\n        projection = {'schema': 'owned-kernel-closed.v1', 'stage': 'kernel-finished', 'exception_class': None if failure is None else failure['class'], 'first_fault': PRIMARY or failure, 'cleanup_fault': cleanup_failure, 'cardinality': COUNTS, 'events': CLOSED_EVENTS, 'result': result}\n        encoded = json.dumps(projection)\n        assert len(encoded.encode()) <= 16384\n        descriptor = os.open(os.environ['KERNEL_PROJECTION'], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)\n        with os.fdopen(descriptor, 'w') as stream:\n            stream.write(encoded)\n        raise SystemExit(2 if failure else 0)\n"
+        )
+        import ast
+        import hashlib
+        import stat
+
+        frozen_fixture = kernel_fixture.read_bytes()
+        frozen_digest = hashlib.sha256(frozen_fixture).hexdigest()
+        syntax = ast.parse(frozen_fixture)
+        allowed = sorted(
+            {
+                node.lineno
+                for node in ast.walk(syntax)
+                if isinstance(node, (ast.Assert, ast.Call, ast.Raise))
+            }
+        )
+        diagnostic_nodes = [
+            node
+            for node in syntax.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"fault", "diagnostic_canary", "cardinality", "await_retirement"}
+        ]
+        diagnostic_namespace = {
+            "HERE": kernel_fixture,
+            "ALLOWED_LINES": frozenset(allowed),
+            "STAGE": "canary",
+            "STAGES": frozenset({"canary"}),
+        }
+        exec(
+            compile(
+                ast.Module(body=diagnostic_nodes, type_ignores=[]), str(kernel_fixture), "exec"
+            ),
+            diagnostic_namespace,
+        )
+        try:
+            diagnostic_namespace["diagnostic_canary"]()
+        except AssertionError as canary:
+            first = diagnostic_namespace["fault"](canary)
+        expected_line = next(
+            node.lineno
+            for node in ast.walk(syntax)
+            if isinstance(node, ast.Assert)
+            and isinstance(node.msg, ast.Constant)
+            and node.msg.value == "PRIVATE_CANARY_MESSAGE"
+        )
+        assert first == {"class": "AssertionError", "line": expected_line, "stage": "canary"}
+        assert "PRIVATE" not in json.dumps(first)
+        assert diagnostic_namespace["fault"](None)["line"] is None
+        try:
+            raise ValueError("PRIVATE_UNMATCHED")
+        except ValueError as unmatched:
+            assert diagnostic_namespace["fault"](unmatched)["line"] is None
+        assert diagnostic_namespace["cardinality"]([]) == "0"
+        assert diagnostic_namespace["cardinality"]([1]) == "1"
+        assert diagnostic_namespace["cardinality"]([1, 2]) == "many"
+        assert hashlib.sha256(kernel_fixture.read_bytes()).hexdigest() == frozen_digest
+        wait_retired = diagnostic_namespace["await_retirement"]
+
+        def controlled_wait(function, mode):
+            state = {"absent": False, "tick": 0.0}
+
+            def owner_probe():
+                return (
+                    None
+                    if mode == "owner-dead"
+                    else (
+                        102 if mode == "owner-reuse" else 101,
+                        "Z" if mode == "owner-zombie" else "S",
+                    )
+                )
+
+            def task_probe():
+                if state["absent"]:
+                    return None, "absent"
+                return (
+                    ((203 if mode == "task-reuse" else 202, "S"), "known")
+                    if mode not in {"denied", "invalid", "unknown", "other"}
+                    else (None, mode)
+                )
+
+            def clock():
+                return state["tick"]
+
+            def pause(seconds):
+                state["tick"] += seconds
+                if mode == "positive":
+                    state["absent"] = True
+
+            function(owner_probe, task_probe, 101, 202, clock, pause)
+            assert task_probe() == (None, "absent"), "actual retirement required"
+
+        controlled_wait(wait_retired, "positive")
+        for refused_mode in (
+            "deadline",
+            "task-reuse",
+            "owner-reuse",
+            "owner-dead",
+            "owner-zombie",
+            "denied",
+            "invalid",
+            "unknown",
+            "other",
+        ):
+            with pytest.raises(AssertionError):
+                controlled_wait(wait_retired, refused_mode)
+        waiting_node = next(node for node in diagnostic_nodes if node.name == "await_retirement")
+        omission_tree = copy.deepcopy(waiting_node)
+        for child in ast.walk(omission_tree):
+            if isinstance(child, ast.For):
+                child.body[-1] = ast.Return(value=None)
+        omitted_namespace = {}
+        exec(
+            compile(
+                ast.fix_missing_locations(ast.Module(body=[omission_tree], type_ignores=[])),
+                str(kernel_fixture),
+                "exec",
+            ),
+            omitted_namespace,
+        )
+        with pytest.raises(AssertionError, match="actual retirement required"):
+            controlled_wait(omitted_namespace["await_retirement"], "positive")
+        controlled_wait(wait_retired, "positive")
+        kernel_projection = tmp_path / "owned-kernel-closed.json"
+        kernel_result = control.run_owned(
+            [sys.executable, str(kernel_fixture), "run"],
+            {
+                **os.environ,
+                "OWNED_SUPERVISOR": str(control.SUPERVISOR),
+                "KERNEL_PROJECTION": str(kernel_projection),
+                "KERNEL_ALLOWED_LINES": json.dumps(allowed),
+            },
+            10,
+        )
+        assert kernel_result["cleanup_complete"] is True
+        assert stat.S_IMODE(kernel_projection.stat().st_mode) == 0o600
+        raw_projection = kernel_projection.read_bytes()
+        assert len(raw_projection) <= 16384
+        kernel_closed = json.loads(raw_projection)
+        assert set(kernel_closed) == {
+            "schema",
+            "stage",
+            "exception_class",
+            "first_fault",
+            "cleanup_fault",
+            "cardinality",
+            "events",
+            "result",
+        }
+        assert kernel_closed["schema"] == "owned-kernel-closed.v1"
+        for closed_fault in (kernel_closed["first_fault"], kernel_closed["cleanup_fault"]):
+            if closed_fault is not None:
+                assert set(closed_fault) == {"class", "line", "stage"}
+                assert closed_fault["line"] is None or (
+                    type(closed_fault["line"]) is int and closed_fault["line"] in allowed
+                )
+                assert closed_fault["stage"] is None or closed_fault["stage"] in {
+                    "root-start",
+                    "before-wait",
+                    "after-wait",
+                    "before-cardinality",
+                    "after-cardinality",
+                    "cleanup",
+                    "kernel-finished",
+                    "canary",
+                }
+
+        assert kernel_result["exit"] == 0, kernel_closed
+        assert kernel_result["timed_out"] is False
+        assert kernel_result["cancelled"] is False
+        assert kernel_closed["exception_class"] is None, kernel_closed
+        kernel_events = kernel_closed["events"]
+        assert kernel_events[-1]["all_owned_groups_absent"] is True
+        assert kernel_events[-1]["real_ECHILD"] is True
+        kernel_case = kernel_closed["result"]["cases"][0]
+        assert kernel_case["real_rescan_complete_and_descendant_retained"] is True
+        assert kernel_case["settled_complete"] is True
+        assert kernel_case["sentinel_preserved"] is True
+
         # An absolute script path does not choose its editable-repair target.
         controller = tmp_path / "controller"
         controller.mkdir()
