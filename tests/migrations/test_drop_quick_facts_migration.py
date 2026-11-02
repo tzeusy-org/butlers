@@ -3,7 +3,7 @@
 Covers:
   (a) Unit — module structure, revision wiring, callable upgrade/downgrade,
       source-text guards (to_regclass guard, row-count gate, recreate on downgrade).
-  (b) Integration — asserts:
+  (b) Integration — against the real rel_024 pre-state, asserts:
         * upgrade raises RuntimeError when quick_facts has rows
         * upgrade drops the table when quick_facts is empty
         * upgrade is a no-op when quick_facts is already absent
@@ -12,10 +12,15 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 
+import asyncpg
 import pytest
+
+from alembic import command
+from butlers.migrations import _build_alembic_config
 
 # ---------------------------------------------------------------------------
 # Migration file path
@@ -48,41 +53,44 @@ class TestRel025Structure:
 
 
 # ---------------------------------------------------------------------------
-# (b) Integration — live DB behaviour
+# (b) Integration — live DB behaviour on the real rel_024 pre-state
 # ---------------------------------------------------------------------------
 
 _SCHEMA = "relationship"
-
-# Minimal DDL for quick_facts (original rel_001 shape), schema-qualified.
-_CREATE_SCHEMA_SQL = f"CREATE SCHEMA IF NOT EXISTS {_SCHEMA}"
-_CREATE_TABLE_SQL = f"""
-    CREATE TABLE IF NOT EXISTS {_SCHEMA}.quick_facts (
-        id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        contact_id UUID NOT NULL,
-        key        TEXT NOT NULL,
-        value      TEXT NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT now(),
-        updated_at TIMESTAMPTZ DEFAULT now(),
-        UNIQUE (contact_id, key)
-    )
-"""
 _QUALIFIED = f"{_SCHEMA}.quick_facts"
+
+
+async def _rel_024(fresh_db) -> tuple[str, asyncpg.Pool]:
+    """A database with the relationship chain at rel_025's predecessor."""
+    url = await asyncio.to_thread(
+        fresh_db,
+        "core",
+        "relationship",
+        schemas={"relationship": _SCHEMA},
+        revisions={"relationship": "rel_024"},
+    )
+    return url, await asyncpg.create_pool(url, min_size=1, max_size=2)
+
+
+async def _migrate(url: str, direction: str, revision: str) -> None:
+    config = _build_alembic_config(url, chains=["relationship"], target_schema=_SCHEMA)
+    await asyncio.to_thread(getattr(command, direction), config, revision)
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_raises_when_table_has_rows(provisioned_postgres_pool) -> None:
+async def test_upgrade_raises_when_table_has_rows(fresh_db) -> None:
     """upgrade() must raise RuntimeError when quick_facts contains rows."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_CREATE_SCHEMA_SQL)
-        await pool.execute(_CREATE_TABLE_SQL)
-        # Insert a sentinel row (no real FK needed — contact_id is plain UUID here).
-        import uuid
-
+    url, pool = await _rel_024(fresh_db)
+    try:
+        # quick_facts.contact_id references the relationship contacts table.
+        contact_id = await pool.fetchval(
+            f"INSERT INTO {_SCHEMA}.contacts (name) VALUES ($1) RETURNING id", "Acme contact"
+        )
         await pool.execute(
             f"INSERT INTO {_QUALIFIED} (contact_id, key, value) VALUES ($1, $2, $3)",
-            str(uuid.uuid4()),
+            contact_id,
             "org",
             "Acme Corp",
         )
@@ -90,103 +98,75 @@ async def test_upgrade_raises_when_table_has_rows(provisioned_postgres_pool) -> 
         count = await pool.fetchval(f"SELECT COUNT(*) FROM {_QUALIFIED}")
         assert count == 1
 
-        # Run upgrade SQL manually (mirrors what the migration does).
         exists = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
         assert exists is not None, "quick_facts must exist before upgrade"
 
         count_before = await pool.fetchval(f"SELECT COUNT(*) FROM {_QUALIFIED}")
         assert count_before and count_before > 0, "Table must be non-empty for this test"
+    finally:
+        await pool.close()
 
-        # Simulate what upgrade() does: raise if count > 0.
-        with pytest.raises(RuntimeError, match=r"row"):
-            if count_before > 0:
-                raise RuntimeError(
-                    f"rel_025: quick_facts has {count_before} row(s). "
-                    f"The table must be empty before it can be dropped. "
-                    f"Investigate and drain the data, then re-run the migration."
-                )
+    with pytest.raises(RuntimeError, match=r"row"):
+        await _migrate(url, "upgrade", "rel_025")
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_drops_empty_table(provisioned_postgres_pool) -> None:
+async def test_upgrade_drops_empty_table(fresh_db) -> None:
     """upgrade() drops quick_facts when it exists and is empty."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_CREATE_SCHEMA_SQL)
-        await pool.execute(_CREATE_TABLE_SQL)
-
+    url, pool = await _rel_024(fresh_db)
+    try:
         # Confirm table exists and is empty.
         exists_before = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
         assert exists_before is not None
         count = await pool.fetchval(f"SELECT COUNT(*) FROM {_QUALIFIED}")
         assert count == 0
 
-        # Run upgrade SQL directly (mirrors upgrade() path for empty table).
-        exists = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
-        if exists is not None:
-            row_count = await pool.fetchval(f"SELECT COUNT(*) FROM {_QUALIFIED}")
-            if row_count and row_count > 0:
-                raise RuntimeError(f"rel_025: {row_count} rows — should not happen in this test")
-            await pool.execute(f"DROP TABLE IF EXISTS {_QUALIFIED}")
+        await _migrate(url, "upgrade", "rel_025")
 
         # Assert table is now absent.
         exists_after = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
         assert exists_after is None, f"Expected {_QUALIFIED} to be absent after upgrade"
+    finally:
+        await pool.close()
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_noop_when_table_absent(provisioned_postgres_pool) -> None:
+async def test_upgrade_noop_when_table_absent(fresh_db) -> None:
     """upgrade() is idempotent: no error when quick_facts is already absent."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_CREATE_SCHEMA_SQL)
-
-        # Verify the table doesn't exist.
+    url, pool = await _rel_024(fresh_db)
+    try:
+        # Out-of-band removal: the table is already gone before rel_025 runs.
+        await pool.execute(f"DROP TABLE {_QUALIFIED}")
         exists = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
         assert exists is None, "quick_facts must be absent for this idempotency test"
 
-        # Run upgrade SQL — to_regclass guard should skip cleanly.
-        exists_check = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
-        if exists_check is None:
-            pass  # No-op — same logic as upgrade()
+        # The to_regclass guard skips cleanly.
+        await _migrate(url, "upgrade", "rel_025")
 
         # Still absent, no error.
         exists_after = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
         assert exists_after is None
+    finally:
+        await pool.close()
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_recreates_empty_table(provisioned_postgres_pool) -> None:
+async def test_downgrade_recreates_empty_table(fresh_db) -> None:
     """downgrade() recreates quick_facts when it is absent."""
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_CREATE_SCHEMA_SQL)
-        await pool.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-
-        # Start from absent state (simulates post-upgrade).
-        await pool.execute(f"DROP TABLE IF EXISTS {_QUALIFIED}")
+    url, pool = await _rel_024(fresh_db)
+    try:
+        # Start from absent state (post-upgrade).
+        await _migrate(url, "upgrade", "rel_025")
         exists_before = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
         assert exists_before is None
 
-        # Run downgrade SQL directly (mirrors downgrade() logic).
-        exists_check = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
-        if exists_check is None:
-            await pool.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {_QUALIFIED} (
-                    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    contact_id UUID NOT NULL,
-                    key        TEXT NOT NULL,
-                    value      TEXT NOT NULL,
-                    created_at TIMESTAMPTZ DEFAULT now(),
-                    updated_at TIMESTAMPTZ DEFAULT now(),
-                    UNIQUE (contact_id, key)
-                )
-                """
-            )
+        await _migrate(url, "downgrade", "rel_024")
 
         # Table should now exist and be empty.
         exists_after = await pool.fetchval(f"SELECT to_regclass('{_QUALIFIED}')")
@@ -194,3 +174,5 @@ async def test_downgrade_recreates_empty_table(provisioned_postgres_pool) -> Non
 
         count = await pool.fetchval(f"SELECT COUNT(*) FROM {_QUALIFIED}")
         assert count == 0, "Recreated table must be empty"
+    finally:
+        await pool.close()

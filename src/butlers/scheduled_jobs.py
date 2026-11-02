@@ -812,7 +812,7 @@ async def _discover_chronicler_projection_schemas(
             FROM information_schema.tables
             WHERE table_name = $1
               AND table_schema != ALL($2::text[])
-              AND table_schema NOT LIKE 'pg_%'
+              AND left(table_schema, 3) <> 'pg_'
             ORDER BY table_schema ASC
             """,
             table_name,
