@@ -109,6 +109,18 @@ class QaPatrolContract:
         return float(self.patrol_interval_minutes * 60 * OVERDUE_CADENCE_MULTIPLIER)
 
 
+def qa_patrol_contract(configs: Iterable[Any]) -> QaPatrolContract | None:
+    """Return the first exact QA config's contract, including a missing/disabled one.
+
+    Read the startup sequence in order without recomputing the contract or
+    consulting runtime registry state. A later duplicate cannot supply a fallback.
+    """
+    return next(
+        (getattr(config, "qa_patrol_contract", None) for config in configs if config.name == "qa"),
+        None,
+    )
+
+
 def contract_from_module_config(qa_config: Mapping[str, Any]) -> QaPatrolContract | None:
     """Build the contract from a roster ``[modules.qa]`` table.
 

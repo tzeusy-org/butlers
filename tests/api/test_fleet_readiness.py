@@ -8,6 +8,7 @@ request reads only the cached snapshot.
 from __future__ import annotations
 
 import contextlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -18,7 +19,12 @@ from butlers.api.app import create_app
 from butlers.api.deps import ButlerConnectionInfo
 from butlers.api.readiness import CHECK_KEYS, FleetReadiness, ReadinessSnapshot
 from butlers.core.control_plane_identity import ShadowCycle
-from butlers.core.qa.patrol_provenance import QaPatrolContract
+from butlers.core.qa.patrol_provenance import (
+    LAST_QUALIFYING_PATROL_SQL,
+    QUALIFYING_PATROL_STATUSES,
+    QaPatrolContract,
+    contract_from_module_config,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -70,8 +76,10 @@ class _Pool:
     def __init__(self, rows: list[dict[str, Any]], last_patrol: datetime | None) -> None:
         self.rows, self.last_patrol = rows, last_patrol
         self.down = False
+        self.queries: list[tuple[str, tuple[Any, ...]]] = []
 
     async def fetchval(self, statement: str, *args: Any) -> Any:
+        self.queries.append((statement, args))
         if self.down:
             raise OSError("db down")
         if statement == "SELECT 1":
@@ -125,6 +133,7 @@ def _readiness(
     jobs: dict[str, Any] | None = None,
     preflight: httpx.Response | Exception | None = None,
     cycle_complete: bool = True,
+    configs: list[ButlerConnectionInfo] | None = None,
 ) -> tuple[FleetReadiness, _Pool, _Clock, list[str]]:
     pool = _Pool([_row(name) for name in _NAMES] if rows is None else rows, last_patrol)
     clock = _Clock()
@@ -133,7 +142,7 @@ def _readiness(
     )
     readiness = FleetReadiness(
         lambda: pool,
-        _configs(),
+        _configs() if configs is None else configs,
         _Jobs(  # type: ignore[arg-type]
             jobs
             if jobs is not None
@@ -166,6 +175,58 @@ async def test_all_fresh_inputs_are_ready_and_paused_daemon_is_an_intentional_ex
     assert snapshot.ready is True
     assert readiness.verdict() == (True, dict.fromkeys(CHECK_KEYS, True))
     assert calls == ["/internal/control-plane/route-preflight"]
+
+    selected = QaPatrolContract(("infra_state", "session_records"), 2)
+    decoy = QaPatrolContract(("log_scanner",), 90)
+    configs = [
+        replace(config, qa_patrol_contract=selected if config.name == "qa" else decoy)
+        for config in _configs()
+    ]
+    # A stale registry observation cannot discard the configured patrol contract.
+    readiness, pool, _, _ = _readiness(
+        configs=configs,
+        rows=_replace("qa", observed_state="unavailable", observed_boot_epoch=2),
+        last_patrol=_NOW - timedelta(seconds=selected.overdue_after_s),
+    )
+    configs[:] = [replace(config, qa_patrol_contract=decoy) for config in configs]
+    snapshot = await readiness.sample()
+    assert snapshot.checks["fleet"] is False
+    assert snapshot.checks["qa_patrol"] is True
+    assert [query for query in pool.queries if query[0] == LAST_QUALIFYING_PATROL_SQL] == [
+        (LAST_QUALIFYING_PATROL_SQL, (list(QUALIFYING_PATROL_STATUSES), selected.digest))
+    ]
+    assert readiness._qa_contract is selected
+    pool.last_patrol -= timedelta(seconds=1)
+    assert (await readiness.sample()).checks["qa_patrol"] is False
+
+    for absent in (
+        [replace(config, qa_patrol_contract=None) for config in configs],
+        [config for config in configs if config.name != "qa"],
+        [
+            replace(config, qa_patrol_contract=contract_from_module_config({"enabled": False}))
+            if config.name == "qa"
+            else config
+            for config in configs
+        ],
+    ):
+        no_patrol, no_pool, _, _ = _readiness(configs=absent)
+        assert (await no_patrol.sample()).checks["qa_patrol"] is False
+        assert not any(sql == LAST_QUALIFYING_PATROL_SQL for sql, _ in no_pool.queries)
+
+    class DuplicateQAConfig:
+        name = "qa"
+        port = 41102
+
+        @property
+        def qa_patrol_contract(self):
+            raise AssertionError("Patrol selection ran before roster validation")
+
+    for duplicate, message in (
+        (ButlerConnectionInfo(name="qa", port=41103), "duplicate roster name"),
+        (ButlerConnectionInfo(name="general", port=41102), "duplicate roster port"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            FleetReadiness(lambda: pool, [DuplicateQAConfig(), duplicate], None)
 
 
 @pytest.mark.parametrize(
