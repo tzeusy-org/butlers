@@ -27,6 +27,7 @@ from butlers.jobs.flight_status import (
     parse_flight_status,
     run_flight_status_check,
 )
+from butlers.testing.fake_pool import fake_pool
 
 pytestmark = pytest.mark.unit
 
@@ -68,13 +69,6 @@ _FLIGHT_PAYLOAD_CANCELLED = {
 }
 
 _FLIGHT_PAYLOAD_EMPTY: dict = {"data": []}
-
-
-def _make_pool(leg_rows=None):
-    pool = AsyncMock()
-    pool.execute = AsyncMock()
-    pool.fetch = AsyncMock(return_value=leg_rows or [])
-    return pool
 
 
 def _mock_credential_store(key: str | None):
@@ -138,7 +132,7 @@ def test_parse_flight_status_cancelled_is_notify_worthy():
 
 
 async def test_not_configured_skips_poll_and_marks_status():
-    pool = _make_pool()
+    pool = fake_pool(fetch=[], execute=None)
 
     with patch(
         "butlers.jobs.flight_status.CredentialStore",
@@ -161,7 +155,7 @@ async def test_not_configured_skips_poll_and_marks_status():
 
 
 async def test_configured_no_legs_records_zero_check_attempt():
-    pool = _make_pool(leg_rows=[])
+    pool = fake_pool(fetch=[], execute=None)
 
     with patch(
         "butlers.jobs.flight_status.CredentialStore",
@@ -200,7 +194,7 @@ async def test_configured_no_legs_records_zero_check_attempt():
 
 async def test_delay_past_threshold_notifies_and_writes_leg_metadata():
     leg = _leg_row()
-    pool = _make_pool(leg_rows=[leg])
+    pool = fake_pool(fetch=[leg], execute=None)
     client = _mock_client(_FLIGHT_PAYLOAD_DELAYED)
 
     propose_mock = AsyncMock(return_value={"status": "accepted"})
@@ -240,7 +234,7 @@ async def test_delay_past_threshold_notifies_and_writes_leg_metadata():
 
     naive_leg = _leg_row(metadata={"flight_number": "NAIVE1"})
     valid_leg = _leg_row(metadata={"flight_number": "VALID2"})
-    mixed_pool = _make_pool(leg_rows=[naive_leg, valid_leg])
+    mixed_pool = fake_pool(fetch=[naive_leg, valid_leg], execute=None)
     naive_payload = {
         "data": [
             {
@@ -286,7 +280,7 @@ async def test_delay_past_threshold_notifies_and_writes_leg_metadata():
 
 async def test_on_time_flight_does_not_notify():
     leg = _leg_row()
-    pool = _make_pool(leg_rows=[leg])
+    pool = fake_pool(fetch=[leg], execute=None)
     client = _mock_client(_FLIGHT_PAYLOAD_ON_TIME)
 
     propose_mock = AsyncMock(return_value={"status": "accepted"})
@@ -316,7 +310,7 @@ async def test_on_time_flight_does_not_notify():
 
 async def test_fetch_failure_records_error_without_crashing():
     leg = _leg_row()
-    pool = _make_pool(leg_rows=[leg])
+    pool = fake_pool(fetch=[leg], execute=None)
     client = _mock_client(_FLIGHT_PAYLOAD_DELAYED, status_code=503)
 
     with patch(
@@ -353,7 +347,7 @@ async def test_mixed_success_and_failure_still_increments_consecutive_failures()
     """
     ok_leg = _leg_row(metadata={"flight_number": "OK123"})
     failing_leg = _leg_row(metadata={"flight_number": "BAD456"})
-    pool = _make_pool(leg_rows=[ok_leg, failing_leg])
+    pool = fake_pool(fetch=[ok_leg, failing_leg], execute=None)
 
     def _handler(request: httpx.Request) -> httpx.Response:
         if request.url.params.get("flight_iata") == "BAD456":
