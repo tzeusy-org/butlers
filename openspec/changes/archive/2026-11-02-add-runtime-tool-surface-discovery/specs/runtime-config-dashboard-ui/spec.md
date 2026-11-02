@@ -5,14 +5,13 @@
 The butler detail Management tab SHALL display the effective runtime config read from the `runtime-config` API endpoint (via the `RuntimeConfigCard` component), not from the raw toml.
 
 ID: REQ-runtime-config-dashboard-ui-001
-Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
+Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
 #### Scenario: Card shows DB values
 - **WHEN** the user opens the Management tab for a butler
 - **THEN** the `RuntimeConfigCard` SHALL show current runtime config values (`core_groups`, `max_concurrent`, `max_queued`) from the DB with editable fields
 - **AND** the resolved model and `session_timeout_s` are shown read-only with an "edit in models" link to the Models tab
-- **AND** `tool_exposure_policy` SHALL be shown as an editable `Eager filtered` or `Automatic verified discovery` choice with concise fallback guidance
 
 #### Scenario: Card distinguishes declaration, decision, and registration
 - **WHEN** the user opens the Management tab for a butler
@@ -25,31 +24,19 @@ Scope: v1-mandatory
 - **WHEN** a cold field (core_groups, max_concurrent, max_queued) is displayed
 - **THEN** the field SHALL show a visual indicator that changes require a daemon restart
 
-#### Scenario: Hot exposure policy shows next-session behavior
+#### Scenario: Stored exposure policy can be edited
 
-- **WHEN** `tool_exposure_policy` is displayed or changed
-- **THEN** the card SHALL state that the setting applies to newly planned sessions without a daemon restart
-- **AND** `auto` SHALL be described as verified-native-when-available with a
-  separately verified eager fallback only when one is available, otherwise the
-  tuple is unavailable/ineligible, not as a guarantee that native discovery
-  will run
-
-#### Scenario: Unavailable policy is not presented as active
-
-- **WHEN** the runtime-config GET request fails or returns degraded/unavailable evidence
-- **THEN** the card SHALL show the policy as unavailable rather than substituting `eager_filtered` or `auto`
-- **AND** it SHALL not present an unconfirmed value as the effective runtime policy
+- **WHEN** the Management-tab runtime config card has loaded
+- **THEN** it SHALL offer `Eager filtered` and `Automatic verified discovery` choices for `tool_exposure_policy`
+- **AND** selecting a choice SHALL stage an edit for the existing Save action
+- **AND** the control SHALL NOT constitute evidence of runtime-native discovery support
 
 ### Requirement: Config tab supports inline editing
 
-The config tab SHALL allow the user to edit runtime config fields and save via
-the PATCH endpoint. For this requirement, the historical “config tab” name
-refers to the editable
-`RuntimeConfigCard` that the preceding requirement places in the butler-detail
-Management tab; this change does not move the card to the raw Config tab.
+The config tab SHALL allow the user to edit runtime config fields and save via the PATCH endpoint.
 
 ID: REQ-runtime-config-dashboard-ui-002
-Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
+Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
 #### Scenario: Edit and save a field
@@ -60,14 +47,20 @@ Scope: v1-mandatory
 - **WHEN** the user saves a change that includes cold fields
 - **THEN** the UI SHALL display a notification listing which fields require a daemon restart to take effect
 
-#### Scenario: Hot policy save does not claim restart
+#### Scenario: Policy save uses the existing PATCH result
 
-- **WHEN** the user saves only `tool_exposure_policy`
-- **THEN** the UI SHALL confirm that the policy applies to subsequent sessions
-- **AND** it SHALL not show a restart-required notification
+- **WHEN** the user saves a policy-only edit successfully
+- **THEN** the card SHALL clear the pending edit and use the returned `restart_required` list
+- **AND** an empty list SHALL not produce a restart-required notification
 
-#### Scenario: Failed policy save preserves confirmed state
+#### Scenario: Failed policy save discards the unconfirmed policy edit
 
-- **WHEN** the policy PATCH fails validation, transport, or persistence
-- **THEN** the UI SHALL show an actionable error and retain or restore the last server-confirmed policy
-- **AND** it SHALL not claim that the edited value is active
+- **WHEN** the policy PATCH fails
+- **THEN** the card SHALL remove the pending exposure-policy edit and retain the server-confirmed value
+- **AND** other pending field edits SHALL remain available for retry
+
+## Source References
+
+- Non-Negotiable Rule 3 (MCP inter-butler communication)
+- Non-Negotiable Rule 5 (DB-persisted operational tuning)
+- RFC 0027 (catalog and exposure contract; unlanded runtime work succeeds to RFC 0038)
