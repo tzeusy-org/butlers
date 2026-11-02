@@ -11,6 +11,7 @@
 - [Runtime-Probe Control Keys](runtime-probe-control-keys.md) — signer/verifier documents, provisioning, restart-driven rotation
 - [Backup and Restore](backup-restore.md) — backup cadence, restore drill, integrity verification
 - [Off-Node Backup Copy](offsite-backup-copy.md) — encrypted restic copy of the dumps to the owner's tailnet device (disabled by default; owner-gated steps)
+- [Memory Authority Demotion](memory-authority-demotion.md) — operator-only, default dry-run demotion of laundered owner-authority memory; unresolved evidence and approval boundary
 - [Data Retention](data-retention.md) — per-table retention decisions, opt-in pruners
 - [Grafana Monitoring](grafana-monitoring.md) — dashboards, tracing, logging
 - [Tailnet Health Monitoring](tailnet-health-monitoring.md) — canonical strict-TLS health probe handoff

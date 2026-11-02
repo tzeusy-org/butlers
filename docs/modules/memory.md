@@ -255,9 +255,17 @@ successful partition writes its own `public.consolidation_runs` row, and the run
 `groups_consolidated` counts partitions.
 
 The partitions stop new laundering; they do not reclassify facts consolidated
-before this change. A historical demotion mechanism (operator-only, default
-dry-run, evidence-manifest gated) is separate, not yet built work, and no live
-dry-run, demotion or restore has been run or authorized.
+before this change. The historical demotion the owner adopted (bu-7ry1sy q1) is an
+operator-only job, `scripts/memory_authority_demotion.py` over
+`butlers.modules.memory.authority_demotion`. It is never scheduled or exposed as a
+tool or API. It reads one memory schema plus an operator-supplied evidence manifest,
+classifies owner-class facts and rules as candidate, excluded, unchanged, UNKNOWN or
+endorsement anomaly, and by default writes nothing. An apply bound to an exact
+approved dry run changes only `content_authority` to `mixed`, disowns the catalog row
+and appends a `content_authority_demoted` receipt per row, atomically per schema.
+Missing historical evidence is UNKNOWN and blocks apply. No live dry-run, demotion or
+restore has been run or authorized; see the
+[authority demotion runbook](../operations/memory-authority-demotion.md).
 
 The dashboard owner can recover an eligible dead-letter episode with
 `POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF
