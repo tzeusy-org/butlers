@@ -24,6 +24,7 @@ Covers:
 
 from __future__ import annotations
 
+import copy
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -2548,13 +2549,56 @@ async def test_poll_workout_emits_deterministic_envelopes_and_replays_same_keys(
     assert run_a["event"]["external_event_id"] == (
         f"google_health:{_OWNER_EMAIL}:workout_session:run-1"
     )
-    assert run_a["control"]["idempotency_key"] == f"google_health:{_OWNER_EMAIL}:workout:run-1"
-    assert run_a["control"]["idempotency_key"] == run_b["control"]["idempotency_key"]
-    assert lift_a["control"]["idempotency_key"] == f"google_health:{_OWNER_EMAIL}:workout:lift-1"
+    run_key = run_a["control"]["idempotency_key"]
+    assert run_key.startswith(f"google_health:{_OWNER_EMAIL}:workout:run-1:")
+    assert run_key == run_b["control"]["idempotency_key"]
+    assert lift_a["control"]["idempotency_key"].startswith(
+        f"google_health:{_OWNER_EMAIL}:workout:lift-1:"
+    )
     assert run_a["payload"]["normalized_text"] == "Workout: running (45m)"
 
     params = fake_api.get_json.await_args_list[0].kwargs["params"]
     assert params["filter"].startswith("exercise.interval.civil_start_time >= ")
+
+
+def test_workout_idempotency_key_is_content_versioned() -> None:
+    """Same content keeps the key; an edited field changes it; the event id stays bare."""
+    from butlers.connectors.google_health import (
+        _normalize_workout_record,
+        build_workout_session_envelope,
+    )
+
+    def build(record: dict[str, Any]) -> dict[str, Any]:
+        raw = _normalize_workout_record(record)
+        return build_workout_session_envelope(
+            endpoint_identity=f"google_health:user:{_OWNER_EMAIL}",
+            google_user_id=_OWNER_EMAIL,
+            session_id=raw["session_id"],
+            session_record=raw,
+            observed_at="2026-04-24T08:00:00Z",
+        )
+
+    original = _WORKOUT_RESPONSE["dataPoints"][0]
+    edited = copy.deepcopy(original)
+    edited["exercise"]["interval"]["endTime"] = "2026-04-24T07:50:00Z"
+    renamed = copy.deepcopy(original)
+    renamed["exercise"]["exerciseType"] = "CYCLING"
+    stamped = copy.deepcopy(original)
+    stamped["exercise"]["updateTime"] = "2026-04-25T00:00:00Z"
+
+    base = build(original)
+    assert (
+        base["control"]["idempotency_key"]
+        == build(copy.deepcopy(original))["control"]["idempotency_key"]
+    )
+    keys = {
+        build(record)["control"]["idempotency_key"]
+        for record in (original, edited, renamed, stamped)
+    }
+    assert len(keys) == 4
+    assert base["event"]["external_event_id"] == (
+        f"google_health:{_OWNER_EMAIL}:workout_session:run-1"
+    )
 
 
 def test_poll_workout_scope_is_already_requested() -> None:

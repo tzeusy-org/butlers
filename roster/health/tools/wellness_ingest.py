@@ -415,6 +415,67 @@ def _source_endpoint_identity(envelope: dict[str, Any], provider: str) -> str | 
     return normalized if normalized.startswith(f"{provider}:") else None
 
 
+def _workout_session_key(external_event_id: str) -> str | None:
+    """Stable per-session key (bare session id) from a workout ``external_event_id``.
+
+    ``google_health:<email>:workout_session:<session_id>`` maps to
+    ``google_health:<email>:workout:<session_id>``, the same value every version of
+    the session shares and the key legacy (pre-versioning) facts were stored under.
+    """
+    parts = external_event_id.split(":", 3)
+    if len(parts) != 4 or not parts[3]:
+        return None
+    return f"google_health:{parts[1]}:workout:{parts[3]}"
+
+
+async def _supersede_prior_workout_versions(
+    pool: Any, new_fact_id: Any, workout_session_key: str
+) -> None:
+    """Supersede earlier active versions of one provider workout session.
+
+    Temporal facts never supersede automatically in ``memory_store_fact``, so an
+    edited session (new content-versioned key, new fact) retires its predecessors
+    here with the same bookkeeping as property-fact supersession: old row
+    ``validity='superseded'`` + ``invalid_at``, ``supersedes_id`` on the new row,
+    and a ``memory_links`` ``supersedes`` edge.
+
+    Idempotent and replay-safe: acts only when the new fact is still the active,
+    not-yet-linked row, so replaying the current or a stale older version is a
+    no-op and can never retire a newer version.  Nothing is ever deleted.
+    """
+    state = await pool.fetchrow(
+        "SELECT validity, supersedes_id FROM facts WHERE id = $1", new_fact_id
+    )
+    if state is None or state["validity"] != "active" or state["supersedes_id"] is not None:
+        return
+    priors = await pool.fetch(
+        "SELECT id FROM facts WHERE predicate = 'workout_session' AND scope = 'health' "
+        "AND validity IN ('active', 'fading') AND id <> $2 "
+        "AND (idempotency_key = $1 OR metadata->>'workout_session_key' = $1) "
+        "ORDER BY created_at DESC, id DESC",
+        workout_session_key,
+        new_fact_id,
+    )
+    if not priors:
+        return
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            "UPDATE facts SET supersedes_id = $2 WHERE id = $1", new_fact_id, priors[0]["id"]
+        )
+        for prior in priors:
+            await conn.execute(
+                "UPDATE facts SET validity = 'superseded', invalid_at = now() WHERE id = $1",
+                prior["id"],
+            )
+            await conn.execute(
+                "INSERT INTO memory_links "
+                "(source_type, source_id, target_type, target_id, relation) "
+                "VALUES ('fact', $1, 'fact', $2, 'supersedes')",
+                new_fact_id,
+                prior["id"],
+            )
+
+
 async def _translate_google_health_envelope(
     pool: Any,
     embedding_engine: Any,
@@ -561,6 +622,14 @@ async def _translate_google_health_envelope(
         metadata["source"] = "google_health"
         metadata["source_endpoint_identity"] = endpoint_identity
 
+        # A workout's idempotency key is content-versioned, so correlate versions of
+        # one provider session through a stable key (bare session id) in metadata.
+        workout_session_key: str | None = None
+        if predicate == "workout_session":
+            workout_session_key = _workout_session_key(external_event_id)
+            if workout_session_key:
+                metadata["workout_session_key"] = workout_session_key
+
         content = normalized_text or f"wellness:{predicate}:{valid_at}"
 
         try:
@@ -587,6 +656,18 @@ async def _translate_google_health_envelope(
             )
             health_wellness_ingest_total.labels(predicate=predicate, outcome="error").inc()
             return {"status": "error", "reason": str(exc)}
+
+        if workout_session_key is not None and result.get("id") is not None:
+            try:
+                await _supersede_prior_workout_versions(pool, result["id"], workout_session_key)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "wellness_ingest: workout supersession failed for %r: %s",
+                    workout_session_key,
+                    exc,
+                )
+                health_wellness_ingest_total.labels(predicate=predicate, outcome="error").inc()
+                return {"status": "error", "reason": str(exc)}
 
         health_wellness_ingest_total.labels(predicate=predicate, outcome="success").inc()
         written_facts.append({"fact_id": result.get("id"), "predicate": predicate})

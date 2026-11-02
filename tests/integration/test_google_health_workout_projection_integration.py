@@ -158,6 +158,7 @@ def _envelope(
     heart_rate: bool,
     email: str = _EMAIL,
     zero_duration: bool = False,
+    end_time: str = "2026-04-24T07:45:00Z",
 ) -> dict[str, Any]:
     metrics: dict[str, Any] = {"caloriesKcal": 345, "distanceMillimeters": 7_500_000}
     if heart_rate:
@@ -168,7 +169,7 @@ def _envelope(
             "exercise": {
                 "interval": {
                     "startTime": "2026-04-24T07:00:00Z",
-                    "endTime": "2026-04-24T07:00:00Z" if zero_duration else "2026-04-24T07:45:00Z",
+                    "endTime": "2026-04-24T07:00:00Z" if zero_duration else end_time,
                 },
                 "exerciseType": "RUNNING",
                 "metricsSummary": metrics,
@@ -261,9 +262,10 @@ async def test_connector_workout_ingest_projects_once_then_checkpointed_replay_p
 
     envelope = _envelope("run-9", detection=detection, heart_rate=heart_rate)
     assert envelope["payload"]["raw"]["private_raw_canary"] == _RAW_CANARY
-    key = f"google_health:{_EMAIL}:workout:run-9"
+    session_key = f"google_health:{_EMAIL}:workout:run-9"
+    key = envelope["control"]["idempotency_key"]
     assert envelope["event"]["external_event_id"] == f"google_health:{_EMAIL}:workout_session:run-9"
-    assert envelope["control"]["idempotency_key"] == key
+    assert key.startswith(f"{session_key}:")
     ingested = await wellness_ingest.translate_wellness_envelope(health, embedding, envelope)
     assert ingested["status"] == "ok"
     facts = await _facts(health)
@@ -294,6 +296,7 @@ async def test_connector_workout_ingest_projects_once_then_checkpointed_replay_p
         "distance_m": 7500.0,
         "source": "google_health",
         "source_endpoint_identity": _ENDPOINT,
+        "workout_session_key": session_key,
     }
     if heart_rate:
         metadata["average_heart_rate"] = 152
@@ -307,7 +310,7 @@ async def test_connector_workout_ingest_projects_once_then_checkpointed_replay_p
     episodes = await _episodes(chronicler)
     assert len(episodes) == 1
     episode = episodes[0]
-    assert episode["source_ref"] == f"health.facts:workout_session:{key}"
+    assert episode["source_ref"] == f"health.facts:workout_session:{session_key}"
     assert (episode["start_at"], episode["end_at"], episode["precision"], episode["layer"]) == (
         _START,
         _END,
@@ -381,3 +384,60 @@ async def test_connector_workout_ingest_projects_once_then_checkpointed_replay_p
     }
     assert episode["id"] in {row["id"] for row in final_episodes}
     assert len(await _owner_links(chronicler)) == 2
+
+
+async def test_edited_workout_supersedes_prior_fact_and_updates_one_episode(
+    projection_pools: _ProjectionPools,
+) -> None:
+    """bu-q7vx1q.38: an edited session supersedes the first fact; one episode, edited values."""
+    health, chronicler = projection_pools.health, projection_pools.chronicler
+    embedding = make_embedding_engine_mock()
+    session_key = f"google_health:{_EMAIL}:workout:run-edit"
+    first_env = _envelope("run-edit", detection="manual", heart_rate=False)
+    edited_env = _envelope(
+        "run-edit", detection="manual", heart_rate=False, end_time="2026-04-24T07:50:00Z"
+    )
+    assert first_env["control"]["idempotency_key"] != edited_env["control"]["idempotency_key"]
+    assert first_env["event"]["external_event_id"] == edited_env["event"]["external_event_id"]
+
+    first = await wellness_ingest.translate_wellness_envelope(health, embedding, first_env)
+    assert first["status"] == "ok"
+    await seed_source_registry(chronicler, sources=INITIAL_SOURCES)
+    projected = await GoogleHealthWorkoutAdapter().run(pool=chronicler, chronicler_pool=chronicler)
+    assert projected.success and projected.rows_projected == 1
+
+    edited = await wellness_ingest.translate_wellness_envelope(health, embedding, edited_env)
+    assert edited["status"] == "ok" and edited["fact_id"] != first["fact_id"]
+    rows = await health.fetch(
+        "SELECT id, validity, supersedes_id, invalid_at FROM health.facts "
+        "WHERE predicate = 'workout_session' ORDER BY created_at, id"
+    )
+    assert [(r["id"], r["validity"]) for r in rows] == [
+        (UUID(str(first["fact_id"])), "superseded"),
+        (UUID(str(edited["fact_id"])), "active"),
+    ]
+    assert rows[0]["invalid_at"] is not None
+    assert rows[1]["supersedes_id"] == rows[0]["id"]
+    link = await health.fetchval(
+        "SELECT count(*) FROM health.memory_links WHERE source_id = $1 AND target_id = $2 "
+        "AND relation = 'supersedes'",
+        rows[1]["id"],
+        rows[0]["id"],
+    )
+    assert link == 1
+
+    # Replaying either version, or an unchanged re-poll, changes nothing.
+    for envelope in (first_env, edited_env):
+        await wellness_ingest.translate_wellness_envelope(health, embedding, envelope)
+    again = await health.fetch(
+        "SELECT id, validity FROM health.facts WHERE predicate = 'workout_session' "
+        "ORDER BY created_at, id"
+    )
+    assert [(r["id"], r["validity"]) for r in again] == [(r["id"], r["validity"]) for r in rows]
+
+    await GoogleHealthWorkoutAdapter().run(pool=chronicler, chronicler_pool=chronicler)
+    episodes = await _episodes(chronicler)
+    assert len(episodes) == 1
+    assert episodes[0]["source_ref"] == f"health.facts:workout_session:{session_key}"
+    assert episodes[0]["end_at"] == datetime(2026, 4, 24, 7, 50, tzinfo=UTC)
+    assert episodes[0]["payload"]["fact_id"] == str(edited["fact_id"])

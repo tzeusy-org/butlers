@@ -1629,3 +1629,107 @@ class TestWorkoutSession:
 
         assert result["status"] == "rejected_non_owner_sender"
         mock_store.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Workout edit supersession (bu-q7vx1q.38)
+# ---------------------------------------------------------------------------
+
+
+class _FakeConn:
+    def __init__(self, executed: list[tuple[str, tuple]]) -> None:
+        self._executed = executed
+
+    async def execute(self, query: str, *args: object) -> None:
+        self._executed.append((query, args))
+
+    def transaction(self):
+        return _NullCtx(None)
+
+
+class _NullCtx:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    async def __aenter__(self) -> object:
+        return self._value
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+
+class _SupersessionPool:
+    """Pool double: one new-fact state row plus prior active versions."""
+
+    def __init__(self, new_state: dict | None, priors: list[uuid.UUID]) -> None:
+        self.new_state = new_state
+        self.priors = priors
+        self.fetch_args: tuple = ()
+        self.executed: list[tuple[str, tuple]] = []
+
+    async def fetchrow(self, query: str, *args: object):
+        return self.new_state
+
+    async def fetch(self, query: str, *args: object):
+        self.fetch_args = args
+        return [{"id": p} for p in self.priors]
+
+    def acquire(self):
+        return _NullCtx(_FakeConn(self.executed))
+
+
+_EDITED_KEY = "google_health:user@example.com:workout:run-1:beefbeefbeefbeef"
+_SESSION_KEY = "google_health:user@example.com:workout:run-1"
+
+
+def _versioned_envelope(raw_overrides: dict | None = None) -> dict:
+    envelope = _make_workout_envelope()
+    envelope["control"]["idempotency_key"] = _EDITED_KEY
+    envelope["payload"]["raw"] = {**envelope["payload"]["raw"], **(raw_overrides or {})}
+    return envelope
+
+
+class TestWorkoutEditSupersession:
+    async def test_new_version_supersedes_prior_with_provenance(self) -> None:
+        old_id, new_id = uuid.uuid4(), uuid.uuid4()
+        pool = _SupersessionPool({"validity": "active", "supersedes_id": None}, [old_id])
+
+        result, mock_store, _ = await _call_translate(
+            _versioned_envelope({"durationMillis": 3_000_000}),
+            pool=pool,
+            store_fact_return={"id": new_id, "supersedes_id": None},
+        )
+
+        assert result["status"] == "ok"
+        kwargs = mock_store.await_args.kwargs
+        assert kwargs["idempotency_key"] == _EDITED_KEY
+        assert kwargs["metadata"]["workout_session_key"] == _SESSION_KEY
+        assert pool.fetch_args[0] == _SESSION_KEY
+        queries = " ".join(q for q, _ in pool.executed)
+        assert "validity = 'superseded'" in queries
+        assert "supersedes_id" in queries
+        assert "'supersedes'" in queries
+        assert any(old_id in args for _, args in pool.executed)
+        assert any(new_id in args for _, args in pool.executed)
+
+    async def test_replay_of_current_or_stale_version_changes_nothing(self) -> None:
+        new_id = uuid.uuid4()
+        for state in (
+            {"validity": "active", "supersedes_id": uuid.uuid4()},  # already linked
+            {"validity": "superseded", "supersedes_id": None},  # stale older version replayed
+            None,
+        ):
+            pool = _SupersessionPool(state, [uuid.uuid4()])
+            result, _, _ = await _call_translate(
+                _versioned_envelope(), pool=pool, store_fact_return={"id": new_id}
+            )
+            assert result["status"] == "ok"
+            assert pool.executed == []
+
+    async def test_first_version_has_nothing_to_supersede(self) -> None:
+        pool = _SupersessionPool({"validity": "active", "supersedes_id": None}, [])
+        result, _, _ = await _call_translate(
+            _versioned_envelope(), pool=pool, store_fact_return={"id": uuid.uuid4()}
+        )
+        assert result["status"] == "ok"
+        assert pool.executed == []

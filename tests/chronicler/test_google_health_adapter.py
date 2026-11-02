@@ -744,15 +744,16 @@ async def test_connector_envelope_flows_through_ingest_to_one_workout_episode() 
     from butlers.tools.health.wellness_ingest import (
         _extract_metadata,
         _extract_valid_at,
+        _workout_session_key,
     )
 
-    record = _normalize_workout_record(
-        {
+    def raw_point(end_time: str) -> dict:
+        return {
             "name": "users/u/dataTypes/exercise/dataPoints/run-9",
             "exercise": {
                 "interval": {
                     "startTime": "2026-04-24T07:00:00Z",
-                    "endTime": "2026-04-24T07:45:00Z",
+                    "endTime": end_time,
                 },
                 "exerciseType": "RUNNING",
                 "displayName": "Run",
@@ -760,24 +761,35 @@ async def test_connector_envelope_flows_through_ingest_to_one_workout_episode() 
                 "dataSource": {"recordingMethod": "MANUAL"},
             },
         }
-    )
-    envelope = build_workout_session_envelope(
-        endpoint_identity="google_health:user:owner@example.invalid",
-        google_user_id="owner@example.invalid",
-        session_id="run-9",
-        session_record=record,
-        observed_at="2026-04-24T08:00:00+00:00",
-    )
-    raw = envelope["payload"]["raw"]
-    row = _sleep_fact_row(
-        row_id="fact-1",
-        idempotency_key=envelope["control"]["idempotency_key"],
-        valid_at=datetime.fromisoformat(
-            _extract_valid_at("workout_session", raw, "").replace("Z", "+00:00")
-        ),
-        metadata=_extract_metadata("workout_session", raw),
-    )
-    row["predicate"] = "workout_session"
+
+    def fact_row(row_id: str, end_time: str) -> dict:
+        envelope = build_workout_session_envelope(
+            endpoint_identity="google_health:user:owner@example.invalid",
+            google_user_id="owner@example.invalid",
+            session_id="run-9",
+            session_record=_normalize_workout_record(raw_point(end_time)),
+            observed_at="2026-04-24T08:00:00+00:00",
+        )
+        raw = envelope["payload"]["raw"]
+        metadata = _extract_metadata("workout_session", raw)
+        # translate_wellness_envelope stamps the stable session key the same way.
+        metadata["workout_session_key"] = _workout_session_key(
+            envelope["event"]["external_event_id"]
+        )
+        row = _sleep_fact_row(
+            row_id=row_id,
+            idempotency_key=envelope["control"]["idempotency_key"],
+            valid_at=datetime.fromisoformat(
+                _extract_valid_at("workout_session", raw, "").replace("Z", "+00:00")
+            ),
+            metadata=metadata,
+        )
+        row["predicate"] = "workout_session"
+        return row
+
+    row = fact_row("fact-1", "2026-04-24T07:45:00Z")
+    edited_row = fact_row("fact-2", "2026-04-24T07:50:00Z")
+    assert row["idempotency_key"] != edited_row["idempotency_key"]
 
     upserted: list[Episode] = []
 
@@ -789,12 +801,14 @@ async def test_connector_envelope_flows_through_ingest_to_one_workout_episode() 
         "butlers.chronicler.adapters.google_health.upsert_episode",
         side_effect=_fake_upsert,
     ):
-        for _ in range(2):
+        # Re-run, then an edited version (only the active fact is fetched): all
+        # three land on one provenance key, so upsert updates, never adds a row.
+        for fact in (row, row, edited_row):
             await GoogleHealthWorkoutAdapter().project(
-                _pool_returning(row), chronicler_pool=_chronicler_pool(), since=None
+                _pool_returning(fact), chronicler_pool=_chronicler_pool(), since=None
             )
 
-    # Re-running yields the same provenance key, so upsert is an update, never a new row.
+    assert upserted[-1].end_at == datetime(2026, 4, 24, 7, 50, tzinfo=UTC)
     assert {e.source_ref for e in upserted} == {
         "health.facts:workout_session:google_health:owner@example.invalid:workout:run-9"
     }

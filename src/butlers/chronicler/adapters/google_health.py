@@ -627,11 +627,6 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
         idempotency_key: str | None = row["idempotency_key"]
         fact_id = str(row["id"])
 
-        if idempotency_key:
-            source_ref = f"{_FACTS_TABLE}:{_WORKOUT_PREDICATE}:{idempotency_key}"
-        else:
-            source_ref = f"{_FACTS_TABLE}:{_WORKOUT_PREDICATE}:{fact_id}"
-
         start_at: datetime | None = row["valid_at"]
         if start_at is None:
             logger.warning(
@@ -641,6 +636,14 @@ class GoogleHealthWorkoutAdapter(ProjectionAdapter):
             return None
 
         metadata: dict[str, Any] = dict(row["metadata"] or {})
+        # The idempotency key is content-versioned (bu-q7vx1q.38); every version of one
+        # provider session shares ``workout_session_key``, so an edit updates the one
+        # episode.  Legacy facts have no such key and keep their idempotency-key ref.
+        stable_key = metadata.get("workout_session_key") or idempotency_key
+        if stable_key:
+            source_ref = f"{_FACTS_TABLE}:{_WORKOUT_PREDICATE}:{stable_key}"
+        else:
+            source_ref = f"{_FACTS_TABLE}:{_WORKOUT_PREDICATE}:{fact_id}"
         end_at = _derive_end_at(start_at, metadata)
 
         activity_type = str(metadata.get("activity_type") or "workout").strip() or "workout"

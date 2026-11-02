@@ -29,8 +29,10 @@ Scope: v1-mandatory
   a data point carries an interval
 - **THEN** it SHALL emit one envelope per data point with
   `external_event_id` `google_health:<user>:workout_session:<id>` and
-  `idempotency_key` `google_health:<user>:workout:<id>`
-- **AND** a trailing-window re-poll SHALL reuse the same idempotency key
+  `idempotency_key` `google_health:<user>:workout:<id>:<digest>`, where
+  `<digest>` fingerprints the session's normalized content
+- **AND** a trailing-window re-poll of an unchanged session SHALL reuse the same
+  idempotency key
 - **AND** the Health ingest SHALL write one `workout_session` fact with
   `valid_at` equal to the session start and metadata `activity_type`,
   `duration_ms`, `end_time`, `session_id`, `detection` (`manual` or `auto`),
@@ -45,8 +47,25 @@ Scope: v1-mandatory
   through the existing `scope_missing` path, and absence of workouts SHALL NOT
   be read as "no workouts"
 
-#### Scenario: Upstream edits and deletions are not yet reconciled
+#### Scenario: Edited workout supersedes the earlier fact with provenance
 
-- **WHEN** a provider workout is edited or removed after it was ingested
-- **THEN** the connector SHALL NOT claim to supersede or retract the stored
-  fact; this reconciliation is a deferred slice
+- **WHEN** a re-polled workout session has a changed type, times, duration,
+  detection or summary metric (or a changed upstream `updateTime`)
+- **THEN** the connector SHALL emit a new envelope whose `idempotency_key` carries
+  a different `<digest>` and whose `external_event_id` is unchanged
+- **AND** the Health ingest SHALL write the new `workout_session` fact, mark the
+  earlier active fact for the same session `superseded` with `invalid_at`, set the
+  new fact's `supersedes_id`, and record a `memory_links` `supersedes` edge
+- **AND** replaying the current or an older version SHALL change nothing, and no
+  fact SHALL be deleted
+- **AND** Chronicler SHALL keep one workout episode per session, updated to the
+  edited values
+
+#### Scenario: Upstream workout deletion is not inferred
+
+- **WHEN** a previously ingested workout is absent from a later list or reconcile
+  response
+- **THEN** the connector and ingest SHALL change nothing, because the public v4
+  reference documents no deletion signal for list or reconcile results
+- **AND** deletion SHALL be handled only when a positive upstream signal is
+  documented (see `docs/connectors/google_health.md`)

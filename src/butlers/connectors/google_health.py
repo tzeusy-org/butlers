@@ -88,6 +88,8 @@ Environment variables
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import signal
@@ -655,6 +657,28 @@ def build_sleep_session_envelope(
     }
 
 
+_WORKOUT_DIGEST_FIELDS = (
+    "startTime",
+    "endTime",
+    "durationMillis",
+    "activity_type",
+    "detection",
+    "calories",
+    "distance_m",
+    "average_heart_rate",
+    # Upstream edit stamp, when the API exposes one, so an edit back to earlier
+    # values still produces a new version instead of deduping to the old one.
+    "updateTime",
+)
+
+
+def _workout_content_digest(session_record: dict[str, Any]) -> str:
+    """Stable 16-hex digest of the normalized, ingest-relevant workout fields."""
+    content = {name: session_record.get(name) for name in _WORKOUT_DIGEST_FIELDS}
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
 def build_workout_session_envelope(
     *,
     endpoint_identity: str,
@@ -666,10 +690,13 @@ def build_workout_session_envelope(
     """Build an ingest.v1 envelope for a Google Health exercise session.
 
     Key shape: ``google_health:<email>:workout_session:<session_id>``
-    Idempotency key shape: ``google_health:<email>:workout:<session_id>``
+    Idempotency key shape: ``google_health:<email>:workout:<session_id>:<digest>``
 
-    A trailing-window re-poll therefore re-emits the same key and the fact
-    store treats it as a no-op.
+    ``digest`` fingerprints the session's content (see
+    :func:`_workout_content_digest`).  A trailing-window re-poll of an unchanged
+    session re-emits the same key and the fact store treats it as a no-op; an
+    edited session arrives under a new key and supersedes the earlier fact.
+    The event id keeps the bare session id so downstream can correlate versions.
     """
     activity_type = str(session_record.get("activity_type") or "workout")
     duration_label = _format_sleep_duration_label(int(session_record.get("durationMillis") or 0))
@@ -695,7 +722,10 @@ def build_workout_session_envelope(
             "normalized_text": normalized_text,
         },
         "control": {
-            "idempotency_key": f"google_health:{google_user_id}:workout:{session_id}",
+            "idempotency_key": (
+                f"google_health:{google_user_id}:workout:{session_id}:"
+                f"{_workout_content_digest(session_record)}"
+            ),
             "policy_tier": "default",
             "ingestion_tier": "full",
         },

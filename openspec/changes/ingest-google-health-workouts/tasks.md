@@ -11,7 +11,7 @@
 - [ ] 3.2 Real-seam DB test in CI (not executable on the authoring host)
 
 ## 4. Deferred
-- [ ] 4.1 Upstream edit/delete reconciliation
+- [x] 4.1 Upstream edit reconciliation (bu-q7vx1q.38); delete handling stays deferred: no documented signal
 - [ ] 4.2 Weight/body-fat bundle with owner-dominance
 - [ ] 4.3 "Last <activity>" read path
 - [ ] 4.4 `workout_session` predicate_registry seed after `mem_013` merges

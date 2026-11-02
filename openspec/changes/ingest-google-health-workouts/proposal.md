@@ -22,8 +22,9 @@ that consent; it adds no scope, account, or connector.
 
 ## Deferred slices
 
-- Upstream edit/delete reconciliation (supersede with provenance): the public v4
-  reference does not document reconcile tombstone semantics, so this is not claimed.
+- Upstream deletion reconciliation: the public v4 reference does not document
+  tombstones, so deletes are not inferred. Edits supersede with provenance
+  (bu-q7vx1q.38).
 - Weight and body-fat into health measurements with owner-dominance (slice 2).
 - "Last <activity>" answers from episodes with an evidence door (slice 3).
 - `predicate_registry` seed for `workout_session`: deferred behind the open
