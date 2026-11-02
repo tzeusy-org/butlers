@@ -269,3 +269,21 @@ Scope: v1-reserved
   or carded candidate, and the owner later taps Track
 - **THEN** one active commitment exists for that fingerprint and its opening evidence is the
   routed one
+
+### Requirement: No Per-Counterparty Card Cap in S1
+
+The reducer SHALL NOT limit the number of candidate cards per counterparty or per day in slice
+S1; every eligible candidate SHALL receive its one card under REQ-commitment-lifecycle-013. The
+adopted owner text is: "S1 candidate cards are not capped per counterparty; the cap applies to
+counterparty-authored candidates when S2 is specified."
+
+ID: REQ-commitment-lifecycle-017
+Source: owner decision 2026-11-02 on bu-jv1moa.43 (option C)
+Scope: v1-reserved
+
+#### Scenario: Several promises to one person on one day are all carded
+
+- **WHEN** the owner makes four distinct qualifying promises to the same counterparty within one
+  owner-local day, including one just before and one just after owner-local midnight
+- **THEN** each of the four candidates receives exactly one card, and none waits, lapses or is
+  dropped because of how many cards that counterparty already received

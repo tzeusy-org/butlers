@@ -7,17 +7,17 @@ it sees only what the owner tells Butlers. The owner released slice S1 of the pr
 (bu-4ap4ap, run 20 move 11, bead bu-jv1moa.11): verified owner-authored one-to-one chat promises
 become tainted candidates, and one signed Telegram card lets the owner Track, mark Done, or
 Ignore each. bu-jv1moa.11 cannot be dispatched until the source, storage, transport, lifecycle
-and cap contract exists. This change supplies it, except for one owner decision.
+and cap contract exists. This change supplies it, including the owner's card-cap decision.
 
-This is a spec-first change. It authorizes no implementation, migration, deployment, live
-message, or cap selection.
+This is a spec-first change. It authorizes no implementation, migration, deployment or live
+message.
 
 ## What Changes
 
-- ADD to `commitment-lifecycle` (REQ-commitment-lifecycle-011 to -016): candidate production,
+- ADD to `commitment-lifecycle` (REQ-commitment-lifecycle-011 to -017): candidate production,
   idempotence and duplicate suppression, the card through the signed confirm transport, Track-only
   promotion with exact Done and Ignore semantics, 14-day silent lapse with content minimization,
-  and coexistence with the routed REQ-007 path.
+  coexistence with the routed REQ-007 path, and the adopted no-cap rule for S1 cards.
 - ADD to `connector-base-spec` (REQ-connector-base-spec-013): explicit per-message `is_from_me`
   and `forwarded` transport facts on user-client conversation history entries.
 - ADD to `butler-switchboard` (REQ-butler-switchboard-011): a fixed, authenticated, read-only
@@ -26,14 +26,14 @@ message, or cap selection.
 - `design.md` gives the ingress-to-Relationship source map, schema, checkpoint and authority
   ownership, the full Track/Done/Ignore/race/replay/expiry matrix, the decisions taken and the
   alternatives rejected.
-- One owner decision is open: the per-counterparty daily card cap and its overflow handling
-  (design.md, "Owner decision: card cap"). The change states options and exact proposed text;
-  it does not choose.
+- Records the owner decision of 2026-11-02 (bu-jv1moa.43, option C): S1 cards have no
+  per-counterparty daily cap; the cap is revisited when S2 is specified
+  (REQ-commitment-lifecycle-017; design.md, "Owner decision: card cap").
 
 ## Non-Goals
 
 - No implementation, code, migration, test or runtime activation. bu-jv1moa.11 implements S1
-  after this change merges and the cap decision is adopted.
+  after this change merges.
 - No change to REQ-commitment-lifecycle-007 or -008. The routed path keeps auto-creating.
 - No counterparty-authored candidates (S2), Gmail (S3) or nudge drafts (S4).
 - No send over the owner's personal WhatsApp or Telegram account (bu-bup68v); the card goes

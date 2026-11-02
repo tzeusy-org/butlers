@@ -1,13 +1,14 @@
 ## 0. Adoption gates (this change)
 
-Spec-first: nothing in groups 1 to 5 is authorized until these close. Groups 1 to 5 are the
+Spec-first: nothing in groups 1 to 5 is authorized until these close and this change merges. Groups 1 to 5 are the
 dispatch packet for bu-jv1moa.11.
 
 - [ ] 0.1 Independent conformance review of this change: additive coexistence with
   REQ-commitment-lifecycle-007, privacy (no raw body outside the Switchboard inbox), exact
   callback authority (signed confirm transport only, Track-only promotion).
-- [ ] 0.2 Owner adopts one card-cap option (design.md, "Owner decision: card cap"); its exact text
-  is added as REQ-commitment-lifecycle-017 with a boundary scenario at owner-local midnight.
+- [x] 0.2 Owner card-cap decision recorded 2026-11-02 on bu-jv1moa.43 (option C, no cap in S1;
+  revisit at S2); its exact text is REQ-commitment-lifecycle-017 with a scenario spanning
+  owner-local midnight.
 - [ ] 0.3 Copy the adopted interfaces, matrix, tests and producer edges into bu-jv1moa.11.
 
 ## 1. Connector transport facts (REQ-connector-base-spec-013)
@@ -64,7 +65,8 @@ dispatch packet for bu-jv1moa.11.
   Track creates one commitment with evidence; Done and Ignore write no owner condition; retry of
   the same `confirm_id` is idempotent; forged, wrong-chat, replayed and expired taps change
   nothing; lapse vs Track race; card step repeated returns the same confirm; expired card is
-  not re-sent; posture defers the card.
+  not re-sent; posture defers the card; four promises to one counterparty across owner-local
+  midnight each receive one card (no cap, REQ-commitment-lifecycle-017).
 - [ ] 4.4 Tests delta at implementation: report actual `Tests: +a ~b -c`; extend existing files
   before adding new ones.
 

@@ -154,35 +154,28 @@ which the Track-only boundary and REQ-008 provenance rule do not allow.
 10. Confidence on Track stays the detector value (0.9 or 0.85), which is already at or above the
     0.8 surfacing threshold of REQ-commitment-lifecycle-004.
 
-## Owner decision: card cap (open)
+## Owner decision: card cap (recorded 2026-11-02, bu-jv1moa.43)
 
 The run-20 dossier promised "a per-sender, per-day candidate cap and a known-contacts-only rule"
-to bound spam from third-party text (its S2 half). No adopted text fixes a number, counting unit,
-day boundary or overflow behavior. Known-contact eligibility is settled above from the identity
-model. The cap is user-visible attention policy and stays with the owner. Until adopted, this
-change is not complete and bu-jv1moa.11 stays held.
+to bound spam from third-party text (its S2 half). No adopted text fixed a number, counting unit,
+day boundary or overflow behavior, so the cap was put to the owner. Known-contact eligibility is
+settled above from the identity model.
 
-- Option A (recommended): at most 3 cards per counterparty per owner-local day; overflow waits.
-  Proposed requirement text:
+The owner chose option C on 2026-11-02 (bu-jv1moa.43): no per-counterparty card cap in S1;
+revisit at S2. The adopted text, carried verbatim in REQ-commitment-lifecycle-017:
 
-  > The reducer SHALL create at most 3 candidate cards per counterparty per owner-local calendar
-  > day, using the general timezone setting (`resolve_general_timezone`). A pending candidate
-  > beyond that allowance SHALL wait, oldest source event first, for a later day's allowance and
-  > SHALL lapse silently if still waiting at its lapse time. Waiting SHALL NOT be reported to the
-  > owner.
+> S1 candidate cards are not capped per counterparty; the cap applies to counterparty-authored
+> candidates when S2 is specified.
 
-  Consequence: bounded card volume per person; nothing silently dropped inside 14 days.
-- Option B: same limit, overflow is dropped. Proposed text: as A, but "A pending candidate beyond
-  that allowance SHALL become `lapsed` immediately and silently." Consequence: strictest volume;
-  real promises beyond the third are lost.
-- Option C: no cap in S1; revisit at S2. Proposed text: "S1 candidate cards are not capped per
-  counterparty; the cap applies to counterparty-authored candidates when S2 is specified."
-  Consequence: candidates come only from the owner's own words, so volume tracks the owner's own
-  messaging; a very chatty day produces one card per promise.
+S1 candidates come only from the owner's own words, so card volume follows the owner's own
+messaging; a very chatty day produces one card per promise. The S2 specification must define
+the cap for counterparty-authored candidates.
 
-Default if unanswered: the status quo. No cap text is adopted, no card behavior ships, and
-bu-jv1moa.11 remains held. The adopted option's text becomes REQ-commitment-lifecycle-017 in this
-change before merge or in a follow-up amendment, with a boundary test at owner-local midnight.
+Rejected alternatives (not live):
+
+- A: at most 3 cards per counterparty per owner-local day, overflow waiting for a later day's
+  allowance and lapsing silently at 14 days.
+- B: the same limit with overflow dropped immediately.
 
 ## Risks
 
