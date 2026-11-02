@@ -11,6 +11,7 @@ import asyncio
 import json
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -45,155 +46,35 @@ pytestmark = [
 ]
 
 
-_LIFECYCLE_SCHEMA_SQL = """
-CREATE TABLE episodes (
-    content_authority TEXT, authority_entity_id UUID,
-    id UUID PRIMARY KEY,
-    butler TEXT NOT NULL,
-    session_id UUID,
-    content TEXT NOT NULL,
-    importance DOUBLE PRECISION NOT NULL DEFAULT 5.0,
-    reference_count INTEGER NOT NULL DEFAULT 0,
-    last_referenced_at TIMESTAMPTZ,
-    expires_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    tenant_id TEXT NOT NULL DEFAULT 'shared',
-    consolidated BOOLEAN NOT NULL DEFAULT false,
-    consolidation_status TEXT NOT NULL DEFAULT 'pending',
-    consolidation_attempts INTEGER NOT NULL DEFAULT 0,
-    last_consolidation_error TEXT,
-    leased_until TIMESTAMPTZ,
-    leased_by TEXT,
-    dead_letter_reason TEXT,
-    next_consolidation_retry_at TIMESTAMPTZ
-);
-
-CREATE TABLE memory_events (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    event_type TEXT NOT NULL,
-    actor TEXT,
-    tenant_id TEXT,
-    actor_butler TEXT,
-    memory_type TEXT,
-    memory_id UUID,
-    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-"""
+@asynccontextmanager
+async def _memory_pool(db, *, schema: str | None = None):
+    """A fresh DB on the real core + memory chains, the memory chain in *schema*."""
+    kwargs = {} if schema is None else {"schemas": {"memory": schema}, "schema": schema}
+    yield await db("core", "memory", **kwargs)
 
 
-_ARTIFACT_SCHEMA_SQL = """
-CREATE TABLE memory_policies (
-    retention_class TEXT PRIMARY KEY,
-    ttl_days INTEGER NOT NULL
-);
-
-INSERT INTO memory_policies (retention_class, ttl_days)
-VALUES ('transient', 7);
-
-CREATE TABLE facts (
-    content_authority TEXT, authority_entity_id UUID,
-    id UUID PRIMARY KEY,
-    subject TEXT NOT NULL DEFAULT '',
-    predicate TEXT NOT NULL DEFAULT '',
-    content TEXT NOT NULL DEFAULT '',
-    embedding TEXT,
-    search_vector TSVECTOR,
-    importance DOUBLE PRECISION NOT NULL DEFAULT 5.0,
-    confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    decay_rate DOUBLE PRECISION NOT NULL DEFAULT 0.01,
-    permanence TEXT NOT NULL DEFAULT 'standard',
-    source_episode_id UUID,
-    supersedes_id UUID,
-    scope TEXT NOT NULL DEFAULT 'global',
-    entity_id UUID,
-    object_entity_id UUID,
-    valid_at TIMESTAMPTZ,
-    validity TEXT NOT NULL DEFAULT 'active',
-    source_butler TEXT NOT NULL DEFAULT 'memory',
-    tenant_id TEXT NOT NULL DEFAULT 'shared',
-    request_id TEXT,
-    idempotency_key TEXT,
-    observed_at TIMESTAMPTZ,
-    retention_class TEXT NOT NULL DEFAULT 'operational',
-    sensitivity TEXT NOT NULL DEFAULT 'normal',
-    embedding_model_version TEXT NOT NULL DEFAULT 'consolidation-lifecycle-test',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    last_confirmed_at TIMESTAMPTZ,
-    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb
-);
-
-CREATE TABLE predicate_registry (
-    name TEXT PRIMARY KEY,
-    is_edge BOOLEAN NOT NULL DEFAULT false,
-    is_temporal BOOLEAN NOT NULL DEFAULT false,
-    status TEXT NOT NULL DEFAULT 'active',
-    superseded_by TEXT,
-    expected_subject_type TEXT,
-    expected_object_type TEXT,
-    inverse_of TEXT,
-    is_symmetric BOOLEAN NOT NULL DEFAULT false,
-    aliases TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
-    description TEXT,
-    usage_count INTEGER NOT NULL DEFAULT 0,
-    last_used_at TIMESTAMPTZ
-);
-
-INSERT INTO predicate_registry (name) VALUES ('test_property');
-
-CREATE TABLE rules (
-    content_authority TEXT, authority_entity_id UUID, endorsed_at TIMESTAMPTZ, endorsed_by UUID,
-    id UUID PRIMARY KEY,
-    content TEXT NOT NULL,
-    embedding TEXT NOT NULL,
-    search_vector TSVECTOR NOT NULL,
-    scope TEXT NOT NULL,
-    maturity TEXT NOT NULL,
-    confidence DOUBLE PRECISION NOT NULL,
-    decay_rate DOUBLE PRECISION NOT NULL,
-    effectiveness_score DOUBLE PRECISION NOT NULL,
-    applied_count INTEGER NOT NULL,
-    success_count INTEGER NOT NULL,
-    harmful_count INTEGER NOT NULL,
-    source_episode_id UUID,
-    source_butler TEXT,
-    created_at TIMESTAMPTZ NOT NULL,
-    tags JSONB NOT NULL,
-    metadata JSONB NOT NULL,
-    tenant_id TEXT NOT NULL,
-    request_id TEXT,
-    retention_class TEXT NOT NULL,
-    sensitivity TEXT NOT NULL,
-    embedding_model_version TEXT NOT NULL
-);
-
-CREATE TABLE memory_links (
-    source_type TEXT NOT NULL,
-    source_id UUID NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id UUID NOT NULL,
-    relation TEXT NOT NULL,
-    UNIQUE (source_type, source_id, target_type, target_id)
-);
-"""
+async def _register_test_predicate(pool) -> None:
+    """Consolidation output in these tests writes facts with a test-only predicate."""
+    await pool.execute(
+        "INSERT INTO predicate_registry (name) VALUES ('test_property') ON CONFLICT DO NOTHING"
+    )
 
 
-async def _install_lifecycle_schema(pool) -> None:
-    await pool.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-    await pool.execute(_LIFECYCLE_SCHEMA_SQL)
-
-
-async def _install_artifact_schema(pool) -> None:
-    await pool.execute(_ARTIFACT_SCHEMA_SQL)
+async def _insert_confirmable_fact(pool, fact_id: uuid.UUID) -> None:
+    """A pre-existing fact for consolidation output to confirm."""
+    await pool.execute(
+        "INSERT INTO facts (id, subject, predicate, content) "
+        "VALUES ($1, 'Owner', 'confirmable_note', 'an existing fact')",
+        fact_id,
+    )
 
 
 class _StaticEmbeddingEngine:
     model_name = "consolidation-lifecycle-test"
 
     def embed(self, _text: str) -> list[float]:
-        return [0.0]
+        # The real columns are vector(384); a unit vector keeps cosine distance defined.
+        return [1.0] + [0.0] * 383
 
 
 class _CompletedThenReplacedSpawner:
@@ -318,12 +199,11 @@ async def _episode_lifecycle(pool, episode_id: uuid.UUID):
 
 @pytest.mark.pg_clock
 async def test_scheduled_run_claims_pending_and_only_retry_eligible_failed_episodes(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A live scheduler claims due retries but never terminal or premature rows."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+    async with _memory_pool(db) as pool:
+        await _register_test_predicate(pool)
         now = datetime.now(UTC)
 
         pending = await _insert_episode(pool, retry_at=now + timedelta(days=1))
@@ -407,15 +287,13 @@ async def test_scheduled_run_claims_pending_and_only_retry_eligible_failed_episo
 
 @pytest.mark.pg_clock
 async def test_private_memory_claim_path_does_not_retry_failed_episodes(
-    provisioned_postgres_pool,
+    db,
     monkeypatch,
 ) -> None:
     """Chronicler's live private hook claims pending work but leaves due failures untouched."""
-    async with provisioned_postgres_pool(schema="chronicler_mem") as pool:
-        await pool.execute("CREATE SCHEMA chronicler_mem")
+    async with _memory_pool(db, schema="chronicler_mem") as pool:
         assert await pool.fetchval("SELECT current_schema()") == "chronicler_mem"
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+        await _register_test_predicate(pool)
         now = datetime.now(UTC)
         pending = await _insert_episode(pool)
         failed_due = await _insert_episode(
@@ -476,12 +354,11 @@ async def test_private_memory_claim_path_does_not_retry_failed_episodes(
 
 @pytest.mark.pg_clock
 async def test_registered_relationship_admin_dry_run_leaves_due_failed_retry_for_scheduler(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """MCP dry runs cannot steal a due retry from the live scheduled Spawner."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+    async with _memory_pool(db) as pool:
+        await _register_test_predicate(pool)
         episode_id = await _insert_episode(
             pool,
             status="failed",
@@ -560,12 +437,11 @@ async def test_registered_relationship_admin_dry_run_leaves_due_failed_retry_for
 
 @pytest.mark.pg_clock
 async def test_due_failed_claim_is_race_safe_between_scheduler_runs(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """Concurrent runs cannot both claim one due failed episode."""
-    async with provisioned_postgres_pool(max_pool_size=3) as pool:
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+    async with _memory_pool(db) as pool:
+        await _register_test_predicate(pool)
         await _insert_episode(
             pool,
             status="failed",
@@ -600,11 +476,10 @@ async def test_due_failed_claim_is_race_safe_between_scheduler_runs(
 
 @pytest.mark.pg_clock
 async def test_failure_transition_is_fenced_sanitized_and_retryable(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A worker may only fail its own active lease, without persisting raw errors."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         episode_id = await _insert_episode(
             pool,
             leased_until=datetime.now(UTC) + timedelta(minutes=5),
@@ -647,11 +522,10 @@ async def test_failure_transition_is_fenced_sanitized_and_retryable(
 
 
 async def test_failure_transition_fails_closed_when_its_event_cannot_persist(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """Lifecycle state cannot advance without its durable audit event."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         episode_id = await _insert_episode(
             pool,
             leased_until=datetime.now(UTC) + timedelta(minutes=5),
@@ -676,11 +550,10 @@ async def test_failure_transition_fails_closed_when_its_event_cannot_persist(
 
 @pytest.mark.pg_clock
 async def test_expired_claim_cannot_persist_a_stale_failure(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """An expired worker lease cannot overwrite a replacement claimant's state."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         episode_id = await _insert_episode(
             pool,
             leased_until=datetime.now(UTC) - timedelta(seconds=1),
@@ -703,11 +576,10 @@ async def test_expired_claim_cannot_persist_a_stale_failure(
 
 
 async def test_terminal_failure_dead_letters_once_and_never_replays(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A stale or repeated terminal write cannot increment or replay a dead letter."""
-    async with provisioned_postgres_pool(max_pool_size=3) as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         episode_id = await _insert_episode(
             pool,
             status="failed",
@@ -761,7 +633,7 @@ async def test_terminal_failure_dead_letters_once_and_never_replays(
 
 
 async def test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_scheduler(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """The retry reset is a genuine re-enqueue, not a cosmetic status relabel.
 
@@ -772,9 +644,8 @@ async def test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_sch
     live worker lease this asserts on is direct evidence of reconsideration
     (bu-6t8ix.2 acceptance criterion 4).
     """
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+    async with _memory_pool(db) as pool:
+        await _register_test_predicate(pool)
         episode_id = await _insert_episode(
             pool,
             status="dead_letter",
@@ -822,11 +693,10 @@ async def test_retry_dead_letter_episode_resets_and_is_reclaimed_by_the_real_sch
 
 
 async def test_retry_dead_letter_episode_rejects_non_dead_letter_status(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A non-dead_letter episode is rejected, not silently reset."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         episode_id = await _insert_episode(pool, status="failed", attempts=1)
 
         with pytest.raises(EpisodeNotDeadLetterError):
@@ -839,20 +709,18 @@ async def test_retry_dead_letter_episode_rejects_non_dead_letter_status(
 
 
 async def test_retry_dead_letter_episode_returns_none_for_unknown_id(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """An id with no matching episode returns None rather than raising."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         assert await retry_dead_letter_episode(pool, uuid.uuid4()) is None
 
 
 async def test_success_transition_is_fenced_and_clears_retry_lifecycle_state(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """Only the current claimant can finalize a group and clear retry evidence."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
+    async with _memory_pool(db) as pool:
         episode_id = await _insert_episode(
             pool,
             status="failed",
@@ -905,12 +773,11 @@ async def test_success_transition_is_fenced_and_clears_retry_lifecycle_state(
 
 
 async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmation(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A terminal audit failure rolls back every write in the protected group."""
-    async with provisioned_postgres_pool() as pool:
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+    async with _memory_pool(db) as pool:
+        await _register_test_predicate(pool)
         # Keep the original five-minute fence observably distinct from the
         # executor's 300-second renewal. A future-only assertion would allow a
         # leaked/committed renewal to masquerade as a complete rollback.
@@ -921,7 +788,7 @@ async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmati
             leased_by="claim-a",
         )
         confirmation_id = uuid.uuid4()
-        await pool.execute("INSERT INTO facts (id) VALUES ($1)", confirmation_id)
+        await _insert_confirmable_fact(pool, confirmation_id)
         await pool.execute(
             "ALTER TABLE memory_events "
             "ADD CONSTRAINT reject_terminal_events "
@@ -991,15 +858,14 @@ async def test_terminal_event_failure_rolls_back_fenced_artifacts_and_confirmati
 
 @pytest.mark.pg_clock
 async def test_replaced_claim_cannot_persist_artifacts_or_terminal_lifecycle(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A completed runtime loses every write when a later claimant owns its episodes."""
-    async with provisioned_postgres_pool(max_pool_size=3) as pool:
-        await _install_lifecycle_schema(pool)
-        await _install_artifact_schema(pool)
+    async with _memory_pool(db) as pool:
+        await _register_test_predicate(pool)
         episode_id = await _insert_episode(pool)
         confirmation_id = uuid.uuid4()
-        await pool.execute("INSERT INTO facts (id) VALUES ($1)", confirmation_id)
+        await _insert_confirmable_fact(pool, confirmation_id)
         spawner = _CompletedThenReplacedSpawner(pool, episode_id, confirmation_id)
 
         displaced = await run_consolidation(
