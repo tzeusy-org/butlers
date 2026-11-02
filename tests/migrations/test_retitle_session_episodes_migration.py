@@ -145,8 +145,8 @@ class TestPrePostMigrationState:
         """The real chronicler schema as chronicler_009's predecessor left it."""
         pool = await db("chronicler", revisions={"chronicler": "chronicler_008"})
         await pool.execute("""
-            INSERT INTO source_adapter_state (source_name)
-            VALUES ('core.sessions')
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('core.sessions', 'supported')
             ON CONFLICT DO NOTHING
         """)
         return pool

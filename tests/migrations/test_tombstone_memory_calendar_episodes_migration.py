@@ -174,13 +174,13 @@ class TestTombstoneMemoryCalendarEpisodesIntegration:
         pool = await db("chronicler", revisions={"chronicler": "chronicler_007"})
         # Register the two source adapters needed for the tests.
         await pool.execute("""
-            INSERT INTO source_adapter_state (source_name)
-            VALUES ('google_calendar.completed')
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('google_calendar.completed', 'supported')
             ON CONFLICT DO NOTHING
         """)
         await pool.execute("""
-            INSERT INTO source_adapter_state (source_name)
-            VALUES ('core.sessions')
+            INSERT INTO source_adapter_state (source_name, chronicler_compatibility)
+            VALUES ('core.sessions', 'supported')
             ON CONFLICT DO NOTHING
         """)
         return pool
