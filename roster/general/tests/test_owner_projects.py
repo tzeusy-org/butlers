@@ -213,7 +213,7 @@ async def _row_counts(pool: asyncpg.Pool) -> dict[str, int]:
         "FROM pg_class AS c JOIN pg_namespace AS n ON n.oid = c.relnamespace "
         "WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition "
         "AND n.nspname NOT IN ('pg_catalog', 'information_schema') "
-        "AND n.nspname NOT LIKE 'pg_toast%' "
+        "AND left(n.nspname, 8) <> 'pg_toast' "
         "AND has_schema_privilege(n.oid, 'USAGE') AND has_table_privilege(c.oid, 'SELECT')"
     )
     return {row["name"]: row["row_count"] for row in rows}
