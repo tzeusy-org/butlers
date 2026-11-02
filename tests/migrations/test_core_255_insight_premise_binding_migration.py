@@ -1466,6 +1466,34 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
                 )
         finally:
             engine.dispose()
+        # bu-jjv2du: a third-owned definer must refuse in the read-only preflight. psql
+        # commits each statement, so a refusal only in the late DO would leave the
+        # earlier grant replay committed (the revoked CREATE would come back).
+        bill_status = "public.resolve_finance_bill_status(uuid)"
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(f"ALTER FUNCTION {bill_status} OWNER TO butler_general_rw"))
+        finally:
+            engine.dispose()
+        third_definer_owner = snapshot(admin_url)
+        asyncio.run(psql(production_path, require_error="P0001"))
+        assert snapshot(admin_url) == third_definer_owner
+        assert (
+            _run(
+                admin_url,
+                "SELECT has_schema_privilege('butler_switchboard_rw','switchboard','CREATE')",
+            )
+            is False
+        )
+        engine = create_engine(admin_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(f'ALTER FUNCTION {bill_status} OWNER TO "{urlparse(db_url).username}"')
+                )
+        finally:
+            engine.dispose()
         asyncio.run(psql(production_path))
         # Wrong-kind input is intentionally not a domain-table stand-in.
         engine = create_engine(admin_url)
