@@ -965,14 +965,16 @@ async def get_butler_session_kinds(
 # (see _VALID_WINDOW_DAYS guard below).  With ix_sessions_started_at (core_128)
 # the range filter is index-backed; result set is at most 30 rows (one per day).
 # Budget: O(sessions_in_window) scan → O(30) GROUP BY buckets.  Bounded and safe.
+#
 # Dense window (bu-s11n0s.5.1): one row per UTC day ending today, a quiet day
 # being a measured 0, so a client can draw any day the response omits as
-# unreported rather than as a fabricated zero. Mirrors _HOURLY_ACTIVITY_SQL.
+# unreported rather than as a fabricated zero. Days are pinned to UTC whatever
+# the session TimeZone, matching the frontend's UTC `YYYY-MM-DD` day keys.
 _DAILY_ACTIVITY_SQL = """
 WITH days AS (
   SELECT generate_series(
-    DATE_TRUNC('day', NOW()) - (($1 - 1) * INTERVAL '1 day'),
-    DATE_TRUNC('day', NOW()),
+    DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC') - (($1 - 1) * INTERVAL '1 day'),
+    DATE_TRUNC('day', NOW() AT TIME ZONE 'UTC'),
     '1 day'
   ) AS day_start
 )
@@ -980,8 +982,8 @@ SELECT
   days.day_start::date AS d,
   COUNT(s.id) AS sessions_count
 FROM days
-LEFT JOIN sessions s ON s.started_at >= days.day_start
-                    AND s.started_at < days.day_start + INTERVAL '1 day'
+LEFT JOIN sessions s ON s.started_at >= days.day_start AT TIME ZONE 'UTC'
+                    AND s.started_at < (days.day_start + INTERVAL '1 day') AT TIME ZONE 'UTC'
 GROUP BY days.day_start
 ORDER BY days.day_start
 """

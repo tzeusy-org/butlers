@@ -16,3 +16,4 @@
 - [x] 3.2 Activity tab hourly stripe and daily bars key buckets by `hour_start` / `date`; daily-activity returns a dense window.
 - [x] 3.3 Fleet board returns `hourly_buckets` keyed by hour start (empty with a null total on failure); the board hook and overview stripe place them by time and drill into the slot's own hour.
 - [x] 3.4 Management-tab owner-hour stripe and connector sparkline fallbacks render unreported slots, not zeros; the unused positional `bucketSessionsByHour` is deleted.
+- [x] 3.5 Connector roster declares `hourly_bucket_starts` and the roster keys every series by it; a failed hourly read returns no buckets and a null 24h total.

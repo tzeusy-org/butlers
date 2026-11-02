@@ -39,3 +39,6 @@ count strip that misplaces its buckets misleads the owner about when their sense
 - `GET /api/butlers/{name}/analytics/daily-activity` returns a dense window, so a quiet day is a
   measured zero. The fleet board replaces the positional `hourly_stripe` with `hourly_buckets`
   keyed by `hour_start`; a failed hourly query returns no buckets and a null `hourly_total`.
+- The connector roster summary declares `hourly_bucket_starts`, and the roster re-keys each series
+  onto the viewer's window by it. A failed hourly read returns empty series and a null
+  `today.messages_ingested` instead of `[0]*24` and `0`.

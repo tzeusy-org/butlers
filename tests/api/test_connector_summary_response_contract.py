@@ -136,9 +136,11 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
             "unclassified_count",
             "device_liveness_available",
             "hourly_events_available",
+            "hourly_bucket_starts",
             "listening_available",
             "owntracks_cadence_available",
         }
+        assert len(data["hourly_bucket_starts"]) == 24
         assert data["connector_registry_available"] is True
         for source, field in [
             ("hourly", "hourly_events_available"),
@@ -187,14 +189,14 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
             ) == ("offline", "healthy")
             assert entries["synthetic-unknown"]["liveness"] == "unclassified"
             assert data["unclassified_count"] == 1
+            # A failed count read reports no buckets and no total (bu-s11n0s.5.1).
+            hourly_failed = failed_source == "hourly"
             assert online["today"] == {
-                "messages_ingested": 0 if failed_source == "hourly" else 7,
+                "messages_ingested": None if hourly_failed else 7,
                 "messages_failed": 2,
             }
-            assert online["hourly_events"] == [0] * 23 + [0 if failed_source == "hourly" else 7]
-            assert online["hourly_filtered_events"] == [0] * 23 + [
-                0 if failed_source == "hourly" else 11
-            ]
+            assert online["hourly_events"] == ([] if hourly_failed else [0] * 23 + [7])
+            assert online["hourly_filtered_events"] == ([] if hourly_failed else [0] * 23 + [11])
             # Failed traffic (slot 22) contradicts deafness, as on the detail route;
             # unknown traffic (hourly read failed) leaves every non-live slot unknown.
             assert online["hourly_listening"] == {

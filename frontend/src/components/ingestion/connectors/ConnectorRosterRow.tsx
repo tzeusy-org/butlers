@@ -45,17 +45,17 @@ import { CONNECTOR_ROSTER_GRID_COLUMNS } from './layout'
 interface ConnectorRosterRowProps {
   connector: ConnectorSummary
   /** Pre-computed 24h hourly spark data (length-24 array). Absent → all zeros. */
-  spark24h?: number[]
+  spark24h?: (number | null)[]
   /**
    * Pre-computed 24h filtered/skip-routed spark data (bu-scyro). Rendered as a
    * visually-quiet second series on the same sparkline. Absent → no overlay.
    */
-  spark24hFiltered?: number[]
+  spark24hFiltered?: (number | null)[]
   /**
    * Heartbeat-derived listening state per spark slot (bu-s11n0s.5). Deaf
    * slots are hatched. Absent → no listening marks.
    */
-  listening24h?: ListeningState[]
+  listening24h?: (ListeningState | null)[]
   /** Pre-computed 24h event count. Falls back to sum of hourly_events. */
   events24h?: number
   /**
@@ -100,7 +100,8 @@ export function ConnectorRosterRow({
   // Missing counts render as unreported slots (bu-s11n0s.5.1), not zeros.
   const bars = spark24h ?? []
   // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
-  const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
+  // null when the hourly count read failed (bu-s11n0s.5.1): shown as a dash, never 0.
+  const eventsCount = events24h ?? c.today?.messages_ingested ?? null
 
   const authPresentation = authStatusPresentation(info)
   // Health is already carried by the row dot. Independent auth failures retain their tone.
@@ -248,7 +249,7 @@ export function ConnectorRosterRow({
       </div>
 
       {/* Events (last 24h) */}
-      <div className="font-mono text-[12px] tabular-nums text-right">{formatNum(eventsCount)}</div>
+      <div className="font-mono text-[12px] tabular-nums text-right">{eventsCount === null ? '—' : formatNum(eventsCount)}</div>
 
       {/* Disclosure — decorative visual cue; the stretched row link owns navigation */}
       <span aria-hidden="true" className="font-mono text-[13px] text-muted-foreground justify-self-end">

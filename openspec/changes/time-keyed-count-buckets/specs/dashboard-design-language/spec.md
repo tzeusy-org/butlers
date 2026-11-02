@@ -2,7 +2,7 @@
 
 ### Requirement: Count-Bucket Truth
 
-Every count strip (activity stripes, daily bars, connector sparklines and histograms) SHALL place each bucket by its bucket-start instant, never by array position. A bucket that no successful source read reported SHALL render as not reported, distinct in shape from a measured zero, and SHALL be left out of the strip's totals and peak. A failed source read SHALL report no buckets rather than a row of zeros. Frontend source SHALL NOT build a chart series from a zero-filled array; the `count-bucket/no-zero-fill` lint rule enforces this, and a genuine non-chart numeric table takes a line-level disable with a reason.
+Every count strip (activity stripes, daily bars, connector sparklines and histograms) SHALL place each bucket by its bucket-start instant, never by array position. A bucket that no successful source read reported SHALL render as not reported, distinct in shape from a measured zero, and SHALL be left out of the strip's totals and peak. A positional series on the wire SHALL declare the bucket start of each slot (the connector roster's `hourly_bucket_starts`) so the client can key it by time. A failed source read SHALL report no buckets, and no total, rather than a row of zeros. Frontend source SHALL NOT build a chart series from a zero-filled array; the `count-bucket/no-zero-fill` lint rule enforces this, and a genuine non-chart numeric table takes a line-level disable with a reason.
 
 ID: REQ-dashboard-design-language-007
 Source: bu-s11n0s.5.1 (JARVIS pursuit run 16, slice S3)
@@ -19,6 +19,12 @@ Scope: v1-mandatory
 - **WHEN** a butler's hourly-activity query fails while the fleet board is built
 - **THEN** that row's `hourly_buckets` SHALL be empty and its `hourly_total` null
 - **AND** the overview stripe SHALL render 24 not-reported slots, not 24 zero cells
+
+#### Scenario: A failed roster count read is unreported
+
+- **WHEN** the connector summaries' hourly count query fails
+- **THEN** every connector's `hourly_events` and `hourly_filtered_events` SHALL be empty and `today.messages_ingested` null
+- **AND** each roster sparkline SHALL read "not reported" and the 24h event figures SHALL show a dash, not 0
 
 #### Scenario: Zero-filled chart arrays are rejected
 

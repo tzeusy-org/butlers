@@ -60,6 +60,22 @@ export function buildBucketSeries<T, V = number>(
 }
 
 /**
+ * Re-key a series the server aligned to `seriesStarts` (ISO bucket starts,
+ * one per element) onto the viewer's `slotStarts` (bu-s11n0s.5.1), so a slot
+ * lands at its own hour even when the two windows end at different hours.
+ * An empty series stays empty (unreported). A response without starts (older
+ * cache) is returned as-is: it was always aligned to the current window.
+ */
+export function rekeySeries<V>(
+  series: readonly V[] | undefined,
+  seriesStarts: readonly string[] | undefined,
+  slotStarts: readonly number[],
+): (V | null)[] | undefined {
+  if (!series?.length || !seriesStarts || seriesStarts.length !== series.length) return series?.slice();
+  return buildBucketSeries(series.map((_, i) => i), (i) => seriesStarts[i], (i) => series[i], slotStarts);
+}
+
+/**
  * Accessible summary of a strip's listening states (bu-s11n0s.5): the number
  * of deaf hourly slots as "not listening Nh", or "" when none are deaf. Only
  * `deaf` counts: `unknown` and unreported slots make no liveness claim.

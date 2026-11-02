@@ -143,7 +143,8 @@ def _listening_states(
 class ConnectorSummaryToday(BaseModel):
     """Existing last-24h ingestion total and reported failure counter."""
 
-    messages_ingested: int
+    # None when the hourly count read failed (bu-s11n0s.5.1), never a fabricated 0.
+    messages_ingested: int | None
     messages_failed: int
 
 
@@ -205,6 +206,8 @@ class ConnectorSummaryResponse(BaseModel):
     unclassified_count: int = 0
     device_liveness_available: bool = True
     hourly_events_available: bool = True
+    # UTC hour starts the per-connector hourly series are keyed to (bu-s11n0s.5.1).
+    hourly_bucket_starts: list[str] = Field(default_factory=list)
     listening_available: bool = True
     owntracks_cadence_available: bool = True
 
@@ -1164,9 +1167,9 @@ async def list_connector_summaries_with_aggregates(
                     target_map[key][bucket_offset] = int(hr["event_count"])
         except Exception:
             logger.warning("connector summaries: failed to fetch hourly timeseries", exc_info=True)
-            # hourly_map/hourly_filtered_map stay empty — connectors fall back to
-            # all-zeros below, and hourly_events_available flips false so a
-            # genuine query failure is never rendered as an honest all-quiet chart.
+            # hourly_map/hourly_filtered_map stay empty — connectors report no
+            # buckets below (bu-s11n0s.5.1), and hourly_events_available flips
+            # false so a genuine query failure never renders as an all-quiet chart.
             hourly_events_available = False
 
     # Per-device liveness fallback for connector_types whose connector_registry
@@ -1347,8 +1350,10 @@ async def list_connector_summaries_with_aggregates(
             unclassified_count += 1
         liveness = _row_liveness(r)
         key = (r["connector_type"], r["endpoint_identity"])
-        hourly = hourly_map.get(key, [0] * 24)
-        hourly_filtered = hourly_filtered_map.get(key, [0] * 24)
+        # On success an endpoint with no rows had a measured-zero window; on a
+        # failed read it has no buckets at all, never 24 fabricated zeros.
+        hourly = hourly_map.get(key, [0] * 24) if hourly_events_available else []
+        hourly_filtered = hourly_filtered_map.get(key, [0] * 24) if hourly_events_available else []
         recording_since, heartbeat_hours = listening_history.get(key, (None, set()))
         hourly_listening = _listening_states(
             hour_starts,
@@ -1376,7 +1381,7 @@ async def list_connector_summaries_with_aggregates(
         # Sum the hourly timeseries (already a real 24h window from public.ingestion_events)
         # to produce a true last-24h ingestion count.  The raw counter_messages_ingested is
         # cumulative since process start and must NOT be used as a "today" figure.
-        messages_ingested_24h = sum(hourly)
+        messages_ingested_24h = sum(hourly) if hourly_events_available else None
         operational_warnings: list[str] = []
         if (
             owntracks_cadence_available
@@ -1494,6 +1499,10 @@ async def list_connector_summaries_with_aggregates(
             # raised — mirrors device_liveness_available
             # (genuine-failure-only degraded flag; never fabricated zeros).
             "hourly_events_available": hourly_events_available,
+            # The UTC hour starts (oldest first) that every per-connector hourly
+            # series is keyed to (bu-s11n0s.5.1). Clients place each slot by
+            # this instant, never by array position.
+            "hourly_bucket_starts": [start.isoformat() for start in hour_starts],
             # False only if the heartbeat-history read raised; every
             # hourly_listening slot is then "unknown", never "deaf".
             "listening_available": listening_available,

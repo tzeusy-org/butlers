@@ -89,10 +89,8 @@ async def test_daily_activity_7d_window() -> None:
     # client can draw a day the API did not report as unreported, not zero.
     assert [b["sessions_count"] for b in buckets] == counts
     assert buckets[-1]["date"] == "2026-05-11"
-    pool = app.dependency_overrides[get_db]().pool("atlas")
-    sql, window = pool.fetch.await_args.args
-    assert window == 7
-    assert "generate_series" in sql and "LEFT JOIN sessions" in sql
+    # The SQL window itself is proven against real Postgres in
+    # tests/integration/test_daily_activity_db.py.
 
 
 async def test_daily_activity_30d_window() -> None:

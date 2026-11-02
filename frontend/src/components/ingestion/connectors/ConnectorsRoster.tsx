@@ -57,6 +57,8 @@ import {
   useAvailableConnectors,
 } from '@/hooks/use-ingestion'
 import type { ConnectorSummary } from '@/api/types'
+import { useTickingNow } from '@/hooks/use-ticking-now'
+import { hourlySlotStarts, rekeySeries } from '@/lib/bucket-series'
 import { SourceDegradedNote } from '@/components/ui/query-boundary'
 import { AttentionStrip } from './AttentionStrip'
 import { ConnectorRosterRow } from './ConnectorRosterRow'
@@ -147,6 +149,7 @@ export function ConnectorsRoster() {
     isError: availableError,
     refetch: refetchAvailable,
   } = useAvailableConnectors()
+  const now = useTickingNow(60_000)
 
   const hasRosterData = connectorsResp?.data !== undefined
   const rosterUnavailable = connectorsError && !hasRosterData
@@ -166,8 +169,8 @@ export function ConnectorsRoster() {
 
   // hourly_events_available (bu-scyro) is false only when the backend's combined
   // ingested+filtered hourly query itself raised — in that case every connector's
-  // hourly_events/hourly_filtered_events fall back to all-zero arrays and
-  // today.messages_ingested (summed from hourly_events) reads as 0. Absent field
+  // hourly_events/hourly_filtered_events are empty (unreported) and
+  // today.messages_ingested is null (bu-s11n0s.5.1). Absent field
   // (older cached response) must NOT be treated as false. Never let that render as
   // an honest "quiet 24h" — surface the degraded source inline instead.
   const hourlyEventsAvailable = connectorsResp?.data?.hourly_events_available !== false
@@ -228,6 +231,10 @@ export function ConnectorsRoster() {
     1,
     ...allConnectors.flatMap((c) => c.hourly_events ?? []),
   )
+  // Each series is keyed by the response's declared bucket starts and placed
+  // onto the viewer's current 24h window (bu-s11n0s.5.1), never by position.
+  const seriesStarts = connectorsResp?.data?.hourly_bucket_starts
+  const slotStarts = hourlySlotStarts(now)
 
   // KPI aggregates.
   //
@@ -338,9 +345,9 @@ export function ConnectorsRoster() {
                 <ConnectorRosterRow
                   key={`${c.connector_type}:${c.endpoint_identity}`}
                   connector={c}
-                  spark24h={c.hourly_events}
-                  spark24hFiltered={c.hourly_filtered_events}
-                  listening24h={c.hourly_listening}
+                  spark24h={rekeySeries(c.hourly_events, seriesStarts, slotStarts)}
+                  spark24hFiltered={rekeySeries(c.hourly_filtered_events, seriesStarts, slotStarts)}
+                  listening24h={rekeySeries(c.hourly_listening, seriesStarts, slotStarts)}
                   catalogChannel={catalogChannelByType.get(c.connector_type)}
                   rosterSparkMax={rosterSparkMax}
                 />
@@ -377,7 +384,7 @@ export function ConnectorsRoster() {
               { label: 'healthy', value: formatNum(healthyCount) },
               { label: 'needs attention', value: formatNum(attentionNeededCount) },
               { label: 'auth · error', value: formatNum(authNeededCount) },
-              { label: 'events · 24h', value: formatNum(totalEvents24h) },
+              { label: 'events · 24h', value: hourlyEventsAvailable ? formatNum(totalEvents24h) : '—' },
             ].map(({ label, value }) => (
               <div key={label}>
                 <div className="font-mono text-[9.5px] tracking-[0.14em] uppercase text-muted-foreground">

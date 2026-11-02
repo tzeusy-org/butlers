@@ -4004,7 +4004,8 @@ export type IngestionPeriod = "24h" | "7d" | "30d";
 
 /** Today's ingestion summary attached to a connector list entry. */
 export interface ConnectorDaySummary {
-  messages_ingested: number;
+  /** Last-24h ingested total; null when the hourly count read failed (bu-s11n0s.5.1). */
+  messages_ingested: number | null;
   messages_failed: number;
   uptime_pct: number | null;
 }
@@ -4355,6 +4356,12 @@ export interface ConnectorSummariesResponse {
    * (bu-scyro; mirrors `device_liveness_available`). Optional/additive.
    */
   hourly_events_available?: boolean;
+  /**
+   * UTC hour starts (oldest first) that every connector's hourly series is
+   * keyed to (bu-s11n0s.5.1). Clients place each slot by this instant, never
+   * by array position. Optional/additive: absent on older responses.
+   */
+  hourly_bucket_starts?: string[];
   /**
    * False only if the heartbeat-history read failed (bu-s11n0s.5); every
    * `hourly_listening` slot is then `unknown`. Optional/additive.

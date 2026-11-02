@@ -199,6 +199,7 @@ function mockHooks(
   profiles: ConnectorProfile[] = [],
   responseOverrides: {
     hourly_events_available?: boolean
+    hourly_bucket_starts?: string[]
     listening_available?: boolean
     device_liveness_available?: boolean
     owntracks_cadence_available?: boolean
@@ -941,6 +942,37 @@ describe('hourly_events_available degraded note (bu-scyro)', () => {
 
     expect(container.textContent).toMatch(/24h activity/)
     expect(container.textContent).toMatch(/hourly event source unavailable/)
+  })
+
+  it('keys roster series by the declared bucket starts and draws a failed read as unreported (bu-s11n0s.5.1)', () => {
+    vi.useFakeTimers({ now: new Date('2026-05-11T12:30:00Z'), toFake: ['Date'] })
+    try {
+      // The server's window ended an hour earlier than the viewer's: its last
+      // slot (5 events) is 1h ago here, and the viewer's current hour is unreported.
+      const starts = Array.from({ length: 24 }, (_, i) =>
+        new Date(Date.parse('2026-05-10T12:00:00Z') + i * 3_600_000).toISOString(),
+      )
+      const keyed = { ...HEALTHY_CONNECTOR, hourly_events: [...Array(23).fill(0), 5] }
+      mockHooks([keyed], [], { hourly_events_available: true, hourly_bucket_starts: starts })
+      renderRoster(container, root)
+      const spark = container.querySelector('[data-testid="roster-rows"] svg[role="img"]')
+      expect(spark?.getAttribute('aria-label')).toBe(
+        '24h activity: 5 events total, peak 1h ago, 1h not reported',
+      )
+
+      const failed = {
+        ...HEALTHY_CONNECTOR,
+        hourly_events: [],
+        today: { messages_ingested: null, messages_failed: 0, uptime_pct: null },
+      }
+      mockHooks([failed], [], { hourly_events_available: false, hourly_bucket_starts: starts })
+      renderRoster(container, root)
+      const failedSpark = container.querySelector('[data-testid="roster-rows"] svg[role="img"]')
+      expect(failedSpark?.getAttribute('aria-label')).toBe('24h activity: not reported')
+      expect(container.querySelector('[data-testid="roster-rows"]')?.textContent).not.toMatch(/\b0\b/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('names a failed heartbeat read so unhatched sparklines never pass for listening (bu-s11n0s.5)', () => {
