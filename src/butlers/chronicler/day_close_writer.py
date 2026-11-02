@@ -132,6 +132,7 @@ def _notify_signature() -> inspect.Signature | None:
         "message",
         "recipient",
         "subject",
+        "attachments",
         "intent",
         "options",
         "timeout_seconds",

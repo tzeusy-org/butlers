@@ -397,6 +397,145 @@ async def test_scheduled_delivery_parks_full_envelope_and_approved_registered_re
         await approvals.on_shutdown()
 
 
+@pytest.mark.parametrize("inert", [False, True])
+async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifies(
+    tmp_path, monkeypatch, inert
+):
+    """Spec: REQ-butler-messenger-003 / REQ-core-notify-033 applied to files.
+
+    Inert-required delivery with files parks even for the owner; a non-owner
+    send parks under the recipient gate. The parked envelope pins each file's
+    sha256, and approved replay re-reads the blob and refuses changed bytes.
+    """
+    import copy
+    import hashlib
+    import importlib
+    from contextlib import nullcontext
+
+    from fastmcp import FastMCP
+
+    from butlers.core.delivery_rendering import inert_delivery_content
+    from butlers.modules.approvals.module import ApprovalsModule
+
+    patches = _patch_infra()
+    daemon, route_execute = await _start_daemon_with_route_execute(
+        _make_butler_toml(tmp_path, butler_name="messenger", modules={"telegram": {}, "email": {}}),
+        patches,
+    )
+    store = _EnvelopeApprovalStore()
+    daemon.db.pool = store
+    telegram = next(module for module in daemon._modules if module.name == "telegram")
+    ref = "s3://butlers/health/statement.pdf"
+    blobs = {ref: b"%PDF reviewed statement"}
+
+    async def get_blob(storage_ref):
+        return blobs[storage_ref]
+
+    telegram._blob_store = MagicMock(scheme="s3", bucket="butlers", get=get_blob)
+    telegram._upload_file = AsyncMock(return_value={"ok": True, "result": {"message_id": 992}})
+    telegram._send_message = AsyncMock(return_value={"ok": True, "result": {"message_id": 991}})
+    monkeypatch.setattr("butlers.modules.telegram.write_audit_entry", AsyncMock())
+    monkeypatch.setattr("butlers.modules.telegram.require_permission", AsyncMock())
+    monkeypatch.setattr("butlers.modules.approvals.park.park_pending_action", store.park)
+    monkeypatch.setattr("butlers.modules.approvals.email_guard.park_pending_action", store.park)
+    recipient = "12345" if inert else "9001"
+
+    async def resolve(_pool, channel, target):
+        return MagicMock(roles=["owner"]) if (channel, target) == ("telegram", "12345") else None
+
+    monkeypatch.setattr(
+        "butlers.identity.resolve_channel_contact_with_owner_corroboration", resolve
+    )
+    monkeypatch.setattr("butlers.modules.approvals.rules.match_rules", AsyncMock(return_value=None))
+    for name in ("_record_approval", "_check_promotion_threshold", "_update_velocity"):
+        monkeypatch.setattr(f"butlers.modules.approvals.module.{name}", AsyncMock())
+    approvals = ApprovalsModule()
+    await approvals.on_startup({}, store)
+    mcp = FastMCP("messenger-attachment-envelope")
+    mcp.tool(name="route.execute")(route_execute)
+    registered = await mcp.get_tool("route.execute")
+    replayed = []
+
+    async def execute(name, args):
+        outcome = await registered.fn(**copy.deepcopy(args))
+        replayed.append(outcome)
+        return outcome
+
+    approvals.set_tool_executor(execute)
+    delivery = importlib.import_module("butlers.tools.switchboard.notification.deliver")
+
+    async def dispatch(_pool, **kwargs):
+        result = await registered.fn(**kwargs["args"])
+        return {"result": result, "error": result.get("error"), "transport": {}}
+
+    monkeypatch.setattr(delivery, "route", dispatch)
+    monkeypatch.setattr(delivery, "log_notification", AsyncMock(return_value=uuid.uuid4()))
+    monkeypatch.setattr(
+        delivery, "_log_notification_best_effort", AsyncMock(return_value=uuid.uuid4())
+    )
+    request = _valid_notify_request()
+    request["delivery"].update(
+        recipient=recipient,
+        message="Your statement.",
+        attachments=[
+            {
+                "filename": "statement.pdf",
+                "media_type": "application/pdf",
+                "storage_ref": ref,
+                "sha256": hashlib.sha256(blobs[ref]).hexdigest(),
+                "size_bytes": len(blobs[ref]),
+            },
+            {
+                "filename": "rows.csv",
+                "media_type": "text/csv",
+                "content_text": "private-row,42\n",
+                "sha256": hashlib.sha256(b"private-row,42\n").hexdigest(),
+                "size_bytes": 15,
+            },
+        ],
+    )
+    try:
+        with inert_delivery_content() if inert else nullcontext():
+            await delivery.deliver(store, source_butler="health", notify_request=request)
+        telegram._upload_file.assert_not_awaited()
+        telegram._send_message.assert_not_awaited()
+        assert store.row is not None and store.row["status"] == "pending"
+        parked = store.row["tool_args"]["input"]["context"]["notify_request"]
+        assert parked["delivery"]["attachments"] == request["delivery"]["attachments"]
+        assert parked["render_links_inert"] is inert
+        if not inert:
+            blobs[ref] = b"%PDF swapped after review"
+        result = await approvals._approve_action(
+            str(store.row["id"]), actor={"type": "human", "id": "owner", "authenticated": True}
+        )
+        assert len(replayed) == 1
+        if inert:
+            assert "error" not in result
+            telegram._send_message.assert_awaited_once_with(
+                "12345",
+                "[health] Your statement.",
+                reply_to_message_id=None,
+                render_links_inert=True,
+            )
+            uploads = [call.args for call in telegram._upload_file.await_args_list]
+            assert [(item.data, caption, anchor) for _, item, caption, anchor, _ in uploads] == [
+                (blobs[ref], None, 991),
+                (b"private-row,42\n", None, 991),
+            ]
+        else:
+            telegram._upload_file.assert_not_awaited()
+            telegram._send_message.assert_not_awaited()
+            assert replayed[0]["status"] == "error"
+            assert replayed[0]["error"]["message"].startswith("attachment_digest_mismatch")
+        assert store.parks == 1
+        logged = repr(delivery.log_notification.await_args_list) + repr(
+            delivery._log_notification_best_effort.await_args_list
+        )
+        assert "rows.csv" in logged and "private-row" not in logged
+    finally:
+        await approvals.on_shutdown()
+
+
 async def test_messenger_without_approval_runtime_refuses_non_owner_and_preserves_owner(
     tmp_path, monkeypatch
 ):

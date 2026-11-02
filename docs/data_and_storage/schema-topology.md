@@ -47,6 +47,10 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   CAS `version` and soft `deleted_at`. Written only by the owner Home dashboard editor (the table
   owner); non-FORCE RLS lets only `butler_travel_rw` and `butler_chronicler_rw` read it and no
   runtime role write it. See [Home Butler](../butlers/home.md#owner-places).
+- **`public.qa_publication_refusals`** -- QA publisher refusal receipts (core_302): one immutable,
+  content-free row (status, category) per attempt the publisher refused before retaining an export,
+  so the case API can prove such an attempt `unpublished`. Fenced like the exports table. See
+  [QA Publication Boundary](../operations/qa-publication-boundary.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 

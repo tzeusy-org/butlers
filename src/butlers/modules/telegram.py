@@ -27,6 +27,14 @@ from butlers.core.channel_reactions import (
     REACTION_IN_PROGRESS,
     REACTION_SUCCESS,
 )
+from butlers.core.notify_attachments import (
+    CAPTION_LIMIT,
+    AttachmentError,
+    ResolvedAttachment,
+    attachment_audit_summary,
+    resolve_attachments,
+    validate_attachment_specs,
+)
 from butlers.core.permissions import NOTIFY_PERMISSION, PermissionUnavailable, require_permission
 from butlers.modules.base import Module
 from butlers.telegram_api import (
@@ -157,6 +165,23 @@ def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
     return description if isinstance(description, str) else str(exc)
 
 
+_PHOTO_REJECTION_MARKERS = ("PHOTO_INVALID_DIMENSIONS", "IMAGE_PROCESS_FAILED", "PHOTO_INVALID")
+
+
+def _telegram_photo_rejected(response: httpx.Response) -> bool:
+    """Only an explicit 400 photo-processing rejection permits a document resend."""
+    if response.status_code != 400:
+        return False
+    try:
+        data = response.json()
+    except (ValueError, TypeError):
+        return False
+    description = data.get("description") if isinstance(data, dict) else None
+    return isinstance(description, str) and any(
+        marker in description.upper() for marker in _PHOTO_REJECTION_MARKERS
+    )
+
+
 class TelegramModule(Module):
     """Telegram module providing identity-prefixed Telegram MCP tools.
 
@@ -176,6 +201,7 @@ class TelegramModule(Module):
         # bot-scope from CredentialStore.
         self._resolved_credentials: dict[str, str] = {}
         self._chat_locks: dict[str, tuple[asyncio.Lock, int]] = {}
+        self._blob_store: Any = None
 
     name = "telegram"
 
@@ -298,6 +324,7 @@ class TelegramModule(Module):
         )
         self._client = httpx.AsyncClient()
         self._db = db
+        self._blob_store = blob_store
         self._resolved_credentials = {}
 
         # --- Bot-scope: CredentialStore (ecosystem-wide Tier 1 credential) ----
@@ -514,18 +541,207 @@ class TelegramModule(Module):
         )
         return data
 
-    async def _send_chunk(
-        self, payload: dict[str, Any], deadline: float, retry_budget: _TelegramRetryBudget
+    async def _send_files(
+        self,
+        chat_id: str,
+        text: str,
+        attachments: list[dict[str, Any]],
+        reply_to_message_id: int | None = None,
+        *,
+        origin_butler: str,
+        render_links_inert: bool = False,
     ) -> dict[str, Any]:
-        """One chunk: only proven rejection permits a bounded resend."""
+        """Deliver files with sendPhoto/sendDocument, text as caption when it fits.
+
+        Every attachment is fetched and verified (size, pinned sha256) before
+        the first Telegram call, so a missing blob or a changed one sends
+        nothing.  Text of at most ``CAPTION_LIMIT`` characters becomes the first
+        file's caption; longer text (or inert-rendered text) goes first through
+        :meth:`_send_message` and the files follow as replies to its last chunk.
+        A failure after any accepted message is a terminal partial delivery.
+        Audit rows carry media type, size, digest and message ids only.
+        """
+        audit_summary: dict[str, Any] = {"chat_id": chat_id, "text_length": len(text)}
+        message_ids: list[int] = []
+        try:
+            specs = validate_attachment_specs(attachments)
+            await require_permission(
+                self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
+            )
+            # origin_butler is the Messenger-verified notify.v1 sender; refs
+            # outside its RFC 0016 key prefix (or the connector prefix) refuse.
+            resolved = await resolve_attachments(
+                specs, self._blob_store, origin_butler=origin_butler
+            )
+            audit_summary["attachments"] = attachment_audit_summary(resolved)
+            text_chunks = split_telegram_text(text) if text.strip() else []
+            caption_first = (
+                not render_links_inert
+                and resolved[0].caption is None
+                and len(text_chunks) == 1
+                and text_units(text) <= CAPTION_LIMIT
+            )
+            anchor = reply_to_message_id
+            if text_chunks and not caption_first:
+                lead_text = text
+                if render_links_inert:
+                    # Captions cannot be rendered inert; fold them into the
+                    # inert text instead of dropping or sending them live.
+                    lead_text += "".join(
+                        f"\n\n{item.filename}: {item.caption}" for item in resolved if item.caption
+                    )
+                sent = await self._send_message(
+                    chat_id,
+                    lead_text,
+                    reply_to_message_id=reply_to_message_id,
+                    render_links_inert=render_links_inert,
+                )
+                result = sent.get("result", {})
+                message_ids.extend(result.get("message_ids") or [result["message_id"]])
+                anchor = message_ids[-1]
+            lock, users = self._chat_locks.get(chat_id, (asyncio.Lock(), 0))
+            self._chat_locks[chat_id] = (lock, users + 1)
+            try:
+                async with lock:
+                    deadline = time.monotonic() + 120
+                    for index, item in enumerate(resolved):
+                        caption = text if index == 0 and caption_first else item.caption
+                        if render_links_inert:
+                            caption = None
+                        data = await self._upload_file(chat_id, item, caption, anchor, deadline)
+                        message_ids.append(data["result"]["message_id"])
+            finally:
+                _, users = self._chat_locks[chat_id]
+                if users == 1:
+                    del self._chat_locks[chat_id]
+                else:
+                    self._chat_locks[chat_id] = (lock, users - 1)
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, TelegramPartialDeliveryError):
+                message_ids = list(exc.message_ids)
+            if message_ids:
+                partial = TelegramPartialDeliveryError(message_ids)
+                failure_category = "telegram_partial_delivery"
+                audit_summary["provider_message_ids"] = message_ids
+            else:
+                partial = None
+                failure_category = (
+                    exc.code
+                    if isinstance(exc, AttachmentError)
+                    else _telegram_send_failure_category(exc)
+                )
+            if isinstance(exc, PermissionUnavailable):
+                logger.error("Telegram file send blocked: category=%s", failure_category)
+                raise
+            logger.error(
+                "Telegram file send failed: category=%s chat_id=%r", failure_category, chat_id
+            )
+            await write_audit_entry(
+                self._audit_pool,
+                self._butler_name,
+                "telegram_send_files",
+                audit_summary,
+                result="error",
+                error=failure_category,
+            )
+            if partial is not None and partial is not exc:
+                raise partial from exc
+            raise
+
+        audit_summary["provider_message_id"] = message_ids[-1]
+        audit_summary["provider_message_ids"] = message_ids
+        await write_audit_entry(
+            self._audit_pool, self._butler_name, "telegram_send_files", audit_summary
+        )
+        return {
+            "ok": True,
+            "result": {"message_id": message_ids[-1], "message_ids": message_ids},
+        }
+
+    async def _upload_file(
+        self,
+        chat_id: str,
+        item: ResolvedAttachment,
+        caption: str | None,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        """Upload one file; a caption parse rejection falls back to plain once.
+
+        A photo Telegram refuses to process (dimensions or image decoding) is
+        re-sent once as a document: an explicit 400 means nothing was posted.
+        """
+        if item.is_photo:
+            try:
+                return await self._upload_as(
+                    "sendPhoto", "photo", chat_id, item, caption, reply_to_message_id, deadline
+                )
+            except httpx.HTTPStatusError as exc:
+                if not _telegram_photo_rejected(exc.response):
+                    raise
+        return await self._upload_as(
+            "sendDocument", "document", chat_id, item, caption, reply_to_message_id, deadline
+        )
+
+    async def _upload_as(
+        self,
+        method: str,
+        field: str,
+        chat_id: str,
+        item: ResolvedAttachment,
+        caption: str | None,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": chat_id}
+        if reply_to_message_id is not None:
+            payload["reply_to_message_id"] = reply_to_message_id
+        rendered = split_telegram_text(caption) if caption else []
+        if len(rendered) == 1:
+            payload["caption"] = rendered[0].html
+            payload["parse_mode"] = "HTML"
+        elif caption:
+            payload["caption"] = caption
+        files = {field: (item.filename, item.data, item.media_type)}
+        retry_budget = _TelegramRetryBudget()
+        try:
+            return await self._send_chunk(
+                payload, deadline, retry_budget, method=method, files=files
+            )
+        except _TelegramParseRejected:
+            payload.pop("parse_mode")
+            payload["caption"] = caption
+            return await self._send_chunk(
+                payload, deadline, retry_budget, method=method, files=files
+            )
+
+    async def _send_chunk(
+        self,
+        payload: dict[str, Any],
+        deadline: float,
+        retry_budget: _TelegramRetryBudget,
+        *,
+        method: str = "sendMessage",
+        files: dict[str, tuple[str, bytes, str]] | None = None,
+    ) -> dict[str, Any]:
+        """One request: only proven rejection permits a bounded resend.
+
+        ``files`` switches the request to a multipart upload (sendPhoto /
+        sendDocument); ``payload`` then holds the form fields.
+        """
         client = self._get_client()
-        url = f"{self._base_url()}/sendMessage"
+        url = f"{self._base_url()}/{method}"
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("Telegram logical-send deadline expired.")
             async with asyncio.timeout(remaining):
-                response = await client.post(url, json=payload)
+                if files is None:
+                    response = await client.post(url, json=payload)
+                else:
+                    response = await client.post(
+                        url, data={k: str(v) for k, v in payload.items()}, files=files
+                    )
             if "parse_mode" in payload and telegram_parse_rejection(response):
                 raise _TelegramParseRejected()
             delay = telegram_retry_after(response)

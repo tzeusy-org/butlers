@@ -1,7 +1,7 @@
 """Owner place registry: one trusted table of named places (bu-jv1moa.7).
 
 Revision ID: core_303
-Revises: core_301
+Revises: core_302
 Create Date: 2026-11-02 00:00:00.000000
 
 ``public.owner_places`` holds the owner's named places (home, work, airports, others): a
@@ -44,7 +44,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_303"
-down_revision = "core_301"
+down_revision = "core_302"
 branch_labels = None
 depends_on = None
 

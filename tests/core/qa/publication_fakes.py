@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -77,6 +78,9 @@ class FakeLedger:
     rows: dict[tuple[uuid.UUID, str], PublicationOperation] = field(default_factory=dict)
     exports: dict[uuid.UUID, SealedExport] = field(default_factory=dict)
     retain_refusal: str | None = None
+    #: Refusal receipts by attempt: ``(status, category)``, first receipt wins.
+    refusals: dict[uuid.UUID, tuple[str, str]] = field(default_factory=dict)
+    refusal_unrecordable: bool = False
     #: Stands in for database ``now()``: stamps egress/outcome and judges the settle.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -86,6 +90,18 @@ class FakeLedger:
         stored = self.exports.setdefault(attempt_id, export)
         if stored.digest != export.digest:
             raise PublicationRefused("export_changed")
+
+    async def record_refusal(self, attempt_id, *, status, category) -> None:
+        """Mirror core_302: the CHECKs and the insert policy's never-retained rule."""
+        if self.refusal_unrecordable:
+            raise PublicationRefused("datastore_unavailable")
+        if status not in ("refused", "anonymization_failed") or not re.fullmatch(
+            r"[a-z][a-z0-9_]{0,63}", category
+        ):
+            raise PublicationRefused("refusal_check_violation")
+        if attempt_id in self.exports or any(key[0] == attempt_id for key in self.rows):
+            raise PublicationRefused("refusal_policy_violation")
+        self.refusals.setdefault(attempt_id, (status, category))
 
     async def begin(self, *, attempt_id, kind, binding, request_digest, expected_object_id):
         key = (attempt_id, kind.value)
