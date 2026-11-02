@@ -898,7 +898,7 @@ When a delivered candidate's `owner_condition` premise resolves, the delivered m
 #### Scenario: A forged enqueue writes nothing
 - **WHEN** a role granted EXECUTE on the SECURITY DEFINER `public.enqueue_premise_amendments` calls it for a condition with no `resolved` `owner_conditions` row, or with a `resolved_at` that differs from that row's
 - **THEN** it returns 0 and writes nothing
-- **AND** a genuine call keys the episode on the ledger row's own fingerprint and `resolved_at`
+- **AND** a genuine call keys the episode on the ledger row's own fingerprint and `resolved_at`, rendered identically from any session time zone or date style, and stores no caller-supplied summary
 
 #### Scenario: Amendment evidence outlives candidate cleanup
 - **WHEN** a candidate that has an amendment is deleted

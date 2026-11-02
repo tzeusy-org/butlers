@@ -11,8 +11,15 @@ bu-q7vx1q.32 (merged with bu-q7vx1q.33).  Two defects in the core_255 seam:
   correction for any premise without a resolved ledger row.  It now inserts only when
   ``public.owner_conditions`` holds a ``resolved`` row with exactly that source, fingerprint
   and ``resolved_at`` (the real witness), keys the episode on that row's values, and
-  otherwise returns 0.  Signature, ``SECURITY DEFINER``, the pinned ``search_path`` and the
-  per-role EXECUTE grants are unchanged (CREATE OR REPLACE keeps them).
+  otherwise returns 0.  It also pins TimeZone/DateStyle so the ``resolved_at::text`` dedup
+  key is session-independent, and stores a NULL summary whatever the caller passes (the
+  broker shows the summary to the owner; every legitimate caller passes NULL).  Signature,
+  ``SECURITY DEFINER``, the pinned ``search_path`` and the per-role EXECUTE grants are
+  unchanged (CREATE OR REPLACE keeps them).
+* Upgrade fails loudly unless the replacement, the dropped key and the widened CHECK all
+  took effect: a database whose definer is owned by another role (bootstrap, bu-jjv2du)
+  fails this migration until ownership converges, rather than recording the fix as applied
+  while the forgeable body stays live.
 * ``public.insight_amendments.candidate_id`` referenced ``insight_candidates`` with
   ``ON DELETE CASCADE``, so deleting a candidate erased its amendment history.  The foreign
   key is dropped (the column stays NOT NULL and the UNIQUE key stays).  Amendment evidence
@@ -79,6 +86,10 @@ $fn$;
 
 # Verifies, never trusts: the resolved owner_conditions row must exist with exactly the
 # supplied source, fingerprint and resolved_at, and its own values key the episode.
+# TimeZone/DateStyle are pinned so ``resolved_at::text`` -- the dedup key -- renders the
+# same from every session (byte-identical to keys core_255 wrote from UTC sessions).
+# ``p_summary`` is ignored: the broker shows the summary to the owner, and no legitimate
+# caller supplies one, so a caller with EXECUTE cannot plant owner-visible text.
 ENQUEUE_FN = """
 CREATE OR REPLACE FUNCTION public.enqueue_premise_amendments(
     p_source text,
@@ -90,6 +101,8 @@ RETURNS integer
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = pg_catalog, pg_temp
+SET TimeZone = 'UTC'
+SET DateStyle = 'ISO, MDY'
 AS $fn$
 DECLARE
     inserted integer;
@@ -98,7 +111,7 @@ BEGIN
     SELECT c.id,
            oc.fingerprint || '@' || oc.resolved_at::text,
            'premise_resolved',
-           p_summary
+           NULL
     FROM public.owner_conditions oc
     JOIN public.insight_candidates c
       ON c.premise ->> 'kind' = 'owner_condition'
@@ -178,11 +191,48 @@ def _core_312_installation_count() -> int:
     return count
 
 
+# The steps above are best-effort (a schema replay that cannot own a shared object skips
+# it), but a skipped security fix must not be recorded as applied: a definer still owned
+# by another role (bootstrap, bu-jjv2du) would keep the forgeable core_255 body live.
+_ASSERT_UPGRADED = f"""
+DO $do$
+DECLARE
+    fn regprocedure := to_regprocedure(
+        'public.enqueue_premise_amendments(text, text, timestamptz, text)');
+BEGIN
+    IF fn IS NULL OR NOT EXISTS (
+        SELECT 1 FROM pg_proc p
+        WHERE p.oid = fn
+          AND p.prosrc LIKE '%public.owner_conditions%'
+          AND 'TimeZone=UTC' = ANY (p.proconfig)
+    ) THEN
+        RAISE EXCEPTION 'core_312: public.enqueue_premise_amendments was not replaced '
+            '(is it owned by another role? see bu-jjv2du)';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.insight_amendments'::regclass AND conname = '{_FK}'
+    ) THEN
+        RAISE EXCEPTION 'core_312: the cascading candidate foreign key is still present';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'public.insight_amendments'::regclass AND conname = '{_CHECK}'
+          AND pg_get_constraintdef(oid) LIKE '%orphaned%'
+    ) THEN
+        RAISE EXCEPTION 'core_312: the amendment state CHECK does not admit orphaned';
+    END IF;
+END
+$do$;
+"""
+
+
 def upgrade() -> None:
     op.execute(_LOCK)
     _execute_best_effort(ENQUEUE_FN)
     _execute_best_effort(f"ALTER TABLE public.insight_amendments DROP CONSTRAINT IF EXISTS {_FK}")
     _set_states(_STATES)
+    op.execute(_ASSERT_UPGRADED)
 
 
 def downgrade() -> None:

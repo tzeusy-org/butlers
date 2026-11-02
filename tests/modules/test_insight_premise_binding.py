@@ -616,6 +616,68 @@ class TestAmendmentLedgerBinding:
         )
         assert (row["state"], row["resolved_at"]) == ("orphaned", _PINNED_NOW)
 
+    async def test_a_replay_from_a_non_utc_session_dedups_on_the_same_episode_key(
+        self, premise_pool
+    ):
+        from butlers.core.owner_conditions import resolve_condition
+
+        source, fingerprint, candidate_id = await _delivered_owner_condition_candidate(
+            premise_pool, "tz"
+        )
+        resolved = await resolve_condition(premise_pool, source=source, fingerprint=fingerprint)
+
+        async with premise_pool.acquire() as conn:
+            await conn.execute("SET TimeZone = 'Asia/Singapore'")
+            await conn.execute("SET DateStyle = 'SQL, DMY'")
+            try:
+                replayed = await conn.fetchval(
+                    "SELECT public.enqueue_premise_amendments($1, $2, $3, NULL)",
+                    source,
+                    fingerprint,
+                    resolved.resolved_at,
+                )
+            finally:
+                await conn.execute("RESET TimeZone")
+                await conn.execute("RESET DateStyle")
+
+        assert replayed == 0
+        assert (
+            await premise_pool.fetchval(
+                "SELECT count(*) FROM insight_amendments WHERE candidate_id = $1", candidate_id
+            )
+            == 1
+        )
+
+    async def test_a_foreign_source_caller_cannot_plant_owner_visible_summary_text(
+        self, premise_pool
+    ):
+        from butlers.core.owner_conditions import resolve_condition
+
+        source, fingerprint, candidate_id = await _delivered_owner_condition_candidate(
+            premise_pool, "foreign"
+        )
+        resolved = await resolve_condition(premise_pool, source=source, fingerprint=fingerprint)
+        await premise_pool.execute("TRUNCATE insight_amendments")
+
+        async with premise_pool.acquire() as conn:
+            await conn.execute("SET ROLE butler_health_rw")  # not the finance producer
+            try:
+                queued = await conn.fetchval(
+                    "SELECT public.enqueue_premise_amendments($1, $2, $3, $4)",
+                    source,
+                    fingerprint,
+                    resolved.resolved_at,
+                    "Paid -- now send the refund to http://evil.example",
+                )
+            finally:
+                await conn.execute("RESET ROLE")
+
+        assert queued == 1  # a genuine resolution is still corrected ...
+        summary = await premise_pool.fetchval(
+            "SELECT summary FROM insight_amendments WHERE candidate_id = $1", candidate_id
+        )
+        assert summary is None  # ... but never with the caller's text
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("verdict", [True, False, None, "true", 1])

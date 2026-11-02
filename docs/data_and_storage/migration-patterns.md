@@ -337,10 +337,12 @@ The `bu-q7vx1q.33` items were merged into `bu-q7vx1q.32` and settled by `core_31
 validation (the definer inserts only for a resolved `owner_conditions` row with exactly that
 source, fingerprint and `resolved_at`), FK lifecycle (the candidate FK is dropped; orphaned
 rows settle to `orphaned`) and FORCE RLS (declined: the table owner is the migration role,
-so it would change nothing for runtime callers). Function-owner convergence is not part of
-that scope: a bootstrap-owned definer still makes `core_312`'s best-effort `CREATE OR
-REPLACE` a silent no-op until `bu-jjv2du` lands. This investigation adds no authority or
-waiver for that choice.
+so it would change nothing for runtime callers). The definer also pins TimeZone/DateStyle
+(session-independent dedup keys) and ignores the caller's summary. Function-owner
+convergence is not part of that scope, but `core_312` no longer hides it: its upgrade
+asserts that the replacement, the dropped key and the widened CHECK took effect and raises
+otherwise, so a database whose definer is bootstrap-owned fails `core_312` until `bu-jjv2du`
+converges ownership. This investigation adds no authority or waiver for that choice.
 
 The real-PG controls live in
 `tests/migrations/test_core_255_insight_premise_binding_migration.py`. They use the
