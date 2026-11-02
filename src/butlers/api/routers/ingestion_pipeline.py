@@ -587,8 +587,7 @@ async def get_pipeline_stats(
     - ``filtered24h``: count of filtered events in the last 24 hours
     - ``aggregates_available``: false when any of the values above could not be
       observed — Prometheus unreachable or unconfigured, a query error, an
-      unparseable or non-finite scalar, or an unusable or contradictory empty
-      sparkline matrix. When
+      unparseable or non-finite scalar, or an unusable sparkline matrix. When
       it is true, every zero above is a zero Prometheus actually reported
       (an empty result set included); the endpoint never substitutes one
       (bu-0m31b)
