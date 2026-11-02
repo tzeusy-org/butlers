@@ -95,7 +95,9 @@ export type LinkResolution =
   | { state: "loading" }
   | { state: "resolved"; label: string; detail: string | null }
   | { state: "missing" }
-  | { state: "unavailable"; reason: string };
+  | { state: "unavailable"; reason: string }
+  /** The record's source is legitimately absent (e.g. Drive not connected): not an alarm. */
+  | { state: "not_connected"; source: string };
 
 function failure(error: unknown): LinkResolution {
   if (error instanceof ApiError && error.status === 404) return { state: "missing" };
@@ -134,8 +136,9 @@ const SINGLE_READERS: Record<SingleKind, (refId: string) => Promise<LinkResoluti
     };
   },
   drive_file: async (refId) => {
-    const file = (await getGeneralDriveFile(refId)).data;
-    return { state: "resolved", label: file.name, detail: file.mime_type };
+    const read = (await getGeneralDriveFile(refId)).data;
+    if (read.state === "not_connected") return { state: "not_connected", source: "Drive" };
+    return { state: "resolved", label: read.file.name, detail: read.file.mime_type };
   },
 };
 

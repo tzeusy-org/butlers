@@ -240,3 +240,14 @@ class DriveFileRecord(BaseModel):
     name: str
     mime_type: str | None = None
     modified_time: datetime | None = None
+
+
+class DriveFileRead(BaseModel):
+    """The Drive reader's answer: the file, or Drive legitimately not connected.
+
+    ``not_connected`` means General runs without the Drive module or without a
+    connected account: a calm state, not a degraded reader.
+    """
+
+    state: Literal["resolved", "not_connected"]
+    file: DriveFileRecord | None = None

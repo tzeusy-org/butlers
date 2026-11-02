@@ -6,8 +6,9 @@
  * resolution hook runs for real: each linked record resolves through its own
  * reader, a failing trip reader degrades only the Trips region, a deleted
  * calendar entry reads as not found, deadlines resolve through their butler's
- * schedule and Drive files through General's Drive reader (bu-jv1moa.44), and
- * the page exposes no Arm or Run control.  Unlinking calls only the General
+ * schedule and Drive files through General's Drive reader (bu-jv1moa.44; Drive
+ * not connected reads calm, not degraded), and the page exposes no Arm or Run
+ * control.  Unlinking calls only the General
  * unlink endpoint, never a linked record's API.
  */
 
@@ -90,7 +91,7 @@ const DETAIL = {
   ],
 };
 
-function renderTab(search = `?tab=projects&project=${PROJECT_ID}`) {
+function renderTab(search = `?tab=projects&project=${PROJECT_ID}`, driveConnected = true) {
   vi.mocked(api.getGeneralProjects).mockResolvedValue({
     data: [SUMMARY],
     meta: { total: 1, offset: 0, limit: 200 },
@@ -131,9 +132,16 @@ function renderTab(search = `?tab=projects&project=${PROJECT_ID}`) {
     },
     meta: {},
   } as never);
-  vi.mocked(api.getGeneralDriveFile).mockRejectedValue(
-    new api.ApiError("DRIVE_UNAVAILABLE", "The Drive reader is unavailable.", 503),
-  );
+  if (driveConnected) {
+    vi.mocked(api.getGeneralDriveFile).mockRejectedValue(
+      new api.ApiError("DRIVE_UNAVAILABLE", "The Drive reader is unavailable.", 503),
+    );
+  } else {
+    vi.mocked(api.getGeneralDriveFile).mockResolvedValue({
+      data: { state: "not_connected", file: null },
+      meta: {},
+    } as never);
+  }
   vi.mocked(api.removeGeneralProjectLink).mockResolvedValue({
     data: { ...DETAIL, links: DETAIL.links.filter((l) => l.id !== "l4") },
     meta: {},
@@ -191,6 +199,14 @@ describe("ButlerGeneralProjectsTab", () => {
     );
     expect(api.getTravelTripSummary).toHaveBeenCalledTimes(2);
     expect(api.getTravelTripSummary).toHaveBeenCalledWith(TRIP_OK);
+  });
+  it("shows Drive not connected calmly, without a degraded-reader alarm", async () => {
+    renderTab(undefined, false);
+
+    const files = await screen.findByTestId("link-region-drive_file");
+    await within(files).findByText("Drive is not connected for General");
+    expect(within(files).queryByRole("alert")).toBeNull();
+    expect(within(files).queryByText(/Unavailable/)).toBeNull();
   });
   it("keeps the form and says so when a create deduplicates onto an existing draft", async () => {
     renderTab("?tab=projects");

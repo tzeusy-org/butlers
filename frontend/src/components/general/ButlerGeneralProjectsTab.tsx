@@ -312,7 +312,9 @@ function ResolvedLine({ resolution }: { resolution: LinkResolution | undefined }
   const text =
     resolution.state === "missing"
       ? "Not found: deleted or never existed"
-      : `Unavailable: ${resolution.reason}`;
+      : resolution.state === "not_connected"
+        ? `${resolution.source} is not connected for General`
+        : `Unavailable: ${resolution.reason}`;
   return <span className="text-xs text-muted-foreground">{text}</span>;
 }
 

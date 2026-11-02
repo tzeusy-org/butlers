@@ -203,11 +203,24 @@ async def test_links_take_typed_opaque_ids_only(
 
 
 class _DriveModule:
-    """General's MCP seam: answers drive_get_file_metadata with a fixed payload."""
+    """General's MCP seam: answers drive_get_file_metadata with a fixed payload.
 
-    def __init__(self, payload=None, *, unreachable: bool = False) -> None:
+    ``tools`` is what General lists; ``raises`` makes the tool call itself fail,
+    as an unknown tool does when the Drive module is not loaded.
+    """
+
+    def __init__(
+        self,
+        payload=None,
+        *,
+        unreachable: bool = False,
+        raises: bool = False,
+        tools: tuple[str, ...] = ("drive_get_file_metadata", "notify"),
+    ) -> None:
         self.payload = payload
         self.unreachable = unreachable
+        self.raises = raises
+        self.tools = tools
         self.calls: list[tuple[str, dict]] = []
 
     async def get_client(self, name: str):
@@ -218,7 +231,12 @@ class _DriveModule:
 
     async def call_tool(self, tool: str, arguments: dict):
         self.calls.append((tool, arguments))
+        if self.raises:
+            raise RuntimeError(f"Unknown tool: {tool}")
         return [SimpleNamespace(text=json.dumps(self.payload))]
+
+    async def list_tools(self):
+        return [SimpleNamespace(name=name) for name in self.tools]
 
 
 _DRIVE_ID = "1AbC_def-9"
@@ -230,22 +248,32 @@ _DRIVE_META = {
     "webViewLink": "https://drive.example.test/file",
     "owners": [{"emailAddress": "someone@example.test"}],
 }
+_NOT_CONFIGURED = {"status": "error", "error": "Google Drive not connected. Connect a Google..."}
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
     ("module", "path_id", "expected"),
     [
-        (_DriveModule(_DRIVE_META), _DRIVE_ID, 200),
-        (_DriveModule({"status": "not_found", "file": None}), _DRIVE_ID, 404),
-        (_DriveModule({"status": "error", "error": "Drive API error (HTTP 500)"}), _DRIVE_ID, 503),
-        (_DriveModule({**_DRIVE_META, "id": "other"}), _DRIVE_ID, 503),
-        (_DriveModule(unreachable=True), _DRIVE_ID, 503),
-        (_DriveModule(_DRIVE_META), "a.b", 404),
+        (_DriveModule(_DRIVE_META), _DRIVE_ID, (200, "resolved")),
+        (_DriveModule({"status": "not_found", "file": None}), _DRIVE_ID, (404, None)),
+        (
+            _DriveModule({"status": "error", "error": "Drive API error (HTTP 500)"}),
+            _DRIVE_ID,
+            (503, None),
+        ),
+        (_DriveModule({**_DRIVE_META, "id": "other"}), _DRIVE_ID, (503, None)),
+        (_DriveModule(unreachable=True), _DRIVE_ID, (503, None)),
+        (_DriveModule(_DRIVE_META), "a.b", (404, None)),
+        # Classify before flagging: Drive legitimately absent is calm, not degraded.
+        (_DriveModule(raises=True, tools=("notify",)), _DRIVE_ID, (200, "not_connected")),
+        (_DriveModule(_NOT_CONFIGURED), _DRIVE_ID, (200, "not_connected")),
+        # A failing call while General still lists the Drive tool is a real failure.
+        (_DriveModule(raises=True), _DRIVE_ID, (503, None)),
     ],
 )
 async def test_drive_file_reader_returns_name_and_type_only(
-    seams, module: _DriveModule, path_id: str, expected: int
+    seams, module: _DriveModule, path_id: str, expected: tuple[int, str | None]
 ) -> None:
     """The owner reads one file's identity through General's Drive module, nothing more."""
     from butlers.api.deps import get_mcp_manager
@@ -254,16 +282,23 @@ async def test_drive_file_reader_returns_name_and_type_only(
     app.dependency_overrides[get_mcp_manager] = lambda: module
     async with _client(app) as http:
         response = await http.get(f"/api/general/drive-files/{path_id}")
-    assert response.status_code == expected
-    if expected == 200:
+    status, state = expected
+    assert response.status_code == status
+    if state == "resolved":
         assert response.json()["data"] == {
-            "id": _DRIVE_ID,
-            "name": "<b>Lease</b>.pdf",
-            "mime_type": "application/pdf",
-            "modified_time": "2026-10-30T08:00:00Z",
+            "state": "resolved",
+            "file": {
+                "id": _DRIVE_ID,
+                "name": "<b>Lease</b>.pdf",
+                "mime_type": "application/pdf",
+                "modified_time": "2026-10-30T08:00:00Z",
+            },
         }
+    elif state == "not_connected":
+        assert response.json()["data"] == {"state": "not_connected", "file": None}
     else:
         assert "Drive API" not in response.text
+        assert "Unknown tool" not in response.text
     # A malformed id never reaches Drive; nothing touches the project pool.
     assert len(module.calls) == (0 if path_id == "a.b" or module.unreachable else 1)
     assert seams.manager.calls == 0

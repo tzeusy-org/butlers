@@ -65,6 +65,7 @@ ProjectDetail = _models.ProjectDetail
 ProjectLink = _models.ProjectLink
 ProjectLinkRequest = _models.ProjectLinkRequest
 ProjectSummary = _models.ProjectSummary
+DriveFileRead = _models.DriveFileRead
 DriveFileRecord = _models.DriveFileRecord
 DRIVE_FILE_ID = _models.DRIVE_FILE_ID
 
@@ -1150,12 +1151,21 @@ async def remove_project_link(
 # Project links of kind drive_file resolve through this reader.  It asks the
 # General butler's own Drive module for one file's metadata over MCP (General
 # holds the Drive credential; the API never does) and returns name and type
-# only.  A Drive or butler failure is a fixed, content-blind 503.
+# only.
+#
+# Classify before flagging: Drive that is legitimately absent (General runs
+# without the google_drive module, or the module has no connected account)
+# answers 200 with state "not_connected", not a degraded source.  Only a
+# genuine failure (unreachable butler, timeout, Drive API error, unreadable
+# payload) is the fixed, content-blind 503.
 # ---------------------------------------------------------------------------
 
 _DRIVE_FILE_NOT_FOUND = (404, "DRIVE_FILE_NOT_FOUND", "Drive file not found.")
 _DRIVE_UNAVAILABLE = (503, "DRIVE_UNAVAILABLE", "The Drive reader is unavailable.")
 _DRIVE_READ_TIMEOUT_S = 10.0
+_DRIVE_TOOL = "drive_get_file_metadata"
+# The Drive module's own "no connected account" answer (_not_configured_error).
+_DRIVE_NOT_CONNECTED_PREFIX = "Google Drive not connected"
 
 
 def _tool_payload(result: Any) -> Any:
@@ -1174,9 +1184,22 @@ def _tool_payload(result: Any) -> Any:
     return None
 
 
+async def _drive_tool_absent(client: Any) -> bool:
+    """True only when General positively lists its tools and Drive's is not among them."""
+    try:
+        tools = await asyncio.wait_for(client.list_tools(), _DRIVE_READ_TIMEOUT_S)
+    except Exception:
+        return False
+    return all(getattr(tool, "name", None) != _DRIVE_TOOL for tool in tools)
+
+
+def _drive_not_connected() -> JSONResponse:
+    return _project_ok(ApiResponse[DriveFileRead](data=DriveFileRead(state="not_connected")))
+
+
 @router.get(
     "/drive-files/{file_id}",
-    response_model=ApiResponse[DriveFileRecord],
+    response_model=ApiResponse[DriveFileRead],
     responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
 )
 async def get_drive_file(
@@ -1189,16 +1212,33 @@ async def get_drive_file(
         return _project_error(_DRIVE_FILE_NOT_FOUND)
     try:
         client = await asyncio.wait_for(mgr.get_client(BUTLER_DB), _DRIVE_READ_TIMEOUT_S)
-        result = await asyncio.wait_for(
-            client.call_tool("drive_get_file_metadata", {"file_id": file_id}),
-            _DRIVE_READ_TIMEOUT_S,
-        )
     except Exception:
         logger.info("Drive file reader unavailable", exc_info=True)
         return _project_error(_DRIVE_UNAVAILABLE)
+    try:
+        result = await asyncio.wait_for(
+            client.call_tool(_DRIVE_TOOL, {"file_id": file_id}), _DRIVE_READ_TIMEOUT_S
+        )
+    except TimeoutError:
+        logger.info("Drive file reader timed out")
+        return _project_error(_DRIVE_UNAVAILABLE)
+    except Exception:
+        # An unknown tool raises here: confirm the module is absent before calm.
+        if await _drive_tool_absent(client):
+            return _drive_not_connected()
+        logger.info("Drive file reader unavailable", exc_info=True)
+        return _project_error(_DRIVE_UNAVAILABLE)
+    if isinstance(result, CallToolResult) and result.is_error and await _drive_tool_absent(client):
+        return _drive_not_connected()
     payload = _tool_payload(result)
     if isinstance(payload, dict) and payload.get("status") == "not_found":
         return _project_error(_DRIVE_FILE_NOT_FOUND)
+    if (
+        isinstance(payload, dict)
+        and payload.get("status") == "error"
+        and str(payload.get("error", "")).startswith(_DRIVE_NOT_CONNECTED_PREFIX)
+    ):
+        return _drive_not_connected()
     if (
         not isinstance(payload, dict)
         or payload.get("id") != file_id
@@ -1214,4 +1254,6 @@ async def get_drive_file(
         )
     except ValueError:
         return _project_error(_DRIVE_UNAVAILABLE)
-    return _project_ok(ApiResponse[DriveFileRecord](data=record))
+    return _project_ok(
+        ApiResponse[DriveFileRead](data=DriveFileRead(state="resolved", file=record))
+    )

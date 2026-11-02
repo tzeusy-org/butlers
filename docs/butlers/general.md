@@ -119,8 +119,11 @@ owner-authorized reader (Travel trip summary, calendar workspace entry, owner co
 for a Drive file). Both single-record readers require owner control. The deadline reader returns
 the task's name, title, target date and status, never its prompt. The Drive reader asks General's
 own Drive module (`drive_get_file_metadata` over MCP; the API holds no Drive credential) and
-returns name, type and modified time only, never a link, owners or content; a Drive or butler
-failure is a content-blind 503 that degrades only the Drive files group. Nothing here schedules,
+returns name, type and modified time only, never a link, owners or content. Drive that is
+legitimately absent (General runs without the `google_drive` module, or the module has no connected
+account) answers `state: "not_connected"` and the tab says "Drive is not connected for General"
+without a degraded note. Only a genuine failure (unreachable butler, timeout, Drive API error) is a
+content-blind 503 that degrades the Drive files group. Nothing here schedules,
 arms, wakes, researches or parks anything; arming, check-ins, cards and close-out are
 bu-jv1moa.30.
 

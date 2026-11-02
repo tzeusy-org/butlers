@@ -9,7 +9,8 @@ Drops: field-by-field assertions, mock-wiring call_args checks.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import shutil
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -169,53 +170,79 @@ async def test_list_503_when_db_unavailable(app):
     assert resp.status_code == 503
 
 
-async def test_deadline_reader_is_owner_only_and_returns_identity_and_status():
-    """Project links resolve deadlines here: no prompt, unknown reads as not found."""
+def _deadline_apps(mock_db):
+    """An owner app and a non-owner app over the same DB manager."""
     from butlers.api.app import create_app
     from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
-    deadline_id = uuid4()
-    row = {
-        "id": deadline_id,
-        "name": "car-insurance",
-        "display_title": "Car insurance renews",
-        "target_date": datetime(2026, 11, 12).date(),
-        "deadline_status": "pending",
-        "enabled": True,
-    }
     owner = create_authenticated_domain_app()
-    _, mock_db, mock_pool = _wire_db(owner)
-    mock_pool.fetchrow = AsyncMock(side_effect=[row, None])
-    path = f"/api/butlers/atlas/deadlines/{deadline_id}"
+    owner.dependency_overrides[get_db] = lambda: mock_db
+    no_owner = create_app(api_key="synthetic-owner-key")
+    no_owner.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
+    no_owner.dependency_overrides[get_db] = lambda: mock_db
+    return owner, no_owner
+
+
+async def _get(app, path: str) -> httpx.Response:
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=owner), base_url="https://test"
+        transport=httpx.ASGITransport(app=app), base_url="https://test"
     ) as client:
-        found = await client.get(path)
-        missing = await client.get(path)
-        unknown_butler = await client.get(f"/api/butlers/nobody/deadlines/{deadline_id}")
+        return await client.get(path)
+
+
+async def test_deadline_reader_refuses_non_owner_and_unknown_butler_before_pool():
+    """Project links resolve deadlines here; refusals never reach a butler pool."""
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    owner, no_owner = _deadline_apps(mock_db)
+    deadline_id = uuid4()
+
+    assert (await _get(no_owner, f"/api/butlers/atlas/deadlines/{deadline_id}")).status_code == 401
+    unknown = await _get(owner, f"/api/butlers/nobody/deadlines/{deadline_id}")
+    assert unknown.status_code == 404
+    mock_db.pool.assert_not_called()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_deadline_reader_returns_deadlines_only_without_prompt(db_pool):
+    """Real migrated scheduled_tasks: a deadline reads back, a cron task id is not found."""
+    from butlers.core.temporal.deadlines_db import deadline_create
+
+    due = datetime.now(UTC).date() + timedelta(days=10)
+    deadline_id = await deadline_create(
+        db_pool,
+        name="car-insurance",
+        prompt="Remind the owner to renew.",
+        target_date=due,
+        lead_time_days=14,
+        alert_thresholds=[{"days_before": 3, "severity": "warning"}],
+    )
+    cron_id = await db_pool.fetchval(
+        "INSERT INTO scheduled_tasks (name, cron, prompt, dispatch_mode, source, task_type) "
+        "VALUES ('daily-digest', '0 9 * * *', 'digest', 'prompt', 'db', 'cron') RETURNING id"
+    )
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.butler_names = ["atlas"]
+    mock_db.pool.return_value = db_pool
+    owner, _ = _deadline_apps(mock_db)
+
+    found = await _get(owner, f"/api/butlers/atlas/deadlines/{deadline_id}")
     assert found.status_code == 200
     assert found.json()["data"] == {
         "id": str(deadline_id),
         "butler": "atlas",
         "name": "car-insurance",
-        "display_title": "Car insurance renews",
-        "target_date": "2026-11-12",
+        "display_title": None,
+        "target_date": due.isoformat(),
         "deadline_status": "pending",
         "enabled": True,
     }
-    assert "task_type = 'deadline'" in mock_pool.fetchrow.call_args.args[0]
-    assert (missing.status_code, unknown_butler.status_code) == (404, 404)
-    assert mock_pool.fetchrow.await_count == 2
-
-    no_owner = create_app(api_key="synthetic-owner-key")
-    no_owner.state.owner_auth_service = _DomainOwnerState("synthetic-owner-key")
-    no_owner.dependency_overrides[get_db] = lambda: mock_db
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=no_owner), base_url="https://test"
-    ) as client:
-        refused = await client.get(path)
-    assert refused.status_code == 401
-    assert mock_pool.fetchrow.await_count == 2
+    not_a_deadline = await _get(owner, f"/api/butlers/atlas/deadlines/{cron_id}")
+    assert not_a_deadline.status_code == 404
+    missing = await _get(owner, f"/api/butlers/atlas/deadlines/{uuid4()}")
+    assert missing.status_code == 404
 
 
 @pytest.mark.parametrize(
