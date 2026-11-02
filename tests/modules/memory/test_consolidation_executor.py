@@ -831,3 +831,163 @@ async def test_failed_evidence_link_rolls_back_its_artifact(monkeypatch) -> None
     assert result["errors"] == ["Failed to store new fact (owner/preference)"]
     assert pool.connection.persisted_artifacts == []
     assert pool.connection.rollbacks == 1
+
+
+class _PartitionPool(_AtomicPool):
+    """Atomic pool whose source episodes carry persisted authority stamps."""
+
+    def __init__(self, authorities: dict[uuid.UUID, str | None]) -> None:
+        super().__init__()
+        self.authorities = authorities
+        self.fetchrow_queries: list[str] = []
+        self.fetchval_queries: list[tuple] = []
+
+    async def fetch(self, *args) -> list:
+        return [
+            {"id": episode_id, "content_authority": authority, "authority_entity_id": None}
+            for episode_id, authority in self.authorities.items()
+        ]
+
+    async def fetchrow(self, query: str, *args):
+        self.fetchrow_queries.append(" ".join(query.split()))
+        return None  # no admitted update target
+
+    async def fetchval(self, query: str, *args):
+        self.fetchval_queries.append((" ".join(query.split()), args))
+        return self.confirmation_admitted
+
+    confirmation_admitted = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("partition", "cited_authority"),
+    [
+        ("owner", "owner"),
+        # bu-dhloi1.26: a system session that also saw a third-party episode could
+        # restate it citing only the system episode, stamping it unlabelled system.
+        ("system", "system"),
+    ],
+)
+async def test_episode_outside_its_partition_fails_before_any_write(
+    monkeypatch, partition: str, cited_authority: str
+) -> None:
+    """REQ-module-memory-005: a stamp that left the partition fails the whole group."""
+    cited_episode, stranger_episode = uuid.uuid4(), uuid.uuid4()
+    store_fact_mock = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
+    monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
+    monkeypatch.setattr(
+        consolidation_executor, "_lookup_episode_ttl_days", AsyncMock(return_value=7)
+    )
+    pool = _PartitionPool({cited_episode: cited_authority, stranger_episode: "third_party"})
+    parsed = ConsolidationResult(
+        new_facts=[
+            NewFact(
+                subject="owner",
+                predicate="preference",
+                content="likes quiet dinners",
+                evidence_episode_ids=[str(cited_episode)],
+            )
+        ]
+    )
+
+    with pytest.raises(consolidation_executor.ConsolidationEvidenceValidationError):
+        await consolidation_executor.execute_consolidation(
+            pool=pool,
+            embedding_engine=object(),
+            parsed=parsed,
+            source_episode_ids=[cited_episode, stranger_episode],
+            butler_name="relationship",
+            authority_partition=partition,
+        )
+
+    store_fact_mock.assert_not_awaited()
+    assert pool.connection.executes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("partition", "authority", "predicate"),
+    [
+        ("owner", "owner", "content_authority IN ('owner', 'owner_device')"),
+        ("system", "system", "content_authority = 'system'"),
+        (
+            "non_owner",
+            None,
+            "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device', 'system')",
+        ),
+    ],
+)
+async def test_partition_scopes_update_targets_and_confirmations(
+    monkeypatch, partition: str, authority: str | None, predicate: str
+) -> None:
+    """REQ-module-memory-006: targets outside the session's partition are rejected."""
+    episode_id = uuid.uuid4()
+    target_id, confirmation_id = uuid.uuid4(), uuid.uuid4()
+    store_fact_mock = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
+    confirm_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
+    monkeypatch.setattr(consolidation_executor, "confirm_memory", confirm_mock)
+    monkeypatch.setattr(
+        consolidation_executor, "_lookup_episode_ttl_days", AsyncMock(return_value=7)
+    )
+    pool = _PartitionPool({episode_id: authority})
+    parsed = ConsolidationResult(
+        updated_facts=[
+            UpdatedFact(
+                target_id=str(target_id),
+                content="restated elsewhere",
+                evidence_episode_ids=[str(episode_id)],
+            )
+        ],
+        confirmations=[str(confirmation_id)],
+    )
+
+    result = await consolidation_executor.execute_consolidation(
+        pool=pool,
+        embedding_engine=object(),
+        parsed=parsed,
+        source_episode_ids=[episode_id],
+        butler_name="relationship",
+        tenant_id="tenant-a",
+        authority_partition=partition,
+    )
+
+    assert result["facts_updated"] == 0
+    assert result["confirmations_made"] == 0
+    assert result["errors"] == [
+        f"Failed to update fact ({target_id})",
+        f"Failed to confirm fact {confirmation_id}",
+    ]
+    store_fact_mock.assert_not_awaited()
+    confirm_mock.assert_not_awaited()
+    assert predicate in pool.fetchrow_queries[0]
+    confirmation_query, confirmation_args = pool.fetchval_queries[0]
+    assert predicate in confirmation_query
+    assert confirmation_args == (confirmation_id, "tenant-a", "relationship")
+
+
+@pytest.mark.asyncio
+async def test_partition_admits_a_same_partition_confirmation(monkeypatch) -> None:
+    """Positive companion: an in-partition confirmation still reaches confirm_memory."""
+    episode_id, confirmation_id = uuid.uuid4(), uuid.uuid4()
+    confirm_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr(consolidation_executor, "confirm_memory", confirm_mock)
+    monkeypatch.setattr(
+        consolidation_executor, "_lookup_episode_ttl_days", AsyncMock(return_value=7)
+    )
+    pool = _PartitionPool({episode_id: "owner_device"})
+    pool.confirmation_admitted = True
+
+    result = await consolidation_executor.execute_consolidation(
+        pool=pool,
+        embedding_engine=object(),
+        parsed=ConsolidationResult(confirmations=[str(confirmation_id)]),
+        source_episode_ids=[episode_id],
+        butler_name="relationship",
+        authority_partition="owner",
+    )
+
+    assert result["errors"] == []
+    assert result["confirmations_made"] == 1
+    confirm_mock.assert_awaited_once_with(pool, "fact", confirmation_id)

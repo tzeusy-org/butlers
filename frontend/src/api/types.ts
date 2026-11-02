@@ -7791,13 +7791,25 @@ export interface EgressCatalog {
   catalog_covers_from: string | null;
 }
 
-/** Per-butler liveness and session snapshot. */
+/**
+ * Per-butler liveness and session snapshot (REQ-system-overview-page-007).
+ *
+ * `last_heartbeat_at` / `heartbeat_age_seconds` are the last successfully
+ * verified healthy receiver observation; `last_probe_at` is the latest attempt
+ * and implies nothing about health. Classify availability from
+ * `observation_state` and `effective_eligibility`, never from age alone.
+ */
 export interface ButlerHeartbeat {
   name: string;
   last_heartbeat_at: string | null;
+  last_probe_at: string | null;
   last_session_at: string | null;
   active_session_count: number;
   heartbeat_age_seconds: number | null;
+  observation_state: "healthy" | "stale" | "unavailable" | "observer_unknown";
+  administrative_policy: "active" | "paused" | "quarantined" | "review_required" | "unknown";
+  route_compatibility: "compatible" | "incompatible" | "unknown";
+  effective_eligibility: "eligible" | "paused" | "ineligible" | "unknown";
   error?: string | null;
 }
 

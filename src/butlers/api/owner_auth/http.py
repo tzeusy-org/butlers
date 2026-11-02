@@ -183,9 +183,12 @@ class OwnerAuthMiddleware:
         connection = HTTPConnection(scope)
         method = scope.get("method", "GET")
         path = scope["path"]
-        public_probe = method == "GET" and path in {"/health", "/api/health"}
+        # Exact GET /ready is the sole semantic-readiness exception (Q4,
+        # REQ-dashboard-api-063); any other method on it is authenticated.
+        public_probe = method == "GET" and path in {"/health", "/api/health", "/ready"}
         if scope["type"] == "http" and (
-            public_probe or not (path == "/api" or path.startswith("/api/") or path == "/health")
+            public_probe
+            or not (path == "/api" or path.startswith("/api/") or path in {"/health", "/ready"})
         ):
             await self.app(scope, receive, send)
             return

@@ -438,3 +438,60 @@ async def test_outcome_recorded_between_read_and_write_is_not_overwritten(
         absence_settle=timedelta(0),
     )
     assert not await get_publication_hold(pool, fingerprint)
+
+
+async def test_retained_export_round_trips_then_prunes_to_a_binding_tombstone(
+    pool, attempt, tmp_path
+) -> None:
+    """Retention as ``butler_qa_rw`` (bu-mc01y5.19) and its pruning (bu-mc01y5.25, core_301)."""
+    from butlers.core.qa.publication.export import build_sealed_export
+    from butlers.core.qa.publication.retention import (
+        load_retained_export,
+        prune_retained_exports,
+        retain_export,
+    )
+    from tests.core.qa.publication_fakes import QA_IDENTITY, commit_file, init_repo
+
+    attempt_id, _ = attempt
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    commit_file(repo, "src/app.py", "value = 2\n", "fix: guard value")
+    head = commit_file(repo, "tests/test_app.py", "def test_value():\n    pass\n", "test: pin")
+    export = await build_sealed_export(
+        repo / ".git" / "objects", base_sha=base, head_sha=head, identity=QA_IDENTITY
+    )
+    await retain_export(pool, attempt_id, export)
+    await retain_export(pool, attempt_id, export)  # idempotent
+    assert await load_retained_export(pool, attempt_id) == export
+    changed = commit_file(repo, "src/app.py", "value = 3\n", "fix: tighten")
+    different = await build_sealed_export(
+        repo / ".git" / "objects", base_sha=base, head_sha=changed, identity=QA_IDENTITY
+    )
+    with pytest.raises(PublicationRefused, match="export_changed"):
+        await retain_export(pool, attempt_id, different)
+
+    # Inside the window nothing prunes; past it the bytes go and the binding stays.
+    await pool.execute(
+        "UPDATE public.healing_attempts SET status = 'failed', closed_at = now() - $2::interval "
+        "WHERE id = $1",
+        attempt_id,
+        timedelta(days=29),
+    )
+    await prune_retained_exports(pool)
+    assert await load_retained_export(pool, attempt_id) == export
+    await pool.execute(
+        "UPDATE public.healing_attempts SET closed_at = now() - $2::interval WHERE id = $1",
+        attempt_id,
+        timedelta(days=31),
+    )
+    assert await prune_retained_exports(pool) >= 1
+    with pytest.raises(PublicationRefused, match="export_pruned"):
+        await load_retained_export(pool, attempt_id)
+    with pytest.raises(PublicationRefused, match="export_pruned"):
+        await retain_export(pool, attempt_id, export)
+    row = await pool.fetchrow(
+        "SELECT head_sha, digest, octet_length(objects) AS size "
+        "FROM public.qa_publication_exports WHERE attempt_id = $1",
+        attempt_id,
+    )
+    assert (row["head_sha"], row["digest"], row["size"]) == (export.head_sha, export.digest, 0)

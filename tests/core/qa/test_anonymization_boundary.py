@@ -153,6 +153,64 @@ async def test_leak_anywhere_in_reachable_history_refuses(
     assert refused.value.code == code
 
 
+def _commit_with_signature(repo: Path, base: str, tail: str, *, which: str = "author") -> str:
+    """Write a raw commit whose ``which`` signature ends in ``tail`` (epoch and zone)."""
+    tree = git(repo, "rev-parse", f"{base}^{{tree}}")
+    good = f"{QA_IDENTITY.render().decode()} 1700000000 +0000"
+    bad = f"{QA_IDENTITY.render().decode()}{tail}"
+    author, committer = (bad, good) if which == "author" else (good, bad)
+    body = f"tree {tree}\nparent {base}\nauthor {author}\ncommitter {committer}\n\nfix\n"
+    return git(repo, "hash-object", "-t", "commit", "-w", "--literally", "--stdin", input=body)
+
+
+@pytest.mark.parametrize("which", ["author", "committer"])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        " 17000000x0 +0000",  # non-digit timestamp
+        " -5 +0000",  # signed timestamp
+        " 0x10 +0000",  # hex timestamp
+        " 1700000000000000000000 +0000",  # overflowing timestamp
+        " 01700000000 +0000",  # leading zero
+        "  1700000000 +0000",  # extra whitespace before the timestamp
+        " 1700000000  +0000",  # extra whitespace before the zone
+        " 1700000000 +0000 ",  # trailing whitespace
+        " 1700000000 0000",  # zone without sign
+        " 1700000000 +00",  # short zone
+        " 1700000000 +00000",  # long zone
+        " 1700000000 +0060",  # minutes out of range
+        " 1700000000 +2400",  # hours out of range
+        " 1700000000 +00:00",  # colon zone
+        " 1700000000 UTC0",  # alphabetic zone
+        " 1700000000",  # zone missing
+        " +0000",  # timestamp missing
+        "",  # both missing
+    ],
+)
+async def test_malformed_signature_timestamp_or_zone_refuses(
+    tmp_path: Path, which: str, tail: str
+) -> None:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = _commit_with_signature(repo, base, tail, which=which)
+
+    with pytest.raises(ExportRefused) as refused:
+        await _export(repo, base, head)
+
+    assert refused.value.code == "author_metadata"
+
+
+@pytest.mark.parametrize("tail", [" 0 +0000", " 1700000000 -0530", " 1700000000 +1400"])
+async def test_well_formed_signature_timestamp_and_zone_export(tmp_path: Path, tail: str) -> None:
+    repo = tmp_path / "repo"
+    base = init_repo(repo)
+    head = _commit_with_signature(repo, base, tail)
+
+    export = await _export(repo, base, head)
+
+    assert export.commits[-1] == head
+
+
 async def test_tree_with_duplicate_entry_name_refuses(tmp_path: Path) -> None:
     # A hand-written tree lists "notes.txt" twice: a leaking blob, then a clean one.
     # A last-wins parse would validate only the clean blob while the sealed tree

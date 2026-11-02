@@ -1410,8 +1410,10 @@ async def _run_investigation_session(
                 metrics=metrics,
                 elapsed_ms=(_time.monotonic() - _phase_start) * 1000,
             )
-            # Teardown is safe for an unpublished proposal: the publisher retained the sealed
-            # export bytes outside agent control before its first egress (core_294).
+            # Teardown is safe only once the publisher reached egress: a push or PR creation
+            # that fails or ends ambiguous left the sealed export retained outside agent
+            # control (core_294).  A refusal before retention (anonymization, whitelist)
+            # retains nothing; only the diff snapshot and notes persisted below survive.
             await _persist_notes_and_remove_worktree(
                 pool,
                 attempt_id,

@@ -201,6 +201,8 @@ async def test_scheduled_evidence_cleanup_honors_configured_hour(monkeypatch):
     pool = _FakePool([row])
     counter = _FakeRetentionCounter()
     monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", counter)
+    prune = AsyncMock(return_value=2)
+    monkeypatch.setattr(qa_module, "prune_retained_exports", prune)
     module = _module_with_pool(pool)
     module._config = QaConfig(retention_cleanup_hour=4)
 
@@ -208,4 +210,26 @@ async def test_scheduled_evidence_cleanup_honors_configured_hour(monkeypatch):
     cleaned = await module.run_scheduled_evidence_cleanup(now=now.replace(hour=4))
 
     assert skipped == {"status": "skipped", "cleaned_rows": 0, "malformed_rows": 0}
-    assert cleaned == {"status": "completed", "cleaned_rows": 1, "malformed_rows": 0}
+    assert cleaned == {
+        "status": "completed",
+        "cleaned_rows": 1,
+        "malformed_rows": 0,
+        "pruned_exports": 2,
+    }
+    prune.assert_awaited_once_with(pool)
+
+
+@pytest.mark.asyncio
+async def test_export_prune_failure_does_not_fail_the_evidence_cleanup(monkeypatch, caplog):
+    now = datetime(2026, 5, 15, 4, tzinfo=UTC)
+    pool = _FakePool([_row(created_at=now - timedelta(days=31))])
+    monkeypatch.setattr(qa_module, "_qa_findings_retention_purged_total", _FakeRetentionCounter())
+    monkeypatch.setattr(qa_module, "prune_retained_exports", AsyncMock(side_effect=OSError))
+    module = _module_with_pool(pool)
+    module._config = QaConfig(retention_cleanup_hour=4)
+
+    with caplog.at_level("WARNING", logger="butlers.modules.qa"):
+        cleaned = await module.run_scheduled_evidence_cleanup(now=now)
+
+    assert cleaned["cleaned_rows"] == 1 and cleaned["pruned_exports"] == 0
+    assert "export prune failed" in caplog.text

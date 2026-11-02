@@ -202,4 +202,12 @@ observer runs in shadow until the remaining stages of
 `restore-butler-control-plane-liveness` land. The staged rollout, `/ready`
 semantics, and deploy gating are specified in its
 [design](../../openspec/changes/restore-butler-control-plane-liveness/design.md).
-Docker's `/health` probe remains a process-liveness signal only.
+Docker's `/health` probe remains a process-liveness signal only. The
+dashboard API's exact public `GET /ready` (owner auth exempts only that
+method and path) returns the cached, content-blind semantic verdict:
+`{"ready":true}` with 200, or 503 with the fixed Boolean `checks`. A supervised
+`fleet_readiness` loop samples PostgreSQL, the roster, observer progress,
+fleet receiver evidence, QA patrol age, supervised-loop health, and
+Switchboard's internal route preflight. The request itself makes no probe,
+query, or write. Deployment launchers consume this route and register no
+second handler.

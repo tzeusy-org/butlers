@@ -540,8 +540,8 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
     asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
-    command.downgrade(general, "core_300")
-    command.downgrade(switchboard, "core_300")
+    command.downgrade(general, "core_301")
+    command.downgrade(switchboard, "core_301")
     engine = create_engine(url)
     # Every previously allowed pair survives; only the ambiguous NULL is canonicalized.
     pairs = [
@@ -616,7 +616,7 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
         with engine.begin() as conn:
             conn.exec_driver_sql("ALTER SCHEMA switchboard RENAME TO pgpeer")
         try:
-            command.downgrade(general, "core_300")
+            command.downgrade(general, "core_301")
             _refused(
                 url,
                 bound_id,
@@ -629,7 +629,7 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
             command.upgrade(general, "core@head")
 
         # A second schema still at core_302 must keep the strict CHECK in force.
-        command.downgrade(general, "core_300")
+        command.downgrade(general, "core_301")
         bound_id = next(row["id"] for row in before if row["stage"] == "bound")
         _refused(
             url,
@@ -637,7 +637,7 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
             "stage = 'ambiguous', stage_order = 3",
             "ck_qa_publication_operations_stage_result",
         )
-        command.downgrade(switchboard, "core_300")
+        command.downgrade(switchboard, "core_301")
         # Historical compatibility returns, without erasing any canonicalized result or hold.
         _update_as_qa(url, bound_id, "stage = 'ambiguous', stage_order = 3")
         with engine.connect() as conn:

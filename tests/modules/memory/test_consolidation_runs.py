@@ -418,6 +418,168 @@ class TestRunConsolidationWritesAuditRow:
         assert all(uuid.UUID(request_id).version == 4 for request_id in request_ids)
         assert len(set(request_ids)) == 2
 
+    async def test_each_authority_partition_consolidates_in_its_own_session(
+        self, monkeypatch
+    ) -> None:
+        """REQ-module-memory-005: one tenant/butler group splits by persisted authority."""
+        owner_ids = [uuid.uuid4(), uuid.uuid4()]
+        system_ids = [uuid.uuid4()]
+        other_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
+        authorities = {
+            owner_ids[0]: "owner",
+            other_ids[0]: "third_party",
+            system_ids[0]: "system",
+            owner_ids[1]: "owner_device",
+            other_ids[1]: None,
+            other_ids[2]: "mixed",
+        }
+        claim_rows = [
+            {
+                "id": episode_id,
+                "butler": "general",
+                "content": f"episode-{episode_id}",
+                "importance": 5.0,
+                "metadata": {},
+                "created_at": None,
+                "tenant_id": "t1",
+                "consolidation_attempts": 0,
+                "content_authority": authority,
+            }
+            # Interleave so partitioning cannot lean on claim order.
+            for episode_id, authority in authorities.items()
+        ]
+        pool = _FakePool(claim_rows=claim_rows)
+        dedup_queries: list[str] = []
+
+        async def _recording_fetch(query: str, *args: Any) -> list[dict]:
+            dedup_queries.append(" ".join(query.split()))
+            return []
+
+        pool.fetch = _recording_fetch  # type: ignore[method-assign]
+        prompts: list[list[uuid.UUID]] = []
+        execute_calls: list[dict[str, Any]] = []
+
+        async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
+            execute_calls.append(kwargs)
+            return {
+                "facts_created": 0,
+                "facts_updated": 0,
+                "rules_created": 0,
+                "confirmations_made": 0,
+                "episodes_consolidated": len(kwargs["source_episode_ids"]),
+                "episode_ttl_days": None,
+                "errors": [],
+            }
+
+        def _prompt(**kwargs: Any) -> str:
+            prompts.append([episode["id"] for episode in kwargs["episodes"]])
+            return "prompt"
+
+        monkeypatch.setattr(
+            consolidation_module, "execute_consolidation", _fake_execute_consolidation
+        )
+        monkeypatch.setattr(
+            consolidation_module,
+            "parse_consolidation_output",
+            lambda output: type("P", (), {"parse_errors": []})(),
+        )
+        monkeypatch.setattr(consolidation_module, "build_consolidation_prompt", _prompt)
+        spawner = _FakeSpawner()
+
+        stats = await consolidation_module.run_consolidation(
+            pool, embedding_engine=None, cc_spawner=spawner
+        )
+
+        # A system-stamped episode gets its own session (bu-dhloi1.26): sharing one
+        # with third-party content would let it restate that content as system.
+        assert spawner.calls == 3
+        assert prompts == [owner_ids, system_ids, other_ids]
+        assert [call["source_episode_ids"] for call in execute_calls] == [
+            owner_ids,
+            system_ids,
+            other_ids,
+        ]
+        assert [call["authority_partition"] for call in execute_calls] == [
+            "owner",
+            "system",
+            "non_owner",
+        ]
+        assert len({call["request_id"] for call in execute_calls}) == 3
+        assert stats["groups"] == {"t1/general": 6}
+        assert stats["groups_consolidated"] == 3
+        assert stats["episodes_consolidated"] == 6
+        assert len(pool.consolidation_run_inserts()) == 3
+
+        # Dedup candidates are filtered by partition in SQL, before LIMIT, so a
+        # third-party fact or rule never reaches the owner or system prompt.
+        assert len(dedup_queries) == 6
+        predicates = [
+            "content_authority IN ('owner', 'owner_device')",
+            "content_authority = 'system'",
+            "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device', 'system')",
+        ]
+        for index, query in enumerate(dedup_queries):
+            predicate = predicates[index // 2]
+            assert predicate in query
+            assert query.index(predicate) < query.index("LIMIT")
+
+    async def test_failed_partition_does_not_block_the_other_partition(self, monkeypatch) -> None:
+        owner_id, other_id = uuid.uuid4(), uuid.uuid4()
+        claim_rows = [
+            {
+                "id": episode_id,
+                "butler": "general",
+                "content": "c",
+                "importance": 5.0,
+                "metadata": {},
+                "created_at": None,
+                "tenant_id": "t1",
+                "consolidation_attempts": 0,
+                "content_authority": authority,
+            }
+            for episode_id, authority in ((owner_id, "owner"), (other_id, "third_party"))
+        ]
+        pool = _FakePool(claim_rows=claim_rows)
+
+        async def _fake_execute_consolidation(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["authority_partition"] == "owner":
+                raise ValueError("out-of-partition evidence")
+            return {
+                "facts_created": 1,
+                "facts_updated": 0,
+                "rules_created": 0,
+                "confirmations_made": 0,
+                "episodes_consolidated": 1,
+                "episode_ttl_days": None,
+                "errors": [],
+            }
+
+        monkeypatch.setattr(
+            consolidation_module, "execute_consolidation", _fake_execute_consolidation
+        )
+        monkeypatch.setattr(
+            consolidation_module,
+            "parse_consolidation_output",
+            lambda output: type("P", (), {"parse_errors": []})(),
+        )
+        monkeypatch.setattr(
+            consolidation_module, "build_consolidation_prompt", lambda **kwargs: "prompt"
+        )
+
+        stats = await consolidation_module.run_consolidation(
+            pool, embedding_engine=None, cc_spawner=_FakeSpawner()
+        )
+
+        assert stats["groups_consolidated"] == 1
+        assert stats["facts_created"] == 1
+        assert stats["errors"] == ["Failed to consolidate general"]
+        failure_updates = [
+            args for query, args in pool.executes if "last_consolidation_error" in query
+        ]
+        assert len(failure_updates) == 1
+        assert [owner_id] in failure_updates[0]
+        assert len(pool.consolidation_run_inserts()) == 1
+
     async def test_no_audit_row_when_no_spawner(self, monkeypatch):
         # Without a spawner, no group is consolidated → no audit row written.
         claim_rows = [

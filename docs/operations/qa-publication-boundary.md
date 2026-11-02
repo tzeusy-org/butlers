@@ -90,11 +90,33 @@ digest, so altered stored bytes refuse with `export_tampered`.
 
 Only `butler_qa_rw` inserts (forced row security, as for the ledger); every runtime role reads, since
 the bytes already passed `validate_anonymized()` and are what a successful publication makes public.
-No role can update or delete a row: there is no UPDATE or DELETE policy, and a BEFORE UPDATE trigger
-(`qa_publication_exports_immutable`) refuses rewrites from a privileged login too. Only the last schema
-to leave `core_294` drops the table, and only while no export is retained. The table is excluded from
-`deploy/backup/pg_dump.sh` for the same reason as the ledger. Pruning old retained exports is not
-implemented.
+No role can delete a row (there is no DELETE policy), and the only rewrite is a prune. The BEFORE
+UPDATE trigger (`qa_publication_exports_immutable`) refuses every other rewrite, from a privileged login
+too. Only the last schema to leave `core_294` drops the table, and only while no export row exists,
+pruned or not. The table is excluded from `deploy/backup/pg_dump.sh` for the same reason as the ledger.
+
+Retention (migration `core_301`, bu-mc01y5.25). A retained export's object bytes are kept until its
+attempt has been terminal (`pr_merged`, `failed`, `unfixable`, `anonymization_failed`, `timeout`) for
+30 days after `closed_at`, by database time, and none of its operations holds the lineage
+(`egress_started` or `ambiguous`). Past that point `retention.prune_retained_exports` empties
+`objects` and the guard stamps `pruned_at`. The row stays as a tombstone: base, head, commits and
+digest keep binding the proposal, so the case API's `export_retained` proof and the sweep's binding
+rebuild (`head_sha`) are unchanged. The guard enforces the same eligibility for every role and makes a
+pruned row final. A BEFORE INSERT trigger (`qa_publication_exports_unpruned_insert`) refuses a row
+inserted with `pruned_at` set, so the guarded UPDATE is the only way to a tombstone. The window is
+measured from `healing_attempts.closed_at` as the QA role writes it. That table has no row-security
+fence, so the window is only as trustworthy as its writers; the lineage-hold check reads the fenced
+ledger. Only `butler_qa_rw` reaches a row for update (forced row security, UPDATE policy for
+that role alone). A pruned export refuses with `export_pruned` on load and on re-retention. The QA
+module runs the prune in the daily `qa_evidence_cleanup` job, at `retention_cleanup_hour`, 100 rows per
+run. A prune failure is logged and does not fail the evidence cleanup. Only the last schema to leave
+`core_301` removes the prune path, and only while no export is pruned, since an emptied row would
+read back as tampered.
+
+The retained bytes exist only for an attempt whose publisher reached retention. A refusal before
+retention (`anonymization_failed`, a denied whitelist) leaves no export. A trusted receipt for those
+refusals is separate work (bu-mc01y5.28). Pruning never removes the row such a receipt would be
+read alongside.
 
 Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
 kept, and no remote branch or PR is deleted.
@@ -227,7 +249,7 @@ anchors the settle), and the stamp is set-once afterwards. A CHECK
 begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
 guard body.
 
-Migration `core_302` closes the historical ambiguous-NULL gap: both INSERT and UPDATE must
+Migration `core_302`, following public `core_301`, closes the historical ambiguous-NULL gap: both INSERT and UPDATE must
 carry result `ambiguous` when stage is `ambiguous`. Upgrade canonicalizes only that result on
 historical ambiguous-NULL rows through the existing QA write role under forced row security.
 The transaction locks the table across backfill and CHECK replacement; bindings, stages,

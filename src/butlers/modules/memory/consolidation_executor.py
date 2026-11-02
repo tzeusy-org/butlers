@@ -30,7 +30,12 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from butlers.modules.memory.consolidation_parser import ConsolidationResult
-from butlers.modules.memory.content_authority import combine_authorities
+from butlers.modules.memory.content_authority import (
+    PARTITIONS,
+    combine_authorities,
+    partition_of,
+    partition_sql,
+)
 from butlers.modules.memory.storage import (
     StaleSupersessionTargetError,
     _lookup_episode_ttl_days,
@@ -302,6 +307,45 @@ def _derive_artifact_authority(
     return authority, (entity_ids.pop() if len(entity_ids) == 1 else None)
 
 
+def _validate_partition_membership(
+    source_episode_ids: list[uuid.UUID],
+    episode_authorities: dict[uuid.UUID, tuple[str | None, uuid.UUID | None]],
+    partition: str,
+) -> None:
+    """Fail the whole partition when a source episode's authority left it.
+
+    Runs inside the persistence fence, after evidence validation and before any
+    artifact write, so a partition that no longer matches its persisted stamps
+    takes the existing failed/dead-letter path with nothing persisted.
+    """
+    for episode_id in source_episode_ids:
+        authority = episode_authorities.get(episode_id, (None, None))[0]
+        if partition_of(authority) != partition:
+            raise ConsolidationEvidenceValidationError(
+                "claimed episode authority does not match its consolidation partition"
+            )
+
+
+async def _confirmation_target_admitted(
+    pool: Any,
+    fact_id: uuid.UUID,
+    *,
+    tenant_id: str,
+    butler_name: str,
+    partition_filter: str,
+) -> bool:
+    """True when a confirmation targets a fact of this tenant, butler and partition."""
+    return bool(
+        await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM facts WHERE id = $1 AND tenant_id = $2"
+            " AND source_butler = $3" + partition_filter + ")",
+            fact_id,
+            tenant_id,
+            butler_name,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Executor
 # ---------------------------------------------------------------------------
@@ -322,6 +366,7 @@ async def execute_consolidation(
     source_schema: str | None = None,
     claim_token: str | None = None,
     lease_duration_seconds: int = 300,
+    authority_partition: str | None = None,
     _claim_persistence_fenced: bool = False,
     _episode_ttl_days: int | None = None,
 ) -> dict[str, Any]:
@@ -367,11 +412,20 @@ async def execute_consolidation(
             transaction.
         lease_duration_seconds: Lease duration used to renew a valid claim
             immediately before protected persistence begins.
+        authority_partition: ``"owner"``, ``"system"`` or ``"non_owner"`` when
+            the caller consolidated one authority partition
+            (``run_consolidation`` always does). Every source episode's
+            persisted authority is revalidated against it before any write,
+            and update targets and confirmations are admitted only within the
+            same tenant, source butler and partition. ``None`` keeps the
+            legacy unpartitioned behavior for direct callers.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
         confirmations_made, episodes_consolidated, episode_ttl_days, errors
     """
+    if authority_partition is not None and authority_partition not in PARTITIONS:
+        raise ValueError(f"unknown consolidation partition {authority_partition!r}")
     # Runtime execution happens outside a transaction, but persistence cannot:
     # a replacement claimant must win before any derived write becomes visible.
     # Lock and renew every source row first, then recurse through the existing
@@ -406,6 +460,7 @@ async def execute_consolidation(
                         source_schema=source_schema,
                         claim_token=claim_token,
                         lease_duration_seconds=lease_duration_seconds,
+                        authority_partition=authority_partition,
                         _claim_persistence_fenced=True,
                         _episode_ttl_days=episode_ttl_days,
                     )
@@ -431,6 +486,8 @@ async def execute_consolidation(
     # Derived knowledge inherits the weakest authority among its evidence
     # episodes, from the server-held stamp, never from anything in the content.
     episode_authorities = await _load_episode_authorities(pool, source_episode_ids)
+    if authority_partition is not None:
+        _validate_partition_membership(source_episode_ids, episode_authorities, authority_partition)
 
     # When the caller wants catalog write-behind but didn't resolve a schema
     # itself (e.g. the deterministic scheduled-job path, which has no access
@@ -446,6 +503,12 @@ async def execute_consolidation(
         _episode_ttl_days
         if _episode_ttl_days is not None
         else await _lookup_episode_ttl_days(pool, retention_class)
+    )
+
+    # A partitioned run may update or confirm only a fact its own session was
+    # shown: same tenant, source butler and authority partition.
+    target_partition_filter = (
+        f"  AND {partition_sql(authority_partition)}\n" if authority_partition is not None else ""
     )
 
     # --- New facts ---
@@ -529,7 +592,8 @@ async def execute_consolidation(
                   AND validity IN ('active', 'fading')
                   AND valid_at IS NULL
                   AND object_entity_id IS NULL
-                """,
+                """
+                + target_partition_filter,
                 target_id,
                 tenant_id,
                 butler_name,
@@ -664,6 +728,21 @@ async def execute_consolidation(
     # --- Confirmations ---
     for confirmation_id in parsed.confirmations:
         try:
+            if authority_partition is not None and not await _confirmation_target_admitted(
+                pool,
+                uuid.UUID(confirmation_id),
+                tenant_id=tenant_id,
+                butler_name=butler_name,
+                partition_filter=target_partition_filter,
+            ):
+                logger.warning(
+                    "Skipping out-of-partition confirmation %s for tenant %s and butler %s",
+                    confirmation_id,
+                    tenant_id,
+                    butler_name,
+                )
+                errors.append(f"Failed to confirm fact {confirmation_id}")
+                continue
             await confirm_memory(pool, "fact", uuid.UUID(confirmation_id))
             confirmations_made += 1
         except Exception as exc:

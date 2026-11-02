@@ -16,6 +16,8 @@
 #   prometheus      — Prometheus (scrapes connector /metrics endpoints +
 #                     receives OTLP metrics from otel-collector)
 #   grafana         — Grafana (pre-provisioned with all dashboards in observability/grafana/)
+#   connector-*-metrics — metrics-proxy sidecars that republish each loopback-
+#                     bound connector's GET /metrics on <connector>:9464
 #
 # SIGNAL FLOW:
 #   butler daemons + dashboard API
@@ -23,8 +25,9 @@
 #       → otel-collector
 #         → /v1/traces  → Tempo
 #         → /v1/metrics → Prometheus (remote_write)
-#   connector health endpoints (/metrics, prometheus text format)
-#     → Prometheus scrape
+#   connector health endpoints (/metrics, prometheus text format, loopback)
+#     → connector-*-metrics sidecar (<connector>:9464)
+#       → Prometheus scrape
 #
 # UI:
 #   Grafana:    http://localhost:3000  (admin / admin)
@@ -50,6 +53,24 @@
 #     GF_AUTH_ANONYMOUS_ENABLED=true docker compose -f docker-compose.yml \
 #       -f docker-compose.observability.yml --profile observability up -d
 #   See docs/operations/deployment-posture.md for the full posture reference.
+
+# Connector metrics proxy (shared shape). Connector health servers bind
+# 127.0.0.1 inside their own container and also serve /health and POST
+# /reload, so Prometheus cannot scrape them across containers, and widening the
+# bind would expose more than metrics. Each sidecar joins its connector's
+# network namespace (network_mode: service:<connector>), relays only
+# GET /metrics from the loopback health port, and listens on 9464, so
+# Prometheus scrapes <connector>:9464. Same script as the Helm chart's
+# connectorMetrics sidecar: scripts/connector_metrics_proxy.py.
+#
+# A sidecar shares the namespace of the connector container it started with.
+# If that connector container is recreated or restarted outside Compose, its
+# target reports up == 0 until the sidecar restarts (re-run `up -d`).
+x-metrics-proxy: &metrics-proxy
+  image: butlers-app:${BUTLERS_APP_TAG:-latest}
+  profiles: [observability]
+  entrypoint: ["python3", "/app/scripts/connector_metrics_proxy.py"]
+  restart: unless-stopped
 
 services:
 
@@ -133,6 +154,102 @@ services:
       - prometheus
       - tempo
     restart: unless-stopped
+
+  # ── Connector metrics proxies ─────────────────────────────────────────
+  # See x-metrics-proxy above. connector-owntracks needs none: its health
+  # server already binds 0.0.0.0 for the OwnTracks webhook.
+  connector-telegram-bot-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40081"]
+    network_mode: "service:connector-telegram-bot"
+    depends_on:
+      connector-telegram-bot:
+        condition: service_started
+        restart: true
+
+  connector-gmail-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40082"]
+    network_mode: "service:connector-gmail"
+    depends_on:
+      connector-gmail:
+        condition: service_started
+        restart: true
+
+  connector-whatsapp-user-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40082"]
+    network_mode: "service:connector-whatsapp-user"
+    depends_on:
+      connector-whatsapp-user:
+        condition: service_started
+        restart: true
+
+  connector-spotify-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40083"]
+    network_mode: "service:connector-spotify"
+    depends_on:
+      connector-spotify:
+        condition: service_started
+        restart: true
+
+  connector-google-calendar-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40085"]
+    network_mode: "service:connector-google-calendar"
+    depends_on:
+      connector-google-calendar:
+        condition: service_started
+        restart: true
+
+  connector-activitywatch-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40092"]
+    network_mode: "service:connector-activitywatch"
+    depends_on:
+      connector-activitywatch:
+        condition: service_started
+        restart: true
+
+  connector-home-assistant-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40087"]
+    network_mode: "service:connector-home-assistant"
+    depends_on:
+      connector-home-assistant:
+        condition: service_started
+        restart: true
+
+  connector-google-drive-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40088"]
+    network_mode: "service:connector-google-drive"
+    depends_on:
+      connector-google-drive:
+        condition: service_started
+        restart: true
+
+  connector-google-health-metrics:
+    <<: *metrics-proxy
+    command: ["--upstream-port=40090"]
+    network_mode: "service:connector-google-health"
+    depends_on:
+      connector-google-health:
+        condition: service_started
+        restart: true
+
+  connector-live-listener-metrics:
+    <<: *metrics-proxy
+    # Follows its connector's audio profile: a sidecar enabled without the
+    # connector it joins fails `compose up`.
+    profiles: [audio]
+    command: ["--upstream-port=40091"]
+    network_mode: "service:connector-live-listener"
+    depends_on:
+      connector-live-listener:
+        condition: service_started
+        restart: true
 
 # ── Additional volumes ───────────────────────────────────────────────────
 

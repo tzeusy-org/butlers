@@ -38,7 +38,9 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
 - **`public.qa_publication_exports`** -- Retained sealed QA export bytes (core_294): one immutable
   row per attempt, written by the publisher before its first egress so a failed or ambiguous
-  publication stays recoverable after worktree teardown. Only `butler_qa_rw` writes (forced RLS);
+  publication stays recoverable after worktree teardown. core_301 adds `pruned_at`: 30 days after
+  a terminal attempt closes with no held lineage, the bytes are emptied and the row stays as a
+  binding tombstone. Only `butler_qa_rw` writes (forced RLS);
   every runtime role reads. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.

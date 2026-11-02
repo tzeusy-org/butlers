@@ -15,6 +15,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,6 +44,8 @@ from butlers.api.owner_auth.service import (
     close_owner_auth_service,
     create_owner_auth_service,
 )
+from butlers.api.readiness import CHECK_KEYS as _READINESS_CHECK_KEYS
+from butlers.api.readiness import FleetReadiness, run_readiness_sampler_loop
 from butlers.api.router_registry import build_router_registry
 from butlers.api.routers.data_ops import _is_production
 from butlers.api.routers.secrets_v2 import (
@@ -194,6 +197,7 @@ async def lifespan(app: FastAPI):
     fleet_events_bridge_task: asyncio.Task | None = None
     model_verify_task: asyncio.Task | None = None
     shadow_observer_task: asyncio.Task | None = None
+    readiness_task: asyncio.Task | None = None
     try:
         await init_db_manager(butler_configs)
         wire_qa_credentials(app)
@@ -208,19 +212,41 @@ async def lifespan(app: FastAPI):
         from butlers.core.control_plane_identity import run_shadow_observer_loop
         from butlers.core.fleet_conditions import controller_after_cycle
 
+        # Semantic readiness (REQ-dashboard-api-063): a separately supervised
+        # controller samples every input into one cached snapshot. Public
+        # GET /ready reads only that snapshot and never probes or writes.
+        readiness = FleetReadiness(
+            lambda: get_db_manager().pool("switchboard"), butler_configs, job_health
+        )
+        app.state.readiness = readiness
+        controller_pass = controller_after_cycle(
+            get_db_manager().pool("switchboard"),
+            butler_configs,
+            get_discovery_diagnostics().is_retired,
+        )
+
+        async def _after_observer_cycle(role_view: Any, cycle: Any) -> None:
+            readiness.note_cycle(cycle)
+            await controller_pass(role_view, cycle)
+
         shadow_observer_task = _track_background_task(
             supervise_lifespan_loop(
                 "fleet_shadow_observer",
                 lambda: run_shadow_observer_loop(
                     get_db_manager().pool("switchboard"),
                     butler_configs,
-                    after_cycle=controller_after_cycle(
-                        get_db_manager().pool("switchboard"),
-                        butler_configs,
-                        get_discovery_diagnostics().is_retired,
-                    ),
+                    after_cycle=_after_observer_cycle,
                 ),
                 health=job_health.recorder("fleet_shadow_observer", "periodic", 150),
+            )
+        )
+        readiness_task = _track_background_task(
+            supervise_lifespan_loop(
+                "fleet_readiness",
+                lambda: run_readiness_sampler_loop(readiness),
+                health=job_health.recorder(
+                    "fleet_readiness", "periodic", readiness.sample_interval_s
+                ),
             )
         )
 
@@ -509,6 +535,10 @@ async def lifespan(app: FastAPI):
         shadow_observer_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await shadow_observer_task
+    if readiness_task is not None:
+        readiness_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await readiness_task
     if secrets_lifecycle_task is not None:
         secrets_lifecycle_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -582,6 +612,8 @@ def create_app(
     )
     # Health endpoints return 503 until lifespan startup sets this True.
     app.state.ready = False
+    # Semantic readiness controller; None until lifespan wires it (fails closed).
+    app.state.readiness = None
     app.state.approval_callback_connector_token = None
     app.router.redirect_slashes = False
 
@@ -674,6 +706,28 @@ def create_app(
             logger.info(
                 "Mounted butler router: %s (prefix=%s)", entry.butler_name, entry.router.prefix
             )
+
+    @app.get("/ready", include_in_schema=False)
+    async def ready() -> JSONResponse:
+        """Content-blind semantic readiness from the cached controller snapshot.
+
+        Exact ``GET /ready`` is the sole public owner-auth exception for
+        readiness. It reads memory only: no database query, daemon call, route
+        preflight, or evidence write happens on the request path. A pass
+        proves control-plane selection and reachability, not transactional
+        ``route.execute`` acceptance. ``/health`` stays process-only.
+        """
+        readiness = getattr(app.state, "readiness", None)
+        if readiness is None:
+            is_ready, checks = False, dict.fromkeys(_READINESS_CHECK_KEYS, False)
+        else:
+            is_ready, checks = readiness.verdict()
+        headers = {"Cache-Control": "no-store"}
+        if is_ready:
+            return JSONResponse(status_code=200, content={"ready": True}, headers=headers)
+        return JSONResponse(
+            status_code=503, content={"ready": False, "checks": checks}, headers=headers
+        )
 
     @app.get("/api/health")
     @app.get("/health")
