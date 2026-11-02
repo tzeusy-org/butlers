@@ -14,8 +14,9 @@ Live egress is the approved Switchboard route to a Messenger-owned channel adapt
 gates, deferred notifications, and Switchboard attention outcomes are their own live boundaries.
 Messenger has no delivery-tracking, retry, dead-letter, queue-depth, or health subsystem, so
 verify delivery through the daemon health endpoint, the approval-gated adapter tools, and a scoped
-`notify()` route outcome, never through retired tracking tables. The retirement of those tables is
-specified in [`messenger-tracking-retirement`](../../openspec/specs/messenger-tracking-retirement/spec.md).
+`notify()` route outcome, never through retired tracking tables. See
+[Truthful Delivery Observability](../../openspec/specs/butler-messenger/spec.md#requirement-truthful-delivery-observability)
+for the current contract.
 
 ## Implementation Notes
 
