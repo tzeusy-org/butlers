@@ -46,7 +46,6 @@ from butlers.jobs.commitment_escalation import (
     renew_stale_commitment,
     run_commitment_escalation,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -61,20 +60,8 @@ pytestmark = [
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=2, max_size=10)
-    yield p
-    await p.close()
-
-
 @pytest.fixture(autouse=True)
-async def clean_ledger(pool: asyncpg.Pool):
+async def clean_ledger(db_pool: asyncpg.Pool):
     """Empty the shared ledger around every test.
 
     The per-test ``source`` fixture isolates rows, but this job deliberately
@@ -83,9 +70,9 @@ async def clean_ledger(pool: asyncpg.Pool):
     this, one test's leftovers show up in the next test's ``scanned``, and
     every count assertion becomes order-dependent.
     """
-    await pool.execute("TRUNCATE public.owner_conditions")
+    await db_pool.execute("TRUNCATE public.owner_conditions")
     yield
-    await pool.execute("TRUNCATE public.owner_conditions")
+    await db_pool.execute("TRUNCATE public.owner_conditions")
 
 
 @pytest.fixture
@@ -220,7 +207,7 @@ async def _row(pool: asyncpg.Pool, source: str, fingerprint: str) -> dict[str, A
 
 class TestScopeOfTheSweep:
     async def test_req_commitment_lifecycle_005_ignores_non_commitment_conditions(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """A bill-overdue row sharing the ledger is never proposed (criterion 1).
 
@@ -230,7 +217,7 @@ class TestScopeOfTheSweep:
         """
         other_source = f"finance:bill-overdue-{uuid.uuid4().hex[:8]}"
         await reconcile_snapshot(
-            pool,
+            db_pool,
             source=other_source,
             observations=[
                 Observation(
@@ -243,7 +230,7 @@ class TestScopeOfTheSweep:
             initial_grace_seconds=0.0,
         )
         # Make it as eligible as a commitment could ever be.
-        await pool.execute(
+        await db_pool.execute(
             """
             UPDATE public.owner_conditions
             SET escalation_level = 'L3', state = 'aging',
@@ -254,30 +241,32 @@ class TestScopeOfTheSweep:
         )
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert proposer.calls == []
         assert result.scanned == 0
 
     async def test_req_commitment_lifecycle_005_does_not_surface_during_l0_grace(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """L0 is the grace period; a just-created commitment has not earned attention.
 
         Criterion 2: only L1+ is processed.
         """
-        await _commit(pool, source=source, grace_seconds=24 * 3600.0)
+        await _commit(db_pool, source=source, grace_seconds=24 * 3600.0)
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.scanned == 1
         assert result.escalated == 0
         assert proposer.calls == []
-        assert (await list_active_commitments(pool, source=source))[0]["escalation_level"] == "L0"
+        assert (await list_active_commitments(db_pool, source=source))[0][
+            "escalation_level"
+        ] == "L0"
 
     async def test_req_commitment_lifecycle_005_advances_a_commitment_nothing_reobserves(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """A commitment has no producer, so this job is what moves its clock.
 
@@ -287,17 +276,19 @@ class TestScopeOfTheSweep:
         would sit at L0 forever and every "at L1+" requirement would be
         unreachable.
         """
-        await _commit(pool, source=source, grace_seconds=0.0)
+        await _commit(db_pool, source=source, grace_seconds=0.0)
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.escalated == 1
         assert result.surfaced == 1
-        assert (await list_active_commitments(pool, source=source))[0]["escalation_level"] == "L1"
+        assert (await list_active_commitments(db_pool, source=source))[0][
+            "escalation_level"
+        ] == "L1"
 
     async def test_req_commitment_lifecycle_005_escalating_does_not_reset_the_silence_clock(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """The tick must not confirm what it escalates.
 
@@ -306,12 +297,12 @@ class TestScopeOfTheSweep:
         escalated would reset the clock it exists to read, and no commitment
         would ever be collected.
         """
-        fingerprint = await _commit(pool, source=source, grace_seconds=0.0)
-        before = (await _row(pool, source, fingerprint))["last_confirmed_at"]
+        fingerprint = await _commit(db_pool, source=source, grace_seconds=0.0)
+        before = (await _row(db_pool, source, fingerprint))["last_confirmed_at"]
 
-        await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
-        after = await _row(pool, source, fingerprint)
+        after = await _row(db_pool, source, fingerprint)
         assert after["escalation_level"] == "L1"
         assert after["last_confirmed_at"] == before
 
@@ -323,46 +314,46 @@ class TestScopeOfTheSweep:
 
 class TestConfidenceBand:
     async def test_req_commitment_lifecycle_005_medium_confidence_is_created_but_not_surfaced(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Spec scenario: confidence 0.7 at L1 proposes nothing, stays queryable.
 
         Criterion 3.
         """
-        fingerprint = await _commit(pool, source=source, confidence=0.7)
-        await _age(pool, source, fingerprint, level="L1", silent_days=2)
+        fingerprint = await _commit(db_pool, source=source, confidence=0.7)
+        await _age(db_pool, source, fingerprint, level="L1", silent_days=2)
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert proposer.calls == []
         assert result.skipped_low_confidence == 1
         assert result.surfaced == 0
         # "AND the commitment is visible on the dashboard and in prep card queries"
-        visible = await list_active_commitments(pool, source=source)
+        visible = await list_active_commitments(db_pool, source=source)
         assert [row["fingerprint"] for row in visible] == [fingerprint]
 
     async def test_req_commitment_lifecycle_005_high_confidence_is_surfaced_at_l1(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Spec scenario: confidence 0.9 at L1 proposes an insight candidate."""
-        fingerprint = await _commit(pool, source=source, confidence=0.9)
-        await _age(pool, source, fingerprint, level="L1", silent_days=2)
+        fingerprint = await _commit(db_pool, source=source, confidence=0.9)
+        await _age(db_pool, source, fingerprint, level="L1", silent_days=2)
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.surfaced == 1
         assert len(proposer.calls) == 1
 
     async def test_req_commitment_lifecycle_005_the_threshold_is_inclusive(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """RFC 0026 §8 bands are ``0.6 <= c < 0.8`` and ``c >= 0.8``, so 0.8 surfaces."""
-        fingerprint = await _commit(pool, source=source, confidence=0.8)
-        await _age(pool, source, fingerprint, level="L1", silent_days=2)
+        fingerprint = await _commit(db_pool, source=source, confidence=0.8)
+        await _age(db_pool, source, fingerprint, level="L1", silent_days=2)
 
-        result = await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        result = await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
         assert result.surfaced == 1
         assert result.skipped_low_confidence == 0
@@ -376,7 +367,7 @@ class TestConfidenceBand:
 class TestDeadlineShortensGrace:
     @pytest.mark.pg_clock
     async def test_req_commitment_lifecycle_005_deadline_inside_grace_surfaces_before_it(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Spec scenario: a deadline inside L0 grace collapses the grace.
 
@@ -387,25 +378,25 @@ class TestDeadlineShortensGrace:
         """
         deadline = datetime.now(UTC) + timedelta(hours=2)
         fingerprint = await _commit(
-            pool,
+            db_pool,
             source=source,
             deadline=deadline,
             grace_seconds=24 * 3600.0,
         )
-        assert (await _row(pool, source, fingerprint))["escalation_level"] == "L0"
+        assert (await _row(db_pool, source, fingerprint))["escalation_level"] == "L0"
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.grace_shortened == 1
-        row = await _row(pool, source, fingerprint)
+        row = await _row(db_pool, source, fingerprint)
         assert row["escalation_level"] == "L1"
         assert result.surfaced == 1
         # Surfaced strictly before the deadline it was pulled forward for.
         assert datetime.now(UTC) < deadline
 
     async def test_req_commitment_lifecycle_005_deadline_beyond_grace_is_left_alone(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Grace shortening applies only when the deadline falls inside the window.
 
@@ -413,37 +404,39 @@ class TestDeadlineShortensGrace:
         escalation schedule already gets there in time.
         """
         fingerprint = await _commit(
-            pool,
+            db_pool,
             source=source,
             deadline=datetime.now(UTC) + timedelta(days=30),
             grace_seconds=24 * 3600.0,
         )
 
-        result = await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        result = await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
         assert result.grace_shortened == 0
-        assert (await _row(pool, source, fingerprint))["escalation_level"] == "L0"
+        assert (await _row(db_pool, source, fingerprint))["escalation_level"] == "L0"
 
     async def test_req_commitment_lifecycle_005_grace_shortening_is_l0_only(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Past L0 the grace period no longer exists; the schedule owns the cadence."""
         fingerprint = await _commit(
-            pool, source=source, deadline=datetime.now(UTC) + timedelta(hours=1)
+            db_pool, source=source, deadline=datetime.now(UTC) + timedelta(hours=1)
         )
-        await _age(pool, source, fingerprint, level="L2", silent_days=5, due_in=timedelta(days=3))
+        await _age(
+            db_pool, source, fingerprint, level="L2", silent_days=5, due_in=timedelta(days=3)
+        )
 
-        result = await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        result = await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
         assert result.grace_shortened == 0
-        assert (await _row(pool, source, fingerprint))["escalation_level"] == "L2"
+        assert (await _row(db_pool, source, fingerprint))["escalation_level"] == "L2"
 
     async def test_req_commitment_lifecycle_005_an_unparseable_deadline_does_not_stop_the_sweep(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """One producer's malformed timestamp must not cost every other commitment its tick."""
-        broken = await _commit(pool, source=source, action="broken deadline", summary="Broken")
-        await pool.execute(
+        broken = await _commit(db_pool, source=source, action="broken deadline", summary="Broken")
+        await db_pool.execute(
             """
             UPDATE public.owner_conditions
             SET metadata = jsonb_set(metadata, '{deadline}', '"not-a-date"')
@@ -452,10 +445,10 @@ class TestDeadlineShortensGrace:
             source,
             broken,
         )
-        healthy = await _commit(pool, source=source, action="healthy one", summary="Healthy")
-        await _age(pool, source, healthy, level="L1", silent_days=2)
+        healthy = await _commit(db_pool, source=source, action="healthy one", summary="Healthy")
+        await _age(db_pool, source, healthy, level="L1", silent_days=2)
 
-        result = await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        result = await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
         assert result.scanned == 2
         assert result.surfaced == 1
@@ -469,28 +462,32 @@ class TestDeadlineShortensGrace:
 class TestCandidateContent:
     @pytest.mark.parametrize(("level", "priority"), [("L1", 40), ("L2", 65), ("L3", 85)])
     async def test_req_commitment_lifecycle_005_priority_is_mapped_from_escalation_level(
-        self, pool: asyncpg.Pool, source: str, level: str, priority: int
+        self, db_pool: asyncpg.Pool, source: str, level: str, priority: int
     ) -> None:
         """Criterion 5: "the commitment's escalation level mapped to insight priority"."""
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level=level, silent_days=2, due_in=timedelta(days=3))
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(
+            db_pool, source, fingerprint, level=level, silent_days=2, due_in=timedelta(days=3)
+        )
 
         proposer = RecordingProposer()
-        await run_commitment_escalation(pool, insight_proposer=proposer)
+        await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert [call["priority"] for call in proposer.for_scope(fingerprint, level)] == [priority]
 
     async def test_req_commitment_lifecycle_005_candidate_carries_the_commitment_summary(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Criterion 5: "a commitment-specific summary"."""
         fingerprint = await _commit(
-            pool, source=source, summary="Send Sam the Le Guin", action="send sam the le guin"
+            db_pool, source=source, summary="Send Sam the Le Guin", action="send sam the le guin"
         )
-        await _age(pool, source, fingerprint, level="L2", silent_days=6, due_in=timedelta(days=3))
+        await _age(
+            db_pool, source, fingerprint, level="L2", silent_days=6, due_in=timedelta(days=3)
+        )
 
         proposer = RecordingProposer()
-        await run_commitment_escalation(pool, insight_proposer=proposer)
+        await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         call = proposer.for_scope(fingerprint, "L2")[0]
         assert "Send Sam the Le Guin" in call["message"]
@@ -499,7 +496,7 @@ class TestCandidateContent:
         assert json.loads(call["metadata"])["fingerprint"] == fingerprint
 
     async def test_req_commitment_lifecycle_005_dedup_key_is_stable_across_ticks(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Criterion 6: two ticks at the same level produce the same key, so the broker dedups.
 
@@ -508,39 +505,41 @@ class TestCandidateContent:
         level and different once the level moves, so a repeat tick collapses
         while a genuine escalation gets through.
         """
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L1", silent_days=2, due_in=timedelta(days=3))
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(
+            db_pool, source, fingerprint, level="L1", silent_days=2, due_in=timedelta(days=3)
+        )
 
         proposer = RecordingProposer()
-        await run_commitment_escalation(pool, insight_proposer=proposer)
-        await run_commitment_escalation(pool, insight_proposer=proposer)
+        await run_commitment_escalation(db_pool, insight_proposer=proposer)
+        await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert proposer.keys() == [f"commitment:{fingerprint}:L1"] * 2
 
     async def test_req_commitment_lifecycle_005_dedup_key_changes_when_the_level_does(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """A genuine escalation must not be silently deduplicated against the level below."""
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L1", silent_days=2)
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(db_pool, source, fingerprint, level="L1", silent_days=2)
 
         proposer = RecordingProposer()
-        await run_commitment_escalation(pool, insight_proposer=proposer)
+        await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert proposer.keys() == [f"commitment:{fingerprint}:L2"]
-        assert (await _row(pool, source, fingerprint))["escalation_level"] == "L2"
+        assert (await _row(db_pool, source, fingerprint))["escalation_level"] == "L2"
 
     async def test_req_commitment_lifecycle_005_a_broker_failure_does_not_abort_the_tick(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """One unroutable commitment must not stop the rest from escalating."""
-        first = await _commit(pool, source=source, action="first", summary="First")
-        second = await _commit(pool, source=source, action="second", summary="Second")
+        first = await _commit(db_pool, source=source, action="first", summary="First")
+        second = await _commit(db_pool, source=source, action="second", summary="Second")
         for fingerprint in (first, second):
-            await _age(pool, source, fingerprint, level="L1", silent_days=2)
+            await _age(db_pool, source, fingerprint, level="L1", silent_days=2)
 
         result = await run_commitment_escalation(
-            pool, insight_proposer=RecordingProposer(raises=True)
+            db_pool, insight_proposer=RecordingProposer(raises=True)
         )
 
         assert result.proposal_errors == 2
@@ -555,7 +554,7 @@ class TestCandidateContent:
 
 class TestInsightEngineComposition:
     async def test_req_commitment_lifecycle_005_the_real_broker_queues_the_candidate(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Criterion 10: the job composes with the engine, unmodified.
 
@@ -573,14 +572,18 @@ class TestInsightEngineComposition:
             propose_insight_candidate,
         )
 
-        await create_insight_tables(pool)
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L2", silent_days=6, due_in=timedelta(days=3))
+        await create_insight_tables(db_pool)
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(
+            db_pool, source, fingerprint, level="L2", silent_days=6, due_in=timedelta(days=3)
+        )
 
-        result = await run_commitment_escalation(pool, insight_proposer=propose_insight_candidate)
+        result = await run_commitment_escalation(
+            db_pool, insight_proposer=propose_insight_candidate
+        )
 
         assert result.surfaced == 1, result
-        queued = await pool.fetchrow(
+        queued = await db_pool.fetchrow(
             "SELECT * FROM insight_candidates WHERE dedup_key = $1",
             f"commitment:{fingerprint}:L2",
         )
@@ -613,15 +616,15 @@ class TestInsightEngineComposition:
 
 class TestGarbageCollection:
     async def test_req_commitment_lifecycle_006_ninety_day_l3_proposes_archival(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Spec scenario: 90+ days at L3 without re-confirmation asks the archival question.
 
         Criterion 7.
         """
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -630,7 +633,7 @@ class TestGarbageCollection:
         )
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.archival_proposed == 1
         call = proposer.for_scope(fingerprint, ARCHIVAL_DEDUP_SCOPE)[0]
@@ -641,12 +644,12 @@ class TestGarbageCollection:
         assert json.loads(call["metadata"])["proposal"] == "archival"
 
     async def test_req_commitment_lifecycle_006_a_fresh_l3_is_not_collected(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Reaching L3 is not the trigger; ninety days of silence at L3 is."""
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -654,12 +657,12 @@ class TestGarbageCollection:
             due_in=timedelta(days=7),
         )
 
-        result = await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        result = await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
         assert result.archival_proposed == 0
 
     async def test_req_commitment_lifecycle_006_archival_is_not_gated_on_confidence(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Collection is housekeeping, not surfacing, so the confidence band does not apply.
 
@@ -669,9 +672,9 @@ class TestGarbageCollection:
         only rows that can never be collected, in the one pass whose purpose is
         to bound the ledger's growth.
         """
-        fingerprint = await _commit(pool, source=source, confidence=0.7)
+        fingerprint = await _commit(db_pool, source=source, confidence=0.7)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -680,7 +683,7 @@ class TestGarbageCollection:
         )
 
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.skipped_low_confidence == 1
         assert result.surfaced == 0
@@ -688,12 +691,12 @@ class TestGarbageCollection:
         assert proposer.keys() == [f"commitment:{fingerprint}:{ARCHIVAL_DEDUP_SCOPE}"]
 
     async def test_req_commitment_lifecycle_006_archival_is_not_deduped_against_l3_surfacing(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """The two proposals ask different questions and must both reach the owner."""
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -702,7 +705,7 @@ class TestGarbageCollection:
         )
 
         proposer = RecordingProposer()
-        await run_commitment_escalation(pool, insight_proposer=proposer)
+        await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert sorted(proposer.keys()) == sorted(
             [
@@ -719,7 +722,7 @@ class TestGarbageCollection:
 
 class TestCancellation:
     async def test_req_commitment_lifecycle_006_cancellation_resolves_with_reason_and_evidence(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Spec scenario: cancelling resolves with ``resolution_reason: "cancelled"``.
 
@@ -734,9 +737,9 @@ class TestCancellation:
         asserts, rather than trusting either the top-level or the nested shape
         the supersede path used to write.
         """
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -745,12 +748,12 @@ class TestCancellation:
         )
 
         transition = await cancel_stale_commitment(
-            pool, source=source, fingerprint=fingerprint, session_id="synthetic-session"
+            db_pool, source=source, fingerprint=fingerprint, session_id="synthetic-session"
         )
 
         assert transition is not None
         assert transition.transition == "resolved"
-        row = await _row(pool, source, fingerprint)
+        row = await _row(db_pool, source, fingerprint)
         assert row["state"] == "resolved"
         assert row["resolved_at"] is not None
         assert row["metadata"]["resolution_reason"] == "cancelled"
@@ -761,43 +764,45 @@ class TestCancellation:
         assert "resolution_reason" not in row["metadata"].get("identity_payload", {})
 
     async def test_req_commitment_lifecycle_006_cancellation_preserves_creation_evidence(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Closing evidence is added alongside ``evidence_opened``, never on top of it."""
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
 
-        await cancel_stale_commitment(pool, source=source, fingerprint=fingerprint)
+        await cancel_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
 
-        metadata = (await _row(pool, source, fingerprint))["metadata"]
+        metadata = (await _row(db_pool, source, fingerprint))["metadata"]
         assert metadata["evidence_opened"]["source"] == "conversation"
         assert metadata["evidence_closed"]["source"] == "owner_confirmed"
         assert metadata["class"] == "commitment"
 
     async def test_req_commitment_lifecycle_006_cancelling_twice_is_not_an_error(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """An owner answering a question about an already-closed commitment gets ``None``."""
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
 
-        assert await cancel_stale_commitment(pool, source=source, fingerprint=fingerprint)
-        assert await cancel_stale_commitment(pool, source=source, fingerprint=fingerprint) is None
+        assert await cancel_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
+        assert (
+            await cancel_stale_commitment(db_pool, source=source, fingerprint=fingerprint) is None
+        )
 
     async def test_req_commitment_lifecycle_006_a_cancelled_commitment_leaves_the_sweep(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Resolved is neither open nor aging, so the next tick never sees it again."""
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L3", silent_days=GC_STALE_DAYS + 1)
-        await cancel_stale_commitment(pool, source=source, fingerprint=fingerprint)
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(db_pool, source, fingerprint, level="L3", silent_days=GC_STALE_DAYS + 1)
+        await cancel_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
 
-        result = await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        result = await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
         assert result.scanned == 0
 
 
 class TestRenewal:
     async def test_req_commitment_lifecycle_006_renewal_resets_escalation_to_l1(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """Spec: "Renewal resets escalation to L1 for another cycle" (criterion 9).
 
@@ -806,9 +811,9 @@ class TestRenewal:
         commitment re-observed is still L3 — so there is no downward
         transition to borrow.
         """
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -816,23 +821,23 @@ class TestRenewal:
             due_in=timedelta(days=7),
         )
 
-        assert await renew_stale_commitment(pool, source=source, fingerprint=fingerprint)
+        assert await renew_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
 
-        row = await _row(pool, source, fingerprint)
+        row = await _row(db_pool, source, fingerprint)
         assert row["escalation_level"] == "L1"
         assert row["state"] == "aging"
 
     async def test_req_commitment_lifecycle_006_renewal_restarts_the_silence_clock(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """The owner has just said the commitment is live, so the 90-day clock restarts.
 
         Without this the very next tick would ask the archival question again,
         because ``last_confirmed_at`` would still be ninety days old.
         """
-        fingerprint = await _commit(pool, source=source)
+        fingerprint = await _commit(db_pool, source=source)
         await _age(
-            pool,
+            db_pool,
             source,
             fingerprint,
             level="L3",
@@ -840,23 +845,23 @@ class TestRenewal:
             due_in=timedelta(days=7),
         )
 
-        await renew_stale_commitment(pool, source=source, fingerprint=fingerprint)
+        await renew_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
         proposer = RecordingProposer()
-        result = await run_commitment_escalation(pool, insight_proposer=proposer)
+        result = await run_commitment_escalation(db_pool, insight_proposer=proposer)
 
         assert result.archival_proposed == 0
         assert proposer.for_scope(fingerprint, ARCHIVAL_DEDUP_SCOPE) == []
 
     async def test_req_commitment_lifecycle_006_renewal_starts_another_full_cycle(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """ "for another cycle" — the renewed commitment climbs L1 -> L2 -> L3 again."""
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L3", silent_days=GC_STALE_DAYS + 10)
-        await renew_stale_commitment(pool, source=source, fingerprint=fingerprint)
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(db_pool, source, fingerprint, level="L3", silent_days=GC_STALE_DAYS + 10)
+        await renew_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
 
         # Make the renewed L1 immediately due, as the schedule would a day later.
-        await pool.execute(
+        await db_pool.execute(
             """
             UPDATE public.owner_conditions SET next_reescalate_at = now() - interval '1 second'
             WHERE source = $1 AND fingerprint = $2
@@ -864,27 +869,29 @@ class TestRenewal:
             source,
             fingerprint,
         )
-        await run_commitment_escalation(pool, insight_proposer=RecordingProposer())
+        await run_commitment_escalation(db_pool, insight_proposer=RecordingProposer())
 
-        assert (await _row(pool, source, fingerprint))["escalation_level"] == "L2"
+        assert (await _row(db_pool, source, fingerprint))["escalation_level"] == "L2"
 
     async def test_req_commitment_lifecycle_006_renewing_a_resolved_commitment_reports_false(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """A caller must be able to tell "renewed" from "that had already closed"."""
-        fingerprint = await _commit(pool, source=source)
-        await cancel_stale_commitment(pool, source=source, fingerprint=fingerprint)
+        fingerprint = await _commit(db_pool, source=source)
+        await cancel_stale_commitment(db_pool, source=source, fingerprint=fingerprint)
 
-        assert await renew_stale_commitment(pool, source=source, fingerprint=fingerprint) is False
+        assert (
+            await renew_stale_commitment(db_pool, source=source, fingerprint=fingerprint) is False
+        )
 
     async def test_req_commitment_lifecycle_006_renewal_only_touches_commitments(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """The class filter guards the write path too, not just the read path."""
         other_source = f"finance:bill-{uuid.uuid4().hex[:8]}"
         fingerprint = "bill-" + uuid.uuid4().hex
         await reconcile_snapshot(
-            pool,
+            db_pool,
             source=other_source,
             observations=[
                 Observation(fingerprint=fingerprint, summary="Bill", metadata={"class": "bill"})
@@ -893,7 +900,9 @@ class TestRenewal:
             initial_grace_seconds=0.0,
         )
 
-        renewed = await renew_stale_commitment(pool, source=other_source, fingerprint=fingerprint)
+        renewed = await renew_stale_commitment(
+            db_pool, source=other_source, fingerprint=fingerprint
+        )
 
         assert renewed is False
 
@@ -905,7 +914,7 @@ class TestRenewal:
 
 class TestScheduledJobHandler:
     async def test_req_commitment_lifecycle_005_the_registered_handler_runs_the_tick(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """The handler the scheduler dispatches must actually reach the ledger.
 
@@ -917,16 +926,18 @@ class TestScheduledJobHandler:
         from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
         from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-        await create_insight_tables(pool)
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L1", silent_days=2, due_in=timedelta(days=3))
+        await create_insight_tables(db_pool)
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(
+            db_pool, source, fingerprint, level="L1", silent_days=2, due_in=timedelta(days=3)
+        )
 
         handler = get_deterministic_schedule_job_registry()["switchboard"]["commitment_escalation"]
-        record = await handler(pool, None)
+        record = await handler(db_pool, None)
 
         assert record["scanned"] == 1
         assert record["surfaced"] == 1
-        queued = await pool.fetchval(
+        queued = await db_pool.fetchval(
             "SELECT count(*) FROM insight_candidates WHERE dedup_key = $1",
             f"commitment:{fingerprint}:L1",
         )
@@ -940,7 +951,7 @@ class TestScheduledJobHandler:
 
 class TestAttentionLedgerRecording:
     async def test_req_commitment_lifecycle_005_delivery_records_the_commitment_in_the_ledger(
-        self, pool: asyncpg.Pool, source: str
+        self, db_pool: asyncpg.Pool, source: str
     ) -> None:
         """A delivered commitment insight is recorded, and resolves back to the commitment.
 
@@ -980,18 +991,20 @@ class TestAttentionLedgerRecording:
             propose_insight_candidate,
         )
 
-        await create_insight_tables(pool)
-        await pool.execute(
+        await create_insight_tables(db_pool)
+        await db_pool.execute(
             """
             INSERT INTO insight_settings (id, verbosity) VALUES (1, 'normal')
             ON CONFLICT (id) DO UPDATE SET verbosity = 'normal'
             """
         )
-        fingerprint = await _commit(pool, source=source)
-        await _age(pool, source, fingerprint, level="L3", silent_days=20, due_in=timedelta(days=7))
+        fingerprint = await _commit(db_pool, source=source)
+        await _age(
+            db_pool, source, fingerprint, level="L3", silent_days=20, due_in=timedelta(days=7)
+        )
 
         assert (
-            await run_commitment_escalation(pool, insight_proposer=propose_insight_candidate)
+            await run_commitment_escalation(db_pool, insight_proposer=propose_insight_candidate)
         ).surfaced == 1
 
         # delivery_cycle consults the Owner Attention Policy, and the migration
@@ -1000,7 +1013,7 @@ class TestAttentionLedgerRecording:
         # every day and passed for the other fifteen. Pin both halves: the
         # policy, so a change to the seed cannot silently re-break it, and the
         # instant, so the test asserts what it means to assert.
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
             VALUES (1, 23, 8, 'UTC')
@@ -1012,15 +1025,15 @@ class TestAttentionLedgerRecording:
         )
         delivery_at = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
         assert not is_policy_quiet_now(
-            await get_approvals_policy_quiet_hours(pool), now=delivery_at
+            await get_approvals_policy_quiet_hours(db_pool), now=delivery_at
         )
 
         notify = AsyncMock(return_value={"status": "ok"})
-        result = await delivery_cycle(pool, notify_fn=notify, now=delivery_at)
+        result = await delivery_cycle(db_pool, notify_fn=notify, now=delivery_at)
         assert result["skipped"] is False
         assert result["delivered"]
 
-        row = await pool.fetchrow(
+        row = await db_pool.fetchrow(
             "SELECT * FROM public.attention_ledger WHERE dedup_key = $1",
             f"commitment:{fingerprint}:L3",
         )
