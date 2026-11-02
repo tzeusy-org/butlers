@@ -15,7 +15,7 @@
 
 - [x] 3.1 Delete the inventory jobs, weight observer, preflight reconciler and frontend build-evidence scripts with their tests and timeout rows.
 - [x] 3.2 Move `make check` and pre-push to the per-lane budget.
-- [ ] 3.3 Retire `ci_partition`, `check_ci_test_shards`, `ci_inventory_collector`, `ci_shard_observer` and `.github/ci-test-weights.json` together with the manual watchdog diagnostic that still imports them (follow-up bead).
+- [x] 3.3 Retire `ci_partition`, `check_ci_test_shards`, `ci_inventory_collector`, `ci_shard_observer` and `.github/ci-test-weights.json` together with the manual watchdog diagnostic that still imports them (follow-up bead).
 
 ## 4. Verification
 

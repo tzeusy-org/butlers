@@ -138,8 +138,8 @@ No local gate command matches CI's scope; check which command produced a number.
 | CI `check-unit (N)` / `check-integration (N)` | `scripts/ci_lanes.py run --lane {unit,integration} --group N --output DIR` |
 | `make lint` | `ruff check src/ tests/ roster/ scripts/`, package-layer contracts, pinned secret/workflow checks and detector self-tests; Ruff omits root `conftest.py` |
 
-- `scripts/check_ci_test_shards.py` and the computed inventory/partition tooling remain only for
-  the manual shard-watchdog diagnostic (bu-29wkwj.8); required and nightly lanes use `ci_lanes.py`.
+- The computed inventory/partition tooling and the manual shard-watchdog diagnostic are retired
+  (bu-29wkwj.8); required and nightly lanes use `ci_lanes.py`.
 - `tests/` does not collect `roster/`: they are sibling roots, so a `tests/`-rooted "full gate" never
   runs `roster/<butler>/tests/`. Add `roster/` whenever the diff touches a roster butler; `pytest
   tests/ --ignore=tests/e2e` plus `pytest roster/` covers CI's Python scope between them.

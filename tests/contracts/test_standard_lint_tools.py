@@ -427,7 +427,7 @@ def test_every_secret_allowance_is_rule_scoped_to_exact_paths(
     # The reviewed config: every allowance names exact files, so the self-test can plant a
     # real-shaped value in each one and require gitleaks to catch it.
     paths = lint_tools.allowance_paths()
-    assert ".github/actions/ci-shard-watchdog-capture/dist/index.js" in paths
+    assert "scripts/requirement-trace-baseline.json" in paths
     assert all((REPO_ROOT / path).is_file() for path in paths)
 
     config = tmp_path / "gitleaks.toml"
