@@ -67,13 +67,15 @@ function Summary({ settings }: { settings: PresenceOwnerEntities }) {
 export function HomePresenceOwnerPanel() {
   const settings = usePresenceOwnerEntities();
   const save = useSavePresenceOwnerEntities();
-  const [draft, setDraft] = useState<string | null>(null);
+  // The draft and the version it was opened from: a refetch while editing must not refresh
+  // the compare-and-swap version, or a change made meanwhile would be silently overwritten.
+  const [draft, setDraft] = useState<{ text: string; version: number } | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
 
   const startEdit = (current: PresenceOwnerEntities) => {
     save.reset();
     setFieldError(null);
-    setDraft(current.owner_entities.join("\n"));
+    setDraft({ text: current.owner_entities.join("\n"), version: current.version });
   };
 
   const cancel = () => {
@@ -83,15 +85,15 @@ export function HomePresenceOwnerPanel() {
 
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (draft === null || !settings.data) return;
-    const result = validate(draft);
+    if (draft === null) return;
+    const result = validate(draft.text);
     if (typeof result === "string") {
       setFieldError(result);
       return;
     }
     setFieldError(null);
     save.mutate(
-      { ownerEntities: result, expectedVersion: settings.data.version },
+      { ownerEntities: result, expectedVersion: draft.version },
       {
         onSuccess: cancel,
         onError: (error) => {
@@ -159,8 +161,8 @@ export function HomePresenceOwnerPanel() {
                 autoComplete="off"
                 placeholder="person.alex"
                 className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                value={draft.text}
+                onChange={(event) => setDraft({ ...draft, text: event.target.value })}
               />
               <p className="text-xs text-muted-foreground">
                 Leave it empty to stop presence detection.

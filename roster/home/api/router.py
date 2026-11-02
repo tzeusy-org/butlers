@@ -2146,8 +2146,8 @@ async def put_presence_owner_entities(
             too_large=_PRESENCE_TOO_LARGE,
         )
     except _PlaceRefusal as refusal:
-        if refusal.status_code == 422:
-            await _audit_presence_best_effort(db, "invalid_request")
+        # Malformed and oversized bodies are both terminal ``invalid_request`` outcomes.
+        await _audit_presence_best_effort(db, "invalid_request")
         return _place_error((refusal.status_code, refusal.code, refusal.message))
 
     submitted = sorted(body.owner_entities)

@@ -61,8 +61,11 @@ vi.mock("@/api/client.ts", async () => {
   };
 });
 
+let queryClient: QueryClient;
+
 function renderPanel() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = client;
   return render(
     <QueryClientProvider client={client}>
       <HomePresenceOwnerPanel />
@@ -142,6 +145,29 @@ describe("HomePresenceOwnerPanel", () => {
     await screen.findByTestId("home-presence-unconfigured");
     expect(server.stored).toEqual([]);
     expect(server.version).toBe(6);
+  });
+
+  it("keeps the version the edit began from, so a change made meanwhile is a 409", async () => {
+    server.stored = ["person.owner"];
+    server.version = 1;
+    renderPanel();
+    await screen.findByTestId("home-presence-entities");
+    fireEvent.click(screen.getByRole("button", { name: "Edit entities" }));
+
+    // Elsewhere, the setting changes and the list refetches while the draft is open.
+    server.stored = ["person.owner", "sensor.owner_room"];
+    server.version = 2;
+    await queryClient.invalidateQueries();
+    await waitFor(() => expect(server.requests.filter((r) => r.method === "GET")).toHaveLength(2));
+
+    type("sensor.owner_room");
+    submit();
+    expect(await screen.findByText(/changed since they were loaded/)).toBeTruthy();
+    expect(server.requests.at(-2)).toEqual({
+      method: "PUT",
+      body: { owner_entities: ["sensor.owner_room"], expected_version: 1 },
+    });
+    expect(server.stored).toEqual(["person.owner", "sensor.owner_room"]);
   });
 
   it("shows a load failure without claiming the setting is empty", async () => {

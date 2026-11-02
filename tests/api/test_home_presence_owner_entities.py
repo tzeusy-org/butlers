@@ -137,10 +137,11 @@ async def test_malformed_put_is_one_content_blind_refusal(seams, path: str, body
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_oversized_body_stops_at_thirty_two_kib(seams) -> None:  # noqa: F811
+    """The body stops at 32 KiB; the refusal still reaches the pool once, for its audit."""
     app = _mounted(seams.manager)
     status, response, _ = await _raw(app, "PUT", _ROUTE, b" " * 32_769, [])
     assert (status, response["error"]["code"]) == (413, "REQUEST_BODY_TOO_LARGE")
-    assert seams.manager.calls == 0
+    assert seams.manager.calls == 1
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +304,23 @@ async def test_get_put_cas_lifecycle_audit_and_privacy(
             "public.ha_entity_snapshot",
         }
         assert needle not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER_AVAILABLE, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_refused_bodies_each_record_one_invalid_request_audit(client, presence_pool) -> None:
+    """Malformed and oversized PUTs are terminal outcomes too: one blind audit event each."""
+    audits_before = len(await _audits(presence_pool))
+    malformed = await client.put(_ROUTE, content=b"{not json")
+    oversized = await client.put(_ROUTE, content=b" " * 32_769)
+    assert (malformed.status_code, oversized.status_code) == (422, 413)
+    audits = (await _audits(presence_pool))[audits_before:]
+    assert [(audit["outcome"], audit["entity_count"]) for audit in audits] == [
+        ("invalid_request", None),
+        ("invalid_request", None),
+    ]
+    assert await _row(presence_pool) == (None, 0)
 
 
 @pytest.mark.integration
