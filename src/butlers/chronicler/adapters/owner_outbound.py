@@ -39,7 +39,11 @@ from datetime import datetime
 
 import asyncpg
 
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    ProjectionAdapter,
+    timestamp_complete_page_sql,
+)
 from butlers.chronicler.models import Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import upsert_point_event
 
@@ -158,27 +162,24 @@ class OwnerOutboundMessageAdapter(ProjectionAdapter):
                     return None
 
                 if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, channel, occurred_at
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY occurred_at ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns="id, channel, occurred_at",
+                        table=_EVIDENCE_TABLE,
+                        ts_col="occurred_at",
+                        order_by="occurred_at ASC, id ASC",
+                        limit_param=1,
                     )
+                    rows = await conn.fetch(sql, self.batch_limit)
                 else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, channel, occurred_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE occurred_at > $1
-                        ORDER BY occurred_at ASC, id ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns="id, channel, occurred_at",
+                        table=_EVIDENCE_TABLE,
+                        ts_col="occurred_at",
+                        order_by="occurred_at ASC, id ASC",
+                        where="occurred_at > $1",
+                        limit_param=2,
                     )
+                    rows = await conn.fetch(sql, since, self.batch_limit)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

@@ -96,7 +96,11 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    ProjectionAdapter,
+    timestamp_complete_page_sql,
+)
 from butlers.chronicler.confidence import (
     EvidenceKind,
     derive_confidence,
@@ -291,36 +295,31 @@ class CommsSocialAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
+                base_where = (
+                    "source_channel = ANY($1::text[]) AND status = 'ingested' "
+                    "AND source_sender_identity IS NOT NULL"
+                )
+                columns = "id, received_at, source_channel, source_sender_identity"
                 if since is None:
-                    rows = await conn.fetch(
-                        """
-                        SELECT id, received_at, source_channel, source_sender_identity
-                        FROM public.ingestion_events
-                        WHERE source_channel = ANY($1::text[])
-                          AND status = 'ingested'
-                          AND source_sender_identity IS NOT NULL
-                        ORDER BY received_at ASC, id ASC
-                        LIMIT $2
-                        """,
-                        list(_COMMS_CHANNELS),
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns=columns,
+                        table="public.ingestion_events",
+                        ts_col="received_at",
+                        order_by="received_at ASC, id ASC",
+                        where=base_where,
+                        limit_param=2,
                     )
+                    rows = await conn.fetch(sql, list(_COMMS_CHANNELS), self.batch_limit)
                 else:
-                    rows = await conn.fetch(
-                        """
-                        SELECT id, received_at, source_channel, source_sender_identity
-                        FROM public.ingestion_events
-                        WHERE source_channel = ANY($1::text[])
-                          AND status = 'ingested'
-                          AND source_sender_identity IS NOT NULL
-                          AND received_at > $2
-                        ORDER BY received_at ASC, id ASC
-                        LIMIT $3
-                        """,
-                        list(_COMMS_CHANNELS),
-                        since,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns=columns,
+                        table="public.ingestion_events",
+                        ts_col="received_at",
+                        order_by="received_at ASC, id ASC",
+                        where=f"{base_where} AND received_at > $2",
+                        limit_param=3,
                     )
+                    rows = await conn.fetch(sql, list(_COMMS_CHANNELS), since, self.batch_limit)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s for comms projection", _EVIDENCE_TABLE)
             return None

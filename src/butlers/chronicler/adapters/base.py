@@ -162,6 +162,49 @@ class ProjectionAdapter(abc.ABC):
         return None
 
 
+def timestamp_complete_page_sql(
+    *,
+    columns: str,
+    table: str,
+    ts_col: str,
+    order_by: str,
+    limit_param: int,
+    where: str = "TRUE",
+) -> str:
+    """Build a ``ts > watermark`` page query that never splits a timestamp.
+
+    Adapters whose source primary key is UUID (or composite) cannot use the
+    integer ``watermark_id`` tuple cursor, so they page on the timestamp
+    alone. A plain ``WHERE ts > $1 ... LIMIT n`` then loses every row that
+    shares the batch's last timestamp but fell past the limit, because the
+    next run starts strictly after that timestamp.
+
+    This page takes the first ``n`` distinct-ordered rows to find the last
+    timestamp ``max_ts`` in the page, then returns *every* row up to and
+    including ``max_ts``. The batch may exceed ``n`` by the size of one
+    same-timestamp run, and the watermark (max ts) always lies past a fully
+    drained timestamp, so ``ts > watermark`` loses nothing and repeats
+    nothing. Stored checkpoints are unchanged, so no migration is needed.
+
+    ``where`` is the full filter (including any ``ts > $k`` clause) and is
+    evaluated twice with the same parameters; ``limit_param`` is the ``$``
+    index of the batch size.
+    """
+    return f"""
+        WITH page AS (
+            SELECT {ts_col} FROM {table}
+            WHERE {where}
+            ORDER BY {ts_col} ASC
+            LIMIT ${limit_param}
+        )
+        SELECT {columns}
+        FROM {table}
+        WHERE ({where})
+          AND {ts_col} <= (SELECT max({ts_col}) FROM page)
+        ORDER BY {order_by}
+    """
+
+
 def compatibility_guard(compat: Compatibility) -> AdapterResult | None:
     """Return an appropriate skip result if ``compat`` is not ``SUPPORTED``.
 
@@ -177,4 +220,9 @@ def compatibility_guard(compat: Compatibility) -> AdapterResult | None:
     )
 
 
-__all__ = ["AdapterResult", "ProjectionAdapter", "compatibility_guard"]
+__all__ = [
+    "AdapterResult",
+    "ProjectionAdapter",
+    "compatibility_guard",
+    "timestamp_complete_page_sql",
+]

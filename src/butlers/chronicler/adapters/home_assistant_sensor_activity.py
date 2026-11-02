@@ -100,11 +100,10 @@ meals.py precedent:
     ``OwnTracksPointAdapter``, both of which read a UUID-keyed,
     unbounded-growth connector evidence table and use a single-column
     ``WHERE received_at > $1`` watermark, leaving ``watermark_id`` unset.
-    The residual risk (two rows sharing the exact same ``received_at``
-    instant at a batch boundary could theoretically split across batches
-    and one could be missed) is accepted: ``received_at`` carries
-    microsecond ``timestamptz`` precision so exact collisions are rare, and
-    this source is ambient evidence-layer signal, not exact accounting.
+    Rows sharing one ``received_at`` instant are never split across batches:
+    the page is completed through its last timestamp
+    (``timestamp_complete_page_sql``), so the strict ``received_at > $1``
+    watermark loses nothing.
 
 Retention-window awareness (design §5 / §2 principle 6 — the first
 Chronicler adapter to read a table with a rolling TTL instead of a
@@ -146,7 +145,11 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    ProjectionAdapter,
+    timestamp_complete_page_sql,
+)
 from butlers.chronicler.confidence import evidence_refs_from_event_ids
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent, Precision, Privacy
 from butlers.chronicler.storage import (
@@ -368,30 +371,25 @@ class HomeAssistantSensorActivityAdapter(ProjectionAdapter):
                     return None
 
                 if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, received_at, full_payload
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE connector_type = $1
-                        ORDER BY received_at ASC, id ASC
-                        LIMIT $2
-                        """,
-                        _CONNECTOR_TYPE,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns="id, received_at, full_payload",
+                        table=_EVIDENCE_TABLE,
+                        ts_col="received_at",
+                        order_by="received_at ASC, id ASC",
+                        where="connector_type = $1",
+                        limit_param=2,
                     )
+                    rows = await conn.fetch(sql, _CONNECTOR_TYPE, self.batch_limit)
                 else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, received_at, full_payload
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE connector_type = $1 AND received_at > $2
-                        ORDER BY received_at ASC, id ASC
-                        LIMIT $3
-                        """,
-                        _CONNECTOR_TYPE,
-                        since,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns="id, received_at, full_payload",
+                        table=_EVIDENCE_TABLE,
+                        ts_col="received_at",
+                        order_by="received_at ASC, id ASC",
+                        where="connector_type = $1 AND received_at > $2",
+                        limit_param=3,
                     )
+                    rows = await conn.fetch(sql, _CONNECTOR_TYPE, since, self.batch_limit)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

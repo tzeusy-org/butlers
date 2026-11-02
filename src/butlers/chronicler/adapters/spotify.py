@@ -40,7 +40,11 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    ProjectionAdapter,
+    timestamp_complete_page_sql,
+)
 from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
@@ -145,34 +149,30 @@ class SpotifySessionAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
+                columns = (
+                    "id, idempotency_key, endpoint_identity, spotify_user_id, started_at, "
+                    "ended_at, duration_seconds, track_count, track_names, context_uri, "
+                    "context_name, recorded_at"
+                )
                 if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, endpoint_identity,
-                               spotify_user_id, started_at, ended_at,
-                               duration_seconds, track_count, track_names,
-                               context_uri, context_name, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY recorded_at ASC, id ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns=columns,
+                        table=_EVIDENCE_TABLE,
+                        ts_col="recorded_at",
+                        order_by="recorded_at ASC, id ASC",
+                        limit_param=1,
                     )
+                    rows = await conn.fetch(sql, self.batch_limit)
                 else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT id, idempotency_key, endpoint_identity,
-                               spotify_user_id, started_at, ended_at,
-                               duration_seconds, track_count, track_names,
-                               context_uri, context_name, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE recorded_at > $1
-                        ORDER BY recorded_at ASC, id ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns=columns,
+                        table=_EVIDENCE_TABLE,
+                        ts_col="recorded_at",
+                        order_by="recorded_at ASC, id ASC",
+                        where="recorded_at > $1",
+                        limit_param=2,
                     )
+                    rows = await conn.fetch(sql, since, self.batch_limit)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None

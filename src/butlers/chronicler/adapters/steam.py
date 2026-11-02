@@ -42,7 +42,11 @@ from butlers.chronicler.adapters._owner_entity import (
     resolve_owner_entity_id,
     upsert_owner_episode_entity,
 )
-from butlers.chronicler.adapters.base import AdapterResult, ProjectionAdapter
+from butlers.chronicler.adapters.base import (
+    AdapterResult,
+    ProjectionAdapter,
+    timestamp_complete_page_sql,
+)
 from butlers.chronicler.confidence import EvidenceKind, derive_confidence
 from butlers.chronicler.models import Episode, Layer, Precision, Privacy
 from butlers.chronicler.storage import upsert_episode
@@ -163,30 +167,30 @@ class SteamPlayAdapter(ProjectionAdapter):
                 if not exists:
                     return None
 
+                columns = (
+                    "steam_id, steam_account_id, app_id, app_name, date, "
+                    "playtime_minutes, recorded_at"
+                )
+                order_by = "recorded_at ASC, steam_id ASC, app_id ASC, date ASC"
                 if since is None:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT steam_id, steam_account_id, app_id, app_name,
-                               date, playtime_minutes, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC
-                        LIMIT $1
-                        """,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns=columns,
+                        table=_EVIDENCE_TABLE,
+                        ts_col="recorded_at",
+                        order_by=order_by,
+                        limit_param=1,
                     )
+                    rows = await conn.fetch(sql, self.batch_limit)
                 else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT steam_id, steam_account_id, app_id, app_name,
-                               date, playtime_minutes, recorded_at
-                        FROM {_EVIDENCE_TABLE}
-                        WHERE recorded_at > $1
-                        ORDER BY recorded_at ASC, steam_id ASC, app_id ASC, date ASC
-                        LIMIT $2
-                        """,
-                        since,
-                        self.batch_limit,
+                    sql = timestamp_complete_page_sql(
+                        columns=columns,
+                        table=_EVIDENCE_TABLE,
+                        ts_col="recorded_at",
+                        order_by=order_by,
+                        where="recorded_at > $1",
+                        limit_param=2,
                     )
+                    rows = await conn.fetch(sql, since, self.batch_limit)
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None
