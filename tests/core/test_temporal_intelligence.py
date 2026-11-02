@@ -970,6 +970,41 @@ class TestTickIntegration:
             await put("new-issuer", 15, issuer="Acme")
         assert refused.value.reason == "total_cap_reached"
 
+    async def test_redating_a_superseded_document_restores_only_an_untouched_flag(self, tick_pool):
+        """Re-dating a superseded document restores its pre-supersession flag only while
+        the owner has not acted on it since; otherwise the owner's current choice stands."""
+        from butlers.core.temporal import document_deadlines as dd
+        from butlers.core.temporal.deadlines_db import deadline_update
+
+        async def put(doc: str, days: int, issuer: str):
+            plan = dd.plan_document_deadline(
+                document_id=f"s3://bucket/general/{doc}.pdf",
+                kind="due",
+                target_date=_future_date(days).isoformat(),
+                issuer=issuer,
+            )
+            return await dd.document_deadline_set(tick_pool, plan)
+
+        async def enabled(task_id: str) -> bool:
+            return await tick_pool.fetchval(
+                "SELECT enabled FROM scheduled_tasks WHERE id = $1::uuid", task_id
+            )
+
+        # Untouched since supersession: the earlier flag comes back.
+        plain = await put("plain-1", 10, "Plain Co")
+        await put("plain-2", 20, "Plain Co")
+        assert await enabled(plain["id"]) is False
+        assert (await put("plain-1", 30, "Plain Co"))["status"] == "superseded"
+        assert await enabled(plain["id"]) is True
+
+        # The owner re-enabled, then disabled it again: document text keeps that disable.
+        touched = await put("touched-1", 10, "Touched Co")
+        await put("touched-2", 20, "Touched Co")
+        await deadline_update(tick_pool, touched["id"], enabled=True)
+        await deadline_update(tick_pool, touched["id"], enabled=False)
+        assert (await put("touched-1", 30, "Touched Co"))["status"] == "superseded"
+        assert await enabled(touched["id"]) is False
+
     async def test_tick_deferred_notification_delivery_and_expiry(self, tick_pool):
         """tick() delivers pending notifications via notify_fn; failure/missing → pending;
         expired (>24h) → expired; deferred_flushed span set."""

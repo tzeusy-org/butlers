@@ -73,7 +73,7 @@ MAX_ACTIVE_DOCUMENT_DEADLINES = 200
 # later, so a forged far-future date cannot retire a reminder that is still ahead.
 MAX_SUPERSEDE_GAP_DAYS = 400
 # job_args keys a cross-document supersession adds to the replaced row.
-_SUPERSESSION_KEYS = ("superseded_by", "enabled_before_supersede")
+_SUPERSESSION_KEYS = ("superseded_by", "superseded_at", "enabled_before_supersede")
 _WRITE_LOCK = "butlers.paperwork_deadline_set"
 
 # Issuer text is printed to the owner as inert text: letters, digits, spaces and a few
@@ -295,7 +295,8 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
     ``superseded`` (a new date or preset: thresholds re-arm and the status returns to
     ``pending``; ``enabled`` is kept, so document text never overrides an owner's disable,
     except that an ``expired`` deadline, which the scheduler disabled itself, is
-    re-enabled, and a superseded one gets back the flag it had before). A name already
+    re-enabled, and a superseded one the owner has not touched since gets back the flag
+    it had before). A name already
     held by any other task (a prompt-bearing deadline, a cron schedule) is refused as
     ``name_conflict`` and left untouched.
 
@@ -391,14 +392,21 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
             status = "created"
         else:
             task_id = row["id"]
-            # A superseded row returns to the flag it had before supersession disabled it.
+            # A superseded row returns to the flag it had before supersession disabled it,
+            # but only while ``updated_at`` still equals the supersession stamp: any later
+            # write (an owner's enable or disable through deadline_update) moves
+            # ``updated_at``, and then the row's current flag is the owner's choice.
             await conn.execute(
                 """
                 UPDATE scheduled_tasks
                 SET target_date = $2, lead_time_days = $3, alert_thresholds = $4,
                     job_args = $5, fired_thresholds = '[]'::jsonb, deadline_status = 'pending',
                     enabled = (
-                        COALESCE((job_args->>'enabled_before_supersede')::boolean, enabled)
+                        CASE
+                            WHEN updated_at = (job_args->>'superseded_at')::timestamptz
+                            THEN (job_args->>'enabled_before_supersede')::boolean
+                            ELSE enabled
+                        END
                         OR deadline_status = 'expired'
                     ) AND NOT $6,
                     next_run_at = now(), updated_at = now()
@@ -418,7 +426,9 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
                 """
                 UPDATE scheduled_tasks
                 SET job_args = job_args || jsonb_build_object(
-                        'superseded_by', $2::text, 'enabled_before_supersede', enabled),
+                        'superseded_by', $2::text,
+                        'superseded_at', now(),
+                        'enabled_before_supersede', enabled),
                     enabled = false, updated_at = now()
                 WHERE id = ANY($1::uuid[])
                 """,
