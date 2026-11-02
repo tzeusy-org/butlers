@@ -13,6 +13,7 @@ from butlers.tools.health._medication_utils import (
     dose_of_medication_sql,
     expected_dose_count,
     frequency_to_doses_per_day,
+    medication_first_seen,
 )
 from butlers.tools.health.measurements import VALID_MEASUREMENT_TYPES as _LOGGABLE_MEASUREMENT_TYPES
 
@@ -232,7 +233,8 @@ async def trend_report(
             doses_per_day=frequency_to_doses_per_day(frequency),
             window_start=since,
             window_end=now,
-            medication_created_at=med.get("created_at"),
+            medication_created_at=await medication_first_seen(pool, med_id_str)
+            or med.get("created_at"),
         )
         rate = round(taken / expected * 100, 1) if expected > 0 else None
         medication_adherence.append(

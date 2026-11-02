@@ -126,3 +126,34 @@ async def test_trend_report_adherence_counts_doses_logged_before_an_edit(health_
 
     (row,) = report["medication_adherence"]
     assert row["taken_doses"] == 4
+
+
+async def test_adherence_expected_doses_ignore_the_edit_that_refreshed_created_at(health_pool):
+    from butlers.tools.health import medication_add, medication_history, medication_update
+
+    med = await medication_add(health_pool, "Metformin", "500mg", "daily")
+    await health_pool.execute(
+        "UPDATE facts SET created_at = now() - interval '60 days' WHERE id = $1", med["id"]
+    )
+    edited = await medication_update(health_pool, str(med["id"]), dosage="850mg")
+
+    history = await medication_history(health_pool, str(edited["id"]))
+
+    # The edited fact is seconds old, but the medication was first seen 60 days ago.
+    age = datetime.now(UTC) - history["medication"]["first_seen_at"]
+    assert age > timedelta(days=59)
+
+
+async def test_trend_report_expected_doses_ignore_the_edit_that_refreshed_created_at(health_pool):
+    from butlers.tools.health import medication_add, medication_update, trend_report
+
+    med = await medication_add(health_pool, "Metformin", "500mg", "daily")
+    await health_pool.execute(
+        "UPDATE facts SET created_at = now() - interval '60 days' WHERE id = $1", med["id"]
+    )
+    await medication_update(health_pool, str(med["id"]), dosage="850mg")
+
+    report = await trend_report(health_pool, "week")
+
+    (row,) = report["medication_adherence"]
+    assert row["expected_doses"] == 7
