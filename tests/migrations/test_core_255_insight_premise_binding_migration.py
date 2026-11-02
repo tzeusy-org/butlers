@@ -1307,14 +1307,18 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 43  # owner RLS bypass
     repeated_success = asyncio.run(psql(production_path))
     assert snapshot(admin_url) == after_transfer
+    # The bootstrap converged the table owner, not the two definers it recreated. core_312
+    # must replace enqueue_premise_amendments, so an ordinary replay without the definer
+    # ownership convergence (bu-jjv2du) fails loudly instead of recording core_312 as
+    # applied over the forgeable core_255 body.
     for schema in ("health", "general"):
-        asyncio.run(run_migrations(db_url, chain="core", schema=schema))
-        engine = create_engine(db_url)
-        try:
-            with engine.connect() as conn:
-                assert_at_chain_head(conn, chain="core", schema=schema)
-        finally:
-            engine.dispose()
+        with pytest.raises(DBAPIError, match="enqueue_premise_amendments was not replaced"):
+            asyncio.run(run_migrations(db_url, chain="core", schema=schema))
+        assert "owner_conditions" not in _run(
+            admin_url,
+            "SELECT prosrc FROM pg_proc WHERE oid = "
+            "'public.enqueue_premise_amendments(text, text, timestamptz, text)'::regprocedure",
+        )
         assert _amendment_rows(admin_url) == original_rows
 
     # Actual runtime execution remains distinct from the trusted migration owner.

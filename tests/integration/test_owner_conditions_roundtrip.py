@@ -314,9 +314,10 @@ class TestExplicitOwnerConditionResolution:
         assert transition.state == "resolved"
 
     async def test_explicit_resolution_amends_the_delivered_insight_exactly_once(
-        self, pool: asyncpg.Pool
+        self, codec_pool: asyncpg.Pool
     ) -> None:
         """bu-q7vx1q.32: the owner-settled path amends as the snapshot path does."""
+        pool = codec_pool  # propose_insight_candidate writes premise JSONB as a dict
         source = f"finance:bill-overdue-{uuid.uuid4().hex}"
         fp = compute_fingerprint(source, 1, {"bill_id": "explicit"})
         await reconcile_snapshot(
