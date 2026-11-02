@@ -1062,7 +1062,7 @@ async def test_dropped_known_summary_counts_open_marked_drops_only(
         register_switchboard_tools(
             ToolContext(
                 daemon=SimpleNamespace(_pipeline=None, _buffer=None),
-                buffer_pool=registry_pool,
+                pool=registry_pool,
                 spawner=None,
                 butler_name="switchboard",
                 butler_type=None,
