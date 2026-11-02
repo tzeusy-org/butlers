@@ -58,8 +58,8 @@ Page text is untrusted (`content_trust: "untrusted"`): it travels only as JSON s
 
 1. The tool marks the row requested (`fetch_requested_at`) and polls it for up to 20 seconds.
 2. Each account runtime of the connector polls every 2 seconds and claims up to two requested, unfetched rows whose `endpoint_identity` is its own (or NULL, for rows written before `sw_055`) with `FOR UPDATE SKIP LOCKED`, stamping `fetch_claimed_at`. A claim older than 120 seconds is reclaimed.
-3. The runtime calls `fetch_attachment`, which refuses a download over the 25 MB global cap. A failure sets `fetch_error`, including a failure to record the stored blob on the row: the runtime then deletes the blob rather than orphan it, and a retry downloads again.
-4. If a batch is interrupted (an exception or the runtime stopping), the runtime releases the claims it has not finished, so the next poll retries them without waiting out the 120-second window.
+3. The runtime calls `fetch_attachment`, which refuses a download over the 25 MB global cap. A failure sets `fetch_error`, including a failure to record the stored blob on the row. The runtime deletes the blob only when the row definitely does not name it (no unfetched row matched, or a re-read shows another ref); when the outcome is unknown and the re-read fails it keeps the blob, since an orphan wastes storage but a dangling ref loses the file. A retry downloads again.
+4. If a batch is interrupted (an exception or the runtime stopping), the runtime releases the claims it has not finished, so the next poll retries them without waiting out the 120-second window. Both the release and `fetch_error` match the runtime's own `fetch_claimed_at`, so a claim another runtime has reclaimed is never released or failed.
 
 The tool returns `{"status": "ready", "storage_ref", "media_type", "filename", "size_bytes", "content_trust": "untrusted"}`, a refusal (`attachment_not_found`, `fetch_failed`, `invalid_reference`), or `{"status": "pending", "retry_after_s"}` when the connector has not answered in time. Calling again after `fetch_failed` retries. A fetched row returns its existing ref with no download. The ref it returns is readable with `attachment_read`, `attachment_view` and `get_attachment`.
 
@@ -137,8 +137,8 @@ psql -h localhost -U butlers -d butlers -c \
   bounds; `tests/contracts/test_tool_presentation_inventory.py` pins that `attachment_read` and
   `attachment_page_view` are cataloged but not listed.
 - `roster/switchboard/tests/test_attachment_materialize_integration.py` pins the request, claim,
-  fetch, idempotence, replay and refusal paths, a failed blob record and an interrupted batch
-  against a real database.
+  fetch, idempotence, replay and refusal paths, a failed or late blob record, an interrupted
+  batch and a reclaimed claim against a real database.
 
 ## Related Pages
 

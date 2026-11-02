@@ -10,6 +10,7 @@ connector pool with none, as the connector's cursor pool connects.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -169,3 +170,61 @@ async def test_an_interrupted_batch_releases_its_unfinished_claims(db, fresh_db)
             switchboard, "m4", attachment_id, wait_s=0, poll_s=0.05
         )
         assert ready["status"] == "ready"
+
+
+@session_loop
+async def test_a_blob_the_row_may_name_is_kept_when_recording_fails_late(db, fresh_db) -> None:
+    switchboard, connector = await _pools(db, fresh_db)
+    blobs = _Blobs()
+    owner = _runtime(connector, blobs, _OWNER, AsyncMock(return_value=b"%PDF"))
+    record = owner._record_fetched_blob
+
+    async def commit_then_lose_the_reply(*args: Any) -> None:
+        await record(*args)
+        raise ConnectionError("reply lost after commit")
+
+    owner._record_fetched_blob = commit_then_lose_the_reply  # type: ignore[method-assign]
+    await owner._write_attachment_ref("m6", "a6", "x.pdf", "application/pdf", 4)
+
+    ready = await _materialize_while_connector_runs(switchboard, owner, "m6", "a6")
+    assert ready["status"] == "ready"
+    assert ready["storage_ref"] == "s3://butlers/connectors/2026/11/02/1.pdf"
+    assert blobs.deleted == []
+
+
+@session_loop
+async def test_a_runtime_never_fails_or_releases_a_claim_taken_over(db, fresh_db) -> None:
+    switchboard, connector = await _pools(db, fresh_db)
+    taken = datetime(2030, 1, 1, tzinfo=UTC)
+
+    def taken_over_then(error: BaseException) -> AsyncMock:
+        async def download(message_id: str, attachment_id: str) -> bytes:
+            # Another runtime reclaims the claim while this one downloads.
+            await switchboard.execute(
+                "UPDATE attachment_refs SET fetch_claimed_at = $3"
+                " WHERE message_id = $1 AND attachment_id = $2",
+                message_id,
+                attachment_id,
+                taken,
+            )
+            raise error
+
+        return AsyncMock(side_effect=download)
+
+    for attachment_id, error in (("a7", RuntimeError("gone")), ("a8", asyncio.CancelledError())):
+        slow = _runtime(connector, _Blobs(), _OWNER, taken_over_then(error))
+        await slow._write_attachment_ref("m7", attachment_id, None, "application/pdf", 4)
+        await attachment_materialize(switchboard, "m7", attachment_id, wait_s=0, poll_s=0.05)
+        try:
+            await slow.materialize_requested_once()
+        except asyncio.CancelledError:
+            pass
+        row = await switchboard.fetchrow(
+            "SELECT fetch_error, fetch_claimed_at = $3 AS still_taken"
+            " FROM attachment_refs WHERE message_id = $1 AND attachment_id = $2",
+            "m7",
+            attachment_id,
+            taken,
+        )
+        assert row["fetch_error"] is None
+        assert row["still_taken"] is True

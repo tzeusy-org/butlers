@@ -3576,10 +3576,17 @@ class GmailConnectorRuntime:
 
             try:
                 await self._record_fetched_blob(message_id, attachment_id, blob_ref)
-            except BaseException:
-                # Unrecorded bytes are unreachable: delete them rather than
-                # orphan them. A retry downloads again.
+            except LookupError:
+                # Definitely unrecorded: delete rather than orphan. A retry
+                # downloads again.
                 await self._discard_blob(blob_ref)
+                raise
+            except BaseException:
+                # Outcome unknown (lost reply, cancellation): the UPDATE may
+                # have committed. Delete only if the row names another ref;
+                # an orphan wastes storage, a dangling ref loses the file.
+                if await self._row_names_other_blob(message_id, attachment_id, blob_ref):
+                    await self._discard_blob(blob_ref)
                 raise
 
             self._metrics.record_attachment_fetched(
@@ -3633,6 +3640,29 @@ class GmailConnectorRuntime:
         if not recorded:
             raise LookupError("attachment ref missing or already fetched")
 
+    async def _row_names_other_blob(
+        self, message_id: str, attachment_id: str, blob_ref: str
+    ) -> bool:
+        """True only if the row is readable and does not name ``blob_ref``."""
+        if not self._db_pool:
+            return False
+        try:
+            async with self._db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT blob_ref FROM switchboard.attachment_refs "
+                    "WHERE message_id = $1 AND attachment_id = $2",
+                    message_id,
+                    attachment_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "fetch_attachment: keeping blob %s; could not tell if it is recorded: %s",
+                blob_ref,
+                exc,
+            )
+            return False
+        return row is None or row["blob_ref"] != blob_ref
+
     async def _discard_blob(self, blob_ref: str) -> None:
         """Best-effort delete of bytes no attachment ref names."""
         if self._blob_store is None:
@@ -3644,8 +3674,12 @@ class GmailConnectorRuntime:
                 "fetch_attachment: could not delete unrecorded blob %s: %s", blob_ref, exc
             )
 
-    async def _release_materialize_claims(self, refs: list[tuple[str, str]]) -> None:
-        """Clear claims an interrupted batch never finished, so the next poll retries them."""
+    async def _release_materialize_claims(self, claims: list[tuple[str, str, datetime]]) -> None:
+        """Clear claims an interrupted batch never finished, so the next poll retries them.
+
+        Each claim is matched on its own ``fetch_claimed_at``, so a claim another
+        runtime has since reclaimed is left alone.
+        """
         if not self._db_pool:
             return
         try:
@@ -3654,17 +3688,20 @@ class GmailConnectorRuntime:
                     """
                     UPDATE switchboard.attachment_refs r
                     SET fetch_claimed_at = NULL
-                    FROM unnest($1::text[], $2::text[]) AS u(message_id, attachment_id)
+                    FROM unnest($1::text[], $2::text[], $3::timestamptz[])
+                        AS u(message_id, attachment_id, claimed_at)
                     WHERE r.message_id = u.message_id AND r.attachment_id = u.attachment_id
+                      AND r.fetch_claimed_at = u.claimed_at
                       AND NOT r.fetched
                     """,
-                    [message_id for message_id, _ in refs],
-                    [attachment_id for _, attachment_id in refs],
+                    [claim[0] for claim in claims],
+                    [claim[1] for claim in claims],
+                    [claim[2] for claim in claims],
                 )
         except Exception as exc:
             # The stale-claim window still reclaims them; keep the original error.
             logger.warning(
-                "attachment materialize: could not release %d claims: %s", len(refs), exc
+                "attachment materialize: could not release %d claims: %s", len(claims), exc
             )
 
     async def materialize_requested_once(self) -> int:
@@ -3699,16 +3736,18 @@ class GmailConnectorRuntime:
                 SET fetch_claimed_at = now()
                 FROM claimable c
                 WHERE r.message_id = c.message_id AND r.attachment_id = c.attachment_id
-                RETURNING r.message_id, r.attachment_id
+                RETURNING r.message_id, r.attachment_id, r.fetch_claimed_at
                 """,
                 self._config.connector_endpoint_identity,
                 _MATERIALIZE_BATCH,
                 float(_MATERIALIZE_CLAIM_STALE_S),
             )
-        unfinished = [(row["message_id"], row["attachment_id"]) for row in claimed]
+        unfinished = [
+            (row["message_id"], row["attachment_id"], row["fetch_claimed_at"]) for row in claimed
+        ]
         try:
             while unfinished:
-                message_id, attachment_id = unfinished[0]
+                message_id, attachment_id, claimed_at = unfinished[0]
                 if await self.fetch_attachment(message_id, attachment_id) is None:
                     async with self._db_pool.acquire() as conn:
                         await conn.execute(
@@ -3716,9 +3755,11 @@ class GmailConnectorRuntime:
                             UPDATE switchboard.attachment_refs
                             SET fetch_error = 'fetch_failed', fetch_claimed_at = NULL
                             WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
+                              AND fetch_claimed_at = $3
                             """,
                             message_id,
                             attachment_id,
+                            claimed_at,
                         )
                 unfinished.pop(0)
         finally:
