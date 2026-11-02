@@ -21,3 +21,11 @@
 
 - [x] 4.1 Run the contract, lane and coverage tests, `make check-guards` and `make test-plan`.
 - [ ] 4.2 Report median and p95 per lane over five or more merge groups, with the slowest group at or under 300 s or the gap explained.
+
+## 5. Standard fan-in (bu-29wkwj.3)
+
+- [x] 5.1 Replace the `check` and `frontend` heredoc verdicts with one `alls-green` needs fan-in; run every job on every event and delete the `route` and `check-affected` jobs.
+- [x] 5.2 Rename check-preflight to `smoke` and move its release-evidence writer to `scripts/ci_smoke.py`.
+- [x] 5.3 Delete the routing, affected, evidence, observer, comparison and latency scripts, the `ci-latency.yml` workflow and their tests; remove the ci-latency capability.
+- [x] 5.4 Replace `tests/contracts/test_ci_test_targets.py` with `tests/contracts/test_required_checks.py` plus the relocated behavioral survivors.
+- [ ] 5.5 Switch the `main-merge-queue` required contexts to `alls-green` with `scripts/setup_main_ruleset.sh` as the PR enters the queue, and prove a deliberately failing unit test fails `alls-green` on a throwaway branch.
