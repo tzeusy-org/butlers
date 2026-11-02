@@ -472,7 +472,7 @@ async def test_retained_export_round_trips_then_prunes_to_a_binding_tombstone(
 
     # Inside the window nothing prunes; past it the bytes go and the binding stays.
     await pool.execute(
-        "UPDATE public.healing_attempts SET status = 'failed', closed_at = now() - $2 "
+        "UPDATE public.healing_attempts SET status = 'failed', closed_at = now() - $2::interval "
         "WHERE id = $1",
         attempt_id,
         timedelta(days=29),
@@ -480,7 +480,7 @@ async def test_retained_export_round_trips_then_prunes_to_a_binding_tombstone(
     await prune_retained_exports(pool)
     assert await load_retained_export(pool, attempt_id) == export
     await pool.execute(
-        "UPDATE public.healing_attempts SET closed_at = now() - $2 WHERE id = $1",
+        "UPDATE public.healing_attempts SET closed_at = now() - $2::interval WHERE id = $1",
         attempt_id,
         timedelta(days=31),
     )

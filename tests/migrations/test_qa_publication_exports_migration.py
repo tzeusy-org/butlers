@@ -245,8 +245,10 @@ def test_only_qa_prunes_and_only_past_retention_without_a_hold(
     with pytest.raises(DBAPIError, match="lineage is held"):
         _as_role(db_url, "butler_qa_rw", _prune_sql(held))
 
-    # Eligible: another runtime role reaches nothing; the QA role prunes once, finally.
+    # Eligible: another runtime role reaches nothing even holding the table grant that
+    # scripts/init-db.sql re-grants (a policy is not a grant); the QA role prunes once, finally.
     _close(db_url, attempt_id, days_ago=31)
+    _admin(db_url, f"GRANT UPDATE ON TABLE {_TABLE} TO butler_general_rw")
     assert _as_role(db_url, "butler_general_rw", _prune_sql(attempt_id)) == 0
     assert _as_role(db_url, "butler_qa_rw", _prune_sql(attempt_id)) == 1
     with pytest.raises(DBAPIError, match="pruned export is final"):
