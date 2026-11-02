@@ -716,6 +716,21 @@ BEGIN
         END LOOP;
     END IF;
 
+    -- public.state holds dashboard-owned control facts (settings.general,
+    -- Telegram consent, infra.backup_facts). Only the owner login writes it;
+    -- runtime roles read it. Keep core_306's revoke after the broad public
+    -- grant above so a bootstrap replay cannot restore runtime DML.
+    IF to_regclass('public.state') IS NOT NULL THEN
+        FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_connector_role, _optional_calendar_role] LOOP
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = _role) THEN
+                EXECUTE format(
+                    'REVOKE INSERT, UPDATE, DELETE ON TABLE public.state FROM %I', _role
+                );
+                EXECUTE format('GRANT SELECT ON TABLE public.state TO %I', _role);
+            END IF;
+        END LOOP;
+    END IF;
+
     RAISE NOTICE 'Bootstrap complete for database "%" (migration/runtime user "%")', _db_name, _migration_user;
 END
 $$;

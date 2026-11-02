@@ -79,6 +79,48 @@ global name constraint and drops the passive representation. The `source_version
 tables are dropped only when empty; if they hold rows, they stay in place unused, and a later
 re-upgrade picks them up again.
 
+## Owner Projects
+
+General holds owner projects: owner-authored, time-bounded charters that group goals,
+obligations and links; a project grants no authority (`gen_004`, bu-jv1moa.12;
+`openspec/specs/butler-general/spec.md` "Owner Projects").
+
+- `projects` mirrors the current charter's title and horizon (at most 180 days ahead) and holds
+  `state` `draft`, `closed` or `expired`. A closed or expired row is frozen by trigger. While a
+  project is a draft, its normalized title plus horizon is unique, so a repeated create returns
+  the existing draft. The create idempotency key is bound to the immutable SHA-256 digest of the
+  create request: a replay returns the project, the same key with a different request is 409.
+- `project_charter_versions` is insert-only (UPDATE, DELETE and TRUNCATE refused). Each version
+  stores title, horizon, objective, done condition, typed constraints (an optional descriptive
+  budget and `must_keep` entries) and the authenticated owner actor. An edit inserts
+  `expected_version + 1` under a row lock; a stale changed edit is 409 `VERSION_CONFLICT`.
+- `project_links` stores a link kind (`deadline`, `owner_condition`, `trip`, `drive_file`,
+  `calendar_event`) and an opaque record id only. Removing a link or closing a project never
+  touches the referenced record.
+- A trigger on both child tables refuses a new charter version and any link insert or delete
+  while the project is closed, expired or past its horizon, so the freeze holds below the API.
+
+Expiry needs no job: reads report a draft past its horizon as `expired` (with `closed_at` at the
+horizon), and the next write to it persists that state and refuses. Creates and charter edits
+persist every due expiry before their draft title/horizon uniqueness check.
+
+A create that matches an existing draft returns that draft with `meta.outcome = "deduplicated"`
+and stores nothing from the request; the Projects tab says so, keeps the form text, and offers to
+open the existing draft.
+
+The routes under `/api/general/projects` require owner control before any body read or pool
+access, and every write also requires the owner's verified dashboard session: an owner API key,
+connector callback or runtime session can read but not write. Request models forbid unknown
+fields, so draft-lineage, promotion, actor or state fields are refused. No MCP tool reaches these
+tables. The dashboard's General **Projects** tab resolves each link through the record's own
+owner-authorized reader (Travel trip summary, calendar workspace entry, owner condition ledger);
+deadlines and Drive files have no per-record reader yet and say so. Nothing here schedules,
+arms, wakes, researches or parks anything; arming, check-ins, cards and close-out are
+bu-jv1moa.30.
+
+Roll back by removing the routes or the tab. Downgrading `gen_004` drops the project tables only
+while all three are empty; otherwise the charter history stays in place unused for a re-upgrade.
+
 ## Explicit Context and Prompt Values
 
 The context tools follow the adopted [context-security contract](../concepts/context-security.md).
