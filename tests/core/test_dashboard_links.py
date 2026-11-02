@@ -108,3 +108,14 @@ def test_only_the_helper_reads_dashboard_url():
             if re.search(r"environ(\.get\(|\[)\s*[\"']DASHBOARD_URL[\"']", text):
                 offenders.append(rel)
     assert offenders == [], f"read DASHBOARD_URL outside butlers.core.dashboard_links: {offenders}"
+
+
+def test_covered_routes_are_walked_by_the_phone_spec():
+    """A route marked phone_walk=covered has a path in phone-entry-routes.ts."""
+    walked = (REGISTRY.parent / "phone-entry-routes.ts").read_text()
+    for entry in json.loads(REGISTRY.read_text())["routes"]:
+        if entry["phone_walk"] == "covered":
+            path = entry["example"].split("?")[0]
+            assert path.split("/")[1] in walked, f"{entry['name']} is not walked on a phone"
+        else:
+            assert entry.get("phone_walk_owner"), f"{entry['name']} pending without an owner"

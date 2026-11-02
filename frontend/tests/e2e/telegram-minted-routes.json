@@ -55,14 +55,6 @@
       "payload_selector": "[data-highlighted=true]",
       "phone_walk": "pending",
       "phone_walk_owner": "bu-z0b0ah.3"
-    },
-    {
-      "name": "decision row",
-      "pattern": "/decisions\\?bead=[A-Za-z0-9._-]+",
-      "example": "/decisions?bead=bu-abc123",
-      "payload_selector": "[data-selected=true]",
-      "phone_walk": "pending",
-      "phone_walk_owner": "bu-z0b0ah.3"
     }
   ]
 }
