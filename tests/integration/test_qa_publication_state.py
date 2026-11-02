@@ -471,8 +471,28 @@ async def test_outcome_recorded_between_read_and_write_is_not_overwritten(
     assert not await get_publication_hold(pool, fingerprint)
 
 
+async def _backdate_close(db_url: str, attempt_id: uuid.UUID, ago: timedelta) -> None:
+    """Move a close into the past as the table owner, the one writer able to lift the stamp."""
+    conn = await asyncpg.connect(db_url)
+    try:
+        async with conn.transaction():
+            await conn.execute(
+                "ALTER TABLE public.healing_attempts DISABLE TRIGGER healing_attempts_closed_at_stamp"
+            )
+            await conn.execute(
+                "UPDATE public.healing_attempts SET closed_at = now() - $2::interval WHERE id = $1",
+                attempt_id,
+                ago,
+            )
+            await conn.execute(
+                "ALTER TABLE public.healing_attempts ENABLE TRIGGER healing_attempts_closed_at_stamp"
+            )
+    finally:
+        await conn.close()
+
+
 async def test_retained_export_round_trips_then_prunes_to_a_binding_tombstone(
-    pool, attempt, tmp_path
+    pool, attempt, tmp_path, migrated_db_url: str
 ) -> None:
     """Retention as ``butler_qa_rw`` (bu-mc01y5.19) and its pruning (bu-mc01y5.25, core_301)."""
     from butlers.core.qa.publication.export import build_sealed_export
@@ -502,19 +522,19 @@ async def test_retained_export_round_trips_then_prunes_to_a_binding_tombstone(
         await retain_export(pool, attempt_id, different)
 
     # Inside the window nothing prunes; past it the bytes go and the binding stays.
+    # The QA role cannot backdate the close the window keys on (core_305 stamps it).
     await pool.execute(
         "UPDATE public.healing_attempts SET status = 'failed', closed_at = now() - $2::interval "
         "WHERE id = $1",
         attempt_id,
-        timedelta(days=29),
+        timedelta(days=31),
     )
     await prune_retained_exports(pool)
     assert await load_retained_export(pool, attempt_id) == export
-    await pool.execute(
-        "UPDATE public.healing_attempts SET closed_at = now() - $2::interval WHERE id = $1",
-        attempt_id,
-        timedelta(days=31),
-    )
+    await _backdate_close(migrated_db_url, attempt_id, timedelta(days=29))
+    await prune_retained_exports(pool)
+    assert await load_retained_export(pool, attempt_id) == export
+    await _backdate_close(migrated_db_url, attempt_id, timedelta(days=31))
     assert await prune_retained_exports(pool) >= 1
     with pytest.raises(PublicationRefused, match="export_pruned"):
         await load_retained_export(pool, attempt_id)
