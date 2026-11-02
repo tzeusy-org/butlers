@@ -209,6 +209,53 @@ class TestSpawnerQuotaEnforcement:
             ).trigger("hello", "tick")
         assert result2.success is False and "30d" in result2.error and adapter_30.invoke_calls == 0
 
+    async def test_quota_denial_writes_no_provider_allowance_state(self, tmp_path: Path) -> None:
+        """An owner token-quota denial is not a provider rejection: no allowance write.
+
+        REQ-catalog-token-limits-003. Only a provider usage-limit rejection may mark an
+        account exhausted; a local budget denial would otherwise block every entry
+        sharing the account until a reset that no provider ever announced.
+        """
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        mock_pool = AsyncMock()
+        adapter = _MockAdapter(result_text="should not run")
+        with (
+            patch(
+                "butlers.core.spawner.resolve_model_with_effective_tier",
+                new_callable=AsyncMock,
+                side_effect=_fake_catalog_quota_exhausted_at_resolve(),
+            ),
+            patch(
+                "butlers.core.spawner.check_token_quota",
+                new_callable=AsyncMock,
+                return_value=_quota_denied_24h(),
+            ),
+            patch(
+                "butlers.core.spawner.next_same_tier_candidate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("butlers.core.spawner.mark_allowance_exhausted", new_callable=AsyncMock) as mark,
+            patch("butlers.core.spawner.clear_allowance_exhaustion", new_callable=AsyncMock) as clr,
+        ):
+            result = await Spawner(
+                config=_make_config(), config_dir=config_dir, pool=mock_pool, runtime=adapter
+            ).trigger("hello", "tick")
+
+        assert result.success is False and adapter.invoke_calls == 0
+        mark.assert_not_called()
+        clr.assert_not_called()
+        statements = [
+            str(call.args[0]).upper()
+            for call in mock_pool.method_calls
+            if call.args and isinstance(call.args[0], str)
+        ]
+        # The denial still wrote its quota_skip provenance row through this same pool...
+        assert any("INSERT INTO" in sql for sql in statements)
+        # ...but nothing touched allowance state.
+        assert not [sql for sql in statements if "PROVIDER_ALLOWANCE_STATES" in sql]
+
     async def test_spawn_proceeds_within_or_unlimited(self, tmp_path: Path) -> None:
         """Spawner proceeds normally when within limits or unlimited."""
         config_dir = tmp_path / "config"

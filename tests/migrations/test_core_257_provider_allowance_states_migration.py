@@ -75,3 +75,55 @@ async def test_upgrade_is_idempotent_constrained_and_downgrade_removes_objects(
             "AND column_name = 'allowance_account')"
         )
         await _run_migration(pool, "downgrade")  # idempotent
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_runtime_roles_get_select_insert_update_only_and_public_gets_nothing(
+    provisioned_postgres_pool,
+) -> None:
+    """Allowance state is evidence: runtime roles never DELETE it, PUBLIC never sees it."""
+    spec = importlib.util.spec_from_file_location("core_257_grants", _MIGRATION)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    async with provisioned_postgres_pool() as pool:
+        await pool.execute(
+            "CREATE TABLE public.model_catalog "
+            "(id UUID PRIMARY KEY DEFAULT gen_random_uuid(), runtime_type TEXT NOT NULL)"
+        )
+        for role in migration._RUNTIME_ROLES:
+            await pool.execute(
+                "DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '"
+                + role
+                + "') THEN CREATE ROLE "
+                + role
+                + " NOLOGIN; END IF; END $$"
+            )
+        await _run_migration(pool, "upgrade")
+
+        for role in migration._RUNTIME_ROLES:
+            for privilege, expected in (
+                ("SELECT", True),
+                ("INSERT", True),
+                ("UPDATE", True),
+                ("DELETE", False),
+                ("TRUNCATE", False),
+                ("REFERENCES", False),
+                ("TRIGGER", False),
+            ):
+                assert (
+                    await pool.fetchval(
+                        "SELECT has_table_privilege($1, 'public.provider_allowance_states', $2)",
+                        role,
+                        privilege,
+                    )
+                    is expected
+                ), (role, privilege)
+
+        public_grants = await pool.fetch(
+            "SELECT a.privilege_type FROM pg_class c, "
+            "LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a "
+            "WHERE c.oid = 'public.provider_allowance_states'::regclass AND a.grantee = 0"
+        )
+        assert public_grants == []
