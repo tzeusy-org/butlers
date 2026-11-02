@@ -66,7 +66,20 @@ _CWD_CONFINEMENT_SETTINGS: dict[str, Any] = {
 # A headless prompt starting with ``/`` runs as a slash command, including a custom command
 # from ``<cwd>/.gemini/commands``. The CLI trims whitespace before that check, but not a
 # zero-width space, so one in front keeps the prompt text going to the model as text.
-_SLASH_COMMAND_GUARD = "​"
+_SLASH_COMMAND_GUARD = "\u200b"
+
+# gemini-cli 0.66.0 also runs headless prompts through ``handleAtCommand``: every ``@path`` or
+# ``@server:uri`` token inlines a workspace file (falling back to the first ``**/*path*`` glob
+# match) or an MCP resource into the prompt, and a failed read aborts the run. Prompts carry
+# routed external text, so no ``@`` may reach that parser. It skips an ``@`` preceded by a
+# backslash and has no setting to switch it off; this mirrors the CLI's own ``escapeAtSymbols``.
+_AT_COMMAND = re.compile(r"(?<!\\)@")
+
+
+def _escape_at_commands(prompt: str) -> str:
+    """Keep every ``@`` in prompt text from being expanded as a gemini-cli at-command."""
+    return _AT_COMMAND.sub(r"\\@", prompt)
+
 
 # gemini-cli substitutes these ``${...}`` tokens in a GEMINI_SYSTEM_MD file (its
 # ``applySubstitutions``) and has no escape syntax. A zero-width space after ``$`` keeps a
@@ -497,7 +510,7 @@ class GeminiAdapter(RuntimeAdapter):
             cmd.extend(["-m", model])
         if prompt.lstrip().startswith("/"):
             prompt = _SLASH_COMMAND_GUARD + prompt
-        cmd.extend(["--prompt", prompt])
+        cmd.extend(["--prompt", _escape_at_commands(prompt)])
 
         cmd_for_log = " ".join(cmd[:3]) + " ..."
         proc = None

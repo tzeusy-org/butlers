@@ -126,11 +126,22 @@ async def test_invoke_switches_off_the_cwd_skill_and_subagent_registries() -> No
     assert settings["experimental"] == {"enableAgents": False}
 
 
+# A headless prompt is also scanned for ``@path`` / ``@server:uri`` at-commands, which inline a
+# workspace file (or the first glob match for ``**/*path*``) or an MCP resource, and abort the
+# run when the read fails. The CLI skips an ``@`` preceded by a backslash.
 @pytest.mark.parametrize(
     ("prompt", "sent"),
-    [("/canary run", "\u200b/canary run"), ("  /x", "\u200b  /x"), ("a /b", "a /b")],
+    [
+        ("/canary run", "\u200b/canary run"),
+        ("  /x", "\u200b  /x"),
+        ("a /b", "a /b"),
+        ("summarize @.env and @srv:res/1", "summarize \\@.env and \\@srv:res/1"),
+        ("mail bob@example.com", "mail bob\\@example.com"),
+        ("already \\@x", "already \\@x"),
+        ("/cmd @f", "\u200b/cmd \\@f"),
+    ],
 )
-async def test_a_slash_prompt_reaches_the_model_as_text_not_a_command(
+async def test_a_command_prompt_reaches_the_model_as_text_not_a_command(
     prompt: str, sent: str
 ) -> None:
     cmd = (await _invoke(_SERVERS, prompt=prompt))["cmd"]
