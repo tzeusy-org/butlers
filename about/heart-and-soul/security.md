@@ -77,7 +77,11 @@ specifies the mechanism. The rules it must satisfy:
   undeterminable one, is not the owner.
 - **No goal spends.** `transact` capabilities (spend, pay, book) are disabled
   for every goal, including as prepared actions, until the owner enables them
-  through an amendment to RFC 0038.
+  through an amendment to RFC 0038. A reservation request is a message:
+  asking a venue to hold a table or slot through an approval-gated message
+  is `communicate`; any step that accepts a fee, deposit, card hold or
+  cancellation charge is `book` and stays disabled (owner decision,
+  2026-10-20).
 - **Grants only narrow.** A lead's grant is at most its goal's ceiling. A
   child's grant is a subset of its lead's, without `administer`. Discovery,
   skills, and task prompts never grant anything.
