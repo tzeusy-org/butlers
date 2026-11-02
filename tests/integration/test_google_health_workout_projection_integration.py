@@ -536,3 +536,37 @@ async def test_racing_versions_and_replays_leave_exactly_the_latest_active(
         "ORDER BY created_at, id"
     )
     assert [(r["id"], r["invalid_at"]) for r in after] == before
+
+
+async def test_unchanged_repoll_repairs_a_half_applied_supersession(
+    projection_pools: _ProjectionPools,
+) -> None:
+    """bu-q7vx1q.38: V2 stored but V1 still active; the next unchanged re-poll retires V1."""
+    health = projection_pools.health
+    embedding = make_embedding_engine_mock()
+    first_env = _envelope("run-heal", detection="manual", heart_rate=False)
+    edited_env = _envelope(
+        "run-heal", detection="manual", heart_rate=False, end_time="2026-04-24T07:50:00Z"
+    )
+    first = await wellness_ingest.translate_wellness_envelope(health, embedding, first_env)
+    first_id = UUID(str(first["fact_id"]))
+    # Simulate supersession failing after the new fact was stored.
+    original = wellness_ingest._supersede_prior_workout_versions
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("simulated crash before supersession")
+
+    wellness_ingest._supersede_prior_workout_versions = _boom
+    try:
+        failed = await wellness_ingest.translate_wellness_envelope(health, embedding, edited_env)
+    finally:
+        wellness_ingest._supersede_prior_workout_versions = original
+    assert failed["status"] == "error"
+    rows = await _validity(health)
+    assert [v for _, v in rows] == ["active", "active"]
+
+    healed = await wellness_ingest.translate_wellness_envelope(health, embedding, edited_env)
+    assert healed["status"] == "ok"
+    after = await _validity(health)
+    assert after[0] == (first_id, "superseded") and after[1][1] == "active"
+    assert len(after) == 2

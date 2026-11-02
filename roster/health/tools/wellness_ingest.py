@@ -447,7 +447,8 @@ async def _find_unchanged_workout_fact(
     because legacy rows lack it.  Used to avoid a no-op supersession at rollout.
     """
     row = await pool.fetchrow(
-        "SELECT id, valid_at = $3::text::timestamptz AS same_valid_at, content = $4 AS same_content, "
+        "SELECT id, valid_at = $3::text::timestamptz AS same_valid_at, "
+        "content = $4 AS same_content, "
         "(metadata - 'workout_session_key') = ($5::text::jsonb - 'workout_session_key') "
         "AS same_metadata "
         "FROM facts WHERE predicate = 'workout_session' AND scope = 'health' "
@@ -726,11 +727,9 @@ async def _translate_google_health_envelope(
             health_wellness_ingest_total.labels(predicate=predicate, outcome="error").inc()
             return {"status": "error", "reason": str(exc)}
 
-        if (
-            workout_session_key is not None
-            and unchanged_id is None
-            and result.get("id") is not None
-        ):
+        # Also runs for an unchanged re-poll: it repairs a version whose earlier
+        # supersession failed part-way, and is a no-op once linked.
+        if workout_session_key is not None and result.get("id") is not None:
             try:
                 await _supersede_prior_workout_versions(pool, result["id"], workout_session_key)
             except Exception as exc:  # noqa: BLE001

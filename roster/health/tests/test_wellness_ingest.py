@@ -1784,4 +1784,4 @@ class TestWorkoutEditSupersession:
         assert result["status"] == "ok"
         assert result["fact_id"] == existing
         mock_store.assert_not_awaited()
-        assert pool.executed == []
+        assert [q for q, _ in pool.executed if not q.startswith("SELECT")] == []
