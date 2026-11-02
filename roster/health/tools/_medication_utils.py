@@ -8,6 +8,9 @@ This module is the single source of truth for:
    (``expected_dose_count``), capped at the medication's own age so a
    medication created partway through the window is never scored against
    doses expected before it existed.
+3. Matching a medication's doses across edits (``dose_of_medication_sql``): every
+   edit supersedes the medication fact with a new id, so doses match by the
+   medication's stable subject rather than its current id.
 
 It is imported by:
 
@@ -232,3 +235,34 @@ def dose_status_today(
     missed = max(due_now - taken, 0)
     later = max(later - max(taken - due_now, 0), 0)
     return DoseStatus(missed=missed, due_later=later)
+
+
+def dose_of_medication_sql(param: str) -> str:
+    """SQL predicate matching ``took_dose`` facts that belong to a medication.
+
+    ``param`` is the placeholder (e.g. ``"$1"``) bound to the medication fact id as
+    text. A dose carries the medication fact id that was current when it was logged,
+    and ``medication_update`` supersedes the fact (new id) on every edit, so matching
+    the given id alone forgets every dose logged before the last edit. This matches
+    any medication fact of the same stable subject, across all validities; dose
+    records are never rewritten (bu-2eaep2, same rule as the refill scan in bu-uc6wh2).
+
+    The id is compared as text so a non-UUID path parameter matches nothing instead of
+    raising. Columns of the outer ``facts`` row are unqualified.
+    """
+    return f"""(
+        metadata->>'medication_id' = {param}
+        OR metadata->>'medication_id' IN (
+            SELECT same_med.id::text
+            FROM facts same_med
+            WHERE same_med.predicate = 'medication'
+              AND same_med.scope = 'health'
+              AND same_med.subject = (
+                  SELECT this_med.subject
+                  FROM facts this_med
+                  WHERE this_med.id::text = {param}
+                    AND this_med.predicate = 'medication'
+                    AND this_med.scope = 'health'
+              )
+        )
+    )"""

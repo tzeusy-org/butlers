@@ -94,6 +94,7 @@ The health butler SHALL store measurements, symptoms, medication doses, medicati
 - **WHEN** `medication_log_dose` is called
 - **THEN** it MUST internally call `store_fact` with `predicate='took_dose'`, `valid_at=taken_at`, `entity_id=owner_entity_id`, `scope='health'`, and `metadata={medication_id, skipped, notes}`
 - **AND** `medication_history` MUST query facts with `predicate='took_dose'`
+- **AND** every dose read for one medication (`medication_history`, `trend_report` adherence, the adherence-dip insight scan, and the dashboard `GET /medications/{id}/doses`) MUST match doses whose `medication_id` is any `medication` fact of that medication's subject, across all validities, so an edit (which supersedes the medication fact with a new id) never drops earlier dose history; dose records MUST NOT be rewritten
 
 #### Scenario: Medication property fact wrappers
 - **WHEN** `medication_add` is called

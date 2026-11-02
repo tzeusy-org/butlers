@@ -9,7 +9,11 @@ from typing import Any
 import asyncpg
 
 from butlers.tools.health._helpers import _row_to_dict
-from butlers.tools.health._medication_utils import expected_dose_count, frequency_to_doses_per_day
+from butlers.tools.health._medication_utils import (
+    dose_of_medication_sql,
+    expected_dose_count,
+    frequency_to_doses_per_day,
+)
 from butlers.tools.health.measurements import VALID_MEASUREMENT_TYPES as _LOGGABLE_MEASUREMENT_TYPES
 
 logger = logging.getLogger(__name__)
@@ -217,7 +221,7 @@ async def trend_report(
             " WHERE predicate = 'took_dose'"
             " AND validity = 'active'"
             " AND scope = 'health'"
-            " AND metadata->>'medication_id' = $1"
+            f" AND {dose_of_medication_sql('$1')}"
             " AND valid_at >= $2",
             med_id_str,
             since,
