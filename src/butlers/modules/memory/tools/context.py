@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from asyncpg import Pool
 
 from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
+from butlers.modules.memory.knowledge_class import EVENT_PREDICATES
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
 
@@ -75,7 +76,8 @@ async def _fetch_profile_facts(
     Only owner-class ``content_authority`` is admitted: a fact anchored to the
     owner but written from a third party's session (or a legacy row with no
     stamp) is not Profile Facts; it can still surface, attributed, as a
-    Task-Relevant Fact.
+    Task-Relevant Fact. Event/transaction predicates (``knowledge_class``) are
+    likewise excluded even when owner-authored; they stay recallable.
 
     Sorted by importance DESC, created_at DESC, id ASC. The read ceiling is
     applied in SQL, matching ``search_catalog``'s sensitivity filter, so an
@@ -94,6 +96,8 @@ async def _fetch_profile_facts(
         "f.content_authority IN ('owner', 'owner_device')",
     ]
     params: list[Any] = [tenant_id]
+    params.append(sorted(EVENT_PREDICATES))
+    conditions.append(f"f.predicate <> ALL(${len(params)})")
     if allowed_sensitivities is not None:
         params.append(list(allowed_sensitivities))
         conditions.append(f"COALESCE(f.sensitivity, 'normal') = ANY(${len(params)})")
@@ -126,10 +130,13 @@ async def _fetch_profile_facts(
           AND f.validity IN ('active', 'fading')
           AND 'owner' = ANY(e.roles)
           AND f.content_authority IN ('owner', 'owner_device')
+          AND f.predicate <> ALL($3)
           AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($2))
     """
     try:
-        withheld = await pool.fetchval(withheld_sql, tenant_id, list(allowed_sensitivities))
+        withheld = await pool.fetchval(
+            withheld_sql, tenant_id, list(allowed_sensitivities), sorted(EVENT_PREDICATES)
+        )
     except Exception:
         logger.debug("Profile facts withheld-count query failed", exc_info=True)
         withheld = 0

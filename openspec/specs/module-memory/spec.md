@@ -636,7 +636,9 @@ cannot be stamped SHALL fail rather than store an unstamped steering artifact.
   row) and `endorsed_at` is NULL. Held rules SHALL be absent from recall, search,
   `memory_context` Active Rules, and the discovery catalog (they are not written
   to it, and any existing catalog row is staled). Profile Facts SHALL admit only
-  owner-class facts; an owner-anchored fact of any other authority SHALL be
+  owner-class, durable facts: a fact whose predicate is event/transaction-class
+  (derived deterministically from the predicate) SHALL NOT appear in Profile Facts
+  even when owner-authored, and SHALL remain available to recall and search; an owner-anchored fact of any other authority SHALL be
   eligible only for Task-Relevant Facts. Every rendered local fact whose authority
   is `third_party`, `mixed` or NULL SHALL carry an attribution regardless of its
   subject: naming its sender (`reported by` / `partly reported by`) when the
