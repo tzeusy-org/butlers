@@ -899,7 +899,10 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
 
         Returns: {total, imported, skipped, errors, import_batch_id, detected_format,
                   merchant_mappings_applied, mv_refreshed, baselines_triggered,
-                  categories_learned, currency_warning (when currency fell back to USD)}
+                  categories_learned, currency_warning (when currency fell back to USD)}.
+          When the columns or date format cannot be detected, returns
+          {status: "unrecognized_format", headers, missing_columns, error}: retry with a
+          column_map naming the date, merchant, and amount columns from headers.
         """
         if module.blob_store is None:
             return {
