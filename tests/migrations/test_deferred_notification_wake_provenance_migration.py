@@ -63,7 +63,7 @@ def _emitted(fn_name: str) -> str:
 def test_revision_chain_is_a_single_additive_step() -> None:
     mod = _load_migration()
 
-    assert (mod.revision, mod.down_revision) == ("core_310", "core_306")
+    assert (mod.revision, mod.down_revision) == ("core_310", "core_309")
     assert mod.branch_labels is None and mod.depends_on is None
 
 

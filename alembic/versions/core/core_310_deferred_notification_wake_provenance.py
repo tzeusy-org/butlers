@@ -1,7 +1,7 @@
 """Record wake-recovery provenance and protocol states on parked holds (bu-kqnum.3.6.1).
 
 Revision ID: core_310
-Revises: core_306
+Revises: core_309
 Create Date: 2026-10-19 00:00:00.000000
 
 Slice A of the strict owner Telegram wake recovery
@@ -38,7 +38,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_310"
-down_revision = "core_306"
+down_revision = "core_309"
 branch_labels = None
 depends_on = None
 
