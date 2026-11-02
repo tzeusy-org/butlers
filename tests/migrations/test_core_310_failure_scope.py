@@ -1,7 +1,7 @@
-"""core_272 fails loudly: only the sequence GRANT may be skipped for lack of privilege.
+"""core_310 fails loudly: only the sequence GRANT may be skipped for lack of privilege.
 
 Bead bu-kqnum.3.6.1 corrections. A handler around the whole upgrade would roll back every
-DDL statement on a privilege error while Alembic still stamped core_272 applied, leaving
+DDL statement on a privilege error while Alembic still stamped core_310 applied, leaving
 holds that write ``wake_*`` columns that do not exist.
 """
 
@@ -19,12 +19,12 @@ _MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_272_deferred_notification_wake_provenance.py"
+    / "core_310_deferred_notification_wake_provenance.py"
 )
 
 
 def _upgrade_sql() -> str:
-    spec = importlib.util.spec_from_file_location("core_272", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_310", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

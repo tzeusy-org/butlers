@@ -15,7 +15,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,6 +29,7 @@ from tests.daemon.test_notify_attention_ledger import (  # noqa: F401
     _make_mock_client,
     _make_mock_pool,
     _patch_infra,
+    _registered_approval_hooks,
     _start_daemon_with_notify,
     butler_dir,
 )
@@ -165,22 +166,43 @@ async def test_a_context_only_hold_carries_no_provenance(butler_dir: Path) -> No
 
 
 @pytest.mark.usefixtures("_fixed_quiet_clock")
-async def test_a_high_priority_notification_is_not_parked_at_all(butler_dir: Path) -> None:
+@pytest.mark.parametrize(
+    "send_kwargs",
+    [
+        pytest.param({"priority": "high"}, id="unverified-high-priority"),
+        pytest.param(
+            {"recipient": _OWNER_CHAT, "_why": "The owner picked this chat.", "_evidence": []},
+            id="explicit-owner-recipient",
+        ),
+    ],
+)
+async def test_a_priority_or_explicit_target_hold_parks_without_provenance(
+    butler_dir: Path, send_kwargs: dict[str, Any]
+) -> None:
     mock_pool = _make_mock_pool(approvals_policy_row=_IN_WINDOW_QUIET_POLICY)
     daemon, notify_fn = await _start_daemon_with_notify(butler_dir, _patch_infra(mock_pool))
     daemon.switchboard_client = _make_mock_client()
+    owner_contact = MagicMock(roles=["owner"])
 
     with (
         _configured_owner_default_recipient(daemon),
+        _registered_approval_hooks(mock_pool),
+        patch("butlers.identity.resolve_contact_by_channel", AsyncMock(return_value=owner_contact)),
+        patch(
+            "butlers.identity.resolve_owner_channel_via_definer",
+            AsyncMock(return_value=(owner_contact, False)),
+        ),
         patch("butlers.context_bus.get_active_context", new=AsyncMock(return_value=[])),
         patch(
             "butlers.credential_store.resolve_owner_entity_info",
             new=AsyncMock(return_value=_OWNER_CHAT),
         ),
     ):
-        await notify_fn(channel="telegram", message="urgent", priority="high")
+        result = await notify_fn(channel="telegram", message="urgent", **send_kwargs)
 
-    assert _deferred_notification_insert_calls(mock_pool) == []
+    assert result["status"] == "deferred"
+    (call,) = _deferred_notification_insert_calls(mock_pool)
+    assert "wake_hold_kind" not in call[0] and len(call) == 8
 
 
 _POLICY_END = datetime(2026, 10, 20, 7, 0, tzinfo=UTC)
@@ -190,6 +212,7 @@ _POLICY_END = datetime(2026, 10, 20, 7, 0, tzinfo=UTC)
 @pytest.mark.parametrize(
     ("overrides", "owner_chat"),
     [
+        pytest.param({"routine_owner_default": False}, _OWNER_CHAT, id="not-routine-default"),
         pytest.param({"channel": "email"}, _OWNER_CHAT, id="not-telegram"),
         pytest.param({"policy": None}, _OWNER_CHAT, id="no-policy"),
         pytest.param({"policy_deliver_at": None}, _OWNER_CHAT, id="context-only"),
@@ -206,6 +229,7 @@ async def test_provenance_is_refused_unless_every_input_is_provable(
     overrides: dict[str, Any], owner_chat: str | None, caplog: pytest.LogCaptureFixture
 ) -> None:
     kwargs: dict[str, Any] = {
+        "routine_owner_default": True,
         "channel": "telegram",
         "policy": _POLICY,
         "policy_deliver_at": _POLICY_END,
@@ -233,6 +257,7 @@ async def test_a_resolution_error_fails_closed_to_no_provenance() -> None:
         assert (
             await _wake_hold_provenance(
                 object(),
+                routine_owner_default=True,
                 channel="telegram",
                 policy=_POLICY,
                 policy_deliver_at=_POLICY_END,

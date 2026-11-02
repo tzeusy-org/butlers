@@ -1,6 +1,6 @@
 """Real-Postgres: wake provenance is written with the hold and the flush fences protocol rows.
 
-Bead bu-kqnum.3.6.1 (core_272). Drives the real ``insert_deferred_notification`` and the real
+Bead bu-kqnum.3.6.1 (core_310). Drives the real ``insert_deferred_notification`` and the real
 ordinary flush against a migrated schema.
 """
 

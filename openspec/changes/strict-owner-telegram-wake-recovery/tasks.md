@@ -1,6 +1,6 @@
 ## 1. Versioned durable protocol foundation
 
-- [x] 1.1 Add guarded migrations for origin-local quiet-hours hold provenance, admission sequencing, fenced reservation states, and legacy-row preservation. (Slice A, bu-kqnum.3.6.1: core_272 on `deferred_notifications`.)
+- [x] 1.1 Add guarded migrations for origin-local quiet-hours hold provenance, admission sequencing, fenced reservation states, and legacy-row preservation. (Slice A, bu-kqnum.3.6.1: core_310 on `deferred_notifications`.)
 - [ ] 1.2 Add guarded migrations for Switchboard accepted-event snapshots, owner/window runs, participant snapshots, run fences, and composition/action digests.
 - [ ] 1.3 Add migrated-database tests for immutability, unique accepted-event and owner/window claims, stale-fence rejection, and no direct cross-schema queue access.
 

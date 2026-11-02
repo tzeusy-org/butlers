@@ -1,11 +1,11 @@
 """Record wake-recovery provenance and protocol states on parked holds (bu-kqnum.3.6.1).
 
-Revision ID: core_272
-Revises: core_268
+Revision ID: core_310
+Revises: core_306
 Create Date: 2026-10-19 00:00:00.000000
 
 Slice A of the strict owner Telegram wake recovery
-(openspec/changes/strict-owner-telegram-wake-recovery, tasks 1.1, 3.1, 3.3).
+(openspec/changes/strict-owner-telegram-wake-recovery, tasks 1.1, 3.1, 3.3a).
 ``deferred_notifications`` (origin schema) gains:
 
 * seven nullable ``wake_*`` provenance columns: hold kind, policy-window key, an
@@ -37,8 +37,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_272"
-down_revision = "core_268"
+revision = "core_310"
+down_revision = "core_306"
 branch_labels = None
 depends_on = None
 
@@ -128,7 +128,7 @@ def upgrade() -> None:
 
             -- Only the grant may be skipped for lack of privilege (core_001's default
             -- privileges already cover the runtime role); every DDL statement above
-            -- must fail loudly rather than leave core_272 stamped but unapplied.
+            -- must fail loudly rather than leave core_310 stamped but unapplied.
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = runtime_role) THEN
                 BEGIN
                     EXECUTE format(
@@ -156,7 +156,7 @@ def downgrade() -> None:
                 SELECT 1 FROM {_TABLE} WHERE status IN ({_PROTOCOL_STATUSES})
             ) THEN
                 RAISE EXCEPTION
-                    'core_272 downgrade refused: deferred_notifications rows are in a '
+                    'core_310 downgrade refused: deferred_notifications rows are in a '
                     'wake-recovery protocol state and have no pre-protocol status to map back to';
             END IF;
 

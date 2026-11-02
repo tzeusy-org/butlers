@@ -1,6 +1,6 @@
-"""core_272: wake-recovery provenance and protocol states on deferred_notifications.
+"""core_310: wake-recovery provenance and protocol states on deferred_notifications.
 
-Bead bu-kqnum.3.6.1 (slice A of strict-owner-telegram-wake-recovery, tasks 1.1/3.1/3.3).
+Bead bu-kqnum.3.6.1 (slice A of strict-owner-telegram-wake-recovery, tasks 1.1/3.1/3.3a).
 The unit tests read the SQL the migration emits; the integration tests run that same SQL
 against a migrated database (Docker; CI-only).
 """
@@ -20,7 +20,7 @@ _MIGRATION_PATH = (
     / "alembic"
     / "versions"
     / "core"
-    / "core_272_deferred_notification_wake_provenance.py"
+    / "core_310_deferred_notification_wake_provenance.py"
 )
 
 _WAKE_COLUMNS = (
@@ -44,7 +44,7 @@ _PROTOCOL_STATUSES = (
 
 
 def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_272", _MIGRATION_PATH)
+    spec = importlib.util.spec_from_file_location("core_310", _MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -63,7 +63,7 @@ def _emitted(fn_name: str) -> str:
 def test_revision_chain_is_a_single_additive_step() -> None:
     mod = _load_migration()
 
-    assert (mod.revision, mod.down_revision) == ("core_272", "core_268")
+    assert (mod.revision, mod.down_revision) == ("core_310", "core_306")
     assert mod.branch_labels is None and mod.depends_on is None
 
 

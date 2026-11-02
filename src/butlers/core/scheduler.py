@@ -1751,11 +1751,13 @@ async def _tick_deferred_notification_pass(
 
     # Reconcile the exact old logical send even if its due/expiry window changed.
     # No fresh-row grouping or provider call happens before this terminal write.
+    # A row a wake-recovery run has since reserved (any ``release_*`` status) belongs to
+    # that run; it is skipped here and its latch entry released below.
     quarantined = _PARTIAL_DEFERRED.keys(pool)
     if quarantined:
         rows = await pool.fetch(
             "SELECT id, butler_name, channel, priority FROM deferred_notifications "
-            "WHERE id = ANY($1::uuid[])",
+            "WHERE id = ANY($1::uuid[]) AND status NOT LIKE 'release\\_%'",
             quarantined,
         )
         for row in rows:

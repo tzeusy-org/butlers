@@ -1,7 +1,7 @@
 """The ordinary deferred flush owns plain pending rows only (bu-kqnum.3.6.1).
 
 Slice A of strict-owner-telegram-wake-recovery (time-aware-delivery "Fenced Wake-Recovery
-Cohorts Are Scheduler-Ineligible", task 3.3). A row in a ``release_*`` protocol state must
+Cohorts Are Scheduler-Ineligible", task 3.3a). A row in a ``release_*`` protocol state must
 never be selected, expired or transitioned by the ordinary loop, and a row reserved after the
 due-fetch must not have its status overwritten by the flush's own status writes.
 
@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.scheduler import _tick_deferred_notification_pass
+from butlers.core.scheduler import _PARTIAL_DEFERRED, _tick_deferred_notification_pass
 
 pytestmark = pytest.mark.unit
 
@@ -73,6 +73,13 @@ class _FlushPool:
 
     async def fetch(self, sql: str, *args: Any) -> list[dict]:
         self.statements.append(sql)
+        if "id = ANY" in sql:  # partial-delivery quarantine reconcile
+            fenced = "NOT LIKE 'release\\_%'" in sql
+            return [
+                dict(r)
+                for r in self.rows
+                if str(r["id"]) in args[0] and not (fenced and r["status"].startswith("release_"))
+            ]
         guarded = "status = 'pending'" in sql
         return [
             dict(r)
@@ -86,6 +93,9 @@ class _FlushPool:
         if "SET status = 'expired'" in sql:
             targets = [r for r in self.rows if r["deliver_at"] < args[0]]
             new = {"status": "expired"}
+        elif "SET status = 'cancelled'" in sql:
+            targets = [r for r in self.rows if r["id"] in args[0]]
+            new = {"status": "cancelled"}
         else:
             ids = args[0] if isinstance(args[0], list) else [args[0]]
             targets = [r for r in self.rows if r["id"] in ids]
@@ -172,3 +182,17 @@ async def test_a_composed_group_keeps_a_member_reserved_after_the_due_fetch() ->
 
     assert first["status"] == "delivered"
     assert second["status"] == "release_prepared" and second["delivered_at"] is None
+
+
+async def test_a_quarantined_send_later_reserved_by_the_protocol_is_left_to_it() -> None:
+    row = _row("release_prepared", age=timedelta(minutes=5), wake=True)
+    pool = _FlushPool([row])
+    _PARTIAL_DEFERRED.mark(pool, str(row["id"]), {"partial_delivery": True})
+    record = AsyncMock()
+
+    with patch("butlers.core.attention_ledger.record_attention_event", record):
+        await _tick_deferred_notification_pass(pool, _NOW, notify_fn=AsyncMock())
+
+    record.assert_not_awaited()
+    assert row["status"] == "release_prepared"
+    assert not _PARTIAL_DEFERRED.contains(pool, str(row["id"]))

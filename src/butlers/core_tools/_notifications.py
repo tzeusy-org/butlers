@@ -46,6 +46,7 @@ _REQUEST_CONTEXT_KEYS_HINT = (
 async def _wake_hold_provenance(
     pool: Any,
     *,
+    routine_owner_default: bool,
     channel: str,
     policy: dict[str, Any] | None,
     policy_deliver_at: datetime | None,
@@ -55,13 +56,19 @@ async def _wake_hold_provenance(
 ) -> Any:
     """Wake-recovery provenance for a newly parked owner-attention quiet-hours hold, or None.
 
-    Eligible only when the Owner Attention Policy quiet-hours decision is part of the hold
-    (not a context-only hold) and the envelope's recipient is the owner's own Telegram chat,
-    resolved now rather than inferred later. Anything not provable fails closed to None: the
+    Eligible only for a routine owner-default send (no explicit recipient or entity, no
+    requested high priority), when the Owner Attention Policy quiet-hours decision is part of
+    the hold (not a context-only hold) and the envelope's recipient is the owner's own Telegram
+    chat, resolved now rather than inferred later. Anything not provable fails closed to None: the
     hold is still parked and releases at its stored ``deliver_at`` as before, it is simply not
     wake-recovery eligible (strict-owner-telegram-wake-recovery, core-notify spec).
     """
-    if channel != "telegram" or policy is None or policy_deliver_at is None:
+    if (
+        not routine_owner_default
+        or channel != "telegram"
+        or policy is None
+        or policy_deliver_at is None
+    ):
         return None
     try:
         from butlers.core.approvals_policy import policy_quiet_hours_window_start
@@ -1003,6 +1010,10 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
             # cannot avoid owner attention policy by spelling out the recipient.
             # Independent non-owner approval decisions remain unchanged.
             _attention_owner_target = entity_id is None and recipient is None
+            # Wake-recovery provenance is for routine owner-default holds only: an explicit
+            # owner address/entity or a requested (even if downgraded) high priority parks
+            # without it (strict-owner-telegram-wake-recovery, core-notify).
+            _routine_owner_default = _attention_owner_target and not _untrusted_high
 
             # Validate email recipients against known contacts.
             # This prevents LLM-hallucinated addresses from reaching delivery.
@@ -1374,6 +1385,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
 
                     _wake_provenance = await _wake_hold_provenance(
                         _notify_pool,
+                        routine_owner_default=_routine_owner_default,
                         channel=channel,
                         policy=_policy,
                         policy_deliver_at=_policy_deliver_at,
