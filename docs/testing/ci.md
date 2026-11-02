@@ -66,10 +66,10 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    make test-ci-integration
    ```
 
-   CI also runs `guards` for static checks, `check-preflight` (beside the lane groups)
+   CI also runs `guards` for static checks, `smoke` (beside the lane groups)
    for the fresh lane counts, per-lane budgets and smoke/release evidence, `check-totals`
    for the lane-group totals,
-   plus the fail-closed `check` fan-in, so these targets alone are not a full
+   plus the fail-closed `alls-green` fan-in, so these targets alone are not a full
    hosted Python gate claim. Run only one broad
    Docker-backed lane at a time, and only one owner may run a broad local lane
    for an exact SHA from a **clean** worktree. `test-ci-*` records that SHA and
@@ -78,21 +78,19 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
    findings; they do not repeat an already-valid broad gate. A targeted PASS
    proves only its named scope; terminal hosted CI is the broad merge evidence.
 
-   The merge queue's `merge_group` run is that terminal broad gate: it runs
-   every shard, `guards`, `frontend` and Playwright `frontend-e2e` (required
-   through `check`) against the exact tree about to land (enforced by the `main-merge-queue` ruleset from
-   `scripts/setup_main_ruleset.sh`). A PR's own CI run is deliberately
-   narrower: the stdlib `route` job classifies the diff fail-closed, and a
-   docs/spec-only PR skips the backend shards and frontend jobs on purpose,
-   while `push` to `main` skips the shards because the queue already validated
-   that tree. On a backend-touching PR `route` consumes the existing conservative
-   planner; a clean scoped plan runs only those test paths in
-   `check-affected`; any planner uncertainty (escalation trigger, empty plan, or
-   a plan reaching into `tests/e2e/`) reports `mode=full` and all eleven children run.
-   Measured precision is in `about/craft-and-care/testing-and-verification.md`.
-   `check-preflight` takes one fresh `--collect-only` count per lane while the groups run;
+   The merge queue's `merge_group` run is that terminal broad gate against the
+   exact tree about to land (enforced by the `main-merge-queue` ruleset from
+   `scripts/setup_main_ruleset.sh`). Every event (pull request, merge group and
+   push to `main`) runs the same complete pipeline: every shard, `guards`,
+   `smoke`, `check-totals`, both Vitest children, `frontend-assurance`, Playwright
+   `frontend-e2e` and `go-bridge`. There is no path routing and no scoped mode
+   (bu-29wkwj.3). The single required check, `alls-green`, needs every one of
+   those jobs and fails unless each reports success. Until the owner switches the
+   ruleset to `alls-green` alone, its legacy `check` and `frontend` contexts are
+   thin jobs that only mirror `alls-green`.
+   `smoke` takes one fresh `--collect-only` count per lane while the groups run;
    `check-totals` then requires the sum of that lane's pytest-split group counts to match
-   it, and preflight checks the same count against the per-lane
+   it, and smoke checks the same count against the per-lane
    collected-test budget in `scripts/test-budget-baseline.json`: a PR that
    pushes a lane over budget condenses tests in the same PR, or raises the
    budget with `--update-baseline` and states the net test delta
@@ -109,10 +107,8 @@ privacy, authorization, retry, idempotency, or migration-outcome test.
 ## Go bridge CI
 
 `go-bridge` runs `whatsapp-bridge`'s complete Go test population on every
-non-doc PR, merge group and main push using the existing backend route. This
-conservative predicate also runs Go for other backend/frontend changes; docs-only
-PRs explicitly skip it. The required `check` needs its verdict: Go failure,
-cancellation, missing result or an unexpected skip cannot read green. The Go job
+PR, merge group and main push. The required `alls-green` needs its verdict: Go failure,
+cancellation, missing result or a skip cannot read green. The Go job
 is separate from the five unit/six integration groups and coverage publication.
 
 The job uses the existing builder's Go1.25.11, a commit-pinned setup-go action,
@@ -220,7 +216,7 @@ and REQ-testing-053; the test budget is unchanged by it.
 
 The frontend steps in `guards` run lint, em-dash copy gate, query-result coercion gate,
 **Import graph (knip)**, then one build. Two `frontend-vitest` children run the tests;
-the required `frontend` verdict checks both children and `guards`. A knip failure skips build, so a local
+`frontend-assurance` reconciles both children's populations, and `alls-green` requires all three plus `guards`. A knip failure skips build, so a local
 green vitest run is not evidence the job will pass. Run `npm run knip` from `frontend/` before
 pushing. Treat "unused export" as a question: it covers both dead code and a helper whose wiring was
 forgotten, so check the bead's acceptance criteria before deleting. Never add an import just to
@@ -244,7 +240,7 @@ output. Transport controls establish this information boundary, not an installed
 cause, performance result or hosted check success.
 
 Frontend tests run locally in a worktree: `scripts/setup_worktree.sh` falls back to a local
-`npm install` when the root `frontend/node_modules` is empty, after which every `frontend` CI step
+`npm install` when the root `frontend/node_modules` is empty, after which every frontend CI step
 (including `vitest run -u` snapshot regeneration) runs for real. Playwright (`frontend-e2e`) needs a
 separate `playwright install --with-deps chromium`.
 
@@ -302,19 +298,15 @@ the test ladder, watchdogs, healthy-workload floors, full merge-group and covera
 
 ## CI fan-out and guard predicates
 
-- CI fan-out: route→five unit/six integration pytest-split groups beside `check-preflight`
+- CI fan-out: five unit/six integration pytest-split groups beside `smoke`
   (fresh lane counts, budgets and dedicated smoke/release evidence)→lane totals in
-  `check-totals`, then
-  the `check` fan-in, which uses `always()` and reads every declared job through `NEEDS_JSON`.
-  `always()` alone does not enforce prerequisites: route and guards verdicts
-  must succeed, and preflight is checked independently of the heavy-shard consistency state.
-  Preflight never counts as a heavy shard; a scoped PR requires preflight and check-affected
-  success with every heavy shard skipped. Docs-only PR and main-push skips require the exact
-  classifier/event/ref policy; full PR and merge_group require all heavy shards. New needed jobs
-  accept success and deny skips until an explicit policy is added. Malformed or missing results,
-  classifier outputs or planner paths fail closed.
+  `check-totals`, then the `alls-green` fan-in. It runs under `always()`, needs every
+  workload job directly, and its one `jq` step fails unless `NEEDS_JSON` holds exactly
+  the expected number of jobs and every result is `success`: a failure, cancellation,
+  skip or missing job fails it. `tests/contracts/test_required_checks.py` executes that
+  step and fails when a job leaves `needs`; actionlint owns workflow syntax.
   Lock, lint, format and SQL safety run in guards with their original scopes;
-  the fresh `--collect-only` lane counts, budgets and smoke/release evidence run in preflight
+  the fresh `--collect-only` lane counts, budgets and smoke/release evidence run in smoke
   beside the groups, and `check-totals` compares each lane's pytest-split group counts with
   those counts once the groups finish. Lane groups
   balance on the committed `.test_durations`; the nightly `durations-refresh` job opens a PR

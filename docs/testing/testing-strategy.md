@@ -132,7 +132,7 @@ make test-ci-integration
 ```
 
 CI also runs static checks and a separate smoke/release-evidence step; terminal
-hosted CI is the only evidence for the whole `check` job. For a given SHA, one
+hosted CI is the only evidence for the whole `alls-green` check. For a given SHA, one
 owner may run a broad local lane from a clean worktree; its receipt records the
 SHA and rejects dirty state. Reviewers reuse only a matching clean receipt and
 run focused checks for any finding rather than repeating the entire suite.

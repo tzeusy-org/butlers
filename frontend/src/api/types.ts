@@ -7821,6 +7821,21 @@ export interface BackupRunFacts {
   reason: string | null;
 }
 
+/** Most recent off-node restic copy of the dump directory (bu-ivuf9u).
+ *
+ * `"disabled"` means this deployment runs no copy job; `"unknown"` means it
+ * should but no readable receipt exists. `stale` is true when an enabled copy
+ * has not reported any run within 36 hours. `reason` is a fixed vocabulary
+ * (or "unrecognized reason"), and `snapshot_id` is hex or null.
+ */
+export interface OffsiteCopyFacts {
+  result: "success" | "failed" | "unknown" | "disabled";
+  finished_at: string | null;
+  reason: string | null;
+  snapshot_id: string | null;
+  stale: boolean;
+}
+
 /** Backup recency, verified artifact health, run outcome, and drill facts.
  *
  * `last_backup_status`/`backup_stale`/`restore_drill`/`last_run` are optional
@@ -7838,6 +7853,8 @@ export interface BackupFacts {
   backup_stale?: boolean;
   last_run?: BackupRunFacts;
   restore_drill?: RestoreDrillFacts;
+  /** Absent on older backends; rendered as "not configured". */
+  offsite_copy?: OffsiteCopyFacts;
 }
 
 /** A single external actor that has received data from this instance. */

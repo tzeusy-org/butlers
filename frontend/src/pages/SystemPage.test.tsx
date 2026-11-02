@@ -1108,6 +1108,42 @@ describe("SystemPage -- SystemVerdictBanner (bu-86c4c.17)", () => {
     expect(html).toContain('data-testid="system-verdict-all-clear"');
   });
 
+  it.each([
+    [{ result: "failed", stale: false }, "off-node backup copy failed"],
+    [{ result: "success", stale: true }, "off-node backup copy is stale"],
+    [{ result: "unknown", stale: true }, "off-node backup copy is stale"],
+  ] as const)("names an enabled off-node copy that is %o (bu-ivuf9u)", (copy, clause) => {
+    // A disabled or absent copy raises nothing: the all-clear tests above
+    // already render without offsite_copy.
+    setAllSuccess();
+    vi.mocked(useBackupFacts).mockReturnValue({
+      status: "success",
+      fetchStatus: "idle",
+      isPlaceholderData: false,
+      refetch: vi.fn(),
+      data: {
+        data: {
+          last_backup_at: "2026-01-01T00:00:00Z",
+          last_backup_size_bytes: 2048,
+          backup_source_reachable: true,
+          backup_history: [],
+          last_backup_status: "healthy",
+          backup_stale: false,
+          last_run: { result: "success", finished_at: null, exit_code: 0, reason: "ok" },
+          restore_drill: { checked_at: "2026-01-01T00:00:00Z", result: "pass", detail: null },
+          offsite_copy: { ...copy, finished_at: null, reason: null, snapshot_id: null },
+        },
+        meta: {},
+      },
+      isLoading: false,
+      error: null,
+    } as AnyMock);
+
+    const html = renderPage();
+    expect(html).toContain(clause);
+    expect(html).not.toContain('data-testid="system-verdict-all-clear"');
+  });
+
   it("surfaces degraded fleet sources rather than a falsely confident all-clear", () => {
     setAllSuccess({ sourcesPartiallyDegraded: true });
     const html = renderPage();
