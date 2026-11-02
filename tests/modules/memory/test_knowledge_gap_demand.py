@@ -79,5 +79,7 @@ async def test_demand_counts_open_gaps_and_asks_and_excludes_answerable_ones(
 async def test_demand_is_empty_when_nothing_is_open(pool_factory, session_hook):
     pool, _owner, _ = await pool_factory()
     session_hook(pool)
+    # The migrated database is module-scoped, so earlier tests' gaps are still there.
+    await pool.execute("DELETE FROM knowledge_gaps")
 
     assert await knowledge_gaps.demand_by_predicate(pool) == []

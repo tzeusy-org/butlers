@@ -17,7 +17,7 @@ import re
 import uuid as _uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
 from asyncpg.exceptions import UndefinedTableError
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -1669,7 +1669,7 @@ async def memory_gap_demand(*, db: Db) -> ApiResponse[list[MemoryGapDemand]]:
         tracker=tracker,
     )
     totals: dict[str, list[int]] = {}
-    for rows in per_pool:
+    for rows in cast("list[list[dict]]", per_pool):
         for row in rows:
             acc = totals.setdefault(row["predicate"], [0, 0])
             acc[0] += row["open_gaps"]
