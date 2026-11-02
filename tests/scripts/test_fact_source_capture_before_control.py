@@ -613,6 +613,50 @@ def test_cli_rejects_unbound_environment_before_any_execution(tmp_path, monkeypa
         assert progress["stage"] == stage
         assert calls == (["installer"] if stage == "uv-install" else ["installer", "prepare"])
 
+        # A refusal after execute starts must retain its execution nonce and source
+        # bindings, rather than main's earlier provider-only preflight binding.
+        execution_binding = {**binding, "nonce": "d" * 64}
+        bindings = iter((copy.deepcopy(binding), copy.deepcopy(execution_binding)))
+        with monkeypatch.context() as context:
+            context.setenv("RUNNER_TEMP", str(directory))
+            context.setenv("FACT_CAPTURE_CONTROL_STARTED", str(control.time.monotonic()))
+            context.setattr(control, "__file__", str(root / "scripts/control.py"))
+            context.setattr(control, "execute", real_execute)
+            context.setattr(
+                control, "provider_binding", lambda root, bindings=bindings: next(bindings)
+            )
+            context.setattr(control, "git", lambda *args, **kwargs: "")
+            context.setattr(
+                control,
+                "workload_state",
+                lambda root, phase: {"phase": phase, "runtime_blob": "e" * 40},
+            )
+            context.setattr(control, "overlay", lambda *args: None)
+            context.setattr(
+                control.subprocess,
+                "run",
+                lambda *args, **kwargs: subprocess.CompletedProcess([], 0),
+            )
+            context.setattr(control, "prepare_uv", install)
+            context.setattr(control, "run_owned", prepare)
+            context.setattr(
+                control.subprocess,
+                "Popen",
+                lambda *args, **kwargs: pytest.fail("refused prephase must not start a PG child"),
+            )
+            assert control.main() == 2
+        evidence = directory / "fact-capture-before-evidence"
+        data = json.loads((evidence / "control-refusal.json").read_text())
+        assert data["binding"]["nonce"] == execution_binding["nonce"]
+        assert data["binding"]["workload"] == {"phase": "after", "runtime_blob": "e" * 40}
+        assert data["binding"]["phase_states"] == {
+            name: {"phase": name, "runtime_blob": "e" * 40} for name in ("before", "after")
+        }
+        assert data["stage"] == stage and data["complete"] is False
+        assert data["pg_call"] == data["cleanup"] == "UNKNOWN"
+        assert not (evidence / "summary.json").exists()
+        assert "PRIVATE" not in json.dumps(data) + capsys.readouterr().out
+
     # Controller mismatches remain fail-closed, but expose only which predicate failed.
     with monkeypatch.context() as context:
         context.setenv("GITHUB_REPOSITORY", "tzeusy-org/butlers")

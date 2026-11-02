@@ -745,6 +745,7 @@ def execute(root, output, progress=None):
         progress = {}
     progress["stage"] = "controller-identity"
     binding = provider_binding(root)
+    progress["binding"] = binding
     progress["stage"] = "aggregate-budget"
     started = float(os.environ["FACT_CAPTURE_CONTROL_STARTED"])
     if not 0 <= time.monotonic() - started < 2480:
@@ -915,7 +916,7 @@ def main():
         print("fact-capture control WITNESS_COMPLETE; BEFORE test remains FAILED")
         return 0
     except (OSError, ValueError, subprocess.SubprocessError, KeyError) as error:
-        data = refusal(error, progress, binding)
+        data = refusal(error, progress, progress.get("binding", binding))
         if output_created:
             try:
                 atomic(output / "control-refusal.json", data)
