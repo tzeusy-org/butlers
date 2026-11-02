@@ -9,7 +9,7 @@ Covers:
           (tenant, butler) group, with the group's counts.
 
 The table's privileges on the real core chain (append-only for butler roles,
-core_307) are pinned in tests/migrations/test_consolidation_runs_grants.py.
+core_308) are pinned in tests/migrations/test_consolidation_runs_grants.py.
 """
 
 from __future__ import annotations

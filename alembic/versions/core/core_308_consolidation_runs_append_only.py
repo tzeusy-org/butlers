@@ -1,7 +1,7 @@
 """Make ``public.consolidation_runs`` append-only for runtime roles (bu-7kbtfw).
 
-Revision ID: core_307
-Revises: core_306
+Revision ID: core_308
+Revises: core_307
 Create Date: 2026-11-03 00:00:00.000000
 
 core_119 granted runtime roles ``SELECT`` on the consolidation audit table and
@@ -23,7 +23,7 @@ role family, not today's roster), UPDATE and DELETE are revoked, and
 broad public grant so a bootstrap replay cannot restore the DML.
 
 The core chain runs once per butler schema over one shared table, so only the
-last schema to leave core_307 restores the bootstrap defaults (core_306
+last schema to leave core_308 restores the bootstrap defaults (core_306
 pattern).
 """
 
@@ -31,12 +31,12 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "core_307"
-down_revision = "core_306"
+revision = "core_308"
+down_revision = "core_307"
 branch_labels = None
 depends_on = None
 
-_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_307:consolidation-runs', 0))"
+_LOCK = "SELECT pg_advisory_xact_lock(hashtextextended('butlers:core_308:consolidation-runs', 0))"
 _BUTLER_ROLES = "rolname LIKE 'butler\\_%\\_rw' ESCAPE '\\'"
 
 
@@ -68,7 +68,7 @@ def _set_runtime_grants(*, append_only: bool) -> None:
     """)
 
 
-def _core_307_installation_count() -> int:
+def _core_308_installation_count() -> int:
     """Count schema-local core chains that still require the append-only fence."""
     bind = op.get_bind()
     schemas = bind.exec_driver_sql(
@@ -90,7 +90,7 @@ def _core_307_installation_count() -> int:
             SELECT EXISTS (
                 SELECT 1 FROM {quote(schema)}.alembic_version
                 WHERE CASE WHEN version_num ~ '^core_[0-9]+$'
-                    THEN substring(version_num FROM 6)::integer >= 307
+                    THEN substring(version_num FROM 6)::integer >= 308
                     ELSE false END
             )
             """
@@ -106,7 +106,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute(_LOCK)
-    # One shared table serves every schema still at core_307; only the last one reopens it.
-    if _core_307_installation_count() > 1:
+    # One shared table serves every schema still at core_308; only the last one reopens it.
+    if _core_308_installation_count() > 1:
         return
     _set_runtime_grants(append_only=False)

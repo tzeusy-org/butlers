@@ -1,4 +1,4 @@
-"""core_307: ``public.consolidation_runs`` is append-only for runtime roles (bu-7kbtfw).
+"""core_308: ``public.consolidation_runs`` is append-only for runtime roles (bu-7kbtfw).
 
 Runs the real core chain, so the bootstrap default privileges that core_119's
 SELECT-only grant never revoked are in play.  The legitimate writer is the
@@ -88,14 +88,14 @@ def test_consolidation_runs_is_append_only_replay_safe_and_reversible(postgres_c
     db_name = migration_db_name()
     db_url = create_migration_db(postgres_container, db_name)
     config = _build_alembic_config(db_url, chains=["core"])
-    command.upgrade(config, "core_306")
+    command.upgrade(config, "core_307")
     engine = create_engine(db_url)
     try:
         with engine.connect() as connection:
             # The gap: bootstrap default privileges outlive core_119's SELECT-only grant.
             assert _privileges(connection) == _BOOTSTRAP_DEFAULTS
 
-        command.upgrade(config, "core_307")
+        command.upgrade(config, "core_308")
         with engine.begin() as connection:
             assert _privileges(connection) == _APPEND_ONLY
             # The real writer (consolidation's audit insert) keeps working as a butler
@@ -118,7 +118,7 @@ def test_consolidation_runs_is_append_only_replay_safe_and_reversible(postgres_c
         with engine.connect() as connection:
             assert _privileges(connection) == _APPEND_ONLY
 
-        command.downgrade(config, "core_306")
+        command.downgrade(config, "core_307")
         with engine.connect() as connection:
             assert _privileges(connection) == _BOOTSTRAP_DEFAULTS
             assert (

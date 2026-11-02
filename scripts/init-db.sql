@@ -733,7 +733,7 @@ BEGIN
 
     -- public.consolidation_runs is an append-only audit: each memory-enabled
     -- butler daemon inserts its own rows as butler_<name>_rw, and nothing may
-    -- rewrite or erase them. Keep core_307's fence after the broad public grant
+    -- rewrite or erase them. Keep core_308's fence after the broad public grant
     -- so a bootstrap replay cannot restore UPDATE/DELETE (or connector INSERT).
     IF to_regclass('public.consolidation_runs') IS NOT NULL THEN
         FOREACH _role IN ARRAY _all_runtime_roles || ARRAY[_optional_calendar_role] LOOP

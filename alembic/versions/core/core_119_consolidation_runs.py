@@ -45,9 +45,9 @@ writes through the owning database role (the migration/runtime owner), which
 retains full access regardless of these grants — mirroring the privilege
 posture for a cross-butler read surface.
 
-Superseded by core_307: the writer is in fact each memory-enabled butler
+Superseded by core_308: the writer is in fact each memory-enabled butler
 daemon (``butler_<name>_rw``), and bootstrap default privileges outlived this
-SELECT-only grant. core_307 makes the table append-only (SELECT, INSERT) for
+SELECT-only grant. core_308 makes the table append-only (SELECT, INSERT) for
 butler roles and read-only for ``connector_writer``.
 """
 
