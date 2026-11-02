@@ -220,10 +220,10 @@ CREDENTIAL_REDACTION = CredentialRedactionFilter()
 
 
 def redact_exception(
-    logger: logging.Logger,
+    logger: structlog.types.WrappedLogger,
     method_name: str,
-    event_dict: dict,
-) -> dict:
+    event_dict: structlog.types.EventDict,
+) -> structlog.types.EventDict:
     """Scrub credential patterns from a record's traceback before rendering.
 
     ``CredentialRedactionFilter`` only sees the message; the traceback is
