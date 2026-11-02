@@ -27,20 +27,25 @@ Scope: v1-mandatory
 - **WHEN** a GET response is returned
 - **THEN** it SHALL include `field_tiers` mapping each runtime_config field to `"hot"` or `"cold"`: `catalog_read_sensitivity` is hot because catalog reads load it at call time; `core_groups`, `core_groups_narrowing_reason`, `max_concurrent`, and `max_queued` are cold
 - **AND** `model` and `session_timeout_s` are NOT part of this map; migration `core_073` moved them onto `public.model_catalog`, edited via the model-settings API
-- **AND** the response SHALL add `"tool_exposure_policy": "hot"` because subsequent invocations resolve it through the runtime-config accessor without restarting the daemon
+
+#### Scenario: Stored exposure policy is returned
+
+- **WHEN** a GET response is returned
+- **THEN** it SHALL include the stored `tool_exposure_policy` and mark that field `hot` in `field_tiers`
+- **AND** a legacy row missing the field SHALL use `eager_filtered`
+- **AND** the API field tier SHALL NOT establish that a runtime planner consumes the policy
 
 ### Requirement: PATCH runtime config endpoint
 
 The dashboard API SHALL expose `PATCH /api/butlers/{name}/runtime-config` accepting a partial update of runtime config fields.
 
 ID: REQ-runtime-config-api-002
-Source: RFC 0007 §Dashboard API Surface; RFC 0027 §Exposure Planning State Machine
+Source: RFC 0007 §Dashboard API Surface
 Scope: v1-mandatory
 
 #### Scenario: Accepted fields
 - **WHEN** a PATCH request is processed
-- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, and `max_queued` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
-- **AND** `tool_exposure_policy` SHALL also be accepted as `eager_filtered` or `auto`
+- **THEN** only `core_groups`, `core_groups_narrowing_reason`, `catalog_read_sensitivity`, `max_concurrent`, `max_queued`, and `tool_exposure_policy` are accepted; `model`/`runtime_type`/`args`/`session_timeout_s` are not runtime_config fields (they live on `public.model_catalog`)
 
 #### Scenario: Catalog read sensitivity updates hot
 
@@ -65,7 +70,7 @@ Scope: v1-mandatory
 #### Scenario: All managed fields are cold
 - **WHEN** a PATCH request updates any of `core_groups`, `max_concurrent`, or `max_queued`
 - **THEN** the response SHALL include `restart_required` listing exactly the changed fields, because all three require a daemon restart to take effect (there are no hot fields on this surface)
-- **AND** the historical no-hot-fields clause is superseded for new fields only: hot `catalog_read_sensitivity` and `tool_exposure_policy` take effect for subsequent invocations and SHALL NOT appear in `restart_required`
+- **AND** the historical no-hot-fields clause is superseded for new fields only: `catalog_read_sensitivity` is hot and MUST NOT appear in `restart_required`
 
 #### Scenario: Invalid field value — negative concurrency
 - **WHEN** a PATCH request sets `max_concurrent` to a negative number or zero
@@ -74,12 +79,11 @@ Scope: v1-mandatory
 #### Scenario: Invalid core_groups — unknown group name
 - **WHEN** a PATCH request sets `core_groups` to `["infra", "foo"]`
 - **THEN** the response SHALL return HTTP 422 with a validation error listing `"foo"` as an unknown group
-- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `graph`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`
+- **AND** the known groups are: `infra`, `state`, `scheduling`, `sessions`, `notifications`, `media`, `graph`, `temporal`, `module_mgmt`, `switchboard_routing`, `switchboard_backfill`, `delegation`, `domain_events`, `fleet_cases`, `cost_claims`, `continuity`
 
 #### Scenario: delegation is a known core group
 - **WHEN** a PATCH request sets `core_groups` to a list including `delegation`
 - **THEN** validation SHALL accept it like any other known group and the DB row SHALL be updated accordingly
-- **AND** the same validation SHALL accept `graph` and `fleet_cases`, completing parity with all fourteen registered group names
 
 #### Scenario: Empty PATCH body
 - **WHEN** a PATCH request has an empty body or no changed fields
@@ -89,13 +93,19 @@ Scope: v1-mandatory
 - **WHEN** a PATCH request targets a non-existent butler
 - **THEN** the response SHALL return HTTP 404
 
-#### Scenario: Hot exposure policy applies to subsequent sessions
+#### Scenario: Exposure policy update is persisted without restart
 
-- **WHEN** a PATCH request changes `tool_exposure_policy` to `auto` or `eager_filtered`
-- **THEN** the DB row and accessor cache are updated and the response excludes that field from `restart_required`
-- **AND** sessions planned after the update use the new policy while in-flight plans remain immutable
+- **WHEN** a PATCH supplies `tool_exposure_policy` as `eager_filtered` or `auto`
+- **THEN** the DB row SHALL be updated and that field SHALL NOT appear in `restart_required`
+- **AND** persistence SHALL NOT claim native discovery activation or an implemented per-attempt planner
 
 #### Scenario: Invalid exposure policy is rejected
 
-- **WHEN** a PATCH request supplies any `tool_exposure_policy` other than `eager_filtered` or `auto`
-- **THEN** the response SHALL return HTTP 422 without changing the stored policy
+- **WHEN** a PATCH supplies another non-null exposure policy value
+- **THEN** the API SHALL return HTTP 422 without changing the stored policy
+
+## Source References
+
+- Non-Negotiable Rule 3 (MCP inter-butler communication)
+- Non-Negotiable Rule 5 (DB-persisted operational tuning)
+- RFC 0027 (catalog and exposure contract; unlanded runtime work succeeds to RFC 0038)
