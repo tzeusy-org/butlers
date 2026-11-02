@@ -23,11 +23,15 @@ Scope: v1-mandatory
 
 ### Requirement: Bounded visit brief digest retention
 
-Health SHALL prune the clinical content of a visit brief digest once the appointment start is older
-than an owner-adopted retention window. Until the owner adopts a window, pruning SHALL be disabled
-and no stored digest SHALL change. Pruning SHALL run inside the `health_visit_brief` run-scoped
-advisory lock, before that run selects upcoming appointments. It SHALL work in bounded batches and
-SHALL skip any event still held by the in-process terminal-write fence. Pruning SHALL replace the
+Health SHALL prune the clinical content of a visit brief digest once an owner-adopted anchor plus an
+owner-adopted delay of `N` ≥ 0 days has passed. The anchor SHALL be one of `appointment` (the row's
+`event_start`) or `settlement`. Settlement means `delivered_at` for a delivered brief, or
+`updated_at` for a brief that carries a terminal failure flag. A brief that never settled uses
+`event_start`. Until the owner adopts an anchor and `N`, pruning SHALL be disabled and no stored
+digest SHALL change. Pruning SHALL run inside the `health_visit_brief` run-scoped advisory lock,
+before that run selects upcoming appointments. It SHALL work in batches with a per-run cap, so a
+backlog drains across successive runs. It SHALL skip any event still held by the in-process
+terminal-write fence. Pruning SHALL replace the
 digest with a residual receipt that holds `content_pruned_at` and any existing `partial_delivery`,
 `telegram_effect_uncertain` and `retryable` flags. It SHALL drop `figures` and the period keys.
 Pruning SHALL keep the row, `event_id`, `event_start`, `period_start` and `delivered_at`, and SHALL
@@ -37,17 +41,17 @@ reported in the job result and a WARNING log as a reason code without content, a
 that run's deliveries.
 
 ID: REQ-butler-health-006
-Source: bu-jv1moa.23; owner decision on the retention window pending (proposal options A to D)
+Source: bu-jv1moa.23; owner decision bu-yxfwfx pending (proposal options A to D; under D this requirement is removed or rescoped before archive)
 Scope: v1-reserved
 
-#### Scenario: Disabled until a window is adopted
+#### Scenario: Disabled until an anchor and delay are adopted
 
-- **WHEN** no retention window has been adopted and the job runs over briefs of any age
+- **WHEN** no anchor and `N` have been adopted and the job runs over briefs of any age
 - **THEN** every stored digest SHALL remain unchanged
 
 #### Scenario: Expired brief keeps its receipt and is never resent
 
-- **WHEN** a delivered brief's appointment start is older than the adopted window
+- **WHEN** a delivered brief's adopted anchor plus `N` days has passed
 - **THEN** its digest SHALL hold only `content_pruned_at` and any terminal flags
 - **AND** `delivered_at` SHALL be unchanged
 - **AND** later runs, including one after a reschedule of that event, SHALL send nothing for it
@@ -56,6 +60,12 @@ Scope: v1-reserved
 
 - **WHEN** an expired brief carries `partial_delivery` or `telegram_effect_uncertain`
 - **THEN** the residual receipt SHALL keep those flags and the event SHALL stay excluded from sends
+
+#### Scenario: Backlog drains across runs
+
+- **WHEN** more rows are eligible than one run's batch cap allows
+- **THEN** that run SHALL prune at most the cap
+- **AND** later runs SHALL prune the remainder
 
 #### Scenario: Repeated and overlapping runs are safe
 

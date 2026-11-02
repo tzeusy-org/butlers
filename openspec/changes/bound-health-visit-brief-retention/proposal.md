@@ -53,7 +53,7 @@ facts, not a retention duration. **No duration is adopted by any existing rule.*
   labels, values or fact ids. The job already behaves this way. The requirement pins it.
 - **Bounded pruning (specified, disabled until adopted).** When the job runs, before its sends and
   under its existing run-scoped advisory lock, it replaces the digest of each eligible row with a
-  residual receipt. A row is eligible once its appointment start is older than the adopted window.
+  residual receipt. A row is eligible once its adopted anchor plus the adopted delay `N` has passed.
   The residual keeps `content_pruned_at` and any terminal outcome flags. It drops `figures` and the
   period keys. The row itself, `event_id`, `event_start`, `period_start` and `delivered_at` stay.
   Rows are never deleted.
@@ -64,35 +64,53 @@ facts, not a retention duration. **No duration is adopted by any existing rule.*
 
 ## Owner decision (hard gate: pruning stays disabled until adopted)
 
-Choose the window after the appointment start at which the digest content is pruned. Until a
-choice is recorded, the default is **no deletion and no change**.
+Gate bead: **bu-yxfwfx**. The implementation successor is **bu-pyuirc**, held behind it.
 
-- **A. 30 days after the appointment start (recommended).** This is the same conservative horizon
+The owner chooses two things: an **anchor** and a delay **`N` ≥ 0 days** after it. Pruning happens
+once the anchor plus `N` has passed. Until a choice is recorded, the default is **no deletion and
+no change**.
+
+- **Anchor `appointment`:** the row's `event_start`.
+- **Anchor `settlement`:** when the brief settled. That is `delivered_at` for a delivered brief. For
+  a terminal failure (`partial_delivery` or `telegram_effect_uncertain`) it is `updated_at`, the
+  latest terminal-flag write, which can only delay pruning. A brief that never settled has no
+  settlement time, so it falls back to `event_start`.
+
+The options below are points in that space.
+
+- **A. Anchor `appointment`, `N` = 30 (recommended).** This is the same conservative horizon
   doctrine already uses for location data. It covers follow-up questions in the weeks after a visit.
   It bounds the duplicate to about a month beyond the brief's purpose, and Health facts still hold
   the full history.
-- **B. 7 days after the appointment start.** Smallest useful window. It still covers the visit
+- **B. Anchor `appointment`, `N` = 7.** Smallest useful window. It still covers the visit
   itself and a reschedule of a few days. Less time to trace a figure if the owner questions it
   later.
-- **C. At terminal settlement (delivered or terminal failure).** No retained duplicate at all. It
-  loses the traceability the brief requirement records ("every figure traceable") as soon as the
-  brief is sent.
-- **D. Keep indefinitely, explicitly accepted.** No pruning. The duplicate stays, and the mechanism
-  is not implemented. This records today's behaviour as a decision instead of an oversight.
+- **C. Anchor `settlement`, `N` = 0 (or a small `N`).** Prunes at the first daily run after
+  delivery or terminal failure, so almost no duplicate is retained. It loses the traceability the
+  brief requirement records ("every figure traceable") as soon as the brief is sent.
+- **D. Keep indefinitely, explicitly accepted.** No pruning, and the duplicate stays. This records
+  today's behaviour as a decision instead of an oversight. If D is chosen, REQ-butler-health-006 is
+  removed from this change before archive, or rescoped to an explicit indefinite-retention
+  statement. Only REQ-butler-health-005 (classification) lands. bu-pyuirc closes as deferred, with
+  the decision cited.
 
-Recommendation: **A**. Whichever option is chosen, residual receipts are kept, and the pruning job
-works through every past row on its first enabled run. Backup copies age out on their own schedule.
+Recommendation: **A**. Whichever option is chosen, residual receipts are kept. On the first enabled
+run, the backlog of past rows drains in capped batches across successive daily runs, not in one run.
+Backup copies age out on their own schedule.
 
-## Implementation packet (held until the owner adopts A, B or C)
+## Implementation packet (bu-pyuirc, held until the owner adopts A, B or C via bu-yxfwfx)
 
 - **Seam.** `src/butlers/jobs/health_visit_brief.py`. Add a prune phase to `_run_locked` after the
   terminal-latch reconciliation and before upcoming-window selection, so it runs inside the existing
-  `_RUN_LOCK_KEY` advisory lock and cannot overlap a send. Add a module constant for the adopted
-  window. `None` means disabled.
+  `_RUN_LOCK_KEY` advisory lock and cannot overlap a send. Add module constants for the adopted
+  anchor and `N`. `None` means disabled.
 - **Statement.** A bounded loop of
-  `UPDATE visit_briefs SET digest = jsonb_strip_nulls(jsonb_build_object('content_pruned_at', now(), 'partial_delivery', digest->'partial_delivery', 'telegram_effect_uncertain', digest->'telegram_effect_uncertain', 'retryable', digest->'retryable')), updated_at = now() WHERE event_id IN (SELECT event_id FROM visit_briefs WHERE event_start < $now - $window AND NOT digest ? 'content_pruned_at' ORDER BY event_start LIMIT $batch FOR UPDATE SKIP LOCKED)`.
-  Exclude event ids still held in `_PARTIAL_BRIEFS`. Cap the batches per run. The `content_pruned_at`
-  guard makes a repeat run a no-op.
+  `UPDATE visit_briefs SET digest = jsonb_strip_nulls(jsonb_build_object('content_pruned_at', now(), 'partial_delivery', digest->'partial_delivery', 'telegram_effect_uncertain', digest->'telegram_effect_uncertain', 'retryable', digest->'retryable')), updated_at = now() WHERE event_id IN (SELECT event_id FROM visit_briefs WHERE $anchor_expr < $now - $n_days AND NOT digest ? 'content_pruned_at' ORDER BY $anchor_expr LIMIT $batch FOR UPDATE SKIP LOCKED)`.
+  For `appointment`, `$anchor_expr` is `event_start`. For `settlement` it is
+  `CASE WHEN delivered_at IS NOT NULL THEN delivered_at WHEN digest ?| array['partial_delivery','telegram_effect_uncertain'] THEN updated_at ELSE event_start END`.
+  The anchor is a fixed choice in code, not caller input. Exclude event ids still held in
+  `_PARTIAL_BRIEFS`. Cap the batches per run, so any backlog drains across runs. The
+  `content_pruned_at` guard makes a repeat run a no-op.
 - **Reschedule.** A delivered row keeps `delivered_at`, so a later re-anchor still sends nothing. An
   undelivered row whose appointment moved back into the lead window is recomposed. The existing
   `ON CONFLICT ... DO UPDATE` writes a fresh digest, which is the correct new brief.
@@ -104,8 +122,9 @@ works through every past row on its first enabled run. Backup copies age out on 
 - **Migration.** None needed. The residual fits the existing `digest` column.
 - **Tests (real Postgres).** Extend `roster/health/tests/test_jobs.py::test_visit_brief` with cases:
   an expired delivered row is pruned to a receipt and the next run sends nothing; an expired
-  terminal row keeps its flags and stays excluded; a repeat run changes nothing; two overlapping
-  runs (prune plus send) still deliver once; and a disabled window leaves the digest byte-identical.
+  terminal row keeps its flags and stays excluded; a repeat run changes nothing; a backlog larger
+  than the cap drains across runs; two overlapping
+  runs (prune plus send) still deliver once; and a disabled policy leaves the digest byte-identical.
   Planned implementation delta: Tests: +0 ~1 -0 (new parametrized cases on the existing gate).
 
 ## Non-goals
