@@ -731,7 +731,6 @@
     "[\"roster/switchboard/tests/test_routing_verdict_log.py\", \"reportMissingImports\", \"4a012ad3557aea7e101d6f8373a5f23e4e7e00c10a9874b94bf2e750a840f73c\"]": 1,
     "[\"roster/switchboard/tests/test_rule_demotion.py\", \"reportMissingImports\", \"9701201d7099b46c03ee26bae0127b8552693bb27c6474eb408b3df42ddd1b99\"]": 1,
     "[\"roster/switchboard/tests/test_rule_promotion_trigger.py\", \"reportMissingImports\", \"c651063d9a0adc6def03b5d8a246636c8bfed126a3bbe632d90adf4004bb3def\"]": 1,
-    "[\"roster/switchboard/tests/test_rule_promotion_trigger.py\", \"reportOptionalMemberAccess\", \"1ec83f26bbb1a5cdf5992f00dbe393ae722b545dac3362a8fd16285063fd9b29\"]": 2,
     "[\"roster/switchboard/tests/test_runtime_attention_message.py\", \"reportMissingImports\", \"479b4a64163f390925e886711e3a7cc2ea89ccbaa774fff59b2aad6c297c3910\"]": 1,
     "[\"roster/switchboard/tests/test_runtime_attention_message.py\", \"reportMissingImports\", \"8fcaf4b9cdd1bd797805e71221386d12dcf0124b23e387e156639848aafe08c6\"]": 2,
     "[\"roster/switchboard/tests/test_runtime_attention_message.py\", \"reportMissingImports\", \"91d8f4116c5677b86272ddfef8988e105c0e42d65b3561107737d8f7d9ebe701\"]": 1,

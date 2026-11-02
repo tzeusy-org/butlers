@@ -692,9 +692,11 @@ async def db(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..
     """Async factory for pools on fresh migrated clones (``butlers.testing.db``).
 
     ``pool = await db("core", "relationship", schemas={"relationship": "relationship"},
-    schema="relationship")``. Every pool it opened closes at teardown.
+    schema="relationship")``. ``await db.open(url, schema=...)`` opens a pool on a URL
+    from ``fresh_db`` when a test also needs that URL (raw connections, admin sessions).
+    Every pool it opened closes at teardown.
     """
-    from butlers.testing.db import migrated_pool
+    from butlers.testing.db import migrated_pool, open_pool
 
     pools: list[Pool] = []
 
@@ -702,6 +704,13 @@ async def db(postgres_container: PostgresContainer) -> AsyncIterator[Callable[..
         pool = await migrated_pool(postgres_container, *chains, **kwargs)
         pools.append(pool)
         return pool
+
+    async def _open(db_url: str, **kwargs: Any) -> Pool:
+        pool = await open_pool(db_url, **kwargs)
+        pools.append(pool)
+        return pool
+
+    _make.open = _open  # type: ignore[attr-defined]
 
     try:
         yield _make

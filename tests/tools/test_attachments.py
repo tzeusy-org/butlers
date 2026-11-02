@@ -59,7 +59,7 @@ async def test_get_attachment_success_and_binary_integrity(blob_store):
     """Successfully retrieve attachment; binary data round-trips correctly."""
     data = b"\x89PNG\r\n\x1a\n" + b"x" * 100
     storage_ref = await blob_store.put(data, content_type="image/png", filename="test.png")
-    result = await get_attachment(blob_store, storage_ref)
+    result = await get_attachment(blob_store, storage_ref, origin_butler=TEST_BUTLER)
 
     assert result["storage_ref"] == storage_ref
     assert result["media_type"] == "image/png"
@@ -69,7 +69,7 @@ async def test_get_attachment_success_and_binary_integrity(blob_store):
     # Full byte range round-trip
     binary_data = bytes(range(256))
     ref2 = await blob_store.put(binary_data, content_type="application/octet-stream")
-    result2 = await get_attachment(blob_store, ref2)
+    result2 = await get_attachment(blob_store, ref2, origin_butler=TEST_BUTLER)
     assert base64.b64decode(result2["data_base64"]) == binary_data
 
 
@@ -78,24 +78,28 @@ async def test_get_attachment_error_cases(blob_store):
     large_data = b"x" * (MAX_ATTACHMENT_SIZE_BYTES + 1)
     storage_ref = await blob_store.put(large_data, content_type="application/octet-stream")
     with pytest.raises(ValueError, match="size limit"):
-        await get_attachment(blob_store, storage_ref)
+        await get_attachment(blob_store, storage_ref, origin_butler=TEST_BUTLER)
 
     # At the absolute 5MB ceiling but over the inline base64 cap: refused
     # (typed refusal), not a multi-MB base64 dump into a JSON tool result
     # (bu-2jtfw.7 — see test_attachment_view.py's contract test).
     at_limit = b"x" * MAX_ATTACHMENT_SIZE_BYTES
     ref2 = await blob_store.put(at_limit, content_type="application/octet-stream")
-    result = await get_attachment(blob_store, ref2)
+    result = await get_attachment(blob_store, ref2, origin_butler=TEST_BUTLER)
     assert result["status"] == "refused"
     assert result["reason"] == "inline_size_cap_exceeded"
     assert result["size_bytes"] == MAX_ATTACHMENT_SIZE_BYTES
     assert "data_base64" not in result
 
     with pytest.raises(BlobNotFoundError):
-        await get_attachment(blob_store, f"s3://{TEST_BUCKET}/{TEST_BUTLER}/2026/01/01/nope.jpg")
+        await get_attachment(
+            blob_store,
+            f"s3://{TEST_BUCKET}/{TEST_BUTLER}/2026/01/01/nope.jpg",
+            origin_butler=TEST_BUTLER,
+        )
 
     with pytest.raises(ValueError, match="Invalid storage_ref format"):
-        await get_attachment(blob_store, "not-a-valid-ref-format")
+        await get_attachment(blob_store, "not-a-valid-ref-format", origin_butler=TEST_BUTLER)
 
 
 async def test_get_attachment_inline_cap(blob_store):
@@ -103,7 +107,7 @@ async def test_get_attachment_inline_cap(blob_store):
     # 3 bytes -> 4 base64 chars, keep well under the cap.
     small = b"x" * ((MAX_INLINE_BASE64_BYTES // 4) * 3 - 3)
     ref = await blob_store.put(small, content_type="application/octet-stream")
-    result = await get_attachment(blob_store, ref)
+    result = await get_attachment(blob_store, ref, origin_butler=TEST_BUTLER)
     assert "data_base64" in result
     assert len(result["data_base64"]) <= MAX_INLINE_BASE64_BYTES
 
@@ -111,7 +115,11 @@ async def test_get_attachment_inline_cap(blob_store):
 async def test_get_attachment_reports_blob_store_unavailable():
     """A degraded S3 startup should produce an actionable attachment error."""
     with pytest.raises(ValueError, match="Blob storage is not configured or currently unavailable"):
-        await get_attachment(None, "s3://test-butlers-blobs/testbutler/2026/01/01/file.jpg")
+        await get_attachment(
+            None,
+            "s3://test-butlers-blobs/testbutler/2026/01/01/file.jpg",
+            origin_butler=TEST_BUTLER,
+        )
 
 
 def _pdf(pages: list[str | None], *, encrypted: bool = False, flate: bool = False) -> bytes:
