@@ -67,6 +67,25 @@ entity, or exposes a mapping read surface, and it returns only an opaque receipt
 Remap, delete, and rollback are separate owner-authorized operations. Route:
 `src/butlers/api/routers/home_person_mappings.py`.
 
+## Owner places
+
+The dashboard's **Devices → Places** panel, behind dashboard owner-auth, edits the owner place
+registry `public.owner_places` (core migration `core_303`): named places with a kind
+(home/work/airport/other), a centre at no more than five decimals, a 50-2000 m radius, other
+names, exact Wi-Fi SSIDs and an optional Home Assistant zone. Edits replace the whole row under
+compare-and-swap (a stale changed edit is `409`); pausing keeps a place but drops it from
+resolution; removal is a soft delete that never reuses the place id. Refusals are content-blind,
+the generic audit middleware never reads these bodies, and the explicit audit row records only
+operation, outcome and versions. Only the Travel and Chronicler runtime roles can read the table
+(row security) and no runtime role can write it. Deterministic readers use
+`butlers.owner_places.load_active_owner_places`; no coordinate or SSID reaches a model.
+
+Not yet cut over: the commuting ETA producer and the OwnTracks place-cluster and SSID projections
+still read `OWNTRACKS_PLACE_REFERENCES` and `chronicler/owntracks/ssid_places`. A later slice
+imports those once and moves the readers to the registry. Routes: `roster/home/api/router.py`
+(`/api/home/places`); requirement: `butler-home` spec, "Owner place registry and dashboard
+editor".
+
 ## Proposed realtime feature specifications
 
 The shared [event-response contract](../../openspec/changes/specify-realtime-feature-contracts/specs/event-response-contract/spec.md)
