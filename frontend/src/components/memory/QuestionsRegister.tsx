@@ -20,8 +20,8 @@
 // underlined word with an inline confirm; the list is refetched afterwards (also
 // after a 404/409), so the row shows the gap's current state, never a ghost.
 //
-// Color discipline: this register renders no red/amber/green pixels of its own;
-// the only state color is the shared load-error line.
+// Color discipline: rows carry no red/amber/green; red text is reserved for
+// failures (load, demand and dismiss errors), as in the sibling registers.
 // ---------------------------------------------------------------------------
 
 import { useState } from "react";
@@ -35,6 +35,7 @@ import { Voice } from "@/components/ui/Voice";
 import { useDismissMemoryGap, useMemoryGapDemand, useMemoryGaps } from "@/hooks/use-memory-gaps";
 import {
   coverageWord,
+  statusWord,
   demandDegradedSources,
   demandRowsOf,
   gapDegradedSources,
@@ -150,7 +151,7 @@ export function QuestionRow({ gap }: { gap: MemoryGap }) {
     >
       <span className="min-w-0 text-[13px] leading-snug">{gap.question}</span>
       <span className="flex items-baseline justify-end gap-1.5 whitespace-nowrap font-mono text-[11px]">
-        <span>{gap.status}</span>
+        <span>{statusWord(gap.status)}</span>
         <span className="text-[var(--mfg)]">{coverageWord(gap.coverage_state)}</span>
       </span>
 

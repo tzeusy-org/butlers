@@ -19,6 +19,19 @@ export function coverageWord(state: string): string {
   return COVERAGE_WORDS[state] ?? state.replace(/_/g, " ");
 }
 
+const STATUS_WORDS: Record<string, string> = {
+  open: "unanswered",
+  answerable: "answer ready",
+  delivered: "answer sent",
+  dismissed: "dismissed",
+  expired: "expired",
+};
+
+/** The word for a gap's lifecycle status; an unknown future status reads as itself. */
+export function statusWord(status: string): string {
+  return STATUS_WORDS[status] ?? status.replace(/_/g, " ");
+}
+
 type GapPages = { pages: CursorPage<MemoryGap>[] } | undefined;
 
 /** Every loaded row, in page order. Callers check the query's error state first. */

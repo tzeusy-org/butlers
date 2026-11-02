@@ -14,7 +14,7 @@ import { MemoryRouter } from "react-router";
 
 import QuestionsRegister from "@/components/memory/QuestionsRegister";
 import { useDismissMemoryGap, useMemoryGapDemand, useMemoryGaps } from "@/hooks/use-memory-gaps";
-import { coverageWord } from "@/lib/memory-gaps";
+import { coverageWord, statusWord } from "@/lib/memory-gaps";
 import type { MemoryGap, MemoryGapDemandRow } from "@/api/memory-gaps.ts";
 
 vi.mock("@/hooks/use-memory-gaps", () => ({
@@ -158,18 +158,19 @@ describe("QuestionsRegister", () => {
     const rows = container.querySelectorAll('[data-testid="question-row"]');
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain("What does Wei drink in the morning?");
-    expect(rows[0].textContent).toContain("open");
+    expect(rows[0].textContent).toContain("unanswered");
     expect(rows[0].textContent).toContain("never looked");
     expect(rows[0].textContent).toContain("2 threads");
     expect(rows[0].textContent).toContain("Jun 12, 2026");
     expect(rows[0].textContent).toContain("favorite_coffee");
-    expect(rows[1].textContent).toContain("answerable");
+    expect(rows[1].textContent).toContain("answer ready");
+    expect(rows[1].textContent).not.toContain("answerable");
     expect(rows[1].textContent).toContain("answered");
     expect(rows[1].textContent).toContain("1 thread");
     expect(rows[1].textContent).not.toContain("1 threads");
   });
 
-  it("links the entity and says which coverage word each state means", () => {
+  it("links the entity and says which coverage and status word each state means", () => {
     setGaps({ gaps: [makeGap()] });
     setDemand([]);
     render();
@@ -181,6 +182,12 @@ describe("QuestionsRegister", () => {
     expect(coverageWord("unavailable")).toBe("unavailable");
     expect(coverageWord("present")).toBe("answered");
     expect(coverageWord("some_new_state")).toBe("some new state");
+    expect(statusWord("open")).toBe("unanswered");
+    expect(statusWord("answerable")).toBe("answer ready");
+    expect(statusWord("delivered")).toBe("answer sent");
+    expect(statusWord("dismissed")).toBe("dismissed");
+    expect(statusWord("expired")).toBe("expired");
+    expect(statusWord("some_new_state")).toBe("some new state");
   });
 
   it("marks a gap whose delivery failed", () => {

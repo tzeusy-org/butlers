@@ -55,7 +55,7 @@ async def test_demand_counts_open_gaps_and_asks_and_excludes_answerable_ones(
     session_hook(pool)
     predicate = await _predicate(pool)
     other = await _second_predicate(pool, predicate)
-    asked_twice, asked_once, answered = (await _entity(pool) for _ in range(3))
+    asked_twice, asked_once, answered = [await _entity(pool) for _ in range(3)]
 
     # Two open gaps on one predicate; three asking threads in total.
     await _decline(pool, await _conversation(pool), asked_twice, predicate)
