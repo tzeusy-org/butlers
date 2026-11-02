@@ -35,7 +35,7 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_pool_with_conn(conn: AsyncMock) -> MagicMock:
+def _make_pool_with_conn(conn: FakeConnection) -> MagicMock:
     """Build a pool whose acquire() context manager yields conn."""
     pool = MagicMock()
     acquire_ctx = MagicMock()
