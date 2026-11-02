@@ -40,37 +40,9 @@ async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
 
 
 @pytest.fixture
-async def dashboard_messages_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_conversations (
-                id UUID PRIMARY KEY,
-                butler_name TEXT NOT NULL
-            )
-            """
-        )
-        await pool.execute(
-            """
-            CREATE TABLE public.dashboard_messages (
-                id UUID PRIMARY KEY,
-                conversation_id UUID NOT NULL REFERENCES public.dashboard_conversations(id)
-                    ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                session_id UUID,
-                model_name TEXT,
-                input_tokens INTEGER,
-                output_tokens INTEGER,
-                duration_ms INTEGER,
-                tool_calls JSONB,
-                error TEXT,
-                request_id UUID
-            )
-            """
-        )
-        yield pool
+async def dashboard_messages_pool(db):
+    """The real dashboard tables as core_213's predecessor (core_212) left them."""
+    return await db("core", revisions={"core": "core_212"})
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -115,7 +87,7 @@ async def test_upgrade_persists_a_sources_array(dashboard_messages_pool) -> None
         """,
         msg_id,
         conv_id,
-        '["finance.get_budget", "transaction#a1b2c3"]',
+        ["finance.get_budget", "transaction#a1b2c3"],
     )
 
     value = await dashboard_messages_pool.fetchval(
