@@ -294,8 +294,12 @@ once, and `public.ambient_projections` keeps only its SHA-256 digest. The token
 unlocks exactly `GET /api/projections/{id}/glance` for that projection, sent as
 `X-Projection-Token` (preferred) or `?token=`, which can reach proxy access
 logs. Every other route treats it as no credential; a non-GET request is 405 and
-an unknown or revoked grant is 404. Revoke with `DELETE /api/projections/{id}`;
-revoking every grant is the rollback. A surface that misses two expected fetch
+an unknown or revoked grant is 404. Rotate the token in one step with
+`POST /api/projections/{id}/rotate` (the old token stops working at once and the
+new one is returned once); revoke with `DELETE /api/projections/{id}`; revoking
+every grant is the rollback. The same verbs, with each grant's last fetch, live
+in the dashboard at Settings > Projections (`/settings/projections`), which is
+also where the lapsed-surface attention item links. A surface that misses two expected fetch
 intervals shows up as one low-severity "last fetched ... ago" item in the
 briefing's attention model until it fetches again; the item is derived on read,
 so nothing is written or scheduled. `?format=text` and `?format=png` render the
