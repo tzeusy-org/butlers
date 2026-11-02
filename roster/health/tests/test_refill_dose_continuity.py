@@ -12,6 +12,7 @@ These run the real write tools and ``run_insight_scan`` against Postgres (CI-onl
 
 from __future__ import annotations
 
+import importlib
 import shutil
 
 import pytest
@@ -39,14 +40,14 @@ async def health_pool(db):
 
 
 async def _log_doses(pool, medication_id: str, count: int) -> None:
-    from butlers.tools.health import medication_log_dose
+    medication_log_dose = importlib.import_module("butlers.tools.health").medication_log_dose
 
     for _ in range(count):
         await medication_log_dose(pool, medication_id)
 
 
 async def _refill_messages(pool) -> list[str]:
-    from butlers.jobs._roster.health_jobs import run_insight_scan
+    run_insight_scan = importlib.import_module("butlers.jobs._roster.health_jobs").run_insight_scan
 
     await run_insight_scan(pool)
     rows = await pool.fetch(
@@ -56,7 +57,8 @@ async def _refill_messages(pool) -> list[str]:
 
 
 async def test_a_dosage_edit_between_doses_keeps_the_dose_count(health_pool):
-    from butlers.tools.health import medication_add, medication_update
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily", quantity=10)
     await _log_doses(health_pool, str(med["id"]), 3)
@@ -70,7 +72,8 @@ async def test_a_dosage_edit_between_doses_keeps_the_dose_count(health_pool):
 
 
 async def test_a_quantity_change_resets_the_dose_count(health_pool):
-    from butlers.tools.health import medication_add, medication_update
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
 
     med = await medication_add(health_pool, "Lisinopril", "10mg", "daily", quantity=10)
     await _log_doses(health_pool, str(med["id"]), 6)
@@ -98,8 +101,10 @@ async def health_schema_pool(db):
 
 async def test_the_scan_and_the_send_time_probe_agree_after_a_dosage_edit(health_schema_pool):
     from butlers.core.insight_premise import probe_premise
-    from butlers.tools.health import medication_add, medication_update
-    from butlers.tools.switchboard.insight import premises
+
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
+    premises = importlib.import_module("butlers.tools.switchboard.insight").premises
 
     pool = health_schema_pool
     med = await medication_add(pool, "Metformin", "500mg", "daily", quantity=10)
@@ -125,7 +130,8 @@ async def test_the_scan_and_the_send_time_probe_agree_after_a_dosage_edit(health
 
 
 async def test_another_medications_doses_are_not_counted(health_pool):
-    from butlers.tools.health import medication_add, medication_update
+    module = importlib.import_module("butlers.tools.health")
+    medication_add, medication_update = module.medication_add, module.medication_update
 
     metformin = await medication_add(health_pool, "Metformin", "500mg", "daily", quantity=10)
     other = await medication_add(health_pool, "Aspirin", "100mg", "daily", quantity=100)

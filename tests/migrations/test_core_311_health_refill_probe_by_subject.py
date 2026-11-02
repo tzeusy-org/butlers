@@ -18,8 +18,6 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
 _CORE = Path(__file__).resolve().parents[2] / "alembic/versions/core"
 _SWITCHBOARD = "butler_switchboard_rw"
 _docker = pytest.mark.skipif(shutil.which("docker") is None, reason="Docker not available")
@@ -44,18 +42,10 @@ def test_the_revision_follows_core_310_and_downgrade_restores_core_272_body() ->
 
 
 @pytest.fixture
-def engine(postgres_container):
-    db_url = create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-    engine = create_engine(db_url)
-    with engine.begin() as conn:
-        conn.execute(text("CREATE SCHEMA IF NOT EXISTS health"))
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS health.facts (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), "
-                "subject text, predicate text, scope text, validity text, metadata jsonb, "
-                "valid_at timestamptz, created_at timestamptz DEFAULT clock_timestamp())"
-            )
-        )
+def engine(fresh_db):
+    # The memory chain owns ``facts``; migrating it into ``health`` gives the probe its
+    # real ``health.facts`` (core stays in ``public``, like production).
+    engine = create_engine(fresh_db("core", "memory", schemas={"memory": "health"}))
     yield engine
     engine.dispose()
 
@@ -65,8 +55,9 @@ def _med(conn, subject: str, *, quantity: int, filled: str, validity: str = "act
     return str(
         conn.execute(
             text(
-                "INSERT INTO health.facts (subject, predicate, scope, validity, metadata) "
-                "VALUES (:subject, 'medication', 'health', :validity, jsonb_build_object("
+                "INSERT INTO health.facts (subject, predicate, content, scope, validity, metadata) "
+                "VALUES (:subject, 'medication', 'medication', 'health', :validity, "
+                "jsonb_build_object("
                 "'active', true, 'quantity', :quantity, "
                 "'quantity_updated_at', (now() - CAST(:filled AS interval))::text)) RETURNING id"
             ),
@@ -86,8 +77,8 @@ def _doses(conn, med_id: str, count: int, *, ago: str = "1 hour") -> None:
     for _ in range(count):
         conn.execute(
             text(
-                "INSERT INTO health.facts (subject, predicate, scope, validity, metadata, valid_at) "
-                "VALUES ('owner', 'took_dose', 'health', 'active', "
+                "INSERT INTO health.facts (subject, predicate, content, scope, validity, metadata, valid_at) "
+                "VALUES ('owner', 'took_dose', 'dose', 'health', 'active', "
                 "jsonb_build_object('medication_id', CAST(:id AS text), 'skipped', false), "
                 "now() - CAST(:ago AS interval))"
             ),
