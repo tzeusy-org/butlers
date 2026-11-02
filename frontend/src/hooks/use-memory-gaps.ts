@@ -20,7 +20,7 @@ export function useMemoryGaps(params?: { status?: MemoryGapStatus; limit?: numbe
       getMemoryGaps({ status, limit, cursor: pageParam, signal }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
-      lastPage.meta.has_more ? (lastPage.meta.next_cursor ?? undefined) : undefined,
+      lastPage.next_cursor ?? undefined,
   });
 }
 

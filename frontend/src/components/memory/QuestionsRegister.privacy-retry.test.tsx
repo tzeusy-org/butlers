@@ -65,7 +65,7 @@ function makeGap(overrides: Partial<MemoryGap> = {}): MemoryGap {
 function setGaps(gaps: MemoryGap[]) {
   vi.mocked(useMemoryGaps).mockReturnValue({
     data: {
-      pages: [{ data: gaps, meta: { limit: 50, next_cursor: null, has_more: false } }],
+      pages: [{ items: gaps, next_cursor: null, limit: 50 }],
     },
     isError: false,
     isPending: false,

@@ -20,8 +20,9 @@ vi.mock("@/api/memory-gaps.ts", () => ({
 
 function page(ids: string[], next: string | null) {
   return {
-    data: ids.map((id) => ({ gap_id: id })),
-    meta: { limit: 2, next_cursor: next, has_more: next !== null },
+    items: ids.map((id) => ({ gap_id: id })),
+    next_cursor: next,
+    limit: 2,
   };
 }
 
@@ -96,7 +97,7 @@ describe("memory gap hooks", () => {
 
     expect(vi.mocked(getMemoryGaps).mock.calls[1][0]).toMatchObject({ cursor: "CUR1" });
     expect(latest.hasNextPage).toBe(false);
-    expect(latest.data?.pages.flatMap((p) => p.data.map((g) => g.gap_id))).toEqual(["a", "b", "c"]);
+    expect(latest.data?.pages.flatMap((p) => p.items.map((g) => g.gap_id))).toEqual(["a", "b", "c"]);
   });
 
   it("refetches the list after a dismissal succeeds", async () => {

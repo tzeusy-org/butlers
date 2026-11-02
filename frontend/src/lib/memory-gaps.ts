@@ -5,7 +5,7 @@ import type {
   MemoryGapDemandResponse,
   MemoryGapDemandRow,
 } from "@/api/memory-gaps.ts";
-import type { KeysetResponse } from "@/api/types.ts";
+import type { CursorPage } from "@/api/types.ts";
 
 const COVERAGE_WORDS: Record<string, string> = {
   unknown: "never looked",
@@ -19,16 +19,16 @@ export function coverageWord(state: string): string {
   return COVERAGE_WORDS[state] ?? state.replace(/_/g, " ");
 }
 
-type GapPages = { pages: KeysetResponse<MemoryGap>[] } | undefined;
+type GapPages = { pages: CursorPage<MemoryGap>[] } | undefined;
 
 /** Every loaded row, in page order. Callers check the query's error state first. */
 export function gapRows(data: GapPages): MemoryGap[] {
-  return data ? data.pages.flatMap((page) => page.data) : [];
+  return data ? data.pages.flatMap((page) => page.items) : [];
 }
 
 /** Pools any loaded page reported as dropped, de-duplicated. */
 export function gapDegradedSources(data: GapPages): string[] {
-  return data ? Array.from(new Set(data.pages.flatMap((page) => page.meta.sources_degraded ?? []))) : [];
+  return data ? Array.from(new Set(data.pages.flatMap((page) => page.sources_degraded ?? []))) : [];
 }
 
 export function demandRowsOf(data: MemoryGapDemandResponse | undefined): MemoryGapDemandRow[] {

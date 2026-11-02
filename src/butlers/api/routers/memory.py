@@ -1648,9 +1648,7 @@ async def list_memory_gaps(
 
 
 @router.get("/gaps/demand", response_model=ApiResponse[list[MemoryGapDemand]])
-async def memory_gap_demand(
-    db: DatabaseManager = Depends(_get_db_manager),
-) -> ApiResponse[list[MemoryGapDemand]]:
+async def memory_gap_demand(*, db: Db) -> ApiResponse[list[MemoryGapDemand]]:
     """Open gaps and asking threads per predicate, most asked first, across memory pools.
 
     Aggregated per pool in SQL and summed here, so the count is right whatever the page

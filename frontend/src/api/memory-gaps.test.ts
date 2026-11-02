@@ -28,16 +28,16 @@ function lastRequest(): { url: string; init: RequestInit } {
 
 describe("getMemoryGaps", () => {
   it("asks for the default open plus answerable list with no query string", async () => {
-    mockJson({ data: [], meta: { limit: 50, next_cursor: null, has_more: false } });
+    mockJson({ items: [], next_cursor: null, limit: 50 });
 
     const result = await getMemoryGaps();
 
-    expect(result.data).toEqual([]);
+    expect(result.items).toEqual([]);
     expect(lastRequest().url).toMatch(/\/memory\/gaps$/);
   });
 
   it("forwards status, limit and the opaque keyset cursor", async () => {
-    mockJson({ data: [], meta: { limit: 10, next_cursor: null, has_more: false } });
+    mockJson({ items: [], next_cursor: null, limit: 10 });
 
     await getMemoryGaps({ status: "answerable", limit: 10, cursor: "abc_-=" });
 
@@ -50,7 +50,7 @@ describe("getMemoryGaps", () => {
   });
 
   it("omits a null cursor and passes the abort signal through", async () => {
-    mockJson({ data: [], meta: { limit: 50, next_cursor: null, has_more: false } });
+    mockJson({ items: [], next_cursor: null, limit: 50 });
     const signal = new AbortController().signal;
 
     await getMemoryGaps({ cursor: null, signal });

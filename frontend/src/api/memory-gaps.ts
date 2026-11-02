@@ -7,7 +7,7 @@
  */
 
 import { apiFetch } from "@/api/client.ts";
-import type { ApiResponse, KeysetResponse } from "@/api/types.ts";
+import type { ApiResponse, CursorPage } from "@/api/types.ts";
 
 export type MemoryGapStatus = "open" | "answerable" | "delivered" | "dismissed" | "expired";
 
@@ -74,9 +74,9 @@ function gapSearch(params: MemoryGapParams | undefined): string {
 }
 
 /** GET /api/memory/gaps: open plus answerable gaps by default, newest first, keyset paged. */
-export function getMemoryGaps(params?: MemoryGapParams): Promise<KeysetResponse<MemoryGap>> {
+export function getMemoryGaps(params?: MemoryGapParams): Promise<CursorPage<MemoryGap>> {
   const qs = gapSearch(params);
-  return apiFetch<KeysetResponse<MemoryGap>>(qs ? `/memory/gaps?${qs}` : "/memory/gaps", {
+  return apiFetch<CursorPage<MemoryGap>>(qs ? `/memory/gaps?${qs}` : "/memory/gaps", {
     signal: params?.signal,
   });
 }

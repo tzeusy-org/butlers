@@ -80,13 +80,10 @@ function setGaps(state: GapsState = {}) {
       : {
           pages: [
             {
-              data: state.gaps ?? [],
-              meta: {
-                limit: 50,
-                next_cursor: null,
-                has_more: false,
-                sources_degraded: state.degraded,
-              },
+              items: state.gaps ?? [],
+              next_cursor: null,
+              limit: 50,
+              sources_degraded: state.degraded,
             },
           ],
         },

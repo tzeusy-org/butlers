@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +25,7 @@ def _wire_demand(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
         return outcome
 
     monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.demand_by_predicate", fake_demand)
-    app.dependency_overrides[_get_db_manager] = lambda: _GapDB()
+    app.dependency_overrides[get_db] = lambda: _GapDB()
 
 
 async def _get_demand(app):
