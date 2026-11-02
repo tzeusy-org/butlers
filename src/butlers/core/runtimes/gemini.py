@@ -49,6 +49,9 @@ logger = logging.getLogger(__name__)
 # Default timeout for Gemini CLI invocation (5 minutes)
 _DEFAULT_TIMEOUT_SECONDS = 300
 
+# The CLI's prefix for every MCP tool name (``mcp_<server>_<tool>``); no built-in uses it.
+_MCP_TOOL_PREFIX = "mcp_"
+
 # ``--allowed-mcp-server-names`` value for a session with no butler MCP server. Without an
 # allowlist the CLI starts every user- and project-level MCP server it finds, and the CLI
 # rejects an empty name ("mcpName is required"), so a name no server uses admits none.
@@ -265,44 +268,38 @@ def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dic
 
 
 def _extract_tool_call(obj: dict[str, Any]) -> dict[str, Any]:
-    """Extract a normalized tool call dict from a Gemini JSON object.
+    """Normalize a Gemini tool call, tagging CLI built-ins.
 
-    Handles both standard ``tool_use`` format and Gemini's
-    ``functionCall`` format.
+    Handles the stream-json ``tool_use`` event (``tool_name``/``tool_id``/``parameters``),
+    Gemini's ``functionCall`` container, and the standard ``tool_use`` block.
 
-    Parameters
-    ----------
-    obj:
-        A JSON object representing a tool call.
-
-    Returns
-    -------
-    dict[str, Any]
-        Normalized tool call with 'id', 'name', and 'input' keys.
+    The CLI names every MCP tool ``mcp_<server>_<tool>`` (0.66.0 enforces the prefix);
+    any other name is a CLI built-in (``run_shell_command``, ``read_file``,
+    ``list_directory``, ...) and is marked ``builtin`` so the spawner never mistakes it
+    for confirmed MCP work, matching the Claude adapter.
     """
-    # Gemini functionCall format: {"functionCall": {"name": ..., "args": ...}}
     fn_call = obj.get("functionCall", {})
     if fn_call and isinstance(fn_call, dict):
-        return {
+        record = {
             "id": obj.get("id", ""),
             "name": fn_call.get("name", ""),
             "input": fn_call.get("args", fn_call.get("arguments", {})),
         }
-
-    # Stream-json ``tool_use`` event: {"tool_name": ..., "tool_id": ..., "parameters": ...}
-    if "tool_name" in obj:
-        return {
+    elif "tool_name" in obj:
+        record = {
             "id": obj.get("tool_id", ""),
             "name": obj.get("tool_name", ""),
             "input": obj.get("parameters", {}),
         }
-
-    # Standard tool_use format
-    return {
-        "id": obj.get("id", ""),
-        "name": obj.get("name", ""),
-        "input": obj.get("input", obj.get("args", obj.get("arguments", {}))),
-    }
+    else:
+        record = {
+            "id": obj.get("id", ""),
+            "name": obj.get("name", ""),
+            "input": obj.get("input", obj.get("args", obj.get("arguments", {}))),
+        }
+    if not str(record["name"] or "").startswith(_MCP_TOOL_PREFIX):
+        record["builtin"] = True
+    return record
 
 
 def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
