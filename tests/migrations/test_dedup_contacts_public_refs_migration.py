@@ -16,11 +16,12 @@ Parent: bu-oluyt.7 (retire public.contacts) → bu-y6o7q (guarded DROP).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -31,14 +32,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_migration_core_133", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # (a) Unit: module structure + source guards
 # ---------------------------------------------------------------------------
@@ -47,7 +40,7 @@ def _load_migration():
 @pytest.mark.unit
 class TestMigrationStructure:
     def test_dedup_snapshots_guards_and_parity_raises(self):
-        dedup = _load_migration()._SNAPSHOT_AND_DEDUP_SQL
+        dedup = load_migration(_MIGRATION_PATH, "_migration_core_133")._SNAPSHOT_AND_DEDUP_SQL
         assert "to_regclass('public.contacts')" in dedup
         assert "priority_contacts_dedup_bak_core_133" in dedup
         assert "home_assistant_persons_dedup_bak_core_133" in dedup
@@ -84,7 +77,7 @@ CREATE TABLE connectors.home_assistant_persons (
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_dedup(provisioned_postgres_pool) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "_migration_core_133")
     async with provisioned_postgres_pool() as pool:
         await pool.execute(_PROVISION_SCHEMA)
         e1 = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
@@ -149,6 +142,6 @@ async def test_dedup(provisioned_postgres_pool) -> None:
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
 async def test_noop_when_contacts_absent(provisioned_postgres_pool) -> None:
     """Forward-compat: dedup cleanly no-ops if public.contacts is already gone."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "_migration_core_133")
     async with provisioned_postgres_pool() as pool:
         await pool.execute(mod._SNAPSHOT_AND_DEDUP_SQL)  # must not raise

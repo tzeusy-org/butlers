@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -19,19 +20,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location(
-        "core_214_collapse_dashboard_conversation_ghosts", _MIGRATION_PATH
-    )
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply(pool: asyncpg.Pool, fn_name: str) -> None:
     sqls: list[str] = []
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "core_214_collapse_dashboard_conversation_ghosts")
     mocked_op = MagicMock()
     mocked_op.execute.side_effect = sqls.append
     with patch.object(migration, "op", mocked_op):

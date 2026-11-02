@@ -20,11 +20,12 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -33,14 +34,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_124_backfill_dashboard_audit_log.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_core_124", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +67,7 @@ class TestMigrationStructure:
 
     def test_downgrade_is_noop_does_not_delete(self):
         # public.audit_log is append-only: downgrade must not DELETE history.
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "_core_124")
         from unittest.mock import MagicMock, patch
 
         executed: list[str] = []
@@ -125,7 +118,7 @@ CREATE TABLE IF NOT EXISTS public.dashboard_audit_log (
 
 def _backfill_sql_for_public() -> str:
     """The migration's backfill SQL targeting the flat-public legacy table."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "_core_124")
     return mod._backfill_sql("public.dashboard_audit_log")
 
 
@@ -271,7 +264,7 @@ async def test_upgrade_is_noop_when_legacy_table_absent(provisioned_postgres_poo
             """
         )
 
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "_core_124")
 
         # Drive upgrade() against a SQLAlchemy-style bind backed by the asyncpg
         # pool through a tiny sync shim is heavy; instead assert the guard helper

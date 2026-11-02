@@ -18,11 +18,12 @@ Parent epic: bu-sbdwt (entity-keyed-preferred-channel).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -40,14 +41,6 @@ _REL_003_PATH = (
 )
 
 
-def _load_migration(path: Path, name: str):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 # ---------------------------------------------------------------------------
 # (a) Unit: module structure + source guards
 # ---------------------------------------------------------------------------
@@ -56,7 +49,7 @@ def _load_migration(path: Path, name: str):
 @pytest.mark.unit
 class TestMigrationStructure:
     def test_force_env_parsing(self, monkeypatch):
-        mod = _load_migration(_MIGRATION_PATH, "_core_123")
+        mod = load_migration(_MIGRATION_PATH, "_core_123")
         monkeypatch.delenv("PREFERRED_CHANNEL_DROP_FORCE", raising=False)
         assert mod._forced() is False
         monkeypatch.setenv("PREFERRED_CHANNEL_DROP_FORCE", "1")
@@ -170,12 +163,12 @@ async def _active_channel_facts(pool, subject):
 
 
 def _backfill_sql():
-    mod = _load_migration(_MIGRATION_PATH, "_core_123")
+    mod = load_migration(_MIGRATION_PATH, "_core_123")
     return mod._BACKFILL_SQL.text.replace(":predicate", "$1")
 
 
 def _parity_sql():
-    mod = _load_migration(_MIGRATION_PATH, "_core_123")
+    mod = load_migration(_MIGRATION_PATH, "_core_123")
     return mod._PARITY_SQL.text.replace(":predicate", "$1")
 
 

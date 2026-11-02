@@ -19,12 +19,13 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark_integration = [
     pytest.mark.integration,
@@ -41,14 +42,6 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_169", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply(pool, fn_name: str) -> None:
     """Capture the migration's op.execute() SQL and run it on the real pool.
 
@@ -58,7 +51,7 @@ async def _apply(pool, fn_name: str) -> None:
     each call's literal SQL and replaying it against a real asyncpg pool
     exercises the exact same statements the real migration would issue.
     """
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_169")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -111,7 +104,7 @@ async def _insert_row(pool, *, metadata_sql: str, actor: str = "general") -> int
 @pytest.mark.unit
 def test_downgrade_issues_no_sql() -> None:
     """Non-reversible repair: downgrade must not touch the DB at all."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_169")
     fake_op = MagicMock()
     with patch.object(mod, "op", fake_op):
         mod.downgrade()
@@ -130,7 +123,7 @@ def test_source_never_touches_historical_columns() -> None:
 
 @pytest.mark.unit
 def test_source_cleanup_does_not_touch_reachability_acks() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_169")
     assert "audit_error_group:%::%" in mod.CLEANUP_DEAD_ACKS_SQL
     assert "scheduled_task_failure:%::%" in mod.CLEANUP_DEAD_ACKS_SQL
     # The DELETE predicate itself must never reference the reachability
@@ -239,7 +232,7 @@ async def test_repair_spans_multiple_batches(provisioned_postgres_pool) -> None:
                 )
             )
 
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "core_169")
         # Shrink the batch size so 25 rows definitely span multiple batches.
         small_batch_sql = mod.REPAIR_METADATA_SQL.replace(
             "v_batch_size CONSTANT BIGINT := 5000;", "v_batch_size CONSTANT BIGINT := 3;"

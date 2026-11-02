@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -35,17 +36,9 @@ CREATE TABLE public.audit_log (
 """
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_178", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 async def _apply(pool, fn_name: str) -> None:
     """Replay the exact SQL emitted by a migration against real Postgres."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_178")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -57,7 +50,7 @@ async def _apply(pool, fn_name: str) -> None:
 
 @pytest.mark.unit
 def test_migration_revision_chain_and_narrow_guard() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_178")
 
     assert mod.revision == "core_178"
     assert mod.down_revision == "core_177"
@@ -77,7 +70,7 @@ def test_migration_never_rewrites_unrelated_historical_columns() -> None:
 
 @pytest.mark.unit
 def test_downgrade_does_not_mutate_append_only_history() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_178")
     fake_op = MagicMock()
     with patch.object(mod, "op", fake_op):
         mod.downgrade()
