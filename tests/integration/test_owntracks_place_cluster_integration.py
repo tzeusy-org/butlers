@@ -31,7 +31,6 @@ from butlers.chronicler.adapters.owntracks_place_cluster import (
 )
 from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.db import register_jsonb_codec
-from butlers.testing.db import open_pool
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -55,13 +54,12 @@ def places_url(fresh_db) -> str:
 
 
 @pytest.fixture
-async def places_pool(places_url: str):
-    p = await open_pool(places_url, max_size=5)
+async def places_pool(db, places_url: str):
+    p = await db.open(places_url, max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
+    return p
 
 
 async def _insert_point(

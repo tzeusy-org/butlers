@@ -25,7 +25,6 @@ from butlers.chronicler.contracts import INITIAL_SOURCES, seed_source_registry
 from butlers.chronicler.jobs import run_project_owntracks_ssid
 from butlers.core.state import state_set
 from butlers.db import register_jsonb_codec
-from butlers.testing.db import open_pool
 from tests.polling import poll_until
 
 docker_available = shutil.which("docker") is not None
@@ -45,14 +44,13 @@ def ssid_url(fresh_db) -> str:
 
 
 @pytest.fixture
-async def ssid_pool(ssid_url: str):
-    p = await open_pool(ssid_url, max_size=5)
+async def ssid_pool(db, ssid_url: str):
+    p = await db.open(ssid_url, max_size=5)
     await p.execute("TRUNCATE TABLE connectors.owntracks_points CASCADE")
     await p.execute("TRUNCATE TABLE episodes, point_events, projection_checkpoints CASCADE")
     await p.execute("DELETE FROM state WHERE key = $1", SSID_PLACE_STATE_KEY)
     await seed_source_registry(p, sources=INITIAL_SOURCES)
-    yield p
-    await p.close()
+    return p
 
 
 async def _insert_point(
