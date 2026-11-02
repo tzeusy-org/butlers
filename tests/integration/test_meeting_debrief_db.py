@@ -36,7 +36,6 @@ from butlers.jobs.meeting_debrief import (
     DEBRIEF_CATEGORY,
     run_meeting_debrief,
 )
-from butlers.testing.db import open_pool
 from butlers.tools.relationship.meeting_debrief import (
     meeting_debrief_answer,
     meeting_debrief_pending,
@@ -65,13 +64,12 @@ def debrief_url(fresh_db) -> str:
 
 
 @pytest.fixture
-async def debrief_pool(debrief_url: str):
+async def debrief_pool(db, debrief_url: str):
     """A pool resolving bare table names the way a butler pool does (own schema first)."""
-    p = await open_pool(debrief_url, schema="relationship", max_size=1)
+    p = await db.open(debrief_url, schema="relationship", max_size=1)
     for table in _TRUNCATE:
         await p.execute(f"TRUNCATE TABLE {table} CASCADE")  # noqa: S608
-    yield p
-    await p.close()
+    return p
 
 
 class _Proposer:
