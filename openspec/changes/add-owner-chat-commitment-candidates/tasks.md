@@ -30,11 +30,12 @@ dispatch packet for bu-jv1moa.11.
   projection audience. Stop if only weaker authentication is possible.
 - [ ] 2.2 Verify the `[Unknown]` single-message envelope path; cover or exclude it explicitly.
 - [ ] 2.3 Implement the fixed projection over `switchboard.message_inbox` with the
-  `(received_at, inbox_id)` cursor, the 60-second in-flight exclusion and the 14-day floor;
+  `(received_at, inbox_id)` cursor, the normative 60-second in-flight exclusion and the 14-day floor;
   unavailability returns an error.
 - [ ] 2.4 Tests on migrated PostgreSQL next to `roster/switchboard/tests/test_ingest_api.py`
   (real `ingest_v1` writes, then projection reads): qualifying selection, group exclusion,
-  owner-sender mismatch exclusion, cursor resume without gaps, unauthenticated caller refused.
+  owner-sender mismatch exclusion, cursor resume without gaps, a late-committing row inside the
+  60-second window is not skipped, unauthenticated caller refused.
 
 ## 3. Relationship reducer and store (REQ-commitment-lifecycle-011, -012, -015)
 
@@ -58,13 +59,16 @@ dispatch packet for bu-jv1moa.11.
 
 - [ ] 4.1 Register `ConfirmSource` `relationship.commitment_candidate` (values `track`, `done`,
   `ignore`; no timeout value) in the trusted composition (`src/butlers/core/confirm_authority.py`);
-  `prepare` reloads the candidate, posture and owner recipient from Relationship state.
-- [ ] 4.2 Relationship sink: lock candidate, apply disposition, `create_commitment` for Track with
-  the evidence in design.md, write receipt, all in one transaction; first terminal wins.
+  `prepare` reloads the candidate, posture and owner recipient from Relationship state and builds
+  the prompt only from the persisted card snapshot (timeout fixed once).
+- [ ] 4.2 Relationship sink: lock candidate, apply disposition, look up an active fingerprint and
+  call `create_commitment` for Track only when none exists, with the evidence in design.md, write
+  receipt, all in one transaction; first terminal wins.
 - [ ] 4.3 Tests: extend `tests/integration/test_signed_confirms.py` with the Relationship sink:
   Track creates one commitment with evidence; Done and Ignore write no owner condition; retry of
   the same `confirm_id` is idempotent; forged, wrong-chat, replayed and expired taps change
-  nothing; lapse vs Track race; card step repeated returns the same confirm; expired card is
+  nothing; lapse vs Track race; card step repeated returns the same confirm, including a retry
+  in the final 24 hours before lapse; Track on an active fingerprint leaves its evidence unchanged; expired card is
   not re-sent; posture defers the card; four promises to one counterparty across owner-local
   midnight each receive one card (no cap, REQ-commitment-lifecycle-017).
 - [ ] 4.4 Tests delta at implementation: report actual `Tests: +a ~b -c`; extend existing files
@@ -78,5 +82,7 @@ dispatch packet for bu-jv1moa.11.
   commitment with the routed opening evidence.
 - [ ] 5.2 Document the registered source in `docs/runtime/signed-confirms.md`, the reducer in
   `roster/relationship/AGENTS.md`, and the connector facts in the connector docs.
-- [ ] 5.3 Rollback: disabling the job and the source stops new candidates and cards; existing
+- [ ] 5.3 File the follow-up for transport retention of the card prompt copy in
+  `public.pending_confirms` (design.md, Lapse and retention).
+- [ ] 5.4 Rollback: disabling the job and the source stops new candidates and cards; existing
   tombstones and receipts are retained so a restart does no duplicate work.

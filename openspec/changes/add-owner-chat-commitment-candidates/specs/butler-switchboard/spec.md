@@ -13,7 +13,10 @@ whenever that identity is present; and a source event time no more than 14 days 
 SHALL carry the source channel, endpoint identity, chat identity, the single non-owner
 counterparty channel identity, the provider message id, the source event time, the ingestion
 event id and the entry's text, ordered by a stable `(received_at, inbox id)` cursor that the
-caller supplies and the projection returns. The projection SHALL take no other argument, SHALL
+caller supplies and the projection returns. Because `received_at` is assigned by the
+application before the inbox insert commits, the projection SHALL exclude every row whose
+`received_at` is less than 60 seconds before the database's current time, so a slow ingest
+transaction commits before the cursor can pass its position. The projection SHALL take no other argument, SHALL
 write nothing, and SHALL report unavailability as an error, never as an empty complete page.
 
 ID: REQ-butler-switchboard-011
@@ -38,6 +41,13 @@ Scope: v1-reserved
 - **WHEN** a model session, connector or daemon other than the bound Relationship identity calls
   the projection
 - **THEN** the call is refused before any row is read
+
+#### Scenario: A late-committing ingest row is not skipped
+
+- **WHEN** an ingest transaction assigns `received_at` T, a second ingest with a later
+  `received_at` commits first, and the first commits 20 seconds after T
+- **THEN** no page returned before T plus 60 seconds includes either row, and the next page
+  after that includes both in cursor order
 
 #### Scenario: The cursor resumes without gaps
 

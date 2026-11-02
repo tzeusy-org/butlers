@@ -23,11 +23,11 @@ Source baseline: `origin/main` at `61334a9b3`. Every path and symbol below was r
 | 2. Batch envelope | Connector | `_build_batch_envelope` (`whatsapp_user_client.py:1873`, `telegram_user_client.py:1124`) emits `ingest.v1` with `payload.raw.conversation_history[]` entries `{message_id, sender_identity, sender, text, timestamp, is_new, reply_to}`, `sender.owner_sender_id`, `sender.chat_type`, `sender.participant_count`, `sender.participants`. Per-entry direction is not present; Telegram owner direction is inferred only from a numeric endpoint identity (`_extract_owner_sender_id`, `telegram_user_client.py:1669`). | Add explicit per-entry `is_from_me` and `forwarded` (REQ-connector-base-spec-013). |
 | 3. Admission and storage | Switchboard | `ingest_v1` (`roster/switchboard/tools/ingestion/ingest.py:772`) dedupes (`_compute_dedupe_key`, line 350) and writes `switchboard.message_inbox` (raw payload, `request_context` with `owner_sender_identity`, `chat_type`, `participant_count`, built by `_build_request_context`, line 488) and `public.ingestion_events` in one transaction. | Unchanged. The inbox stays the only durable copy of message text. |
 | 4. Projection | Switchboard | None. `relationship_jobs.run_interaction_sync` reads `switchboard.message_inbox` directly under the `core_077` grant for passive interaction sync; that grant is not reused here. | New fixed owner-chat span projection on the authenticated service-plane endpoint (REQ-butler-switchboard-011). |
-| 5. Reduction | Relationship | `detect_commitment` (`roster/relationship/tools/commitments.py:560`) is pure; its only caller is the LLM-invoked `capture_commitment` (line 767) behind the `commitment_capture` tool. Counterparty resolution today is by capitalised name (`_resolve_counterparty`, line 706). `resolve_contact_by_channel` (`src/butlers/identity.py:538`) reads `relationship.entity_facts`, Relationship's own schema. | New deterministic reducer job; counterparty from chat identity through `resolve_contact_by_channel`; candidate table in the Relationship schema (REQ-commitment-lifecycle-011, -012). |
+| 5. Reduction | Relationship | `detect_commitment` (`roster/relationship/tools/commitments.py:560`) is pure; its only caller is the LLM-invoked `capture_commitment` (line 745) behind the `commitment_capture` tool. Counterparty resolution today is by capitalised name (`_resolve_counterparty`, line 704). `resolve_contact_by_channel` (`src/butlers/identity.py:538`) reads `relationship.entity_facts`, Relationship's own schema. | New deterministic reducer job; counterparty from chat identity through `resolve_contact_by_channel`; candidate table in the Relationship schema (REQ-commitment-lifecycle-011, -012). |
 | 6. Card | Switchboard/Messenger confirm service | `ConfirmService.create` with a registered sink (`src/butlers/core/confirm_service.py:57`), `cfm1` tokens (`confirm_tokens.py`), `public.pending_confirms` (`core_282_signed_confirms`), composition `ConfirmAuthorityTopology` with `ConfirmSource` (`confirm_authority.py`). Dark until the canonical switch installs the composition (`docs/runtime/signed-confirms.md`). | New `ConfirmSource` named `relationship.commitment_candidate` (REQ-commitment-lifecycle-013). |
-| 7. Tap | Telegram bot connector, confirm resolver | `telegram_bot._maybe_handle_confirm_callback` (line 1111) verifies HMAC and forwards to `POST /api/confirms/callback`; the resolver locks the row, matches sender and chat, rechecks the deadline under the lock, and records one answer. | Unchanged. |
+| 7. Tap | Telegram bot connector, confirm resolver | `telegram_bot._maybe_handle_confirm_callback` (line 1112) verifies HMAC and forwards to `POST /api/confirms/callback`; the resolver locks the row, matches sender and chat, rechecks the deadline under the lock, and records one answer. | Unchanged. |
 | 8. Application | Relationship sink | `dispatch_one` (`confirm_service.py:286`) calls the registered `apply(confirm_id, sink_ref, value)` and retries the same key until a receipt with `status: "applied"` returns. Expiry without `on_timeout_value` records `no_answer` without calling the sink. | Relationship sink performs Track, Done or Ignore with a receipt keyed by `confirm_id` (REQ-commitment-lifecycle-014). |
-| 9. Commitment | Core helper over `public.owner_conditions` | `create_commitment` (`src/butlers/core/commitments.py:425`), `commitment_fingerprint` (line 181), escalation in `src/butlers/jobs/commitment_escalation.py`. | Unchanged; Track calls `create_commitment`. |
+| 9. Commitment | Core helper over `public.owner_conditions` | `create_commitment` (`src/butlers/core/commitments.py:425`) confirms a duplicate fingerprint in place but replaces `evidence_opened` with the newest observation (module docstring, lines 50-60); `commitment_fingerprint` (line 181); `list_active_commitments` (line 583); escalation in `src/butlers/jobs/commitment_escalation.py`. | Helper unchanged. Track looks up an active fingerprint first and calls `create_commitment` only when none exists, so an existing commitment's opening evidence is kept. |
 
 ## Ownership
 
@@ -48,8 +48,10 @@ Source baseline: `origin/main` at `61334a9b3`. Every path and symbol below was r
 `direction`, `counterparty_entity_id`, `action_description` (at most 120 characters),
 `deadline`, `confidence`, `marker`, `fingerprint`, `channel`, `evidence_ref`
 (`{ingestion_event_id, provider_message_id}`), `taint` (`untrusted_origin`), `event_time`,
-`lapse_at` (`event_time + 14 days`), `confirm_id`, `card_expires_at`, `created_at`,
-`terminal_at`, `commitment_fingerprint`. Content columns are nulled on any terminal transition.
+`lapse_at` (`event_time + 14 days`), `card_snapshot` (rendered question, card spans, recipient
+binding, timeout fixed once; written before the first card request), `confirm_id`,
+`card_expires_at`, `created_at`,
+`terminal_at`, `commitment_fingerprint`. Content columns, including `card_snapshot`, are nulled on any terminal transition.
 
 ### Evidence on a tracked commitment
 
@@ -91,13 +93,13 @@ message text is never stored outside the Switchboard inbox.
 | Quiet or sleep hours | Transport defers delivery (Messenger recheck); the producer does not bypass it. |
 | Less than 30 seconds to lapse | Never carded; lapses. |
 | Card expires unanswered, or first send lost or ambiguous | No re-send (transport never resends; producer creates one card per candidate). Candidate stays `carded` and lapses at `lapse_at`. |
-| Card step repeated after a crash | `ConfirmService.create` returns the existing row for the same producer key. |
+| Card step repeated after a crash | The prompt is rebuilt from the persisted card snapshot (question, spans, recipient, timeout fixed once), so `ConfirmService.create` sees an identical prompt and returns the existing row; recomputing the timeout would change the immutable prompt and be refused. |
 
 ### Dispositions and races
 
 | Event | Candidate | Commitment ledger | Receipt |
 |---|---|---|---|
-| Track on `carded` | `tracked`, content cleared | `create_commitment` with candidate fields and evidence; if fingerprint active, confirm in place, opening evidence unchanged | `{status: applied, outcome: tracked, fingerprint}` |
+| Track on `carded` | `tracked`, content cleared | `create_commitment` with candidate fields and evidence; if the fingerprint is already active, no write (existing row and evidence unchanged) | `{status: applied, outcome: tracked, fingerprint}` |
 | Done on `carded` | `done`, content cleared | none | `{status: applied, outcome: done}` |
 | Ignore on `carded` | `ignored`, content cleared | none | `{status: applied, outcome: ignored}` |
 | Any answer on a terminal candidate (lapsed, superseded, or already disposed) | unchanged (first terminal wins) | none | `{status: applied, outcome: already_<state>}` |
@@ -107,7 +109,7 @@ message text is never stored outside the Switchboard inbox.
 | Double tap, concurrent taps | transport records one answer | at most one application | one receipt |
 | Forged signature, wrong sender or chat, expired confirm | unchanged; refused before the sink | none | none |
 | Lapse sweep vs Track application | row lock on the candidate serializes them; the first committed terminal state wins | Track writes only if it wins | per the winner |
-| Routed REQ-007 create vs Track | `create_commitment` serializes on the source advisory lock and fingerprint | one active commitment | Track reports `tracked` with the shared fingerprint |
+| Routed REQ-007 create vs Track | Track's lookup finds the routed row and skips the write; if the routed create commits between lookup and `create_commitment`, the helper confirms in place and `evidence_opened` becomes Track's | one active commitment | Track reports `tracked` with the shared fingerprint |
 | Counterparty posture changes after carding | unchanged | Track still applies (explicit owner choice) | normal |
 
 Done means "already handled, nothing to track"; Ignore means "not a promise worth tracking".
@@ -122,6 +124,22 @@ which the Track-only boundary and REQ-008 provenance rule do not allow.
 | `lapse_at` with no disposition | `lapsed`, silent, content cleared. |
 | Any terminal transition | Content cleared; tombstone keeps `source_key`, state, timestamps, `confirm_id`, `commitment_fingerprint`. |
 | `event_time` older than 14 days and terminal | Tombstone deleted. Safe, because the projection never returns events older than 14 days, so a purged tombstone can never be re-hit. |
+
+The 14-day bound covers the Relationship candidate store only. The card's question and quoted
+action are also written to `public.pending_confirms` by the signed confirm transport, which
+today neither purges nor redacts answered or expired rows and includes them in backups
+(`docs/runtime/signed-confirms.md`, `docs/operations/backup-restore.md`). Bounding that copy is a
+transport retention change, filed as a follow-up rather than claimed here.
+
+### Restatement after Done or Ignore
+
+Duplicate suppression looks only at active commitments and non-terminal candidates. After the
+owner taps Done or Ignore, the candidate is terminal and its tombstone keeps no fingerprint, so a
+later message restating the same promise to the same person creates a new candidate and a new
+card. With no S1 cap (REQ-commitment-lifecycle-017) nothing else limits this. It is accepted for
+S1 because each card follows a fresh message the owner wrote, and keeping a fingerprint on Done
+or Ignore tombstones would retain a per-person action hash beyond what the recorded decisions
+allow. The S2 cap revisit is the place to reconsider it.
 
 ## Decisions (engineering judgment, recorded)
 
@@ -145,8 +163,12 @@ which the Track-only boundary and REQ-008 provenance rule do not allow.
    `metadata.unidentified`, not the owner. This is the identity model's existing definition
    (`docs/concepts/identity-model.md`), not a new policy.
 6. Reject, never truncate, actions over 120 characters. Reversible: yes.
-7. One card per candidate, no re-card, 24-hour maximum card timeout bounded by `lapse_at`.
-   Re-carding would be new attention policy. Reversible: yes.
+7. One card per candidate, no re-card, 24-hour maximum card timeout bounded by `lapse_at` and
+   fixed once in a persisted card snapshot. Re-carding would be new attention policy.
+   Reversible: yes.
+11. Track skips the ledger write when the fingerprint is already active, instead of relying on
+    `create_commitment`'s duplicate path, which would overwrite the existing `evidence_opened`.
+    No new ledger seam is needed. Reversible: yes.
 8. Carded but unanswered candidates lapse at the recorded 14-day horizon, not at card expiry,
    so a delayed application of an answer accepted before the deadline normally lands.
 9. Reducer does not run while the signed-confirm composition is absent, so no owner-chat

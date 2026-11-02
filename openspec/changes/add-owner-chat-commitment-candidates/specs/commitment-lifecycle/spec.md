@@ -115,9 +115,13 @@ the registered deterministic sink path of `notify-confirm-interaction`
 (REQ-notify-confirm-interaction-009), with producer `relationship.commitment_candidate`, the
 candidate id as producer key and sink reference, the owner entity's primary Telegram binding as
 recipient, and exactly three options with values `track`, `done` and `ignore`. The card SHALL
-declare no `on_timeout_value`, and its timeout SHALL be the lesser of 86400 seconds and the time
-remaining until the candidate's lapse; a candidate with less than 30 seconds remaining SHALL NOT
-be carded. Immediately before creating a card the reducer SHALL re-check the fingerprint against
+declare no `on_timeout_value`. Before the first card request the reducer SHALL persist, on the
+candidate row, a card snapshot: the rendered question, card spans, recipient binding and a
+timeout fixed once as the lesser of 86400 seconds and the time then remaining until the
+candidate's lapse. Every card request, including a retry after a crash or an ambiguous reply,
+SHALL build the prompt only from that snapshot, so a retry presents an identical prompt and
+receives the existing confirm. A candidate with less than 30 seconds remaining when the snapshot
+would be taken SHALL NOT be carded. Immediately before creating a card the reducer SHALL re-check the fingerprint against
 active commitments and SHALL terminate the candidate as `superseded` without a card on a match.
 While the counterparty's posture is not `active`, the card SHALL be deferred without losing the
 candidate. While the signed-confirm composition is unavailable, the candidate SHALL stay pending.
@@ -136,6 +140,13 @@ Scope: v1-reserved
 - **THEN** exactly one confirm with producer `relationship.commitment_candidate`, options
   `track`, `done` and `ignore`, and no timeout value exists for that candidate
 - **AND** repeating the card step returns the same confirm rather than a second one
+
+#### Scenario: A card retry late in the candidate's life reuses the first confirm
+
+- **WHEN** the reducer crashes after the confirm was created but before recording `carded`, and
+  retries less than 24 hours before the candidate's lapse
+- **THEN** the retry rebuilds the identical prompt from the persisted snapshot and receives the
+  existing confirm; no second confirm and no refused or orphaned card results
 
 #### Scenario: Posture defers the card
 
@@ -169,8 +180,13 @@ commitment: it SHALL call `create_commitment` with the candidate's kind, directi
 confidence, action and deadline, and `evidence_opened` carrying `source: "owner_chat_candidate"`,
 the channel, the source evidence reference, the source event time, the marker, the candidate id,
 the `confirm_id` and the answer time, and SHALL then mark the candidate `tracked` with the
-resulting fingerprint. When an active commitment already has that fingerprint, `track` SHALL
-confirm it in place and SHALL NOT replace its opening evidence. `done` SHALL mark the candidate
+resulting fingerprint. Inside the sink transaction, `track` SHALL first look up an active
+commitment with the candidate's fingerprint; when one exists, `track` SHALL NOT call
+`create_commitment` and SHALL mark the candidate `tracked` with that fingerprint, leaving the
+commitment row, including its `evidence_opened`, unchanged. If a commitment with that fingerprint
+commits between the lookup and `create_commitment`, the helper's duplicate semantics apply: the
+episode and its `first_detected_at` are kept and `evidence_opened` takes the newest observation,
+which is this Track. `done` SHALL mark the candidate
 `done` and `ignore` SHALL mark it `ignored`; neither SHALL create, confirm or resolve any
 commitment. A candidate that is already terminal SHALL keep its first terminal state; the sink
 SHALL record a receipt naming that state and change nothing else. A confirm answer SHALL confer
@@ -189,11 +205,11 @@ Scope: v1-reserved
 - **AND** a retried application of the same `confirm_id` after a lost reply creates no second
   commitment and returns the same receipt
 
-#### Scenario: Track on an already-tracked promise confirms it
+#### Scenario: Track on an already-tracked promise leaves the commitment alone
 
 - **WHEN** an active commitment with the candidate's fingerprint exists when Track is applied
-- **THEN** that commitment is confirmed in place, its `evidence_opened` is unchanged, and the
-  candidate is `tracked`
+- **THEN** no owner condition is written, the commitment's `evidence_opened` is unchanged, and
+  the candidate is `tracked` with that fingerprint
 
 #### Scenario: Done and Ignore never touch the commitment ledger
 
@@ -222,7 +238,10 @@ transition (`tracked`, `done`, `ignored`, `superseded`, `lapsed`) the store SHAL
 action description, deadline and counterparty, keeping only a content-free tombstone: the source
 key, the terminal state, timestamps, the `confirm_id` when carded, and the commitment fingerprint
 when tracked. Tombstones SHALL be deleted once their source event time is more than 14 days old.
-No candidate content SHALL be retained longer than the 14-day horizon.
+The Relationship candidate store SHALL retain no candidate content longer than the 14-day
+horizon. The card's prompt copy (question and quoted action) in the signed confirm transport's
+`public.pending_confirms` row is outside this store and follows that transport's own retention
+and backup policy; this requirement does not claim to purge it.
 
 ID: REQ-commitment-lifecycle-015
 Source: bu-jv1moa.11 recorded decisions (unconfirmed candidates lapse silently after 14 days; content retention limited to the action phrase)
@@ -263,12 +282,19 @@ Scope: v1-reserved
 - **THEN** the commitment is created exactly as REQ-commitment-lifecycle-007 requires, with no
   candidate and no card
 
-#### Scenario: Both paths see the same promise
+#### Scenario: A routed commitment supersedes a pending candidate
 
-- **WHEN** a routed owner conversation creates a commitment whose fingerprint matches a pending
-  or carded candidate, and the owner later taps Track
-- **THEN** one active commitment exists for that fingerprint and its opening evidence is the
-  routed one
+- **WHEN** a routed owner conversation creates a commitment whose fingerprint matches a pending,
+  not yet carded candidate
+- **THEN** the candidate becomes `superseded` at its card step, no card is created, and one
+  active commitment exists with the routed opening evidence
+
+#### Scenario: Track after a routed commitment on a carded candidate
+
+- **WHEN** a routed owner conversation creates a commitment whose fingerprint matches an
+  already carded candidate, and the owner then taps Track
+- **THEN** one active commitment exists for that fingerprint, its opening evidence is the routed
+  one, and the candidate is `tracked`
 
 ### Requirement: No Per-Counterparty Card Cap in S1
 

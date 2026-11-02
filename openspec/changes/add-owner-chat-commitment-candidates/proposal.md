@@ -69,4 +69,4 @@ No MODIFIED block is added, so there is no overwrite risk against
 - Documentation at implementation: `docs/runtime/signed-confirms.md` (new registered source),
   `roster/relationship/AGENTS.md`, connector docs.
 - Affected RFCs: none amended.
-- Rollback: close this PR (draft), or revert it (after merge, before implementation).
+- Rollback: revert this change before implementation starts.
