@@ -120,6 +120,7 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
 - **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally` under a root-owned directory whose ancestors are not group/other-writable (the CLI silently skips a system settings file anywhere else), failing before spawn when that directory chain does not qualify
 - **AND** passes `--allowed-mcp-server-names` naming the butler's MCP servers, or a name no server uses when there are none (the CLI rejects an empty name), so user- or project-level MCP servers never start even though `--skip-trust` trusts the working directory
+- **AND** stages `skills.enabled: false` and `experimental.enableAgents: false` in those settings and prefixes a prompt that starts with `/` with a zero-width space, so the trusted working directory's `.gemini/skills`, `.agents/skills`, `.gemini/agents` and `.gemini/commands` never load into the session; the CLI has no setting that stops it loading `GEMINI.md` from the working directory and its ancestors, so no roster directory ships one
 - **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
 - **AND** passes declared butler env vars to the subprocess
 - **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.66.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
@@ -732,6 +733,7 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **THEN** the consecutive-identical streak SHALL count only calls of the same thread
 - **AND** a subagent repeating one call to the threshold SHALL trip the loop detector even when its parent's calls interleave
 - **AND** parallel subagents that each stay under the threshold SHALL NOT trip it, however their calls interleave
+- **AND** merging daemon-captured MCP records into the adapter-reported list SHALL keep the adapter's stream order, so a thread alternating a runtime built-in with one MCP call SHALL NOT read as consecutive identical calls
 
 #### Scenario: Tool-call budget exceeded
 - **WHEN** the cumulative tool-call count for a session exceeds a configured non-zero `max_tool_calls`

@@ -223,3 +223,51 @@ def test_merge_matches_raw_parser_payload_to_capture_fingerprint():
     assert [call["id"] for call in merged] == ["t1", "t2"]
     assert [call["name"] for call in merged] == ["contact_resolve", "contact_resolve"]
     assert all(call["outcome"] == "success" for call in merged)
+
+
+def test_merge_keeps_stream_order_between_mcp_and_builtin_calls():
+    """A subagent alternating Bash with one MCP call stays interleaved, not a loop.
+
+    Capture only sees MCP calls; built-ins exist only on the parser side. Merging
+    must keep the parser's stream order so the per-thread loop guard does not
+    read the MCP calls as consecutive. A capture record without a parser
+    counterpart lands before the next paired call that executed after it.
+    """
+    from butlers.core.spawner_guardrails import (
+        _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD,
+        _check_degenerate_tool_loop,
+    )
+
+    rounds = _DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD
+    parsed: list[dict] = []
+    for i in range(rounds):
+        parsed.append(
+            {
+                "id": f"bash{i}",
+                "name": "Bash",
+                "input": {"command": f"ls {i}"},
+                "builtin": True,
+                "parent_tool_use_id": "agent1",
+            }
+        )
+        parsed.append(
+            {
+                "id": f"mcp{i}",
+                "name": "mcp__lifestyle__state_get",
+                "input": {"key": "k"},
+                "parent_tool_use_id": "agent1",
+            }
+        )
+    executed = [{"name": "state_get", "input": {"key": "k"}, "outcome": "success"}] * rounds
+    executed = [{"name": "notify", "input": {"msg": "hi"}, "outcome": "success"}, *executed]
+
+    merged = _merge_tool_call_records(parsed, executed, butler_name="lifestyle")
+
+    assert [call.get("id", call["name"]) for call in merged] == [
+        "bash0",
+        "notify",
+        "mcp0",
+        *[f"{kind}{i}" for i in range(1, rounds) for kind in ("bash", "mcp")],
+    ]
+    assert all(c["outcome"] == "success" for c in merged if c["name"] == "state_get")
+    assert _check_degenerate_tool_loop(merged) is None
