@@ -170,8 +170,8 @@ def _cgi_update_with_message(data: str = "cgi:2026-07-02:confirm") -> dict[str, 
     }
 
 
-def _urls(connector: TelegramBotConnector) -> list[str]:
-    return [call.args[0] for call in connector._http_client.post.call_args_list]
+def _urls(post: AsyncMock) -> list[str]:
+    return [call.args[0] for call in post.call_args_list]
 
 
 @pytest.mark.parametrize(
@@ -209,11 +209,12 @@ async def test_settled_answer_stamps_outcome_and_retires_buttons(body, outcome):
 async def test_unsettled_answer_keeps_buttons_for_retry(resolve):
     connector = _make_connector(internal_api_url="http://dashboard-api:41200")
     connector._http_client = MagicMock()
-    connector._http_client.post = AsyncMock(side_effect=[resolve, _resp()])
+    post = AsyncMock(side_effect=[resolve, _resp()])
+    connector._http_client.post = post
 
     assert await connector._maybe_handle_gap_interview_callback(_cgi_update_with_message())
 
-    urls = _urls(connector)
+    urls = _urls(post)
     assert not any(u.endswith(("/editMessageText", "/editMessageReplyMarkup")) for u in urls)
 
 
@@ -222,10 +223,9 @@ async def test_failed_text_edit_still_removes_keyboard():
     connector._http_client = MagicMock()
     failed_edit = _resp(status_code=500)
     failed_edit.raise_for_status.side_effect = RuntimeError("telegram 500")
-    connector._http_client.post = AsyncMock(
-        side_effect=[_resp(body={"status": "applied"}), _resp(), failed_edit, _resp()]
-    )
+    post = AsyncMock(side_effect=[_resp(body={"status": "applied"}), _resp(), failed_edit, _resp()])
+    connector._http_client.post = post
 
     assert await connector._maybe_handle_gap_interview_callback(_cgi_update_with_message())
 
-    assert _urls(connector)[-1].endswith("/editMessageReplyMarkup")
+    assert _urls(post)[-1].endswith("/editMessageReplyMarkup")

@@ -1463,13 +1463,15 @@ class TelegramBotConnector:
         text edit fails we still try to strip the keyboard alone.
         """
         message = callback_query.get("message")
-        chat = message.get("chat") if isinstance(message, dict) else None
-        message_id = message.get("message_id") if isinstance(message, dict) else None
+        if not isinstance(message, dict):
+            return
+        chat = message.get("chat")
+        message_id = message.get("message_id")
         chat_id = chat.get("id") if isinstance(chat, dict) else None
         if chat_id is None or not isinstance(message_id, int):
             return
-        question = message.get("text") if isinstance(message.get("text"), str) else ""
-        text = f"{question}\n\n{outcome}" if question else outcome
+        question = message.get("text")
+        text = f"{question}\n\n{outcome}" if isinstance(question, str) and question else outcome
         try:
             # editMessageText without reply_markup also drops the inline keyboard.
             await edit_telegram_message_text(
