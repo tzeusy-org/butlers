@@ -561,7 +561,13 @@ async def test_reads_are_unavailable_never_false_empty(seams):
 
 from tests.integration import test_general_capture_ledger as ledger  # noqa: E402
 
-capture_db_url = ledger.capture_db_url
+
+@pytest.fixture
+def capture_db_url(fresh_db):
+    # A fresh migrated ledger per case: listings and row counts start empty.
+    return fresh_db(
+        "core", "general", schemas={"general": "general"}, revisions={"core": "core_287"}
+    )
 
 
 @pytest.fixture
