@@ -13,6 +13,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from butlers.api.pagination import Page
+
 
 class TimelineEvent(BaseModel):
     """A single event in the cross-butler timeline.
@@ -75,45 +77,25 @@ class TimelineHeartbeatRollup(BaseModel):
     failed: int = 0
 
 
-class TimelineMeta(BaseModel):
-    """Pagination metadata for timeline responses."""
+class TimelineResponse(Page[TimelineEvent]):
+    """Cursor-paginated timeline response: the shared ``Page`` plus rollup siblings.
 
-    cursor: str | None = None
-    has_more: bool = False
+    Uses an opaque composite ``(timestamp, id)`` keyset cursor for stable
+    descending pagination: pass ``next_cursor`` back as ``cursor`` for the next
+    page; ``next_cursor`` is ``null`` on the last page.
+    """
+
     heartbeat_rollup: TimelineHeartbeatRollup = Field(default_factory=TimelineHeartbeatRollup)
-    degraded_sources: list[str] = Field(
-        default_factory=list,
-        description=(
-            "Names of event sources ('sessions', 'notifications') whose "
-            "query failed for this request. A non-empty list means the "
-            "returned page is a partial view of that source, not a truthful "
-            "empty result — mirrors the aggregates_available degraded-mode "
-            "convention (see CLAUDE.md) applied per-source instead of as a "
-            "single flag."
-        ),
-    )
     degraded_butlers: list[str] = Field(
         default_factory=list,
         description=(
             "Names of butler pools whose session query failed for this request. "
-            "This is additive evidence alongside degraded_sources: a non-empty "
+            "This is additive evidence alongside ``sources_degraded`` (which names "
+            "failed event sources, 'sessions' or 'notifications'): a non-empty "
             "list means reachable Timeline rows are partial, not a complete "
             "fleet-history claim."
         ),
     )
-
-
-class TimelineResponse(BaseModel):
-    """Cursor-paginated timeline response.
-
-    Uses an opaque composite ``(timestamp, id)`` keyset cursor for stable
-    descending pagination — pass ``meta.cursor`` back as the ``before``
-    parameter for the next page. ``meta.has_more`` indicates whether
-    additional pages exist.
-    """
-
-    data: list[TimelineEvent]
-    meta: TimelineMeta = Field(default_factory=TimelineMeta)
 
 
 class TimelineHistogramBucket(BaseModel):

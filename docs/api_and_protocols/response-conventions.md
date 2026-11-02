@@ -10,7 +10,7 @@ The shared wrappers live in `src/butlers/api/models/__init__.py`: `ApiResponse[T
 (`{"data": T, "meta": {...}}`), `PaginatedResponse[T]` (offset/limit with `meta.total`),
 `Page[T]` from `src/butlers/api/pagination.py` (cursor lists, see below), and `ErrorResponse` (`{"error": {"code", "message",
 "butler"?, "details"?}}`). New endpoints use these wrappers. A few domain routers (for example
-timeline and relationship) return unwrapped typed payloads; each route's `response_model` is the
+relationship) return unwrapped typed payloads; each route's `response_model` is the
 authority, surfaced in the generated OpenAPI schema. Error codes are stable machine strings;
 clients branch on `error.code`, never on `message`.
 
@@ -79,7 +79,7 @@ cursor endpoint uses `Page`.
 `tests/api/test_pagination.py` (`test_every_paginated_route_uses_page_or_a_listed_exception`), which
 fails when a paginated route uses any other envelope or when a listed route converts without
 dropping its entry. Today that is `GET /api/sessions` (`KeysetResponse`, retires at the RFC 0038
-D19 switch), `GET /api/timeline`, the calendar workspace read and invitations routes, and the QA
+D19 switch), the calendar workspace read and invitations routes, and the QA
 case journal tail-follow, plus a handful of bespoke offset envelopes.
 
 Channel filtering uses `channels` (comma-separated); there is no single-value channel alias.
@@ -226,9 +226,8 @@ writer regression is not serving-deployment evidence.
   drill-down link share one captured `since`/`until` pair.
 - TanStack Query can report `isError` while keeping data from an earlier success: show stale
   freshness beside retained rows instead of replacing them with an error banner.
-- Timeline partial sources: keep the generic `meta.degraded_sources` signal and add
-  `meta.degraded_butlers` only for named failed session pools (the frontend defaults the additive
-  field). When unpinned, commit current rows and cursor before fetching older data, so a failed page
+- Timeline partial sources: `sources_degraded` names failed sources and the sibling
+  `degraded_butlers` names failed session pools (the frontend defaults an absent value to `[]`). When unpinned, commit current rows and cursor before fetching older data, so a failed page
   stays visible and retries the same cursor.
 
 ### Known-contact harm availability

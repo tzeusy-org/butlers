@@ -98,7 +98,7 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: mockJson("getTimeline", { data: [
+        body: mockJson("getTimeline", { items: [
             {
               id: TIMELINE_EVENT_ID,
               type: "notification",
@@ -108,13 +108,13 @@ async function mockScrollMemoryApis(page: Page): Promise<void> {
               is_heartbeat: false,
               data: {},
             },
-          ], meta: {
-            cursor: null,
-            has_more: false,
-            heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
-            degraded_sources: [],
-            degraded_butlers: [],
-          } }),
+          ],
+          next_cursor: null,
+          limit: 50,
+          sources_degraded: null,
+          heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
+          degraded_butlers: [],
+        }),
       });
       return;
     }

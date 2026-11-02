@@ -209,7 +209,7 @@ export default function DashboardPage() {
   const approvals = pendingApprovalsQuery.data?.data;
   const notificationStats = notificationStatsQuery.data?.data;
   const qaSummary = qaSummaryQuery.data?.data;
-  const timeline = timelineQuery.data?.data;
+  const timeline = timelineQuery.data?.items;
   const toggleInternal = useCallback(() => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);

@@ -7,7 +7,7 @@ Provides:
 
 Merges sessions and notifications from all butler databases into a single
 time-ordered event stream using ``DatabaseManager.fan_out_with_status()``. Supports
-composite ``(timestamp, id)`` keyset pagination (``before`` cursor + ``limit``)
+composite ``(timestamp, id)`` keyset pagination (``cursor`` + ``limit``)
 and SQL-level filtering by butler and event type.
 
 Cross-butler fan-out reads go through the versioned read-model boundary in
@@ -33,7 +33,6 @@ from butlers.api.models.timeline import (
     TimelineHistogramBucket,
     TimelineHistogramMeta,
     TimelineHistogramResponse,
-    TimelineMeta,
     TimelineResponse,
 )
 from butlers.api.pagination import decode_cursor, encode_cursor
@@ -187,12 +186,12 @@ async def list_timeline(
             "The active butler, type, and trace filters still apply."
         ),
     ),
-    before: str | None = Query(
+    cursor: str | None = Query(
         None,
         description=(
-            "Pagination cursor from the previous page's ``meta.cursor`` field: "
+            "Pagination cursor from the previous page's ``next_cursor`` field: "
             "an opaque composite (timestamp, id) keyset position; a malformed "
-            "one is a 400."
+            "or foreign one is a 400."
         ),
     ),
     limit: int = Query(50, ge=1, le=200, description="Max events to return"),
@@ -217,15 +216,15 @@ async def list_timeline(
     Switchboard database for notifications, then merges and sorts them
     by ``(timestamp, id)`` descending.
 
-    Cursor-based pagination: pass ``before`` (the previous page's
-    ``meta.cursor``) to fetch the next page. The response includes
-    ``meta.cursor`` for the subsequent page and ``meta.has_more`` to
-    indicate if more exist. The composite ``(timestamp, id)`` keyset avoids
+    Cursor-based pagination: pass ``cursor`` (the previous page's
+    ``next_cursor``) to fetch the next page. The response includes
+    ``next_cursor`` for the subsequent page, ``null`` on the last page.
+    The composite ``(timestamp, id)`` keyset avoids
     dropping events that share the cursor's exact boundary timestamp (e.g.
     simultaneous heartbeat ticks across butlers).
 
     ``event_type`` filtering (``session``/``error``/``notification``) is
-    applied in SQL, not after the fact — so ``has_more``/pagination are
+    applied in SQL, not after the fact — so ``next_cursor``/pagination are
     always computed over the actually-matching set, and filtering to
     ``error`` can reach every error, not just those among the newest
     unfiltered page.
@@ -234,8 +233,8 @@ async def list_timeline(
     ID, so the trace scope never mixes unrelated timeline rows into the
     response.
 
-    ``meta.degraded_sources`` lists any of ``sessions``/``notifications``
-    whose query failed this request, while ``meta.degraded_butlers`` names
+    ``sources_degraded`` lists any of ``sessions``/``notifications``
+    whose query failed this request (``null`` when all answered), while ``degraded_butlers`` names
     failed session pools. The returned page for either state is partial, not a
     truthful empty or complete-fleet result (mirrors the
     ``aggregates_available`` degraded-mode convention, applied per source).
@@ -243,8 +242,8 @@ async def list_timeline(
     since, until = _validate_interval(since, until, required=False)
     before_ts: datetime | None = None
     before_id: UUID | None = None
-    if before is not None:
-        before_ts, before_id = decode_cursor(before, (datetime, UUID), scope="timeline")
+    if cursor is not None:
+        before_ts, before_id = decode_cursor(cursor, (datetime, UUID), scope="timeline")
 
     trace_id = trace.strip() if trace is not None and trace.strip() else None
 
@@ -336,9 +335,9 @@ async def list_timeline(
     has_more = len(events) > limit
     page = events[:limit]
 
-    cursor: str | None = None
+    next_cursor: str | None = None
     if has_more and page:
-        cursor = encode_cursor((page[-1].timestamp, page[-1].id), scope="timeline")
+        next_cursor = encode_cursor((page[-1].timestamp, page[-1].id), scope="timeline")
 
     heartbeat_events = [e for e in page if e.is_heartbeat]
     heartbeat_rollup = TimelineHeartbeatRollup(
@@ -348,14 +347,12 @@ async def list_timeline(
     )
 
     return TimelineResponse(
-        data=page,
-        meta=TimelineMeta(
-            cursor=cursor,
-            has_more=has_more,
-            heartbeat_rollup=heartbeat_rollup,
-            degraded_sources=degraded_sources,
-            degraded_butlers=degraded_butlers,
-        ),
+        items=page,
+        next_cursor=next_cursor,
+        limit=limit,
+        sources_degraded=degraded_sources or None,
+        heartbeat_rollup=heartbeat_rollup,
+        degraded_butlers=degraded_butlers,
     )
 
 

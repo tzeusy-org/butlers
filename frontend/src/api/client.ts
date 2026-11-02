@@ -1486,7 +1486,7 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
   const sp = new URLSearchParams();
   if (params?.limit) sp.set("limit", String(params.limit));
   if (params?.event) sp.set("event", params.event);
-  if (params?.before) sp.set("before", params.before);
+  if (params?.cursor) sp.set("cursor", params.cursor);
   if (params?.trace) sp.set("trace", params.trace);
   if (params?.since) sp.set("since", params.since);
   if (params?.until) sp.set("until", params.until);
@@ -1494,16 +1494,10 @@ export async function getTimeline(params?: TimelineParams): Promise<TimelineResp
   params?.event_type?.forEach((t) => sp.append("event_type", t));
   const qs = sp.toString();
   const response = await apiFetch<TimelineResponse>(qs ? `/timeline?${qs}` : "/timeline");
-  // The backend field is additive. Normalize an older rolling-deploy response
-  // so Timeline consumers can distinguish an intentionally empty name list
-  // from an omitted field without weakening generic degraded_sources handling.
-  return {
-    ...response,
-    meta: {
-      ...response.meta,
-      degraded_butlers: response.meta.degraded_butlers ?? [],
-    },
-  };
+  // `degraded_butlers` is an additive sibling. Normalize an omitted field so
+  // Timeline consumers can tell an intentionally empty list from an older
+  // response without weakening generic sources_degraded handling.
+  return { ...response, degraded_butlers: response.degraded_butlers ?? [] };
 }
 
 /** Fetch server-counted minute density for one bounded Timeline interval. */

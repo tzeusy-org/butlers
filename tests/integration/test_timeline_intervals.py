@@ -140,9 +140,9 @@ async def test_histogram_counts_beyond_head_page_and_interval_cursor_is_lossless
     second = await _request(
         manager,
         "/api/timeline",
-        {**params, "limit": 50, "before": first.json()["meta"]["cursor"]},
+        {**params, "limit": 50, "cursor": first.json()["next_cursor"]},
     )
-    returned_ids = {event["id"] for event in first.json()["data"] + second.json()["data"]}
+    returned_ids = {event["id"] for event in first.json()["items"] + second.json()["items"]}
     assert returned_ids == {str(event_id) for event_id in inserted_ids}
 
 
@@ -174,10 +174,10 @@ async def test_exact_event_lookup_resolves_notification_beyond_timeline_head(tim
         },
     )
 
-    assert str(notification_id) not in {row["id"] for row in head.json()["data"]}
+    assert str(notification_id) not in {row["id"] for row in head.json()["items"]}
     assert exact.status_code == 200
-    assert [row["id"] for row in exact.json()["data"]] == [str(notification_id)]
-    assert exact.json()["data"][0]["data"]["status"] == "failed"
+    assert [row["id"] for row in exact.json()["items"]] == [str(notification_id)]
+    assert exact.json()["items"][0]["data"]["status"] == "failed"
 
 
 async def test_histogram_and_list_share_error_butler_trace_and_boundary_predicates(timeline_db):
@@ -218,7 +218,7 @@ async def test_histogram_and_list_share_error_butler_trace_and_boundary_predicat
 
     assert histogram.status_code == events.status_code == 200
     assert sum(bucket["count"] for bucket in histogram.json()["data"]) == 2
-    assert {event["id"] for event in events.json()["data"]} == {
+    assert {event["id"] for event in events.json()["items"]} == {
         str(matching_session),
         str(notification_id),
     }

@@ -209,7 +209,8 @@ The Timeline page (`/timeline`) SHALL merge events from all butlers into a singl
 #### Scenario: Cursor-based pagination (Load More)
 - **WHEN** more events exist beyond the current page
 - **THEN** a "Load More" button appears below the timeline
-- **AND** clicking it appends the next page of events to the existing list (using cursor-based pagination via `response.meta.cursor`)
+- **AND** clicking it appends the next page of events to the existing list (using cursor-based pagination via the response's `next_cursor`, sent back as `cursor`)
+- **AND** "Load More" is shown only while `next_cursor` is non-null
 - **AND** previously loaded events are preserved in state
 
 #### Scenario: Auto-refresh control
@@ -356,7 +357,7 @@ Offset-paginated dashboard surfaces, including domain pages, SHALL share the sam
 
 #### Scenario: Timeline cursor pagination
 - **WHEN** the Timeline page loads more events
-- **THEN** it uses cursor-based pagination (sending `before` parameter from `response.meta.cursor`)
+- **THEN** it uses cursor-based pagination (sending `cursor` from the previous response's `next_cursor`, shared `Page[T]` envelope)
 - **AND** new events are appended to the accumulated event list rather than replacing them
 - **AND** while the operator is viewing that committed history, a background live-head refresh neither replaces nor visually dims the historical snapshot; newly arrived head events are surfaced through the new-events path instead
 
@@ -458,7 +459,7 @@ The frontend TypeScript interfaces SHALL define the data contracts that all visi
 
 - **WHEN** the timeline API responds
 - **THEN** each event conforms to: `id` (string), `type` (string), `butler` (string), `timestamp` (ISO 8601 string), `summary` (string), `data` (object)
-- **AND** the response meta includes `cursor` (string | null) and `has_more` (boolean) for pagination
+- **AND** the response is the shared `Page[T]` envelope (`items`, `next_cursor`, `limit`, `sources_degraded`) plus `heartbeat_rollup` and `degraded_butlers`
 
 #### Scenario: NotificationSummary contract
 
@@ -677,10 +678,10 @@ when the Internal lens is disabled.
 ### Requirement: Timeline partial-source evidence
 
 The Timeline SHALL preserve every event returned by reachable sources while
-making any unavailable Timeline subread explicit. Its response metadata SHALL
-retain the existing `degraded_sources: string[]` contract and SHALL
-additively expose `degraded_butlers: string[]` for named failed session
-fan-out pools. A non-empty degraded list means the displayed evidence is
+making any unavailable Timeline subread explicit. Its response SHALL
+name failed sources (`sessions`, `notifications`) in the Page `sources_degraded`
+field (null only when every source answered) and SHALL additionally expose
+`degraded_butlers: string[]` for named failed session fan-out pools. A non-empty degraded list means the displayed evidence is
 partial and SHALL NOT be described as a complete fleet history, a genuine
 empty state, or an exhausted historical boundary.
 
@@ -689,8 +690,8 @@ empty state, or an exhausted historical boundary.
 - **WHEN** the Timeline session fan-out succeeds for at least one requested
   butler and fails for one or more other requested butlers
 - **THEN** the response preserves events from reachable butlers
-- **AND** `meta.degraded_sources` retains `sessions`
-- **AND** `meta.degraded_butlers` names the failed session pools
+- **AND** `sources_degraded` retains `sessions`
+- **AND** `degraded_butlers` names the failed session pools
 - **AND** the Timeline renders the generic partial-source state plus the named
   unavailable butlers without claiming a complete fleet history
 

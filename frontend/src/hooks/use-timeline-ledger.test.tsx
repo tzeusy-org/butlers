@@ -52,16 +52,17 @@ function makeEvent(id: string, timestamp: string, overrides: Partial<TimelineEve
   };
 }
 
-function response(events: TimelineEvent[], meta: Partial<TimelineResponse["meta"]> = {}): TimelineResponse {
+function response(
+  events: TimelineEvent[],
+  overrides: Partial<Omit<TimelineResponse, "items">> = {},
+): TimelineResponse {
   return {
-    data: events,
-    meta: {
-      cursor: null,
-      has_more: false,
-      heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
-      degraded_sources: [],
-      ...meta,
-    },
+    items: events,
+    next_cursor: null,
+    limit: 50,
+    sources_degraded: null,
+    heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
+    ...overrides,
   };
 }
 
@@ -92,7 +93,7 @@ function deferred<T>() {
 describe("useTimelineLedger", () => {
   it("renders the live head page directly while pinned", async () => {
     const page1 = [makeEvent("e3", "2026-07-04T14:32:00Z"), makeEvent("e2", "2026-07-04T14:31:00Z")];
-    mockGetTimeline.mockResolvedValue(response(page1, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValue(response(page1, { next_cursor: "cur-1" }));
 
     const { Wrapper } = makeWrapper();
     const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
@@ -105,8 +106,8 @@ describe("useTimelineLedger", () => {
 
   it("loadMore commits a snapshot, appends the older page, and unpins", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
-    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { has_more: false });
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { next_cursor: null });
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
     mockGetTimeline.mockResolvedValueOnce(olderPage);
 
     const interval = {
@@ -129,14 +130,14 @@ describe("useTimelineLedger", () => {
     expect(mockGetTimeline).toHaveBeenLastCalledWith({
       ...interval,
       limit: 50,
-      before: "cur-1",
+      cursor: "cur-1",
     });
   });
 
   it("retains the committed snapshot and retries the same cursor after Load older fails", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
-    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { has_more: false });
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { next_cursor: null });
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
     mockGetTimeline.mockRejectedValueOnce(new Error("older page unavailable"));
     mockGetTimeline.mockResolvedValueOnce(olderPage);
 
@@ -152,24 +153,24 @@ describe("useTimelineLedger", () => {
     await waitFor(() => expect(result.current.loadMoreError).toBe(true));
     expect(result.current.events.map((event) => event.id)).toEqual(["e2"]);
     expect(result.current.hasMore).toBe(true);
-    expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, before: "cur-1" });
+    expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, cursor: "cur-1" });
 
     act(() => {
       result.current.retryLoadMore();
     });
 
     await waitFor(() => expect(result.current.events.map((event) => event.id)).toEqual(["e2", "e1"]));
-    expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, before: "cur-1" });
+    expect(mockGetTimeline).toHaveBeenLastCalledWith({ limit: 50, cursor: "cur-1" });
   });
 
   it("retains named partial-source metadata from a successfully loaded older page", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
     const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], {
-      has_more: false,
-      degraded_sources: ["sessions"],
+      next_cursor: null,
+      sources_degraded: ["sessions"],
       degraded_butlers: ["home"],
-    } as unknown as Partial<TimelineResponse["meta"]>);
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    });
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
     mockGetTimeline.mockResolvedValueOnce(olderPage);
 
     const { Wrapper } = makeWrapper();
@@ -185,8 +186,8 @@ describe("useTimelineLedger", () => {
 
   it("counts newly-arrived head events while unpinned instead of merging them silently", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" })); // loadMore's own fetch (same baseline, no older page in this test)
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" })); // loadMore's own fetch (same baseline, no older page in this test)
 
     const { client, Wrapper } = makeWrapper();
     const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
@@ -200,7 +201,7 @@ describe("useTimelineLedger", () => {
 
     // A new event lands — subsequent head-query fetches return it.
     const page1WithNew = [makeEvent("e3", "2026-07-04T14:40:00Z"), ...page1];
-    mockGetTimeline.mockResolvedValue(response(page1WithNew, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValue(response(page1WithNew, { next_cursor: "cur-1" }));
 
     await act(async () => {
       await client.invalidateQueries({ queryKey: ["timeline"] });
@@ -213,8 +214,8 @@ describe("useTimelineLedger", () => {
 
   it("showNewEvents jumps back to the live head and clears newCount", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
 
     const { client, Wrapper } = makeWrapper();
     const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
@@ -224,7 +225,7 @@ describe("useTimelineLedger", () => {
     await waitFor(() => expect(result.current.pinned).toBe(false));
 
     const page1WithNew = [makeEvent("e3", "2026-07-04T14:40:00Z"), ...page1];
-    mockGetTimeline.mockResolvedValue(response(page1WithNew, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValue(response(page1WithNew, { next_cursor: "cur-1" }));
     await act(async () => {
       await client.invalidateQueries({ queryKey: ["timeline"] });
     });
@@ -239,7 +240,7 @@ describe("useTimelineLedger", () => {
 
   it("flags the live feed as down when the head poll fails after a successful first paint, without blanking the stale events", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
 
     const { client, Wrapper } = makeWrapper();
     const { result } = renderHook(() => useTimelineLedger({}), { wrapper: Wrapper });
@@ -263,8 +264,8 @@ describe("useTimelineLedger", () => {
 
   it("resets pinned/committed state when filters change", async () => {
     const page1 = [makeEvent("e2", "2026-07-04T14:32:00Z")];
-    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { has_more: false });
-    mockGetTimeline.mockResolvedValueOnce(response(page1, { has_more: true, cursor: "cur-1" }));
+    const olderPage = response([makeEvent("e1", "2026-07-04T13:00:00Z")], { next_cursor: null });
+    mockGetTimeline.mockResolvedValueOnce(response(page1, { next_cursor: "cur-1" }));
     mockGetTimeline.mockResolvedValueOnce(olderPage);
     mockGetTimeline.mockResolvedValue(response([makeEvent("e4", "2026-07-04T15:00:00Z")]));
 

@@ -75,7 +75,7 @@ export interface UseTimelineLedgerResult {
 
 const EMPTY_ROLLUP: TimelineHeartbeatRollup = { ticks: 0, butlers: 0, failed: 0 };
 
-function mergeDistinct(left: string[], right: string[] | undefined): string[] {
+function mergeDistinct(left: string[], right: string[] | null | undefined): string[] {
   return [...new Set([...left, ...(right ?? [])])];
 }
 
@@ -116,7 +116,7 @@ export function useTimelineLedger(
     setIsLoadingMore(false);
   }, [scopeKey]);
 
-  const headData = head.data?.data;
+  const headData = head.data?.items;
   const headEvents = useMemo(() => headData ?? [], [headData]);
   const committedIds = useMemo(
     () => (committed ? new Set(committed.map((e) => e.id)) : null),
@@ -136,22 +136,22 @@ export function useTimelineLedger(
   const events = enabled ? (pinned ? headEvents : (committed ?? headEvents)) : [];
 
   const hasMore = enabled
-    ? (pinned ? (head.data?.meta.has_more ?? false) : committedCursor !== undefined)
+    ? (pinned ? (head.data?.next_cursor ?? null) !== null : committedCursor !== undefined)
     : false;
 
   const loadMore = useCallback(() => {
     if (!enabled || isLoadingMore) return;
     const baseline = committed ?? headEvents;
-    const baselineCursor = committed !== null ? committedCursor : head.data?.meta.cursor;
+    const baselineCursor = committed !== null ? committedCursor : head.data?.next_cursor;
     if (!baselineCursor) return;
     const baselineDegradedSources =
       committed !== null
         ? (committedDegradedSources ?? [])
-        : (head.data?.meta.degraded_sources ?? []);
+        : (head.data?.sources_degraded ?? []);
     const baselineDegradedButlers =
       committed !== null
         ? (committedDegradedButlers ?? [])
-        : (head.data?.meta.degraded_butlers ?? []);
+        : (head.data?.degraded_butlers ?? []);
     const requestId = ++paginationRequestRef.current;
 
     setPinned(false);
@@ -163,20 +163,20 @@ export function useTimelineLedger(
     setCommittedDegradedButlers(baselineDegradedButlers);
     setLoadMoreError(false);
     setIsLoadingMore(true);
-    const params = { ...filters, limit: PAGE_SIZE, before: baselineCursor };
+    const params = { ...filters, limit: PAGE_SIZE, cursor: baselineCursor };
     qc.fetchQuery({
       queryKey: ["timeline", params],
       queryFn: () => getTimeline(params),
     })
       .then((page) => {
         if (paginationRequestRef.current !== requestId) return;
-        setCommitted([...baseline, ...page.data]);
-        setCommittedCursor(page.meta.has_more ? (page.meta.cursor ?? undefined) : undefined);
+        setCommitted([...baseline, ...page.items]);
+        setCommittedCursor(page.next_cursor ?? undefined);
         setCommittedDegradedSources(
-          mergeDistinct(baselineDegradedSources, page.meta.degraded_sources),
+          mergeDistinct(baselineDegradedSources, page.sources_degraded),
         );
         setCommittedDegradedButlers(
-          mergeDistinct(baselineDegradedButlers, page.meta.degraded_butlers),
+          mergeDistinct(baselineDegradedButlers, page.degraded_butlers),
         );
       })
       .catch((err) => {
@@ -215,13 +215,13 @@ export function useTimelineLedger(
 
   const degradedSources = enabled
     ? pinned
-      ? (head.data?.meta.degraded_sources ?? [])
-      : (committedDegradedSources ?? head.data?.meta.degraded_sources ?? [])
+      ? (head.data?.sources_degraded ?? [])
+      : (committedDegradedSources ?? head.data?.sources_degraded ?? [])
     : [];
   const degradedButlers = enabled
     ? pinned
-      ? (head.data?.meta.degraded_butlers ?? [])
-      : (committedDegradedButlers ?? head.data?.meta.degraded_butlers ?? [])
+      ? (head.data?.degraded_butlers ?? [])
+      : (committedDegradedButlers ?? head.data?.degraded_butlers ?? [])
     : [];
 
   return {
@@ -243,6 +243,6 @@ export function useTimelineLedger(
     showNewEvents,
     degradedSources,
     degradedButlers,
-    heartbeatRollup: enabled ? (head.data?.meta.heartbeat_rollup ?? EMPTY_ROLLUP) : EMPTY_ROLLUP,
+    heartbeatRollup: enabled ? (head.data?.heartbeat_rollup ?? EMPTY_ROLLUP) : EMPTY_ROLLUP,
   };
 }

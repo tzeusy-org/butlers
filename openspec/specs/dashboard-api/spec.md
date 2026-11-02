@@ -54,7 +54,7 @@ All API responses SHALL use consistent wrapper types. Backend Pydantic models an
 #### Scenario: Unwrapped response exceptions
 - **WHEN** certain domain endpoints return data
 - **THEN** the following endpoints use unwrapped typed payloads instead of the standard `ApiResponse<T>` wrapper:
-  - Timeline: `GET /api/timeline` returns `TimelineResponse` (unwrapped)
+  - Timeline: `GET /api/timeline` returns `TimelineResponse`, a `Page[TimelineEvent]` subclass with sibling fields (unwrapped)
   - Relationship domain: `GET /api/relationship/contacts/{contactId}` returns `ContactDetail` (unwrapped), and other relationship sub-resource endpoints return unwrapped arrays
   - Trigger: `POST /api/butlers/{name}/trigger` returns `TriggerResponse` (unwrapped)
   - Conversation create and follow-up: `POST /api/butlers/{name}/conversations` and `POST /api/butlers/{name}/conversations/{conversation_id}/messages` return `text/event-stream`

@@ -165,7 +165,7 @@ test.describe("LiveStatusBadge — /ingestion (events head poll)", () => {
 // /timeline (TimelinePage) — badge driven by useTimelineLedger's head poll
 // ---------------------------------------------------------------------------
 
-function timelineEvent(timestamp: string): ResponseOf<"getTimeline">["data"][number] {
+function timelineEvent(timestamp: string): ResponseOf<"getTimeline">["items"][number] {
   return {
     id: "11111111-0000-0000-0000-000000000001",
     type: "session",
@@ -177,11 +177,11 @@ function timelineEvent(timestamp: string): ResponseOf<"getTimeline">["data"][num
   };
 }
 
-const TIMELINE_META = {
-  cursor: null,
-  has_more: false,
+const TIMELINE_SIBLINGS = {
+  next_cursor: null,
+  limit: 50,
+  sources_degraded: null,
   heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
-  degraded_sources: [],
 };
 
 const TIMELINE_HISTOGRAM: ResponseOf<"getTimelineHistogram"> = {
@@ -205,7 +205,7 @@ const TIMELINE_HISTOGRAM: ResponseOf<"getTimelineHistogram"> = {
  * "Down"). Route predicates are pathname-specific so the three response
  * envelopes cannot be confused with each other.
  */
-async function mockTimeline(page: Page, events: ResponseOf<"getTimeline">["data"] | 500) {
+async function mockTimeline(page: Page, events: ResponseOf<"getTimeline">["items"] | 500) {
   await page.route("**/api/**", (route) => {
     if (new URL(route.request().url()).pathname.startsWith("/api/auth/owner/")) return route.fallback();
     return fulfillEmptyApi(route);
@@ -233,7 +233,7 @@ async function mockTimeline(page: Page, events: ResponseOf<"getTimeline">["data"
     route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: mockJson("getTimeline", { data: events, meta: TIMELINE_META }),
+      body: mockJson("getTimeline", { items: events, ...TIMELINE_SIBLINGS }),
     });
   });
 }

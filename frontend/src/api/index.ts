@@ -482,7 +482,6 @@ export type {
   SymptomCreateRequest,
   SymptomUpdateRequest,
   TimelineEvent,
-  TimelineMeta,
   TimelineParams,
   TimelineResponse,
   TimelineHistogramBucket,

@@ -16,13 +16,11 @@ function mockTimelineResponse() {
     ok: true,
     status: 200,
     json: async () => ({
-      data: [],
-      meta: {
-        cursor: null,
-        has_more: false,
-        heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
-        degraded_sources: [],
-      },
+      items: [],
+      next_cursor: null,
+      limit: 50,
+      sources_degraded: null,
+      heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
     }),
     text: async () => "",
     headers: { get: () => "application/json" },
@@ -37,7 +35,7 @@ describe("getTimeline", () => {
 
     const response = await getTimeline();
 
-    expect(response.meta.degraded_butlers).toEqual([]);
+    expect(response.degraded_butlers).toEqual([]);
   });
 
   it("forwards a trace scope", async () => {

@@ -314,7 +314,7 @@ function setDefaultData(
     error: null,
   } as AnyMock);
   vi.mocked(useTimeline).mockReturnValue({
-    data: { data: [], meta: { cursor: null, has_more: false } },
+    data: { items: [], next_cursor: null, limit: 50, heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 } },
     isLoading: false,
     isError: false,
     error: null,
@@ -955,7 +955,7 @@ describe("DashboardPage -- OperationsNowList", () => {
   it("keeps maintenance out of Now by default and exposes it through the URL-backed Internal lens", () => {
     vi.mocked(useTimeline).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             id: "maintenance-1",
             type: "session",
@@ -977,7 +977,9 @@ describe("DashboardPage -- OperationsNowList", () => {
             data: { success: true },
           },
         ],
-        meta: { cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 50,
+        heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
       },
       isLoading: false,
       isError: false,
@@ -998,7 +1000,7 @@ describe("DashboardPage -- OperationsNowList", () => {
   it("renders failed maintenance as a failure in both Dashboard Now lenses", () => {
     vi.mocked(useTimeline).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             id: "maintenance-success",
             type: "session",
@@ -1020,7 +1022,9 @@ describe("DashboardPage -- OperationsNowList", () => {
             data: { success: false },
           },
         ],
-        meta: { cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 50,
+        heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
       },
       isLoading: false,
       isError: false,
@@ -1397,7 +1401,7 @@ describe("DashboardPage -- OperationsNowList", () => {
   it("renders recent timeline activity rows", () => {
     vi.mocked(useTimeline).mockReturnValue({
       data: {
-        data: [
+        items: [
           {
             id: "evt-1",
             type: "session",
@@ -1407,7 +1411,9 @@ describe("DashboardPage -- OperationsNowList", () => {
             data: {},
           },
         ],
-        meta: { cursor: null, has_more: false },
+        next_cursor: null,
+        limit: 50,
+        heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
       },
       isLoading: false,
       isError: false,

@@ -770,31 +770,16 @@ export interface TimelineHeartbeatRollup {
   failed: number;
 }
 
-/** Cursor-based pagination metadata for the timeline endpoint. */
-export interface TimelineMeta {
-  cursor: string | null;
-  has_more: boolean;
+/** Response shape from GET /api/timeline: the shared cursor page plus rollup siblings. */
+export interface TimelineResponse extends CursorPage<TimelineEvent> {
   /** Correct rollup copy source — "{ticks} ticks · {butlers} butlers · {failed} failed". */
   heartbeat_rollup: TimelineHeartbeatRollup;
   /**
-   * Names of event sources ("sessions", "notifications") whose query failed
-   * for this request. Non-empty means the returned page is a partial view of
-   * that source, not a truthful empty result (mirrors the aggregates_available
-   * degraded-mode convention — see CLAUDE.md — applied per-source).
-   */
-  degraded_sources: string[];
-  /**
-   * Additive names of session fan-out pools that failed for this request.
-   * Kept optional for rolling deploys against an older Timeline API; readers
-   * must preserve the generic degraded_sources state either way.
+   * Names of session fan-out pools that failed for this request. Kept
+   * optional for rolling deploys; `sources_degraded` carries the generic
+   * per-source state (null when every source answered).
    */
   degraded_butlers?: string[];
-}
-
-/** Response shape from GET /api/timeline. */
-export interface TimelineResponse {
-  data: TimelineEvent[];
-  meta: TimelineMeta;
 }
 
 /** Query parameters for the timeline endpoint. */
@@ -804,7 +789,7 @@ export interface TimelineParams {
   event?: string;
   butler?: string[];
   event_type?: string[];
-  before?: string;
+  cursor?: string;
   /** Filter sessions and trace-attributed notifications by OpenTelemetry trace ID. */
   trace?: string;
   /** Inclusive UTC minute bound; must be paired with until. */

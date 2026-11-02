@@ -10,7 +10,7 @@ function completeHour() {
   return { since: until - HOUR_MS, until };
 }
 
-function timelineEvent(id: string, timestamp: string): ResponseOf<"getTimeline">["data"][number] {
+function timelineEvent(id: string, timestamp: string): ResponseOf<"getTimeline">["items"][number] {
   return {
     id,
     type: "notification",
@@ -90,14 +90,12 @@ async function mockTimeline(page: Page) {
       status: 200,
       contentType: "application/json",
       body: mockJson("getTimeline", {
-        data: rows,
-        meta: {
-          cursor: null,
-          has_more: false,
-          heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
-          degraded_sources: ["notifications"],
-          degraded_butlers: [],
-        },
+        items: rows,
+        next_cursor: null,
+        limit: 50,
+        sources_degraded: ["notifications"],
+        heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
+        degraded_butlers: [],
       }),
     }),
   );

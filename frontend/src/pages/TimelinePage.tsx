@@ -248,12 +248,12 @@ export default function TimelinePage() {
     attentionParams,
     interval.valid && !selectedEventInLedger,
   );
-  const resolvedEvent = selectedEvent.data?.data[0];
+  const resolvedEvent = selectedEvent.data?.items[0];
   const eventResolutionFailed = Boolean(
     selectedEventId &&
       !selectedEventInLedger &&
       (selectedEvent.isError ||
-        (!resolvedEvent && Boolean(selectedEvent.data?.meta.degraded_sources.length))),
+        (!resolvedEvent && Boolean(selectedEvent.data?.sources_degraded?.length))),
   );
 
   // Saved views — shared /api/timeline/saved-views backend (bu-vgj88),

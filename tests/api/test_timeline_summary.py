@@ -396,10 +396,38 @@ async def test_timeline_endpoint_returns_clean_summary(app):
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    events = resp.json()["data"]
+    events = resp.json()["items"]
     assert len(events) == 1
     assert events[0]["summary"] == "Summarise my unread email"
     assert "REQUEST CONTEXT" not in events[0]["summary"]
+
+
+async def test_timeline_cursor_walks_pages_and_rejects_malformed_cursor(app):
+    """Shared Page envelope: ``next_cursor`` feeds ``cursor``; null tail; bad tokens are 400."""
+    from butlers.api.pagination import encode_cursor
+
+    rows = [_make_session_row(prompt=f"p{i}") for i in range(3)]
+    _app_with_mock_db(app, fan_out_results=[{"atlas": rows}, {"atlas": rows[:1]}])
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = (await client.get("/api/timeline", params={"limit": 2})).json()
+        second = (
+            await client.get("/api/timeline", params={"limit": 2, "cursor": first["next_cursor"]})
+        ).json()
+        garbage = await client.get("/api/timeline", params={"cursor": "garbage"})
+        foreign = await client.get(
+            "/api/timeline",
+            params={"cursor": encode_cursor((_NOW, uuid4()), scope="calendar-workspace")},
+        )
+
+    assert len(first["items"]) == 2 and first["limit"] == 2
+    assert first["next_cursor"] is not None
+    assert len(second["items"]) == 1 and second["next_cursor"] is None
+    assert "data" not in first and "meta" not in first and "has_more" not in first
+    assert garbage.status_code == 400
+    assert foreign.status_code == 400
 
 
 async def test_timeline_endpoint_never_returns_a_scheduled_system_prompt(app):
@@ -416,7 +444,7 @@ async def test_timeline_endpoint_never_returns_a_scheduled_system_prompt(app):
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    summary = resp.json()["data"][0]["summary"]
+    summary = resp.json()["items"][0]["summary"]
     assert summary == "Scheduled: consolidation"
     assert "# Memory Consolidation" not in summary
 
@@ -448,7 +476,7 @@ async def test_timeline_trace_scope_filters_sessions_and_notifications_by_trace(
         resp = await client.get("/api/timeline", params={"trace": trace_id})
 
     assert resp.status_code == 200
-    assert {event["summary"] for event in resp.json()["data"]} == {
+    assert {event["summary"] for event in resp.json()["items"]} == {
         "Routed message",
         "Trace notification",
     }
@@ -489,7 +517,7 @@ async def test_timeline_event_lookup_forwards_exact_id_and_scope(app):
         )
 
     assert response.status_code == 200
-    assert [row["id"] for row in response.json()["data"]] == [str(event_id)]
+    assert [row["id"] for row in response.json()["items"]] == [str(event_id)]
     session_sql, session_args = mock_db.fan_out_with_status.call_args.args
     assert "id = $1" in session_sql
     assert session_args == (event_id, "trace-lookup")
@@ -745,7 +773,7 @@ async def test_timeline_endpoint_heartbeat_rollup_counts_distinct_butlers(app):
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    rollup = resp.json()["meta"]["heartbeat_rollup"]
+    rollup = resp.json()["heartbeat_rollup"]
     # atlas ticked twice, switchboard once (failed) => 3 ticks, 2 distinct butlers, 1 failed.
     assert rollup == {"ticks": 3, "butlers": 2, "failed": 1}
 
@@ -756,7 +784,7 @@ async def test_timeline_endpoint_heartbeat_rollup_counts_distinct_butlers(app):
 
 
 async def test_timeline_endpoint_reports_degraded_sessions_source(app):
-    """A failed per-butler session fan-out surfaces as meta.degraded_sources (fix 5)."""
+    """A failed per-butler session fan-out surfaces as sources_degraded (fix 5)."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, ["atlas"]))
@@ -771,7 +799,7 @@ async def test_timeline_endpoint_reports_degraded_sessions_source(app):
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    assert resp.json()["meta"]["degraded_sources"] == ["sessions"]
+    assert resp.json()["sources_degraded"] == ["sessions"]
 
 
 async def test_timeline_endpoint_names_degraded_session_butlers_without_replacing_source_metadata(
@@ -792,13 +820,13 @@ async def test_timeline_endpoint_names_degraded_session_butlers_without_replacin
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    meta = resp.json()["meta"]
-    assert meta["degraded_sources"] == ["sessions"]
-    assert meta["degraded_butlers"] == ["home"]
+    body = resp.json()
+    assert body["sources_degraded"] == ["sessions"]
+    assert body["degraded_butlers"] == ["home"]
 
 
 async def test_timeline_endpoint_reports_degraded_notifications_source(app):
-    """A failed notification sub-query surfaces as meta.degraded_sources, not silence (fix 5)."""
+    """A failed notification sub-query surfaces as sources_degraded, not silence (fix 5)."""
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.butler_names = ["atlas"]
     mock_db.fan_out_with_status = AsyncMock(return_value=({"atlas": []}, []))
@@ -813,7 +841,7 @@ async def test_timeline_endpoint_reports_degraded_notifications_source(app):
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    assert resp.json()["meta"]["degraded_sources"] == ["notifications"]
+    assert resp.json()["sources_degraded"] == ["notifications"]
 
     mock_db.pool = MagicMock(side_effect=KeyError("switchboard"))
     async with httpx.AsyncClient(
@@ -822,12 +850,12 @@ async def test_timeline_endpoint_reports_degraded_notifications_source(app):
         exact = await client.get("/api/timeline", params={"event": str(uuid4())})
 
     assert exact.status_code == 200
-    assert exact.json()["data"] == []
-    assert exact.json()["meta"]["degraded_sources"] == ["notifications"]
+    assert exact.json()["items"] == []
+    assert exact.json()["sources_degraded"] == ["notifications"]
 
 
-async def test_timeline_endpoint_no_degraded_sources_on_success(app):
-    """The happy path reports an empty degraded_sources list, not an absent field."""
+async def test_timeline_endpoint_no_sources_degraded_on_success(app):
+    """The happy path reports null sources_degraded: every source answered."""
     row = _make_session_row(prompt="Run the nightly digest", trigger_source="schedule")
     _app_with_mock_db(app, fan_out_results=[{"atlas": [row]}])
 
@@ -837,7 +865,7 @@ async def test_timeline_endpoint_no_degraded_sources_on_success(app):
         resp = await client.get("/api/timeline")
 
     assert resp.status_code == 200
-    assert resp.json()["meta"]["degraded_sources"] == []
+    assert resp.json()["sources_degraded"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -923,7 +951,7 @@ async def test_timeline_error_lens_includes_failed_delivery(app):
         resp = await client.get("/api/timeline", params={"event_type": "error"})
 
     assert resp.status_code == 200
-    events = resp.json()["data"]
+    events = resp.json()["items"]
     # The failed delivery is present in the Errors lens...
     assert len(events) == 1
     assert events[0]["data"]["status"] == "failed"

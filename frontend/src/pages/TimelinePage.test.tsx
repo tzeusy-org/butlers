@@ -855,7 +855,7 @@ describe("TimelinePage — current failed records", () => {
     setLedger({ events: headEvents });
     setTimelineEvent({
       data: {
-        data: [
+        items: [
           {
             id: notificationId,
             type: "notification",
@@ -866,13 +866,11 @@ describe("TimelinePage — current failed records", () => {
             data: { status: "failed", channel: "telegram" },
           },
         ],
-        meta: {
-          cursor: null,
-          has_more: false,
-          heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
-          degraded_sources: [],
-          degraded_butlers: [],
-        },
+        next_cursor: null,
+        limit: 1,
+        sources_degraded: null,
+        heartbeat_rollup: { ticks: 0, butlers: 0, failed: 0 },
+        degraded_butlers: [],
       },
     });
 

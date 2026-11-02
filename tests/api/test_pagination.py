@@ -154,7 +154,6 @@ _OFFSET_PARAMS = {"offset", "page"}
 #: Cursor routes that do not return Page, and why. Drop an entry when its route converts.
 _CURSOR_ENVELOPE_EXCEPTIONS = {
     "/api/sessions": "KeysetResponse; retires at the RFC 0038 D19 switch",
-    "/api/timeline": "TimelineResponse; sibling heartbeat and degraded fields not yet on a Page",
     "/api/calendar/workspace": "ApiResponse payload; moves with the calendar workspace refactor",
     "/api/calendar/workspace/invitations": "ApiResponse payload; same calendar refactor",
     "/api/qa/cases/{case_id}/journal": "tail-follow by event timestamp, not a keyset position",
