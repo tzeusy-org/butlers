@@ -416,10 +416,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
     ): "dynamic-local: closed public table cleanup tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
         "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
-        "<dynamic:{_child}>",
-    ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
-        "roster/relationship/tests/test_contacts_merge_no_stranded_triples.py",
         "<dynamic:{table}>",
     ): "dynamic-local: public account table fixtures; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
