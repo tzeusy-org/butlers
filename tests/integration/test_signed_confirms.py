@@ -116,6 +116,15 @@ async def test_recipient_expiry_race_and_restart_application(confirms):
         await conn.execute(
             "ALTER TABLE public.pending_confirms ENABLE TRIGGER confirm_identity_guard"
         )
+    with pytest.raises(Exception, match="re-enter application"):
+        async with role_pool.acquire() as conn:
+            # One statement cannot both redact and reopen application.
+            await conn.execute(
+                "UPDATE public.pending_confirms SET "
+                "prompt=public.confirm_redacted_prompt(prompt), application_status='pending' "
+                "WHERE id=$1",
+                card["id"],
+            )
     assert await restarted.redact_settled() == 1
     redacted = await restarted.get(card["id"])
     assert set(redacted["prompt"]) == {"redacted", "digest"} and "Work" not in str(redacted)

@@ -1,7 +1,7 @@
 """Let settled signed confirms shed their prompt copy (bu-jv1moa.46).
 
 Revision ID: core_307
-Revises: core_305
+Revises: core_306
 
 ``public.pending_confirms.prompt`` holds the card's question, quoted facts and option
 labels. core_282 made it immutable for the row's whole life, so answered and expired
@@ -18,7 +18,7 @@ redacted row can never re-enter application. The horizon itself is service polic
 from alembic import op
 
 revision = "core_307"
-down_revision = "core_305"
+down_revision = "core_306"
 branch_labels = None
 depends_on = None
 
@@ -77,7 +77,9 @@ def upgrade():
         AND NOT OLD.prompt ? 'redacted'
         AND NEW.prompt = public.confirm_redacted_prompt(OLD.prompt))
     THEN RAISE EXCEPTION 'confirm prompt identity is immutable'; END IF;
-    IF OLD.prompt ? 'redacted' AND NEW.application_status <> 'applied'
+    -- NEW as well as OLD: one statement must not redact and reopen application together.
+    IF (OLD.prompt ? 'redacted' OR NEW.prompt ? 'redacted')
+       AND NEW.application_status <> 'applied'
     THEN RAISE EXCEPTION 'redacted confirm cannot re-enter application'; END IF;
 """
         + _GUARD_SUFFIX

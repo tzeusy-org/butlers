@@ -7,6 +7,7 @@ This service has no approval executor and no model-supplied routing interface.
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from uuid import UUID, uuid4
 
 from butlers.core.confirm_models import ConfirmPrompt
 from butlers.core.confirm_tokens import mint_confirm_token, verify_confirm_token
+
+logger = logging.getLogger(__name__)
 
 # A settled row keeps its question, quotes and option labels this long, then the worker
 # replaces them with the database-owned content-free tombstone (core_307).
@@ -343,6 +346,10 @@ class ConfirmService:
         if row is None:
             return None
         prompt = row["prompt"]
+        if prompt.get("redacted"):
+            # The guard forbids this state; never let one such row wedge the worker loop.
+            logger.error("Redacted confirm %s is awaiting application; skipping", row["id"])
+            return row["id"]
         value = (
             prompt["options"][row["answer_index"]]["value"]
             if row["status"] == "answered"
