@@ -813,7 +813,6 @@ def build_day_close_completion_hooks(
     *,
     timezone: str | ZoneInfo = "UTC",
     store_fact_fn: Callable[..., Any] | None = None,
-    propose_enrichment_fn: Callable[..., Any] | None = None,
 ) -> dict[str, Callable[..., Any]]:
     """Return the completion_hooks dict for the chronicler scheduler loop.
 
@@ -827,8 +826,7 @@ def build_day_close_completion_hooks(
     runs the deterministic memory write-back loop after the prose is cached:
     it synthesizes derived insights + self-reminders from the chronicler's OWN
     ``daily_rollups`` and writes them into the chronicler's OWN memory schema,
-    and — when ``propose_enrichment_fn`` is also supplied — proposes recurring
-    companions to relationship over MCP. The write-back is best-effort and adds
+    The write-back is best-effort and adds
     no owner-facing message; a failure never breaks the cache write.
 
     Usage::
@@ -868,15 +866,12 @@ def build_day_close_completion_hooks(
                 day_date=day_date,
                 timezone=str(_coerce_zone(effective_timezone)),
                 store_fact_fn=store_fact_fn,
-                propose_enrichment_fn=propose_enrichment_fn,
             )
             logger.info(
-                "day_close_writer: write-back for %s (%d insights, %d self-reminders, "
-                "%d proposals, %d errors)",
+                "day_close_writer: write-back for %s (%d insights, %d self-reminders, %d errors)",
                 day_date.isoformat(),
                 wb.insights_written,
                 wb.self_reminders_written,
-                wb.proposals_sent,
                 wb.errors,
             )
         except Exception:
