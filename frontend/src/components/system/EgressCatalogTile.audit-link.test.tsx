@@ -22,6 +22,10 @@ vi.mock("@/hooks/use-system", () => ({
     isPending: false,
     isError: false,
     isForbidden: false,
+    status: "success",
+    fetchStatus: "idle",
+    isPlaceholderData: false,
+    refetch: vi.fn(),
     data: { data: { actors: mockActors, catalog_covers_from: null }, meta: {} },
   }),
 }))
