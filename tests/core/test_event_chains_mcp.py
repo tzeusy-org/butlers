@@ -11,11 +11,7 @@ import shutil
 import uuid
 from datetime import UTC, datetime
 
-import asyncpg
 import pytest
-
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [pytest.mark.unit]
 
@@ -71,45 +67,21 @@ def test_row_to_dict_normalization():
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestEventChainsDB:
     """Integration tests for event_chains_db CRUD functions."""
 
-    @pytest.fixture
-    async def pool(self, migrated_db_url: str):
-        """Return an asyncpg pool with event_chains table cleared between tests."""
-        p = await asyncpg.create_pool(
-            migrated_db_url,
-            min_size=1,
-            max_size=3,
-            server_settings={"search_path": "general,public"},
-            init=register_jsonb_codec,
-        )
-        await p.execute("TRUNCATE event_chains CASCADE")
-        yield p
-        await p.close()
-
     _ACTIONS = [{"action_type": "prompt", "delay_minutes": 0, "prompt": "Log event"}]
 
-    async def test_create_and_list(self, pool):
+    async def test_create_and_list(self, db_pool):
         """event_chain_create returns a row dict; list filters by butler and trigger_type."""
         from butlers.core.temporal.event_chains_db import event_chain_create, event_chain_list
 
         butler = f"butler-{uuid.uuid4().hex[:8]}"
         chain = await event_chain_create(
-            pool,
+            db_pool,
             butler_name=butler,
             name="visit-chain",
             trigger_type="deadline_passed",
@@ -120,50 +92,54 @@ class TestEventChainsDB:
         assert chain["status"] == "active"
 
         # list returns it
-        chains = await event_chain_list(pool, butler_name=butler)
+        chains = await event_chain_list(db_pool, butler_name=butler)
         assert len(chains) == 1
 
         # filter by trigger_type works
-        filtered = await event_chain_list(pool, butler_name=butler, trigger_type="deadline_passed")
+        filtered = await event_chain_list(
+            db_pool, butler_name=butler, trigger_type="deadline_passed"
+        )
         assert len(filtered) == 1
 
-        empty = await event_chain_list(pool, butler_name=butler, trigger_type="deadline_threshold")
+        empty = await event_chain_list(
+            db_pool, butler_name=butler, trigger_type="deadline_threshold"
+        )
         assert len(empty) == 0
 
         # Historical calendar rows are intentionally preserved, readable and inert.
-        historical_id = await pool.fetchval(
+        historical_id = await db_pool.fetchval(
             "INSERT INTO event_chains (name, trigger_type, actions, butler_name) "
             "VALUES ('historical', 'calendar_event_end', $1, $2) RETURNING id",
             self._ACTIONS,
             butler,
         )
         historical = await event_chain_list(
-            pool, butler_name=butler, trigger_type="calendar_event_end"
+            db_pool, butler_name=butler, trigger_type="calendar_event_end"
         )
         assert [r["id"] for r in historical] == [str(historical_id)]
         from butlers.core.temporal.event_chains_db import get_chain_by_id
 
-        historical_row = await get_chain_by_id(pool, historical_id, butler_name=butler)
+        historical_row = await get_chain_by_id(db_pool, historical_id, butler_name=butler)
         assert historical_row is not None
         assert historical_row["trigger_type"] == "calendar_event_end"
         from butlers.core.scheduler import _tick_event_chain_pass
 
-        assert await _tick_event_chain_pass(pool, None, datetime.now(UTC)) == 0
+        assert await _tick_event_chain_pass(db_pool, None, datetime.now(UTC)) == 0
         assert (
-            await pool.fetchval("SELECT status FROM event_chains WHERE id=$1", historical_id)
+            await db_pool.fetchval("SELECT status FROM event_chains WHERE id=$1", historical_id)
             == "active"
         )
         from butlers.core.temporal.event_chains_db import event_chain_delete
 
-        assert await event_chain_delete(pool, historical_id, butler_name=butler) is True
+        assert await event_chain_delete(db_pool, historical_id, butler_name=butler) is True
 
-    async def test_create_validation_errors(self, pool):
+    async def test_create_validation_errors(self, db_pool):
         """Duplicate name raises; invalid trigger_type raises; empty name raises."""
         from butlers.core.temporal.event_chains_db import event_chain_create
 
         butler = f"butler-{uuid.uuid4().hex[:8]}"
         await event_chain_create(
-            pool,
+            db_pool,
             butler_name=butler,
             name="dup",
             trigger_type="deadline_passed",
@@ -171,7 +147,7 @@ class TestEventChainsDB:
         )
         with pytest.raises(ValueError, match="already exists"):  # duplicate name
             await event_chain_create(
-                pool,
+                db_pool,
                 butler_name=butler,
                 name="dup",
                 trigger_type="deadline_passed",
@@ -180,14 +156,14 @@ class TestEventChainsDB:
 
         with pytest.raises((ValueError, Exception)):  # invalid trigger_type
             await event_chain_create(
-                pool,
+                db_pool,
                 butler_name=butler,
                 name="bad-trigger",
                 trigger_type="timer_elapsed",
                 actions=self._ACTIONS,
             )
 
-    async def test_update_and_delete(self, pool):
+    async def test_update_and_delete(self, db_pool):
         """update changes status; not-found raises; delete removes row."""
         from butlers.core.temporal.event_chains_db import (
             event_chain_create,
@@ -197,7 +173,7 @@ class TestEventChainsDB:
 
         butler = f"butler-{uuid.uuid4().hex[:8]}"
         chain = await event_chain_create(
-            pool,
+            db_pool,
             butler_name=butler,
             name="update-me",
             trigger_type="deadline_threshold",
@@ -207,28 +183,30 @@ class TestEventChainsDB:
 
         # Update status to paused
         updated = await event_chain_update(
-            pool, chain_id=chain_id, butler_name=butler, status="paused"
+            db_pool, chain_id=chain_id, butler_name=butler, status="paused"
         )
         assert updated["status"] == "paused"
 
         # Update actions resets status to active
         new_actions = [{"action_type": "prompt", "delay_minutes": 10, "prompt": "Remind"}]
         updated2 = await event_chain_update(
-            pool, chain_id=chain_id, butler_name=butler, actions=new_actions
+            db_pool, chain_id=chain_id, butler_name=butler, actions=new_actions
         )
         assert updated2["status"] == "active"
 
         # Not-found raises
         with pytest.raises((ValueError, Exception)):
             await event_chain_update(
-                pool, chain_id=str(uuid.uuid4()), butler_name=butler, status="paused"
+                db_pool, chain_id=str(uuid.uuid4()), butler_name=butler, status="paused"
             )
 
         # Delete removes
-        deleted = await event_chain_delete(pool, chain_id=chain_id, butler_name=butler)
+        deleted = await event_chain_delete(db_pool, chain_id=chain_id, butler_name=butler)
         assert deleted is True
 
-        not_found = await event_chain_delete(pool, chain_id=str(uuid.uuid4()), butler_name=butler)
+        not_found = await event_chain_delete(
+            db_pool, chain_id=str(uuid.uuid4()), butler_name=butler
+        )
         assert not_found is False
 
 
