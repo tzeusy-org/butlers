@@ -683,7 +683,7 @@ async def wipe_data(
     butler_schemas = await pool.fetch(
         "SELECT schema_name FROM information_schema.schemata "
         "WHERE schema_name NOT IN ('public', 'information_schema', 'pg_catalog', 'pg_toast') "
-        "  AND schema_name NOT LIKE 'pg_%'"
+        "  AND left(schema_name, 3) <> 'pg_'"
     )
     for row in butler_schemas:
         schema = row["schema_name"]

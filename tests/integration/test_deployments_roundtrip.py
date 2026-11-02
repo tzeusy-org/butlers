@@ -25,7 +25,6 @@ from butlers.core.deployments import (
     list_recent_deployments,
     record_deployment,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -35,25 +34,13 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    yield p
-    await p.close()
-
-
 # ---------------------------------------------------------------------------
 # Schema shape
 # ---------------------------------------------------------------------------
 
 
-async def test_deployments_table_exists_with_expected_columns(pool: asyncpg.Pool) -> None:
-    rows = await pool.fetch(
+async def test_deployments_table_exists_with_expected_columns(db_pool: asyncpg.Pool) -> None:
+    rows = await db_pool.fetch(
         """
         SELECT column_name FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'deployments'
@@ -73,9 +60,9 @@ async def test_deployments_table_exists_with_expected_columns(pool: asyncpg.Pool
     }
 
 
-async def test_result_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -> None:
+async def test_result_check_constraint_rejects_bogus_value(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (git_sha, result)
             VALUES ('abc1234', 'in_progress')
@@ -83,9 +70,9 @@ async def test_result_check_constraint_rejects_bogus_value(pool: asyncpg.Pool) -
         )
 
 
-async def test_provenance_constraints_reject_bogus_values(pool: asyncpg.Pool) -> None:
+async def test_provenance_constraints_reject_bogus_values(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (git_sha, result, source)
             VALUES ('abc1234', 'success', 'manual')
@@ -93,7 +80,7 @@ async def test_provenance_constraints_reject_bogus_values(pool: asyncpg.Pool) ->
         )
 
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (git_sha, result, source, serving_mode)
             VALUES ('abc1234', 'success', 'boot', 'container')
@@ -101,7 +88,7 @@ async def test_provenance_constraints_reject_bogus_values(pool: asyncpg.Pool) ->
         )
 
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (git_sha, result, source)
             VALUES ('abc1234', 'success', 'deploy')
@@ -109,7 +96,7 @@ async def test_provenance_constraints_reject_bogus_values(pool: asyncpg.Pool) ->
         )
 
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (git_sha, result, source, serving_worktree)
             VALUES ('abc1234', 'success', 'boot', '.worktrees/frozen-checkout')
@@ -122,11 +109,11 @@ async def test_provenance_constraints_reject_bogus_values(pool: asyncpg.Pool) ->
     [("boot", None), (None, ".worktrees/frozen-checkout")],
 )
 async def test_hotreload_provenance_requires_boot_source_and_worktree_label(
-    pool: asyncpg.Pool, source: str | None, serving_worktree: str | None
+    db_pool: asyncpg.Pool, source: str | None, serving_worktree: str | None
 ) -> None:
     """core_176 must not admit an unexplained or unattributed worktree boot."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (
                 git_sha, result, source, serving_mode, serving_worktree
@@ -146,14 +133,14 @@ async def test_hotreload_provenance_requires_boot_source_and_worktree_label(
     ],
 )
 async def test_provenance_constraints_reject_partial_legacy_tuples(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
     source: str | None,
     serving_mode: str | None,
     serving_worktree: str | None,
 ) -> None:
     """Only the all-null provenance tuple is a legitimate pre-core_176 row."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (
                 git_sha, result, source, serving_mode, serving_worktree
@@ -168,11 +155,11 @@ async def test_provenance_constraints_reject_partial_legacy_tuples(
 
 @pytest.mark.parametrize("serving_worktree", [".worktrees/.", ".worktrees/.."])
 async def test_provenance_constraints_reject_dot_segment_worktree_labels(
-    pool: asyncpg.Pool, serving_worktree: str
+    db_pool: asyncpg.Pool, serving_worktree: str
 ) -> None:
     """A stored worktree label must name a checkout, not a path-navigation segment."""
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await db_pool.execute(
             """
             INSERT INTO public.deployments (
                 git_sha, result, source, serving_mode, serving_worktree
@@ -183,9 +170,9 @@ async def test_provenance_constraints_reject_dot_segment_worktree_labels(
         )
 
 
-async def test_git_sha_is_required(pool: asyncpg.Pool) -> None:
+async def test_git_sha_is_required(db_pool: asyncpg.Pool) -> None:
     with pytest.raises(asyncpg.NotNullViolationError):
-        await pool.execute("INSERT INTO public.deployments (result) VALUES ('success')")
+        await db_pool.execute("INSERT INTO public.deployments (result) VALUES ('success')")
 
 
 # ---------------------------------------------------------------------------
@@ -194,9 +181,9 @@ async def test_git_sha_is_required(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_record_and_read_current_deployment(pool: asyncpg.Pool) -> None:
+async def test_record_and_read_current_deployment(db_pool: asyncpg.Pool) -> None:
     row_id = await record_deployment(
-        pool,
+        db_pool,
         git_sha="abc1234",
         migration_head="core_163",
         result="success",
@@ -206,7 +193,7 @@ async def test_record_and_read_current_deployment(pool: asyncpg.Pool) -> None:
     )
     assert row_id is not None
 
-    current = await get_current_deployment(pool)
+    current = await get_current_deployment(db_pool)
     assert current is not None
     assert current["git_sha"] == "abc1234"
     assert current["migration_head"] == "core_163"
@@ -218,9 +205,9 @@ async def test_record_and_read_current_deployment(pool: asyncpg.Pool) -> None:
     assert current["finished_at"] is not None
 
 
-async def test_current_deployment_is_the_most_recent_row(pool: asyncpg.Pool) -> None:
+async def test_current_deployment_is_the_most_recent_row(db_pool: asyncpg.Pool) -> None:
     await record_deployment(
-        pool,
+        db_pool,
         git_sha="older",
         migration_head="core_162",
         result="success",
@@ -229,7 +216,7 @@ async def test_current_deployment_is_the_most_recent_row(pool: asyncpg.Pool) -> 
         serving_worktree=None,
     )
     await record_deployment(
-        pool,
+        db_pool,
         git_sha="newer",
         migration_head="core_163",
         result="success",
@@ -238,13 +225,13 @@ async def test_current_deployment_is_the_most_recent_row(pool: asyncpg.Pool) -> 
         serving_worktree=None,
     )
 
-    current = await get_current_deployment(pool)
+    current = await get_current_deployment(db_pool)
     assert current["git_sha"] == "newer"
 
 
-async def test_list_recent_deployments_orders_newest_first(pool: asyncpg.Pool) -> None:
+async def test_list_recent_deployments_orders_newest_first(db_pool: asyncpg.Pool) -> None:
     await record_deployment(
-        pool,
+        db_pool,
         git_sha="sha-a",
         migration_head="core_163",
         result="success",
@@ -253,7 +240,7 @@ async def test_list_recent_deployments_orders_newest_first(pool: asyncpg.Pool) -
         serving_worktree=None,
     )
     await record_deployment(
-        pool,
+        db_pool,
         git_sha="sha-b",
         migration_head="core_163",
         result="failed",
@@ -262,17 +249,19 @@ async def test_list_recent_deployments_orders_newest_first(pool: asyncpg.Pool) -
         serving_worktree=None,
     )
 
-    recent = await list_recent_deployments(pool, limit=2)
+    recent = await list_recent_deployments(db_pool, limit=2)
     assert len(recent) == 2
     assert recent[0]["git_sha"] == "sha-b"
     assert recent[1]["git_sha"] == "sha-a"
 
 
-async def test_failed_deploy_and_null_migration_head_persist_honestly(pool: asyncpg.Pool) -> None:
+async def test_failed_deploy_and_null_migration_head_persist_honestly(
+    db_pool: asyncpg.Pool,
+) -> None:
     """A boot with no readable alembic_version and a partial start must record
     the honest degraded state, never a fabricated success."""
     row_id = await record_deployment(
-        pool,
+        db_pool,
         git_sha="broken-sha",
         migration_head=None,
         result="failed",
@@ -280,7 +269,7 @@ async def test_failed_deploy_and_null_migration_head_persist_honestly(pool: asyn
         serving_mode=None,
         serving_worktree=None,
     )
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         """
         SELECT git_sha, migration_head, result, source, serving_mode, serving_worktree
         FROM public.deployments
@@ -296,9 +285,9 @@ async def test_failed_deploy_and_null_migration_head_persist_honestly(pool: asyn
     assert row["serving_worktree"] is None
 
 
-async def test_legacy_row_keeps_unknown_provenance(pool: asyncpg.Pool) -> None:
+async def test_legacy_row_keeps_unknown_provenance(db_pool: asyncpg.Pool) -> None:
     """The upgrade cannot honestly infer source or serving mode for old rows."""
-    row_id = await pool.fetchval(
+    row_id = await db_pool.fetchval(
         """
         INSERT INTO public.deployments (git_sha, result)
         VALUES ('legacy-sha', 'success')
@@ -306,7 +295,7 @@ async def test_legacy_row_keeps_unknown_provenance(pool: asyncpg.Pool) -> None:
         """
     )
 
-    row = await pool.fetchrow(
+    row = await db_pool.fetchrow(
         """
         SELECT source, serving_mode, serving_worktree
         FROM public.deployments

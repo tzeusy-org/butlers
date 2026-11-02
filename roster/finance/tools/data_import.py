@@ -6,7 +6,7 @@ deduplicates against existing transactions, and processes in batches of 500.
 
 Public API:
     import_transactions(pool, blob_store, storage_ref, account_id, currency, column_map,
-                        dry_run, notify_fn)
+                        dry_run, notify_fn, *, origin_butler)
     import_transactions_from_file(pool, file_path, account_id, currency, column_map,
                                   dry_run, notify_fn)
 
@@ -37,6 +37,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import asyncpg
+
+from butlers.core.notify_attachments import AttachmentError, check_storage_ref
 
 logger = logging.getLogger(__name__)
 
@@ -955,6 +957,8 @@ async def import_transactions(
     column_map: dict[str, str] | None = None,
     dry_run: bool = False,
     notify_fn: Any = None,
+    *,
+    origin_butler: str,
 ) -> dict[str, Any]:
     """Import transactions from a bank CSV export stored in blob storage.
 
@@ -970,7 +974,10 @@ async def import_transactions(
     blob_store:
         BlobStore instance used to retrieve the CSV file.
     storage_ref:
-        Blob storage reference string (e.g. ``s3://bucket/path/file.csv``).
+        Blob storage reference string (e.g. ``s3://bucket/finance/file.csv``).
+        It must sit under the RFC 0016 prefix ``{bucket}/{origin_butler}/`` or
+        the connector prefix ``{bucket}/connectors/``; any other ref is refused
+        before a byte is fetched.
     account_id:
         UUID string of the account to associate all transactions with.
     currency:
@@ -990,6 +997,9 @@ async def import_transactions(
         exceeds ``_LARGE_IMPORT_THRESHOLD`` rows.  Called at 25/50/75/100%
         completion with ``channel``, ``message``, and ``intent`` keyword args
         (matching the butler's ``notify()`` MCP tool signature).
+    origin_butler:
+        Name of the butler running the import, taken from the daemon context and
+        never from the caller. It scopes which blob prefix ``storage_ref`` may name.
 
     Returns
     -------
@@ -1003,6 +1013,21 @@ async def import_transactions(
     mappings and the count is reported via ``categories_learned``.
     """
     import_batch_id = str(uuid.uuid4())
+
+    # --- Refuse a ref outside this butler's blob prefix (RFC 0016) ---
+    try:
+        check_storage_ref(storage_ref, blob_store, origin_butler=origin_butler)
+    except AttachmentError as exc:
+        reason = (
+            "attachment_forbidden" if exc.code == "attachment_forbidden" else "invalid_storage_ref"
+        )
+        return {
+            "status": "refused",
+            "reason": reason,
+            "error": str(exc),
+            "storage_ref": storage_ref,
+            "import_batch_id": import_batch_id,
+        }
 
     # --- Load from blob storage ---
     try:

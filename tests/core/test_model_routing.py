@@ -48,7 +48,6 @@ from butlers.core.model_routing import (
     resolve_model,
     resolve_model_with_effective_tier,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -376,33 +375,21 @@ async def test_fetch_resolve_rows_bounded_lru_eviction() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Return an asyncpg pool with model routing tables cleared between tests.
+async def routing_pool(db) -> asyncpg.Pool:
+    """Core pool with the seeded model catalog emptied.
 
     Also drops the bounded routing-decision cache (bu-k9te9, slice 5): it is a
     process-global, TTL-based cache keyed on (butler_name, tiers), so without this a test
-    could observe another test's cached rows for the same key within the TTL window
-    despite the DB being freshly truncated.
+    could observe another test's cached rows for the same key within the TTL window.
     """
     clear_routing_decision_cache()
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    await p.execute(
+    pool = await db("core")
+    await pool.execute(
         "TRUNCATE public.model_round_robin_counters, "
         "public.butler_model_overrides, public.model_catalog CASCADE"
     )
-    yield p
-    await p.close()
+    return pool
 
 
 async def _insert_catalog_entry(
@@ -418,9 +405,7 @@ async def _insert_catalog_entry(
     extra_args: list[str] | None = None,
     last_verified_ok: bool | None = None,
 ) -> str:
-    import json
-
-    extra_json = json.dumps(extra_args or [])
+    extra_json = extra_args or []
     row = await pool.fetchrow(
         """
         INSERT INTO public.model_catalog
@@ -643,24 +628,26 @@ def test_parse_max_cost_per_call() -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_basic_catalog(pool: asyncpg.Pool) -> None:
+async def test_resolve_basic_catalog(routing_pool: asyncpg.Pool) -> None:
     """Global entry resolves; wrong tier returns None with no fallthrough; empty catalog returns None."""
     # Empty catalog returns None
     assert (
-        await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+        await resolve_model(
+            routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        )
         is None
     )
 
     # Matching tier found
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="sonnet",
         model_id="claude-sonnet-4",
         complexity_tier="workhorse",
         priority=10,
     )
     result = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert result is not None
     runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
@@ -672,7 +659,9 @@ async def test_resolve_basic_catalog(pool: asyncpg.Pool) -> None:
 
     # Wrong tier returns None (no fallthrough)
     assert (
-        await resolve_model(pool, "general", Complexity.REASONING, allow_tier_fallthrough=False)
+        await resolve_model(
+            routing_pool, "general", Complexity.REASONING, allow_tier_fallthrough=False
+        )
         is None
     )
 
@@ -680,17 +669,17 @@ async def test_resolve_basic_catalog(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_returns_catalog_session_timeout(pool: asyncpg.Pool) -> None:
+async def test_resolve_returns_catalog_session_timeout(routing_pool: asyncpg.Pool) -> None:
     """Resolved catalog rows include per-row session_timeout_s."""
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="timed-sonnet",
         model_id="claude-sonnet-4",
         complexity_tier="workhorse",
         session_timeout_s=2400,
     )
     result = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert result is not None
     runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
@@ -704,7 +693,7 @@ async def test_resolve_returns_catalog_session_timeout(pool: asyncpg.Pool) -> No
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> None:
+async def test_resolve_excludes_failed_verification_rows(routing_pool: asyncpg.Pool) -> None:
     """Rows that failed verification are not dispatch candidates.
 
     ``NULL`` means untested and remains eligible; ``true`` means verified and
@@ -712,7 +701,7 @@ async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> 
     timeout and must not be selected again until verification succeeds.
     """
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="timed-out-opencode",
         runtime_type="opencode",
         model_id="opencode-go/slow-model",
@@ -721,7 +710,7 @@ async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> 
         last_verified_ok=False,
     )
     verified_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="verified-codex",
         runtime_type="codex",
         model_id="gpt-5.4-mini",
@@ -730,7 +719,7 @@ async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> 
         last_verified_ok=True,
     )
     untested_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="untested-codex",
         runtime_type="codex",
         model_id="gpt-5.3-codex-spark",
@@ -740,18 +729,18 @@ async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> 
     )
 
     result = await resolve_model(
-        pool, "switchboard", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "switchboard", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert result is not None
     assert result[1] == "gpt-5.4-mini"
     assert str(result[3]) == verified_id
 
-    await pool.execute(
+    await routing_pool.execute(
         "UPDATE public.model_catalog SET last_verified_ok = false WHERE id = $1",
         uuid.UUID(verified_id),
     )
     result = await resolve_model(
-        pool, "switchboard", Complexity.WORKHORSE, allow_tier_fallthrough=True
+        routing_pool, "switchboard", Complexity.WORKHORSE, allow_tier_fallthrough=True
     )
     assert result is not None
     assert result[1] == "gpt-5.3-codex-spark"
@@ -761,28 +750,34 @@ async def test_resolve_excludes_failed_verification_rows(pool: asyncpg.Pool) -> 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_override_disable_and_remap(pool: asyncpg.Pool) -> None:
+async def test_resolve_override_disable_and_remap(routing_pool: asyncpg.Pool) -> None:
     """Override disable hides entry for that butler; remap moves it to new tier."""
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="sonnet",
         model_id="claude-sonnet-4",
         complexity_tier="workhorse",
         priority=10,
     )
-    await _insert_override(pool, butler_name="health", catalog_entry_id=entry_id, enabled=False)
+    await _insert_override(
+        routing_pool, butler_name="health", catalog_entry_id=entry_id, enabled=False
+    )
     assert (
-        await resolve_model(pool, "health", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+        await resolve_model(
+            routing_pool, "health", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        )
         is None
     )
     assert (
-        await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+        await resolve_model(
+            routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        )
         is not None
     )
 
     # Override remap: workhorse → reasoning for relationship butler
     await _insert_override(
-        pool,
+        routing_pool,
         butler_name="relationship",
         catalog_entry_id=entry_id,
         enabled=True,
@@ -790,12 +785,12 @@ async def test_resolve_override_disable_and_remap(pool: asyncpg.Pool) -> None:
     )
     assert (
         await resolve_model(
-            pool, "relationship", Complexity.WORKHORSE, allow_tier_fallthrough=False
+            routing_pool, "relationship", Complexity.WORKHORSE, allow_tier_fallthrough=False
         )
         is None
     )
     reasoning_r = await resolve_model(
-        pool, "relationship", Complexity.REASONING, allow_tier_fallthrough=False
+        routing_pool, "relationship", Complexity.REASONING, allow_tier_fallthrough=False
     )
     assert reasoning_r is not None and reasoning_r[1] == "claude-sonnet-4"
 
@@ -803,36 +798,36 @@ async def test_resolve_override_disable_and_remap(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_override_priority_boost(pool: asyncpg.Pool) -> None:
+async def test_resolve_override_priority_boost(routing_pool: asyncpg.Pool) -> None:
     """Priority override boosts lower-priority entry above global default."""
     haiku_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="haiku",
         model_id="claude-haiku-4",
         complexity_tier="workhorse",
         priority=5,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="sonnet2",
         model_id="claude-sonnet-4",
         complexity_tier="workhorse",
         priority=20,
     )
     global_r = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert global_r is not None and global_r[1] == "claude-sonnet-4"
 
     await _insert_override(
-        pool,
+        routing_pool,
         butler_name="messenger",
         catalog_entry_id=haiku_id,
         enabled=True,
         priority=100,
     )
     messenger_r = await resolve_model(
-        pool, "messenger", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "messenger", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert messenger_r is not None and messenger_r[1] == "claude-haiku-4"
 
@@ -840,9 +835,9 @@ async def test_resolve_override_priority_boost(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_round_robin(pool: asyncpg.Pool) -> None:
+async def test_resolve_round_robin(routing_pool: asyncpg.Pool) -> None:
     """Same-priority entries cycle round-robin; only top-priority entries included."""
-    await pool.execute("""
+    await routing_pool.execute("""
         INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
         VALUES
@@ -854,9 +849,15 @@ async def test_resolve_round_robin(pool: asyncpg.Pool) -> None:
              '2026-01-03 00:00:00+00', '2026-01-03 00:00:00+00')
     """)
 
-    r1 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
-    r2 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
-    r3 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    r1 = await resolve_model(
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    r2 = await resolve_model(
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    r3 = await resolve_model(
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
     assert r1 is not None and r1[1] == "model-first"
     assert r2 is not None and r2[1] == "model-second"
     assert r3 is not None and r3[1] == "model-first"  # wraps
@@ -868,9 +869,9 @@ async def test_resolve_round_robin(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_extra_args_and_string_tier(pool: asyncpg.Pool) -> None:
+async def test_resolve_extra_args_and_string_tier(routing_pool: asyncpg.Pool) -> None:
     """extra_args list is returned; plain string tier accepted."""
-    await pool.execute("""
+    await routing_pool.execute("""
         INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, complexity_tier, priority, extra_args)
         VALUES
@@ -879,22 +880,22 @@ async def test_resolve_extra_args_and_string_tier(pool: asyncpg.Pool) -> None:
     """)
 
     result = await resolve_model(
-        pool, "general", Complexity.REASONING, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.REASONING, allow_tier_fallthrough=False
     )
     assert result is not None and result[2] == ["--config", "model_reasoning_effort=high"]
 
-    result2 = await resolve_model(pool, "general", "reasoning", allow_tier_fallthrough=False)
+    result2 = await resolve_model(
+        routing_pool, "general", "reasoning", allow_tier_fallthrough=False
+    )
     assert result2 is not None and result2[1] == "claude-opus-4"
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_specialty_tier(pool: asyncpg.Pool) -> None:
+async def test_resolve_specialty_tier(routing_pool: asyncpg.Pool) -> None:
     """specialty tier resolves correctly and is isolated from workhorse."""
-    import json
-
-    await pool.execute(
+    await routing_pool.execute(
         """
         INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
@@ -903,12 +904,12 @@ async def test_resolve_specialty_tier(pool: asyncpg.Pool) -> None:
         "specialty-model",
         "opencode",
         "ollama/qwen3.5:9b",
-        json.dumps([]),
+        [],
         "specialty",
         True,
         10,
     )
-    await pool.execute(
+    await routing_pool.execute(
         """
         INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, extra_args, complexity_tier, enabled, priority)
@@ -917,39 +918,46 @@ async def test_resolve_specialty_tier(pool: asyncpg.Pool) -> None:
         "local-model",
         "claude",
         "claude-sonnet-4-6",
-        json.dumps([]),
+        [],
         "local",
         True,
         10,
     )
 
     # Specialty tier resolves; workhorse does not match it (no fallthrough)
-    sp = await resolve_model(pool, "connector", Complexity.SPECIALTY, allow_tier_fallthrough=False)
+    sp = await resolve_model(
+        routing_pool, "connector", Complexity.SPECIALTY, allow_tier_fallthrough=False
+    )
     assert sp is not None and sp[1] == "ollama/qwen3.5:9b"
     assert (
-        await resolve_model(pool, "connector", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+        await resolve_model(
+            routing_pool, "connector", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        )
         is None
     )
 
     # local tier resolves
-    lo = await resolve_model(pool, "email", Complexity.LOCAL, allow_tier_fallthrough=False)
+    lo = await resolve_model(routing_pool, "email", Complexity.LOCAL, allow_tier_fallthrough=False)
     assert lo is not None and lo[1] == "claude-sonnet-4-6"
 
     # String form accepted
     assert (
-        await resolve_model(pool, "connector", "specialty", allow_tier_fallthrough=False)
+        await resolve_model(routing_pool, "connector", "specialty", allow_tier_fallthrough=False)
         is not None
     )
-    assert await resolve_model(pool, "email", "local", allow_tier_fallthrough=False) is not None
+    assert (
+        await resolve_model(routing_pool, "email", "local", allow_tier_fallthrough=False)
+        is not None
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_tier_fallthrough_order(pool: asyncpg.Pool) -> None:
+async def test_resolve_tier_fallthrough_order(routing_pool: asyncpg.Pool) -> None:
     """§3.2: when requested tier has no entry, fall through to next canonical tier."""
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="cheap-fallback",
         model_id="cheap-model",
         complexity_tier="cheap",
@@ -957,22 +965,26 @@ async def test_resolve_tier_fallthrough_order(pool: asyncpg.Pool) -> None:
     )
 
     # Requesting reasoning tier; no reasoning entry → falls through to workhorse → cheap
-    result = await resolve_model(pool, "general", Complexity.REASONING, allow_tier_fallthrough=True)
+    result = await resolve_model(
+        routing_pool, "general", Complexity.REASONING, allow_tier_fallthrough=True
+    )
     assert result is not None and result[1] == "cheap-model"
 
     # Requesting workhorse tier; falls through to cheap
     result2 = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=True
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=True
     )
     assert result2 is not None and result2[1] == "cheap-model"
 
     # Requesting cheap tier; matches directly
-    result3 = await resolve_model(pool, "general", Complexity.CHEAP, allow_tier_fallthrough=True)
+    result3 = await resolve_model(
+        routing_pool, "general", Complexity.CHEAP, allow_tier_fallthrough=True
+    )
     assert result3 is not None and result3[1] == "cheap-model"
 
     # Requesting specialty tier; no entry in specialty/local/legacy → None
     result4 = await resolve_model(
-        pool, "general", Complexity.SPECIALTY, allow_tier_fallthrough=True
+        routing_pool, "general", Complexity.SPECIALTY, allow_tier_fallthrough=True
     )
     assert result4 is None
 
@@ -980,7 +992,7 @@ async def test_resolve_tier_fallthrough_order(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_counter_only_increments_for_resolved_tier(pool: asyncpg.Pool) -> None:
+async def test_counter_only_increments_for_resolved_tier(routing_pool: asyncpg.Pool) -> None:
     """Counter increments only for the tier that was actually selected.
 
     With fallthrough enabled and only a cheap entry present, requesting
@@ -988,7 +1000,7 @@ async def test_counter_only_increments_for_resolved_tier(pool: asyncpg.Pool) -> 
     reasoning or workhorse counters for the skipped empty tiers.
     """
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="cheap-only",
         model_id="cheap-model",
         complexity_tier="cheap",
@@ -996,11 +1008,13 @@ async def test_counter_only_increments_for_resolved_tier(pool: asyncpg.Pool) -> 
     )
 
     # Resolve from reasoning → falls through to cheap.
-    result = await resolve_model(pool, "general", Complexity.REASONING, allow_tier_fallthrough=True)
+    result = await resolve_model(
+        routing_pool, "general", Complexity.REASONING, allow_tier_fallthrough=True
+    )
     assert result is not None and result[1] == "cheap-model"
 
     # Only the cheap counter should exist and be 0 (first use).
-    rows = await pool.fetch(
+    rows = await routing_pool.fetch(
         "SELECT complexity_tier, counter FROM public.model_round_robin_counters "
         "WHERE butler_name = $1 ORDER BY complexity_tier",
         "general",
@@ -1017,7 +1031,7 @@ async def test_counter_only_increments_for_resolved_tier(pool: asyncpg.Pool) -> 
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_empty_tier_fallthrough_does_not_increment_skipped_counters(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """Skipped empty tiers never appear in model_round_robin_counters.
 
@@ -1025,7 +1039,7 @@ async def test_empty_tier_fallthrough_does_not_increment_skipped_counters(
     only accumulate a counter for cheap; reasoning and workhorse stay absent.
     """
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="cheap-only-2",
         model_id="cheap-model-2",
         complexity_tier="cheap",
@@ -1035,11 +1049,11 @@ async def test_empty_tier_fallthrough_does_not_increment_skipped_counters(
     # Three calls from reasoning tier; all fall through to cheap.
     for _ in range(3):
         r = await resolve_model(
-            pool, "fallcheck", Complexity.REASONING, allow_tier_fallthrough=True
+            routing_pool, "fallcheck", Complexity.REASONING, allow_tier_fallthrough=True
         )
         assert r is not None and r[1] == "cheap-model-2"
 
-    rows = await pool.fetch(
+    rows = await routing_pool.fetch(
         "SELECT complexity_tier, counter FROM public.model_round_robin_counters "
         "WHERE butler_name = $1",
         "fallcheck",
@@ -1052,10 +1066,12 @@ async def test_empty_tier_fallthrough_does_not_increment_skipped_counters(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_no_fallthrough_does_not_increment_counter_on_miss(pool: asyncpg.Pool) -> None:
+async def test_no_fallthrough_does_not_increment_counter_on_miss(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """allow_tier_fallthrough=False with no matching entry returns None and increments nothing."""
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="workhorse-only",
         model_id="workhorse-model",
         complexity_tier="workhorse",
@@ -1064,11 +1080,11 @@ async def test_no_fallthrough_does_not_increment_counter_on_miss(pool: asyncpg.P
 
     # Request reasoning tier with fallthrough disabled; no reasoning entry.
     result = await resolve_model(
-        pool, "nofallcheck", Complexity.REASONING, allow_tier_fallthrough=False
+        routing_pool, "nofallcheck", Complexity.REASONING, allow_tier_fallthrough=False
     )
     assert result is None
 
-    rows = await pool.fetch(
+    rows = await routing_pool.fetch(
         "SELECT complexity_tier FROM public.model_round_robin_counters WHERE butler_name = $1",
         "nofallcheck",
     )
@@ -1081,13 +1097,13 @@ async def test_no_fallthrough_does_not_increment_counter_on_miss(pool: asyncpg.P
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_deprecated_string_tier_warns(
-    pool: asyncpg.Pool, caplog: pytest.LogCaptureFixture
+    routing_pool: asyncpg.Pool, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Passing a legacy string tier to resolve_model triggers a deprecation warning."""
     import logging
 
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="workhorse-model",
         model_id="workhorse-model-id",
         complexity_tier="workhorse",
@@ -1096,7 +1112,9 @@ async def test_resolve_deprecated_string_tier_warns(
 
     with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
         # "medium" maps to "workhorse" — should find the workhorse entry
-        result = await resolve_model(pool, "general", "medium", allow_tier_fallthrough=False)
+        result = await resolve_model(
+            routing_pool, "general", "medium", allow_tier_fallthrough=False
+        )
 
     assert result is not None and result[1] == "workhorse-model-id"
     assert any("DEPRECATED" in r.message for r in caplog.records)
@@ -1110,17 +1128,19 @@ async def test_resolve_deprecated_string_tier_warns(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_with_effective_tier_returns_effective_tier(pool: asyncpg.Pool) -> None:
+async def test_resolve_with_effective_tier_returns_effective_tier(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """resolve_model_with_effective_tier returns 6-tuple with effective_tier appended."""
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="workhorse-ewt",
         model_id="model-workhorse-ewt",
         complexity_tier="workhorse",
         priority=5,
     )
     result = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert result is not None
     assert len(result) == 6
@@ -1137,11 +1157,11 @@ async def test_resolve_with_effective_tier_returns_effective_tier(pool: asyncpg.
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_with_effective_tier_fallthrough_reports_resolved_tier(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """When tier fallthrough occurs, effective_tier reflects the actual tier found."""
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="cheap-ewt",
         model_id="model-cheap-ewt",
         complexity_tier="cheap",
@@ -1149,7 +1169,7 @@ async def test_resolve_with_effective_tier_fallthrough_reports_resolved_tier(
     )
     # Request reasoning; no reasoning entry → falls through to cheap
     result = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.REASONING, allow_tier_fallthrough=True
+        routing_pool, "general", Complexity.REASONING, allow_tier_fallthrough=True
     )
     assert result is not None
     assert result[1] == "model-cheap-ewt"
@@ -1159,10 +1179,10 @@ async def test_resolve_with_effective_tier_fallthrough_reports_resolved_tier(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_with_effective_tier_none_when_no_match(pool: asyncpg.Pool) -> None:
+async def test_resolve_with_effective_tier_none_when_no_match(routing_pool: asyncpg.Pool) -> None:
     """Returns None when no entry qualifies in any tier."""
     result = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.REASONING, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.REASONING, allow_tier_fallthrough=False
     )
     assert result is None
 
@@ -1175,25 +1195,25 @@ async def test_resolve_with_effective_tier_none_when_no_match(pool: asyncpg.Pool
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_empty_catalog_returns_none(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_empty_catalog_returns_none(routing_pool: asyncpg.Pool) -> None:
     """Returns None when catalog is empty."""
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    result = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert result is None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_returns_matching_entry(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_returns_matching_entry(routing_pool: asyncpg.Pool) -> None:
     """Returns a matching candidate when one exists in the tier."""
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-basic",
         model_id="model-nst-basic",
         complexity_tier="workhorse",
         priority=5,
     )
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    result = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert result is not None
     runtime_type, model_id, extra_args, catalog_entry_id, session_timeout_s = result
     assert runtime_type == "claude"
@@ -1206,35 +1226,37 @@ async def test_next_same_tier_returns_matching_entry(pool: asyncpg.Pool) -> None
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_excludes_attempted_id(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_excludes_attempted_id(routing_pool: asyncpg.Pool) -> None:
     """Excludes already-attempted catalog entry IDs."""
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-exclude",
         model_id="model-nst-exclude",
         complexity_tier="workhorse",
         priority=5,
     )
     # Exclude the only entry → None
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [uuid.UUID(entry_id)])
+    result = await next_same_tier_candidate(
+        routing_pool, "general", "workhorse", [uuid.UUID(entry_id)]
+    )
     assert result is None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_priority_ordering(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_priority_ordering(routing_pool: asyncpg.Pool) -> None:
     """Returns highest-priority entry first; deterministic by priority DESC, created_at ASC."""
     # Insert two entries at different priorities
     low_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-ord-low",
         model_id="model-nst-low",
         complexity_tier="workhorse",
         priority=5,
     )
     high_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-ord-high",
         model_id="model-nst-high",
         complexity_tier="workhorse",
@@ -1242,16 +1264,16 @@ async def test_next_same_tier_priority_ordering(pool: asyncpg.Pool) -> None:
     )
 
     # Without exclusions, should return high-priority entry
-    r1 = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    r1 = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert r1 is not None and r1[1] == "model-nst-high"
 
     # Exclude the high-priority entry → should return low-priority entry
-    r2 = await next_same_tier_candidate(pool, "general", "workhorse", [uuid.UUID(high_id)])
+    r2 = await next_same_tier_candidate(routing_pool, "general", "workhorse", [uuid.UUID(high_id)])
     assert r2 is not None and r2[1] == "model-nst-low"
 
     # Exclude both → None
     r3 = await next_same_tier_candidate(
-        pool, "general", "workhorse", [uuid.UUID(high_id), uuid.UUID(low_id)]
+        routing_pool, "general", "workhorse", [uuid.UUID(high_id), uuid.UUID(low_id)]
     )
     assert r3 is None
 
@@ -1259,18 +1281,18 @@ async def test_next_same_tier_priority_ordering(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_does_not_cross_tier(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_does_not_cross_tier(routing_pool: asyncpg.Pool) -> None:
     """Failover does NOT cross tier boundaries — only exact effective tier is searched."""
     # Insert reasoning and cheap entries only (no workhorse)
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-cross-reasoning",
         model_id="model-nst-reasoning",
         complexity_tier="reasoning",
         priority=10,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-cross-cheap",
         model_id="model-nst-cheap",
         complexity_tier="cheap",
@@ -1278,17 +1300,17 @@ async def test_next_same_tier_does_not_cross_tier(pool: asyncpg.Pool) -> None:
     )
 
     # Searching workhorse tier → no results (reasoning and cheap not included)
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    result = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert result is None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_excludes_disabled_entries(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_excludes_disabled_entries(routing_pool: asyncpg.Pool) -> None:
     """Disabled catalog entries (enabled=False) are never returned as failover candidates."""
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-disabled",
         model_id="model-nst-disabled",
         complexity_tier="workhorse",
@@ -1296,7 +1318,7 @@ async def test_next_same_tier_excludes_disabled_entries(pool: asyncpg.Pool) -> N
         enabled=False,
     )
     enabled_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-enabled",
         model_id="model-nst-enabled",
         complexity_tier="workhorse",
@@ -1304,7 +1326,7 @@ async def test_next_same_tier_excludes_disabled_entries(pool: asyncpg.Pool) -> N
         enabled=True,
     )
 
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    result = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert result is not None and result[1] == "model-nst-enabled"
     assert str(result[3]) == enabled_id
 
@@ -1312,10 +1334,10 @@ async def test_next_same_tier_excludes_disabled_entries(pool: asyncpg.Pool) -> N
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_excludes_failed_verification(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_excludes_failed_verification(routing_pool: asyncpg.Pool) -> None:
     """Entries with last_verified_ok=false are excluded from failover candidates."""
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-failed-ok",
         model_id="model-nst-failed",
         complexity_tier="workhorse",
@@ -1323,7 +1345,7 @@ async def test_next_same_tier_excludes_failed_verification(pool: asyncpg.Pool) -
         last_verified_ok=False,
     )
     good_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-good-ok",
         model_id="model-nst-good",
         complexity_tier="workhorse",
@@ -1331,7 +1353,7 @@ async def test_next_same_tier_excludes_failed_verification(pool: asyncpg.Pool) -
         last_verified_ok=None,  # untested — eligible
     )
 
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    result = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert result is not None and result[1] == "model-nst-good"
     assert str(result[3]) == good_id
 
@@ -1339,48 +1361,50 @@ async def test_next_same_tier_excludes_failed_verification(pool: asyncpg.Pool) -
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_applies_override_disable(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_applies_override_disable(routing_pool: asyncpg.Pool) -> None:
     """Butler override that disables an entry hides it for that butler only."""
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-ovr-disable",
         model_id="model-nst-ovr-disabled",
         complexity_tier="workhorse",
         priority=10,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-ovr-visible",
         model_id="model-nst-ovr-visible",
         complexity_tier="workhorse",
         priority=5,
     )
     # Override disables the high-priority entry for butler "restricted"
-    await _insert_override(pool, butler_name="restricted", catalog_entry_id=entry_id, enabled=False)
+    await _insert_override(
+        routing_pool, butler_name="restricted", catalog_entry_id=entry_id, enabled=False
+    )
 
     # For "restricted": disabled entry hidden → returns lower-priority visible entry
-    r_restricted = await next_same_tier_candidate(pool, "restricted", "workhorse", [])
+    r_restricted = await next_same_tier_candidate(routing_pool, "restricted", "workhorse", [])
     assert r_restricted is not None and r_restricted[1] == "model-nst-ovr-visible"
 
     # For "general": disabled override does not apply → returns high-priority entry
-    r_general = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    r_general = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert r_general is not None and r_general[1] == "model-nst-ovr-disabled"
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_applies_override_priority(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_applies_override_priority(routing_pool: asyncpg.Pool) -> None:
     """Butler override that boosts priority of a lower-priority entry surfaces it first."""
     low_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-prio-low",
         model_id="model-nst-prio-low",
         complexity_tier="workhorse",
         priority=5,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-prio-high",
         model_id="model-nst-prio-high",
         complexity_tier="workhorse",
@@ -1388,7 +1412,7 @@ async def test_next_same_tier_applies_override_priority(pool: asyncpg.Pool) -> N
     )
     # Override boosts low-priority entry to 100 for butler "boosted"
     await _insert_override(
-        pool,
+        routing_pool,
         butler_name="boosted",
         catalog_entry_id=low_id,
         enabled=True,
@@ -1396,11 +1420,11 @@ async def test_next_same_tier_applies_override_priority(pool: asyncpg.Pool) -> N
     )
 
     # For "general": high-priority catalog entry wins normally
-    r_general = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    r_general = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert r_general is not None and r_general[1] == "model-nst-prio-high"
 
     # For "boosted": override lifts the low entry to priority 100 → it wins
-    r_boosted = await next_same_tier_candidate(pool, "boosted", "workhorse", [])
+    r_boosted = await next_same_tier_candidate(routing_pool, "boosted", "workhorse", [])
     assert r_boosted is not None and r_boosted[1] == "model-nst-prio-low"
 
 
@@ -1408,18 +1432,18 @@ async def test_next_same_tier_applies_override_priority(pool: asyncpg.Pool) -> N
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_next_same_tier_override_tier_remap_excludes_from_original(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """Override remapping a workhorse entry to reasoning hides it from workhorse failover."""
     remapped_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-remapped",
         model_id="model-nst-remapped",
         complexity_tier="workhorse",
         priority=20,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-remap-visible",
         model_id="model-nst-remap-visible",
         complexity_tier="workhorse",
@@ -1427,7 +1451,7 @@ async def test_next_same_tier_override_tier_remap_excludes_from_original(
     )
     # Override remaps the high-priority workhorse entry to reasoning for butler "remapper"
     await _insert_override(
-        pool,
+        routing_pool,
         butler_name="remapper",
         catalog_entry_id=remapped_id,
         enabled=True,
@@ -1435,20 +1459,20 @@ async def test_next_same_tier_override_tier_remap_excludes_from_original(
     )
 
     # For "remapper" searching workhorse: remapped entry is gone → only visible remains
-    r = await next_same_tier_candidate(pool, "remapper", "workhorse", [])
+    r = await next_same_tier_candidate(routing_pool, "remapper", "workhorse", [])
     assert r is not None and r[1] == "model-nst-remap-visible"
 
     # For "remapper" searching reasoning: remapped entry is found
-    r_reasoning = await next_same_tier_candidate(pool, "remapper", "reasoning", [])
+    r_reasoning = await next_same_tier_candidate(routing_pool, "remapper", "reasoning", [])
     assert r_reasoning is not None and r_reasoning[1] == "model-nst-remapped"
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_deterministic_tiebreak_ordering(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_deterministic_tiebreak_ordering(routing_pool: asyncpg.Pool) -> None:
     """When multiple entries share the same priority, ordering is by created_at ASC then id ASC."""
-    await pool.execute("""
+    await routing_pool.execute("""
         INSERT INTO public.model_catalog
             (alias, runtime_type, model_id, complexity_tier, priority, created_at, updated_at)
         VALUES
@@ -1461,33 +1485,35 @@ async def test_next_same_tier_deterministic_tiebreak_ordering(pool: asyncpg.Pool
     """)
 
     # First call: all available → returns the earliest-created (tie-a)
-    r1 = await next_same_tier_candidate(pool, "general", "cheap", [])
+    r1 = await next_same_tier_candidate(routing_pool, "general", "cheap", [])
     assert r1 is not None and r1[1] == "model-nst-tie-a"
 
     # Exclude tie-a → returns tie-b (next by created_at)
-    r2 = await next_same_tier_candidate(pool, "general", "cheap", [r1[3]])
+    r2 = await next_same_tier_candidate(routing_pool, "general", "cheap", [r1[3]])
     assert r2 is not None and r2[1] == "model-nst-tie-b"
 
     # Exclude tie-a and tie-b → returns tie-c
-    r3 = await next_same_tier_candidate(pool, "general", "cheap", [r1[3], r2[3]])
+    r3 = await next_same_tier_candidate(routing_pool, "general", "cheap", [r1[3], r2[3]])
     assert r3 is not None and r3[1] == "model-nst-tie-c"
 
     # Exclude all → None
-    r4 = await next_same_tier_candidate(pool, "general", "cheap", [r1[3], r2[3], r3[3]])
+    r4 = await next_same_tier_candidate(routing_pool, "general", "cheap", [r1[3], r2[3], r3[3]])
     assert r4 is None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_next_same_tier_no_mutation_of_round_robin_counter(pool: asyncpg.Pool) -> None:
+async def test_next_same_tier_no_mutation_of_round_robin_counter(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """next_same_tier_candidate does NOT increment the round-robin counter.
 
     The round-robin counter is managed exclusively by resolve_model; failover
     candidate fetching must not interfere with it.
     """
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="nst-rr-check",
         model_id="model-nst-rr",
         complexity_tier="workhorse",
@@ -1496,8 +1522,8 @@ async def test_next_same_tier_no_mutation_of_round_robin_counter(pool: asyncpg.P
     butler = "rr-check-butler"
 
     # Call resolve_model once to create the counter row at 0
-    await resolve_model(pool, butler, Complexity.WORKHORSE, allow_tier_fallthrough=False)
-    rows_before = await pool.fetch(
+    await resolve_model(routing_pool, butler, Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    rows_before = await routing_pool.fetch(
         "SELECT counter FROM public.model_round_robin_counters WHERE butler_name = $1",
         butler,
     )
@@ -1505,9 +1531,9 @@ async def test_next_same_tier_no_mutation_of_round_robin_counter(pool: asyncpg.P
 
     # Call next_same_tier_candidate multiple times
     for _ in range(3):
-        await next_same_tier_candidate(pool, butler, "workhorse", [])
+        await next_same_tier_candidate(routing_pool, butler, "workhorse", [])
 
-    rows_after = await pool.fetch(
+    rows_after = await routing_pool.fetch(
         "SELECT counter FROM public.model_round_robin_counters WHERE butler_name = $1",
         butler,
     )
@@ -1529,16 +1555,14 @@ async def _insert_spend_rule(
     condition: dict,
     action: dict,
 ) -> None:
-    import json
-
     await pool.execute(
         """
         INSERT INTO public.spend_rules (position, condition, action)
         VALUES ($1, $2::jsonb, $3::jsonb)
         """,
         position,
-        json.dumps(condition),
-        json.dumps(action),
+        condition,
+        action,
     )
 
 
@@ -1552,44 +1576,44 @@ async def _resolved_tuple(pool: asyncpg.Pool, butler: str, tier: Complexity):
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_overrides_resolved_model(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_overrides_resolved_model(routing_pool: asyncpg.Pool) -> None:
     """A matching routing rule re-routes the resolved model to the rule's target.
 
     Pre-fix this assertion fails: rules were never consulted at dispatch, so the
     tier-resolved model would be returned unchanged.
     """
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     # Tier resolution would pick the expensive (higher-priority) workhorse model.
     expensive_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="expensive",
         model_id="claude-opus-expensive",
         complexity_tier="workhorse",
         priority=100,
     )
     cheap_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="cheap",
         model_id="claude-haiku-cheap",
         complexity_tier="workhorse",
         priority=1,
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
     assert resolved[1] == "claude-opus-expensive"
     assert str(resolved[3]) == expensive_id
 
     # Rule: route general/workhorse → the cheap model.
     await _insert_spend_rule(
-        pool,
+        routing_pool,
         position=0,
         condition={"butler": "general", "complexity": "workhorse"},
         action={"model": "claude-haiku-cheap"},
     )
 
     routed = (
-        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+        await apply_spend_routing_rules(routing_pool, "general", Complexity.WORKHORSE, resolved)
     ).resolved
     assert routed[1] == "claude-haiku-cheap"
     assert str(routed[3]) == cheap_id
@@ -1598,29 +1622,41 @@ async def test_spend_rule_overrides_resolved_model(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_first_match_wins(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_first_match_wins(routing_pool: asyncpg.Pool) -> None:
     """Rules evaluate top-to-bottom (position ASC); the first matching rule wins."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
     first_id = await _insert_catalog_entry(
-        pool, alias="first", model_id="first-target", complexity_tier="workhorse", priority=1
+        routing_pool,
+        alias="first",
+        model_id="first-target",
+        complexity_tier="workhorse",
+        priority=1,
     )
     await _insert_catalog_entry(
-        pool, alias="second", model_id="second-target", complexity_tier="workhorse", priority=1
+        routing_pool,
+        alias="second",
+        model_id="second-target",
+        complexity_tier="workhorse",
+        priority=1,
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
     assert resolved[1] == "base-model"
 
     # Two catch-all rules both match general/workhorse; position 0 must win.
-    await _insert_spend_rule(pool, position=0, condition={}, action={"model": "first-target"})
-    await _insert_spend_rule(pool, position=1, condition={}, action={"model": "second-target"})
+    await _insert_spend_rule(
+        routing_pool, position=0, condition={}, action={"model": "first-target"}
+    )
+    await _insert_spend_rule(
+        routing_pool, position=1, condition={}, action={"model": "second-target"}
+    )
 
     routed = (
-        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+        await apply_spend_routing_rules(routing_pool, "general", Complexity.WORKHORSE, resolved)
     ).resolved
     assert routed[1] == "first-target"
     assert str(routed[3]) == first_id
@@ -1629,27 +1665,27 @@ async def test_spend_rule_first_match_wins(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_no_match_leaves_model_unchanged(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_no_match_leaves_model_unchanged(routing_pool: asyncpg.Pool) -> None:
     """When no rule condition matches, the tier-resolved model is returned unchanged."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     base_id = await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
     await _insert_catalog_entry(
-        pool, alias="other", model_id="other-model", complexity_tier="workhorse", priority=1
+        routing_pool, alias="other", model_id="other-model", complexity_tier="workhorse", priority=1
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
     assert resolved[1] == "base-model"
 
     # Rule targets a DIFFERENT butler — does not match this dispatch.
     await _insert_spend_rule(
-        pool, position=0, condition={"butler": "health"}, action={"model": "other-model"}
+        routing_pool, position=0, condition={"butler": "health"}, action={"model": "other-model"}
     )
 
     routed = (
-        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+        await apply_spend_routing_rules(routing_pool, "general", Complexity.WORKHORSE, resolved)
     ).resolved
     assert routed[1] == "base-model"
     assert str(routed[3]) == base_id
@@ -1658,32 +1694,36 @@ async def test_spend_rule_no_match_leaves_model_unchanged(pool: asyncpg.Pool) ->
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_unroutable_target_keeps_original(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_unroutable_target_keeps_original(routing_pool: asyncpg.Pool) -> None:
     """A matched rule routing to a non-dispatchable model keeps the original (first-match-wins)."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     base_id = await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
     fallthrough_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="fallthrough",
         model_id="fallthrough-model",
         complexity_tier="workhorse",
         priority=1,
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
     assert resolved[1] == "base-model"
 
     # First rule matches but routes to a model with no catalog row → unroutable.
     # Second rule also matches and IS routable; first-match-wins means it must NOT
     # be reached — the original model is kept.
-    await _insert_spend_rule(pool, position=0, condition={}, action={"model": "does-not-exist"})
-    await _insert_spend_rule(pool, position=1, condition={}, action={"model": "fallthrough-model"})
+    await _insert_spend_rule(
+        routing_pool, position=0, condition={}, action={"model": "does-not-exist"}
+    )
+    await _insert_spend_rule(
+        routing_pool, position=1, condition={}, action={"model": "fallthrough-model"}
+    )
 
     routed = (
-        await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+        await apply_spend_routing_rules(routing_pool, "general", Complexity.WORKHORSE, resolved)
     ).resolved
     assert routed[1] == "base-model"
     assert str(routed[3]) == base_id
@@ -1693,28 +1733,30 @@ async def test_spend_rule_unroutable_target_keeps_original(pool: asyncpg.Pool) -
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_surfaces_max_cost_per_call(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_surfaces_max_cost_per_call(routing_pool: asyncpg.Pool) -> None:
     """A matching rule's action.max_cost_per_call is surfaced on the routing result."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
     cheap_id = await _insert_catalog_entry(
-        pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
+        routing_pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
 
     # Rule re-routes the model AND attaches a per-call cap.
     await _insert_spend_rule(
-        pool,
+        routing_pool,
         position=0,
         condition={"butler": "general"},
         action={"model": "cheap-model", "max_cost_per_call": 0.05},
     )
 
-    result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    result = await apply_spend_routing_rules(
+        routing_pool, "general", Complexity.WORKHORSE, resolved
+    )
     assert result.resolved[1] == "cheap-model"
     assert str(result.resolved[3]) == cheap_id
     assert result.max_cost_per_call == pytest.approx(0.05)
@@ -1723,19 +1765,23 @@ async def test_spend_rule_surfaces_max_cost_per_call(pool: asyncpg.Pool) -> None
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_cap_only_keeps_model(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_cap_only_keeps_model(routing_pool: asyncpg.Pool) -> None:
     """A cap-only rule (no action.model) keeps the resolved model but surfaces the cap."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     base_id = await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
 
-    await _insert_spend_rule(pool, position=0, condition={}, action={"max_cost_per_call": 0.10})
+    await _insert_spend_rule(
+        routing_pool, position=0, condition={}, action={"max_cost_per_call": 0.10}
+    )
 
-    result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    result = await apply_spend_routing_rules(
+        routing_pool, "general", Complexity.WORKHORSE, resolved
+    )
     # Model unchanged, cap surfaced.
     assert result.resolved[1] == "base-model"
     assert str(result.resolved[3]) == base_id
@@ -1745,37 +1791,39 @@ async def test_spend_rule_cap_only_keeps_model(pool: asyncpg.Pool) -> None:
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_trigger_condition_at_dispatch(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_trigger_condition_at_dispatch(routing_pool: asyncpg.Pool) -> None:
     """The trigger_source dim gates a rule at dispatch via apply_spend_routing_rules."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
     cheap_id = await _insert_catalog_entry(
-        pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
+        routing_pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
 
     # Rule matches only healing-triggered dispatches.
     await _insert_spend_rule(
-        pool, position=0, condition={"trigger": "healing"}, action={"model": "cheap-model"}
+        routing_pool, position=0, condition={"trigger": "healing"}, action={"model": "cheap-model"}
     )
 
     # No trigger context → rule does not match.
-    no_trigger = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    no_trigger = await apply_spend_routing_rules(
+        routing_pool, "general", Complexity.WORKHORSE, resolved
+    )
     assert no_trigger.resolved[1] == "base-model"
 
     # Non-matching trigger → rule does not match.
     routed_other = await apply_spend_routing_rules(
-        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="route"
+        routing_pool, "general", Complexity.WORKHORSE, resolved, trigger_source="route"
     )
     assert routed_other.resolved[1] == "base-model"
 
     # Matching trigger → rule re-routes.
     routed_healing = await apply_spend_routing_rules(
-        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="healing"
+        routing_pool, "general", Complexity.WORKHORSE, resolved, trigger_source="healing"
     )
     assert routed_healing.resolved[1] == "cheap-model"
     assert str(routed_healing.resolved[3]) == cheap_id
@@ -1784,7 +1832,7 @@ async def test_spend_rule_trigger_condition_at_dispatch(pool: asyncpg.Pool) -> N
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_purpose_condition_at_dispatch(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_purpose_condition_at_dispatch(routing_pool: asyncpg.Pool) -> None:
     """The ``purpose`` dim gates a rule at dispatch identically to ``trigger`` (bu-og0j2).
 
     ``purpose`` is stamped onto ``token_usage_ledger`` using the same
@@ -1793,35 +1841,40 @@ async def test_spend_rule_purpose_condition_at_dispatch(pool: asyncpg.Pool) -> N
     context (connectors.discretion_dispatcher). A rule authored against ``purpose``
     must gate on it exactly as a ``trigger`` rule would.
     """
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     await _insert_catalog_entry(
-        pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
+        routing_pool, alias="base", model_id="base-model", complexity_tier="workhorse", priority=100
     )
     cheap_id = await _insert_catalog_entry(
-        pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
+        routing_pool, alias="cheap", model_id="cheap-model", complexity_tier="workhorse", priority=1
     )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
 
     # Rule matches only discretion-purposed dispatches.
     await _insert_spend_rule(
-        pool, position=0, condition={"purpose": "discretion"}, action={"model": "cheap-model"}
+        routing_pool,
+        position=0,
+        condition={"purpose": "discretion"},
+        action={"model": "cheap-model"},
     )
 
     # No trigger context → rule does not match.
-    no_trigger = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+    no_trigger = await apply_spend_routing_rules(
+        routing_pool, "general", Complexity.WORKHORSE, resolved
+    )
     assert no_trigger.resolved[1] == "base-model"
 
     # Non-matching purpose → rule does not match.
     routed_other = await apply_spend_routing_rules(
-        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="route"
+        routing_pool, "general", Complexity.WORKHORSE, resolved, trigger_source="route"
     )
     assert routed_other.resolved[1] == "base-model"
 
     # Matching purpose → rule re-routes.
     routed_discretion = await apply_spend_routing_rules(
-        pool, "general", Complexity.WORKHORSE, resolved, trigger_source="discretion"
+        routing_pool, "general", Complexity.WORKHORSE, resolved, trigger_source="discretion"
     )
     assert routed_discretion.resolved[1] == "cheap-model"
     assert str(routed_discretion.resolved[3]) == cheap_id
@@ -1862,12 +1915,12 @@ async def _insert_dispatch_attempt(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_closed_with_no_dispatch_history(pool: asyncpg.Pool) -> None:
+async def test_breaker_closed_with_no_dispatch_history(routing_pool: asyncpg.Pool) -> None:
     """A brand-new catalog entry with no dispatch_attempts rows has a closed breaker."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="fresh", model_id="fresh-model", complexity_tier="workhorse"
+        routing_pool, alias="fresh", model_id="fresh-model", complexity_tier="workhorse"
     )
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is False
     assert state.consecutive_failures == 0
 
@@ -1875,15 +1928,19 @@ async def test_breaker_closed_with_no_dispatch_history(pool: asyncpg.Pool) -> No
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_opens_after_threshold_consecutive_failures(pool: asyncpg.Pool) -> None:
+async def test_breaker_opens_after_threshold_consecutive_failures(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """N consecutive runtime_failure rows trip the breaker open."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="flaky", model_id="flaky-model", complexity_tier="workhorse"
+        routing_pool, alias="flaky", model_id="flaky-model", complexity_tier="workhorse"
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="runtime_failure"
+        )
 
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is True
     assert state.consecutive_failures == _BREAKER_FAILURE_THRESHOLD
 
@@ -1891,7 +1948,9 @@ async def test_breaker_opens_after_threshold_consecutive_failures(pool: asyncpg.
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_and_resolver_use_id_for_equal_timestamp_ordering(pool: asyncpg.Pool) -> None:
+async def test_breaker_and_resolver_use_id_for_equal_timestamp_ordering(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """The newest id wins when same-timestamp attempts race each other.
 
     A success is written first, followed by the five later-inserted failures at
@@ -1900,30 +1959,32 @@ async def test_breaker_and_resolver_use_id_for_equal_timestamp_ordering(pool: as
     select the healthy lower-priority candidate.
     """
     tripped_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="equal-ts-tripped",
         model_id="equal-ts-tripped-model",
         complexity_tier="workhorse",
         priority=100,
     )
     healthy_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="equal-ts-healthy",
         model_id="equal-ts-healthy-model",
         complexity_tier="workhorse",
         priority=10,
     )
     tied_ts = datetime.now(UTC)
-    await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="success", ts=tied_ts)
+    await _insert_dispatch_attempt(
+        routing_pool, catalog_entry_id=tripped_id, outcome="success", ts=tied_ts
+    )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=tripped_id, outcome="runtime_failure", ts=tied_ts
+            routing_pool, catalog_entry_id=tripped_id, outcome="runtime_failure", ts=tied_ts
         )
 
-    state = await get_breaker_state(pool, uuid.UUID(tripped_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(tripped_id))
     assert state.open is True
     resolved = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert resolved is not None
     assert str(resolved[3]) == healthy_id
@@ -1932,51 +1993,64 @@ async def test_breaker_and_resolver_use_id_for_equal_timestamp_ordering(pool: as
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_stays_closed_below_threshold(pool: asyncpg.Pool) -> None:
+async def test_breaker_stays_closed_below_threshold(routing_pool: asyncpg.Pool) -> None:
     """Fewer than the threshold consecutive failures leaves the breaker closed."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="mostly-ok", model_id="mostly-ok-model", complexity_tier="workhorse"
+        routing_pool, alias="mostly-ok", model_id="mostly-ok-model", complexity_tier="workhorse"
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD - 1):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="runtime_failure"
+        )
 
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is False
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_closes_after_a_success_breaks_the_streak(pool: asyncpg.Pool) -> None:
+async def test_breaker_closes_after_a_success_breaks_the_streak(routing_pool: asyncpg.Pool) -> None:
     """A success row inside the trailing window closes the breaker (half-open probe succeeded)."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="recovered", model_id="recovered-model", complexity_tier="workhorse"
+        routing_pool, alias="recovered", model_id="recovered-model", complexity_tier="workhorse"
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="runtime_failure"
+        )
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is True
 
-    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="success")
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    await _insert_dispatch_attempt(routing_pool, catalog_entry_id=entry_id, outcome="success")
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is False
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_ignores_suppressed_and_quota_skip_outcomes(pool: asyncpg.Pool) -> None:
+async def test_breaker_ignores_suppressed_and_quota_skip_outcomes(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """'suppressed' and 'quota_skip' rows are not systemic-failure signals about
     the model itself and must not contribute to the consecutive-failure count."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="quota-limited", model_id="quota-limited-model", complexity_tier="workhorse"
+        routing_pool,
+        alias="quota-limited",
+        model_id="quota-limited-model",
+        complexity_tier="workhorse",
     )
     for _ in range(10):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="quota_skip")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="quota_skip"
+        )
     for _ in range(10):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="suppressed")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="suppressed"
+        )
 
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is False
     assert state.consecutive_failures == 0
 
@@ -1984,20 +2058,30 @@ async def test_breaker_ignores_suppressed_and_quota_skip_outcomes(pool: asyncpg.
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_open_excludes_entry_from_resolve_model(pool: asyncpg.Pool) -> None:
+async def test_breaker_open_excludes_entry_from_resolve_model(routing_pool: asyncpg.Pool) -> None:
     """resolve_model must skip a breaker-open entry, falling through as if it
     did not exist — the same behavior as last_verified_ok = false."""
     tripped_id = await _insert_catalog_entry(
-        pool, alias="tripped", model_id="tripped-model", complexity_tier="workhorse", priority=100
+        routing_pool,
+        alias="tripped",
+        model_id="tripped-model",
+        complexity_tier="workhorse",
+        priority=100,
     )
     healthy_id = await _insert_catalog_entry(
-        pool, alias="healthy", model_id="healthy-model", complexity_tier="workhorse", priority=10
+        routing_pool,
+        alias="healthy",
+        model_id="healthy-model",
+        complexity_tier="workhorse",
+        priority=10,
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=tripped_id, outcome="runtime_failure"
+        )
 
     result = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert result is not None
     assert str(result[3]) == healthy_id
@@ -2007,19 +2091,29 @@ async def test_breaker_open_excludes_entry_from_resolve_model(pool: asyncpg.Pool
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_breaker_open_excludes_entry_from_next_same_tier_candidate(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """next_same_tier_candidate must also skip a breaker-open entry."""
     tripped_id = await _insert_catalog_entry(
-        pool, alias="tripped2", model_id="tripped2-model", complexity_tier="workhorse", priority=100
+        routing_pool,
+        alias="tripped2",
+        model_id="tripped2-model",
+        complexity_tier="workhorse",
+        priority=100,
     )
     healthy_id = await _insert_catalog_entry(
-        pool, alias="healthy2", model_id="healthy2-model", complexity_tier="workhorse", priority=10
+        routing_pool,
+        alias="healthy2",
+        model_id="healthy2-model",
+        complexity_tier="workhorse",
+        priority=10,
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=tripped_id, outcome="runtime_failure"
+        )
 
-    result = await next_same_tier_candidate(pool, "general", "workhorse", [])
+    result = await next_same_tier_candidate(routing_pool, "general", "workhorse", [])
     assert result is not None
     assert str(result[3]) == healthy_id
 
@@ -2027,19 +2121,21 @@ async def test_breaker_open_excludes_entry_from_next_same_tier_candidate(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_half_open_probe_after_cooldown(pool: asyncpg.Pool) -> None:
+async def test_breaker_half_open_probe_after_cooldown(routing_pool: asyncpg.Pool) -> None:
     """After the cooldown window elapses since the last failure, the breaker
     stops excluding the entry (the next resolution IS the half-open probe)."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="cooled-down", model_id="cooled-down-model", complexity_tier="workhorse"
+        routing_pool, alias="cooled-down", model_id="cooled-down-model", complexity_tier="workhorse"
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="runtime_failure"
+        )
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is True
 
     # Backdate every attempt row past the cooldown window.
-    await pool.execute(
+    await routing_pool.execute(
         f"""
         UPDATE public.model_dispatch_attempts
            SET ts = now() - interval '{_BREAKER_HALF_OPEN_COOLDOWN_MINUTES + 1} minutes'
@@ -2048,26 +2144,34 @@ async def test_breaker_half_open_probe_after_cooldown(pool: asyncpg.Pool) -> Non
         uuid.UUID(entry_id),
     )
 
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is False
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_get_breaker_states_batches_across_catalog(pool: asyncpg.Pool) -> None:
+async def test_get_breaker_states_batches_across_catalog(routing_pool: asyncpg.Pool) -> None:
     """get_breaker_states returns per-entry state for the whole catalog in one call."""
     tripped_id = await _insert_catalog_entry(
-        pool, alias="batch-tripped", model_id="batch-tripped-model", complexity_tier="workhorse"
+        routing_pool,
+        alias="batch-tripped",
+        model_id="batch-tripped-model",
+        complexity_tier="workhorse",
     )
     healthy_id = await _insert_catalog_entry(
-        pool, alias="batch-healthy", model_id="batch-healthy-model", complexity_tier="workhorse"
+        routing_pool,
+        alias="batch-healthy",
+        model_id="batch-healthy-model",
+        complexity_tier="workhorse",
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
-    await _insert_dispatch_attempt(pool, catalog_entry_id=healthy_id, outcome="success")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=tripped_id, outcome="runtime_failure"
+        )
+    await _insert_dispatch_attempt(routing_pool, catalog_entry_id=healthy_id, outcome="success")
 
-    states = await get_breaker_states(pool, [uuid.UUID(tripped_id), uuid.UUID(healthy_id)])
+    states = await get_breaker_states(routing_pool, [uuid.UUID(tripped_id), uuid.UUID(healthy_id)])
     assert states[uuid.UUID(tripped_id)].open is True
     assert states[uuid.UUID(healthy_id)].open is False
 
@@ -2075,13 +2179,18 @@ async def test_get_breaker_states_batches_across_catalog(pool: asyncpg.Pool) -> 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_get_breaker_states_defaults_missing_ids_to_closed(pool: asyncpg.Pool) -> None:
+async def test_get_breaker_states_defaults_missing_ids_to_closed(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """An entry with zero dispatch history returns a default closed BreakerState
     rather than being omitted from the result dict."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="never-dispatched", model_id="never-dispatched-model", complexity_tier="cheap"
+        routing_pool,
+        alias="never-dispatched",
+        model_id="never-dispatched-model",
+        complexity_tier="cheap",
     )
-    states = await get_breaker_states(pool, [uuid.UUID(entry_id)])
+    states = await get_breaker_states(routing_pool, [uuid.UUID(entry_id)])
     assert states[uuid.UUID(entry_id)].open is False
     assert states[uuid.UUID(entry_id)].consecutive_failures == 0
 
@@ -2100,7 +2209,7 @@ async def test_get_breaker_states_defaults_missing_ids_to_closed(pool: asyncpg.P
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_spend_rule_to_breaker_open_model_honored_and_flagged(
-    pool: asyncpg.Pool, caplog
+    routing_pool: asyncpg.Pool, caplog
 ) -> None:
     """A rule routing to a breaker-open model keeps the override AND flags the breaker.
 
@@ -2111,14 +2220,18 @@ async def test_spend_rule_to_breaker_open_model_honored_and_flagged(
     """
     import logging
 
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     # Tier resolution picks the healthy default; the rule reroutes to the tripped one.
     await _insert_catalog_entry(
-        pool, alias="brk-base", model_id="brk-base-model", complexity_tier="workhorse", priority=100
+        routing_pool,
+        alias="brk-base",
+        model_id="brk-base-model",
+        complexity_tier="workhorse",
+        priority=100,
     )
     tripped_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="brk-target",
         model_id="brk-target-model",
         complexity_tier="workhorse",
@@ -2127,20 +2240,24 @@ async def test_spend_rule_to_breaker_open_model_honored_and_flagged(
     # Trip the breaker: the most recent _BREAKER_FAILURE_THRESHOLD attempts are all
     # runtime_failure and recent, so the breaker derives as open.
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=tripped_id, outcome="runtime_failure"
+        )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
     assert resolved[1] == "brk-base-model"
 
     await _insert_spend_rule(
-        pool,
+        routing_pool,
         position=0,
         condition={"butler": "general", "complexity": "workhorse"},
         action={"model": "brk-target-model"},
     )
 
     with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
-        result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+        result = await apply_spend_routing_rules(
+            routing_pool, "general", Complexity.WORKHORSE, resolved
+        )
 
     # Rule honored: model IS re-routed to the breaker-open target.
     assert result.resolved[1] == "brk-target-model"
@@ -2157,31 +2274,43 @@ async def test_spend_rule_to_breaker_open_model_honored_and_flagged(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_to_healthy_model_no_breaker_flag(pool: asyncpg.Pool, caplog) -> None:
+async def test_spend_rule_to_healthy_model_no_breaker_flag(
+    routing_pool: asyncpg.Pool, caplog
+) -> None:
     """A rule routing to a healthy (breaker-closed) model sets no breaker flag/warning."""
     import logging
 
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     await _insert_catalog_entry(
-        pool, alias="ok-base", model_id="ok-base-model", complexity_tier="workhorse", priority=100
+        routing_pool,
+        alias="ok-base",
+        model_id="ok-base-model",
+        complexity_tier="workhorse",
+        priority=100,
     )
     healthy_id = await _insert_catalog_entry(
-        pool, alias="ok-target", model_id="ok-target-model", complexity_tier="workhorse", priority=1
+        routing_pool,
+        alias="ok-target",
+        model_id="ok-target-model",
+        complexity_tier="workhorse",
+        priority=1,
     )
     # A single success = breaker closed.
-    await _insert_dispatch_attempt(pool, catalog_entry_id=healthy_id, outcome="success")
+    await _insert_dispatch_attempt(routing_pool, catalog_entry_id=healthy_id, outcome="success")
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
     await _insert_spend_rule(
-        pool,
+        routing_pool,
         position=0,
         condition={},
         action={"model": "ok-target-model"},
     )
 
     with caplog.at_level(logging.WARNING, logger="butlers.core.model_routing"):
-        result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
+        result = await apply_spend_routing_rules(
+            routing_pool, "general", Complexity.WORKHORSE, resolved
+        )
 
     assert result.resolved[1] == "ok-target-model"
     assert result.breaker_open is None
@@ -2191,28 +2320,40 @@ async def test_spend_rule_to_healthy_model_no_breaker_flag(pool: asyncpg.Pool, c
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_spend_rule_breaker_flag_matches_get_breaker_state(pool: asyncpg.Pool) -> None:
+async def test_spend_rule_breaker_flag_matches_get_breaker_state(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """The surfaced breaker_open state matches get_breaker_state (PR #3170 semantics)."""
-    await pool.execute("TRUNCATE public.spend_rules")
+    await routing_pool.execute("TRUNCATE public.spend_rules")
 
     await _insert_catalog_entry(
-        pool, alias="sem-base", model_id="sem-base-model", complexity_tier="workhorse", priority=100
+        routing_pool,
+        alias="sem-base",
+        model_id="sem-base-model",
+        complexity_tier="workhorse",
+        priority=100,
     )
     tripped_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="sem-target",
         model_id="sem-target-model",
         complexity_tier="workhorse",
         priority=1,
     )
     for _ in range(_BREAKER_FAILURE_THRESHOLD):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=tripped_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=tripped_id, outcome="runtime_failure"
+        )
 
-    resolved = await _resolved_tuple(pool, "general", Complexity.WORKHORSE)
-    await _insert_spend_rule(pool, position=0, condition={}, action={"model": "sem-target-model"})
+    resolved = await _resolved_tuple(routing_pool, "general", Complexity.WORKHORSE)
+    await _insert_spend_rule(
+        routing_pool, position=0, condition={}, action={"model": "sem-target-model"}
+    )
 
-    result = await apply_spend_routing_rules(pool, "general", Complexity.WORKHORSE, resolved)
-    direct = await get_breaker_state(pool, uuid.UUID(tripped_id))
+    result = await apply_spend_routing_rules(
+        routing_pool, "general", Complexity.WORKHORSE, resolved
+    )
+    direct = await get_breaker_state(routing_pool, uuid.UUID(tripped_id))
 
     assert result.breaker_open is not None
     assert result.breaker_open.open == direct.open is True
@@ -2222,22 +2363,24 @@ async def test_spend_rule_breaker_flag_matches_get_breaker_state(pool: asyncpg.P
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_breaker_override_outcome_ignored_by_breaker_derivation(pool: asyncpg.Pool) -> None:
+async def test_breaker_override_outcome_ignored_by_breaker_derivation(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """The informational override outcome must not trip/reset the breaker.
 
     The breaker CTE counts only runtime_failure/success rows, so a
     breaker_open_override attempt row is inert to breaker derivation.
     """
     entry_id = await _insert_catalog_entry(
-        pool, alias="inert", model_id="inert-model", complexity_tier="cheap"
+        routing_pool, alias="inert", model_id="inert-model", complexity_tier="cheap"
     )
     # Only override rows — no runtime_failure/success history.
     for _ in range(_BREAKER_FAILURE_THRESHOLD + 2):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome=BREAKER_OPEN_RULE_OVERRIDE_OUTCOME
+            routing_pool, catalog_entry_id=entry_id, outcome=BREAKER_OPEN_RULE_OVERRIDE_OUTCOME
         )
 
-    state = await get_breaker_state(pool, uuid.UUID(entry_id))
+    state = await get_breaker_state(routing_pool, uuid.UUID(entry_id))
     assert state.open is False
     assert state.consecutive_failures == 0
     # Prefix constant is greppable on the trail (documents the recorded fact).
@@ -2253,22 +2396,24 @@ async def test_breaker_override_outcome_ignored_by_breaker_derivation(pool: asyn
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_routing_evidence_aggregates_success_and_failure_counts(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """get_routing_evidence counts success/runtime_failure and computes duration percentiles."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="evidence-a", model_id="evidence-a-model", complexity_tier="workhorse"
+        routing_pool, alias="evidence-a", model_id="evidence-a-model", complexity_tier="workhorse"
     )
     for duration in (1000, 2000, 3000):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=duration
+            routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=duration
         )
-    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+    await _insert_dispatch_attempt(
+        routing_pool, catalog_entry_id=entry_id, outcome="runtime_failure"
+    )
     # Ignored outcomes must not count toward sample_count.
-    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="quota_skip")
-    await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="suppressed")
+    await _insert_dispatch_attempt(routing_pool, catalog_entry_id=entry_id, outcome="quota_skip")
+    await _insert_dispatch_attempt(routing_pool, catalog_entry_id=entry_id, outcome="suppressed")
 
-    evidence = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence = await get_routing_evidence(routing_pool, [uuid.UUID(entry_id)])
     e = evidence[uuid.UUID(entry_id)]
     assert e.success_count == 3
     assert e.failure_count == 1
@@ -2279,12 +2424,17 @@ async def test_get_routing_evidence_aggregates_success_and_failure_counts(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_get_routing_evidence_defaults_missing_ids_to_zero(pool: asyncpg.Pool) -> None:
+async def test_get_routing_evidence_defaults_missing_ids_to_zero(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """A requested id with no dispatch_attempts rows gets zero-sample evidence, not omission."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="fresh-evidence", model_id="fresh-evidence-model", complexity_tier="workhorse"
+        routing_pool,
+        alias="fresh-evidence",
+        model_id="fresh-evidence-model",
+        complexity_tier="workhorse",
     )
-    evidence = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence = await get_routing_evidence(routing_pool, [uuid.UUID(entry_id)])
     e = evidence[uuid.UUID(entry_id)]
     assert e.success_count == 0
     assert e.failure_count == 0
@@ -2296,18 +2446,18 @@ async def test_get_routing_evidence_defaults_missing_ids_to_zero(pool: asyncpg.P
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_get_routing_scores_marks_insufficient_data_below_threshold(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """get_routing_scores never fabricates a score for a sparse-history entry."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="sparse", model_id="sparse-model", complexity_tier="workhorse"
+        routing_pool, alias="sparse", model_id="sparse-model", complexity_tier="workhorse"
     )
     for _ in range(_EVIDENCE_MIN_SAMPLES - 1):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=1000
+            routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=1000
         )
 
-    scores = await get_routing_scores(pool, [(uuid.UUID(entry_id), "sparse-model")])
+    scores = await get_routing_scores(routing_pool, [(uuid.UUID(entry_id), "sparse-model")])
     score = scores[uuid.UUID(entry_id)]
     assert score.insufficient_data is True
     assert score.score is None
@@ -2317,7 +2467,7 @@ async def test_get_routing_scores_marks_insufficient_data_below_threshold(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_prefers_evidence_based_winner_over_round_robin(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """Once both same-priority candidates have sufficient evidence, the better one always wins.
 
@@ -2326,22 +2476,22 @@ async def test_resolve_prefers_evidence_based_winner_over_round_robin(
     been performing -- the exact gap bu-ep4ks.13 closes.
     """
     fast_id = await _insert_catalog_entry(
-        pool, alias="fast", model_id="fast-model", complexity_tier="workhorse", priority=10
+        routing_pool, alias="fast", model_id="fast-model", complexity_tier="workhorse", priority=10
     )
     slow_id = await _insert_catalog_entry(
-        pool, alias="slow", model_id="slow-model", complexity_tier="workhorse", priority=10
+        routing_pool, alias="slow", model_id="slow-model", complexity_tier="workhorse", priority=10
     )
     for _ in range(_EVIDENCE_MIN_SAMPLES):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=fast_id, outcome="success", duration_ms=500
+            routing_pool, catalog_entry_id=fast_id, outcome="success", duration_ms=500
         )
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=slow_id, outcome="success", duration_ms=436_000
+            routing_pool, catalog_entry_id=slow_id, outcome="success", duration_ms=436_000
         )
 
     for _ in range(5):
         result = await resolve_model(
-            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+            routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
         )
         assert result is not None
         assert result[1] == "fast-model", (
@@ -2354,27 +2504,33 @@ async def test_resolve_prefers_evidence_based_winner_over_round_robin(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_falls_back_to_round_robin_when_evidence_insufficient(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """With no dispatch history at all, resolution still round-robins exactly as before."""
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="no-history-a",
         model_id="no-history-a-model",
         complexity_tier="workhorse",
         priority=10,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="no-history-b",
         model_id="no-history-b-model",
         complexity_tier="workhorse",
         priority=10,
     )
 
-    r1 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
-    r2 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
-    r3 = await resolve_model(pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False)
+    r1 = await resolve_model(
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    r2 = await resolve_model(
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
+    r3 = await resolve_model(
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+    )
     assert r1 is not None and r2 is not None and r3 is not None
     seen = {r1[1], r2[1]}
     assert seen == {"no-history-a-model", "no-history-b-model"}
@@ -2429,16 +2585,22 @@ async def _insert_ledger_row(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_quota_aware_no_limits_row_is_pure_fast_path(pool: asyncpg.Pool) -> None:
+async def test_resolve_quota_aware_no_limits_row_is_pure_fast_path(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """No token_limits row -> quota_aware=True returns exactly what quota_aware=False would."""
     await _insert_catalog_entry(
-        pool, alias="qa-no-limits", model_id="qa-no-limits-model", priority=10
+        routing_pool, alias="qa-no-limits", model_id="qa-no-limits-model", priority=10
     )
     unaware = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     aware = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+        routing_pool,
+        "general",
+        Complexity.WORKHORSE,
+        allow_tier_fallthrough=False,
+        quota_aware=True,
     )
     assert unaware is not None and aware is not None
     assert unaware == aware
@@ -2447,16 +2609,24 @@ async def test_resolve_quota_aware_no_limits_row_is_pure_fast_path(pool: asyncpg
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_quota_aware_boundary_just_under_limit_allowed(pool: asyncpg.Pool) -> None:
+async def test_resolve_quota_aware_boundary_just_under_limit_allowed(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """usage == limit - 1 -> quota_ok, quota_aware=True returns normally (no exception)."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="qa-under", model_id="qa-under-model", priority=10
+        routing_pool, alias="qa-under", model_id="qa-under-model", priority=10
     )
-    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=100)
-    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=60, output_tokens=39)
+    await _insert_limits(routing_pool, catalog_entry_id=entry_id, limit_24h=100)
+    await _insert_ledger_row(
+        routing_pool, catalog_entry_id=entry_id, input_tokens=60, output_tokens=39
+    )
 
     result = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+        routing_pool,
+        "general",
+        Complexity.WORKHORSE,
+        allow_tier_fallthrough=False,
+        quota_aware=True,
     )
     assert result is not None
     assert str(result[3]) == entry_id
@@ -2466,24 +2636,30 @@ async def test_resolve_quota_aware_boundary_just_under_limit_allowed(pool: async
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_quota_aware_boundary_exactly_at_limit_raises_exhausted(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """usage == limit (>=) -> blocked, matching check_token_quota's exact boundary."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="qa-exact", model_id="qa-exact-model", priority=10
+        routing_pool, alias="qa-exact", model_id="qa-exact-model", priority=10
     )
-    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=100)
-    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=60, output_tokens=40)
+    await _insert_limits(routing_pool, catalog_entry_id=entry_id, limit_24h=100)
+    await _insert_ledger_row(
+        routing_pool, catalog_entry_id=entry_id, input_tokens=60, output_tokens=40
+    )
 
     with pytest.raises(TierQuotaExhausted) as exc_info:
         await resolve_model_with_effective_tier(
-            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+            routing_pool,
+            "general",
+            Complexity.WORKHORSE,
+            allow_tier_fallthrough=False,
+            quota_aware=True,
         )
     assert exc_info.value.effective_tier == "workhorse"
     # The representative must be exactly what a quota-unaware resolve would have picked --
     # the caller falls back to the pre-existing sequential quota loop starting from it.
     unaware = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert exc_info.value.representative == unaware
 
@@ -2492,18 +2668,24 @@ async def test_resolve_quota_aware_boundary_exactly_at_limit_raises_exhausted(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_quota_aware_30d_boundary_exactly_at_limit_raises_exhausted(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """30d window boundary: usage == limit_30d (24h unlimited) also blocks."""
     entry_id = await _insert_catalog_entry(
-        pool, alias="qa-exact-30d", model_id="qa-exact-30d-model", priority=10
+        routing_pool, alias="qa-exact-30d", model_id="qa-exact-30d-model", priority=10
     )
-    await _insert_limits(pool, catalog_entry_id=entry_id, limit_30d=200)
-    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=120, output_tokens=80)
+    await _insert_limits(routing_pool, catalog_entry_id=entry_id, limit_30d=200)
+    await _insert_ledger_row(
+        routing_pool, catalog_entry_id=entry_id, input_tokens=120, output_tokens=80
+    )
 
     with pytest.raises(TierQuotaExhausted):
         await resolve_model_with_effective_tier(
-            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+            routing_pool,
+            "general",
+            Complexity.WORKHORSE,
+            allow_tier_fallthrough=False,
+            quota_aware=True,
         )
 
 
@@ -2511,7 +2693,7 @@ async def test_resolve_quota_aware_30d_boundary_exactly_at_limit_raises_exhauste
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_resolve_quota_aware_mixed_tied_peers_conservatively_raises(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """One of two tied top-priority peers is quota-blocked -> TierQuotaExhausted is still raised.
 
@@ -2521,25 +2703,33 @@ async def test_resolve_quota_aware_mixed_tied_peers_conservatively_raises(
     exhaustion. Verifies the fold never silently narrows a tie on the caller's behalf.
     """
     ok_id = await _insert_catalog_entry(
-        pool, alias="qa-mixed-ok", model_id="qa-mixed-ok-model", priority=10
+        routing_pool, alias="qa-mixed-ok", model_id="qa-mixed-ok-model", priority=10
     )
     blocked_id = await _insert_catalog_entry(
-        pool, alias="qa-mixed-blocked", model_id="qa-mixed-blocked-model", priority=10
+        routing_pool, alias="qa-mixed-blocked", model_id="qa-mixed-blocked-model", priority=10
     )
-    await _insert_limits(pool, catalog_entry_id=blocked_id, limit_24h=100)
-    await _insert_ledger_row(pool, catalog_entry_id=blocked_id, input_tokens=100, output_tokens=0)
+    await _insert_limits(routing_pool, catalog_entry_id=blocked_id, limit_24h=100)
+    await _insert_ledger_row(
+        routing_pool, catalog_entry_id=blocked_id, input_tokens=100, output_tokens=0
+    )
     del ok_id  # unused beyond seeding a quota-ok tied peer
 
     with pytest.raises(TierQuotaExhausted):
         await resolve_model_with_effective_tier(
-            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=True
+            routing_pool,
+            "general",
+            Complexity.WORKHORSE,
+            allow_tier_fallthrough=False,
+            quota_aware=True,
         )
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_quota_aware_does_not_change_tier_fallthrough(pool: asyncpg.Pool) -> None:
+async def test_resolve_quota_aware_does_not_change_tier_fallthrough(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """Tier-fallthrough stays governed by breaker/enabled state only, never by quota.
 
     A workhorse candidate that is quota-blocked must NOT cause resolution to fall through to
@@ -2549,25 +2739,31 @@ async def test_resolve_quota_aware_does_not_change_tier_fallthrough(pool: asyncp
     either (it only ever searched within `_failover_effective_tier`).
     """
     workhorse_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="qa-fallthrough-workhorse",
         model_id="qa-fallthrough-workhorse-model",
         complexity_tier="workhorse",
         priority=10,
     )
     await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="qa-fallthrough-cheap",
         model_id="qa-fallthrough-cheap-model",
         complexity_tier="cheap",
         priority=10,
     )
-    await _insert_limits(pool, catalog_entry_id=workhorse_id, limit_24h=100)
-    await _insert_ledger_row(pool, catalog_entry_id=workhorse_id, input_tokens=100, output_tokens=0)
+    await _insert_limits(routing_pool, catalog_entry_id=workhorse_id, limit_24h=100)
+    await _insert_ledger_row(
+        routing_pool, catalog_entry_id=workhorse_id, input_tokens=100, output_tokens=0
+    )
 
     with pytest.raises(TierQuotaExhausted) as exc_info:
         await resolve_model_with_effective_tier(
-            pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=True, quota_aware=True
+            routing_pool,
+            "general",
+            Complexity.WORKHORSE,
+            allow_tier_fallthrough=True,
+            quota_aware=True,
         )
     assert exc_info.value.effective_tier == "workhorse"
     assert exc_info.value.representative[1] == "qa-fallthrough-workhorse-model"
@@ -2576,7 +2772,9 @@ async def test_resolve_quota_aware_does_not_change_tier_fallthrough(pool: asyncp
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_resolve_quota_unaware_default_ignores_quota_ok_column(pool: asyncpg.Pool) -> None:
+async def test_resolve_quota_unaware_default_ignores_quota_ok_column(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """Regression guard: quota_aware defaults to False and quota status never filters selection.
 
     Every existing caller of resolve_model / resolve_model_with_effective_tier (Models tab,
@@ -2585,28 +2783,34 @@ async def test_resolve_quota_unaware_default_ignores_quota_ok_column(pool: async
     resolved normally when quota_aware is left at its default.
     """
     entry_id = await _insert_catalog_entry(
-        pool, alias="qa-default-ignored", model_id="qa-default-ignored-model", priority=10
+        routing_pool, alias="qa-default-ignored", model_id="qa-default-ignored-model", priority=10
     )
-    await _insert_limits(pool, catalog_entry_id=entry_id, limit_24h=1)
-    await _insert_ledger_row(pool, catalog_entry_id=entry_id, input_tokens=999, output_tokens=0)
+    await _insert_limits(routing_pool, catalog_entry_id=entry_id, limit_24h=1)
+    await _insert_ledger_row(
+        routing_pool, catalog_entry_id=entry_id, input_tokens=999, output_tokens=0
+    )
 
     # resolve_model: never raises, never filters on quota.
     via_resolve_model = await resolve_model(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert via_resolve_model is not None
     assert str(via_resolve_model[3]) == entry_id
 
     # resolve_model_with_effective_tier default (quota_aware unset): same behavior.
     default_result = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
+        routing_pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False
     )
     assert default_result is not None
     assert str(default_result[3]) == entry_id
 
     # Explicit quota_aware=False: identical.
     explicit_false = await resolve_model_with_effective_tier(
-        pool, "general", Complexity.WORKHORSE, allow_tier_fallthrough=False, quota_aware=False
+        routing_pool,
+        "general",
+        Complexity.WORKHORSE,
+        allow_tier_fallthrough=False,
+        quota_aware=False,
     )
     assert explicit_false == default_result
 
@@ -2614,7 +2818,9 @@ async def test_resolve_quota_unaware_default_ignores_quota_ok_column(pool: async
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_routing_cache_masks_a_new_candidate_until_cleared(pool: asyncpg.Pool) -> None:
+async def test_routing_cache_masks_a_new_candidate_until_cleared(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """A cache hit serves the stale-but-still-valid candidate set within the TTL window.
 
     Documents the accepted staleness bound this cache trades for fewer round trips:
@@ -2622,21 +2828,21 @@ async def test_routing_cache_masks_a_new_candidate_until_cleared(pool: asyncpg.P
     until the cache is cleared (in production: until the short TTL elapses).
     """
     await _insert_catalog_entry(
-        pool, alias="cache-first", model_id="cache-first-model", priority=10
+        routing_pool, alias="cache-first", model_id="cache-first-model", priority=10
     )
-    first = await resolve_model(pool, "cache-butler", Complexity.WORKHORSE)
+    first = await resolve_model(routing_pool, "cache-butler", Complexity.WORKHORSE)
     assert first is not None and first[1] == "cache-first-model"
 
     await _insert_catalog_entry(
-        pool, alias="cache-second", model_id="cache-second-model", priority=100
+        routing_pool, alias="cache-second", model_id="cache-second-model", priority=100
     )
-    still_cached = await resolve_model(pool, "cache-butler", Complexity.WORKHORSE)
+    still_cached = await resolve_model(routing_pool, "cache-butler", Complexity.WORKHORSE)
     assert still_cached is not None and still_cached[1] == "cache-first-model", (
         "Expected the cached (now stale) candidate set within the TTL window"
     )
 
     model_routing_module.clear_routing_decision_cache()
-    fresh = await resolve_model(pool, "cache-butler", Complexity.WORKHORSE)
+    fresh = await resolve_model(routing_pool, "cache-butler", Complexity.WORKHORSE)
     assert fresh is not None and fresh[1] == "cache-second-model"
 
 
@@ -2644,7 +2850,7 @@ async def test_routing_cache_masks_a_new_candidate_until_cleared(pool: asyncpg.P
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_routing_cache_round_robin_counter_still_increments_on_cache_hit(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """The round-robin counter increments every call even when candidate rows are cached.
 
@@ -2653,13 +2859,15 @@ async def test_routing_cache_round_robin_counter_still_increments_on_cache_hit(
     (test_resolve_round_robin, test_empty_tier_fallthrough_does_not_increment_skipped_counters)
     depend on it incrementing exactly once per logical resolve_model call.
     """
-    await _insert_catalog_entry(pool, alias="rr-cache-only", model_id="rr-cache-model", priority=10)
+    await _insert_catalog_entry(
+        routing_pool, alias="rr-cache-only", model_id="rr-cache-model", priority=10
+    )
 
     for _ in range(3):
-        r = await resolve_model(pool, "rr-cache-butler", Complexity.WORKHORSE)
+        r = await resolve_model(routing_pool, "rr-cache-butler", Complexity.WORKHORSE)
         assert r is not None and r[1] == "rr-cache-model"
 
-    row = await pool.fetchrow(
+    row = await routing_pool.fetchrow(
         "SELECT counter FROM public.model_round_robin_counters "
         "WHERE butler_name = $1 AND complexity_tier = 'workhorse'",
         "rr-cache-butler",
@@ -2673,21 +2881,23 @@ async def test_routing_cache_round_robin_counter_still_increments_on_cache_hit(
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_routing_cache_never_used_by_quota_aware_resolution(pool: asyncpg.Pool) -> None:
+async def test_routing_cache_never_used_by_quota_aware_resolution(
+    routing_pool: asyncpg.Pool,
+) -> None:
     """quota_aware=True always sees a newly-added candidate immediately -- never cached."""
     await _insert_catalog_entry(
-        pool, alias="qa-cache-first", model_id="qa-cache-first-model", priority=10
+        routing_pool, alias="qa-cache-first", model_id="qa-cache-first-model", priority=10
     )
     first = await resolve_model_with_effective_tier(
-        pool, "qa-cache-butler", Complexity.WORKHORSE, quota_aware=True
+        routing_pool, "qa-cache-butler", Complexity.WORKHORSE, quota_aware=True
     )
     assert first is not None and first[1] == "qa-cache-first-model"
 
     await _insert_catalog_entry(
-        pool, alias="qa-cache-second", model_id="qa-cache-second-model", priority=100
+        routing_pool, alias="qa-cache-second", model_id="qa-cache-second-model", priority=100
     )
     second = await resolve_model_with_effective_tier(
-        pool, "qa-cache-butler", Complexity.WORKHORSE, quota_aware=True
+        routing_pool, "qa-cache-butler", Complexity.WORKHORSE, quota_aware=True
     )
     assert second is not None and second[1] == "qa-cache-second-model", (
         "quota_aware=True must never serve a cached (potentially quota-stale) answer"
@@ -2708,7 +2918,7 @@ async def test_routing_cache_never_used_by_quota_aware_resolution(pool: asyncpg.
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_routing_evidence_mixed_null_and_nonnull_duration_successes(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """Evidence correctly excludes NULL durations from percentiles but includes in success count.
 
@@ -2717,28 +2927,30 @@ async def test_routing_evidence_mixed_null_and_nonnull_duration_successes(
     to percentile calculations.
     """
     entry_id = await _insert_catalog_entry(
-        pool, alias="mixed-duration", model_id="mixed-model", complexity_tier="workhorse"
+        routing_pool, alias="mixed-duration", model_id="mixed-model", complexity_tier="workhorse"
     )
 
     # Insert success rows with various duration values:
     # - 3 pre-migration style (NULL duration)
     for _ in range(3):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
+            routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
         )
     # - 2 post-migration style with concrete durations: 1000ms, 2000ms
     await _insert_dispatch_attempt(
-        pool, catalog_entry_id=entry_id, outcome="success", duration_ms=1000
+        routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=1000
     )
     await _insert_dispatch_attempt(
-        pool, catalog_entry_id=entry_id, outcome="success", duration_ms=2000
+        routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=2000
     )
     # - 2 failures (to test failure_count is separate)
     for _ in range(2):
-        await _insert_dispatch_attempt(pool, catalog_entry_id=entry_id, outcome="runtime_failure")
+        await _insert_dispatch_attempt(
+            routing_pool, catalog_entry_id=entry_id, outcome="runtime_failure"
+        )
 
     # Fetch evidence for this entry
-    evidence_dict = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence_dict = await get_routing_evidence(routing_pool, [uuid.UUID(entry_id)])
     evidence = evidence_dict[uuid.UUID(entry_id)]
 
     # success_count must include ALL successes (3 NULL + 2 with durations = 5)
@@ -2779,7 +2991,7 @@ async def test_routing_evidence_mixed_null_and_nonnull_duration_successes(
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_routing_evidence_only_null_duration_successes_yields_defined_score(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """A window with only NULL-duration successes (no failures) yields a well-defined score.
 
@@ -2788,7 +3000,7 @@ async def test_routing_evidence_only_null_duration_successes_yields_defined_scor
     latency component of the score should handle that gracefully.
     """
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="null-only-success",
         model_id="null-only-model",
         complexity_tier="workhorse",
@@ -2797,11 +3009,11 @@ async def test_routing_evidence_only_null_duration_successes_yields_defined_scor
     # Insert 5 successes, all with NULL duration (pre-migration style only)
     for _ in range(5):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
+            routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
         )
 
     # Fetch evidence
-    evidence_dict = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence_dict = await get_routing_evidence(routing_pool, [uuid.UUID(entry_id)])
     evidence = evidence_dict[uuid.UUID(entry_id)]
 
     # success_count = 5
@@ -2830,7 +3042,7 @@ async def test_routing_evidence_only_null_duration_successes_yields_defined_scor
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_routing_evidence_null_durations_do_not_affect_percentile_calculation(
-    pool: asyncpg.Pool,
+    routing_pool: asyncpg.Pool,
 ) -> None:
     """NULL-duration rows are strictly excluded from p50/p95 calculation.
 
@@ -2839,7 +3051,7 @@ async def test_routing_evidence_null_durations_do_not_affect_percentile_calculat
     non-NULL subset, not over a 0-padded representation.
     """
     entry_id = await _insert_catalog_entry(
-        pool,
+        routing_pool,
         alias="null-not-padded",
         model_id="null-not-padded-model",
         complexity_tier="workhorse",
@@ -2848,7 +3060,7 @@ async def test_routing_evidence_null_durations_do_not_affect_percentile_calculat
     # Insert 10 NULL-duration successes
     for _ in range(10):
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
+            routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=None
         )
     # Insert 4 non-NULL successes: 100ms, 200ms, 300ms, 400ms
     # Sorted: [100, 200, 300, 400]
@@ -2857,10 +3069,10 @@ async def test_routing_evidence_null_durations_do_not_affect_percentile_calculat
     #     = 300 + 0.85*(400-300) = 300 + 85 = 385
     for duration in [100, 200, 300, 400]:
         await _insert_dispatch_attempt(
-            pool, catalog_entry_id=entry_id, outcome="success", duration_ms=duration
+            routing_pool, catalog_entry_id=entry_id, outcome="success", duration_ms=duration
         )
 
-    evidence_dict = await get_routing_evidence(pool, [uuid.UUID(entry_id)])
+    evidence_dict = await get_routing_evidence(routing_pool, [uuid.UUID(entry_id)])
     evidence = evidence_dict[uuid.UUID(entry_id)]
 
     # Total success_count must include all 14 successes
