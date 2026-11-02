@@ -33,7 +33,6 @@ from datetime import UTC, datetime
 import asyncpg
 import pytest
 
-from butlers.testing.db import open_pool
 from butlers.tools.switchboard.routing.rule_demotion import maybe_create_demotion_suggestion
 from butlers.tools.switchboard.routing.rule_promotion import _fetch_evidence_headers
 from butlers.tools.switchboard.routing.verdict_log import record_routing_verdict
@@ -54,24 +53,20 @@ def routing_url(fresh_db) -> str:
 
 
 @pytest.fixture
-async def public_pool(routing_url: str) -> asyncpg.Pool:
+async def public_pool(db, routing_url: str) -> asyncpg.Pool:
     """Pool whose ``search_path`` is scoped to ``public`` only.
 
     Mirrors the production shared/public-scoped caller shape (e.g. the shared
     credential pool in ``deps.py``, ``shared_db_schema = "public"``) that
     ``test_deliver_search_path_integration.py`` reproduces for ``deliver()``.
     """
-    p = await open_pool(routing_url, schema="public")
-    yield p
-    await p.close()
+    return await db.open(routing_url, schema="public")
 
 
 @pytest.fixture
-async def switchboard_pool(routing_url: str) -> asyncpg.Pool:
+async def switchboard_pool(db, routing_url: str) -> asyncpg.Pool:
     """Pool scoped to the switchboard schema, used only to seed/read-back rows."""
-    p = await open_pool(routing_url, schema="switchboard")
-    yield p
-    await p.close()
+    return await db.open(routing_url, schema="switchboard")
 
 
 async def _insert_ingestion_event(pool: asyncpg.Pool, *, dedupe_key: str) -> uuid.UUID:
