@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import shutil
 from types import SimpleNamespace
-from uuid import uuid4
 
 import asyncpg
 import httpx
@@ -128,10 +127,11 @@ async def _raw(app, method: str, path: str, body: bytes, headers: list[tuple[byt
     return status, (json.loads(raw) if raw else None), received
 
 
+_FIXED_ID = "00000000-0000-4000-8000-00000000f1ac"
 _WRITES = [
     ("POST", _ROUTE),
-    ("PUT", f"{_ROUTE}/{uuid4()}"),
-    ("DELETE", f"{_ROUTE}/{uuid4()}?expected_version=1"),
+    ("PUT", f"{_ROUTE}/{_FIXED_ID}"),
+    ("DELETE", f"{_ROUTE}/{_FIXED_ID}?expected_version=1"),
 ]
 
 
