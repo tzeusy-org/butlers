@@ -495,10 +495,6 @@ SCHEMA_REACH_ALLOWLIST: dict[tuple[str, str], str] = {
         "<dynamic:{qualified}>",
     ): "dynamic-local: owning migration's loop over its fixed ledger table tuple; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
     (
-        "roster/switchboard/tests/test_correct_route.py",
-        "<dynamic:{table}>",
-    ): "dynamic-local: local route-test cleanup table selection; baseline ownership justification, not a foreign-schema exception or cleanup authorization",
-    (
         "roster/switchboard/tests/test_identity_injection.py",
         "relationship.entity_facts",
     ): "burn-down: existing relationship.entity_facts coupling; route through owning service or make local schema authority explicit",
