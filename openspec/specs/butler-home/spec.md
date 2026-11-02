@@ -125,6 +125,73 @@ The home butler SHALL keep the current state of every Home Assistant entity in t
 - **THEN** they MUST read from `ha_entity_snapshot` (for example `SELECT entity_id, state, attributes, last_updated FROM ha_entity_snapshot`), optionally filtered by entity-ID domain prefix or `attributes->>'area_id'`
 - **AND** an empty result signals that the module has not yet populated state, not a permanent condition
 
+### Requirement: Owner place registry and dashboard editor
+
+The system SHALL keep the owner's named places in one trusted registry,
+`public.owner_places` (core migration `core_303`), and Home SHALL own its only editor.
+Each place has a stable UUID `id` (never reused, so later perception records can carry
+it), a trimmed `label` of 1-80 characters, a `kind` of `home`, `work`, `airport` or
+`other`, `lat`/`lon` within range at no more than five decimals, an integer `radius_m`
+of 50-2000, up to 10 `aliases`, up to 20 exact case-sensitive `ssids` of 1-32 bytes, an
+optional `ha_zone` (`zone.<id>`), `paused`, `version` and `deleted_at`. Among live
+(not deleted) places a label is unique case-insensitively, at most one place is `home`,
+and an SSID belongs to at most one place.
+
+The editor is `GET/POST /api/home/places` and `PUT/DELETE /api/home/places/{id}`. Each
+route passes `require_dashboard_owner_control` before it reads any body octet, decodes,
+or acquires a pool; the handlers read the body themselves (at most 16 KiB) and the
+generic `DashboardAuditMiddleware` skips the whole `/api/home/places` subtree by path
+before touching the body. `PUT` replaces the whole row under compare-and-swap: an edit
+identical to the stored place is a no-op success even from a stale `expected_version`;
+a changed edit from a stale version is `409 VERSION_CONFLICT`; pausing is an edit of
+`paused`. `DELETE ?expected_version=N` soft-deletes. Refusals are fixed and
+content-blind (`422 INVALID_REQUEST`, `404 PLACE_NOT_FOUND`, `409 PLACE_CONFLICT`,
+`413`, `503 PLACES_UNAVAILABLE`) and never echo input. Every write runs in one
+transaction under a fixed advisory lock and appends one audit row carrying only the
+operation, outcome and prior/new version. No response, log, audit row, prompt, model
+session or MCP tool receives a coordinate, SSID, alias or zone id from this capability.
+
+Runtime access is a row-security fence that survives `init-db.sql` regrants: only
+`butler_travel_rw` and `butler_chronicler_rw` may read, and no runtime role may write.
+`butlers.owner_places.load_active_owner_places` is the shared deterministic read
+(live and unpaused places, stable order). The one-time import of
+`OWNTRACKS_PLACE_REFERENCES` and `chronicler/owntracks/ssid_places` and the cutover of
+the commuting-ETA, place-cluster and SSID readers are a later slice of the same
+capability; until it lands those legacy sources remain the live configuration.
+
+ID: REQ-butler-home-owner-places-001
+Source: bu-jv1moa.7 (Dots superset run 20 move 7, S1)
+Scope: v1-mandatory
+
+#### Scenario: Denied owner authority touches nothing
+
+- **WHEN** owner authentication is unavailable or the credential is missing or wrong
+- **THEN** every places route returns `503` or `401` before reading the body or
+  acquiring a pool, and no audit row is written
+
+#### Scenario: Malformed place is refused without echo
+
+- **WHEN** a write carries an out-of-range or over-precise coordinate, a radius outside
+  50-2000, an unknown field, or a repeated SSID or alias
+- **THEN** the API returns one fixed `422 INVALID_REQUEST` with no field detail and
+  performs no database access
+
+#### Scenario: Stale edit conflicts and writes nothing
+
+- **WHEN** a changed edit carries an `expected_version` that is not the stored version
+- **THEN** the API returns `409 VERSION_CONFLICT` and the row is unchanged
+
+#### Scenario: Paused or deleted places leave resolution
+
+- **WHEN** a place is paused or soft-deleted
+- **THEN** `load_active_owner_places` no longer returns it, a paused place stays listed
+  in the editor, and a deleted place's id is never reused
+
+#### Scenario: A failed write leaves no partial state
+
+- **WHEN** the audit append or any statement fails before commit
+- **THEN** the API returns `503 PLACES_UNAVAILABLE` and the place and version are unchanged
+
 ### Requirement: Switchboard Registration
 
 The home butler SHALL register with the Switchboard for cross-butler accessibility.
