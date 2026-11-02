@@ -257,9 +257,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     from butlers.core.routing_context import _routing_ctx_var
     from butlers.core.utils import coerce_request_id as _coerce_request_id
     from butlers.ingestion_bearer_scrub import scrub_message_text
-    from butlers.tools.attachment_materialize import (
-        attachment_materialize as _attachment_materialize,
-    )
+    from butlers.tools.attachment_materialize import materialize_routed_attachment
     from butlers.tools.switchboard.backfill.connector import backfill_poll as _backfill_poll
     from butlers.tools.switchboard.backfill.connector import backfill_progress as _backfill_progress
     from butlers.tools.switchboard.ingestion.ingest import (
@@ -1647,7 +1645,9 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
     async def attachment_materialize(message_id: str, attachment_id: str) -> dict[str, Any]:
         """Fetch an email attachment that was not downloaded at ingest into storage.
 
-        Use it for an attachment listed with ``status=not_fetched``. Waits up
+        Use it for an attachment of the message you are handling that is
+        listed with ``status=not_fetched``; any other ref is refused with
+        ``attachment_not_in_request``. Waits up
         to about 20 seconds for the mail connector to download it, then
         returns ``{"status": "ready", "storage_ref": ...}``; read the ref with
         ``attachment_read`` (PDF) or ``attachment_view`` (image). The filename
@@ -1660,7 +1660,7 @@ def register_switchboard_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable)
             attachment_id: The mail provider's attachment id (``source_attachment_id``).
         """
         try:
-            return await _attachment_materialize(pool, message_id, attachment_id)
+            return await materialize_routed_attachment(pool, message_id, attachment_id)
         except Exception:
             logger.exception("attachment_materialize failed")
             return {"status": "refused", "reason": "internal_error"}

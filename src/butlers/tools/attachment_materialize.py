@@ -9,6 +9,13 @@ so ``attachment_read``, ``attachment_view`` and ``get_attachment`` accept it.
 Idempotent on ``(message_id, attachment_id)``: a fetched row returns its
 existing blob ref with no download. A failed fetch is reported once; asking
 again retries it.
+
+The tool serves only the request it is handling (bu-jv1moa.59):
+``materialize_routed_attachment`` accepts a ref only when it is one of the
+lazy attachments in the calling runtime session's routing context, which the
+daemon recorded from the ingested message, never from model input. Anything
+else is refused before the table is read, so the refusal reveals nothing about
+other accounts' refs.
 """
 
 from __future__ import annotations
@@ -18,6 +25,8 @@ import time
 from typing import Any
 
 import asyncpg
+
+from butlers.core.tool_call_capture import get_current_runtime_session_routing_context
 
 DEFAULT_WAIT_S = 20.0
 DEFAULT_POLL_S = 0.5
@@ -53,6 +62,50 @@ def _ready(row: asyncpg.Record) -> dict[str, Any]:
         "size_bytes": row["size_bytes"],
         "content_trust": "untrusted",
     }
+
+
+def _routed_refs(routing_context: dict[str, Any] | None) -> set[tuple[str, str]]:
+    """The lazy ``(message_id, attachment_id)`` refs of the routed request."""
+    attachments = (routing_context or {}).get("attachments")
+    if not isinstance(attachments, list):
+        return set()
+    return {
+        (att["source_message_id"], att["source_attachment_id"])
+        for att in attachments
+        if isinstance(att, dict)
+        and isinstance(att.get("source_message_id"), str)
+        and isinstance(att.get("source_attachment_id"), str)
+    }
+
+
+async def materialize_routed_attachment(
+    pool: asyncpg.Pool,
+    message_id: str,
+    attachment_id: str,
+    *,
+    wait_s: float = DEFAULT_WAIT_S,
+    poll_s: float = DEFAULT_POLL_S,
+) -> dict[str, Any]:
+    """``attachment_materialize`` for a ref of the calling session's routed request only.
+
+    The session is the runtime session bound to this tool call; a call with no
+    bound session, or one whose request has no such lazy ref, is refused.
+    """
+    routed = _routed_refs(get_current_runtime_session_routing_context())
+    if not (
+        isinstance(message_id, str)
+        and isinstance(attachment_id, str)
+        and (message_id, attachment_id) in routed
+    ):
+        return {
+            "status": "refused",
+            "reason": "attachment_not_in_request",
+            **_ref(message_id, attachment_id),
+            "hint": "Only attachments of the message this session is handling can be fetched.",
+        }
+    return await attachment_materialize(
+        pool, message_id, attachment_id, wait_s=wait_s, poll_s=poll_s
+    )
 
 
 async def attachment_materialize(
