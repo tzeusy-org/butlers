@@ -305,7 +305,7 @@ Scope: v1-mandatory
 #### Scenario: Engineering-executor launch stays outside the goal runtime
 - **WHEN** QA launches an initial or follow-up investigation before or after the RFC 0038 switch
 - **THEN** the session is recorded in the QA session store with trigger source `qa` and creates no goal, goal invocation, invocation token or broker grant
-- **AND** its environment holds only `PATH` and the credentials the QA executor contract declares, which exclude every provider or remote-repository credential held by the restricted publisher
+- **AND** its environment is exactly the environment the `confine-qa-publication-authority` **Agent environment** scenario (REQ-qa-investigation-dispatch-001, Investigation Agent Sandbox) allows, unchanged by this requirement
 - **AND** its work is charged to the QA incident work budget, never to an RFC 0038 D10 goal budget, and a staffer goal's judgment cannot request, resume or reserve the launch
 
 ### Requirement: Evidence-Driven PR Follow-Up

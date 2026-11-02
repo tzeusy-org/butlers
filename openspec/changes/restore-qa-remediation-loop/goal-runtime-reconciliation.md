@@ -35,9 +35,10 @@ Rules that follow from the table and are now carried by the amended clauses:
 - **An executor launch is not a goal invocation.** It enters no goal ledger as an
   invocation, holds no invocation token, broker grant or MCP server, and starts
   from the surviving Spawner with trigger source `qa`. Its session record stays
-  in the QA session store. Its credentials are only those the QA executor
-  contract declares; that set excludes every provider or remote-repository
-  credential, which stays with the restricted publisher.
+  in the QA session store. Its environment is exactly the one the
+  `confine-qa-publication-authority` **Agent environment** scenario
+  (REQ-qa-investigation-dispatch-001, Investigation Agent Sandbox) allows; this
+  reconciliation does not restate or change it.
 - **Incident admission is not goal admission.** The goal admission/ledger is
   the only logical journal for the `qa_triage_v1` staffer goal, and only for it.
   Incident generations, pending work, fences and launch reservations stay
@@ -87,7 +88,7 @@ requirement for the owner, not executed evidence (Tests: +0 ~0 -0 here).
 | REQ-qa-investigation-dispatch-010 Journal Event Emission | DI | Retained | Deterministic journal | B `bu-6a9xxw.2` | `tests/core/qa/test_journal.py` |
 | REQ-qa-investigation-dispatch-011 QA-Owned Runtime and Launch Authority | EE | Amended | Names the launch as a D18 engineering executor from the surviving Spawner, outside goal ledger, broker and D10 | A `bu-6a9xxw.1` | `tests/daemon/test_qa_jobs.py` |
 | REQ-qa-investigation-dispatch-012 Evidence-Driven PR Follow-Up | EE + RP | Amended | A follow-up is an executor launch, never a goal; review feedback is untrusted data and cannot widen authority | E `bu-6a9xxw.5` | `tests/core/qa/test_github_pr.py` |
-| REQ-qa-investigation-dispatch-013 Gate Sequence Preservation | DI | Retained | Gate 1 already uses verified goal origin or executor provenance | C `bu-6a9xxw.3` | `tests/core/qa/test_dispatch.py` |
+| REQ-qa-investigation-dispatch-013 Gate Sequence Preservation | DI | Retained | Gate 1 already uses verified goal origin or executor provenance, as carried by `source_session_trigger_source` in REQ-qa-triage-002 | C `bu-6a9xxw.3` | `tests/core/qa/test_dispatch.py` |
 | REQ-qa-log-scanner-001 Temporal Filtering | DI | Retained | Deterministic source; successor log backend owned by `bu-dss7he.13` | D `bu-6a9xxw.4` | `tests/core/qa/test_log_scanner.py` or its predecessor-produced successor |
 | REQ-qa-log-scanner-002 Scan Performance Guardrails | DI | Retained | Deterministic caps | D `bu-6a9xxw.4` | `tests/core/qa/test_log_scanner.py` or its predecessor-produced successor |
 | REQ-qa-triage-001 Cooldown Awareness | DI | Retained | Deterministic gate | C `bu-6a9xxw.3` | `tests/core/qa/test_triage.py` |
@@ -118,10 +119,12 @@ is retained; the seven amendments only add clauses.
 Both this change and `generalist-lead-focused-delegation` modify `staffer-qa`
 **Patrol Loop Lifecycle**. The generalist block's normative change is the
 service-plane relay (requirement sentence, `Source: RFC 0038 D7`, and the
-Reactive findings scenario). This change's adopted block replaces the
-not-durably-queued crash clause, the all-empty clean clause and the
-unconditional mini-patrol coverage clause (recorded in
-`intentional-replacements.md`).
+Reactive findings scenario). This change's adopted block replaces five
+clauses recorded in `intentional-replacements.md`: the all-empty clean clause,
+the not-durably-queued crash clause, and three Reactive findings clauses (the
+generic `route()` relay, the unconditional in-memory buffering, and the
+unconditional mini-patrol coverage). The `route()` clause is also replaced by
+the generalist block, so both changes agree on it.
 
 Resolution, without overwriting either approved requirement:
 
