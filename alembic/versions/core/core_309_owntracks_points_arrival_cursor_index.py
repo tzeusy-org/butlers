@@ -1,7 +1,7 @@
 """OwnTracks points: cover arrival-order cursor paging.
 
 Revision ID: core_309
-Revises: core_306
+Revises: core_308
 Create Date: 2026-11-03 00:00:00.000000
 
 ``owntracks.points`` pages the indefinitely retained evidence table by arrival
@@ -20,7 +20,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "core_309"
-down_revision = "core_306"
+down_revision = "core_308"
 branch_labels = None
 depends_on = None
 
