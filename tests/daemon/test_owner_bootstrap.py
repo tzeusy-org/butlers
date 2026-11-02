@@ -17,23 +17,22 @@ import asyncpg
 import pytest
 
 from butlers.owner_bootstrap import _ensure_owner_entity
+from butlers.testing.fake_pool import FakeConnection, FakePool, fake_pool
 
 pytestmark = pytest.mark.unit
 
 _OWNER_ENTITY_ID = uuid.uuid4()
 
 
-def _make_pool(
+def _pool_and_conn(
     *,
     entities_table_exists: bool = True,
     roles_on_entities: bool = True,
     owner_select_before_insert: uuid.UUID | None = None,
     entity_insert_returns: uuid.UUID | None = _OWNER_ENTITY_ID,
     owner_select_after_insert: uuid.UUID | None = None,
-) -> tuple[MagicMock, AsyncMock]:
-    """Build a mock asyncpg pool that simulates public.entities state."""
-    conn = AsyncMock()
-
+) -> tuple[FakePool, FakeConnection]:
+    """Build a fake asyncpg pool that simulates public.entities state."""
     # Build the sequence of fetchval returns:
     # 1. to_regclass('public.entities') IS NOT NULL
     # 2. (if entities exist) information_schema check for roles on entities
@@ -65,16 +64,8 @@ def _make_pool(
         except StopIteration:
             return None
 
-    conn.fetchval = AsyncMock(side_effect=_fetchval)
-
-    pool = MagicMock()
-    pool.acquire = MagicMock()
-    acquire_ctx = AsyncMock()
-    acquire_ctx.__aenter__ = AsyncMock(return_value=conn)
-    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire.return_value = acquire_ctx
-
-    return pool, conn
+    pool = fake_pool(fetchval=AsyncMock(side_effect=_fetchval))
+    return pool, pool.connection
 
 
 class TestEnsureOwnerEntityBehavior:
@@ -82,7 +73,7 @@ class TestEnsureOwnerEntityBehavior:
         """INSERT on fresh start; SELECT fallback when INSERT returns None; idempotent on existing role;
         skips when entities table or roles column missing; exceptions are non-fatal."""
         # Fresh entity: INSERT called; no contacts INSERT
-        pool, conn = _make_pool()
+        pool, conn = _pool_and_conn()
         await _ensure_owner_entity(pool)
         insert_sqls = [c[0][0] if c[0] else "" for c in conn.fetchval.call_args_list]
         assert any("INSERT INTO public.entities" in s for s in insert_sqls)
@@ -92,7 +83,7 @@ class TestEnsureOwnerEntityBehavior:
 
         # INSERT=None → SELECT fallback
         # INSERT=None → SELECT fallback (select by role), still None → warning logged
-        pool2, conn2 = _make_pool(entity_insert_returns=None, owner_select_after_insert=None)
+        pool2, conn2 = _pool_and_conn(entity_insert_returns=None, owner_select_after_insert=None)
         with patch("butlers.owner_bootstrap.logger") as mock_logger2:
             await _ensure_owner_entity(pool2)
         sqls2 = [c[0][0] if c[0] else "" for c in conn2.fetchval.call_args_list]
@@ -100,7 +91,7 @@ class TestEnsureOwnerEntityBehavior:
         mock_logger2.warning.assert_called()
 
         # INSERT=None → SELECT fallback finds the entity → no warning
-        pool2b, conn2b = _make_pool(
+        pool2b, conn2b = _pool_and_conn(
             entity_insert_returns=None, owner_select_after_insert=_OWNER_ENTITY_ID
         )
         with patch("butlers.owner_bootstrap.logger") as mock_logger2b:
@@ -110,14 +101,14 @@ class TestEnsureOwnerEntityBehavior:
         mock_logger2b.warning.assert_not_called()
 
         # Existing owner-role entity → no INSERT
-        pool3, conn3 = _make_pool(owner_select_before_insert=_OWNER_ENTITY_ID)
+        pool3, conn3 = _pool_and_conn(owner_select_before_insert=_OWNER_ENTITY_ID)
         await _ensure_owner_entity(pool3)
         for call in conn3.fetchval.call_args_list:
             assert "INSERT INTO public.entities" not in (call[0][0] if call[0] else "")
 
         # Skips when entities table or roles column missing
         for kwargs in [{"entities_table_exists": False}, {"roles_on_entities": False}]:
-            pool_g, conn_g = _make_pool(**kwargs)
+            pool_g, conn_g = _pool_and_conn(**kwargs)
             await _ensure_owner_entity(pool_g)
             for call in conn_g.fetchval.call_args_list:
                 assert "INSERT INTO public.entities" not in (call[0][0] if call[0] else "")
@@ -135,7 +126,7 @@ class TestEnsureOwnerEntityBehavior:
             assert "bootstrap" in warning_msg.lower() or "skipped" in warning_msg.lower()
 
         # Fetchval exception during INSERT → non-fatal
-        pool4, conn4 = _make_pool()
+        pool4, conn4 = _pool_and_conn()
         original_se = conn4.fetchval.side_effect
         call_count = 0
         results = list(original_se.args[0]) if hasattr(original_se, "args") else []
@@ -247,14 +238,14 @@ class TestConcurrentStartupSafety:
     async def test_concurrent_calls_safe(self) -> None:
         """Multiple concurrent calls complete without error; each attempts INSERT with 'owner' role."""
         # 5 concurrent calls complete
-        pools5 = [_make_pool()[0] for _ in range(5)]
+        pools5 = [_pool_and_conn()[0] for _ in range(5)]
         await asyncio.gather(*[_ensure_owner_entity(p) for p in pools5])
 
         # 3 concurrent calls each insert owner role
         insert_calls: list[tuple] = []
         pools3 = []
         for _ in range(3):
-            pool, conn = _make_pool()
+            pool, conn = _pool_and_conn()
             original_fetchval = conn.fetchval
 
             async def capturing_fetchval(sql, *args, _orig=original_fetchval):
