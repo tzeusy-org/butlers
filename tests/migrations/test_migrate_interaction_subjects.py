@@ -10,11 +10,12 @@ Covers:
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.unit
 
@@ -29,15 +30,6 @@ _MIGRATION_PATH = (
     / "migrations"
     / "018_migrate_interaction_subjects.py"
 )
-
-
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("rel_018", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +54,7 @@ class TestFactsTableGuard:
 
     def test_upgrade_no_op_when_facts_absent(self) -> None:
         """upgrade() exits after the guard when facts table does not exist."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_018")
         mock_conn = self._make_conn_no_facts()
         mock_op = MagicMock()
         mock_op.get_bind.return_value = mock_conn
@@ -75,7 +67,7 @@ class TestFactsTableGuard:
 
     def test_downgrade_no_op_when_facts_absent(self) -> None:
         """downgrade() exits after the guard when facts table does not exist."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_018")
         mock_conn = self._make_conn_no_facts()
         mock_op = MagicMock()
         mock_op.get_bind.return_value = mock_conn
@@ -96,7 +88,7 @@ class TestUpgradeSQLShape:
 
     def _collect_upgrade_sqls(self, total_contact_count: int = 5) -> list[str]:
         """Run upgrade() with mocked connection and collect SQL strings."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_018")
         sqls: list[str] = []
         call_count = [0]
 
@@ -146,7 +138,7 @@ class TestUpgradeSQLShape:
 
     def test_upgrade_no_op_when_zero_contact_subjects(self) -> None:
         """upgrade() exits early (no UPDATE) when there are no contact: subjects."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_018")
         sqls: list[str] = []
         call_count = [0]
 
@@ -184,7 +176,7 @@ class TestDowngradeSQLShape:
 
     def _collect_downgrade_sqls(self, total_entity_count: int = 5) -> list[str]:
         """Run downgrade() with mocked connection and collect SQL strings."""
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH, "rel_018")
         sqls: list[str] = []
         call_count = [0]
 

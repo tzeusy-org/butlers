@@ -14,12 +14,13 @@ Bead: bu-69zp9 (discovered-from bu-gpc2u)
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -30,18 +31,9 @@ _MIGRATION_PATH = (
 )
 
 
-def _load_migration():
-    """Import the migration module by file path."""
-    spec = importlib.util.spec_from_file_location("core_103", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _collect_upgrade_sqls() -> list[str]:
     """Run upgrade() with op mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_103")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
@@ -52,7 +44,7 @@ def _collect_upgrade_sqls() -> list[str]:
 
 def _collect_downgrade_sqls() -> list[str]:
     """Run downgrade() with op mocked; return SQL strings."""
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_103")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)

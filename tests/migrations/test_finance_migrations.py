@@ -9,13 +9,14 @@ is covered canonically by tests/config/test_migration_contract.py.
 
 from __future__ import annotations
 
-import importlib.util
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -24,14 +25,6 @@ pytestmark = pytest.mark.integration
 # ---------------------------------------------------------------------------
 
 _FINANCE_MIGRATIONS = Path(__file__).resolve().parents[2] / "roster" / "finance" / "migrations"
-
-
-def _load_migration(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 async def _apply(pool: asyncpg.Pool, mod, direction: str) -> None:
@@ -378,7 +371,7 @@ class TestBillsReconciledTransactionIdMigration:
         reads as NULL when omitted from an INSERT.
         """
         pool = bills_pool
-        mod = _load_migration("finance_009", _MIGRATION_009)
+        mod = load_migration(_MIGRATION_009, "finance_009")
         await _apply(pool, mod, "upgrade")
 
         # Column metadata.
@@ -421,7 +414,7 @@ class TestBillsReconciledTransactionIdMigration:
     async def test_downgrade_drops_column(self, bills_pool: asyncpg.Pool) -> None:
         """After upgrade then downgrade the column and its index are absent from the schema."""
         pool = bills_pool
-        mod = _load_migration("finance_009", _MIGRATION_009)
+        mod = load_migration(_MIGRATION_009, "finance_009")
         await _apply(pool, mod, "upgrade")
         await _apply(pool, mod, "downgrade")
 
@@ -458,7 +451,7 @@ class TestTransactionDedupIndexCleanupMigration:
         assert await pool.fetchval("SELECT to_regclass('uq_transactions_composite_dedup')")
         assert await pool.fetchval("SELECT to_regclass('uq_transactions_csv_dedup')")
 
-        mod = _load_migration("finance_011", _MIGRATION_011)
+        mod = load_migration(_MIGRATION_011, "finance_011")
         await _apply(pool, mod, "upgrade")
 
         assert await pool.fetchval("SELECT to_regclass('uq_transactions_composite_dedup')") is None
@@ -550,7 +543,7 @@ class TestSubscriptionCancellationDoorMigration:
         explicit default, and a bare INSERT leaves them NULL.
         """
         pool = subscriptions_pool
-        mod = _load_migration("finance_013", _MIGRATION_013)
+        mod = load_migration(_MIGRATION_013, "finance_013")
         await _apply(pool, mod, "upgrade")
 
         cols = {
@@ -588,7 +581,7 @@ class TestSubscriptionCancellationDoorMigration:
     ) -> None:
         """notice_period_days must be non-negative when present."""
         pool = subscriptions_pool
-        mod = _load_migration("finance_013", _MIGRATION_013)
+        mod = load_migration(_MIGRATION_013, "finance_013")
         await _apply(pool, mod, "upgrade")
 
         with pytest.raises(asyncpg.CheckViolationError):
@@ -606,7 +599,7 @@ class TestSubscriptionCancellationDoorMigration:
     async def test_downgrade_drops_columns(self, subscriptions_pool: asyncpg.Pool) -> None:
         """After upgrade then downgrade, all three door columns are absent."""
         pool = subscriptions_pool
-        mod = _load_migration("finance_013", _MIGRATION_013)
+        mod = load_migration(_MIGRATION_013, "finance_013")
         await _apply(pool, mod, "upgrade")
         await _apply(pool, mod, "downgrade")
 
@@ -635,8 +628,8 @@ class TestObligationLedgerMigration:
     """
 
     async def _upgrade_to_014(self, pool: asyncpg.Pool) -> None:
-        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
-        await _apply(pool, _load_migration("finance_014", _MIGRATION_014), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_013, "finance_013"), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_014, "finance_014"), "upgrade")
 
     @pytest.mark.integration
     async def test_upgrade_creates_table_with_expected_columns(
@@ -719,7 +712,7 @@ class TestObligationLedgerMigration:
         """After upgrade then downgrade, obligation_ledger no longer exists."""
         pool = subscriptions_pool
         await self._upgrade_to_014(pool)
-        await _apply(pool, _load_migration("finance_014", _MIGRATION_014), "downgrade")
+        await _apply(pool, load_migration(_MIGRATION_014, "finance_014"), "downgrade")
 
         exists = await pool.fetchval(
             "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
@@ -821,9 +814,7 @@ async def test_budget_period_upgrade_preserves_legacy_rows(legacy_budget_db, leg
             )
     after = await _budget_schema_state(pool)
     # Reapplying the repair changes neither rows nor its current CHECK.
-    repair = _load_migration(
-        "finance_budget_periods", _FINANCE_MIGRATIONS / "016_budget_periods.py"
-    )
+    repair = load_migration(_FINANCE_MIGRATIONS / "016_budget_periods.py", "finance_budget_periods")
     async with pool.acquire() as conn, conn.transaction():
         await _apply(conn, repair, "upgrade")
     assert await _budget_schema_state(pool) == after
@@ -908,7 +899,7 @@ class TestSubscriptionCancellationProvenanceMigration:
         self, subscriptions_pool: asyncpg.Pool
     ) -> None:
         pool = subscriptions_pool
-        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_013, "finance_013"), "upgrade")
         await pool.execute(
             """
             INSERT INTO subscriptions (
@@ -922,7 +913,7 @@ class TestSubscriptionCancellationProvenanceMigration:
             """
         )
 
-        await _apply(pool, _load_migration("finance_017", _MIGRATION_017), "upgrade")
+        await _apply(pool, load_migration(_MIGRATION_017, "finance_017"), "upgrade")
 
         row = await pool.fetchrow(
             "SELECT cancellation_url_source, status_source FROM subscriptions"
@@ -934,8 +925,8 @@ class TestSubscriptionCancellationProvenanceMigration:
         self, subscriptions_pool: asyncpg.Pool
     ) -> None:
         pool = subscriptions_pool
-        await _apply(pool, _load_migration("finance_013", _MIGRATION_013), "upgrade")
-        mod = _load_migration("finance_017", _MIGRATION_017)
+        await _apply(pool, load_migration(_MIGRATION_013, "finance_013"), "upgrade")
+        mod = load_migration(_MIGRATION_017, "finance_017")
         await _apply(pool, mod, "upgrade")
 
         with pytest.raises(asyncpg.CheckViolationError):
@@ -1045,8 +1036,8 @@ async def test_actual_field_claim_upgrade_constraints_and_lossless_refusal(
         assert after["renewal_source"] == after["price_source"] == "extracted"
         assert after["field_claims"] == [] and after["date_epoch"] == after["price_epoch"] == 0
     if case == "legacy-reapply":
-        module = _load_migration(
-            "finance_claim_reapply", _FINANCE_MIGRATIONS / "019_subscription_field_claims.py"
+        module = load_migration(
+            _FINANCE_MIGRATIONS / "019_subscription_field_claims.py", "finance_claim_reapply"
         )
         async with pool.acquire() as conn:
             async with conn.transaction():

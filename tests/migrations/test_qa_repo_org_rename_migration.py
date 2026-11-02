@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import uuid
 from datetime import UTC, datetime
@@ -10,6 +9,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -22,17 +23,9 @@ _LEGACY_REPOSITORY_URL = "https://github.com/Tzeusy/butlers"
 _CANONICAL_REPOSITORY_URL = "https://github.com/tzeusy-org/butlers"
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_235", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def _apply(pool, fn_name: str) -> None:
     """Execute exactly the SQL emitted by one migration entrypoint."""
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_235")
     sqls: list[str] = []
     fake_op = MagicMock()
     fake_op.execute.side_effect = sqls.append
@@ -89,7 +82,7 @@ async def _repo_url_default(pool) -> str | None:
 def test_migration_chain_metadata_and_downgrade_preserves_operator_choices() -> None:
     from butlers.migrations import get_chain_revision_ids
 
-    module = _load_migration()
+    module = load_migration(_MIGRATION_PATH, "core_235")
 
     assert module.revision == "core_235"
     assert module.down_revision == "core_234"

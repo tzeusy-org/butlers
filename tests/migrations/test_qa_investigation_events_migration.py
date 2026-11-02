@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import asyncpg
 import pytest
+
+from butlers.testing.migration import load_migration
 
 pytestmark = pytest.mark.integration
 
@@ -19,14 +20,6 @@ _MIGRATION_PATH = (
     / "core"
     / "core_091_qa_investigation_events.py"
 )
-
-
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_091", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 @pytest.fixture
@@ -46,7 +39,7 @@ async def qa_investigation_events_pool(provisioned_postgres_pool):
 
 
 async def _run_upgrade(pool: asyncpg.Pool) -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH, "core_091")
     sqls: list[str] = []
     mock_op = MagicMock()
     mock_op.execute.side_effect = lambda sql: sqls.append(sql)
