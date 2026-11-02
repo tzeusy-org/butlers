@@ -240,7 +240,10 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
         ) -> list[dict]:
             """List all deadline tasks, optionally filtered by status.
 
-            Returns deadlines sorted by target_date (soonest first).
+            Returns deadlines sorted by target_date (soonest first). A deadline that
+            another document's deadline replaced is disabled and carries
+            ``superseded_by`` (the replacing deadline's id) and ``superseded_at``;
+            both are null on every other deadline, including one the owner disabled.
             """
             deadlines = await _deadline_list(pool, status=status_filter)
             return deadlines

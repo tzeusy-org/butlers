@@ -118,6 +118,33 @@ def test_document_deadline_plan_pins_the_template_and_refuses_bad_input():
         assert refused.value.reason == reason, overrides
 
 
+def test_supersession_fields_expose_only_well_formed_markers():
+    """A supersession reads from job_args as a task id and a timestamp, nothing else;
+    a tampered or missing marker reads as not superseded."""
+    from butlers.core.temporal.deadlines_db import supersession_fields
+
+    task_id = str(uuid.uuid4())
+    at = "2026-11-02T10:15:00.123456+00:00"
+    assert supersession_fields(
+        {"superseded_by": task_id, "superseded_at": at, "issuer": "AXA", "taint": "x"}
+    ) == {"superseded_by": task_id, "superseded_at": datetime.fromisoformat(at)}
+    none = {"superseded_by": None, "superseded_at": None}
+    for args in (
+        None,
+        "not-an-object",
+        {},
+        {"superseded_by": "<b>AXA</b>", "superseded_at": at},
+        {"superseded_by": 7, "superseded_at": at},
+    ):
+        assert supersession_fields(args) == none, args
+    # A garbled or naive stamp drops only the timestamp.
+    for bad_at in ("yesterday", "2026-11-02T10:15:00", 1730540100):
+        assert supersession_fields({"superseded_by": task_id, "superseded_at": bad_at}) == {
+            "superseded_by": task_id,
+            "superseded_at": None,
+        }
+
+
 # ---------------------------------------------------------------------------
 # 12.2 — Deadline countdown and threshold firing
 # ---------------------------------------------------------------------------
@@ -870,6 +897,7 @@ class TestTickIntegration:
         and keeps an owner's disable; an earlier or far-later date keeps both; caps refuse."""
         from butlers.core.scheduler import tick
         from butlers.core.temporal import document_deadlines as dd
+        from butlers.core.temporal.deadlines_db import deadline_list
 
         def plan(doc: str, days: int, issuer: str | None = "AXA", kind: str = "due"):
             return dd.plan_document_deadline(
@@ -911,6 +939,15 @@ class TestTickIntegration:
         # and kept with a pointer, and the owner's disable carries over to the newer one.
         newer = await put("axa-2", 40, issuer="axa")
         assert (newer["status"], newer["replaced"]) == ("created", [older["id"]])
+        # deadline_list tells the superseded row from an owner-disabled one, without job_args.
+        listed = {r["id"]: r for r in await deadline_list(tick_pool)}
+        assert "job_args" not in listed[older["id"]]
+        assert listed[older["id"]]["superseded_by"] == newer["id"]
+        assert listed[older["id"]]["superseded_at"] is not None
+        assert (listed[newer["id"]]["superseded_by"], listed[newer["id"]]["superseded_at"]) == (
+            None,
+            None,
+        )
         # An earlier date, or one over 400 days past the one it would replace, keeps both.
         assert (await put("axa-3", 20))["replaced"] == []
         assert (await put("axa-4", 50, kind="renewal"))["replaced"] == []

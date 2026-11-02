@@ -4,6 +4,7 @@
 - [x] 1.3 `paperwork_deadline_notify` fixed-template owner notice, registered for every butler.
 - [x] 1.4 `paperwork_deadline_set` core temporal tool, D4 inventory declaration, `scheduled_tasks` record writer, dark-build hiding.
 - [x] 1.5 S2: supersession across same-issuer, same-kind documents (later date within 400 days retires, never deletes; owner disable carried) and per-issuer/per-butler caps under one advisory lock.
+- [x] 1.6 `deadline_list` and the dashboard schedules API and table surface a superseded deadline's `superseded_by`/`superseded_at`, never the rest of `job_args`.
 
 ## 2. Verification
 - [x] 2.1 Plan test: template pinning, issuer sanitizing, late-threshold collapse and typed refusals.
@@ -12,3 +13,4 @@
 - [x] 2.5 Real-Postgres: an undelivered notice leaves `fired_thresholds` unchanged; supersede keeps an owner's disable and re-enables an expired deadline.
 - [x] 2.6 Real-Postgres: cross-document supersession kept as disabled rows that never fire, owner-disable carry-over, earlier and far-later date coexistence, issuer-change capping, issuer-less isolation and both cap refusals.
 - [x] 2.4 Inventory contract test: cataloged with D4 metadata, not listed to current sessions.
+- [x] 2.7 Supersession fields: well-formed-only unit test, schedules API test, schedules table test and the real-Postgres `deadline_list` check.
