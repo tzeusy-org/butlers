@@ -41,8 +41,6 @@ from butlers.core.model_routing import (
     resolve_dispatch,
     resolve_model_with_effective_tier,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 
@@ -59,23 +57,16 @@ BUTLER = "general"
 TOOL_INTENT = derive_dispatch_intent("external", Complexity.CHEAP)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    """Pool with catalog, override, counter, and quota tables cleared between tests."""
+async def dispatch_pool(db) -> asyncpg.Pool:
+    """Core pool with the seeded model catalog emptied."""
     clear_routing_decision_cache()
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=1)
-    await p.execute(
+    pool = await db("core")
+    await pool.execute(
         "TRUNCATE public.model_round_robin_counters, public.butler_model_overrides, "
         "public.token_limits, public.token_usage_ledger, public.model_catalog CASCADE"
     )
-    yield p
-    await p.close()
+    return pool
 
 
 async def _insert_entry(
@@ -85,7 +76,7 @@ async def _insert_entry(
     runtime_type: str = "claude",
     complexity_tier: str = "cheap",
     priority: int = 0,
-    capabilities: str = "{}",
+    capabilities: dict | None = None,
     max_context_tokens: int | None = None,
 ) -> uuid.UUID:
     """Insert one enabled catalog entry. Model ids are synthetic and unpriced."""
@@ -102,7 +93,7 @@ async def _insert_entry(
         f"synthetic-{alias}",
         complexity_tier,
         priority,
-        capabilities,
+        capabilities or {},
         max_context_tokens,
     )
     return row["id"]
@@ -122,23 +113,29 @@ def _codes(resolution, entry_id: uuid.UUID) -> set[FitCode]:
     raise AssertionError(f"entry {entry_id} missing from receipt")
 
 
-async def test_hard_fit_excludes_tool_incapable_top_priority_entry(pool: asyncpg.Pool) -> None:
+async def test_hard_fit_excludes_tool_incapable_top_priority_entry(
+    dispatch_pool: asyncpg.Pool,
+) -> None:
     """The live defect: a top-priority entry that cannot accept tools must not win.
 
     The first assertion is the control -- it shows the pre-existing resolver really
     does pick the unusable entry, so the fix is answering a real failure rather than
     a hypothetical one.
     """
-    api_id = await _insert_entry(pool, alias="fit-api", runtime_type="api", priority=30)
-    claude_id = await _insert_entry(pool, alias="fit-claude", runtime_type="claude", priority=10)
+    api_id = await _insert_entry(dispatch_pool, alias="fit-api", runtime_type="api", priority=30)
+    claude_id = await _insert_entry(
+        dispatch_pool, alias="fit-claude", runtime_type="claude", priority=10
+    )
 
     legacy = await resolve_model_with_effective_tier(
-        pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
+        dispatch_pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
     )
     assert legacy is not None
     assert legacy[3] == api_id, "control failed: legacy resolver no longer picks the api entry"
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
     assert resolution.selection is not None
     assert resolution.selection[3] == claude_id
     assert resolution.winner_reason == "sole_candidate"
@@ -147,23 +144,25 @@ async def test_hard_fit_excludes_tool_incapable_top_priority_entry(pool: asyncpg
     assert _outcome(resolution, claude_id) is CandidateOutcome.SELECTED
 
 
-async def test_discretion_receipt_capture_matches_legacy_selection(pool: asyncpg.Pool) -> None:
+async def test_discretion_receipt_capture_matches_legacy_selection(
+    dispatch_pool: asyncpg.Pool,
+) -> None:
     """Receipt capture cannot change the winner for tool-less discretion calls."""
     api_id = await _insert_entry(
-        pool,
+        dispatch_pool,
         alias="ctl-api",
         runtime_type="api",
         priority=30,
-        capabilities=json.dumps({"no_such_feature": True}),
+        capabilities={"no_such_feature": True},
     )
-    await _insert_entry(pool, alias="ctl-claude", runtime_type="claude", priority=10)
+    await _insert_entry(dispatch_pool, alias="ctl-claude", runtime_type="claude", priority=10)
 
     legacy = await resolve_model_with_effective_tier(
-        pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
+        dispatch_pool, BUTLER, Complexity.CHEAP, allow_tier_fallthrough=False
     )
     receipt_sink = []
     via_kwarg = await resolve_model_with_effective_tier(
-        pool,
+        dispatch_pool,
         BUTLER,
         Complexity.CHEAP,
         allow_tier_fallthrough=False,
@@ -177,14 +176,20 @@ async def test_discretion_receipt_capture_matches_legacy_selection(pool: asyncpg
     assert receipt_sink[0].requested_intent.required_features == frozenset()
 
 
-async def test_falls_through_when_the_whole_tier_misfits(pool: asyncpg.Pool) -> None:
+async def test_falls_through_when_the_whole_tier_misfits(dispatch_pool: asyncpg.Pool) -> None:
     """A tier with no fitting candidate is not a winning tier, so fallthrough continues."""
-    api_id = await _insert_entry(pool, alias="ft-api", runtime_type="api", priority=30)
+    api_id = await _insert_entry(dispatch_pool, alias="ft-api", runtime_type="api", priority=30)
     specialty_id = await _insert_entry(
-        pool, alias="ft-claude", runtime_type="claude", complexity_tier="specialty", priority=5
+        dispatch_pool,
+        alias="ft-claude",
+        runtime_type="claude",
+        complexity_tier="specialty",
+        priority=5,
     )
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=True)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=True
+    )
     assert resolution.selection is not None
     assert resolution.selection[3] == specialty_id
     assert resolution.effective_tier == "specialty"
@@ -198,14 +203,14 @@ async def test_falls_through_when_the_whole_tier_misfits(pool: asyncpg.Pool) -> 
     assert _outcome(resolution, api_id) is CandidateOutcome.EXCLUDED_HARD_FIT
 
 
-async def test_no_selection_when_nothing_fits_anywhere(pool: asyncpg.Pool) -> None:
+async def test_no_selection_when_nothing_fits_anywhere(dispatch_pool: asyncpg.Pool) -> None:
     """Distinct from "no catalog entries": the receipt explains why the fleet is stuck."""
-    api_id = await _insert_entry(pool, alias="ns-api", runtime_type="api", priority=30)
+    api_id = await _insert_entry(dispatch_pool, alias="ns-api", runtime_type="api", priority=30)
     api2_id = await _insert_entry(
-        pool, alias="ns-api2", runtime_type="api", complexity_tier="local", priority=5
+        dispatch_pool, alias="ns-api2", runtime_type="api", complexity_tier="local", priority=5
     )
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT)
+    resolution = await resolve_dispatch(dispatch_pool, BUTLER, TOOL_INTENT)
     assert resolution.selection is None
     assert resolution.winner_reason is None
     assert resolution.effective_tier is None
@@ -214,16 +219,18 @@ async def test_no_selection_when_nothing_fits_anywhere(pool: asyncpg.Pool) -> No
 
     # The 6-tuple caller sees None and takes its existing static-fallback path.
     assert (
-        await resolve_model_with_effective_tier(pool, BUTLER, Complexity.CHEAP, intent=TOOL_INTENT)
+        await resolve_model_with_effective_tier(
+            dispatch_pool, BUTLER, Complexity.CHEAP, intent=TOOL_INTENT
+        )
         is None
     )
 
 
-async def test_context_floor_excludes_undeclared_window(pool: asyncpg.Pool) -> None:
+async def test_context_floor_excludes_undeclared_window(dispatch_pool: asyncpg.Pool) -> None:
     """An undeclared context window cannot satisfy a floor, even at top priority."""
-    undeclared_id = await _insert_entry(pool, alias="cx-undeclared", priority=30)
+    undeclared_id = await _insert_entry(dispatch_pool, alias="cx-undeclared", priority=30)
     declared_id = await _insert_entry(
-        pool, alias="cx-declared", priority=10, max_context_tokens=200_000
+        dispatch_pool, alias="cx-declared", priority=10, max_context_tokens=200_000
     )
 
     intent = DispatchIntent(
@@ -233,64 +240,77 @@ async def test_context_floor_excludes_undeclared_window(pool: asyncpg.Pool) -> N
         required_features=frozenset({ModelFeature.TOOL_USE}),
         min_context_tokens=100_000,
     )
-    resolution = await resolve_dispatch(pool, BUTLER, intent, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(dispatch_pool, BUTLER, intent, allow_tier_fallthrough=False)
     assert resolution.selection is not None
     assert resolution.selection[3] == declared_id
     assert _codes(resolution, undeclared_id) == {FitCode.CONTEXT_WINDOW_UNKNOWN}
 
 
-async def test_row_capabilities_override_the_adapter_baseline(pool: asyncpg.Pool) -> None:
+async def test_row_capabilities_override_the_adapter_baseline(dispatch_pool: asyncpg.Pool) -> None:
     """An operator can declare per-entry truth the adapter class cannot know."""
     api_id = await _insert_entry(
-        pool,
+        dispatch_pool,
         alias="ov-api",
         runtime_type="api",
         priority=30,
-        capabilities=json.dumps({"tool_use": True}),
+        capabilities={"tool_use": True},
     )
-    await _insert_entry(pool, alias="ov-claude", priority=10)
+    await _insert_entry(dispatch_pool, alias="ov-claude", priority=10)
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
     assert resolution.selection is not None
     assert resolution.selection[3] == api_id
 
 
-async def test_unusable_capability_envelope_excludes_the_entry(pool: asyncpg.Pool) -> None:
+async def test_unusable_capability_envelope_excludes_the_entry(dispatch_pool: asyncpg.Pool) -> None:
     """A stored envelope the descriptor layer cannot parse fails closed, not open.
 
     The column CHECK only pins the JSON shape (the feature vocabulary lives with the
     adapters), so an unknown key is storable and must be caught during resolution.
     """
     broken_id = await _insert_entry(
-        pool, alias="bad-envelope", priority=30, capabilities=json.dumps({"no_such_feature": True})
+        dispatch_pool,
+        alias="bad-envelope",
+        priority=30,
+        capabilities={"no_such_feature": True},
     )
-    good_id = await _insert_entry(pool, alias="good-envelope", priority=10)
+    good_id = await _insert_entry(dispatch_pool, alias="good-envelope", priority=10)
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
     assert resolution.selection is not None
     assert resolution.selection[3] == good_id
     assert _codes(resolution, broken_id) == {FitCode.CAPABILITY_DESCRIPTOR_INVALID}
 
 
-async def test_lower_priority_fitting_peer_is_recorded_not_selected(pool: asyncpg.Pool) -> None:
+async def test_lower_priority_fitting_peer_is_recorded_not_selected(
+    dispatch_pool: asyncpg.Pool,
+) -> None:
     """Fit filters; priority still decides among what is left."""
-    top_id = await _insert_entry(pool, alias="pr-top", priority=30)
-    low_id = await _insert_entry(pool, alias="pr-low", priority=10)
+    top_id = await _insert_entry(dispatch_pool, alias="pr-top", priority=30)
+    low_id = await _insert_entry(dispatch_pool, alias="pr-low", priority=10)
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
     assert resolution.selection is not None
     assert resolution.selection[3] == top_id
     assert _outcome(resolution, low_id) is CandidateOutcome.NOT_TOP_PRIORITY
 
 
-async def test_tied_fitting_peers_still_round_robin(pool: asyncpg.Pool) -> None:
+async def test_tied_fitting_peers_still_round_robin(dispatch_pool: asyncpg.Pool) -> None:
     """Below the evidence threshold the tie-break is the existing round-robin counter."""
-    first_id = await _insert_entry(pool, alias="rr-a", priority=10)
-    second_id = await _insert_entry(pool, alias="rr-b", priority=10)
+    first_id = await _insert_entry(dispatch_pool, alias="rr-a", priority=10)
+    second_id = await _insert_entry(dispatch_pool, alias="rr-b", priority=10)
 
     winners = []
     for _ in range(4):
-        resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+        resolution = await resolve_dispatch(
+            dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+        )
         assert resolution.selection is not None
         assert resolution.winner_reason == "round_robin"
         winners.append(resolution.selection[3])
@@ -299,14 +319,14 @@ async def test_tied_fitting_peers_still_round_robin(pool: asyncpg.Pool) -> None:
     assert winners[0] != winners[1]
 
 
-async def test_quota_block_raises_with_the_receipt_attached(pool: asyncpg.Pool) -> None:
+async def test_quota_block_raises_with_the_receipt_attached(dispatch_pool: asyncpg.Pool) -> None:
     """A quota-exhausted tier keeps the existing contract and gains an explanation."""
-    entry_id = await _insert_entry(pool, alias="q-claude", priority=10)
-    await pool.execute(
+    entry_id = await _insert_entry(dispatch_pool, alias="q-claude", priority=10)
+    await dispatch_pool.execute(
         "INSERT INTO public.token_limits (catalog_entry_id, limit_24h) VALUES ($1, 100)",
         entry_id,
     )
-    await pool.execute(
+    await dispatch_pool.execute(
         """
         INSERT INTO public.token_usage_ledger
             (catalog_entry_id, butler_name, input_tokens, output_tokens)
@@ -318,7 +338,7 @@ async def test_quota_block_raises_with_the_receipt_attached(pool: asyncpg.Pool) 
 
     with pytest.raises(TierQuotaExhausted) as exc_info:
         await resolve_dispatch(
-            pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False, quota_aware=True
+            dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False, quota_aware=True
         )
 
     exc = exc_info.value
@@ -328,12 +348,14 @@ async def test_quota_block_raises_with_the_receipt_attached(pool: asyncpg.Pool) 
     assert _outcome(exc.resolution, entry_id) is CandidateOutcome.EXCLUDED_QUOTA
 
 
-async def test_receipt_is_json_safe_and_prompt_free(pool: asyncpg.Pool) -> None:
+async def test_receipt_is_json_safe_and_prompt_free(dispatch_pool: asyncpg.Pool) -> None:
     """The receipt has to be storable and showable without redaction."""
-    api_id = await _insert_entry(pool, alias="rc-api", runtime_type="api", priority=30)
-    claude_id = await _insert_entry(pool, alias="rc-claude", priority=10)
+    api_id = await _insert_entry(dispatch_pool, alias="rc-api", runtime_type="api", priority=30)
+    claude_id = await _insert_entry(dispatch_pool, alias="rc-claude", priority=10)
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
     payload = resolution.describe()
     assert json.loads(json.dumps(payload)) == payload
     assert payload["policy_version"] == DISPATCH_POLICY_VERSION
@@ -351,13 +373,13 @@ async def test_receipt_is_json_safe_and_prompt_free(pool: asyncpg.Pool) -> None:
 
 
 async def test_breaker_open_candidate_is_explained_and_receipt_persists(
-    pool: asyncpg.Pool,
+    dispatch_pool: asyncpg.Pool,
 ) -> None:
     """A breaker exclusion remains visible without becoming eligible again."""
-    broken_id = await _insert_entry(pool, alias="rc-breaker", priority=30)
-    selected_id = await _insert_entry(pool, alias="rc-healthy", priority=10)
+    broken_id = await _insert_entry(dispatch_pool, alias="rc-breaker", priority=30)
+    selected_id = await _insert_entry(dispatch_pool, alias="rc-healthy", priority=10)
     for attempt_index in range(_BREAKER_FAILURE_THRESHOLD):
-        await pool.execute(
+        await dispatch_pool.execute(
             """
             INSERT INTO public.model_dispatch_attempts
                 (catalog_entry_id, butler, outcome, attempt_index)
@@ -368,7 +390,9 @@ async def test_breaker_open_candidate_is_explained_and_receipt_persists(
             attempt_index,
         )
 
-    resolution = await resolve_dispatch(pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False)
+    resolution = await resolve_dispatch(
+        dispatch_pool, BUTLER, TOOL_INTENT, allow_tier_fallthrough=False
+    )
     assert resolution.selection is not None
     assert resolution.selection[3] == selected_id
     payload = resolution.describe()
@@ -376,17 +400,15 @@ async def test_breaker_open_candidate_is_explained_and_receipt_persists(
     assert excluded["outcome"] == "excluded_breaker"
     assert excluded["exclusion"] == "breaker_open"
 
-    async with pool.acquire() as connection:
-        await register_jsonb_codec(connection)
     attempt_id = await record_dispatch_attempt(
-        pool,
+        dispatch_pool,
         catalog_entry_id=selected_id,
         butler=BUTLER,
         outcome="success",
         attempt_index=0,
         resolution_receipt=payload,
     )
-    stored = await pool.fetchval(
+    stored = await dispatch_pool.fetchval(
         "SELECT resolution_receipt FROM public.model_dispatch_attempts WHERE id = $1",
         attempt_id,
     )
