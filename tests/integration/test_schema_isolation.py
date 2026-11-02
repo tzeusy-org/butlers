@@ -46,9 +46,14 @@ _SELECT_PUBLIC = "SELECT canonical_name FROM entities WHERE canonical_name = $1"
 
 
 @pytest.fixture
-async def isolated_db(fresh_db) -> str:
+def isolation_url(fresh_db) -> str:
+    return fresh_db("core")
+
+
+@pytest.fixture
+async def isolated_db(isolation_url: str) -> str:
     """A fresh core-migrated database with one shared public row, ``Alice``."""
-    url = fresh_db("core")
+    url = isolation_url
     conn = await asyncpg.connect(url)
     try:
         # Public table — must be visible from both butler search paths.
