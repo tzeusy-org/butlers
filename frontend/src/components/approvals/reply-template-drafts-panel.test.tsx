@@ -59,6 +59,7 @@ import {
 import { ReplyTemplateDraftsPanel } from "@/components/approvals/reply-template-drafts-panel.tsx";
 
 const ALICE = "11111111-1111-4111-8111-111111111111";
+const BOB = "22222222-2222-4222-8222-222222222222";
 
 function draft(overrides: Partial<StandingReplyTemplateDraft> = {}): StandingReplyTemplateDraft {
   return {
@@ -213,6 +214,65 @@ describe("ReplyTemplateDraftsPanel", () => {
     expect(revokeReplyTemplateDraft).not.toHaveBeenCalled();
     fireEvent.click(within(inspector).getByRole("button", { name: "Confirm revoke" }));
     await waitFor(() => expect(revokeReplyTemplateDraft).toHaveBeenCalledWith("d1", 3));
+  });
+
+  it("keeps a failed revoke's error on screen with revoke-specific copy", async () => {
+    vi.mocked(listReplyTemplateDrafts).mockResolvedValue(page([draft()]));
+    vi.mocked(revokeReplyTemplateDraft).mockRejectedValue(
+      new ApiError("UNKNOWN_ERROR", "stale_revision", 409, { error: "stale_revision" }),
+    );
+    renderPanel();
+    const inspector = await openDraft();
+    fireEvent.click(within(inspector).getByRole("button", { name: "Revoke" }));
+    fireEvent.click(within(inspector).getByRole("button", { name: "Confirm revoke" }));
+
+    const alert = await within(inspector).findByRole("alert");
+    expect(alert.textContent).toMatch(/confirm again to revoke/);
+    expect(alert.textContent).not.toMatch(/Save again/);
+    expect(within(inspector).getByRole("button", { name: "Confirm revoke" })).toBeTruthy();
+  });
+
+  it("moves focus into the opened editor and back to its trigger on close", async () => {
+    vi.mocked(listReplyTemplateDrafts).mockResolvedValue(page([draft()]));
+    vi.mocked(editReplyTemplateDraft).mockResolvedValue({ data: draft({ revision: 4 }), meta: {} });
+    renderPanel();
+
+    const newDraft = await screen.findByRole("button", { name: "+ Draft" });
+    fireEvent.click(newDraft);
+    expect(document.activeElement?.textContent).toBe("New standing-reply draft");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(document.activeElement).toBe(newDraft));
+
+    const inspector = await openDraft();
+    const edit = within(inspector).getByRole("button", { name: "Edit" });
+    fireEvent.click(edit);
+    expect(document.activeElement?.textContent).toMatch(/Edit draft/);
+    fireEvent.click(screen.getByRole("button", { name: "Save revision" }));
+    await waitFor(() => expect(document.activeElement).toBe(edit));
+  });
+
+  it("labels unpin controls by name, never by raw id", async () => {
+    vi.mocked(listReplyTemplateDrafts).mockResolvedValue(
+      page([draft({ recipient_entity_ids: [ALICE, BOB] })]),
+    );
+    // Alice resolves; Bob's lookup never answers.
+    vi.mocked(getEntity).mockImplementation((id) =>
+      id === ALICE
+        ? Promise.resolve({ data: { id: ALICE, canonical_name: "Alice" } } as Awaited<
+            ReturnType<typeof getEntity>
+          >)
+        : new Promise(() => {}),
+    );
+    renderPanel();
+    const inspector = await openDraft();
+    fireEvent.click(within(inspector).getByRole("button", { name: "Edit" }));
+    const editor = screen.getByTestId("reply-template-draft-editor");
+
+    expect(await within(editor).findByRole("button", { name: "Unpin Alice" })).toBeTruthy();
+    expect(within(editor).getByRole("button", { name: "Unpin recipient 2" })).toBeTruthy();
+    for (const button of within(editor).getAllByRole("button", { name: /^Unpin/ })) {
+      expect(button.getAttribute("aria-label")).not.toMatch(/[0-9a-f]{8}-/);
+    }
   });
 
   it("previews a call with authority none and humanized reasons", async () => {

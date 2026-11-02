@@ -9,7 +9,7 @@
  * control (activation belongs to bu-jv1moa.28).
  */
 
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { getEntities, getEntity } from "@/api/index.ts";
@@ -122,6 +122,17 @@ function errorCopy(error: unknown): string {
   return ERROR_COPY[code] ?? code;
 }
 
+/** Revoke has no unsaved content, so its conflicts read differently from an edit's. */
+const REVOKE_ERROR_COPY: Record<string, string> = {
+  stale_revision:
+    "This draft changed since you opened it. Review the newer revision, then confirm again to revoke it.",
+  draft_revoked: "This draft is already revoked.",
+};
+
+function revokeErrorCopy(error: unknown): string {
+  return REVOKE_ERROR_COPY[errorCode(error)] ?? errorCopy(error);
+}
+
 const EYEBROW = "text-[10px] font-mono uppercase tracking-widest text-muted-foreground";
 const FIELD =
   "w-full px-2 py-1.5 text-sm border border-border rounded bg-background focus:outline-none focus:ring-focus focus:border-focus";
@@ -145,18 +156,47 @@ function AuthorityNone() {
 // Recipients
 // ---------------------------------------------------------------------------
 
-function useRecipientName(entityId: string, known?: string) {
+/** The entity's canonical name, or null while it is unknown. */
+function useRecipientName(entityId: string, known?: string): string | null {
   const { data } = useQuery({
     queryKey: ["approvals", "reply-template-recipient", entityId],
     queryFn: () => getEntity(entityId, { facts_limit: 1 }),
     enabled: known === undefined,
     staleTime: 5 * 60_000,
   });
-  return known ?? data?.data.canonical_name ?? `${entityId.slice(0, 8)}…`;
+  return known ?? data?.data.canonical_name ?? null;
 }
 
 function RecipientName({ entityId, known }: { entityId: string; known?: string }) {
-  return <>{useRecipientName(entityId, known)}</>;
+  return <>{useRecipientName(entityId, known) ?? `${entityId.slice(0, 8)}…`}</>;
+}
+
+function RecipientChip({
+  entityId,
+  position,
+  known,
+  onUnpin,
+}: {
+  entityId: string;
+  position: number;
+  known?: string;
+  onUnpin: () => void;
+}) {
+  const name = useRecipientName(entityId, known);
+  return (
+    <li className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs">
+      {name ?? `${entityId.slice(0, 8)}…`}
+      <button
+        type="button"
+        // Never a raw UUID: an unresolved name falls back to its position.
+        aria-label={`Unpin ${name ?? `recipient ${position}`}`}
+        onClick={onUnpin}
+        className="text-muted-foreground hover:text-destructive px-0.5"
+      >
+        ×
+      </button>
+    </li>
+  );
 }
 
 function RecipientPicker({
@@ -169,6 +209,7 @@ function RecipientPicker({
   onChange: (ids: string[], names: Record<string, string>) => void;
 }) {
   const inputId = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
   const [q, setQ] = useState("");
   const term = q.trim();
   const search = useQuery({
@@ -187,25 +228,23 @@ function RecipientPicker({
       </label>
       {value.length > 0 && (
         <ul className="flex flex-wrap gap-1.5 mb-2" aria-label="Pinned recipients">
-          {value.map((id) => (
-            <li
+          {value.map((id, i) => (
+            <RecipientChip
               key={id}
-              className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs"
-            >
-              <RecipientName entityId={id} known={names[id]} />
-              <button
-                type="button"
-                aria-label={`Unpin ${names[id] ?? id}`}
-                onClick={() => onChange(value.filter((v) => v !== id), names)}
-                className="text-muted-foreground hover:text-destructive px-0.5"
-              >
-                ×
-              </button>
-            </li>
+              entityId={id}
+              position={i + 1}
+              known={names[id]}
+              onUnpin={() => {
+                onChange(value.filter((v) => v !== id), names);
+                // The chip's button unmounts; keep focus in the picker.
+                searchRef.current?.focus();
+              }}
+            />
           ))}
         </ul>
       )}
       <input
+        ref={searchRef}
         id={inputId}
         value={q}
         onChange={(e) => setQ(e.target.value)}
@@ -264,6 +303,9 @@ function DraftEditor({
   onDone: () => void;
 }) {
   const formId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // Opening the editor moves focus into it, so keyboard users land on the form.
+  useEffect(() => headingRef.current?.focus(), []);
   const butlers = useButlers();
   const createMut = useCreateReplyTemplateDraft();
   const editMut = useEditReplyTemplateDraft();
@@ -332,7 +374,12 @@ function DraftEditor({
       className="mt-4 space-y-3 border border-border rounded p-4"
     >
       <div className="flex items-center justify-between gap-2">
-        <h3 id={`${formId}-title`} className="text-sm font-medium">
+        <h3
+          id={`${formId}-title`}
+          ref={headingRef}
+          tabIndex={-1}
+          className="text-sm font-medium focus:outline-none focus-visible:ring-focus"
+        >
           {draft ? `Edit draft · revision ${draft.revision}` : "New standing-reply draft"}
         </h3>
         <AuthorityNone />
@@ -619,7 +666,8 @@ function RevokeControl({ draft }: { draft: StandingReplyTemplateDraft }) {
         onClick={() =>
           revokeMut.mutate(
             { id: draft.id, expectedRevision: draft.revision },
-            { onSettled: () => setConfirming(false) },
+            // Close only on success: a failure keeps the alert below on screen.
+            { onSuccess: () => setConfirming(false) },
           )
         }
         className={cn(SECONDARY_BUTTON, "text-destructive border-destructive/40")}
@@ -631,7 +679,7 @@ function RevokeControl({ draft }: { draft: StandingReplyTemplateDraft }) {
       </button>
       {revokeMut.isError && (
         <span role="alert" className="text-xs text-destructive">
-          {errorCopy(revokeMut.error)}
+          {revokeErrorCopy(revokeMut.error)}
         </span>
       )}
     </span>
@@ -643,7 +691,7 @@ function DraftInspector({
   onEdit,
 }: {
   draft: StandingReplyTemplateDraft;
-  onEdit: () => void;
+  onEdit: (trigger: HTMLElement) => void;
 }) {
   const revoked = draft.state === "revoked";
   return (
@@ -682,7 +730,7 @@ function DraftInspector({
       </dl>
       {!revoked && (
         <div className="flex flex-wrap items-center gap-2">
-          <button type="button" onClick={onEdit} className={SECONDARY_BUTTON}>
+          <button type="button" onClick={(e) => onEdit(e.currentTarget)} className={SECONDARY_BUTTON}>
             Edit
           </button>
           <RevokeControl draft={draft} />
@@ -703,12 +751,34 @@ export function ReplyTemplateDraftsPanel() {
   const query = useReplyTemplateDrafts();
   const [selected, setSelected] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState>({ mode: "closed" });
+  const newDraftRef = useRef<HTMLButtonElement>(null);
+  // The control that opened the editor; focus returns to it when the editor closes.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const focusReturnPending = useRef(false);
+
+  function openEditor(next: EditorState, trigger: HTMLElement) {
+    returnFocusRef.current = trigger;
+    setEditor(next);
+  }
+
+  function closeEditor() {
+    focusReturnPending.current = true;
+    setEditor({ mode: "closed" });
+  }
+
+  useEffect(() => {
+    if (editor.mode !== "closed" || !focusReturnPending.current) return;
+    focusReturnPending.current = false;
+    const trigger = returnFocusRef.current;
+    (trigger?.isConnected ? trigger : newDraftRef.current)?.focus();
+  }, [editor]);
 
   // query.isError is threaded into the QueryBoundary below.
   const pages = query.data ? query.data.pages : [];
   const drafts = pages.flatMap((p) => p.items);
   const degraded = [...new Set(pages.flatMap((p) => p.sources_degraded ?? []))];
   const editing = editor.mode === "edit" ? drafts.find((d) => d.id === editor.id) : undefined;
+  const editorOpen = editor.mode === "create" || editing !== undefined;
 
   return (
     <section
@@ -725,24 +795,25 @@ export function ReplyTemplateDraftsPanel() {
             Typed reply templates kept as inactive drafts. They authorize nothing.
           </div>
         </div>
-        {editor.mode === "closed" && (
-          <button
-            type="button"
-            onClick={() => setEditor({ mode: "create" })}
-            className={SECONDARY_BUTTON}
-          >
-            + Draft
-          </button>
-        )}
+        {/* Always mounted (disabled while editing) so focus can return to it. */}
+        <button
+          ref={newDraftRef}
+          type="button"
+          disabled={editorOpen}
+          onClick={(e) => openEditor({ mode: "create" }, e.currentTarget)}
+          className={SECONDARY_BUTTON}
+        >
+          + Draft
+        </button>
       </div>
 
-      {editor.mode === "create" && <DraftEditor onDone={() => setEditor({ mode: "closed" })} />}
+      {editor.mode === "create" && <DraftEditor onDone={closeEditor} />}
       {editing && (
         <DraftEditor
           // Keyed by id only: a newer revision must not wipe the owner's unsaved edit.
           key={editing.id}
           draft={editing}
-          onDone={() => setEditor({ mode: "closed" })}
+          onDone={closeEditor}
         />
       )}
 
@@ -807,7 +878,7 @@ export function ReplyTemplateDraftsPanel() {
                   {open && (
                     <DraftInspector
                       draft={draft}
-                      onEdit={() => setEditor({ mode: "edit", id: draft.id })}
+                      onEdit={(trigger) => openEditor({ mode: "edit", id: draft.id }, trigger)}
                     />
                   )}
                 </li>
