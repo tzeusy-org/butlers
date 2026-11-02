@@ -9,13 +9,13 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import Request
 from pydantic import ValidationError
 
-from butlers.testing.fake_pool import fake_pool
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
@@ -63,7 +63,7 @@ def _fake_settings_row(
     )
 
 
-def _make_db(pool: AsyncMock) -> MagicMock:
+def _make_db(pool: FakePool) -> MagicMock:
     """Build a mock DatabaseManager that returns the given pool for any butler name."""
     db = MagicMock()
     db.pool = MagicMock(return_value=pool)
