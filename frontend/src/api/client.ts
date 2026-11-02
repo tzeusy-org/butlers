@@ -26,6 +26,11 @@ import type {
   ApprovalsFlatListResponse,
   ApprovalsListResponse,
   ApprovalsPolicy,
+  StandingReplyTemplateDraft,
+  StandingReplyTemplateDraftCreateRequest,
+  StandingReplyTemplateDraftEditRequest,
+  StandingReplyTemplatePreview,
+  StandingReplyTemplatePreviewRequest,
   UnroutableAttentionItem,
   UnroutableRetryResult,
   AutonomySuggestion,
@@ -3667,6 +3672,73 @@ export function updateApprovalsPolicy(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(policy),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Standing-reply template drafts (owner-only, inactive; bu-jv1moa.10/.42)
+// ---------------------------------------------------------------------------
+
+export function listReplyTemplateDrafts(
+  cursor?: string | null,
+): Promise<CursorPage<StandingReplyTemplateDraft>> {
+  const qs = new URLSearchParams();
+  if (cursor) qs.set("cursor", cursor);
+  const query = qs.toString();
+  return apiFetch<CursorPage<StandingReplyTemplateDraft>>(
+    query ? `/approvals/reply-templates?${query}` : "/approvals/reply-templates",
+  );
+}
+
+export function createReplyTemplateDraft(
+  request: StandingReplyTemplateDraftCreateRequest,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>("/approvals/reply-templates", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+}
+
+export function editReplyTemplateDraft(
+  draftId: string,
+  request: StandingReplyTemplateDraftEditRequest,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
+}
+
+export function revokeReplyTemplateDraft(
+  draftId: string,
+  expectedRevision: number,
+): Promise<ApiResponse<StandingReplyTemplateDraft>> {
+  return apiFetch<ApiResponse<StandingReplyTemplateDraft>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}/revoke`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    },
+  );
+}
+
+export function previewReplyTemplateDraft(
+  draftId: string,
+  request: StandingReplyTemplatePreviewRequest,
+): Promise<ApiResponse<StandingReplyTemplatePreview>> {
+  return apiFetch<ApiResponse<StandingReplyTemplatePreview>>(
+    `/approvals/reply-templates/${encodeURIComponent(draftId)}/preview`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(request),
+    },
+  );
 }
 
 /**
