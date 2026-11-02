@@ -15,8 +15,10 @@ import {
   closeGeneralProject,
   createGeneralProject,
   editGeneralProjectCharter,
+  getButlerDeadline,
   getCalendarWorkspaceEntry,
   getGeneralProject,
+  getGeneralDriveFile,
   getGeneralProjects,
   getSystemConditions,
   getTravelTripSummary,
@@ -93,44 +95,63 @@ export type LinkResolution =
   | { state: "loading" }
   | { state: "resolved"; label: string; detail: string | null }
   | { state: "missing" }
-  | { state: "unavailable"; reason: string }
-  | { state: "no_reader" };
-
-/** Kinds whose canonical per-record reader exists today. */
-export const RESOLVABLE_KINDS: ReadonlySet<GeneralProjectLinkKind> = new Set([
-  "trip",
-  "calendar_event",
-  "owner_condition",
-]);
+  | { state: "unavailable"; reason: string };
 
 function failure(error: unknown): LinkResolution {
   if (error instanceof ApiError && error.status === 404) return { state: "missing" };
   return { state: "unavailable", reason: "reader failed" };
 }
 
+/** Kinds with a per-record reader; owner conditions resolve from one ledger read. */
+type SingleKind = Exclude<GeneralProjectLinkKind, "owner_condition">;
+
+const SINGLE_READERS: Record<SingleKind, (refId: string) => Promise<LinkResolution>> = {
+  trip: async (refId) => {
+    const trip = (await getTravelTripSummary(refId)).trip;
+    return {
+      state: "resolved",
+      label: trip.name,
+      detail: `${trip.destination} · ${trip.start_date} to ${trip.end_date}`,
+    };
+  },
+  calendar_event: async (refId) => {
+    const entry = (await getCalendarWorkspaceEntry(refId)).data;
+    return { state: "resolved", label: entry.title, detail: entry.start_at };
+  },
+  // A deadline link is `<butler>:<task id>`: it lives in that butler's schedule.
+  deadline: async (refId) => {
+    const separator = refId.indexOf(":");
+    if (separator < 1) return { state: "missing" };
+    const deadline = (
+      await getButlerDeadline(refId.slice(0, separator), refId.slice(separator + 1))
+    ).data;
+    return {
+      state: "resolved",
+      label: deadline.display_title ?? deadline.name,
+      detail: `${deadline.butler} · due ${deadline.target_date}${
+        deadline.deadline_status ? ` · ${deadline.deadline_status}` : ""
+      }`,
+    };
+  },
+  drive_file: async (refId) => {
+    const file = (await getGeneralDriveFile(refId)).data;
+    return { state: "resolved", label: file.name, detail: file.mime_type };
+  },
+};
+
 /** Resolve each link through its record's reader; returns a resolution per link id. */
 export function useProjectLinkResolution(
   links: GeneralProjectLink[],
 ): Map<string, LinkResolution> {
-  const single = links.filter((l) => l.ref_kind === "trip" || l.ref_kind === "calendar_event");
+  const single = links.filter(
+    (l): l is GeneralProjectLink & { ref_kind: SingleKind } => l.ref_kind !== "owner_condition",
+  );
   const needsConditions = links.some((l) => l.ref_kind === "owner_condition");
 
   const singles = useQueries({
     queries: single.map((link) => ({
       queryKey: ["project-link", link.ref_kind, link.ref_id],
-      queryFn: async (): Promise<LinkResolution> => {
-        if (link.ref_kind === "trip") {
-          const summary = await getTravelTripSummary(link.ref_id);
-          const trip = summary.trip;
-          return {
-            state: "resolved",
-            label: trip.name,
-            detail: `${trip.destination} · ${trip.start_date} to ${trip.end_date}`,
-          };
-        }
-        const entry = (await getCalendarWorkspaceEntry(link.ref_id)).data;
-        return { state: "resolved", label: entry.title, detail: entry.start_at };
-      },
+      queryFn: () => SINGLE_READERS[link.ref_kind](link.ref_id),
       retry: false,
     })),
   });
@@ -170,8 +191,6 @@ export function useProjectLinkResolution(
           resolved.set(link.id, { state: "unavailable", reason: "beyond the reader's page" });
         }
       }
-    } else if (!RESOLVABLE_KINDS.has(link.ref_kind)) {
-      resolved.set(link.id, { state: "no_reader" });
     }
   }
   return resolved;

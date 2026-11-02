@@ -2505,6 +2505,25 @@ export interface GeneralProjectCreateRequest extends GeneralProjectCharterInput 
   idempotency_key: string;
 }
 
+/** GET /api/butlers/{name}/deadlines/{id} — one deadline's identity and status (owner only). */
+export interface DeadlineRecord {
+  id: string;
+  butler: string;
+  name: string;
+  display_title: string | null;
+  target_date: string;
+  deadline_status: string | null;
+  enabled: boolean;
+}
+
+/** GET /api/general/drive-files/{id} — one Drive file's name and type (owner only). */
+export interface GeneralDriveFile {
+  id: string;
+  name: string;
+  mime_type: string | null;
+  modified_time: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Health — new endpoints (bu-iuol4.24)
 // ---------------------------------------------------------------------------

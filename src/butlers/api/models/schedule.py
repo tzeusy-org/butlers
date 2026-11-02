@@ -7,7 +7,7 @@ proxied through MCP tool calls.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
@@ -66,6 +66,22 @@ class Schedule(BaseModel):
     last_run_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class DeadlineRecord(BaseModel):
+    """One deadline task, as an owner single-record reader returns it.
+
+    Carries only what identifies the deadline and its status; the task prompt
+    and alert configuration stay with the butler.
+    """
+
+    id: UUID
+    butler: str
+    name: str
+    display_title: str | None = None
+    target_date: date
+    deadline_status: str | None = None
+    enabled: bool
 
 
 class ScheduleCreate(BaseModel):

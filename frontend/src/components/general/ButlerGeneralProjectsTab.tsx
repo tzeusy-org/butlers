@@ -60,6 +60,15 @@ const LINK_LABEL: Record<GeneralProjectLinkKind, string> = {
   calendar_event: "Calendar events",
 };
 
+/** The id shape each kind's reader resolves, shown as the input placeholder. */
+const REF_HINT: Record<GeneralProjectLinkKind, string> = {
+  deadline: "butler:deadline-uuid",
+  owner_condition: "condition uuid",
+  trip: "trip uuid",
+  drive_file: "Drive file id",
+  calendar_event: "calendar entry uuid",
+};
+
 const LINK_ORDER: GeneralProjectLinkKind[] = [
   "deadline",
   "owner_condition",
@@ -303,9 +312,7 @@ function ResolvedLine({ resolution }: { resolution: LinkResolution | undefined }
   const text =
     resolution.state === "missing"
       ? "Not found: deleted or never existed"
-      : resolution.state === "no_reader"
-        ? "No reader for this record kind yet"
-        : `Unavailable: ${resolution.reason}`;
+      : `Unavailable: ${resolution.reason}`;
   return <span className="text-xs text-muted-foreground">{text}</span>;
 }
 
@@ -382,7 +389,13 @@ function AddLink({ projectId }: { projectId: string }) {
       </div>
       <div className="min-w-48 flex-1 space-y-1">
         <Label htmlFor={`${id}-ref`}>Record id</Label>
-        <Input id={`${id}-ref`} required value={refId} onChange={(e) => setRefId(e.target.value)} />
+        <Input
+          id={`${id}-ref`}
+          required
+          placeholder={REF_HINT[kind]}
+          value={refId}
+          onChange={(e) => setRefId(e.target.value)}
+        />
       </div>
       <Button type="submit" variant="outline" disabled={add.isPending}>
         Link

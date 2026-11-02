@@ -114,8 +114,10 @@ successful response. No receipt ID or guaranteed audit-recorded status is expose
   omits the suppression chip. The existing 30-second foreground polling cadence is retained.
 - General owner projects (`?tab=projects` on `/butlers/general`, selection in `?project=`)
   resolve each typed link in the browser through that record's existing owner-authorized reader:
-  `getTravelTripSummary`, `getCalendarWorkspaceEntry`, and one `getSystemConditions({ledger:
-  "owner"})` page for owner conditions (`frontend/src/hooks/use-general-projects.ts`). Each
+  `getTravelTripSummary`, `getCalendarWorkspaceEntry`, `getButlerDeadline` (the
+  `<butler>:<uuid>` link id names the butler), `getGeneralDriveFile`, and one
+  `getSystemConditions({ledger: "owner"})` page for owner conditions
+  (`frontend/src/hooks/use-general-projects.ts`). Each
   link group degrades alone with `SourceDegradedNote`; 404 reads as not found, and a match beyond
   the owner-condition page reads as unavailable, not missing. Writes return the fresh detail,
   which seeds the detail cache before the list refetches; a create form keeps one idempotency key

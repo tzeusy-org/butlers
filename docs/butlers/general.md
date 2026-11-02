@@ -95,8 +95,9 @@ obligations and links; a project grants no authority (`gen_004`, bu-jv1moa.12;
   budget and `must_keep` entries) and the authenticated owner actor. An edit inserts
   `expected_version + 1` under a row lock; a stale changed edit is 409 `VERSION_CONFLICT`.
 - `project_links` stores a link kind (`deadline`, `owner_condition`, `trip`, `drive_file`,
-  `calendar_event`) and an opaque record id only. Removing a link or closing a project never
-  touches the referenced record.
+  `calendar_event`) and an opaque record id only: a canonical UUID for owner conditions, trips
+  and calendar events, `<butler>:<task uuid>` for a deadline, and a bare Drive file id for a
+  Drive file. Removing a link or closing a project never touches the referenced record.
 - A trigger on both child tables refuses a new charter version and any link insert or delete
   while the project is closed, expired or past its horizon, so the freeze holds below the API.
 
@@ -113,8 +114,13 @@ access, and every write also requires the owner's verified dashboard session: an
 connector callback or runtime session can read but not write. Request models forbid unknown
 fields, so draft-lineage, promotion, actor or state fields are refused. No MCP tool reaches these
 tables. The dashboard's General **Projects** tab resolves each link through the record's own
-owner-authorized reader (Travel trip summary, calendar workspace entry, owner condition ledger);
-deadlines and Drive files have no per-record reader yet and say so. Nothing here schedules,
+owner-authorized reader (Travel trip summary, calendar workspace entry, owner condition ledger,
+`GET /api/butlers/{butler}/deadlines/{id}` for a deadline, and `GET /api/general/drive-files/{id}`
+for a Drive file). Both single-record readers require owner control. The deadline reader returns
+the task's name, title, target date and status, never its prompt. The Drive reader asks General's
+own Drive module (`drive_get_file_metadata` over MCP; the API holds no Drive credential) and
+returns name, type and modified time only, never a link, owners or content; a Drive or butler
+failure is a content-blind 503 that degrades only the Drive files group. Nothing here schedules,
 arms, wakes, researches or parks anything; arming, check-ins, cards and close-out are
 bu-jv1moa.30.
 

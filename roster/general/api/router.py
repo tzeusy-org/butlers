@@ -13,6 +13,7 @@ contract answers 503 rather than falling back to unfiltered reads.
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import json
@@ -23,12 +24,13 @@ from uuid import UUID
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastmcp.client.client import CallToolResult
 from pydantic import BaseModel
 from starlette.responses import JSONResponse
 
 from butlers.api.audit_emit import authenticated_principal
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import Db, OptionalDb
+from butlers.api.deps import Db, MCPClientManager, OptionalDb, get_mcp_manager
 from butlers.api.models import (
     ApiMeta,
     ApiResponse,
@@ -63,6 +65,8 @@ ProjectDetail = _models.ProjectDetail
 ProjectLink = _models.ProjectLink
 ProjectLinkRequest = _models.ProjectLinkRequest
 ProjectSummary = _models.ProjectSummary
+DriveFileRecord = _models.DriveFileRecord
+DRIVE_FILE_ID = _models.DRIVE_FILE_ID
 
 logger = logging.getLogger(__name__)
 
@@ -1138,3 +1142,76 @@ async def remove_project_link(
     return _project_ok(
         ApiResponse[ProjectDetail](data=detail, meta=ApiMeta.model_validate({"outcome": outcome}))
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /drive-files/{file_id} — owner single-record Drive reader (bu-jv1moa.44)
+#
+# Project links of kind drive_file resolve through this reader.  It asks the
+# General butler's own Drive module for one file's metadata over MCP (General
+# holds the Drive credential; the API never does) and returns name and type
+# only.  A Drive or butler failure is a fixed, content-blind 503.
+# ---------------------------------------------------------------------------
+
+_DRIVE_FILE_NOT_FOUND = (404, "DRIVE_FILE_NOT_FOUND", "Drive file not found.")
+_DRIVE_UNAVAILABLE = (503, "DRIVE_UNAVAILABLE", "The Drive reader is unavailable.")
+_DRIVE_READ_TIMEOUT_S = 10.0
+
+
+def _tool_payload(result: Any) -> Any:
+    """The first JSON text block of an MCP tool result, or None."""
+    if isinstance(result, CallToolResult):
+        if result.is_error:
+            return None
+        result = result.content
+    for block in result if isinstance(result, list) else []:
+        text = getattr(block, "text", None)
+        if text:
+            try:
+                return json.loads(text)
+            except (json.JSONDecodeError, TypeError):
+                return None
+    return None
+
+
+@router.get(
+    "/drive-files/{file_id}",
+    response_model=ApiResponse[DriveFileRecord],
+    responses={404: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
+)
+async def get_drive_file(
+    file_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    mgr: MCPClientManager = Depends(get_mcp_manager),
+) -> Any:
+    """One Drive file's name and type, owner only; nothing is written or copied."""
+    if not DRIVE_FILE_ID.fullmatch(file_id):
+        return _project_error(_DRIVE_FILE_NOT_FOUND)
+    try:
+        client = await asyncio.wait_for(mgr.get_client(BUTLER_DB), _DRIVE_READ_TIMEOUT_S)
+        result = await asyncio.wait_for(
+            client.call_tool("drive_get_file_metadata", {"file_id": file_id}),
+            _DRIVE_READ_TIMEOUT_S,
+        )
+    except Exception:
+        logger.info("Drive file reader unavailable", exc_info=True)
+        return _project_error(_DRIVE_UNAVAILABLE)
+    payload = _tool_payload(result)
+    if isinstance(payload, dict) and payload.get("status") == "not_found":
+        return _project_error(_DRIVE_FILE_NOT_FOUND)
+    if (
+        not isinstance(payload, dict)
+        or payload.get("id") != file_id
+        or not isinstance(payload.get("name"), str)
+    ):
+        return _project_error(_DRIVE_UNAVAILABLE)
+    try:
+        record = DriveFileRecord(
+            id=file_id,
+            name=payload["name"],
+            mime_type=payload.get("mimeType"),
+            modified_time=payload.get("modifiedTime"),
+        )
+    except ValueError:
+        return _project_error(_DRIVE_UNAVAILABLE)
+    return _project_ok(ApiResponse[DriveFileRecord](data=record))
