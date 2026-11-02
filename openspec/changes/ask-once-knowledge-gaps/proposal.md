@@ -14,8 +14,8 @@ so generalist task 4.2 applies cleanly. It changes no RFC 0038 decision, profile
 
 ## What Changes
 
-- An owner decline may record a typed gap (entity, predicate) in the memory schema of the domain
-  that registers the predicate, with the origin taken from server-side provenance, never from
+- An owner decline may record a typed gap (entity, predicate) in the memory schema of the called
+  domain, which records only predicates registered there, with the origin taken from server-side provenance, never from
   arguments. Before the switch the only seam is the landed, frozen dashboard answer-lane
   `conversation_reply` decline. After the switch the only seam is the broker-granted,
   non-steering Memory gap `record` capability (`record` class, `owner_authority` false,
@@ -29,7 +29,8 @@ so generalist task 4.2 applies cleanly. It changes no RFC 0038 decision, profile
   in the same transaction. Closure attribution comes from the fact's stored authority, so a
   third-party report reads "reported by" and never closes a gap as established fact.
 - A deterministic, model-free module-default job posts exactly one notice per origin thread with
-  the fact's reference, retries with bounded backoff, records `delivery_failed` on exhaustion, and
+  the fact's reference, retries with bounded backoff, records a `failed` attention event and flags `delivery_failed` on
+  exhaustion, and
   expires gaps open past their ttl. Dashboard origins post into their own thread; other admitted
   channels deliver only through the canonical owner-delivery subject with receipts, and an
   ambiguous send stays `unknown` instead of being resent.

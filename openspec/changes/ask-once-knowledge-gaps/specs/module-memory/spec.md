@@ -5,7 +5,7 @@
 A memory-enabled butler SHALL record an unanswered owner question as a typed knowledge gap in its own
 memory schema: `entity_id`, `predicate`, `question_summary`, `asked_at`, `expires_at` (default
 ninety days after `asked_at`), one origin row per asking thread (`origin_conversation_id`,
-`origin_request_id`, `origin_channel`, and the origin goal when a goal recorded it), and a `status`
+`origin_request_id`, `origin_channel`), and a `status`
 of `open`, `answerable`, `delivered`, `dismissed` or `expired`. At most one `open` gap SHALL exist
 per `(entity_id, predicate)`. Gap capture SHALL validate that the entity exists and is not merged
 away and that the predicate is registered in the recording schema, SHALL admit only an origin that
@@ -31,7 +31,8 @@ redirected to a recipient other than its origin thread. A fact whose authority i
 `system` SHALL read "now known"; a fact of any other authority SHALL read "reported by" the sender
 and SHALL NOT be presented as established. A failed delivery SHALL keep the gap `answerable`, count
 the attempt and retry with bounded backoff; once attempts are exhausted the gap SHALL stay visible in
-the open-gap list with its last error and SHALL record one `delivery_failed` attention outcome. The
+the open-gap list with its last error, flagged `delivery_failed` in the listing, and SHALL record
+one attention event (outcome `failed`, intent `knowledge_gap_answer`). The
 same job SHALL mark `open` gaps past `expires_at` as `expired` without notice. `dismissed` and
 `expired` are terminal.
 
@@ -80,7 +81,7 @@ Scope: v1-mandatory
 
 - **WHEN** posting the notice fails
 - **THEN** the gap SHALL stay `answerable` with its attempt count and last error and SHALL be retried until attempts are exhausted
-- **AND** exhaustion SHALL record one `delivery_failed` attention outcome and keep the gap listed
+- **AND** exhaustion SHALL record one attention event with outcome `failed` and intent `knowledge_gap_answer`, and keep the gap listed with `delivery_failed` set
 
 #### Scenario: A closure failure never loses the fact
 
@@ -101,10 +102,17 @@ SHALL be removed with the answer lane at the switch. After the switch, the only 
 broker-granted, non-steering Memory gap `record` capability that REQ-dashboard-goal-continuity-004
 admits for an owner-authenticated answer goal. That capability SHALL be declared with effect class
 `record`, `owner_authority` false and `idempotency` `key_required`; its arguments SHALL be the
-entity, the predicate and the question summary only, and its owner domain SHALL be the domain whose
-memory schema registers the predicate, which records the gap in its own schema behind a valid
-broker assertion (REQ-capability-authorization-007). Origin goal, thread, request and channel SHALL
-come from the broker assertion's goal provenance, never from arguments. A repeated call with the
+entity, the predicate and the question summary only. Each memory-enabled domain SHALL declare its
+own gap `record` capability with itself as owner domain, and that capability SHALL record a gap only
+in its own schema, behind a valid broker assertion (REQ-capability-authorization-007), and only for
+a predicate registered in that schema; any other predicate SHALL be refused with a typed
+`predicate_unregistered` result and record nothing. A predicate registered in more than one schema
+SHALL be recorded only in the schema of the domain whose capability was called, where a matching
+fact write can close it; there SHALL be no cross-schema capture, closure or fan-out. Origin thread,
+request and channel SHALL come from the broker assertion's goal provenance, never from arguments;
+the origin goal identity SHALL be stored on the origin row once `bu-q7vx1q.70` adds that column
+(task 3.2). This requirement is v1-mandatory for the store's admission rule; its post-switch seam
+is exercised only through the post-v1 REQ-dashboard-goal-continuity-008 answer goal. A repeated call with the
 same effect identity SHALL return the original result, and a repeated origin thread for the same
 open gap SHALL merge without a second origin row.
 
@@ -142,6 +150,11 @@ Scope: v1-mandatory
 
 - **WHEN** the origin is not owner-verified, or its channel is outside the admitted set
 - **THEN** no gap or origin row SHALL be written and the result SHALL name the refusal
+
+#### Scenario: A gap is recorded only where it can close
+
+- **WHEN** a domain's gap `record` capability is called for a predicate its schema does not register, or for a predicate also registered in another domain's schema
+- **THEN** an unregistered predicate SHALL be refused `predicate_unregistered` with nothing written, and a registered one SHALL be recorded only in the called domain's schema, never in another
 
 #### Scenario: A replayed record call does not duplicate
 
