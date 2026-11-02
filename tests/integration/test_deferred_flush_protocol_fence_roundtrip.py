@@ -29,19 +29,10 @@ _NOW = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-        pool_schema="switchboard",
+async def sb_pool(db):
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    try:
-        yield p
-    finally:
-        await p.close()
 
 
 def _envelope(text: str) -> dict:
@@ -62,10 +53,10 @@ def _provenance(envelope: dict) -> WakeHoldProvenance:
     )
 
 
-async def _park(pool, text: str, *, wake: bool, age: timedelta = timedelta(hours=1)) -> str:
+async def _park(sb_pool, text: str, *, wake: bool, age: timedelta = timedelta(hours=1)) -> str:
     envelope = _envelope(text)
     return await insert_deferred_notification(
-        pool,
+        sb_pool,
         butler_name="health",
         channel="telegram",
         message=text,
@@ -76,13 +67,13 @@ async def _park(pool, text: str, *, wake: bool, age: timedelta = timedelta(hours
     )
 
 
-async def test_provenance_lands_in_the_same_row_and_other_holds_carry_none(pool) -> None:
-    held = await _park(pool, "wake", wake=True)
-    plain = await _park(pool, "plain", wake=False)
+async def test_provenance_lands_in_the_same_row_and_other_holds_carry_none(sb_pool) -> None:
+    held = await _park(sb_pool, "wake", wake=True)
+    plain = await _park(sb_pool, "plain", wake=False)
 
     rows = {
         str(r["id"]): r
-        for r in await pool.fetch(
+        for r in await sb_pool.fetch(
             "SELECT id, status, wake_hold_kind, wake_admission_sequence, wake_target,"
             " wake_envelope_digest FROM deferred_notifications"
         )
@@ -96,40 +87,40 @@ async def test_provenance_lands_in_the_same_row_and_other_holds_carry_none(pool)
     assert rows[plain]["wake_admission_sequence"] is None
 
 
-async def test_admission_sequence_increases_with_each_hold(pool) -> None:
-    await _park(pool, "first", wake=True)
-    await _park(pool, "second", wake=True)
+async def test_admission_sequence_increases_with_each_hold(sb_pool) -> None:
+    await _park(sb_pool, "first", wake=True)
+    await _park(sb_pool, "second", wake=True)
 
     by_message = {
         r["message"]: r["wake_admission_sequence"]
-        for r in await pool.fetch(
+        for r in await sb_pool.fetch(
             "SELECT message, wake_admission_sequence FROM deferred_notifications"
         )
     }
     assert by_message["second"] > by_message["first"]
 
 
-async def test_the_flush_leaves_protocol_rows_and_handles_plain_and_legacy_rows(pool) -> None:
-    due = await _park(pool, "due", wake=True)
-    legacy_stale = await _park(pool, "legacy-stale", wake=False, age=timedelta(hours=30))
-    prepared = await _park(pool, "prepared", wake=True)
-    committed = await _park(pool, "committed", wake=True, age=timedelta(hours=30))
-    await pool.execute(
+async def test_the_flush_leaves_protocol_rows_and_handles_plain_and_legacy_rows(sb_pool) -> None:
+    due = await _park(sb_pool, "due", wake=True)
+    legacy_stale = await _park(sb_pool, "legacy-stale", wake=False, age=timedelta(hours=30))
+    prepared = await _park(sb_pool, "prepared", wake=True)
+    committed = await _park(sb_pool, "committed", wake=True, age=timedelta(hours=30))
+    await sb_pool.execute(
         "UPDATE deferred_notifications SET status = 'release_prepared' WHERE id = $1::uuid",
         prepared,
     )
-    await pool.execute(
+    await sb_pool.execute(
         "UPDATE deferred_notifications SET status = 'release_committed' WHERE id = $1::uuid",
         committed,
     )
     notify_fn = AsyncMock()
 
     with patch("butlers.core.attention_ledger.record_attention_event", AsyncMock()):
-        delivered = await _tick_deferred_notification_pass(pool, _NOW, notify_fn=notify_fn)
+        delivered = await _tick_deferred_notification_pass(sb_pool, _NOW, notify_fn=notify_fn)
 
     status = {
         str(r["id"]): r["status"]
-        for r in await pool.fetch("SELECT id, status FROM deferred_notifications")
+        for r in await sb_pool.fetch("SELECT id, status FROM deferred_notifications")
     }
     assert delivered == 1
     assert status[due] == "delivered"

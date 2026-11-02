@@ -132,33 +132,24 @@ def test_downgrade_restores_the_pre_protocol_status_check() -> None:
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-        pool_schema="switchboard",
+async def sb_pool(db):
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    try:
-        yield p
-    finally:
-        await p.close()
 
 
-async def _run(pool, sql: str) -> None:
-    await pool.execute(sql)
+async def _run(sb_pool, sql: str) -> None:
+    await sb_pool.execute(sql)
 
 
-async def _insert(pool, *, status: str = "pending", provenance: bool = False) -> uuid.UUID:
+async def _insert(sb_pool, *, status: str = "pending", provenance: bool = False) -> uuid.UUID:
     wake = (
         "'owner_attention_quiet_hours', 'w', nextval('deferred_notifications_admission_seq'),"
         " 'UTC', '{}'::jsonb, 'd', now()"
         if provenance
         else "NULL, NULL, NULL, NULL, NULL, NULL, NULL"
     )
-    return await pool.fetchval(
+    return await sb_pool.fetchval(
         f"""
         INSERT INTO deferred_notifications
             (butler_name, channel, message, envelope, deliver_at, status, {", ".join(_WAKE_COLUMNS)})
@@ -172,18 +163,18 @@ async def _insert(pool, *, status: str = "pending", provenance: bool = False) ->
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_a_migrated_database_has_the_columns_and_a_legacy_row_stays_pending(pool) -> None:
+async def test_a_migrated_database_has_the_columns_and_a_legacy_row_stays_pending(sb_pool) -> None:
     columns = {
         r["column_name"]
-        for r in await pool.fetch(
+        for r in await sb_pool.fetch(
             "SELECT column_name FROM information_schema.columns"
             " WHERE table_schema = current_schema() AND table_name = 'deferred_notifications'"
         )
     }
     assert set(_WAKE_COLUMNS) <= columns
 
-    row_id = await _insert(pool)
-    row = await pool.fetchrow("SELECT status, wake_hold_kind FROM deferred_notifications")
+    row_id = await _insert(sb_pool)
+    row = await sb_pool.fetchrow("SELECT status, wake_hold_kind FROM deferred_notifications")
     assert row["status"] == "pending" and row["wake_hold_kind"] is None
     assert row_id is not None
 
@@ -191,21 +182,21 @@ async def test_a_migrated_database_has_the_columns_and_a_legacy_row_stays_pendin
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_protocol_state_needs_provenance_and_provenance_is_immutable(pool) -> None:
+async def test_protocol_state_needs_provenance_and_provenance_is_immutable(sb_pool) -> None:
     import asyncpg
 
     with pytest.raises(asyncpg.CheckViolationError):
-        await _insert(pool, status="release_prepared", provenance=False)
+        await _insert(sb_pool, status="release_prepared", provenance=False)
 
-    row_id = await _insert(pool, status="release_prepared", provenance=True)
+    row_id = await _insert(sb_pool, status="release_prepared", provenance=True)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await sb_pool.execute(
             "UPDATE deferred_notifications SET wake_policy_window_key = 'other' WHERE id = $1",
             row_id,
         )
-    legacy_id = await _insert(pool)
+    legacy_id = await _insert(sb_pool)
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await sb_pool.execute(
             "UPDATE deferred_notifications SET wake_hold_kind = 'owner_attention_quiet_hours'"
             " WHERE id = $1",
             legacy_id,
@@ -215,29 +206,29 @@ async def test_protocol_state_needs_provenance_and_provenance_is_immutable(pool)
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_then_upgrade_round_trips_on_an_empty_table(pool) -> None:
-    await _run(pool, _emitted("downgrade"))
+async def test_downgrade_then_upgrade_round_trips_on_an_empty_table(sb_pool) -> None:
+    await _run(sb_pool, _emitted("downgrade"))
     columns = {
         r["column_name"]
-        for r in await pool.fetch(
+        for r in await sb_pool.fetch(
             "SELECT column_name FROM information_schema.columns"
             " WHERE table_schema = current_schema() AND table_name = 'deferred_notifications'"
         )
     }
     assert not set(_WAKE_COLUMNS) & columns
 
-    await _run(pool, _emitted("upgrade"))
-    assert await pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
+    await _run(sb_pool, _emitted("upgrade"))
+    assert await sb_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 0
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_refuses_while_a_row_is_in_a_protocol_state(pool) -> None:
+async def test_downgrade_refuses_while_a_row_is_in_a_protocol_state(sb_pool) -> None:
     import asyncpg
 
-    await _insert(pool, status="release_committed", provenance=True)
+    await _insert(sb_pool, status="release_committed", provenance=True)
 
     with pytest.raises(asyncpg.RaiseError, match="downgrade refused"):
-        await _run(pool, _emitted("downgrade"))
-    assert await pool.fetchval("SELECT count(*) FROM deferred_notifications") == 1
+        await _run(sb_pool, _emitted("downgrade"))
+    assert await sb_pool.fetchval("SELECT count(*) FROM deferred_notifications") == 1

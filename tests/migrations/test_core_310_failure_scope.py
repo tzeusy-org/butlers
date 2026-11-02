@@ -49,29 +49,20 @@ def test_only_the_grant_sits_inside_the_privilege_handler() -> None:
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    from butlers.testing.migration import create_migrated_test_pool
-
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "switchboard"],
-        schemas={"switchboard": "switchboard"},
-        pool_schema="switchboard",
+async def sb_pool(db):
+    return await db(
+        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
     )
-    try:
-        yield p
-    finally:
-        await p.close()
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_partial_provenance_is_refused_by_the_all_or_nothing_check(pool) -> None:
+async def test_partial_provenance_is_refused_by_the_all_or_nothing_check(sb_pool) -> None:
     import asyncpg
 
     with pytest.raises(asyncpg.CheckViolationError):
-        await pool.execute(
+        await sb_pool.execute(
             "INSERT INTO deferred_notifications"
             " (butler_name, channel, message, envelope, deliver_at, wake_policy_window_key)"
             " VALUES ('b', 'telegram', 'm', '{}'::jsonb, now(), 'w')"
