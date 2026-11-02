@@ -863,6 +863,74 @@ class TestTickIntegration:
             await document_deadline_set(tick_pool, renewal)
         assert refused.value.reason == "name_conflict"
 
+    async def test_failed_document_notice_backs_off_then_fires_on_recovery(
+        self, tick_pool, monkeypatch
+    ):
+        """A Switchboard outage ledgers one failed row per backoff step, not per tick; the
+        threshold stays unfired and fires once delivery recovers."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from butlers.core.scheduler import tick
+        from butlers.core.temporal.document_deadlines import (
+            document_deadline_set,
+            plan_document_deadline,
+        )
+        from butlers.jobs import owner_notify
+        from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+        plan = plan_document_deadline(
+            document_id="s3://bucket/general/outage.pdf",
+            kind="due",
+            target_date=_future_date(2).isoformat(),
+            issuer="SP Group",
+        )
+        await document_deadline_set(tick_pool, plan)
+        monkeypatch.setattr(
+            owner_notify, "check_owner_notify_suppression", AsyncMock(return_value=None)
+        )
+        monkeypatch.setattr(
+            owner_notify, "resolve_owner_telegram_recipient", AsyncMock(return_value="123")
+        )
+        client = MagicMock()
+        client.call_tool = AsyncMock(
+            return_value=MagicMock(is_error=False, data={"notification_id": "n-1"})
+        )
+        switchboard: list[Any] = [None]
+        monkeypatch.setattr(owner_notify, "get_current_switchboard_client", lambda: switchboard[0])
+        job = get_deterministic_schedule_job_registry()["general"]["paperwork_deadline_notify"]
+
+        async def run_job(**kwargs):
+            await job(tick_pool, kwargs["job_args"])
+
+        async def ledger() -> list[tuple[str, str]]:
+            rows = await tick_pool.fetch(
+                "SELECT outcome, dedup_key FROM public.attention_ledger "
+                "WHERE origin_butler = 'general' ORDER BY occurred_at"
+            )
+            return [(r["outcome"], r["dedup_key"]) for r in rows]
+
+        async def fired() -> list[Any]:
+            return await tick_pool.fetchval(
+                "SELECT fired_thresholds FROM scheduled_tasks WHERE name = $1", plan.name
+            )
+
+        for _ in range(3):
+            await tick(tick_pool, run_job)
+        failed = await ledger()
+        assert [outcome for outcome, _ in failed] == ["failed"]
+        assert failed[0][1].startswith("paperwork_deadline_notify:")
+        assert await fired() == []
+
+        # Past the 5-minute backoff the next attempt goes out; once delivery recovers,
+        # the threshold fires under the same key.
+        await tick_pool.execute(
+            "UPDATE public.attention_ledger SET occurred_at = occurred_at - interval '6 minutes'"
+        )
+        switchboard[0] = client
+        await tick(tick_pool, run_job)
+        assert await ledger() == [failed[0], ("delivered", failed[0][1])]
+        assert len(await fired()) == 1
+
     async def test_document_deadlines_supersede_across_documents_and_cap_per_issuer(
         self, tick_pool, monkeypatch
     ):
