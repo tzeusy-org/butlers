@@ -75,6 +75,8 @@ def register_event_tools(
         # An approved overlap replay passes the parked ISO strings back in.
         start_at = _create_boundary(start_at)
         end_at = _create_boundary(end_at)
+        if isinstance(notification, dict):
+            notification = CalendarNotificationInput.model_validate(notification)
         await module._require_calendar_write_permission()
         provider = module._require_provider()
         resolved_calendar_id = module._resolve_calendar_id(calendar_id, for_create=True)
@@ -94,7 +96,12 @@ def register_event_tools(
             "location": location,
             "attendees": attendees or [],
             "recurrence_rule": recurrence_rule,
-            "notification": notification,
+            # Park the structured form; a str(model) cannot be validated back.
+            "notification": (
+                notification.model_dump(mode="json")
+                if isinstance(notification, CalendarNotificationInput)
+                else notification
+            ),
             "status": status,
             "visibility": visibility,
             "notes": notes,

@@ -30,7 +30,7 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -61,6 +61,7 @@ from butlers.modules.calendar import (
     CalendarEventCreate,
     CalendarEventUpdate,
     CalendarModule,
+    CalendarNotificationInput,
     CalendarProvider,
     CalendarRequestError,
     CalendarSyncState,
@@ -4229,9 +4230,33 @@ class TestCalendarApprovalAuthority:
         handler.assert_awaited_once()
         assert handler.await_args.kwargs["calendar_id"] == "cal-seen"
 
-    @pytest.mark.parametrize("tool_name", ["calendar_create_event", "calendar_update_event"])
+    @pytest.mark.parametrize(
+        ("tool_name", "overrides"),
+        [
+            ("calendar_create_event", {}),
+            # Structured notification, all-day dates and a non-UTC offset must
+            # each survive the JSON park and rebuild the identical call.
+            (
+                "calendar_create_event",
+                {"notification": CalendarNotificationInput(enabled=True, minutes_before=10)},
+            ),
+            (
+                "calendar_create_event",
+                {"start_at": date(2026, 2, 20), "end_at": date(2026, 2, 21), "all_day": True},
+            ),
+            (
+                "calendar_create_event",
+                {
+                    "start_at": datetime.fromisoformat("2026-02-21T00:30:00+08:00"),
+                    "end_at": datetime.fromisoformat("2026-02-21T01:30:00+08:00"),
+                },
+            ),
+            ("calendar_update_event", {}),
+        ],
+        ids=["create", "create-notification", "create-all-day", "create-non-utc", "update"],
+    )
     async def test_approved_overlap_replay_executes_once_and_only_under_its_context(
-        self, tool_name
+        self, tool_name, overrides
     ):
         """An approved overlap write runs once on replay instead of re-parking,
         while any other caller -- including a context bound to different
@@ -4283,6 +4308,7 @@ class TestCalendarApprovalAuthority:
             "start_at": datetime(2026, 2, 20, 16, tzinfo=UTC),
             "end_at": datetime(2026, 2, 20, 17, tzinfo=UTC),
             "request_id": "overlap-1",
+            **overrides,
         }
         if tool_name == "calendar_update_event":
             call["event_id"] = "evt-1"
