@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.testing.fake_pool import fake_pool
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
@@ -230,7 +230,7 @@ def _make_node_create_pool(
     entity_id: str,
     *,
     map_title: str = "Test Map",
-) -> AsyncMock:
+) -> FakePool:
     """Build a mock pool that satisfies all calls in mind_map_node_create.
 
     Call order:
@@ -476,7 +476,7 @@ class TestMasteryStateMachine:
         current_status: str,
         map_id: str | None = None,
         node_id: str | None = None,
-    ) -> tuple[AsyncMock, str, str]:
+    ) -> tuple[FakePool, str, str]:
         """Return (pool, node_id, map_id) wired for a node with given mastery_status."""
         nid = node_id or str(uuid.uuid4())
         mid = map_id or str(uuid.uuid4())
@@ -679,7 +679,7 @@ class TestEdgeCreateCycleDetection:
         parent_id: str,
         child_id: str,
         map_id: str,
-    ) -> AsyncMock:
+    ) -> FakePool:
         """Pool returning two nodes in the same map."""
         node_rows = [
             _make_row({"id": parent_id, "mind_map_id": map_id}),

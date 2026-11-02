@@ -34,7 +34,7 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 
 
-def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
+def _make_conn_with_transaction(conn: FakeConnection) -> FakeConnection:
     """Wire conn.transaction() as an async context manager."""
     tx_ctx = MagicMock()
     tx_ctx.__aenter__ = AsyncMock(return_value=None)
@@ -43,7 +43,7 @@ def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
     return conn
 
 
-def _make_pool_with_conn(conn: AsyncMock) -> AsyncMock:
+def _make_pool_with_conn(conn: FakeConnection) -> AsyncMock:
     """Build a pool whose acquire() context manager yields the given conn."""
     pool = MagicMock()
     acquire_ctx = MagicMock()

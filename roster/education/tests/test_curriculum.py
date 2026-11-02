@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from butlers.testing.fake_pool import fake_pool
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import Record as _make_row
 
 pytestmark = pytest.mark.unit
@@ -364,7 +364,7 @@ def _make_generate_pool(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     execute_count: int = 20,
-) -> AsyncMock:
+) -> FakePool:
     """Build a pool for curriculum_generate with pre-loaded graph."""
     map_row = _make_row({"id": map_id, "status": map_status})
     node_rows = [_make_row(n) for n in nodes]
@@ -616,7 +616,7 @@ def _make_replan_pool(
     nodes: list[dict[str, Any]],
     edges: list[dict[str, Any]],
     execute_count: int = 20,
-) -> AsyncMock:
+) -> FakePool:
     """Build a pool for curriculum_replan."""
     map_row = _make_row({"id": map_id, "status": map_status})
     node_rows = [_make_row(n) for n in nodes]
@@ -779,7 +779,7 @@ def _make_next_node_pool(
     *,
     map_status: str = "active",
     node_row: dict[str, Any] | None = None,
-) -> AsyncMock:
+) -> FakePool:
     """Build a pool for curriculum_next_node."""
     map_row = _make_row({"status": map_status})
     pool = fake_pool(
@@ -1051,7 +1051,7 @@ class TestClassifyConceptType:
 # ---------------------------------------------------------------------------
 
 
-def _metadata_patch_call(pool: AsyncMock) -> Any | None:
+def _metadata_patch_call(pool: FakePool) -> Any | None:
     """Return the batched node-metadata patch execute() call, if it was issued."""
     for call in pool.execute.call_args_list:
         sql = str(call.args[0]) if call.args else ""
@@ -1060,7 +1060,7 @@ def _metadata_patch_call(pool: AsyncMock) -> Any | None:
     return None
 
 
-def _metadata_patches(pool: AsyncMock) -> dict[str, dict[str, Any]]:
+def _metadata_patches(pool: FakePool) -> dict[str, dict[str, Any]]:
     """Return {node_id: patch_dict} from the batched metadata patch call."""
     import json
 
@@ -1155,7 +1155,7 @@ class TestCurriculumGenerateSourceRefs:
         map_id: str,
         nodes: list[dict[str, Any]],
         registered: tuple[str, ...],
-    ) -> AsyncMock:
+    ) -> FakePool:
         return fake_pool(
             fetchrow=AsyncMock(side_effect=[_make_row({"id": map_id, "status": "active"})]),
             fetch=AsyncMock(
