@@ -23,6 +23,18 @@ re-enabled, rewritten, or audited by module-default recovery, regardless of its
 `enabled` state. The scheduler SHALL NOT infer module ownership from a name
 prefix, a dashboard request, or arbitrary database state.
 
+Recovery is a control-plane transition only (RFC 0038 D2). It SHALL NOT admit
+a goal, submit an obligation admission, call a job function, or start a
+session. A recovered row's later due occurrences SHALL dispatch through its
+preserved dispatch mode under the Dispatch Modes requirement: a job-mode row
+calls its deterministic job, and a prompt-mode row submits one obligation
+admission for that occurrence. Because `next_run_at` is preserved, recovery
+SHALL NOT admit catch-up occurrences.
+
+ID: REQ-core-scheduler-003
+Source: bu-kqnum.13 module-default TOML-orphan recovery; RFC 0038 D2
+Scope: v1-mandatory
+
 A stale `next_run_at`, expired episode history, or other retained data MUST NOT
 override the `memory_episode_cleanup` recovery exclusion. Any future cleanup
 recovery policy requires a separate provenance- and owner-gated capability; it
@@ -44,6 +56,15 @@ is not generic module-default recovery.
   `enabled=true`
 - **AND** the row's cron, dispatch payload, complexity, and `next_run_at` SHALL
   remain the values it had before the recovery
+
+#### Scenario: Recovery admits no goal and dispatches later by preserved mode
+
+- **WHEN** an eligible module default is recovered at daemon startup
+- **THEN** the recovery SHALL admit no goal, submit no obligation admission,
+  call no job function, and start no session
+- **AND** when the recovered row next falls due it SHALL dispatch through its
+  preserved dispatch mode, with no additional occurrence admitted for the time
+  it was disabled
 
 #### Scenario: Disabled TOML cleanup cannot be automatically reclaimed or dispatched
 

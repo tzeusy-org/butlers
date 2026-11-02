@@ -26,6 +26,20 @@ limited to reclaiming an existing row and does not change ordinary
 missing-default creation. Recovery SHALL NOT replace a recovered row's last
 TOML cadence with the module-default cadence.
 
+Under the goal runtime (RFC 0038 D2 and D18), every memory maintenance schedule
+remains a job-mode row with a deterministic handler. Episode cleanup, decay,
+superseded-fact purge and ANN observability stay deterministic jobs that never
+admit a goal. The `memory_consolidation` handler, including its bounded
+backfill schedule, SHALL perform no model judgment itself: it submits one
+obligation admission per `(tenant_id, butler, partition)` as the
+`module-memory` consolidation pipeline requires, and admits none for an empty
+pending set. Recovering a consolidation row therefore resumes those partitioned
+obligation goals at its preserved cadence; recovery itself admits no goal.
+
+ID: REQ-memory-retention-policy-010
+Source: bu-kqnum.13 module-default TOML-orphan recovery; RFC 0038 D2 and D18
+Scope: v1-mandatory
+
 #### Scenario: Decay sweep runs without any TOML schedule
 
 - **WHEN** a butler's `butler.toml` enables `[modules.memory]` and declares no
@@ -62,6 +76,16 @@ TOML cadence with the module-default cadence.
 - **AND** its dispatch mode, prompt/job name, job arguments, complexity, and
   `next_run_at` MUST remain unchanged
 
+#### Scenario: Recovered consolidation submits partitioned obligation goals
+
+- **WHEN** a `memory_consolidation` row has been recovered and later falls due
+  with pending episodes
+- **THEN** the recovery itself MUST have admitted no goal and started no session
+- **AND** the due job MUST submit one obligation admission per
+  `(tenant_id, butler, partition)` with the git-declared consolidation
+  capability set, passing no Spawner
+- **AND** an empty pending-episode set MUST admit no goal
+
 #### Scenario: Disabled TOML cleanup cannot become a historical drain
 
 - **WHEN** a memory-enabled butler has removed its TOML
@@ -73,6 +97,7 @@ TOML cadence with the module-default cadence.
 - **THEN** the cleanup row SHALL remain `source='toml'` and `enabled=false`
 - **AND** no recovery audit entry or cleanup dispatch SHALL occur
 - **AND** the expired episodes SHALL remain undeleted
+- **AND** no goal SHALL be admitted in place of the fenced cleanup
 
 #### Scenario: Every memory-enabled butler has a working consolidation path
 
@@ -83,6 +108,10 @@ TOML cadence with the module-default cadence.
   handler for that butler — a module-registered schedule naming a job with no
   registered handler for that butler is a defect, not an acceptable
   configuration
+- **AND** `memory_episode_cleanup`, `memory_purge_superseded`,
+  `memory_decay_sweep`, and `memory_ann_observability` MUST complete without
+  admitting a goal, while `memory_consolidation` MUST reach model judgment only
+  through its partitioned obligation admissions
 
 #### Scenario: Bounded incremental backlog drain
 
@@ -91,6 +120,8 @@ TOML cadence with the module-default cadence.
 - **THEN** a `memory_consolidation_backfill` schedule MUST claim additional
   pending episodes on a tighter cadence, bounded to a configurable batch size
   per run (never one unbounded transaction)
+- **AND** the claimed episodes MUST be submitted through the same partitioned
+  obligation admissions as `memory_consolidation`, never a Spawner session
 - **AND** episodes in `consolidation_status = 'dead_letter'` MUST NOT be
   reclaimed by this or any consolidation pass
 
@@ -128,7 +159,13 @@ Memory retention recovery SHALL be limited to the scheduler control-plane
 transition defined by `core-scheduler` and the read-only expired-retention
 observation defined by `dashboard-api`. An expired-retention observation MUST
 not invoke cleanup, toggle a schedule, enqueue a backfill, change an episode's
-expiry, delete a row, send a notification, or mutate provenance/evidence.
+expiry, delete a row, send a notification, mutate provenance/evidence, or
+admit a goal. Ordinary episode cleanup remains a deterministic job under the
+goal runtime; it gains no model judgment and no goal-granted authority.
+
+ID: REQ-memory-retention-policy-011
+Source: bu-kqnum.13 expired-retention deadman; RFC 0038 D2
+Scope: v1-mandatory
 
 The retention observation SHALL use the exact eligibility predicate of ordinary
 episode cleanup, currently `expires_at < now()`, rather than a separate expiry
@@ -158,7 +195,7 @@ cleanup handler SHALL NOT be repurposed as an unbounded historical backfill.
   threshold
 - **THEN** the statistics path SHALL remain read-only
 - **AND** it SHALL not invoke `memory_episode_cleanup`, re-enable a cleanup
-  schedule, alter a retention policy, or delete an episode
+  schedule, alter a retention policy, delete an episode, or admit a goal
 
 #### Scenario: Historical drain remains fenced by provenance and owner authorization
 

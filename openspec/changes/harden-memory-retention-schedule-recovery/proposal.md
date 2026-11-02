@@ -15,6 +15,12 @@ without changing schedule state or deleting retained data.
 
 ## What Changes
 
+- Align recovery with adopted RFC 0038 D2 and D18. Deterministic cleanup,
+  decay, purge and observability maintenance stay jobs and never become goals.
+  A recovered `memory_consolidation` schedule, like its backfill, submits one
+  declared obligation goal per tenant, source domain and taint partition when
+  it next falls due. Recovery itself, the expired-retention observation and the
+  Memory Overture admit no goal and start no session. No RFC decision changes.
 - Define the sole automatic TOML-orphan recovery: a registered module default
   other than `memory_episode_cleanup` may reclaim and re-enable only its
   matching `source='toml'` row. A disabled `source='db'` row remains
@@ -47,9 +53,12 @@ None.
 
 - `core-scheduler`: constrain module-default TOML reclaim provenance and make
   the state transition plus audit atomic, idempotent, and concurrency-safe.
+  Recovery admits no goal; a recovered row dispatches later through its
+  preserved mode.
 - `memory-retention-policy`: define the retention-recovery boundary, the
   cleanup-predicate-based expired-retained observation, and the no-drain
-  guardrail.
+  guardrail. Cleanup stays a deterministic job; recovered consolidation
+  submits partitioned obligation goals.
 - `dashboard-api`: extend the memory-stats fan-out contract with truthful
   expired-retention aggregates, per-source coverage, and degraded-source
   semantics.
@@ -66,5 +75,7 @@ None.
   frontend types, and `frontend/src/components/memory/MemoryOverture.tsx`.
 - Verification spans scheduler transition/rollback/concurrency tests,
   real-Postgres stats fan-out coverage, degraded-envelope contracts, and
-  focused UI rendering tests. No migration, live database operation, schedule
+  focused UI rendering tests. The consolidation obligation-admission path is
+  delivered by the generalist change's domain conversion and hard switch, not
+  by this change. No migration, live database operation, schedule
   toggle, or historical cleanup is authorized by this change.

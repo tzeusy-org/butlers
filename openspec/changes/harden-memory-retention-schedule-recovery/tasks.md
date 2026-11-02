@@ -20,6 +20,12 @@
   restart is a no-op, same-name recoveries across two butlers remain
   attributable, and disabled TOML cleanup with expired history produces no
   recovery, dispatch, or deletion.
+- [ ] 1.6 Add goal-runtime boundary regressions: recovery admits no goal and
+  starts no session; a recovered job-mode row keeps its dispatch mode; cleanup
+  stays a deterministic job; and a recovered `memory_consolidation` row's next
+  due run submits one obligation admission per `(tenant_id, butler, partition)`
+  through the generalist change's consolidation admission path, which this
+  change does not itself deliver.
 
 ## 2. Complete-or-unknown expired-retention API observation
 
@@ -55,7 +61,8 @@
 
 - [ ] 4.1 Review the final diff for the explicit fences: no migration,
   historical drain, provenance/evidence mutation, cleanup recovery or
-  invocation, schedule toggle, notification, or `source='db'` re-enable is
+  invocation, schedule toggle, notification, `source='db'` re-enable, or goal
+  admission from recovery, the retention observation or the Overture is
   introduced.
 - [ ] 4.2 Run the targeted scheduler, memory API, degraded-envelope, and
   frontend Overture/type suites; run the repository's required final quality

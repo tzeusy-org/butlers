@@ -1,5 +1,11 @@
 ## Context
 
+This change is re-scoped by `bu-kqnum.13.7` to the adopted RFC 0038 D2 and D18
+goal runtime before it archives, per the `generalist-lead-focused-delegation`
+collision disposition. Deterministic memory maintenance stays a job;
+consolidation, the one model-judgment maintenance path, submits partitioned
+obligation goals. No RFC decision changes here (see D6).
+
 `ensure_module_default_schedule()` currently runs from module startup before
 `sync_schedules()` has established which `[[butler.schedule]]` entries remain
 in the active TOML configuration. It flips any same-named `source='toml'` row
@@ -50,6 +56,10 @@ operation.
   catch-up/delete path.
 - Introducing a background job, startup side effect, migration, or automatic
   remediation based on the new statistics.
+- Admitting a goal, submitting an obligation admission, or starting a session
+  from recovery, the retention observation, or the Overture. Delivering the
+  consolidation obligation-admission path itself, which belongs to the
+  generalist change's domain conversion and hard switch.
 - Defining episode evidence/provenance behavior after deletion. That belongs to
   `bu-kqnum.13.4`; no retained source may be drained before its contract and
   implementation are complete.
@@ -197,6 +207,43 @@ authorization, restore proof, a fixed cutoff and dry run, bounded atomic
 batches, and a terminal provenance-aware notification before it changes live
 data. The ordinary cleanup handler MUST NOT be reused as an unbounded backfill.
 
+### D6 — Recovery is control plane; recovered schedules dispatch by their mode
+
+RFC 0038 D2 keeps deterministic jobs unchanged and turns prompt-carrying
+schedules into obligation admissions; D2 and D18 make memory consolidation an
+obligation goal of the memory-owning domain, one per tenant, source domain and
+partition (untainted owner-class episodes apart from all others). This change
+applies those decisions without amending them:
+
+- Recovery is a scheduler control-plane transition plus its audit. It admits
+  no goal, submits no obligation admission, calls no job function, and starts
+  no session. It runs at daemon startup outside any goal, so its audit entry
+  carries scheduler identity, not goal lineage.
+- A recovered row keeps its stored dispatch mode. Its next due occurrence
+  dispatches under the `core-scheduler` Dispatch Modes contract: a job-mode row
+  calls its deterministic job; a prompt-mode row submits one obligation
+  admission for that occurrence. Preserving `next_run_at` means recovery does
+  not backfill missed occurrences.
+- `memory_episode_cleanup`, `memory_decay_sweep`, `memory_purge_superseded`
+  and `memory_ann_observability` are deterministic jobs that never admit a
+  goal; this change converts no other registered memory or Chronicler default
+  either. Cleanup in particular stays a bounded deletion job;
+  the goal runtime gives it no model judgment and no new authority, and the
+  D1 recovery exclusion and D5 drain fence are unchanged.
+- `memory_consolidation` and `memory_consolidation_backfill` stay job-mode
+  rows whose handlers submit one obligation admission per
+  `(tenant_id, butler, partition)` with the git-declared consolidation
+  capability set, and pass no Spawner. Recovering either row therefore resumes
+  partitioned obligation goals at its preserved cadence; an empty pending set
+  admits no goal.
+- The expired-retention observation and the Overture are reads. They admit no
+  goal, and a retention-degraded status is not an obligation trigger.
+
+**Why this over a recovery-time catch-up admission:** admitting consolidation
+goals from startup would make recovery a hidden dispatch path and couple daemon
+boot to the control plane's availability. Leaving dispatch to the due
+occurrence keeps one admission path with occurrence-identity deduplication.
+
 ## Direct Reader and Contract Map
 
 | Boundary | Current authority / reader | Contract added here |
@@ -227,6 +274,8 @@ as a substitute for the complete-or-unknown `/api/memory/stats` observation.
 | Concurrent recovery attempts | At most one transition returns a row and produces an audit entry; all other attempts are no-ops. |
 | Audit insert fails | Roll back the transition; the pre-transition schedule state remains visible and no recovery audit exists. |
 | Process crash before commit | Neither transition nor audit is committed. |
+| Eligible `memory_consolidation` (or its backfill) recovered | Recovery admits no goal; at its next due occurrence the job submits one obligation admission per `(tenant_id, butler, partition)`, or none for an empty pending set. |
+| Any recovery or retention observation, control plane unavailable | Recovery and the observation still complete; neither depends on goal admission. |
 | Process crash after commit / later restart | The row is DB-owned and enabled; future registration is a no-op and emits no duplicate audit. |
 | A complete stats source has retained expired rows | Return its exact count/ratio and a degraded status; do not invoke cleanup. |
 | A retention stats source fails | Name it, mark fleet retention unknown, null fleet aggregate/ratio, and retain successful per-source evidence. |
@@ -242,6 +291,7 @@ as a substitute for the complete-or-unknown `/api/memory/stats` observation.
 | Cross-contract | Existing degraded-envelope contract confirms `retention_pools_failed` names failures without mutating ordinary `pools_failed` or catalog fields. |
 | Frontend | Types compile; Overture tests construct exact `RetentionSourceObservation` rows and render healthy, degraded, and unknown/incomplete retention states while retaining existing degraded notes. |
 | Scope guard | Static/review inspection confirms no migration, drain call, cleanup recovery/dispatch, schedule toggle endpoint, notification, provenance mutation, or historical data operation is introduced. |
+| Goal-runtime boundary | Recovery, the stats observation and the Overture admit no goal and start no session; cleanup stays a job; recovered consolidation's due run submits partitioned admissions (shared with the generalist domain-conversion tests). |
 | Spec | `openspec validate harden-memory-retention-schedule-recovery --strict` succeeds. |
 
 ## Risks / Trade-offs
