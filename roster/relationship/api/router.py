@@ -29,6 +29,7 @@ from butlers.api.deps import (
 )
 from butlers.api.pagination import Page, decode_cursor, encode_cursor
 from butlers.core import entity_graph_edges
+from butlers.core.audit_transaction import audit_transaction
 from butlers.credential_store import assert_entity_info_secured
 from butlers.entity_facts_channels import (
     TELEGRAM_HANDLE_PREFIX as _EF_TELEGRAM_HANDLE_PREFIX,
@@ -7425,7 +7426,7 @@ async def owner_identity_fact_decision(
     )
 
     pool = _pool(db)
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         try:
             result = await decide_identity_fact(
                 conn, entity_id=entity_id, fact_id=fact_id, decision=decision

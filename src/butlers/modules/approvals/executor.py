@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from butlers.core.audit_transaction import AuditTransactionError, audit_transaction
 from butlers.modules.approvals.events import ApprovalEventType, record_approval_event
 from butlers.modules.approvals.execution_context import (
     ApprovalExecutionContext,
@@ -121,7 +122,9 @@ def _parse_execution_result(raw_payload: Any) -> ExecutionResult | None:
 
 
 @asynccontextmanager
-async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
+async def _approval_write_transaction(
+    pool: Any, *, audit_owned: bool = False
+) -> AsyncIterator[Any]:
     """Yield a write target with a transaction when the runtime exposes one.
 
     Modules receive either an asyncpg pool/connection or the project's
@@ -136,18 +139,24 @@ async def _approval_write_transaction(pool: Any) -> AsyncIterator[Any]:
         async with acquire() as connection:
             transaction = getattr(connection, "transaction", None)
             if callable(transaction):
-                async with connection.transaction():
+                scope = audit_transaction(connection) if audit_owned else connection.transaction()
+                async with scope:
                     yield connection
             else:
+                if audit_owned:
+                    raise AuditTransactionError("Audit transaction state is unavailable")
                 yield connection
         return
 
     transaction = getattr(target, "transaction", None)
     if callable(transaction):
-        async with transaction():
+        scope = audit_transaction(target) if audit_owned else transaction()
+        async with scope:
             yield target
         return
 
+    if audit_owned:
+        raise AuditTransactionError("Audit transaction state is unavailable")
     yield target
 
 

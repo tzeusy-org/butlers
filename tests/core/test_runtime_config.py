@@ -54,6 +54,22 @@ def _make_row(
     }
 
 
+def _track_transaction_state(connection):
+    """Expose public state while retaining the existing boundary call assertions."""
+    connection.is_in_transaction = MagicMock(return_value=False)
+    transaction = connection.transaction.return_value
+
+    async def enter():
+        connection.is_in_transaction.return_value = True
+
+    async def leave(*exc):
+        connection.is_in_transaction.return_value = False
+        return False
+
+    transaction.__aenter__.side_effect = enter
+    transaction.__aexit__.side_effect = leave
+
+
 def _transaction_pool():
     """One connection stands in for this test's acquired transaction boundary."""
     pool = AsyncMock()
@@ -66,6 +82,7 @@ def _transaction_pool():
     transaction.__aexit__ = AsyncMock(return_value=False)
     pool.transaction = MagicMock(return_value=transaction)
     pool.fetchval = AsyncMock(return_value=1)
+    _track_transaction_state(pool)
     return pool
 
 
@@ -405,6 +422,7 @@ async def test_reconciliation_uses_existing_core_append_in_own_transaction(monke
     transaction.__aenter__ = AsyncMock()
     transaction.__aexit__ = AsyncMock(return_value=False)
     connection.transaction = MagicMock(return_value=transaction)
+    _track_transaction_state(connection)
     acquisition = MagicMock()
     acquisition.__aenter__ = AsyncMock(return_value=connection)
     acquisition.__aexit__ = AsyncMock(return_value=False)

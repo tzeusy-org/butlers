@@ -58,6 +58,7 @@ from pydantic import BaseModel
 from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.routers import audit
+from butlers.core.audit_transaction import audit_transaction
 from butlers.core.crypto import aes_gcm
 
 logger = logging.getLogger(__name__)
@@ -482,7 +483,7 @@ async def create_webhook(
     # The INSERT and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
     # state change — if either write fails, both roll back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         row = await conn.fetchrow(
             "INSERT INTO public.webhooks "
             "(id, endpoint, events, enabled, secret_encrypted, secret_prefix, "
@@ -600,7 +601,7 @@ async def update_webhook(
     # The UPDATE and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
     # state change — if either write fails, both roll back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         row = await conn.fetchrow(
             "UPDATE public.webhooks "
             "SET endpoint = $1, events = $2::jsonb, enabled = $3, secret_encrypted = $4, "
@@ -660,7 +661,7 @@ async def delete_webhook(
     # The DELETE and the audit append run inside the same transaction (acquired
     # connection + conn.transaction()) so the audit row is atomic with the
     # state change — if either write fails, both roll back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         result = await conn.execute(
             "DELETE FROM public.webhooks WHERE id = $1::uuid",
             str(webhook_id),
@@ -737,7 +738,7 @@ async def test_webhook(
     # same transaction (acquired connection + conn.transaction()) so the audit
     # row is atomic with the state change — if either write fails, both roll
     # back together.
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn, audit_transaction(conn):
         await conn.execute(
             "UPDATE public.webhooks SET last_test_at = now(), last_test_ok = $1 "
             "WHERE id = $2::uuid",

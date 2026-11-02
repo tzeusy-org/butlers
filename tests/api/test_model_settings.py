@@ -89,7 +89,7 @@ def _app_with_pool(
     pool_raises=None,
     fetchrow_side_effect=None,
 ):
-    mock_pool = AsyncMock()
+    mock_pool = AsyncMock(spec=asyncpg.Pool, is_closing=MagicMock(return_value=False))
     mock_pool.fetch = AsyncMock(return_value=[_mock_record(r) for r in (fetch_rows or [])])
     if fetchrow_side_effect is not None:
         mock_pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
@@ -105,6 +105,17 @@ def _app_with_pool(
             __aenter__=AsyncMock(return_value=None), __aexit__=AsyncMock(return_value=None)
         )
     )
+    mock_conn.is_in_transaction = MagicMock(return_value=False)
+
+    async def enter_transaction():
+        mock_conn.is_in_transaction.return_value = True
+
+    async def leave_transaction(*exc):
+        mock_conn.is_in_transaction.return_value = False
+        return False
+
+    mock_conn.transaction.return_value.__aenter__.side_effect = enter_transaction
+    mock_conn.transaction.return_value.__aexit__.side_effect = leave_transaction
     mock_conn.fetchrow = mock_pool.fetchrow
     mock_conn.fetchval = AsyncMock(
         side_effect=lambda sql, *args: (
@@ -1462,6 +1473,7 @@ class _OverrideStore:
 
             yield SimpleNamespace(
                 transaction=self.transaction,
+                is_in_transaction=lambda: self.in_transaction,
                 fetchrow=self.fetchrow,
                 execute=self.execute,
                 fetchval=self._append_audit,
@@ -1510,6 +1522,9 @@ class _OverrideStore:
         return [dict(row) for row in self.rows.values() if row["id"] in args[0]]
 
     async def execute(self, sql, *args):
+        if sql == "SELECT 1":
+            assert self.in_transaction
+            return "SELECT 1"
         assert self.in_transaction and "DELETE FROM public.butler_model_overrides" in sql
         if self.fail == "mutation":
             raise RuntimeError("synthetic mutation failure")

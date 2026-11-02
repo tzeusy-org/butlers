@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from butlers.config import RuntimeSeedConfig
 from butlers.core import audit
+from butlers.core.audit_transaction import audit_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -315,7 +316,7 @@ class RuntimeConfigAccessor:
         # Retain the conditional row lock through the canonical append and commit.
         # A failed audit cannot leave a reconciled configuration without its receipt.
         async with self._pool.acquire() as connection:
-            async with connection.transaction():
+            async with audit_transaction(connection):
                 audited = await connection.fetchrow(
                     f"""
                     WITH candidate AS MATERIALIZED (
