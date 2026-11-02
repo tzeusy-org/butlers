@@ -39,8 +39,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.audit_helpers import clear_audit_log_for_test
 
@@ -55,26 +53,11 @@ BASE_URL = "http://test"
 _TEST_KEY_HEX = bytes(range(32)).hex()
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the core writes and the switchboard registry they validate."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "switchboard"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
+async def audit_pool(db) -> asyncpg.Pool:
+    """The core writes plus the switchboard registry they validate."""
+    p = await db("core", "switchboard")
     await p.execute("TRUNCATE TABLE public.permissions CASCADE")
-    await p.execute("TRUNCATE TABLE public.webhooks CASCADE")
     await clear_audit_log_for_test(p)
     await p.execute(
         "INSERT INTO butler_registry (name, endpoint_url) VALUES ($1, $2) "
@@ -82,15 +65,14 @@ async def pool(postgres_container, migrated_db_url: str):
         "chronicler",
         "http://chronicler.test",
     )
-    yield p
-    await p.close()
+    return p
 
 
 @pytest.fixture
-def atomicity_app(pool: asyncpg.Pool) -> FastAPI:
+def atomicity_app(audit_pool: asyncpg.Pool) -> FastAPI:
     """FastAPI app whose permissions/webhooks routers are wired to the real pool."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.pool.return_value = pool
+    mock_db.pool.return_value = audit_pool
 
     application = create_app()
     application.dependency_overrides[get_db] = lambda: mock_db
@@ -108,7 +90,7 @@ async def _client(app: FastAPI) -> httpx.AsyncClient:
 
 
 async def test_permission_set_rolls_back_state_and_audit_together(
-    pool: asyncpg.Pool, atomicity_app: FastAPI
+    audit_pool: asyncpg.Pool, atomicity_app: FastAPI
 ) -> None:
     """When audit.append() fails mid-transaction, the permissions UPSERT is
     rolled back too — neither row is persisted."""
@@ -129,21 +111,21 @@ async def test_permission_set_rolls_back_state_and_audit_together(
     # The route does not catch this failure — it surfaces as HTTP 500.
     assert resp.status_code == 500
 
-    perm_count = await pool.fetchval(
+    perm_count = await audit_pool.fetchval(
         "SELECT count(*) FROM public.permissions WHERE butler = $1 AND permission = $2",
         "chronicler",
         "spawn",
     )
     assert perm_count == 0, "permissions row must roll back when the audit write fails"
 
-    audit_count = await pool.fetchval(
+    audit_count = await audit_pool.fetchval(
         "SELECT count(*) FROM public.audit_log WHERE action = 'permission.set'"
     )
     assert audit_count == 0, "audit row must not survive the rolled-back transaction"
 
 
 async def test_permission_set_commits_state_and_audit_together(
-    pool: asyncpg.Pool, atomicity_app: FastAPI
+    audit_pool: asyncpg.Pool, atomicity_app: FastAPI
 ) -> None:
     """On success, the permissions UPSERT and the audit row both commit."""
     with patch("butlers.api.routers.permissions.dispatch_event"):
@@ -155,7 +137,7 @@ async def test_permission_set_commits_state_and_audit_together(
 
     assert resp.status_code == 200
 
-    perm_row = await pool.fetchrow(
+    perm_row = await audit_pool.fetchrow(
         "SELECT granted, reason FROM public.permissions WHERE butler = $1 AND permission = $2",
         "chronicler",
         "spawn",
@@ -164,7 +146,7 @@ async def test_permission_set_commits_state_and_audit_together(
     assert perm_row["granted"] is True
     assert perm_row["reason"] == "atomicity commit test"
 
-    audit_row = await pool.fetchrow(
+    audit_row = await audit_pool.fetchrow(
         "SELECT actor, target, note FROM public.audit_log WHERE action = 'permission.set'"
     )
     assert audit_row is not None, "audit row must be persisted alongside the state change"
@@ -178,7 +160,7 @@ async def test_permission_set_commits_state_and_audit_together(
 
 
 async def test_webhook_create_rolls_back_state_and_audit_together(
-    pool: asyncpg.Pool, atomicity_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    audit_pool: asyncpg.Pool, atomicity_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When audit.append() fails mid-transaction, the webhooks INSERT is
     rolled back too — neither row is persisted."""
@@ -200,20 +182,20 @@ async def test_webhook_create_rolls_back_state_and_audit_together(
 
     assert resp.status_code == 500
 
-    webhook_count = await pool.fetchval(
+    webhook_count = await audit_pool.fetchval(
         "SELECT count(*) FROM public.webhooks WHERE endpoint = $1",
         "https://example.com/rollback-hook",
     )
     assert webhook_count == 0, "webhooks row must roll back when the audit write fails"
 
-    audit_count = await pool.fetchval(
+    audit_count = await audit_pool.fetchval(
         "SELECT count(*) FROM public.audit_log WHERE action = 'webhook.create'"
     )
     assert audit_count == 0, "audit row must not survive the rolled-back transaction"
 
 
 async def test_webhook_create_commits_state_and_audit_together(
-    pool: asyncpg.Pool, atomicity_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    audit_pool: asyncpg.Pool, atomicity_app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """On success, the webhooks INSERT and the audit row both commit."""
     monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
@@ -228,13 +210,13 @@ async def test_webhook_create_commits_state_and_audit_together(
     assert resp.status_code == 201
     webhook_id = resp.json()["data"]["id"]
 
-    webhook_row = await pool.fetchrow(
+    webhook_row = await audit_pool.fetchrow(
         "SELECT endpoint FROM public.webhooks WHERE id = $1::uuid", webhook_id
     )
     assert webhook_row is not None, "webhooks row must be persisted on success"
     assert webhook_row["endpoint"] == "https://example.com/commit-hook"
 
-    audit_row = await pool.fetchrow(
+    audit_row = await audit_pool.fetchrow(
         "SELECT target FROM public.audit_log WHERE action = 'webhook.create'"
     )
     assert audit_row is not None, "audit row must be persisted alongside the state change"
