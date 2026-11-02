@@ -53,6 +53,8 @@ from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -74,13 +76,6 @@ _OWNTRACKS_TOKEN_VALID = "a" * 64  # 64-char hex string
 # ---------------------------------------------------------------------------
 
 
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
-
-
 def _make_entity_info_row(
     *,
     info_type: str,
@@ -90,10 +85,10 @@ def _make_entity_info_row(
     last_test_ok: bool | None = True,
     last_test_code: int | None = None,
     last_test_message: str | None = None,
-) -> MagicMock:
+) -> Record:
     row_id = uuid4()
     eid = str(uuid4())
-    return _make_row(
+    return make_row(
         id=row_id,
         entity_id=eid,
         type=info_type,
@@ -130,17 +125,17 @@ def _make_shared_pool(
         # Raw token fetch by PK id (used by probe to get refresh token)
         if "entity_info" in sql and "WHERE id = $1" in sql:
             if raw_token_value is not None:
-                return _make_row(value=raw_token_value)
+                return make_row(value=raw_token_value)
             return None
         # HA URL lookup via owner entity
         if "home_assistant_url" in sql:
             if ha_url_value is not None:
-                return _make_row(value=ha_url_value)
+                return make_row(value=ha_url_value)
             return None
         # Steam primary account SteamID
         if "steam_accounts" in sql and "is_primary" in sql:
             if steam_id_value is not None:
-                return _make_row(steam_id=int(steam_id_value))
+                return make_row(steam_id=int(steam_id_value))
             return None
         # Full entity_info row (used by _fetch_single_user_secret)
         if "entity_info" in sql or "entities" in sql:
@@ -634,7 +629,7 @@ class TestOwnTracksSystemProbe:
                 if args and args[0] == "owntracks_webhook_token":
                     # Full row for _fetch_single_system_secret
                     if "secret_value" in sql:
-                        return _make_row(
+                        return make_row(
                             secret_key="owntracks_webhook_token",
                             secret_value=token_value,
                             category="owntracks",

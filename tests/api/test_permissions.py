@@ -26,6 +26,8 @@ from httpx import ASGITransport, AsyncClient
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.core.permissions import ENFORCED_PERMISSIONS
+from butlers.testing.fake_pool import FakePool, fake_pool
+from butlers.testing.records import records
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -39,77 +41,29 @@ def _provide(value):
 _ENFORCED_SORTED = sorted(ENFORCED_PERMISSIONS)
 
 
-def _make_records(rows: list[dict]) -> list[MagicMock]:
-    records = []
-    for row in rows:
-        m = MagicMock()
-        m.__getitem__ = MagicMock(side_effect=lambda k, _r=row: _r[k])
-        records.append(m)
-    return records
-
-
-class _NullTxCtx:
-    """No-op async context manager standing in for ``conn.transaction()``."""
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False  # never suppress — let exceptions propagate/rollback
-
-
-class _AcquireCtx:
-    """Async context manager standing in for ``pool.acquire()``.
-
-    Yields *conn* (the same mock as the pool itself) so existing assertions
-    against ``pool.execute``/``pool.fetchrow`` keep working unchanged even
-    though the route now issues those calls via an acquired connection.
-    """
-
-    def __init__(self, conn):
-        self._conn = conn
-
-    async def __aenter__(self):
-        return self._conn
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-
-def _make_pool(
+def _permissions_pool(
     rows: list[dict] | None = None,
     butler_rows: list[dict] | None = None,
     registered: bool = True,
-) -> AsyncMock:
-    """Return an asyncpg pool mock wired for two sequential fetch calls.
+) -> FakePool:
+    """Return a fake pool wired for two sequential fetch calls.
 
     GET /api/permissions calls pool.fetch twice:
       1. butler_registry query  → butler_rows
       2. public.permissions query → rows
     PUT /api/permissions reads the live butler registry through pool.fetchval,
-    then performs its mutation through the acquired connection.
-
-    ``pool.acquire()`` yields the pool mock itself as "conn" (see
-    ``_AcquireCtx``) and ``pool.transaction()`` is a no-op context manager, so
-    the route's ``async with pool.acquire() as conn, conn.transaction():``
-    exercises the same ``execute``/``fetchrow`` mocks asserted on below.
+    then performs its mutation through the acquired connection, whose
+    ``execute``/``fetchrow`` mocks are the pool's own.
     """
-    pool = AsyncMock()
-    pool.execute = AsyncMock(return_value=None)
-    pool.fetchval = AsyncMock(return_value=registered)
-    pool.fetchrow = AsyncMock(return_value=None)
-    pool.fetch = AsyncMock(
-        side_effect=[
-            _make_records(butler_rows or []),
-            _make_records(rows or []),
-        ]
+    return fake_pool(
+        execute=None,
+        fetchval=registered,
+        fetchrow=None,
+        fetch=AsyncMock(side_effect=[records(butler_rows or []), records(rows or [])]),
     )
-    pool.acquire = MagicMock(return_value=_AcquireCtx(pool))
-    pool.transaction = MagicMock(return_value=_NullTxCtx())
-    return pool
 
 
-def _make_db(pool: AsyncMock) -> MagicMock:
+def _make_db(pool: FakePool) -> MagicMock:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
     return db
@@ -133,7 +87,7 @@ def clear_overrides(app):
 
 async def test_get_permissions_empty_matrix(app):
     """With no butlers and no rows the cells dict is empty; perms = enforced set."""
-    pool = _make_pool(rows=[], butler_rows=[])
+    pool = _permissions_pool(rows=[], butler_rows=[])
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -160,7 +114,7 @@ async def test_get_permissions_dense_matrix_enforced_perms(app):
             "updated_at": now,
         },
     ]
-    pool = _make_pool(rows=perm_rows, butler_rows=butler_rows)
+    pool = _permissions_pool(rows=perm_rows, butler_rows=butler_rows)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -211,7 +165,7 @@ async def test_get_permissions_inherited_false_after_explicit_row(app):
             "updated_at": now,
         },
     ]
-    pool = _make_pool(rows=perm_rows, butler_rows=butler_rows)
+    pool = _permissions_pool(rows=perm_rows, butler_rows=butler_rows)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -243,7 +197,7 @@ async def test_get_permissions_butler_only_in_perm_rows(app):
             "updated_at": now,
         },
     ]
-    pool = _make_pool(rows=perm_rows, butler_rows=[])
+    pool = _permissions_pool(rows=perm_rows, butler_rows=[])
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -275,7 +229,7 @@ async def test_get_permissions_503_when_no_switchboard(app):
 
 async def test_put_permission_success(app):
     """Successful update returns 200 and calls audit.append."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -316,7 +270,7 @@ async def test_put_permission_success(app):
 
 async def test_put_permission_rejects_non_enforced_permission_before_writing(app):
     """The writable route cannot mint decorative, non-runtime permission rows."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -334,7 +288,7 @@ async def test_put_permission_rejects_non_enforced_permission_before_writing(app
 
 async def test_put_permission_rejects_unregistered_butler_before_writing(app):
     """Only live registry members can receive an explicit permission override."""
-    pool = _make_pool(registered=False)
+    pool = _permissions_pool(registered=False)
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -362,7 +316,7 @@ async def test_put_permission_rejects_unregistered_butler_before_writing(app):
 
 async def test_put_permission_empty_reason_returns_422(app):
     """Empty reason returns HTTP 422 with {error: reason_required}."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -379,7 +333,7 @@ async def test_put_permission_empty_reason_returns_422(app):
 
 async def test_put_permission_whitespace_reason_returns_422(app):
     """Whitespace-only reason returns HTTP 422 with {error: reason_required}."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -401,7 +355,7 @@ async def test_put_permission_missing_reason_returns_422(app):
     missing field defaults to "" and still yields the spec-mandated body shape
     rather than a generic Pydantic "field required" error.
     """
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -451,7 +405,7 @@ def test_validate_no_secrets_rejects_credential_patterns():
 
 async def test_put_permission_credential_reason_returns_422(app):
     """Reason matching a credential pattern → 422 reason_contains_credential."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -483,7 +437,7 @@ async def test_put_permission_credential_reason_no_state_change(app):
         "SECRET bearer",
     ]
     for reason in credential_reasons:
-        pool = _make_pool()
+        pool = _permissions_pool()
         db = _make_db(pool)
         app.dependency_overrides[get_db] = _provide(db)
 
@@ -500,7 +454,7 @@ async def test_put_permission_credential_reason_no_state_change(app):
 
 async def test_put_permission_clean_reason_still_succeeds(app):
     """A reason with no credential keywords still goes through normally."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
@@ -530,7 +484,7 @@ async def test_put_permission_clean_reason_still_succeeds(app):
 
 async def test_put_permission_dispatches_event_on_success(app):
     """PUT /api/permissions calls dispatch_event with permission.set on success."""
-    pool = _make_pool()
+    pool = _permissions_pool()
     db = _make_db(pool)
     app.dependency_overrides[get_db] = lambda: db
 
