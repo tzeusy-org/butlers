@@ -27,7 +27,7 @@ Scope: v1-mandatory
 - **WHEN** the skill guides an import of a CSV
 - **THEN** the runtime MUST first call `import_transactions(storage_ref, dry_run=true)` and review `detected_format`, `error_details`, and `preview`
 - **AND** it MUST then call `import_transactions(storage_ref)` without `dry_run`, passing the same `column_map` and `currency` when one was needed
-- **AND** when the response has `status="unrecognized_format"`, it MUST build an explicit `column_map` from the returned `headers` and `missing_columns`, asking the owner only when the headers leave the mapping ambiguous
+- **AND** when the response has `status="unrecognized_format"`, it MUST build an explicit `column_map` from the returned `headers` and `missing_columns`, asking the owner only when the headers leave the mapping ambiguous or `headers_truncated` is true
 - **AND** when the dry-run `preview` is empty, it MUST NOT run the import
 - **AND** when no `column_map` can express the file's sign convention, it MUST report that to the owner instead of importing amounts with the wrong direction
 - **AND** it MUST attempt at most 3 dry-run previews before reporting failure to the user

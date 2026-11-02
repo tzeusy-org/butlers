@@ -136,6 +136,9 @@ import_transactions(
   recognized; check whether another header is the real date column.
 - Ask the user only when `headers` leaves the choice ambiguous (two plausible
   columns for one key, or none that fits). Never read the file to find out.
+- If `headers_truncated` is true, the echoed headers were capped (at most 50
+  names of 100 characters each), so the list may be incomplete. Do not guess:
+  ask the user which columns hold the date, amount, and merchant.
 
 **Sign convention you cannot fix.** `column_map` chooses columns; it does not
 flip signs. If the preview shows every charge as `credit` (common for
