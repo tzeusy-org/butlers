@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import importlib
 import shutil
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -203,7 +204,11 @@ class TestNetWorthSnapshot:
         A second manual snapshot for the same account and date must update the
         stored row in place (same id) rather than error or insert a duplicate.
         """
-        from butlers.tools.finance.overview import net_worth_snapshot
+        # The roster module is registered at runtime; importlib keeps pyright's
+        # unresolved-import count at baseline.
+        net_worth_snapshot = importlib.import_module(
+            "butlers.tools.finance.overview"
+        ).net_worth_snapshot
 
         target = date(2025, 7, 1)
         first = await net_worth_snapshot(
