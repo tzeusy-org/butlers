@@ -18,7 +18,7 @@
 // ---------------------------------------------------------------------------
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { cleanup, render as renderDom, screen, waitFor, act } from "@testing-library/react";
+import { cleanup, render as renderDom, screen, waitFor, act, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useButlerHeartbeats } from "@/hooks/use-system";
 import type { ButlerHeartbeat } from "@/api/types";
@@ -499,24 +499,41 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
     try {
       const view = renderDom(<QueryClientProvider client={client}><MemoryRouter><ButlerHeartbeatTile /></MemoryRouter></QueryClientProvider>);
       await waitFor(() => expect(screen.getByRole("link", {name: "View service-0"}).querySelectorAll("dd")[0]?.textContent).toBe("healthy"));
+      const indexVisibleRows = () => {
+        const links = new Map<string, HTMLElement[]>();
+        for (const link of screen.getAllByRole("link")) {
+          const label = link.getAttribute("aria-label");
+          if (label !== null) links.set(label, [...(links.get(label) ?? []), link]);
+        }
+        return links;
+      };
+      let visibleRows = indexVisibleRows();
+      const rowFor = (name: string) => {
+        const matches = visibleRows.get(`View ${name}`) ?? [];
+        expect(matches, `one visible row for ${name}`).toHaveLength(1);
+        const item = matches[0].closest("li");
+        expect(item, `list item for ${name}`).not.toBeNull();
+        return within(item!).getByRole("link", {name: `View ${name}`});
+      };
       for (const entry of facts) {
-        const row = screen.getByRole("link", {name: `View ${entry.name}`});
+        const row = rowFor(entry.name);
         const values = [...row.querySelectorAll("dd")].map((value) => value.textContent);
         expect.soft(values, entry.name).toEqual([entry.observation_state, entry.administrative_policy, entry.route_compatibility, entry.effective_eligibility]
           .map((value) => !value || value.startsWith("new-") ? "unknown" : value.replaceAll("_", " ")));
       }
-      expect.soft([...screen.getByRole("link", {name: "View Case"}).querySelectorAll("dd")].map((value) => value.textContent), "missing exact-name facts").toEqual(["unknown", "unknown", "unknown", "unknown"]);
-      expect(screen.getByRole("link", {name: "View schema-only"}).textContent).toContain("unreachable");
-      expect(screen.getByRole("link", {name: "View service-0"}).textContent).toContain("2001-01-01T00:00:00Z");
-      expect(screen.getByRole("link", {name: "View service-0"}).textContent).toContain("Last probe attempt");
+      expect.soft([...rowFor("Case").querySelectorAll("dd")].map((value) => value.textContent), "missing exact-name facts").toEqual(["unknown", "unknown", "unknown", "unknown"]);
+      expect(rowFor("schema-only").textContent).toContain("unreachable");
+      expect(rowFor("service-0").textContent).toContain("2001-01-01T00:00:00Z");
+      expect(rowFor("service-0").textContent).toContain("Last probe attempt");
       expect(calls).toEqual([{url: "/api/system/butlers/heartbeat", method: "GET"}]);
       await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
       await waitFor(() => expect(calls).toHaveLength(2));
       expect(calls.every((entry) => entry.url === "/api/system/butlers/heartbeat" && entry.method === "GET")).toBe(true);
       vi.mocked(useButlerStatusBoard).mockReturnValue({rows: [], needsYou: [], aggregates: makeAggregates({isError: true})});
       view.rerender(<QueryClientProvider client={client}><MemoryRouter><ButlerHeartbeatTile /></MemoryRouter></QueryClientProvider>);
+      visibleRows = indexVisibleRows();
       expect(screen.getByText("Board activity unavailable.").textContent).toContain("unavailable");
-      expect(screen.getByRole("link", {name: "View schema-only"}).querySelectorAll("dd")[0]?.textContent).toBe("healthy");
+      expect(rowFor("schema-only").querySelectorAll("dd")[0]?.textContent).toBe("healthy");
     } finally { cleanup(); client.clear(); vi.useRealTimers(); }
   });
 });
