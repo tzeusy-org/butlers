@@ -187,8 +187,16 @@ def test_the_per_tool_allowlist_applies_to_the_parser_record() -> None:
     assert _SENTINEL not in _persisted(merged)
 
 
-def test_runtime_shell_commands_keep_their_raw_input() -> None:
-    record = {"id": "c1", "name": "command_execution", "input": {"command": "ls -1"}}
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"id": "c1", "name": "command_execution", "input": {"command": "ls -1"}},
+        {"id": "c2", "name": "Agent", "builtin": True, "input": {"prompt": "run", "x": 1}},
+    ],
+    ids=["codex-shell", "claude-builtin"],
+)
+def test_runtime_native_tools_keep_their_raw_input(record: dict[str, Any]) -> None:
+    """Runtime-native work (shell, Claude built-ins) has no butler capture allowlist."""
 
     merged = _merge_tool_call_records([record], [], butler_name="finance")
 

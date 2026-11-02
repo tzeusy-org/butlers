@@ -22,8 +22,8 @@ from butlers.mcp_wrappers import (
     _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL,
 )
 
-# Runtime-reported records of these tools keep their raw input: they are shell commands the
-# runtime ran itself, not butler MCP tools with a capture allowlist.
+# Runtime-reported records of these tools, and Claude built-ins (tagged ``builtin``), keep their
+# raw input: they are work the runtime ran itself, not butler MCP tools with a capture allowlist.
 _RAW_INPUT_TOOL_NAMES = frozenset({"command_execution"})
 _RAW_INPUT_KEYS = ("input", "args", "arguments", "parameters")
 
@@ -156,7 +156,11 @@ def _strip_parsed_input(call: dict[str, Any], butler_name: str) -> dict[str, Any
     raw_name = str(normalized.get("name", "") or "")
     # The stored name stays as reported: the merge normalizes it exactly once.
     name = _normalize_tool_name(raw_name, butler_name)
-    if name in _RAW_INPUT_TOOL_NAMES or raw_name in _RAW_INPUT_TOOL_NAMES:
+    if (
+        normalized.get("builtin") is True
+        or name in _RAW_INPUT_TOOL_NAMES
+        or raw_name in _RAW_INPUT_TOOL_NAMES
+    ):
         return normalized
     payload = _payload_for_signature(normalized)
     has_raw_input = any(key in normalized for key in _RAW_INPUT_KEYS)
