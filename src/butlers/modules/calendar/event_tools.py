@@ -32,6 +32,13 @@ if TYPE_CHECKING:
     from . import CalendarModule
 
 
+def _create_boundary(value: date | datetime | str) -> date | datetime:
+    """Restore a replayed ISO boundary; a bare date stays an all-day date."""
+    if not isinstance(value, str):
+        return value
+    return date.fromisoformat(value) if len(value) == 10 else datetime.fromisoformat(value)
+
+
 def register_event_tools(
     module: CalendarModule, mcp: Any, _tool: Callable[..., Any], butler_name: str
 ) -> None:
@@ -65,12 +72,39 @@ def register_event_tools(
         Fail-closed: provider errors return a structured error dict rather than
         silently dropping the mutation (spec section 4.4 / 15.2).
         """
+        # An approved overlap replay passes the parked ISO strings back in.
+        start_at = _create_boundary(start_at)
+        end_at = _create_boundary(end_at)
         await module._require_calendar_write_permission()
         provider = module._require_provider()
         resolved_calendar_id = module._resolve_calendar_id(calendar_id, for_create=True)
         resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
         normalized_request_id = module._normalize_request_id(request_id)
         resolved_entity_ids = entity_ids or []
+        # The exact call an overlap approval parks; replaying it rebuilds the
+        # same dict, so only the executor's context for it opens the gate.
+        overlap_args = {
+            "title": title,
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+            "all_day": all_day,
+            "timezone": timezone,
+            "description": description,
+            "body": body,
+            "location": location,
+            "attendees": attendees or [],
+            "recurrence_rule": recurrence_rule,
+            "notification": notification,
+            "status": status,
+            "visibility": visibility,
+            "notes": notes,
+            "color_id": color_id,
+            # Bind the calendar the owner is shown, not "resolve later".
+            "calendar_id": resolved_calendar_id,
+            "conflict_policy": resolved_conflict_policy,
+            "entity_ids": [str(e) for e in resolved_entity_ids],
+            "request_id": request_id,
+        }
         action_payload = {
             "title": title,
             "start_at": start_at,
@@ -94,6 +128,8 @@ def register_event_tools(
             action_type="workspace_user_create",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_create_event",
+            tool_args=overlap_args,
         )
         if replay is not None:
             return replay
@@ -180,27 +216,7 @@ def register_event_tools(
         if conflict_result["status"] == "allow_overlap":
             approval_result = await module._gate_overlap_approval(
                 tool_name="calendar_create_event",
-                tool_args={
-                    "title": title,
-                    "start_at": start_at.isoformat(),
-                    "end_at": end_at.isoformat(),
-                    "all_day": all_day,
-                    "timezone": timezone,
-                    "description": description,
-                    "body": body,
-                    "location": location,
-                    "attendees": attendees or [],
-                    "recurrence_rule": recurrence_rule,
-                    "notification": notification,
-                    "status": status,
-                    "visibility": visibility,
-                    "notes": notes,
-                    "color_id": color_id,
-                    # Bind the calendar the owner is shown, not "resolve later".
-                    "calendar_id": resolved_calendar_id,
-                    "conflict_policy": resolved_conflict_policy,
-                    "entity_ids": [str(e) for e in resolved_entity_ids],
-                },
+                tool_args=overlap_args,
                 conflicts=conflict_result["conflicts"],
                 provider_name=provider.name,
                 resolved_calendar_id=resolved_calendar_id,
@@ -393,6 +409,13 @@ def register_event_tools(
         )
         resolved_conflict_policy = module._resolve_conflict_policy(conflict_policy)
         normalized_request_id = module._normalize_request_id(request_id)
+        # The canonical call an overlap approval parks, with the calendar and
+        # policy the owner is shown bound in; replay rebuilds the same dict.
+        overlap_args = {
+            **approval_args,
+            "calendar_id": resolved_calendar_id,
+            "conflict_policy": resolved_conflict_policy,
+        }
         action_payload = {
             "event_id": normalized_event_id,
             "title": title,
@@ -416,6 +439,8 @@ def register_event_tools(
             action_type="workspace_user_update",
             request_id=normalized_request_id,
             action_payload=action_payload,
+            tool_name="calendar_update_event",
+            tool_args=overlap_args,
         )
         if replay is not None:
             return replay
@@ -586,28 +611,7 @@ def register_event_tools(
             if conflict_result["status"] == "allow_overlap":
                 approval_result = await module._gate_overlap_approval(
                     tool_name="calendar_update_event",
-                    tool_args={
-                        "event_id": event_id,
-                        "title": title,
-                        "start_at": start_at.isoformat() if start_at else None,
-                        "end_at": end_at.isoformat() if end_at else None,
-                        "all_day": all_day,
-                        "timezone": timezone,
-                        "description": description,
-                        "body": body,
-                        "location": location,
-                        "attendees": attendees,
-                        "recurrence_rule": recurrence_rule,
-                        "recurrence_scope": recurrence_scope,
-                        "color_id": color_id,
-                        # Bind the calendar the owner is shown, not "resolve later".
-                        "calendar_id": resolved_calendar_id,
-                        "conflict_policy": resolved_conflict_policy,
-                        "entity_ids": (
-                            [str(e) for e in entity_ids] if entity_ids is not None else None
-                        ),
-                        "clear_entity_ids": clear_entity_ids,
-                    },
+                    tool_args=overlap_args,
                     conflicts=conflict_result["conflicts"],
                     provider_name=provider.name,
                     resolved_calendar_id=resolved_calendar_id,

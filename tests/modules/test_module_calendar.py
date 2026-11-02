@@ -4229,6 +4229,102 @@ class TestCalendarApprovalAuthority:
         handler.assert_awaited_once()
         assert handler.await_args.kwargs["calendar_id"] == "cal-seen"
 
+    @pytest.mark.parametrize("tool_name", ["calendar_create_event", "calendar_update_event"])
+    async def test_approved_overlap_replay_executes_once_and_only_under_its_context(
+        self, tool_name
+    ):
+        """An approved overlap write runs once on replay instead of re-parking,
+        while any other caller -- including a context bound to different
+        arguments -- still parks."""
+        from butlers.modules.approvals.execution_context import (
+            ApprovalExecutionContext,
+            approval_tool_args_digest,
+            reset_approval_execution_context,
+            set_approval_execution_context,
+        )
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        existing = _make_event(event_id="evt-1", title="BUTLER: Team Sync")
+        provider = _ProviderDouble(
+            event=existing,
+            conflicts=[
+                _make_event(
+                    event_id="busy-1",
+                    title="(busy)",
+                    start_at=datetime(2026, 2, 20, 16, 30, tzinfo=UTC),
+                    end_at=datetime(2026, 2, 20, 17, 30, tzinfo=UTC),
+                )
+            ],
+        )
+        mcp = FastMCP("calendar-overlap-replay")
+        mod = CalendarModule()
+        mod._provider = provider
+        mod._resolved_calendar_id = "primary"
+        await mod.register_tools(
+            mcp=mcp,
+            config={
+                "provider": "google",
+                "calendar_id": "primary",
+                "conflicts": {"policy": "allow_overlap", "require_approval_for_overlap": True},
+            },
+            db=SimpleNamespace(db_name="butlers", db_schema="general"),
+            butler_name="test-butler",
+        )
+        pool = _CalendarApprovalRow()
+
+        async def enqueue(name, args, agent_summary):
+            pool.park(name, args)
+            return str(pool.row["id"])
+
+        mod.set_approval_enqueuer(enqueue)
+        tool = await tool_fn(mcp, tool_name)
+        call: dict[str, Any] = {
+            "title": "Team Sync",
+            "start_at": datetime(2026, 2, 20, 16, tzinfo=UTC),
+            "end_at": datetime(2026, 2, 20, 17, tzinfo=UTC),
+            "request_id": "overlap-1",
+        }
+        if tool_name == "calendar_update_event":
+            call["event_id"] = "evt-1"
+        # Keep the pending-row door real: the parked row resumes only for the
+        # executor's context; the other projection seams are doubles.
+        mod._load_projection_action = AsyncMock(return_value=None)
+        mod._record_projection_action = AsyncMock()
+
+        def writes():
+            return provider.create_calls + provider.update_calls
+
+        parked = await tool(**call)
+        assert parked["status"] == "approval_required"
+        stored = pool.row["tool_args"]
+        mod._load_projection_action.return_value = ("pending", parked, None)
+
+        # A context approving different arguments must not open this gate.
+        foreign = ApprovalExecutionContext(
+            action_id=uuid.uuid4(),
+            session_id=None,
+            actor="owner",
+            tool_name=tool_name,
+            tool_args_digest=approval_tool_args_digest({**stored, "title": "Other"}),
+            authorized_task=asyncio.current_task(),
+        )
+        token = set_approval_execution_context(foreign)
+        try:
+            assert (await tool(**call))["status"] == "pending"
+            # Past the pending row, the overlap gate itself still parks.
+            mod._load_projection_action.return_value = None
+            assert (await tool(**call))["status"] == "approval_required"
+            mod._load_projection_action.return_value = ("pending", parked, None)
+        finally:
+            reset_approval_execution_context(token)
+        assert writes() == []
+
+        pool.row.update(status="approved", decided_by="owner")
+        outcome = await execute_approved_action(pool, pool.row["id"], tool_name, stored, tool)
+        assert outcome.success, outcome.error
+        assert outcome.result["status"] != "approval_required"
+        assert len(writes()) == 1
+
 
 class _CalendarApprovalRow:
     """Single-row JSON storage double; PostgreSQL owns concurrency verification."""

@@ -195,9 +195,11 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   to `fail`).
 - With `allow_overlap` and `conflicts.require_approval_for_overlap = true`, an overlapping write
   returns `status="approval_required"` and queues a `pending_actions` row carrying the executable
-  tool name and args; a replay with `approval_action_id` bypasses re-queue only when that action is
-  `approved` for the same tool. With approvals unavailable it returns `approval_unavailable` and
-  never writes.
+  tool name and args (the bound calendar, resolved policy and `request_id` included). The gate opens
+  only while the approvals executor replays that exact call (`get_approval_execution_context` for
+  the tool name and argument digest; for `calendar_update_event` the canonical
+  `calendar_approval_args` form), so an approved overlap write runs once instead of re-parking.
+  With approvals unavailable it returns `approval_unavailable` and never writes.
 - Malformed provider payloads raise `ValueError`; `CalendarAuthError` is reserved for auth and
   transport failures. `src/butlers/modules/calendar/google.py::_GoogleProvider` validates credentials
   before creating its owned `httpx.AsyncClient`, so a credential error cannot leak a client.
