@@ -76,6 +76,8 @@ from butlers.api.routers.secrets_v2 import (
     get_inventory,
     resolve_staleness_window_s,
 )
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -106,13 +108,6 @@ def _freeze_time(frozen_now: datetime = _FROZEN_NOW):
         yield frozen_now
 
 
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
-
-
 def _make_system_row(
     *,
     key: str = "SOME_API_KEY",
@@ -124,8 +119,8 @@ def _make_system_row(
     last_test_code: int | None = None,
     last_test_message: str | None = None,
     expires_at: datetime | None = None,
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return make_row(
         secret_key=key,
         secret_value=value,
         category=category,
@@ -151,10 +146,10 @@ def _make_entity_info_row(
     last_test_ok: bool | None = None,
     last_test_code: int | None = None,
     last_test_message: str | None = None,
-) -> MagicMock:
+) -> Record:
     row_id = uuid4()
     eid = entity_id or str(uuid4())
-    return _make_row(
+    return make_row(
         id=row_id,
         entity_id=eid,
         type=info_type,
@@ -1460,7 +1455,7 @@ def test_inventory_probe_log_lru_attached():
     system_row = _make_system_row(key="KEY1", value="v1", last_test_ok=True)
     # Bulk probe rows must include credential_key so _row_to_test_result can
     # build the dict {credential_key: TestResult}.
-    probe_row_bulk = _make_row(
+    probe_row_bulk = make_row(
         credential_key="KEY1", ok=True, code=200, message=None, recorded_at=_NOW, latency_ms=None
     )
     mock_db = _make_db_manager(
@@ -1743,7 +1738,7 @@ async def test_fetch_probe_log_returns_none(fetchrow_result):
 
 async def test_fetch_probe_log_returns_test_result_when_row_exists():
     """When a probe row exists, returns a TestResult with ok/code/message/at."""
-    row = _make_row(ok=True, code=200, message=None, recorded_at=_NOW, latency_ms=None)
+    row = make_row(ok=True, code=200, message=None, recorded_at=_NOW, latency_ms=None)
     pool = AsyncMock()
     pool.fetchrow = AsyncMock(return_value=row)
 
@@ -1981,7 +1976,7 @@ def test_row_to_test_result_maps_fields_and_handles_none_message():
     """_row_to_test_result maps ok/code/message/recorded_at/latency_ms and tolerates a None message."""
     # Freeze the formatter's clock so "now" and recorded_at are on the same
     # calendar day regardless of when CI runs.
-    row = _make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW, latency_ms=42)
+    row = make_row(ok=True, code=200, message="all good", recorded_at=_FROZEN_NOW, latency_ms=42)
     with _freeze_time():
         result = _row_to_test_result(row)
     assert result.ok is True
@@ -1993,9 +1988,7 @@ def test_row_to_test_result_maps_fields_and_handles_none_message():
     assert result.latency_ms == 42
 
     none_msg = _row_to_test_result(
-        _make_row(
-            ok=True, code=200, message=None, recorded_at=datetime.now(tz=UTC), latency_ms=None
-        )
+        make_row(ok=True, code=200, message=None, recorded_at=datetime.now(tz=UTC), latency_ms=None)
     )
     assert none_msg.message is None
     assert none_msg.latency_ms is None
@@ -2009,10 +2002,10 @@ def test_row_to_test_result_maps_fields_and_handles_none_message():
 async def test_fetch_probe_logs_bulk_returns_dict_for_all_keys():
     """Bulk query returns a dict with one TestResult entry per key that has a probe."""
     _now = datetime.now(tz=UTC)
-    row_a = _make_row(
+    row_a = make_row(
         credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now, latency_ms=None
     )
-    row_b = _make_row(
+    row_b = make_row(
         credential_key="KEY_B",
         ok=False,
         code=500,
@@ -2037,7 +2030,7 @@ async def test_fetch_probe_logs_bulk_returns_dict_for_all_keys():
 async def test_fetch_probe_logs_bulk_omits_keys_with_no_probe():
     """Keys with no probe row are absent from the result dict (caller treats as None)."""
     _now = datetime.now(tz=UTC)
-    row_a = _make_row(
+    row_a = make_row(
         credential_key="KEY_A", ok=True, code=200, message=None, recorded_at=_now, latency_ms=None
     )
 
@@ -2091,10 +2084,10 @@ def test_inventory_probe_results_match_per_row_expectations():
     system_row_fail = _make_system_row(key="FAIL_KEY", value="v2", last_test_ok=False)
 
     # Bulk probe rows keyed by credential_key
-    probe_row_ok = _make_row(
+    probe_row_ok = make_row(
         credential_key="API_KEY", ok=True, code=200, message=None, recorded_at=_now, latency_ms=None
     )
-    probe_row_fail = _make_row(
+    probe_row_fail = make_row(
         credential_key="FAIL_KEY",
         ok=False,
         code=401,
@@ -2960,15 +2953,15 @@ def test_infer_provider_from_type_bridges_catalogue_alias_spellings():
 
 async def test_fetch_scopes_required_by_provider_unions_across_features():
     """Scopes required is the union of every catalogue row's required_scopes for a provider."""
-    row_a = _make_row(
+    row_a = make_row(
         provider="google",
         required_scopes=["https://www.googleapis.com/auth/calendar"],
     )
-    row_b = _make_row(
+    row_b = make_row(
         provider="google",
         required_scopes=["https://www.googleapis.com/auth/gmail.modify"],
     )
-    row_c = _make_row(provider="spotify", required_scopes=[])
+    row_c = make_row(provider="spotify", required_scopes=[])
 
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=[row_a, row_b, row_c])
@@ -2996,16 +2989,8 @@ async def test_fetch_scopes_required_by_provider_empty_on_missing_table():
 async def test_fetch_google_granted_scopes_returns_real_per_account_scopes():
     """scopes_granted for Google comes from public.google_accounts.granted_scopes."""
     eid = str(uuid4())
-    row = _make_row(
-        entity_id=uuid4(), granted_scopes=["https://www.googleapis.com/auth/gmail.modify"]
-    )
     # entity_id in the row must round-trip via str() to match the lookup key.
-    row.__getitem__ = MagicMock(
-        side_effect=lambda k: {
-            "entity_id": eid,
-            "granted_scopes": ["https://www.googleapis.com/auth/gmail.modify"],
-        }[k]
-    )
+    row = make_row(entity_id=eid, granted_scopes=["https://www.googleapis.com/auth/gmail.modify"])
 
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=[row])
@@ -3026,7 +3011,7 @@ async def test_fetch_google_test_mode_expiry_computes_seven_day_window():
     """A test-mode account's synthetic expiry is last_token_refresh_at + 7d."""
     eid = str(uuid4())
     refreshed_at = _NOW - timedelta(days=3)
-    row = _make_row(entity_id=eid, last_token_refresh_at=refreshed_at)
+    row = make_row(entity_id=eid, last_token_refresh_at=refreshed_at)
 
     pool = AsyncMock()
     pool.fetch = AsyncMock(return_value=[row])
@@ -3054,13 +3039,13 @@ async def test_fetch_google_test_mode_expiry_empty_when_table_missing():
 
 async def test_fetch_audit_bulk_returns_recent_rows_per_target_newest_first():
     """Bulk audit fetch returns real audit_log rows, newest first, per target."""
-    older = _make_row(
+    older = make_row(
         target="u:google", ts=_NOW - timedelta(hours=2), actor="owner", action="verified", note=None
     )
-    newer = _make_row(
+    newer = make_row(
         target="u:google", ts=_NOW, actor="owner", action="rotated", note="manual rotate"
     )
-    other = _make_row(
+    other = make_row(
         target="s:BUTLER_TELEGRAM_TOKEN", ts=_NOW, actor="owner", action="set", note=None
     )
 
@@ -3102,7 +3087,7 @@ async def test_fetch_cli_secrets_includes_real_issued_and_expires():
     """CliRuntime.issued/expires are populated from butler_secrets, not dropped."""
     issued_at = _NOW - timedelta(days=30)
     expires_at = _NOW + timedelta(days=60)
-    row = _make_row(
+    row = make_row(
         secret_key="claude-cli-token",
         secret_value="tok",
         category="cli",
@@ -3133,7 +3118,7 @@ async def test_fetch_cli_secrets_includes_real_issued_and_expires():
 
 async def test_fetch_cli_secrets_hides_probe_history_after_credential_replacement():
     """A prior probe cannot be displayed for a health-reset replacement token."""
-    row = _make_row(
+    row = make_row(
         secret_key="cli-auth/codex",
         secret_value="replacement-token",
         category="cli-auth",
@@ -3146,7 +3131,7 @@ async def test_fetch_cli_secrets_hides_probe_history_after_credential_replacemen
         last_test_code=None,
         last_test_message=None,
     )
-    stale_probe = _make_row(
+    stale_probe = make_row(
         credential_key="cli-auth/codex",
         ok=False,
         code=None,
@@ -3180,7 +3165,7 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     """
     eid = str(uuid4())
     issued_at = _NOW - timedelta(days=10)
-    google_row = _make_row(
+    google_row = make_row(
         id=uuid4(),
         entity_id=eid,
         type="google_oauth_refresh",
@@ -3193,11 +3178,11 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
         last_test_message=None,
     )
 
-    audit_row = _make_row(target="u:google", ts=_NOW, actor="owner", action="verified", note=None)
-    catalogue_row = _make_row(
+    audit_row = make_row(target="u:google", ts=_NOW, actor="owner", action="verified", note=None)
+    catalogue_row = make_row(
         provider="google", required_scopes=["https://www.googleapis.com/auth/calendar"]
     )
-    granted_row = _make_row(
+    granted_row = make_row(
         entity_id=eid, granted_scopes=["https://www.googleapis.com/auth/calendar"]
     )
 
@@ -3233,7 +3218,7 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     # Keep the original single-row companion, then verify that each distinct
     # provider stays paired with its own row when the inventory is mixed.
     github_issued = _NOW - timedelta(days=2)
-    github_row = _make_row(
+    github_row = make_row(
         id=uuid4(),
         entity_id=eid,
         type="github_pat",
@@ -3247,7 +3232,7 @@ async def test_fetch_user_secrets_includes_real_issued_scopes_and_audit():
     )
     user_rows[:] = [github_row, google_row]
     audit_rows.append(
-        _make_row(target="u:github", ts=_NOW, actor="owner", action="rotated", note=None)
+        make_row(target="u:github", ts=_NOW, actor="owner", action="rotated", note=None)
     )
     results = await _fetch_user_secrets(pool, identity=UUID(eid))
     assert [item.entity_id for item in results] == [eid, eid]
@@ -3273,7 +3258,7 @@ async def test_fetch_user_secrets_google_test_mode_account_flips_to_expiring():
     """
     eid = str(uuid4())
     refreshed_at = _NOW - timedelta(days=5)
-    google_row = _make_row(
+    google_row = make_row(
         id=uuid4(),
         entity_id=eid,
         type="google_oauth_refresh",
@@ -3285,7 +3270,7 @@ async def test_fetch_user_secrets_google_test_mode_account_flips_to_expiring():
         last_test_code=None,
         last_test_message=None,
     )
-    test_mode_row = _make_row(entity_id=eid, last_token_refresh_at=refreshed_at)
+    test_mode_row = make_row(entity_id=eid, last_token_refresh_at=refreshed_at)
 
     pool = AsyncMock()
 
@@ -3326,7 +3311,7 @@ async def test_fetch_user_secrets_scopes_required_matches_across_catalogue_alias
     'home_assistant'/'homeassistant' but NOT 'telegram'/'telegram_bot').
     """
     eid = str(uuid4())
-    telegram_row = _make_row(
+    telegram_row = make_row(
         id=uuid4(),
         entity_id=eid,
         type="telegram_user_session",
@@ -3338,7 +3323,7 @@ async def test_fetch_user_secrets_scopes_required_matches_across_catalogue_alias
         last_test_code=None,
         last_test_message=None,
     )
-    catalogue_row = _make_row(provider="telegram", required_scopes=["telegram:bot-token"])
+    catalogue_row = make_row(provider="telegram", required_scopes=["telegram:bot-token"])
 
     pool = AsyncMock()
 
@@ -3366,7 +3351,7 @@ async def test_fetch_user_secrets_scopes_required_matches_across_catalogue_alias
 async def test_fetch_user_secrets_non_google_provider_has_honestly_empty_scopes_granted():
     """A non-Google credential has no real granted-scopes source and stays []."""
     eid = str(uuid4())
-    row = _make_row(
+    row = make_row(
         id=uuid4(),
         entity_id=eid,
         type="github_pat",
@@ -3494,19 +3479,19 @@ def test_inventory_user_rows_omit_every_raw_evidence_sentinel():
     shared_pool = _make_content_blind_shared_pool(
         user_row=user_row,
         catalogue_rows=[
-            _make_row(
+            make_row(
                 provider="google",
                 required_scopes=["https://www.googleapis.com/auth/calendar.readonly"],
             )
         ],
         granted_rows=[
-            _make_row(
+            make_row(
                 entity_id=entity_id,
                 granted_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
             )
         ],
         audit_rows=[
-            _make_row(
+            make_row(
                 target="u:google",
                 ts=_NOW,
                 actor="owner",
@@ -3515,7 +3500,7 @@ def test_inventory_user_rows_omit_every_raw_evidence_sentinel():
             )
         ],
         probe_rows=[
-            _make_row(
+            make_row(
                 credential_key="google_oauth_refresh",
                 ok=False,
                 code=401,
@@ -3525,7 +3510,7 @@ def test_inventory_user_rows_omit_every_raw_evidence_sentinel():
             )
         ],
         capability_rows=[
-            _make_row(
+            make_row(
                 credential_key="google_oauth_refresh:sentinel-capability",
                 ok=False,
                 code=403,
@@ -3586,7 +3571,7 @@ def test_inventory_user_rows_map_unknown_google_scope_to_other():
     shared_pool = _make_content_blind_shared_pool(
         user_row=_make_entity_info_row(entity_id=entity_id, info_type="google_oauth_refresh"),
         catalogue_rows=[
-            _make_row(
+            make_row(
                 provider="google",
                 required_scopes=["https://www.googleapis.com/auth/sentinel-unmapped-scope"],
             )
@@ -3607,7 +3592,7 @@ def test_inventory_user_rows_map_non_google_scopes_to_connectivity():
     entity_id = str(uuid4())
     shared_pool = _make_content_blind_shared_pool(
         user_row=_make_entity_info_row(entity_id=entity_id, info_type="telegram_bot_token"),
-        catalogue_rows=[_make_row(provider="telegram_bot", required_scopes=["telegram:bot-token"])],
+        catalogue_rows=[make_row(provider="telegram_bot", required_scopes=["telegram:bot-token"])],
     )
 
     resp = _build_app_with_shared_pool(shared_pool).get(
@@ -3700,7 +3685,7 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
         system_rows=[system_row],
         cli_rows=[cli_row],
         probe_rows=[
-            _make_row(
+            make_row(
                 credential_key="SENTINEL_SYSTEM_KEY",
                 ok=False,
                 code=401,
@@ -3708,7 +3693,7 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
                 recorded_at=_NOW,
                 latency_ms=12,
             ),
-            _make_row(
+            make_row(
                 credential_key="sentinel-cli-key",
                 ok=False,
                 code=401,
@@ -3718,7 +3703,7 @@ def test_inventory_system_and_cli_rows_omit_every_probe_and_audit_sentinel():
             ),
         ],
         audit_rows=[
-            _make_row(
+            make_row(
                 target="s:SENTINEL_SYSTEM_KEY",
                 ts=_NOW,
                 actor="owner",

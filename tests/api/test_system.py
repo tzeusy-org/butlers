@@ -37,6 +37,7 @@ from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.api.routers import system as system_router
 from butlers.api.routers.system import _commits_behind_main
 from butlers.core.backup_facts import read_backup_facts_from_dir
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -104,15 +105,6 @@ def _make_app_with_db(mock_db):
     return app
 
 
-def _make_record(row: dict) -> MagicMock:
-    rec = MagicMock()
-    rec.__getitem__ = MagicMock(side_effect=lambda k: row[k])
-    rec.get = MagicMock(side_effect=lambda k, default=None: row.get(k, default))
-    for k, v in row.items():
-        setattr(rec, k, v)
-    return rec
-
-
 # ---------------------------------------------------------------------------
 # GET /api/system/instance
 # ---------------------------------------------------------------------------
@@ -156,8 +148,8 @@ def _make_db_endpoint_mock(*, fail_at=None, schema_rows=None, table_rows=None):
         if fail_at in ("schema", "table"):
             raise RuntimeError("permission denied")
         if "GROUP BY" in sql:
-            return [_make_record(r) for r in schema_rows]
-        return [_make_record(r) for r in table_rows]
+            return [Record(r) for r in schema_rows]
+        return [Record(r) for r in table_rows]
 
     pool.fetchval = AsyncMock(side_effect=_fetchval)
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -1641,7 +1633,7 @@ def _make_egress_db(
     async def _fetch(sql, *args):
         if audit_fails:
             raise RuntimeError("DB error")
-        return [_make_record(r) for r in audit_rows]
+        return [Record(r) for r in audit_rows]
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -1781,7 +1773,7 @@ def _make_heartbeat_db(
     async def _sw_fetch(sql, *args):
         if registry_fails:
             raise RuntimeError("DB error")
-        return [_make_record(r) for r in registry_rows]
+        return [Record(r) for r in registry_rows]
 
     sw_pool.fetch = AsyncMock(side_effect=_sw_fetch)
     butler_pool = AsyncMock()
@@ -1856,7 +1848,7 @@ async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_
             observed = fresh_receiver_timestamp if receiver_observation_present else None
         else:
             observed = old_legacy_timestamp
-        return [_make_record({"name": "general", "last_seen_at": observed})]
+        return [Record({"name": "general", "last_seen_at": observed})]
 
     switchboard_pool.fetch.side_effect = _registry_rows
     async with httpx.AsyncClient(
@@ -2143,7 +2135,7 @@ class TestEgressSpan:
             return None
 
         async def _fetch(sql, *args):
-            return [_make_record(r) for r in audit_rows]
+            return [Record(r) for r in audit_rows]
 
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         pool.fetch = AsyncMock(side_effect=_fetch)
