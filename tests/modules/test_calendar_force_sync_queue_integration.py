@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -23,21 +24,10 @@ pytestmark = [
 ]
 
 
-_CREATE_ACTION_LOG_SQL = """
-CREATE TABLE calendar_action_log (
-    id BIGSERIAL PRIMARY KEY,
-    idempotency_key TEXT NOT NULL UNIQUE,
-    request_id TEXT,
-    action_type TEXT NOT NULL,
-    action_status TEXT NOT NULL,
-    action_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-    action_result JSONB,
-    error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    applied_at TIMESTAMPTZ
-)
-"""
+@asynccontextmanager
+async def _calendar_pool(db):
+    """calendar_action_log from the real core chain (core_003 + core_194 queue lease)."""
+    yield await db("core", min_size=2, max_size=4)
 
 
 def _queue_worker(pool) -> CalendarModule:
@@ -48,11 +38,10 @@ def _queue_worker(pool) -> CalendarModule:
 
 
 async def test_concurrent_queue_workers_execute_one_pending_command_once(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """One real SQL lease admits one provider sync across two module workers."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=4) as pool:
-        await pool.execute(_CREATE_ACTION_LOG_SQL)
+    async with _calendar_pool(db) as pool:
         await pool.execute(
             """
             INSERT INTO calendar_action_log (
@@ -100,11 +89,10 @@ async def test_concurrent_queue_workers_execute_one_pending_command_once(
 
 
 async def test_running_command_blocks_a_pending_successor_from_another_worker(
-    provisioned_postgres_pool,
+    db,
 ) -> None:
     """A successor waits for the current provider operation instead of overlapping it."""
-    async with provisioned_postgres_pool(min_pool_size=2, max_pool_size=4) as pool:
-        await pool.execute(_CREATE_ACTION_LOG_SQL)
+    async with _calendar_pool(db) as pool:
         await pool.executemany(
             """
             INSERT INTO calendar_action_log (

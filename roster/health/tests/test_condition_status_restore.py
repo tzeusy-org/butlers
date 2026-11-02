@@ -16,10 +16,7 @@ import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import asyncpg
 import pytest
-
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -33,28 +30,10 @@ _MIGRATION = (
 )
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    from butlers.db import register_jsonb_codec
-
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.memory_links, public.facts CASCADE")
-    yield p
-    await p.close()
+async def memory_pool(db):
+    """A private clone migrated with the core and memory chains."""
+    return await db("core", "memory")
 
 
 def _migration_sql(step: str) -> list[str]:
@@ -104,14 +83,14 @@ async def _metadata(pool, subject: str) -> dict:
     return json.loads(value) if isinstance(value, str) else dict(value)
 
 
-async def test_stripped_condition_regains_its_status_from_content(pool) -> None:
-    await _condition(pool, "asthma", "Asthma: managed", {"name": "Asthma"})
-    await _condition(pool, "flu", "Flu: resolved", {"name": "Flu"})
-    await _condition(pool, "ibs", "IBS: active", {"name": "IBS"})
-    await _condition(pool, "odd", "Back pain: flare: managed", {"name": "Back pain: flare"})
-    await _condition(pool, "fading", "Gout: resolved", {"name": "Gout"}, validity="fading")
+async def test_stripped_condition_regains_its_status_from_content(memory_pool) -> None:
+    await _condition(memory_pool, "asthma", "Asthma: managed", {"name": "Asthma"})
+    await _condition(memory_pool, "flu", "Flu: resolved", {"name": "Flu"})
+    await _condition(memory_pool, "ibs", "IBS: active", {"name": "IBS"})
+    await _condition(memory_pool, "odd", "Back pain: flare: managed", {"name": "Back pain: flare"})
+    await _condition(memory_pool, "fading", "Gout: resolved", {"name": "Gout"}, validity="fading")
 
-    await _run(pool, "upgrade")
+    await _run(memory_pool, "upgrade")
 
     for subject, status in [
         ("asthma", "managed"),
@@ -120,60 +99,64 @@ async def test_stripped_condition_regains_its_status_from_content(pool) -> None:
         ("odd", "managed"),
         ("fading", "resolved"),
     ]:
-        meta = await _metadata(pool, subject)
+        meta = await _metadata(memory_pool, subject)
         assert meta["status"] == status, subject
         assert meta["status_restored_by"] == "health_004", subject
-    assert (await _metadata(pool, "asthma"))["name"] == "Asthma"
+    assert (await _metadata(memory_pool, "asthma"))["name"] == "Asthma"
 
 
-async def test_rows_with_a_status_or_unparseable_content_are_untouched(pool) -> None:
-    await _condition(pool, "has-status", "Eczema: active", {"name": "Eczema", "status": "resolved"})
-    await _condition(pool, "bad-suffix", "Migraine: severe", {"name": "Migraine"})
-    await _condition(pool, "no-suffix", "Migraine", {"name": "Migraine"})
-    await _condition(pool, "other-pred", "Sleep: managed", {}, predicate="symptom")
-    await _condition(pool, "other-scope", "Acne: managed", {}, scope="relationship")
-    await _condition(pool, "retracted", "Cold: managed", {}, validity="retracted")
+async def test_rows_with_a_status_or_unparseable_content_are_untouched(memory_pool) -> None:
+    await _condition(
+        memory_pool, "has-status", "Eczema: active", {"name": "Eczema", "status": "resolved"}
+    )
+    await _condition(memory_pool, "bad-suffix", "Migraine: severe", {"name": "Migraine"})
+    await _condition(memory_pool, "no-suffix", "Migraine", {"name": "Migraine"})
+    await _condition(memory_pool, "other-pred", "Sleep: managed", {}, predicate="symptom")
+    await _condition(memory_pool, "other-scope", "Acne: managed", {}, scope="relationship")
+    await _condition(memory_pool, "retracted", "Cold: managed", {}, validity="retracted")
     before = {
-        r["subject"]: r["metadata"] for r in await pool.fetch("SELECT subject, metadata FROM facts")
+        r["subject"]: r["metadata"]
+        for r in await memory_pool.fetch("SELECT subject, metadata FROM facts")
     }
 
-    await _run(pool, "upgrade")
+    await _run(memory_pool, "upgrade")
 
     after = {
-        r["subject"]: r["metadata"] for r in await pool.fetch("SELECT subject, metadata FROM facts")
+        r["subject"]: r["metadata"]
+        for r in await memory_pool.fetch("SELECT subject, metadata FROM facts")
     }
     assert after == before
-    assert (await _metadata(pool, "has-status"))["status"] == "resolved"
+    assert (await _metadata(memory_pool, "has-status"))["status"] == "resolved"
 
 
-async def test_upgrade_is_idempotent(pool) -> None:
-    await _condition(pool, "asthma", "Asthma: managed", {"name": "Asthma"})
+async def test_upgrade_is_idempotent(memory_pool) -> None:
+    await _condition(memory_pool, "asthma", "Asthma: managed", {"name": "Asthma"})
 
-    await _run(pool, "upgrade")
-    first = await _metadata(pool, "asthma")
-    await _run(pool, "upgrade")
+    await _run(memory_pool, "upgrade")
+    first = await _metadata(memory_pool, "asthma")
+    await _run(memory_pool, "upgrade")
 
-    assert await _metadata(pool, "asthma") == first
+    assert await _metadata(memory_pool, "asthma") == first
 
 
-async def test_downgrade_leaves_restored_rows_unchanged(pool) -> None:
-    await _condition(pool, "stripped", "Asthma: managed", {"name": "Asthma", "notes": "n"})
+async def test_downgrade_leaves_restored_rows_unchanged(memory_pool) -> None:
+    await _condition(memory_pool, "stripped", "Asthma: managed", {"name": "Asthma", "notes": "n"})
     # condition_update copies metadata forward, so a row the owner updated after the repair
     # carries the tag with a status the owner chose.
     await _condition(
-        pool,
+        memory_pool,
         "inherited",
         "Eczema: resolved",
         {"name": "Eczema", "status": "resolved", "status_restored_by": "health_004"},
     )
-    await _run(pool, "upgrade")
-    restored = await _metadata(pool, "stripped")
+    await _run(memory_pool, "upgrade")
+    restored = await _metadata(memory_pool, "stripped")
     assert restored["status"] == "managed"
 
-    await _run(pool, "downgrade")
+    await _run(memory_pool, "downgrade")
 
-    assert await _metadata(pool, "stripped") == restored
-    assert await _metadata(pool, "inherited") == {
+    assert await _metadata(memory_pool, "stripped") == restored
+    assert await _metadata(memory_pool, "inherited") == {
         "name": "Eczema",
         "status": "resolved",
         "status_restored_by": "health_004",
