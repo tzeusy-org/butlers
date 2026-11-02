@@ -234,7 +234,7 @@ async def test_executor_writes_tally_only_after_an_execution_outcome(home_pool) 
     )
 
     result = await execute_approved_action(
-        home_pool=home_pool,
+        pool=home_pool,
         action_id=action.id,
         tool_name=action.tool_name,
         tool_args=action.tool_args,
