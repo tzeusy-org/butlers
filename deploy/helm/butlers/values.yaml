@@ -166,6 +166,32 @@ backup:
   schedule: "0 2 * * *"
   retainDays: 14
 
+# Off-node copy of the backup dumps (bu-ivuf9u): an encrypted restic
+# repository on the owner's second always-on tailnet device, over SFTP.
+# Disabled by default; every live step is owner-gated. Runbook:
+# docs/operations/offsite-backup-copy.md.
+offsiteCopy:
+  enabled: false
+  # Runs after the 02:00 dump has finished.
+  schedule: "30 3 * * *"
+  # Owner-supplied, no default: the device's tailnet IP or a name that
+  # resolves from inside a pod, and the repository path on it.
+  host: ""
+  repoPath: ""
+  user: restic
+  port: 22
+  # Name of an existing Secret in the release namespace. The chart never
+  # creates it. Keys: restic-password, ssh-private-key, known-hosts.
+  secretName: ""
+  # true only for the owner-approved first run against an empty repository.
+  initRepository: false
+  sourceHostLabel: butlers
+  keep: {daily: 14, weekly: 8, monthly: 6}
+  image: restic/restic:0.18.1
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
 connectorDefaults:
   resources:
     requests: {cpu: 25m, memory: 192Mi}
