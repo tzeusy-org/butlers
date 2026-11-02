@@ -22,7 +22,6 @@ import pytest
 
 from butlers.jobs.deploy_drift import compute_drift_report
 from butlers.migrations import _chain_script_directory, get_chain_head
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -32,21 +31,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-        schemas={"core": "switchboard"},
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    yield p
-    await p.close()
+async def switchboard_pool(db) -> asyncpg.Pool:
+    """The core chain migrated into the switchboard schema, as deployed."""
+    return await db("core", schemas={"core": "switchboard"})
 
 
 class _FakeDatabaseManager:
@@ -69,9 +57,11 @@ def _only_core_for_switchboard(monkeypatch) -> None:
     )
 
 
-async def test_freshly_migrated_schema_is_not_drifted(pool: asyncpg.Pool, monkeypatch) -> None:
+async def test_freshly_migrated_schema_is_not_drifted(
+    switchboard_pool: asyncpg.Pool, monkeypatch
+) -> None:
     _only_core_for_switchboard(monkeypatch)
-    db = _FakeDatabaseManager(pool)
+    db = _FakeDatabaseManager(switchboard_pool)
 
     report = await compute_drift_report(db)
 
@@ -80,10 +70,10 @@ async def test_freshly_migrated_schema_is_not_drifted(pool: asyncpg.Pool, monkey
 
 
 async def test_rolled_back_alembic_version_is_detected_as_drift(
-    pool: asyncpg.Pool, monkeypatch
+    switchboard_pool: asyncpg.Pool, monkeypatch
 ) -> None:
     _only_core_for_switchboard(monkeypatch)
-    db = _FakeDatabaseManager(pool)
+    db = _FakeDatabaseManager(switchboard_pool)
 
     head = get_chain_head("core")
     parent = _chain_script_directory("core").get_revision(head).down_revision
@@ -92,7 +82,7 @@ async def test_rolled_back_alembic_version_is_detected_as_drift(
     # Simulate the bu-zhfd0 shape: the DB never actually applied the head
     # revision, even though the codebase (and, in the real incident, the
     # merged PR) already has it.
-    await pool.execute(
+    await switchboard_pool.execute(
         'UPDATE "switchboard".alembic_version SET version_num = $1 WHERE version_num = $2',
         parent,
         head,
