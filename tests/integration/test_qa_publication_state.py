@@ -329,6 +329,11 @@ async def test_sweep_adopts_the_only_pr_for_a_lost_pr_create(pool, attempt) -> N
         operation.id,
     )
     assert tuple(row) == ("reconciled", "resource_found", "17")
+    # The adoption lands on the attempt in the same write, so the case API shows the PR.
+    pr = await pool.fetchrow(
+        "SELECT pr_number, pr_url FROM public.healing_attempts WHERE id = $1", attempt_id
+    )
+    assert tuple(pr) == (17, "https://github.com/acme/butlers/pull/17")
 
     # A lost label set on the adopted PR binds that PR and is swept against its labels.
     labels = ("self-healing", "automated")
