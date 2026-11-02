@@ -47,8 +47,9 @@ _HEADER = re.compile(rb"([0-9a-f]{40}) (blob|tree|commit) ([0-9]{1,9})\n")
 #: Framing allowance over the export's own size bound.
 _MAX_ENCODED_BYTES = MAX_EXPORT_BYTES + (1 << 20)
 
-#: How long a terminal attempt's export bytes are kept after ``closed_at``.  The core_301
-#: guard enforces the same window in SQL (``interval '30 days'``); change both together.
+#: How long a terminal attempt's export bytes are kept after ``closed_at``; the prune query's
+#: only source.  The core_301 guard enforces it as a floor (``interval '30 days'``): a shorter
+#: value here selects rows the guard refuses and the batch fails, so change both together.
 EXPORT_RETENTION = timedelta(days=30)
 #: Default rows pruned per call, so one run never rewrites an unbounded batch.
 PRUNE_BATCH = 100
@@ -167,7 +168,7 @@ async def prune_retained_exports(pool: Any, *, limit: int = PRUNE_BATCH) -> int:
             WHERE x.pruned_at IS NULL
               AND a.status IN ('pr_merged', 'failed', 'unfixable', 'anonymization_failed',
                                'timeout')
-              AND a.closed_at <= now() - interval '30 days'
+              AND a.closed_at <= now() - $2::interval
               AND NOT EXISTS (
                   SELECT 1 FROM public.qa_publication_operations AS op
                   WHERE op.attempt_id = x.attempt_id
@@ -183,5 +184,6 @@ async def prune_retained_exports(pool: Any, *, limit: int = PRUNE_BATCH) -> int:
         WHERE x.attempt_id = due.attempt_id
         """,
         limit,
+        EXPORT_RETENTION,
     )
     return int(str(status).rsplit(" ", 1)[-1])

@@ -102,7 +102,11 @@ attempt has been terminal (`pr_merged`, `failed`, `unfixable`, `anonymization_fa
 `objects` and the guard stamps `pruned_at`. The row stays as a tombstone: base, head, commits and
 digest keep binding the proposal, so the case API's `export_retained` proof and the sweep's binding
 rebuild (`head_sha`) are unchanged. The guard enforces the same eligibility for every role and makes a
-pruned row final. Only `butler_qa_rw` reaches a row for update (forced row security, UPDATE policy for
+pruned row final. A BEFORE INSERT trigger (`qa_publication_exports_unpruned_insert`) refuses a row
+inserted with `pruned_at` set, so the guarded UPDATE is the only way to a tombstone. The window is
+measured from `healing_attempts.closed_at` as the QA role writes it. That table has no row-security
+fence, so the window is only as trustworthy as its writers; the lineage-hold check reads the fenced
+ledger. Only `butler_qa_rw` reaches a row for update (forced row security, UPDATE policy for
 that role alone). A pruned export refuses with `export_pruned` on load and on re-retention. The QA
 module runs the prune in the daily `qa_evidence_cleanup` job, at `retention_cleanup_hour`, 100 rows per
 run. A prune failure is logged and does not fail the evidence cleanup. Only the last schema to leave

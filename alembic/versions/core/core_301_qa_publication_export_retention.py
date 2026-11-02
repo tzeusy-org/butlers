@@ -20,11 +20,16 @@ retained until exact reconciliation resolves the hold, so pruning is narrow:
   closed at least 30 days ago by database time, and holds no publication lineage (no
   operation in ``egress_started`` or ``ambiguous``).  The guard stamps ``pruned_at`` with
   database time.  Any other UPDATE still refuses, and a pruned row is final.
+* ``qa_publication_exports_unpruned_insert`` (BEFORE INSERT, every role) refuses a row
+  inserted with ``pruned_at`` set, so the guarded UPDATE is the only way to a tombstone.
 * Only ``butler_qa_rw`` prunes: forced row security gains an UPDATE policy for that role
   alone (``scripts/init-db.sql`` re-grants DML to every runtime role, so the policy, not
   the grant, is the fence).
 
-The retention window lives here and in ``retention.EXPORT_RETENTION``; change both.
+The retention window lives here and in ``retention.EXPORT_RETENTION``; change both.  It is
+measured from ``healing_attempts.closed_at`` as the QA role writes it.  That table has no
+row-security fence (runtime roles hold public DML), so the window is only as trustworthy as
+its writers; the lineage-hold check reads the fenced ledger.
 
 The core chain runs once per butler schema over one shared table, so only the last
 schema to leave core_301 removes the prune path, and only while no export is pruned:
@@ -42,6 +47,8 @@ depends_on = None
 
 _TABLE = "public.qa_publication_exports"
 _GUARD = "public.qa_publication_exports_immutable"
+_INSERT_GUARD = "public.qa_publication_exports_unpruned_insert"
+_INSERT_TRIGGER = "qa_publication_exports_unpruned_insert"
 _QA_ROLE = "butler_qa_rw"
 _CONSTRAINT = "ck_qa_publication_exports_pruned"
 _POLICY = "qa_publication_exports_prune"
@@ -101,6 +108,21 @@ _PRUNE_GUARD = f"""
                     USING ERRCODE = 'check_violation';
             END IF;
             NEW.pruned_at := now();
+            RETURN NEW;
+        END
+        $$
+        """
+
+# Pruning is reachable only through the guarded UPDATE: an INSERT that arrives already pruned
+# would skip the eligibility checks and leave a tombstone no verified export ever backed.
+_INSERT_GUARD_FUNCTION = f"""
+        CREATE OR REPLACE FUNCTION {_INSERT_GUARD}() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            IF NEW.pruned_at IS NOT NULL THEN
+                RAISE EXCEPTION 'retained QA export cannot be inserted pruned'
+                    USING ERRCODE = 'check_violation';
+            END IF;
             RETURN NEW;
         END
         $$
@@ -176,6 +198,15 @@ def upgrade() -> None:
         """
     )
     op.execute(_PRUNE_GUARD)
+    op.execute(_INSERT_GUARD_FUNCTION)
+    op.execute(f"DROP TRIGGER IF EXISTS {_INSERT_TRIGGER} ON {_TABLE}")
+    op.execute(
+        f"""
+        CREATE TRIGGER {_INSERT_TRIGGER}
+            BEFORE INSERT ON {_TABLE}
+            FOR EACH ROW EXECUTE FUNCTION {_INSERT_GUARD}()
+        """
+    )
     _for_existing_role(
         _QA_ROLE, f"GRANT UPDATE (objects, pruned_at) ON TABLE {_TABLE} TO {_QA_ROLE}"
     )
@@ -210,6 +241,8 @@ def downgrade() -> None:
     _for_existing_role(
         _QA_ROLE, f"REVOKE UPDATE (objects, pruned_at) ON TABLE {_TABLE} FROM {_QA_ROLE}"
     )
+    op.execute(f"DROP TRIGGER IF EXISTS {_INSERT_TRIGGER} ON {_TABLE}")
+    op.execute(f"DROP FUNCTION IF EXISTS {_INSERT_GUARD}()")
     op.execute(_CORE_294_GUARD)
     op.execute(f"ALTER TABLE {_TABLE} DROP CONSTRAINT IF EXISTS {_CONSTRAINT}")
     op.execute(f"ALTER TABLE {_TABLE} DROP COLUMN IF EXISTS pruned_at")

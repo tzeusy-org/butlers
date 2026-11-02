@@ -18,6 +18,7 @@ import pytest
 
 from butlers.core.qa.publication.export import ExportRefused, build_sealed_export
 from butlers.core.qa.publication.retention import (
+    EXPORT_RETENTION,
     decode_objects,
     encode_objects,
     load_retained_export,
@@ -139,4 +140,4 @@ async def test_prune_reports_the_rows_the_database_pruned() -> None:
     pool.execute = AsyncMock(return_value="UPDATE 3")
 
     assert await prune_retained_exports(pool, limit=7) == 3
-    assert pool.execute.await_args.args[1:] == (7,)
+    assert pool.execute.await_args.args[1:] == (7, EXPORT_RETENTION)

@@ -205,6 +205,26 @@ def test_only_qa_prunes_and_only_past_retention_without_a_hold(
     for attempt in (attempt_id, held):
         _as_role(db_url, "butler_qa_rw", _insert_sql(attempt))
 
+    # A tombstone cannot be inserted directly: that would skip eligibility and the digest.
+    tombstone = _new_attempt(db_url)
+    _close(db_url, tombstone, days_ago=31)
+    inserted_pruned = (
+        f"INSERT INTO {_TABLE} "
+        "(attempt_id, base_sha, head_sha, commits, objects, digest, pruned_at) "
+        f"VALUES ('{tombstone}', '{'b' * 40}', '{_HEAD}', ARRAY['{_HEAD}'], ''::bytea, "
+        f"'{'a' * 64}', now())"
+    )
+    with pytest.raises(DBAPIError, match="cannot be inserted pruned"):
+        _as_role(db_url, "butler_qa_rw", inserted_pruned)
+    engine = create_engine(db_url)
+    try:
+        with pytest.raises(DBAPIError, match="cannot be inserted pruned"):
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"ALTER TABLE {_TABLE} NO FORCE ROW LEVEL SECURITY")
+                conn.exec_driver_sql(inserted_pruned)
+    finally:
+        engine.dispose()
+
     # Active, then terminal inside the 30-day window: refused, even bypassing row security.
     with pytest.raises(DBAPIError, match="not past retention"):
         _as_role(db_url, "butler_qa_rw", _prune_sql(attempt_id))
