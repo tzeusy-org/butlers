@@ -302,7 +302,6 @@
     "[\"roster/health/tests/test_jobs.py\", \"reportArgumentType\", \"583480fdd419587d59aa3dedd4cdeac00afdf133a36e1c9a5d8f0ae2df4e74fc\"]": 1,
     "[\"roster/health/tests/test_jobs.py\", \"reportArgumentType\", \"7eeddad45fb7b9494cc2c765659ebfb2768b0ba86a657f09d51ee17549c771f3\"]": 5,
     "[\"roster/health/tests/test_jobs.py\", \"reportMissingImports\", \"6246e0a88f28f31212bff68e95d1ab94af39028a93cce60487f1bf8d004e56c1\"]": 44,
-    "[\"roster/health/tests/test_jobs.py\", \"reportMissingImports\", \"83715520e51ce19f3ece7f97f60c1fc5b3419338f340ae04d57c9afc99d3256f\"]": 1,
     "[\"roster/health/tests/test_jobs.py\", \"reportOptionalMemberAccess\", \"7025370d494b78de464e6a5e140d764adc41589da1100a0dc17b441fb6131419\"]": 2,
     "[\"roster/health/tests/test_jobs.py\", \"reportOptionalSubscript\", \"fcfee2c821a27efa27e98f2d5582b41dbfe06583dcb5277ab74db54b46ce6646\"]": 7,
     "[\"roster/health/tests/test_measurement_sources.py\", \"reportMissingImports\", \"4751bb51716caa41153bd39161fc43ef2b8ca022605acc32df0a1657381a7588\"]": 2,
