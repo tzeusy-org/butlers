@@ -1154,6 +1154,14 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
         engine.dispose()
     before_transfer = snapshot(admin_url)
     assert before_transfer["column_acl"] and before_transfer["dependents"]
+    definer_execute = (
+        "SELECT array_agg((p.proname, r.rolname, "
+        "has_function_privilege(r.oid, p.oid, 'EXECUTE'))::text ORDER BY p.proname, r.rolname) "
+        "FROM pg_proc p CROSS JOIN pg_roles r WHERE p.proname IN "
+        "('enqueue_premise_amendments', 'resolve_finance_bill_status') "
+        "AND (r.rolname LIKE 'butler\\_%' OR r.rolname = 'connector_writer')"
+    )
+    runtime_definer_execute = _run(admin_url, definer_execute)
 
     # Precise disposable source copies exercise every saved catalog identity.
     # Each copy changes only the documented insertion before the owning DO.
@@ -1303,7 +1311,18 @@ def test_core_255_bootstrap_install_grants_visibility_without_peer_row_authority
     for key in ("rls", "force_rls"):
         assert after_transfer["catalog"]["table"][key] == before_transfer["catalog"]["table"][key]
     assert after_transfer["catalog"]["policies"] == before_transfer["catalog"]["policies"]
-    assert after_transfer["catalog"]["functions"] == before_transfer["catalog"]["functions"]
+    # bu-jjv2du: the core_255 definers follow the table to the migration login in the same
+    # atomic block; body pins and runtime EXECUTE rights are unchanged (core_312 needs the
+    # owner to replace them on the dynamic-head replay below).
+    target_name = unquote(urlparse(db_url).username)
+    for before_fn, after_fn in zip(
+        before_transfer["catalog"]["functions"],
+        after_transfer["catalog"]["functions"],
+        strict=True,
+    ):
+        assert before_fn["owner"] == before_transfer["catalog"]["identity"]["session_user"]
+        assert after_fn == {**before_fn, "owner": target_name, "acl": after_fn["acl"]}
+    assert _run(admin_url, definer_execute) == runtime_definer_execute
     assert _run(db_url, "SELECT count(*) FROM public.insight_amendments") == 43  # owner RLS bypass
     repeated_success = asyncio.run(psql(production_path))
     assert snapshot(admin_url) == after_transfer
@@ -1880,9 +1899,9 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
                 _expect_permission_denied(conn, runpy.run_path(str(_CORE_255))[source_name])
     finally:
         engine.dispose()
-    # The replay reaches core_312, which must replace the bootstrap-owned enqueue definer:
-    # it fails loudly (bu-jjv2du) rather than recording core_312 over the core_255 body.
-    with pytest.raises(DBAPIError, match="enqueue_premise_amendments was not replaced"):
+    # core_255's best-effort replay skips the definers; core_312 then refuses to record its
+    # fix over a bootstrap-owned definer (bu-jjv2du: init-db.sql converges the owner).
+    with pytest.raises(DBAPIError, match="was not replaced"):
         asyncio.run(run_migrations(db_url, chain="core", schema="health"))
     assert _amendment_catalog(db_url)["functions"] == bootstrap_functions
     command.downgrade(config, "core_254")
@@ -1934,7 +1953,7 @@ def test_core_255_adds_premise_objects_idempotently_and_downgrades_cleanly(
         {
             "bounded_retention": receipts,
             "ordinary_definer_downgrade": "schema-owner DROP succeeds; function call raises 42883 until ordinary recreate",
-            "ordinary_definer_replace": "42501 while bootstrap-owned; best-effort schema replay leaves owner unchanged",
+            "ordinary_definer_replace": "42501 while bootstrap-owned; core_255 replay skips it, core_312 fails loud",
             "ordinary_replay_functions": _amendment_catalog(db_url)["functions"],
             "all_states_preserved": sorted(row["state"] for row in before),
         }
