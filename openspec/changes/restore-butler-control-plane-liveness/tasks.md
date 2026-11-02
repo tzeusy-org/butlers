@@ -55,7 +55,7 @@ This task list retains historical checkmarks and future parent work; this docs-o
   preflight, no private content, process-only `/health`, and no transactional
   target-acceptance claim. Supported launchers only consume this route under the adopted deployment contract; no production Compose resurrection is implied.
   (REQ-dashboard-api-063; REQ-butler-switchboard-004)
-- [ ] 5.2 Q5 gates deployment completion on two distinct complete observer
+- [x] 5.2 Q5 gates deployment completion on two distinct complete observer
   cycles and two distinct current-config all-source-success scheduled QA
   patrol completions after window start, while every sampled `/ready` result
   remains true beyond the longest fleet TTL. Derive the finite timeout from

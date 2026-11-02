@@ -50,6 +50,7 @@ import httpx
 from butlers.core.control_plane_identity import (
     FLEET_FACTS_SQL,
     PROBE_DEADLINE_S,
+    READINESS_CHECK_KEYS,
     DashboardProbeRoleView,
     ExpectedDaemon,
     ShadowCycle,
@@ -63,15 +64,7 @@ from butlers.core.qa.patrol_provenance import (
 
 logger = logging.getLogger(__name__)
 
-CHECK_KEYS: Final[tuple[str, ...]] = (
-    "postgres",
-    "roster",
-    "observer",
-    "fleet",
-    "qa_patrol",
-    "supervisors",
-    "route_canary",
-)
+CHECK_KEYS: Final[tuple[str, ...]] = READINESS_CHECK_KEYS
 #: Dashboard lifespan control loops whose supervised health readiness requires.
 READINESS_CONTROL_LOOPS: Final[tuple[str, ...]] = ("fleet_shadow_observer",)
 READINESS_JOB_NAME: Final[str] = "fleet_readiness"

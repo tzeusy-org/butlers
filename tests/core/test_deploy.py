@@ -36,6 +36,7 @@ from butlers.core.deploy import (
     run_deploy,
     run_migrations,
     wait_for_health,
+    wait_for_semantic_readiness,
 )
 from tests.restore_drill_endpoint_policy import (
     EXECUTOR_NUMERIC_IDENTITIES_REJECTED,
@@ -594,6 +595,35 @@ class TestWaitForHealth:
         assert calls["n"] == 2
 
 
+async def test_green_health_alone_never_completes_the_semantic_readiness_phase(monkeypatch):
+    """REQ-dashboard-api-064: no readiness config, or a failed sustained wait,
+    fails the phase closed with only the content-blind receipt."""
+    with pytest.raises(DeployError, match="no sustained-readiness") as exc_info:
+        await wait_for_semantic_readiness(_config(), AsyncMock())
+    assert exc_info.value.phase == "semantic-readiness"
+
+    from butlers.core.deploy_readiness import ReadinessReceipt, resolve_target
+    from butlers.core.qa.patrol_provenance import QaPatrolContract
+
+    entry = type(
+        "E",
+        (),
+        {
+            "name": "qa",
+            "liveness_ttl_seconds": 300,
+            "qa_patrol_contract": QaPatrolContract(("infra_state",), 10),
+        },
+    )
+    receipt = ReadinessReceipt(False, "recommended", ("fleet",), 1, 0, 0.0, 2100.0, 2100.0)
+    monkeypatch.setattr(
+        "butlers.core.deploy.await_sustained_readiness", AsyncMock(return_value=receipt)
+    )
+    with pytest.raises(DeployError) as exc_info:
+        await wait_for_semantic_readiness(_config(readiness=resolve_target([entry()])), AsyncMock())
+    assert exc_info.value.phase == "semantic-readiness"
+    assert '"failing_categories":["fleet"]' in str(exc_info.value)
+
+
 class TestRunDeploy:
     """Orchestration only — record_deployment is mocked here; the real write
     is covered by the integration test."""
@@ -626,6 +656,14 @@ class TestRunDeploy:
             lambda config: RestoreDrillEndpoint("postgres.example.test", "10.23.4.5", 5432),
         )
         monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
+
+        async def _ready(config, pool):
+            calls.append("semantic-readiness")
+            if fail_at == "semantic-readiness":
+                raise DeployError("semantic-readiness", '{"result":"failed"}')
+            return '{"result":"success"}'
+
+        monkeypatch.setattr("butlers.core.deploy.wait_for_semantic_readiness", _ready)
         monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: "deadbeef")
         # Preflight is exercised directly in TestPreflightCheck against real
         # tmp git repos; the orchestration tests use a fake `/repo` path, so
@@ -650,8 +688,10 @@ class TestRunDeploy:
             "restore-drill-boundary",
             "recreate",
             "health-check",
+            "semantic-readiness",
         ]
         assert result.result == "success"
+        assert result.readiness_receipt == '{"result":"success"}'
         assert result.git_sha == "deadbeef"
         assert result.migration_head == "core_163"
         record_mock.assert_awaited_once_with(
@@ -667,7 +707,15 @@ class TestRunDeploy:
         pool.close.assert_not_awaited()
 
     @pytest.mark.parametrize(
-        "fail_at", ["build", "migrate", "restore-drill-boundary", "recreate", "health-check"]
+        "fail_at",
+        [
+            "build",
+            "migrate",
+            "restore-drill-boundary",
+            "recreate",
+            "health-check",
+            "semantic-readiness",
+        ],
     )
     async def test_failure_at_each_phase_records_failed_row_and_reraises(
         self, monkeypatch, fail_at

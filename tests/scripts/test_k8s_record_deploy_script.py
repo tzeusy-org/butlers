@@ -22,6 +22,7 @@ case "$*" in
     [ -n "$CONTROL_PRESENT" ] && echo deployment.apps/butlers-control
     exit 0 ;;
   *"rollout status deploy/$FAIL_ROLLOUT"*) [ -n "$FAIL_ROLLOUT" ] && exit 1 ;;
+  *"deployments await-ready"*) [ -n "$FAIL_READY" ] && exit 1 ;;
   *" exec "*) [ -n "$FAIL_EXEC" ] && exit 1 ;;
 esac
 exit 0
@@ -50,6 +51,7 @@ def _run(tmp_path: Path, bin_dir: Path, **fail: str) -> tuple[int, str, list[str
         "FAIL_ROLLOUT": "",
         "FAIL_EXEC": "",
         "FAIL_QUERY": "",
+        "FAIL_READY": "",
         "CONTROL_PRESENT": "1",
         **{
             ("CONTROL_PRESENT" if key == "control_present" else f"FAIL_{key.upper()}"): value
@@ -78,8 +80,24 @@ def test_success_records_one_success_row_after_both_rollouts(tmp_path: Path, bin
         "kubectl -n ns-x rollout status deploy/butlers-control --timeout=10m",
     ]
     assert len(_records(calls)) == 1
+    # Rollout is not completion: the sustained semantic readiness wait runs in the
+    # API pod after every rollout and before the success row (REQ-dashboard-api-064).
+    assert calls[-2] == ("kubectl -n ns-x exec --pod-running-timeout=30s deploy/dashboard-api -- "
+                         "/app/.venv/bin/butlers deployments await-ready")  # fmt: skip
     assert calls[-1].endswith("deploy/dashboard-api -- /app/.venv/bin/butlers deployments record "
                               "--source deploy --result success")  # fmt: skip
+
+
+def test_unsustained_readiness_records_failed_row_and_fails_the_release(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    code, _stderr, calls = _run(tmp_path, bin_dir, ready="1")
+    assert code == 1
+    assert len(_records(calls)) == 1
+    assert calls[-1].endswith("--source deploy --result failed --git-sha tag123")
+
+    code, _stderr, calls = _run(tmp_path, bin_dir, rollout="dashboard-api")
+    assert not any("await-ready" in c for c in calls)
 
 
 def test_helm_failure_records_failed_row_and_skips_rollout_waits(
