@@ -661,7 +661,7 @@ async def test_real_deferred_wrapper_terminal_partial_keeps_failed_tail_across_b
 async def test_terminal_reconciliation_does_not_cancel_a_new_same_recipient_send(
     monkeypatch, terminal_field
 ):
-    from butlers.core import scheduler
+    from butlers.core.scheduler import deferred_pass as scheduler
 
     now = datetime.now(UTC)
     old_id, fresh_id = uuid.uuid4(), uuid.uuid4()

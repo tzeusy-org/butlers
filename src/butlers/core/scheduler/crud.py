@@ -118,7 +118,7 @@ async def ensure_module_default_schedule(
             from butlers.core.audit import append as append_audit
 
             await append_audit(
-                connection,
+                connection,  # pyright: ignore[reportArgumentType]
                 actor=normalized_owner_butler,
                 action="scheduler.module_default_recovered",
                 target=f"schedule:{name}",

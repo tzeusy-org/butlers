@@ -185,7 +185,7 @@ async def tick(
         # pool, never the eligibility pool, and re-reads it before each
         # dispatch so an owner hold committed mid-tick stops later admissions.
         # ------------------------------------------------------------------
-        admission_refusal: Callable[[], Awaitable[str | None]] | None = None
+        admission_refusal: Callable[[], Awaitable[str | None]] | None = None  # pyright: ignore[reportAssignmentType, reportRedeclaration]
         if butler_name == _QA_BUTLER_NAME:
 
             async def admission_refusal() -> str | None:

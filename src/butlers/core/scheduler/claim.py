@@ -121,7 +121,7 @@ async def read_qa_schedule_policy(pool: asyncpg.Pool | None) -> QaSchedulePolicy
     try:
         rows = await pool.fetch(_QA_POLICY_QUERY)
     except asyncpg.PostgresError as exc:
-        return _QA_POLICY_SQLSTATES.get(exc.sqlstate, QaSchedulePolicy.UNAVAILABLE)
+        return _QA_POLICY_SQLSTATES.get(exc.sqlstate, QaSchedulePolicy.UNAVAILABLE)  # pyright: ignore[reportAttributeAccessIssue]
     except Exception:
         return QaSchedulePolicy.UNAVAILABLE
     if len(rows) != 1:
@@ -170,7 +170,7 @@ async def _butler_dispatch_gated(
         return None
 
     try:
-        from butlers.tools.switchboard.registry.registry import (
+        from butlers.tools.switchboard.registry.registry import (  # pyright: ignore[reportMissingImports]
             receiver_route_cutover_enabled,
             resolve_routing_target,
         )
@@ -181,7 +181,8 @@ async def _butler_dispatch_gated(
             try:
                 row = await eligibility_pool.fetchrow(_BUTLER_POLICY_QUERY)
             except asyncpg.PostgresError as exc:
-                if exc.sqlstate != "P0002":  # anything but "no policy row" fails open
+                # anything but "no policy row" fails open
+                if exc.sqlstate != "P0002":  # pyright: ignore[reportAttributeAccessIssue]
                     raise
                 row = None
             if row is not None and row["butler_name"] != butler_name:
