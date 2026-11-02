@@ -91,16 +91,20 @@ Nothing is written. Check the response:
 1. **`status`** — `"refused"` means the ref is outside this butler's prefix
    (`reason="attachment_forbidden"`) or malformed (`reason="invalid_storage_ref"`).
    Do not retry with a different guess; ask the user for the correct upload.
-   `"error"` carries a message (blob not found, date format not detected, ...).
+   `"unrecognized_format"` means the columns or date format could not be
+   detected; the response carries `headers` and `missing_columns` (go to
+   Phase 3). `"error"` carries a message (blob not found, ...).
 2. **`detected_format`** — `chase`, `amex`, `capital_one`, or `generic`.
 3. **`date_format_detected`** — confirm it matches the `preview` dates (e.g. a UK
    statement must not parse `03/04` as March 4 when it means 3 April).
-4. **`preview`** — up to 10 parsed transactions. For each, check `merchant`,
+4. **`preview`** — up to 10 parsed transactions. If `preview` is empty or
+   `parsed` is 0, nothing would import: do NOT run Phase 4. Fix the
+   `column_map` (Phase 3) or report to the user. For each row, check `merchant`,
    `amount`, and `direction` (`debit` = money out, `credit` = money in). Charges
    on a card statement and purchases on a bank statement must be `debit`.
 5. **`is_duplicate`** — preview rows already in the ledger.
-6. **`parse_errors` / `error_details`** — rows that failed to parse. Each entry's
-   `raw` keys are the CSV header names; use them when building a `column_map`.
+6. **`parse_errors` / `error_details`** — rows that failed to parse, with a
+   reason per row.
 7. **`currency_warning`** — currency fell back to USD. If the statement is not
    USD, re-run the preview with `currency=<code>`.
 
@@ -108,22 +112,30 @@ Nothing is written. Check the response:
 
 ## Phase 3: Adjust the column map (only when needed)
 
-If the preview picked the wrong columns, or the response is an error saying the
-date column could not be found, re-run the dry run with an explicit
-`column_map` (a JSON string):
+Supply a `column_map` (a JSON string) when the dry run returns
+`status="unrecognized_format"`, or when the preview read the wrong column
+(e.g. the merchant shows a reference number). Re-run the dry run with it:
 
 ```
 import_transactions(
     storage_ref=<ref>,
-    column_map='{"date": "Txn Date", "merchant": "Payee", "amount": "Value"}',
+    column_map='{"date": "Booking Date"}',
     dry_run=true,
 )
 ```
 
-- Required keys: `date`, `merchant` (or `description`), `amount`.
-- Optional keys: `category`, `description`.
-- Take column names from `error_details[].raw` keys when present; otherwise ask
-  the user for the header row. Never read the file to find them.
+- Every key is an override merged over auto-detection; no key is required.
+  Name only the columns detection got wrong or missed.
+- Keys: `date`, `merchant`, `amount`, plus optional `category` and
+  `description`. `description` is NOT a substitute for `merchant`: the
+  merchant is read only from the `merchant` key (or its auto-detected column).
+- On `unrecognized_format`, build the map from the response: for each entry in
+  `missing_columns`, pick the matching name from `headers` (e.g. `Booking Date`
+  for `date`, `Payee Details` for `merchant`, `Value` for `amount`). If
+  `missing_columns` is empty, the date column was found but its format was not
+  recognized; check whether another header is the real date column.
+- Ask the user only when `headers` leaves the choice ambiguous (two plausible
+  columns for one key, or none that fits). Never read the file to find out.
 
 **Sign convention you cannot fix.** `column_map` chooses columns; it does not
 flip signs. If the preview shows every charge as `credit` (common for
@@ -144,7 +156,12 @@ When the preview looks right, call `import_transactions` again with the same
 `dry_run`:
 
 ```
-import_transactions(storage_ref=<ref>, account_id=<uuid or omit>, column_map=<same or omit>)
+import_transactions(
+    storage_ref=<ref>,
+    account_id=<uuid or omit>,
+    currency=<same or omit>,
+    column_map=<same or omit>,
+)
 ```
 
 The tool inserts in batches, skips duplicates, sends progress notifications for
@@ -206,16 +223,14 @@ The user emails `chase_checking_jan2025.csv`; the routed message carries its
 A dashboard upload of a European bank export whose date column is named
 `Booking Date`.
 
-1. The dry run returns `status="error"` with `Could not auto-detect date
-   format. Sample values: []` — no date column was recognized, and no rows were
-   parsed, so there are no `error_details` to read headers from.
-2. Ask the user for the header row. They reply
-   `Booking Date,Payee,Value,Balance`.
-3. Re-run the dry run with `column_map='{"date": "Booking Date"}'` and
-   `currency="EUR"`. `Payee` and `Value` are recognized on their own, so the
-   preview now shows dated rows with a supermarket purchase as a `debit` and a
-   salary as a `credit`.
-4. Import with the same `column_map` and `currency`, then report.
+1. The dry run returns `status="unrecognized_format"` with
+   `headers=["Booking Date", "Payee", "Value", "Balance"]` and
+   `missing_columns=["date"]`. `Payee` and `Value` were detected on their own.
+2. `Booking Date` is the only date-like header, so there is no need to ask the
+   user. Re-run the dry run with `column_map='{"date": "Booking Date"}'` and
+   `currency="EUR"`. The preview now shows dated rows with a supermarket
+   purchase as a `debit` and a salary as a `credit`.
+3. Import with the same `column_map` and `currency`, then report.
 
 ---
 
@@ -227,6 +242,7 @@ A dashboard upload of a European bank export whose date column is named
 | `status="refused"`, `invalid_storage_ref` | Malformed ref | Use the exact ref from the attachment or upload |
 | `Blob storage is not configured` | Deployment has no blob store | Report to the user; import is unavailable |
 | `Failed to load file from blob storage` | Ref points at a missing blob | Ask the user to re-upload |
-| `Could not auto-detect date format` | Date column missing or unusual | Supply `column_map` with `date`; ask the user for headers if unknown |
+| `status="unrecognized_format"` | Required column not detected, or date format unknown | Build `column_map` from `headers` and `missing_columns`; ask the user only if ambiguous |
+| Empty `preview`, `parsed` is 0 | `column_map` points at the wrong columns | Fix the map; do not import |
 | Every charge previews as `credit` | Positive-charge export detected as `generic` | Do not import; report the sign problem to the user |
 | High skip rate (>20%) | Overlapping import or cross-source duplicates | Expected on re-run; verify with user if first run |
