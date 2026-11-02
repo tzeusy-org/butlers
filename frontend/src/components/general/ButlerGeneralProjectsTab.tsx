@@ -232,23 +232,52 @@ function CreateProject({ onCreated, onCancel }: { onCreated: (id: string) => voi
   const create = useCreateGeneralProject();
   // One key per form: a double submit or retry replays instead of duplicating.
   const [idempotencyKey] = useState(() => crypto.randomUUID());
+  // A create that matches an existing draft's title and horizon returns that
+  // draft without storing this form's text: say so and keep the form, so the
+  // owner can copy their text or change the title or horizon and retry.
+  const [existing, setExisting] = useState<{ id: string; title: string } | null>(null);
   return (
     <Section data-testid="project-create">
       <SectionHeader>
         <SectionTitle>New project</SectionTitle>
       </SectionHeader>
-      <SectionContent>
+      <SectionContent className="space-y-3">
+        {existing && (
+          <div
+            role="status"
+            data-testid="project-deduplicated"
+            className="space-y-2 rounded-sm border border-[var(--amber)]/40 bg-[var(--amber)]/10 px-3 py-2 text-xs text-[var(--amber-text)]"
+          >
+            <p>
+              A draft with this title and horizon already exists ({existing.title}). Nothing was
+              saved from this form; your text is still below. Change the title or horizon to create
+              a separate project, or open the existing draft and edit its charter.
+            </p>
+            <Button size="sm" variant="outline" onClick={() => onCreated(existing.id)}>
+              Open existing draft
+            </Button>
+          </div>
+        )}
         <CharterForm
           submitLabel="Create draft"
           pending={create.isPending}
           error={create.error}
           onCancel={onCancel}
-          onSubmit={(charter, kind) =>
+          onSubmit={(charter, kind) => {
+            setExisting(null);
             create.mutate(
               { ...charter, kind, idempotency_key: idempotencyKey },
-              { onSuccess: (response) => onCreated(response.data.id) },
-            )
-          }
+              {
+                onSuccess: (response) => {
+                  if (response.meta?.outcome === "deduplicated") {
+                    setExisting({ id: response.data.id, title: response.data.title });
+                  } else {
+                    onCreated(response.data.id);
+                  }
+                },
+              },
+            );
+          }}
         />
       </SectionContent>
     </Section>

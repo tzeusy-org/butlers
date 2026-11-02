@@ -79,7 +79,7 @@ General SHALL hold owner projects: owner-authored, time-bounded charters that gr
 - **WHEN** the owner creates a project with an `idempotency_key`
 - **THEN** charter version 1 is written and the project is a `draft`
 - **AND** replaying the same key and request returns the same project (`meta.outcome = "replayed"`), while the same key with a different request returns 409 `IDEMPOTENCY_KEY_REUSED`
-- **AND** a create whose normalized title (case and whitespace folded) and horizon match an existing draft returns that draft (`meta.outcome = "deduplicated"`) instead of a twin
+- **AND** a create whose normalized title (case and whitespace folded) and horizon match an existing draft returns that draft (`meta.outcome = "deduplicated"`) instead of a twin; nothing from that request is stored, so the Projects tab says so, keeps the form text, and offers to open the existing draft
 
 #### Scenario: Charter edits use compare-and-swap
 - **WHEN** the owner edits a draft's charter with `expected_version`
@@ -91,6 +91,7 @@ General SHALL hold owner projects: owner-authored, time-bounded charters that gr
 - **WHEN** the owner closes a draft at its current version, or a draft's horizon passes
 - **THEN** the project reads as `closed` or `expired` (expiry takes effect exactly at the horizon on every read, and the next write persists it)
 - **AND** a closed or expired project is frozen: charter edits, close and link changes return 409 `PROJECT_NOT_DRAFT`
+- **AND** the freeze holds in the database too: inserting a charter version or inserting or deleting a link for a closed, expired or past-horizon project is refused whatever the caller
 
 #### Scenario: Typed links reference records without copying them
 - **WHEN** the owner links a record to a draft

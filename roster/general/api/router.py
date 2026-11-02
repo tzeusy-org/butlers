@@ -699,6 +699,14 @@ async def _load_detail(connection: Any, project_id: UUID) -> Any:
     )
 
 
+async def _sweep_expired(connection: Any) -> None:
+    """Persist every due expiry (state and ``closed_at`` at the horizon)."""
+    await connection.execute(
+        "UPDATE projects SET state = 'expired', closed_at = horizon_end, updated_at = now() "
+        "WHERE state = 'draft' AND horizon_end <= now()"
+    )
+
+
 async def _lock_draft(connection: Any, project_id: UUID) -> Any:
     """Lock one project row, persisting a due expiry first; refuse unless draft."""
     row = await connection.fetchrow(
@@ -855,10 +863,7 @@ async def create_project(
         pool = _projects_pool(db)
 
         async def decide(connection: Any) -> Any:
-            await connection.execute(
-                "UPDATE projects SET state = 'expired', closed_at = horizon_end, "
-                "updated_at = now() WHERE state = 'draft' AND horizon_end <= now()"
-            )
+            await _sweep_expired(connection)
             keyed = await connection.fetchrow(
                 "SELECT id, create_request_digest FROM projects WHERE create_idempotency_key = $1",
                 body.idempotency_key,
@@ -948,6 +953,9 @@ async def edit_project_charter(
             if body.expected_version != current:
                 return _PROJECT_VERSION_CONFLICT
             _check_horizon(body.horizon_end)
+            # Persist due expiries first, so a draft that already reads as
+            # expired never holds the draft title/horizon slot against this edit.
+            await _sweep_expired(connection)
             await _insert_charter(connection, target, current + 1, body)
             await connection.execute(
                 "UPDATE projects SET title = $2, horizon_end = $3, "

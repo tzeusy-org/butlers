@@ -348,6 +348,66 @@ async def test_project_lifecycle_versions_links_and_no_side_effects(
     assert outbound == []
 
 
+@pytest.mark.integration
+@pytest.mark.skipif(not _DOCKER, reason="Docker not available")
+@pytest.mark.asyncio(loop_scope="session")
+async def test_database_freezes_terminal_projects_and_edits_persist_due_expiry(pool, seams) -> None:
+    """Below the API, a closed or expired project takes no version or link change."""
+    seams.manager.serving = pool
+    async with _client(_mounted(seams.manager, session=True)) as http:
+        closed = (await http.post(_ROUTE, json=_create(idempotency_key="c1"))).json()["data"]
+        await http.post(
+            f"{_ROUTE}/{closed['id']}/links", json={"ref_kind": "trip", "ref_id": _TRIP_ID}
+        )
+        await http.post(f"{_ROUTE}/{closed['id']}/close", json={"expected_version": 1})
+        lapsed = (
+            await http.post(_ROUTE, json=_create(idempotency_key="l1", title="Lapsed"))
+        ).json()["data"]
+        live = (await http.post(_ROUTE, json=_create(idempotency_key="v1", title="Live"))).json()[
+            "data"
+        ]
+    await pool.execute(
+        "UPDATE projects SET horizon_end = now() - interval '1 minute' WHERE id = $1::uuid",
+        lapsed["id"],
+    )
+
+    version = (
+        "INSERT INTO project_charter_versions (project_id, version, title, horizon_end, "
+        "objective, done_condition, constraints, created_by) VALUES "
+        "($1::uuid, 99, 'x', now() + interval '1 day', 'o', 'd', '{}'::jsonb, 'owner')"
+    )
+    link = (
+        "INSERT INTO project_links (project_id, ref_kind, ref_id, created_by) "
+        "VALUES ($1::uuid, 'drive_file', 'file-1', 'owner')"
+    )
+    for project_id in (closed["id"], lapsed["id"]):
+        for statement in (version, link):
+            with pytest.raises(asyncpg.PostgresError, match="frozen"):
+                await pool.execute(statement, project_id)
+    with pytest.raises(asyncpg.PostgresError, match="frozen"):
+        await pool.execute("DELETE FROM project_links WHERE project_id = $1::uuid", closed["id"])
+    # Positive control: a live draft accepts both.
+    await pool.execute(version, live["id"])
+    await pool.execute(link, live["id"])
+
+    # A charter edit persists due expiries before it writes, so a draft that
+    # already reads as expired no longer holds the draft title/horizon slot.
+    assert (
+        await pool.fetchval("SELECT state FROM projects WHERE id = $1::uuid", lapsed["id"])
+        == "draft"
+    )
+    async with _client(_mounted(seams.manager, session=True)) as http:
+        edited = await http.put(
+            f"{_ROUTE}/{live['id']}/charter",
+            json={**_charter(title="Live", objective="Edited."), "expected_version": 1},
+        )
+    assert edited.status_code == 200
+    assert (
+        await pool.fetchval("SELECT state FROM projects WHERE id = $1::uuid", lapsed["id"])
+        == "expired"
+    )
+
+
 # ---------------------------------------------------------------------------
 # gen_004 upgrade / downgrade
 # ---------------------------------------------------------------------------

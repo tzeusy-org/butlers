@@ -21,6 +21,9 @@ obligations and links; a project grants no authority.
   trip, drive_file, calendar_event).  A link holds a kind and a record id
   only: no URL and no copied record content.  Removing a link never touches
   the referenced record.
+- A trigger refuses a new charter version and any link insert or delete
+  while the project is closed, expired or past its horizon, so the freeze
+  holds below the API too.
 
 Nothing here schedules, arms, wakes or grants anything.  Downgrade drops the
 tables only while all three are empty; otherwise the charter history is
@@ -195,6 +198,60 @@ def upgrade() -> None:
         """
     )
 
+    # Database-level freeze: a closed, expired or past-horizon project takes
+    # no new charter version and no link change, whatever the caller.  The
+    # parent row is share-locked so a concurrent close serializes with it.
+    op.execute(
+        f"""
+        CREATE OR REPLACE FUNCTION {schema}.project_children_require_draft()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        SET search_path = pg_catalog, pg_temp
+        AS $fn$
+        DECLARE
+            v_project UUID;
+            v_open BOOLEAN;
+        BEGIN
+            IF TG_OP = 'DELETE' THEN
+                v_project := OLD.project_id;
+            ELSE
+                v_project := NEW.project_id;
+            END IF;
+            SELECT parent.state = 'draft' AND parent.horizon_end > pg_catalog.now()
+            INTO v_open
+            FROM {schema}.projects AS parent
+            WHERE parent.id = v_project
+            FOR SHARE;
+            IF v_open IS DISTINCT FROM true THEN
+                RAISE EXCEPTION 'a closed or expired project is frozen' USING ERRCODE = '55000';
+            END IF;
+            IF TG_OP = 'DELETE' THEN
+                RETURN OLD;
+            END IF;
+            RETURN NEW;
+        END;
+        $fn$
+        """
+    )
+    op.execute(
+        "DROP TRIGGER IF EXISTS project_charter_versions_require_draft ON project_charter_versions"
+    )
+    op.execute(
+        f"""
+        CREATE TRIGGER project_charter_versions_require_draft
+        BEFORE INSERT ON project_charter_versions
+        FOR EACH ROW EXECUTE FUNCTION {schema}.project_children_require_draft()
+        """
+    )
+    op.execute("DROP TRIGGER IF EXISTS project_links_require_draft ON project_links")
+    op.execute(
+        f"""
+        CREATE TRIGGER project_links_require_draft
+        BEFORE INSERT OR DELETE ON project_links
+        FOR EACH ROW EXECUTE FUNCTION {schema}.project_children_require_draft()
+        """
+    )
+
 
 def downgrade() -> None:
     op.execute(_LOCK)
@@ -212,6 +269,7 @@ def downgrade() -> None:
                 DROP TABLE project_charter_versions;
                 DROP TABLE projects;
                 DROP FUNCTION IF EXISTS {schema}.project_charter_versions_immutable();
+                DROP FUNCTION IF EXISTS {schema}.project_children_require_draft();
                 DROP FUNCTION IF EXISTS {schema}.projects_transition_guard();
             END IF;
         END

@@ -97,9 +97,16 @@ obligations and links; a project grants no authority (`gen_004`, bu-jv1moa.12;
 - `project_links` stores a link kind (`deadline`, `owner_condition`, `trip`, `drive_file`,
   `calendar_event`) and an opaque record id only. Removing a link or closing a project never
   touches the referenced record.
+- A trigger on both child tables refuses a new charter version and any link insert or delete
+  while the project is closed, expired or past its horizon, so the freeze holds below the API.
 
 Expiry needs no job: reads report a draft past its horizon as `expired` (with `closed_at` at the
-horizon), and the next write to it persists that state and refuses.
+horizon), and the next write to it persists that state and refuses. Creates and charter edits
+persist every due expiry before their draft title/horizon uniqueness check.
+
+A create that matches an existing draft returns that draft with `meta.outcome = "deduplicated"`
+and stores nothing from the request; the Projects tab says so, keeps the form text, and offers to
+open the existing draft.
 
 The routes under `/api/general/projects` require owner control before any body read or pool
 access, and every write also requires the owner's verified dashboard session: an owner API key,

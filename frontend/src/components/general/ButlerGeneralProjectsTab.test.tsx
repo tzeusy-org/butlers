@@ -85,7 +85,7 @@ const DETAIL = {
   ],
 };
 
-function renderTab() {
+function renderTab(search = `?tab=projects&project=${PROJECT_ID}`) {
   vi.mocked(api.getGeneralProjects).mockResolvedValue({
     data: [SUMMARY],
     meta: { total: 1, offset: 0, limit: 200 },
@@ -125,7 +125,7 @@ function renderTab() {
       { client },
       createElement(
         MemoryRouter,
-        { initialEntries: [`/butlers/general?tab=projects&project=${PROJECT_ID}`] },
+        { initialEntries: [`/butlers/general${search}`] },
         createElement(ButlerGeneralProjectsTab),
       ),
     ),
@@ -168,5 +168,31 @@ describe("ButlerGeneralProjectsTab", () => {
     );
     expect(api.getTravelTripSummary).toHaveBeenCalledTimes(2);
     expect(api.getTravelTripSummary).toHaveBeenCalledWith(TRIP_OK);
+  });
+  it("keeps the form and says so when a create deduplicates onto an existing draft", async () => {
+    renderTab("?tab=projects");
+    vi.mocked(api.createGeneralProject).mockResolvedValue({
+      data: DETAIL,
+      meta: { outcome: "deduplicated" },
+    } as never);
+
+    fireEvent.click(await screen.findByRole("button", { name: /new/i }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "move to tiong bahru" } });
+    fireEvent.change(screen.getByLabelText("Horizon (at most 180 days)"), {
+      target: { value: "2026-12-15T08:00" },
+    });
+    fireEvent.change(screen.getByLabelText("Objective"), { target: { value: "Fresh plan" } });
+    fireEvent.change(screen.getByLabelText("Done when"), { target: { value: "Moved in" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create draft" }));
+
+    const notice = await screen.findByTestId("project-deduplicated");
+    expect(notice.textContent).toContain("Nothing was saved from this form");
+    // The owner's text is still in the form, and the old draft was not opened.
+    expect((screen.getByLabelText("Objective") as HTMLTextAreaElement).value).toBe("Fresh plan");
+    expect(screen.queryByTestId("project-detail")).toBeNull();
+    expect(api.getGeneralProject).not.toHaveBeenCalled();
+
+    fireEvent.click(within(notice).getByRole("button", { name: "Open existing draft" }));
+    expect(await screen.findByTestId("project-detail")).toBeTruthy();
   });
 });
