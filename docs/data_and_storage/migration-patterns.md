@@ -438,7 +438,7 @@ their separate authority contract or equate the trusted migration owner with run
 - A shared-DDL downgrade that counts schema-local consumers selects `alembic_version` namespaces
   with `left(namespace.nspname, 3) <> 'pg_'`, never `NOT LIKE 'pg_%'`: LIKE's `_` is a wildcard, so
   supported names such as `pgpeer` or `pga` would be omitted, undercounting retained consumers and
-  dropping shared objects they still use. The core246-303 consumer scans were corrected in place
+  dropping shared objects they still use. The core246-305 consumer scans were corrected in place
   (a forward revision cannot change an earlier downgrade); the real-PG pgpeer control in
   `tests/migrations/test_dashboard_job_health_migration.py` executes every core scan and rejects the
   old clause.
