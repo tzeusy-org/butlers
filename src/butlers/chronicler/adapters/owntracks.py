@@ -40,6 +40,16 @@ Semantics:
   ``ts > watermark`` (inclusive), or after the newest settled row when every
   row is already covered. Only rows that arrived since then are re-read;
   their projections are idempotent by ``source_ref``.
+- Late fixes and movement episodes: a fix whose device ``ts`` is at or before
+  its endpoint's open-episode carryover ``end_at`` is *late* (an offline queue
+  delivered after newer fixes, or a cutover re-read). Late fixes always get
+  their ``location`` point event, but never extend, replace or reorder the
+  endpoint's carryover; the carryover with the newest ``end_at`` stays. A
+  late span that overlaps the open carryover episode or any stored movement
+  episode for that endpoint produces no episode write, so an already-emitted
+  episode is never duplicated or overlapped. A late span in a gap no episode
+  covers (with at least ``MIN_MOVEMENT_POINTS`` fixes) becomes its own
+  standalone movement episode.
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
@@ -743,104 +753,118 @@ class OwnTracksPointAdapter(ProjectionAdapter):
 
         event_id_by_key = event_id_by_key or {}
 
-        # Segment in device-time order.  Sorting by upload time instead would
-        # yield negative ts gaps for buffered points, which pass the gap check
-        # and merge fixes taken hours (and airports) apart (bu-8r9q06).
-        # Group by endpoint first so interleaved devices cannot fragment each
-        # other's movement into single-fix segments.
-        rows = sorted(rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r)))
-
+        # Late fixes: arrival-order paging can deliver fixes at or before an
+        # endpoint's open-episode horizon (offline queues, legacy cutover
+        # re-reads). They never extend or replace that carryover; see
+        # ``_late_segments``.
+        horizons = self._carryover_horizons(prior_carryover)
+        late_rows = [
+            r
+            for r in rows
+            if (h := horizons.get(r["endpoint_identity"])) is not None and r["ts"] <= h[1]
+        ]
+        late_keys = {id(r) for r in late_rows}
+        rows = [r for r in rows if id(r) not in late_keys]
         gap = timedelta(minutes=self.movement_gap_minutes)
         episodes_upserted = 0
-
-        # Each segment: list of rows in the same movement episode.
-        # Also tracks whether the segment continues a prior-batch open episode.
         segments: list[dict] = []
-        first_row = rows[0]
-        endpoint = first_row["endpoint_identity"]
+        if rows:
+            # Segment in device-time order.  Sorting by upload time instead would
+            # yield negative ts gaps for buffered points, which pass the gap check
+            # and merge fixes taken hours (and airports) apart (bu-8r9q06).
+            # Group by endpoint first so interleaved devices cannot fragment each
+            # other's movement into single-fix segments.
+            rows = sorted(rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r)))
 
-        # Check if the first row continues a prior-batch open episode.
-        carry = prior_carryover.get(endpoint)
-        existing_source_ref: str | None = None
-        prior_start_at: datetime | None = None
-        prior_start_lat: float | None = None
-        prior_start_lon: float | None = None
-        prior_point_count = 0
+            # Each segment: list of rows in the same movement episode.
+            # Also tracks whether the segment continues a prior-batch open episode.
+            first_row = rows[0]
+            endpoint = first_row["endpoint_identity"]
 
-        if carry:
-            resolved = self._resolve_carryover_segment(
-                endpoint=endpoint,
-                carry=carry,
-                row_ts=first_row["ts"],
-                gap=gap,
-            )
-            if resolved is not None:
-                (
-                    existing_source_ref,
-                    prior_start_at,
-                    prior_start_lat,
-                    prior_start_lon,
-                    prior_point_count,
-                ) = resolved
+            # Check if the first row continues a prior-batch open episode.
+            carry = prior_carryover.get(endpoint)
+            existing_source_ref: str | None = None
+            prior_start_at: datetime | None = None
+            prior_start_lat: float | None = None
+            prior_start_lon: float | None = None
+            prior_point_count = 0
 
-        current: list[dict[str, Any]] = [first_row]
-        current_source_ref: str | None = existing_source_ref
-        current_prior_start_at: datetime | None = prior_start_at
-        current_prior_start_lat: float | None = prior_start_lat
-        current_prior_start_lon: float | None = prior_start_lon
-        current_prior_point_count = prior_point_count
-
-        for row in rows[1:]:
-            prev = current[-1]
-            same_identity = row["endpoint_identity"] == prev["endpoint_identity"]
-            time_gap = row["ts"] - prev["ts"]
-            if same_identity and time_gap <= gap:
-                current.append(row)
-            else:
-                segments.append(
-                    {
-                        "rows": current,
-                        "source_ref": current_source_ref,
-                        "prior_start_at": current_prior_start_at,
-                        "prior_start_lat": current_prior_start_lat,
-                        "prior_start_lon": current_prior_start_lon,
-                        "prior_point_count": current_prior_point_count,
-                    }
+            if carry:
+                resolved = self._resolve_carryover_segment(
+                    endpoint=endpoint,
+                    carry=carry,
+                    row_ts=first_row["ts"],
+                    gap=gap,
                 )
-                current = [row]
-                current_source_ref = None
-                current_prior_start_at = None
-                current_prior_start_lat = None
-                current_prior_start_lon = None
-                current_prior_point_count = 0
-                # Check carryover for this new segment's endpoint too.
-                new_endpoint = row["endpoint_identity"]
-                new_carry = prior_carryover.get(new_endpoint)
-                if new_carry:
-                    new_resolved = self._resolve_carryover_segment(
-                        endpoint=new_endpoint,
-                        carry=new_carry,
-                        row_ts=row["ts"],
-                        gap=gap,
+                if resolved is not None:
+                    (
+                        existing_source_ref,
+                        prior_start_at,
+                        prior_start_lat,
+                        prior_start_lon,
+                        prior_point_count,
+                    ) = resolved
+
+            current: list[dict[str, Any]] = [first_row]
+            current_source_ref: str | None = existing_source_ref
+            current_prior_start_at: datetime | None = prior_start_at
+            current_prior_start_lat: float | None = prior_start_lat
+            current_prior_start_lon: float | None = prior_start_lon
+            current_prior_point_count = prior_point_count
+
+            for row in rows[1:]:
+                prev = current[-1]
+                same_identity = row["endpoint_identity"] == prev["endpoint_identity"]
+                time_gap = row["ts"] - prev["ts"]
+                if same_identity and time_gap <= gap:
+                    current.append(row)
+                else:
+                    segments.append(
+                        {
+                            "rows": current,
+                            "source_ref": current_source_ref,
+                            "prior_start_at": current_prior_start_at,
+                            "prior_start_lat": current_prior_start_lat,
+                            "prior_start_lon": current_prior_start_lon,
+                            "prior_point_count": current_prior_point_count,
+                        }
                     )
-                    if new_resolved is not None:
-                        (
-                            current_source_ref,
-                            current_prior_start_at,
-                            current_prior_start_lat,
-                            current_prior_start_lon,
-                            current_prior_point_count,
-                        ) = new_resolved
-        segments.append(
-            {
-                "rows": current,
-                "source_ref": current_source_ref,
-                "prior_start_at": current_prior_start_at,
-                "prior_start_lat": current_prior_start_lat,
-                "prior_start_lon": current_prior_start_lon,
-                "prior_point_count": current_prior_point_count,
-            }
-        )
+                    current = [row]
+                    current_source_ref = None
+                    current_prior_start_at = None
+                    current_prior_start_lat = None
+                    current_prior_start_lon = None
+                    current_prior_point_count = 0
+                    # Check carryover for this new segment's endpoint too.
+                    new_endpoint = row["endpoint_identity"]
+                    new_carry = prior_carryover.get(new_endpoint)
+                    if new_carry:
+                        new_resolved = self._resolve_carryover_segment(
+                            endpoint=new_endpoint,
+                            carry=new_carry,
+                            row_ts=row["ts"],
+                            gap=gap,
+                        )
+                        if new_resolved is not None:
+                            (
+                                current_source_ref,
+                                current_prior_start_at,
+                                current_prior_start_lat,
+                                current_prior_start_lon,
+                                current_prior_point_count,
+                            ) = new_resolved
+            segments.append(
+                {
+                    "rows": current,
+                    "source_ref": current_source_ref,
+                    "prior_start_at": current_prior_start_at,
+                    "prior_start_lat": current_prior_start_lat,
+                    "prior_start_lon": current_prior_start_lon,
+                    "prior_point_count": current_prior_point_count,
+                }
+            )
+
+        segments.extend(self._late_segments(late_rows, gap))
 
         new_carryover: dict = {}
 
@@ -888,10 +912,28 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             effective_start_lat = float(raw_start_lat)
             effective_start_lon = float(raw_start_lon)
 
-            # Record carryover for every segment (keyed by endpoint, so the
-            # last one wins) before deciding whether to emit: a segment still
-            # below the minimum evidence may grow past it next batch.
-            new_carryover[endpoint_identity] = {
+            if seg.get("late"):
+                # Point events only when the late span touches the open
+                # carryover episode or any stored movement episode; otherwise
+                # a standalone episode. Either way the carryover stays put.
+                if point_count < MIN_MOVEMENT_POINTS:
+                    continue
+                carry_start, carry_end = horizons[endpoint_identity]
+                if effective_start_at <= carry_end and end_at >= carry_start:
+                    continue
+                async with owntracks_connection(chronicler_pool) as pooled:
+                    if await self._merge_overlapping_episode(
+                        cast(asyncpg.Connection, pooled),
+                        endpoint_identity=endpoint_identity,
+                        start_at=effective_start_at,
+                        end_at=end_at,
+                    ):
+                        continue
+            # Record carryover for every live segment (keyed by endpoint, so
+            # the last one wins) before deciding whether to emit: a segment
+            # still below the minimum evidence may grow past it next batch.
+            # A late segment's state is discarded with ``slot``.
+            slot: dict[str, Any] = {
                 "source_ref": seg_source_ref,
                 "start_at": effective_start_at.isoformat(),
                 "end_at": end_at.isoformat(),
@@ -899,6 +941,8 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 "start_lon": effective_start_lon,
                 "point_count": point_count,
             }
+            if not seg.get("late"):
+                new_carryover[endpoint_identity] = slot
 
             # Minimum movement evidence: one fix is a location, not a movement.
             if point_count < MIN_MOVEMENT_POINTS:
@@ -949,7 +993,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 else:
                     # Legacy episode without linked evidence: extend its stored count.
                     point_count += merged["point_count"]
-                new_carryover[endpoint_identity].update(
+                slot.update(
                     source_ref=seg_source_ref,
                     start_at=effective_start_at.isoformat(),
                     end_at=end_at.isoformat(),
@@ -968,7 +1012,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             }
             if terminal is not None:
                 payload.update(end_lat=terminal[0], end_lon=terminal[1])
-            new_carryover[endpoint_identity].update(
+            slot.update(
                 end_lat=terminal[0] if terminal is not None else None,
                 end_lon=terminal[1] if terminal is not None else None,
             )
@@ -1015,6 +1059,50 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             episodes_upserted += 1
 
         return episodes_upserted, new_carryover
+
+    def _carryover_horizons(self, prior_carryover: dict) -> dict[str, tuple[datetime, datetime]]:
+        """Map endpoint → readable open-episode span ``(start_at, end_at)``."""
+        horizons: dict[str, tuple[datetime, datetime]] = {}
+        for endpoint, carry in prior_carryover.items():
+            if endpoint.startswith("_") or not isinstance(carry, dict):
+                continue
+            try:
+                start_at = datetime.fromisoformat(carry["start_at"])
+                end_at = datetime.fromisoformat(carry["end_at"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if start_at.tzinfo is None or end_at.tzinfo is None:
+                continue
+            horizons[endpoint] = (min(start_at, end_at), max(start_at, end_at))
+        return horizons
+
+    @staticmethod
+    def _late_segments(late_rows: list[dict[str, Any]], gap: timedelta) -> list[dict]:
+        """Group late fixes by endpoint and gap into standalone segments."""
+        segments: list[dict] = []
+        current: list[dict[str, Any]] = []
+        for row in sorted(late_rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r))):
+            if current and (
+                row["endpoint_identity"] != current[-1]["endpoint_identity"]
+                or row["ts"] - current[-1]["ts"] > gap
+            ):
+                segments.append(current)
+                current = []
+            current.append(row)
+        if current:
+            segments.append(current)
+        return [
+            {
+                "rows": seg,
+                "source_ref": None,
+                "prior_start_at": None,
+                "prior_start_lat": None,
+                "prior_start_lon": None,
+                "prior_point_count": 0,
+                "late": True,
+            }
+            for seg in segments
+        ]
 
     async def _merge_overlapping_episode(
         self,

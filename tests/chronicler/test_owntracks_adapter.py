@@ -507,9 +507,20 @@ async def _project_run(
     *,
     since: datetime | None = None,
     batch_limit: int = 1000,
+    episodes: list[Episode] | None = None,
+    stored: dict | None = None,
 ) -> tuple[object, list[str]]:
-    """One run through a fresh adapter, persisting carryover in ``store``."""
+    """One run through a fresh adapter, persisting carryover in ``store``.
+
+    Upserted episodes append to ``episodes``; ``stored`` is the movement
+    episode the overlap lookup finds.
+    """
     projected: list[str] = []
+    upserted = episodes if episodes is not None else []
+
+    async def _fake_ep(conn: object, episode: Episode) -> Episode:
+        upserted.append(episode)
+        return episode
 
     async def _fake_pe(conn: object, event: PointEvent) -> PointEvent:
         projected.append(event.payload["idempotency_key"])
@@ -523,15 +534,19 @@ async def _project_run(
         patch("butlers.chronicler.adapters.owntracks.get_owntracks_point", return_value=None),
         patch("butlers.chronicler.adapters.owntracks.retained_owntracks_rows", return_value=[]),
         patch("butlers.chronicler.adapters.owntracks.upsert_point_event", side_effect=_fake_pe),
-        patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=lambda c, e: e),
+        patch("butlers.chronicler.adapters.owntracks.upsert_episode", side_effect=_fake_ep),
         patch(
             "butlers.chronicler.adapters.owntracks.get_carryover",
             AsyncMock(side_effect=lambda c, n: json.loads(json.dumps(store))),
         ),
         patch("butlers.chronicler.adapters.owntracks.save_carryover", side_effect=_save),
     ):
+        cp = _chronicler_pool()
+        if stored is not None:
+            conn = await cp.acquire().__aenter__()
+            conn.fetchrow = AsyncMock(return_value=stored)
         result = await OwnTracksPointAdapter(batch_limit=batch_limit).project(
-            table.pool(), chronicler_pool=_chronicler_pool(), since=since
+            table.pool(), chronicler_pool=cp, since=since
         )
     return result, projected
 
@@ -554,6 +569,107 @@ async def test_buffered_fix_older_than_projected_fix_is_projected_once() -> None
     assert (first_keys, second_keys, third_keys) == (["fresh"], ["queued"], [])
     # The relational watermark still reports device time, never regressing.
     assert second.watermark == _NOW
+
+
+@pytest.mark.asyncio
+async def test_late_fix_between_live_runs_keeps_one_movement_episode() -> None:
+    """live → late-old → live must not fork the open episode (review r4444869734)."""
+    later = _NOW + timedelta(hours=2)
+    table = _ArrivalTable(
+        *(
+            _arrived(_NOW + timedelta(minutes=m), _NOW + timedelta(minutes=m), f"live-{m}")
+            for m in (0, 1, 2)
+        ),
+        now=later,
+    )
+    store: dict = {}
+    episodes: list[Episode] = []
+
+    await _project_run(table, store, episodes=episodes)
+    open_episode = dict(store[_ENDPOINT])
+    table.rows.append(_arrived(_NOW - timedelta(minutes=30), _NOW + timedelta(minutes=3), "late"))
+    _, late_keys = await _project_run(table, store, episodes=episodes)
+    assert late_keys == ["late"]
+    assert store[_ENDPOINT] == open_episode
+    table.rows += [
+        _arrived(_NOW + timedelta(minutes=m), _NOW + timedelta(minutes=m + 2), f"live-{m}")
+        for m in (3, 4)
+    ]
+    await _project_run(table, store, episodes=episodes)
+
+    assert {ep.source_ref for ep in episodes} == {open_episode["source_ref"]}
+    assert episodes[-1].payload["point_count"] == 5
+    assert (episodes[-1].start_at, episodes[-1].end_at) == (_NOW, _NOW + timedelta(minutes=4))
+
+
+@pytest.mark.asyncio
+async def test_cutover_reread_inside_emitted_episode_writes_no_episode() -> None:
+    """Re-read fixes already covered by stored episodes only re-project points."""
+    covered = [
+        _arrived(_NOW + timedelta(minutes=m), _NOW + timedelta(minutes=m), f"c-{m}")
+        for m in (0, 1, 2)
+    ]
+    earlier = [  # an earlier, closed episode that is not the open carryover
+        _arrived(_NOW - timedelta(hours=2, minutes=m), _NOW + timedelta(minutes=1), f"e-{m}")
+        for m in (0, 1)
+    ]
+    table = _ArrivalTable(*covered, *earlier, now=_NOW + timedelta(hours=1))
+    carry = {
+        "source_ref": "connectors.owntracks_points:movement:open",
+        "start_at": _NOW.isoformat(),
+        "end_at": (_NOW + timedelta(minutes=2)).isoformat(),
+        "start_lat": 1.2345,
+        "start_lon": 103.8765,
+        "point_count": 3,
+    }
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:closed",
+        "start_at": _NOW - timedelta(hours=2, minutes=1),
+        "end_at": _NOW - timedelta(hours=2),
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 2},
+        "linked_event_ids": [],
+    }
+    store: dict = {_ENDPOINT: dict(carry)}
+    episodes: list[Episode] = []
+
+    # Legacy watermark below the open episode: cutover re-reads every row.
+    _, reread = await _project_run(
+        table, store, since=_NOW - timedelta(hours=3), episodes=episodes, stored=stored
+    )
+
+    assert sorted(reread) == sorted(r["idempotency_key"] for r in (*covered, *earlier))
+    assert episodes == []
+    assert store[_ENDPOINT] == carry
+
+
+@pytest.mark.asyncio
+async def test_late_span_in_an_uncovered_gap_becomes_its_own_episode() -> None:
+    """A whole buffered span older than the open episode still records the trip."""
+    table = _ArrivalTable(
+        *(
+            _arrived(_NOW + timedelta(minutes=m), _NOW + timedelta(minutes=m), f"live-{m}")
+            for m in (0, 1)
+        ),
+        now=_NOW + timedelta(hours=1),
+    )
+    store: dict = {}
+    episodes: list[Episode] = []
+    await _project_run(table, store, episodes=episodes)
+    open_episode = dict(store[_ENDPOINT])
+
+    table.rows += [
+        _arrived(_NOW - timedelta(hours=3, minutes=-m), _NOW + timedelta(minutes=5), f"q-{m}")
+        for m in (0, 5)
+    ]
+    await _project_run(table, store, episodes=episodes)
+
+    flight = episodes[-1]
+    assert flight.source_ref != open_episode["source_ref"]
+    assert (flight.start_at, flight.end_at) == (
+        _NOW - timedelta(hours=3),
+        _NOW - timedelta(hours=2, minutes=55),
+    )
+    assert store[_ENDPOINT] == open_episode
 
 
 @pytest.mark.asyncio
