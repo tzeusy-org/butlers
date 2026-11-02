@@ -11,21 +11,32 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel
+from starlette.responses import JSONResponse
 
-from butlers.api.audit_emit import emit_dashboard_audit
+from butlers.api.audit_emit import authenticated_principal, emit_dashboard_audit
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import Db
-from butlers.api.models import PaginatedResponse, PaginationMeta
+from butlers.api.deps import Db, OptionalDb
+from butlers.api.models import (
+    ApiResponse,
+    ErrorDetail,
+    ErrorResponse,
+    PaginatedResponse,
+    PaginationMeta,
+)
 from butlers.api.owner_control import require_dashboard_owner_control
 from butlers.connectors.home_assistant_statistics import (
     HAStatisticsClient,
     HAStatisticsError,
     parse_statistics_change_series,
 )
+from butlers.core.audit import append as append_audit
 from butlers.credential_store import upsert_owner_entity_info
 from butlers.jobs.home import HASourceUnmeasurableError, _require_ha_source_healthy
 from butlers.roster_imports import roster_module
@@ -56,6 +67,9 @@ AtmosphereCurrentResponse = _models.AtmosphereCurrentResponse
 AtmosphereLocationUpdateRequest = _models.AtmosphereLocationUpdateRequest
 SafetyWatchEntry = _models.SafetyWatchEntry
 SafetyWatchUpsertRequest = _models.SafetyWatchUpsertRequest
+OwnerPlaceInput = _models.OwnerPlaceInput
+OwnerPlaceUpdate = _models.OwnerPlaceUpdate
+OwnerPlaceResponse = _models.OwnerPlaceResponse
 
 logger = logging.getLogger(__name__)
 
@@ -1527,4 +1541,414 @@ async def delete_safety_watch(
         response_status=204,
         request=request,
     )
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# /api/home/places — the owner place registry editor (public.owner_places; bu-jv1moa.7)
+# ---------------------------------------------------------------------------
+#
+# Owner-only and content-blind.  Owner control is a dependency, and the handlers read the
+# body themselves, so a denied request is refused before any body octet, decode or pool
+# access.  DashboardAuditMiddleware skips this prefix by path before reading the body; each
+# write records one explicit allowlisted audit row inside its own transaction instead.  No
+# response, log line or audit row echoes a coordinate, SSID, alias, label or zone id.
+
+_PLACES_LOCK = "butlers:home:owner-places:v1"
+_PLACES_MAX_BODY_BYTES = 16_384
+_PLACE_COLUMNS = (
+    "id, label, kind, lat, lon, radius_m, aliases, ssids, ha_zone, paused, version, updated_at"
+)
+
+
+class _PlaceRefusal(Exception):
+    """A fixed, content-blind refusal for the owner place routes."""
+
+    def __init__(self, status_code: int, code: str, message: str) -> None:
+        super().__init__(code)
+        self.status_code = status_code
+        self.code = code
+        self.message = message
+
+
+_INVALID_PLACE = (422, "INVALID_REQUEST", "Place request is invalid.")
+_PLACES_UNAVAILABLE = (503, "PLACES_UNAVAILABLE", "Place registry is unavailable.")
+_PLACE_NOT_FOUND = (404, "PLACE_NOT_FOUND", "Place not found.")
+_PLACE_VERSION_CONFLICT = (
+    409,
+    "VERSION_CONFLICT",
+    "This place changed since it was loaded. Reload and try again.",
+)
+_PLACE_CONFLICT = (
+    409,
+    "PLACE_CONFLICT",
+    "Another place already uses this name or network, or is already home.",
+)
+_PLACE_TOO_LARGE = (413, "REQUEST_BODY_TOO_LARGE", "Request body exceeds 16 KiB.")
+
+
+def _place_error(refusal: tuple[int, str, str]) -> JSONResponse:
+    status_code, code, message = refusal
+    body = ErrorResponse(error=ErrorDetail(code=code, message=message))
+    return JSONResponse(
+        status_code=status_code,
+        content=body.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _places_pool(db: DatabaseManager | None):
+    if db is None:
+        raise _PlaceRefusal(*_PLACES_UNAVAILABLE)
+    try:
+        return db.pool(BUTLER_DB)
+    except Exception as exc:
+        raise _PlaceRefusal(*_PLACES_UNAVAILABLE) from exc
+
+
+async def _read_place_body[T: BaseModel](request: Request, model: type[T]) -> T:
+    """Read at most 16 KiB of received octets and validate them without echoing input."""
+    if request.url.query:
+        raise _PlaceRefusal(*_INVALID_PLACE)
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk[: _PLACES_MAX_BODY_BYTES + 1 - len(raw)])
+        if len(raw) > _PLACES_MAX_BODY_BYTES:
+            raise _PlaceRefusal(*_PLACE_TOO_LARGE)
+    try:
+        return model.model_validate(json.loads(bytes(raw).decode("utf-8")))
+    except (UnicodeError, ValueError, RecursionError) as exc:
+        # ValidationError and JSONDecodeError are both ValueError subclasses.
+        raise _PlaceRefusal(*_INVALID_PLACE) from exc
+
+
+def _parse_place_id(place_id: str) -> UUID:
+    try:
+        parsed = UUID(place_id)
+    except ValueError as exc:
+        raise _PlaceRefusal(*_PLACE_NOT_FOUND) from exc
+    if str(parsed) != place_id:
+        raise _PlaceRefusal(*_PLACE_NOT_FOUND)
+    return parsed
+
+
+def _place_response(row: Any) -> OwnerPlaceResponse:
+    return OwnerPlaceResponse(
+        id=row["id"],
+        label=row["label"],
+        kind=row["kind"],
+        lat=float(row["lat"]),
+        lon=float(row["lon"]),
+        radius_m=row["radius_m"],
+        aliases=list(row["aliases"] or []),
+        ssids=list(row["ssids"] or []),
+        ha_zone=row["ha_zone"],
+        paused=row["paused"],
+        version=row["version"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _same_place(row: Any, body: Any) -> bool:
+    return (
+        row["label"] == body.label
+        and row["kind"] == body.kind
+        and float(row["lat"]) == body.lat
+        and float(row["lon"]) == body.lon
+        and row["radius_m"] == body.radius_m
+        and list(row["aliases"] or []) == body.aliases
+        and list(row["ssids"] or []) == body.ssids
+        and row["ha_zone"] == body.ha_zone
+        and row["paused"] == body.paused
+    )
+
+
+def _place_args(body: Any) -> tuple[Any, ...]:
+    return (
+        body.label,
+        body.kind,
+        Decimal(repr(body.lat)),
+        Decimal(repr(body.lon)),
+        body.radius_m,
+        body.aliases,
+        body.ssids,
+        body.ha_zone,
+        body.paused,
+    )
+
+
+async def _conflicts(connection: Any, body: Any, place_id: UUID | None) -> bool:
+    """True when another live place shares the label, an SSID, or the single home slot."""
+    return await connection.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM public.owner_places "
+        "WHERE deleted_at IS NULL AND id IS DISTINCT FROM $1 "
+        "AND (lower(label) = lower($2) OR ssids && $3::text[] "
+        "OR ($4::text = 'home' AND kind = 'home')))",
+        place_id,
+        body.label,
+        body.ssids,
+        body.kind,
+    )
+
+
+async def _audit_place(
+    connection: Any,
+    operation: str,
+    outcome: str,
+    *,
+    prior_version: int | None,
+    new_version: int | None,
+) -> None:
+    """One allowlisted audit row: operation, outcome and versions, never place content."""
+    await append_audit(
+        connection,
+        authenticated_principal(),
+        f"home_owner_place_{operation}",
+        metadata={
+            "operation": operation,
+            "outcome": outcome,
+            "prior_version": prior_version,
+            "new_version": new_version,
+        },
+        result="success"
+        if outcome in {"created", "updated", "unchanged", "deleted"}
+        else "refused",
+    )
+    logger.info("owner place %s outcome=%s", operation, outcome)
+
+
+async def _place_transaction(pool: Any, decide: Any) -> Any:
+    """Run ``decide`` under the registry lock in one transaction; map failures blind."""
+    try:
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1, 0))",
+                _PLACES_LOCK,
+            )
+            return await decide(connection)
+    except _PlaceRefusal:
+        raise
+    except asyncpg.UniqueViolationError as exc:
+        raise _PlaceRefusal(*_PLACE_CONFLICT) from exc
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError) as exc:
+        logger.error("owner place write failed: database unavailable")
+        raise _PlaceRefusal(*_PLACES_UNAVAILABLE) from exc
+
+
+@router.get(
+    "/places",
+    response_model=ApiResponse[list[OwnerPlaceResponse]],
+    responses={503: {"model": ErrorResponse}},
+)
+async def list_owner_places(
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Every place the owner has not deleted, paused ones included, by label."""
+    try:
+        rows = await _places_pool(db).fetch(
+            f"SELECT {_PLACE_COLUMNS} FROM public.owner_places "
+            "WHERE deleted_at IS NULL ORDER BY lower(label), id"
+        )
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    except (asyncpg.PostgresError, asyncpg.InterfaceError, OSError):
+        logger.error("owner place list failed: database unavailable")
+        return _place_error(_PLACES_UNAVAILABLE)
+    payload = ApiResponse[list[OwnerPlaceResponse]](data=[_place_response(row) for row in rows])
+    return JSONResponse(
+        content=payload.model_dump(mode="json"), headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.post(
+    "/places",
+    status_code=201,
+    response_model=ApiResponse[OwnerPlaceResponse],
+    responses={409: {"model": ErrorResponse}, 422: {"model": ErrorResponse}},
+)
+async def create_owner_place(
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Add a place; it takes part in resolution immediately unless created paused."""
+    try:
+        body = await _read_place_body(request, OwnerPlaceInput)
+        pool = _places_pool(db)
+
+        async def decide(connection: Any) -> Any:
+            if await _conflicts(connection, body, None):
+                await _audit_place(
+                    connection, "create", "conflict", prior_version=None, new_version=None
+                )
+                return _PLACE_CONFLICT
+            row = await connection.fetchrow(
+                "INSERT INTO public.owner_places "
+                "(label, kind, lat, lon, radius_m, aliases, ssids, ha_zone, paused) "
+                "VALUES ($1, $2, $3, $4, $5, $6::text[], $7::text[], $8, $9) "
+                f"RETURNING {_PLACE_COLUMNS}",
+                *_place_args(body),
+            )
+            await _audit_place(connection, "create", "created", prior_version=None, new_version=1)
+            return row
+
+        result = await _place_transaction(pool, decide)
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    if isinstance(result, tuple):
+        return _place_error(result)
+    payload = ApiResponse[OwnerPlaceResponse](data=_place_response(result))
+    return JSONResponse(
+        status_code=201,
+        content=payload.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.put(
+    "/places/{place_id}",
+    response_model=ApiResponse[OwnerPlaceResponse],
+    responses={
+        404: {"model": ErrorResponse},
+        409: {"model": ErrorResponse},
+        422: {"model": ErrorResponse},
+    },
+)
+async def update_owner_place(
+    request: Request,
+    place_id: str,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Any:
+    """Replace a place under compare-and-swap; pausing is an edit of ``paused``.
+
+    An edit identical to the stored place is a no-op success even from a stale version;
+    a changed edit from a stale version is ``409 VERSION_CONFLICT`` and writes nothing.
+    """
+    try:
+        target = _parse_place_id(place_id)
+        body = await _read_place_body(request, OwnerPlaceUpdate)
+        pool = _places_pool(db)
+
+        async def decide(connection: Any) -> Any:
+            row = await connection.fetchrow(
+                f"SELECT {_PLACE_COLUMNS} FROM public.owner_places "
+                "WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                target,
+            )
+            if row is None:
+                await _audit_place(
+                    connection, "update", "not_found", prior_version=None, new_version=None
+                )
+                return _PLACE_NOT_FOUND
+            current = row["version"]
+            if _same_place(row, body):
+                await _audit_place(
+                    connection, "update", "unchanged", prior_version=current, new_version=current
+                )
+                return row
+            if body.expected_version != current:
+                await _audit_place(
+                    connection,
+                    "update",
+                    "version_conflict",
+                    prior_version=current,
+                    new_version=None,
+                )
+                return _PLACE_VERSION_CONFLICT
+            if await _conflicts(connection, body, target):
+                await _audit_place(
+                    connection, "update", "conflict", prior_version=current, new_version=None
+                )
+                return _PLACE_CONFLICT
+            updated = await connection.fetchrow(
+                "UPDATE public.owner_places SET label = $2, kind = $3, lat = $4, lon = $5, "
+                "radius_m = $6, aliases = $7::text[], ssids = $8::text[], ha_zone = $9, "
+                "paused = $10, version = version + 1, updated_at = now() "
+                f"WHERE id = $1 RETURNING {_PLACE_COLUMNS}",
+                target,
+                *_place_args(body),
+            )
+            await _audit_place(
+                connection, "update", "updated", prior_version=current, new_version=current + 1
+            )
+            return updated
+
+        result = await _place_transaction(pool, decide)
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    if isinstance(result, tuple):
+        return _place_error(result)
+    payload = ApiResponse[OwnerPlaceResponse](data=_place_response(result))
+    return JSONResponse(
+        content=payload.model_dump(mode="json"), headers={"Cache-Control": "no-store"}
+    )
+
+
+@router.delete(
+    "/places/{place_id}",
+    status_code=204,
+    response_model=None,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def delete_owner_place(
+    place_id: str,
+    request: Request,
+    _owner: str = Depends(require_dashboard_owner_control),
+    *,
+    db: OptionalDb,
+) -> Response:
+    """Soft-delete a place at ``?expected_version=N``; its identity is never reused."""
+    try:
+        target = _parse_place_id(place_id)
+        raw_version = request.query_params.get("expected_version", "")
+        if (
+            list(request.query_params) != ["expected_version"]
+            or not raw_version.isascii()
+            or not raw_version.isdigit()
+            or int(raw_version) < 1
+        ):
+            raise _PlaceRefusal(*_INVALID_PLACE)
+        expected = int(raw_version)
+        pool = _places_pool(db)
+
+        async def decide(connection: Any) -> Any:
+            current = await connection.fetchval(
+                "SELECT version FROM public.owner_places "
+                "WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+                target,
+            )
+            if current is None:
+                await _audit_place(
+                    connection, "delete", "not_found", prior_version=None, new_version=None
+                )
+                return _PLACE_NOT_FOUND
+            if current != expected:
+                await _audit_place(
+                    connection,
+                    "delete",
+                    "version_conflict",
+                    prior_version=current,
+                    new_version=None,
+                )
+                return _PLACE_VERSION_CONFLICT
+            await connection.execute(
+                "UPDATE public.owner_places SET deleted_at = now(), "
+                "version = version + 1, updated_at = now() WHERE id = $1",
+                target,
+            )
+            await _audit_place(
+                connection, "delete", "deleted", prior_version=current, new_version=current + 1
+            )
+            return None
+
+        result = await _place_transaction(pool, decide)
+    except _PlaceRefusal as refusal:
+        return _place_error((refusal.status_code, refusal.code, refusal.message))
+    if isinstance(result, tuple):
+        return _place_error(result)
     return Response(status_code=204)
