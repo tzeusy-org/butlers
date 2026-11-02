@@ -510,7 +510,7 @@ def test_core_268_shared_hardening_survives_all_but_the_last_schema_downgrade(
         engine.dispose()
 
 
-# --- core_302: ambiguous outcomes cannot omit their result ---
+# --- core_304: ambiguous outcomes cannot omit their result ---
 
 
 def test_ambiguous_null_result_insert_is_refused(db_url: str) -> None:
@@ -531,7 +531,7 @@ def test_ambiguous_null_result_insert_is_refused(db_url: str) -> None:
         engine.dispose()
 
 
-def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
+def test_core_304_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
     postgres_container,
 ) -> None:
     """Only the last schema may restore the old CHECK; neither direction releases holds."""
@@ -540,8 +540,8 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
     asyncio.run(run_migrations(url, chain="core", schema="switchboard"))
     general = _build_alembic_config(url, chains=["core"], target_schema="general")
     switchboard = _build_alembic_config(url, chains=["core"], target_schema="switchboard")
-    command.downgrade(general, "core_301")
-    command.downgrade(switchboard, "core_301")
+    command.downgrade(general, "core_303")
+    command.downgrade(switchboard, "core_303")
     engine = create_engine(url)
     # Every previously allowed pair survives; only the ambiguous NULL is canonicalized.
     pairs = [
@@ -613,23 +613,28 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
         # Supported names beginning with "pg" are not PostgreSQL system schemas.
         # Exercise the actual second schema, then restore the original two-schema path.
         bound_id = next(row["id"] for row in before if row["stage"] == "bound")
-        with engine.begin() as conn:
-            conn.exec_driver_sql("ALTER SCHEMA switchboard RENAME TO pgpeer")
+        # Schema renames are disposable-test setup; behavioral callers stay ordinary.
+        control_engine = create_engine(_superuser_url(postgres_container, url))
         try:
-            command.downgrade(general, "core_301")
-            _refused(
-                url,
-                bound_id,
-                "stage = 'ambiguous', stage_order = 3",
-                "ck_qa_publication_operations_stage_result",
-            )
+            with control_engine.begin() as conn:
+                conn.exec_driver_sql("ALTER SCHEMA switchboard RENAME TO pgpeer")
+            try:
+                command.downgrade(general, "core_303")
+                _refused(
+                    url,
+                    bound_id,
+                    "stage = 'ambiguous', stage_order = 3",
+                    "ck_qa_publication_operations_stage_result",
+                )
+            finally:
+                with control_engine.begin() as conn:
+                    conn.exec_driver_sql("ALTER SCHEMA pgpeer RENAME TO switchboard")
+                command.upgrade(general, "core@head")
         finally:
-            with engine.begin() as conn:
-                conn.exec_driver_sql("ALTER SCHEMA pgpeer RENAME TO switchboard")
-            command.upgrade(general, "core@head")
+            control_engine.dispose()
 
-        # A second schema still at core_302 must keep the strict CHECK in force.
-        command.downgrade(general, "core_301")
+        # A second schema still at core_304 must keep the strict CHECK in force.
+        command.downgrade(general, "core_303")
         bound_id = next(row["id"] for row in before if row["stage"] == "bound")
         _refused(
             url,
@@ -637,7 +642,7 @@ def test_core_302_canonicalizes_legacy_rows_and_keeps_shared_hold_guards(
             "stage = 'ambiguous', stage_order = 3",
             "ck_qa_publication_operations_stage_result",
         )
-        command.downgrade(switchboard, "core_301")
+        command.downgrade(switchboard, "core_303")
         # Historical compatibility returns, without erasing any canonicalized result or hold.
         _update_as_qa(url, bound_id, "stage = 'ambiguous', stage_order = 3")
         with engine.connect() as conn:

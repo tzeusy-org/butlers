@@ -249,13 +249,13 @@ anchors the settle), and the stamp is set-once afterwards. A CHECK
 begun. Only the last schema to leave `core_300` drops the column and CHECK and restores the `core_268`
 guard body.
 
-Migration `core_302`, following public `core_301`, closes the historical ambiguous-NULL gap: both INSERT and UPDATE must
+Migration `core_304`, following public `core_303`, closes the historical ambiguous-NULL gap: both INSERT and UPDATE must
 carry result `ambiguous` when stage is `ambiguous`. Upgrade canonicalizes only that result on
 historical ambiguous-NULL rows through the existing QA write role under forced row security.
 The transaction locks the table across backfill and CHECK replacement; bindings, stages,
 reconciliation, effects and lineage holds remain unchanged. Every other stage/result pair and
 the set-once, reconciliation and held-delete guards remain unchanged. Only the last schema to
-leave `core_302` restores the historical `core_268` CHECK. Downgrade retains canonicalized
+leave `core_304` restores the historical `core_268` CHECK. Downgrade retains canonicalized
 results, preserving set-once semantics and every unresolved hold.
 
 `deploy/backup/pg_dump.sh` excludes the table because forced row security fences the dump role. A
