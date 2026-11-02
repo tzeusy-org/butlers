@@ -10,10 +10,15 @@ import asyncio
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 from butlers.core.confirm_models import ConfirmPrompt
 from butlers.core.confirm_tokens import mint_confirm_token, verify_confirm_token
+
+# A settled row keeps its question, quotes and option labels this long, then the worker
+# replaces them with the database-owned content-free tombstone (core_307).
+PROMPT_RETENTION = timedelta(days=14)
 
 
 class ConfirmCursorError(ValueError):
@@ -92,10 +97,19 @@ class ConfirmService:
         }
         recipient = prompt.recipient
 
-        def same_identity(row):
+        async def same_identity(conn, row):
+            if row is None:
+                return False
+            stored = row["prompt"]
+            if stored.get("redacted"):
+                # A redacted row still binds its question through the tombstone digest.
+                stored_matches = stored == await conn.fetchval(
+                    "SELECT public.confirm_redacted_prompt($1::jsonb)", payload
+                )
+            else:
+                stored_matches = stored == payload
             return (
-                row is not None
-                and row["prompt"] == payload
+                stored_matches
                 and row["recipient_entity"] == recipient.entity_id
                 and row["recipient_sender"] == recipient.sender_id
                 and row["recipient_chat"] == recipient.chat_id
@@ -111,7 +125,7 @@ class ConfirmService:
                 producer_key,
             )
             if existing is not None:
-                if not same_identity(existing):
+                if not await same_identity(conn, existing):
                     raise ValueError("producer key already binds a different immutable prompt")
                 return dict(existing)
             expiry = None
@@ -149,7 +163,7 @@ class ConfirmService:
                     producer,
                     producer_key,
                 )
-                if not same_identity(row):
+                if not await same_identity(conn, row):
                     raise ValueError("producer key already binds a different immutable prompt")
         return dict(row)
 
@@ -252,7 +266,9 @@ class ConfirmService:
                 ):
                     return {"status": "refused"}
                 channel = "telegram_owner"
-            if type(option) is not int or not 0 <= option < len(row["prompt"]["options"]):
+            # A redacted (always settled) row has no options left; it is already handled.
+            options = row["prompt"].get("options")
+            if options is not None and (type(option) is not int or not 0 <= option < len(options)):
                 return {"status": "refused"}
             if row["status"] != "pending":
                 return {
@@ -281,6 +297,30 @@ class ConfirmService:
             result = await conn.execute("""UPDATE public.pending_confirms
                 SET status='expired', answered_at=clock_timestamp(),application_status='pending'
                 WHERE status='pending' AND expires_at <= clock_timestamp()""")
+        return int(result.split()[-1])
+
+    async def redact_settled(self, *, limit: int = 100) -> int:
+        """Drop prompt copy from rows settled longer than PROMPT_RETENTION.
+
+        Settled means terminal, applied and with no terminal rendering still owed, so
+        no worker step reads the question again. The guard trigger admits only this
+        replacement and only on such rows.
+        """
+        async with self._connection() as conn:
+            result = await conn.execute(
+                """UPDATE public.pending_confirms
+                SET prompt=public.confirm_redacted_prompt(prompt)
+                WHERE id IN (
+                    SELECT id FROM public.pending_confirms
+                    WHERE status<>'pending' AND application_status='applied'
+                      AND NOT prompt ? 'redacted'
+                      AND (message_ref IS NULL
+                           OR rendered_status = status||':'||application_status)
+                      AND answered_at <= clock_timestamp() - $1::interval
+                    ORDER BY answered_at FOR UPDATE SKIP LOCKED LIMIT $2)""",
+                PROMPT_RETENTION,
+                limit,
+            )
         return int(result.split()[-1])
 
     async def dispatch_one(self, *, exclude: tuple[UUID, ...] = ()) -> UUID | None:

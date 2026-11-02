@@ -10,7 +10,7 @@ from fastapi import FastAPI
 
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
-from butlers.api.routers.confirms import router
+from butlers.api.routers.confirms import REDACTED_TEXT, router
 from butlers.core.owner_auth_context import verified_http_principal
 from tests.api.auth_helpers import _DomainOwnerState
 
@@ -79,9 +79,16 @@ async def test_exact_callback_credential_does_not_authorize_owner_or_adjacent_ro
                 "/api/confirms/callback", json=body, headers={"X-API-Key": "owner-key"}
             )
         ).status_code == 403
-        assert (
-            await client.get("/api/confirms", headers={"X-API-Key": "owner-key"})
-        ).status_code == 200
+        # A redacted row renders a fixed placeholder, never its digest or stale options.
+        redacted = {"redacted": True, "digest": "ab"}
+        row = dict.fromkeys(("status", "answer_index", "application_status"), None)
+        row |= {"id": uuid4(), "prompt": redacted, "expires_at": None, "created_at": None}
+        service.list_owner.return_value = {"rows": [row], "next_cursor": None}
+        response = await client.get("/api/confirms", headers={"X-API-Key": "owner-key"})
+        assert response.status_code == 200
+        card = response.json()["data"][0]
+        assert (card["text"], card["options"]) == (REDACTED_TEXT, [])
+        assert "digest" not in response.text
 
 
 async def test_uncomposed_runtime_is_explicitly_unavailable():
