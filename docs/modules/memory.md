@@ -107,7 +107,8 @@ recording the fact reference, a value excerpt and the fact's server-stamped auth
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
 A closure that raises never fails the fact write: the write commits, the gap stays open, and
-`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, per `butler`) is
+`butlers.memory.knowledge_gap_closure_failures_total` (`stage=closure`, or `stage=reservation` when the pair
+reservation fails; per `butler`) is
 incremented after a warning log; a failure to record the counter is logged and never fails
 the write.
 
@@ -122,7 +123,7 @@ projections. Identity and registry-relational predicates still belong to the Rel
 Gap bookkeeping is best effort: a missing local gap table skips it; an ordinary reservation
 failure skips both closures, while an individual closure failure leaves that gap open without
 discarding a successful sibling. Savepoints protect the canonical fact transaction, and failures
-use the existing warning/count. Cancellation or a canonical write/projection error still rolls
+use the warning and the counter above. Cancellation or a canonical write/projection error still rolls
 back the enclosing write. Temporal replay and an already-existing inverse key create no new
 answer; inactive retained rows are never reactivated. There is no historical repair scan, and
 later retraction retains the existing answer snapshot. Gaps retain the local single-owner contract:

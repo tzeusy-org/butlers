@@ -446,7 +446,7 @@ def record_domain_event_delivery_failed_permanent(
 # Memory knowledge-gap instruments
 # ---------------------------------------------------------------------------
 
-_KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES = frozenset({"closure"})
+_KNOWLEDGE_GAP_CLOSURE_FAILURE_STAGES = frozenset({"closure", "reservation"})
 _UNKNOWN_BUTLER = "unknown"
 
 

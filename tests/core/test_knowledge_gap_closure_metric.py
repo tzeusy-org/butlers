@@ -133,3 +133,31 @@ def test_the_butler_label_is_the_logging_context_name(reader) -> None:
 
 def test_no_module_level_closure_counter_remains() -> None:
     assert not hasattr(knowledge_gaps, "closure_failures")
+
+
+async def test_a_swallowed_reservation_error_is_counted_with_the_reservation_stage(
+    reader,
+) -> None:
+    conn = MagicMock()
+    conn.transaction = MagicMock(side_effect=RuntimeError("lock service down"))
+
+    reserved = await knowledge_gaps.reserve_gap_pairs(conn, [(uuid.uuid4(), "lives_in")])
+
+    assert reserved is False
+    (point,) = _points(reader)
+    assert dict(point.attributes) == {"butler": "unknown", "stage": "reservation"}
+    assert point.value == 1
+
+
+async def test_a_metric_failure_never_escapes_the_reservation(monkeypatch, caplog) -> None:
+    def exporter_down(**_kwargs: Any) -> None:
+        raise RuntimeError("OTLP exporter unavailable")
+
+    monkeypatch.setattr(knowledge_gaps, "record_knowledge_gap_closure_failure", exporter_down)
+    conn = MagicMock()
+    conn.transaction = MagicMock(side_effect=RuntimeError("lock service down"))
+
+    with caplog.at_level(logging.WARNING, logger=knowledge_gaps.__name__):
+        assert await knowledge_gaps.reserve_gap_pairs(conn, [(uuid.uuid4(), "lives_in")]) is False
+
+    assert "metric emission failed" in caplog.text

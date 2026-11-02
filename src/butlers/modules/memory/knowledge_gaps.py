@@ -92,7 +92,6 @@ async def reserve_gap_pairs(conn: Any, pairs: list[tuple[uuid.UUID, str]]) -> bo
     both closures, rather than falling back to their unsafe individual lock order.
     Cancellation still propagates and rolls back the enclosing write.
     """
-    global closure_failures
     try:
         async with conn.transaction():
             if not await conn.fetchval("SELECT to_regclass('knowledge_gaps') IS NOT NULL"):
@@ -106,12 +105,11 @@ async def reserve_gap_pairs(conn: Any, pairs: list[tuple[uuid.UUID, str]]) -> bo
                 await conn.execute("SELECT pg_advisory_xact_lock($1::bigint)", row["lock_id"])
         return True
     except Exception:
-        closure_failures += 1
-        logger.warning(
-            "Knowledge-gap pair reservation failed (closure_failures=%s)",
-            closure_failures,
-            exc_info=True,
-        )
+        logger.warning("Knowledge-gap pair reservation failed", exc_info=True)
+        try:
+            record_knowledge_gap_closure_failure(stage="reservation")
+        except Exception:
+            logger.warning("knowledge gap closure metric emission failed", exc_info=True)
         return False
 
 

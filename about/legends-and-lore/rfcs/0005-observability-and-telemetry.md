@@ -181,13 +181,13 @@ The domain-event counter MUST be recorded only after `mark_delivery_failed()` ha
 
 | Instrument | Type | Labels | Description |
 |------------|------|--------|-------------|
-| `butlers.memory.knowledge_gap_closure_failures_total` | Counter | `butler` (registered name, or `unknown` outside a butler context), `stage` (`closure`) | Knowledge-gap closure failures swallowed so the fact write could commit |
+| `butlers.memory.knowledge_gap_closure_failures_total` | Counter | `butler` (registered name, or `unknown` outside a butler context), `stage` (`closure`, `reservation`) | Knowledge-gap closure and pair-reservation failures swallowed so the fact write could commit |
 
 The counter is best-effort and recorded after the failure is logged: an emission failure MUST NOT fail the fact write. Entity, predicate and fact identifiers and exception text are forbidden attributes.
 
 ### Cardinality Discipline
 
-All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, currently `closure`; an unsupported value is rejected before emission).
+All metrics MUST use low-cardinality attributes only. Permitted attributes: `butler`, `tool_name`, `outcome`, `trigger_source`, `error_class`, `source_channel`, `policy_tier`, `model`, `task_name`, `rule_type`, `action`, `reason`, `result`, `path`, `queue_name`, `starvation_override`, `source_butler`, `destination_butler`, `workflow`, `phase`, `decision`, `stage` (a closed set of bookkeeping step names, `closure` or `reservation`; an unsupported value is rejected before emission).
 
 The following MUST NEVER be used as metric attributes: `request_id`, raw sender identities, `thread_id`, message text, session IDs, attempt IDs, trace IDs, UUIDs, timestamps, or any other high-cardinality identifier.
 
