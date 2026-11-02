@@ -13,6 +13,7 @@ from pathlib import Path
 
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding
 from butlers.core.qa.publication.export import GitIdentity, SealedExport
+from butlers.core.qa.publication.reconcile import PullRequestView
 from butlers.core.qa.publication.state import PublicationOperation, PublicationRefused
 from butlers.core.qa.publication.transport import AmbiguousOutcome, StaleExpectedHead
 
@@ -31,6 +32,7 @@ class FakeProvider:
     lose_response_on: str | None = None
     raise_on_push: Exception | None = None
     raise_on_create: Exception | None = None
+    raise_on_labels: Exception | None = None
 
     def _maybe_lose(self, name: str) -> None:
         if self.lose_response_on == name:
@@ -56,10 +58,15 @@ class FakeProvider:
 
     async def update_pull_request(self, *, number, title, body) -> None:
         self.calls.append(("update_pull_request", {"number": number}))
+        self.prs[number] |= {"title": title, "body": body}
+        self._maybe_lose("update_pull_request")
 
     async def set_labels(self, *, number, labels) -> None:
         self.calls.append(("set_labels", {"number": number, "labels": labels}))
+        if self.raise_on_labels is not None:
+            raise self.raise_on_labels
         self.prs[number]["labels"] = labels
+        self._maybe_lose("set_labels")
 
     # Read-only ``PublicationReader`` view; never appended to ``calls`` (the effect log).
 
@@ -68,6 +75,19 @@ class FakeProvider:
 
     async def find_pull_requests(self, *, head, base) -> tuple[int, ...]:
         return tuple(n for n, pr in self.prs.items() if (pr["head"], pr["base"]) == (head, base))
+
+    async def read_pull_request(self, *, number) -> PullRequestView | None:
+        pr = self.prs.get(number)
+        if pr is None:
+            return None
+        return PullRequestView(
+            number=number,
+            head=pr["head"],
+            base=pr["base"],
+            title=pr["title"],
+            body=pr["body"],
+            labels=tuple(pr.get("labels", ())),
+        )
 
 
 @dataclass

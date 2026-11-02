@@ -75,7 +75,7 @@ async def test_run_assumes_the_qa_role_and_reports_ids_and_categories(
     connection = MagicMock(execute=AsyncMock())
     await create_pool.call_args.kwargs["setup"](connection)
     connection.execute.assert_awaited_once_with("SET ROLE butler_qa_rw")
-    sweep.assert_awaited_once_with(pool, reader, limit=5)
+    sweep.assert_awaited_once_with(pool, reader, limit=5, labels=("self-healing", "automated"))
     out = capsys.readouterr().out
     assert json.loads(out)["entries"] == [
         {

@@ -42,6 +42,11 @@ The `public` schema contains tables that multiple butlers need to read. It is th
   a terminal attempt closes with no held lineage, the bytes are emptied and the row stays as a
   binding tombstone. Only `butler_qa_rw` writes (forced RLS);
   every runtime role reads. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.owner_places`** -- The owner place registry (core_303): named places with a stable
+  UUID, kind, five-decimal centre, radius, aliases, exact SSIDs, optional HA zone, `paused`,
+  CAS `version` and soft `deleted_at`. Written only by the owner Home dashboard editor (the table
+  owner); non-FORCE RLS lets only `butler_travel_rw` and `butler_chronicler_rw` read it and no
+  runtime role write it. See [Home Butler](../butlers/home.md#owner-places).
 - **`public.qa_publication_refusals`** -- QA publisher refusal receipts (core_302): one immutable,
   content-free row (status, category) per attempt the publisher refused before retaining an export,
   so the case API can prove such an attempt `unpublished`. Fenced like the exports table. See

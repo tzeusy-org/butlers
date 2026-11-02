@@ -67,6 +67,15 @@ _SKIP_PREFIXES: tuple[str, ...] = ("/health", "/api/health")
 # explicit field-by-field audit row inside the mapping transaction.
 _EXACT_SKIP_ROUTES: frozenset[tuple[str, str]] = frozenset({("POST", "/api/home/person-mappings")})
 
+# The owner place registry editor carries coordinates and Wi-Fi SSIDs.  Its handlers write
+# one explicit allowlisted audit row per write, so the generic middleware never reads these
+# bodies: matched by path before the body is touched, for every method and outcome.
+_PRIVATE_SUBTREES: tuple[str, ...] = ("/api/home/places",)
+
+
+def _in_private_subtree(path: str) -> bool:
+    return any(path == root or path.startswith(f"{root}/") for root in _PRIVATE_SUBTREES)
+
 
 def _infer_butler(path: str) -> str:
     """Derive a butler name from the request path.
@@ -128,7 +137,9 @@ class DashboardAuditMiddleware(BaseHTTPMiddleware):
         if request.method not in _MUTATING_METHODS:
             return await call_next(request)
 
-        if (request.method, request.url.path) in _EXACT_SKIP_ROUTES:
+        if (request.method, request.url.path) in _EXACT_SKIP_ROUTES or _in_private_subtree(
+            request.url.path
+        ):
             return await call_next(request)
 
         path = request.url.path

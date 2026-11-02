@@ -26,6 +26,7 @@ from butlers.core.owner_creation import (
     argument_digest,
     owner_creation_transaction,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -121,9 +122,8 @@ async def test_domain_write_and_closed_receipt_share_connection_and_transaction(
 
     connection = SimpleNamespace(transaction=transaction, fetchval=fetchval)
 
-    @asynccontextmanager
-    async def acquire():
-        yield connection
+    def acquire():
+        return AsyncCtx(connection)
 
     @owner_creation_transaction
     async def create(conn, *, fails=False):
