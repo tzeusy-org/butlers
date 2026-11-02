@@ -855,7 +855,11 @@ left untouched.
   restricted `connector_writer` role and cannot write the chronicler schema,
   POSTs `{interview_id, answer}` to `POST /api/chronicler/gap-interview/resolve`
   (env `CONNECTOR_INTERNAL_API_URL`, default `http://dashboard-api:41200`) and
-  `answerCallbackQuery`-acks the tap. That endpoint + the
+  `answerCallbackQuery`-acks the tap. Only primary-owner taps are applied, and
+  the POST carries the connector callback credential
+  (`X-Butlers-Approval-Callback-Token`), which owner auth accepts
+  for that exact route only, without an owner principal; without it the API
+  answers 401 and the owner sees "Couldn't record that right now". That endpoint + the
   `chronicler_resolve_gap_interview` MCP tool both delegate to
   `gap_interview.resolve_gap_interview_callback` (one resolver, identical write
   shape). It is the **first real tenant of the corrections machinery**: writes a

@@ -16,16 +16,24 @@ from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
 )
+from butlers.core.approval_callbacks import APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER
 
 
-def _make_connector(*, internal_api_url: str | None) -> TelegramBotConnector:
+def _make_connector(
+    *,
+    internal_api_url: str | None,
+    connector_token: str | None = "connector-key",
+    owner: bool = True,
+) -> TelegramBotConnector:
     config = TelegramBotConnectorConfig(
         switchboard_mcp_url="http://localhost:41100/sse",
         endpoint_identity="telegram:bot:1",
         telegram_token="test-token",
         internal_api_url=internal_api_url,
+        approval_callback_connector_token=connector_token,
     )
     connector = TelegramBotConnector(config, cursor_pool=MagicMock())
+    connector._is_primary_owner_callback = AsyncMock(return_value=owner)
     return connector
 
 
@@ -53,6 +61,8 @@ async def test_cgi_callback_posts_to_resolve_api_and_acks():
     resolve_url = calls[0].args[0]
     assert resolve_url == "http://dashboard-api:41200/api/chronicler/gap-interview/resolve"
     assert calls[0].kwargs["json"] == {"interview_id": "2026-07-02", "answer": "confirm"}
+    # The dashboard API is owner-authenticated; the tap carries the connector credential.
+    assert calls[0].kwargs["headers"] == {APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: "connector-key"}
     # Second POST → answerCallbackQuery acknowledging the tap.
     ack_url = calls[1].args[0]
     assert ack_url.endswith("/answerCallbackQuery")
@@ -116,3 +126,28 @@ async def test_cgi_callback_api_unreachable_is_graceful():
     assert connector._http_client.post.call_count == 2
     ack = connector._http_client.post.call_args_list[1].kwargs["json"]
     assert "dashboard" in ack["text"]
+
+
+async def test_cgi_callback_without_connector_credential_is_graceful():
+    connector = _make_connector(internal_api_url="http://dashboard-api:41200", connector_token=None)
+    connector._http_client = MagicMock()
+    connector._http_client.post = AsyncMock(return_value=_resp())
+
+    handled = await connector._maybe_handle_gap_interview_callback(_cgi_update())
+    assert handled is True
+    posts = connector._http_client.post.call_args_list
+    assert len(posts) == 1
+    assert posts[0].args[0].endswith("/answerCallbackQuery")
+
+
+async def test_cgi_callback_from_non_owner_is_acked_but_not_applied():
+    connector = _make_connector(internal_api_url="http://dashboard-api:41200", owner=False)
+    connector._http_client = MagicMock()
+    connector._http_client.post = AsyncMock(return_value=_resp())
+
+    handled = await connector._maybe_handle_gap_interview_callback(_cgi_update())
+    assert handled is True
+    posts = connector._http_client.post.call_args_list
+    assert len(posts) == 1
+    assert posts[0].args[0].endswith("/answerCallbackQuery")
+    assert posts[0].kwargs["json"]["text"] == ""

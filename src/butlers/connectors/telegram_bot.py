@@ -1436,17 +1436,23 @@ class TelegramBotConnector:
 
         interview_id, answer = parsed
         callback_query_id = str(callback_query.get("id", ""))
-        toast = await self._apply_gap_interview_answer(interview_id, answer)
+        if await self._is_primary_owner_callback(callback_query):
+            toast = await self._apply_gap_interview_answer(interview_id, answer)
+        else:
+            # The unsigned cgi: payload only carries authority from the owner chat.
+            logger.warning("gap-interview callback from a non-owner sender ignored")
+            toast = ""
         if callback_query_id:
             await self._answer_callback_query(callback_query_id, toast)
         return True
 
     async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> str:
         """POST the answer to the chronicler API; return an owner-facing toast."""
-        if not self._config.internal_api_url:
+        connector_token = self._config.approval_callback_connector_token
+        if not self._config.internal_api_url or not connector_token:
             logger.warning(
-                "gap-interview callback received but CONNECTOR_INTERNAL_API_URL is unset; "
-                "cannot apply (interview_id=%s)",
+                "gap-interview callback received without CONNECTOR_INTERNAL_API_URL or the "
+                "connector callback credential; cannot apply (interview_id=%s)",
                 interview_id,
             )
             return "Couldn't record that — please use the dashboard."
@@ -1454,7 +1460,9 @@ class TelegramBotConnector:
         url = f"{self._config.internal_api_url.rstrip('/')}/api/chronicler/gap-interview/resolve"
         try:
             resp = await self._http_client.post(
-                url, json={"interview_id": interview_id, "answer": answer}
+                url,
+                headers={APPROVAL_CALLBACK_CONNECTOR_TOKEN_HEADER: connector_token},
+                json={"interview_id": interview_id, "answer": answer},
             )
         except Exception as exc:  # noqa: BLE001 — network hiccup ⇒ graceful toast
             logger.warning("gap-interview resolve POST failed: %s", exc)
