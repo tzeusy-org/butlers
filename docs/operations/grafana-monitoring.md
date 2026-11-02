@@ -83,7 +83,8 @@ OpenTelemetry Collector (port 4318)
   ├─ /v1/traces  → Grafana Tempo
   └─ /v1/metrics → Prometheus (remote_write)
 
-Connector Health Endpoints (/metrics)
+Connector Health Endpoints (/metrics, loopback-only)
+  ↓ (metrics-proxy sidecar, <connector>:9464)
   ↓ (Prometheus scrape)
 Prometheus
 
@@ -106,8 +107,21 @@ Grafana
 
 - **Prometheus** — Prometheus metrics database (port 9090)
   - Scrapes connector health endpoints (prometheus_client text format)
+    through per-connector metrics-proxy sidecars (below)
   - Receives OTLP metrics from otel-collector via remote_write
   - Stores time-series data in local volume (`prometheus_data`)
+
+- **`connector-*-metrics`** — one metrics-proxy sidecar per scraped connector
+  - Connector health servers bind `127.0.0.1` and also serve `/health` and
+    `POST /reload`, so Prometheus cannot reach them from its own container
+  - Each sidecar joins its connector's network namespace
+    (`network_mode: service:<connector>`) and republishes only `GET /metrics`
+    on port 9464; Prometheus scrapes `<connector>:9464`
+  - Same script as the chart's `connectorMetrics` sidecar
+    (`scripts/connector_metrics_proxy.py`); `connector-owntracks` needs none,
+    since its webhook server already binds `0.0.0.0`
+  - If a connector container restarts outside Compose, its target reads
+    `up == 0` until the sidecar restarts; re-run `up -d`
 
 - **Grafana** — Grafana dashboards UI (port 3000)
   - Pre-provisioned with Prometheus and Tempo datasources
@@ -261,7 +275,8 @@ dashboard source so Grafana never mistakes the alert rule for a dashboard.
 `observability/grafana-alerting/connector-google-health.json` provisions one
 rule group, `butlers-connector-google-health`, over the connector's own
 `prometheus_client` metrics (scraped by the `connector-google-health` job in
-`observability/prometheus/prometheus.yml`, or in Kubernetes through the chart's
+`observability/prometheus/prometheus.yml` through the Compose
+`connector-google-health-metrics` sidecar, or in Kubernetes through the chart's
 `connectorMetrics` sidecar). Each rule keeps the
 `endpoint_identity` and `resource` labels, so Grafana raises one instance per
 account and resource:

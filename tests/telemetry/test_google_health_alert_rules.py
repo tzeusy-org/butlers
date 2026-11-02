@@ -15,7 +15,6 @@ pytestmark = pytest.mark.unit
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RULE_PATH = _REPO_ROOT / "observability/grafana-alerting/connector-google-health.json"
 _PROMETHEUS_PATH = _REPO_ROOT / "observability/prometheus/prometheus.yml"
-_COMPOSE_PATH = _REPO_ROOT / "docker-compose.yml"
 
 
 def _rules_by_uid() -> dict[str, dict]:
@@ -96,18 +95,17 @@ def test_google_health_rules_cover_exactly_the_three_alertable_signals() -> None
     }
 
 
-def test_local_prometheus_scrapes_the_google_health_connector_port() -> None:
-    """Without a scrape job the rules would evaluate against no series at all."""
+def test_local_prometheus_scrapes_the_google_health_connector() -> None:
+    """Without a scrape job the rules would evaluate against no series at all.
+
+    That the target reaches the connector's metrics (through its proxy sidecar)
+    is pinned for every connector job in test_compose_connector_metrics_scrape.
+    """
     scrape = yaml.safe_load(_PROMETHEUS_PATH.read_text(encoding="utf-8"))
     job = next(
         job for job in scrape["scrape_configs"] if job["job_name"] == "connector-google-health"
     )
-    compose = yaml.safe_load(_COMPOSE_PATH.read_text(encoding="utf-8"))
-    port = compose["services"]["connector-google-health"]["environment"]["CONNECTOR_HEALTH_PORT"]
 
-    assert job["static_configs"] == [
-        {
-            "targets": [f"connector-google-health:{port}"],
-            "labels": {"connector": "google_health"},
-        }
-    ]
+    ((target,),) = [static["targets"] for static in job["static_configs"]]
+    assert target.rsplit(":", 1)[0] == "connector-google-health"
+    assert job["static_configs"][0]["labels"] == {"connector": "google_health"}

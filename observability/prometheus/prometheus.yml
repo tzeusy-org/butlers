@@ -11,20 +11,16 @@
 # NOTE: Connector health endpoints are optional — Prometheus reports a
 # scrape error for connectors that are not running, which is expected.
 #
-# Connector health port assignments (from docker-compose.yml and connector defaults):
-#   connector-telegram-bot:    40081  (default, no compose override)
-#   connector-gmail:           40082  (default, no compose override)
-#   connector-whatsapp-user:   40082  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-spotify:         40083  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-google-calendar: 40085  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-owntracks:       40086  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-home-assistant:  40087  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-google-drive:    40088  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-google-health:   40090  (compose CONNECTOR_HEALTH_PORT override)
-#   connector-live-listener:   40091  (compose CONNECTOR_HEALTH_PORT override)
+# Connector health servers bind 127.0.0.1 inside their own container, so these
+# jobs scrape the metrics-proxy sidecar each one gets in
+# docker-compose.observability.yml. The sidecar shares the connector's network
+# namespace and serves only GET /metrics on port 9464, so every target is
+# <connector>:9464. connector-owntracks is the exception: its health server
+# already binds 0.0.0.0 (for the OwnTracks webhook) on port 40086.
 #
-# Each connector runs in its own container with its own network namespace,
-# so port 40082 on connector-gmail and connector-whatsapp-user are distinct.
+# Sidecar upstream ports (the connector's CONNECTOR_HEALTH_PORT in
+# docker-compose.yml) are pinned by
+# tests/telemetry/test_compose_connector_metrics_scrape.py.
 
 global:
   scrape_interval: 15s
@@ -36,35 +32,35 @@ scrape_configs:
   # ── Connector: Telegram Bot ────────────────────────────────────────────
   - job_name: connector-telegram-bot
     static_configs:
-      - targets: ["connector-telegram-bot:40081"]
+      - targets: ["connector-telegram-bot:9464"]
         labels:
           connector: telegram_bot
 
   # ── Connector: Gmail ──────────────────────────────────────────────────
   - job_name: connector-gmail
     static_configs:
-      - targets: ["connector-gmail:40082"]
+      - targets: ["connector-gmail:9464"]
         labels:
           connector: gmail
 
   # ── Connector: WhatsApp User ──────────────────────────────────────────
   - job_name: connector-whatsapp-user
     static_configs:
-      - targets: ["connector-whatsapp-user:40082"]
+      - targets: ["connector-whatsapp-user:9464"]
         labels:
           connector: whatsapp_user
 
   # ── Connector: Spotify ────────────────────────────────────────────────
   - job_name: connector-spotify
     static_configs:
-      - targets: ["connector-spotify:40083"]
+      - targets: ["connector-spotify:9464"]
         labels:
           connector: spotify
 
   # ── Connector: Google Calendar ────────────────────────────────────────
   - job_name: connector-google-calendar
     static_configs:
-      - targets: ["connector-google-calendar:40085"]
+      - targets: ["connector-google-calendar:9464"]
         labels:
           connector: google_calendar
 
@@ -78,21 +74,21 @@ scrape_configs:
   # ── Connector: ActivityWatch ──────────────────────────────────────────
   - job_name: connector-activitywatch
     static_configs:
-      - targets: ["connector-activitywatch:40092"]
+      - targets: ["connector-activitywatch:9464"]
         labels:
           connector: activitywatch
 
   # ── Connector: Home Assistant ─────────────────────────────────────────
   - job_name: connector-home-assistant
     static_configs:
-      - targets: ["connector-home-assistant:40087"]
+      - targets: ["connector-home-assistant:9464"]
         labels:
           connector: home_assistant
 
   # ── Connector: Google Drive ───────────────────────────────────────────
   - job_name: connector-google-drive
     static_configs:
-      - targets: ["connector-google-drive:40088"]
+      - targets: ["connector-google-drive:9464"]
         labels:
           connector: google_drive
 
@@ -100,13 +96,13 @@ scrape_configs:
   # Feeds observability/grafana-alerting/connector-google-health.json.
   - job_name: connector-google-health
     static_configs:
-      - targets: ["connector-google-health:40090"]
+      - targets: ["connector-google-health:9464"]
         labels:
           connector: google_health
 
   # ── Connector: Live Listener (audio profile only) ─────────────────────
   - job_name: connector-live-listener
     static_configs:
-      - targets: ["connector-live-listener:40091"]
+      - targets: ["connector-live-listener:9464"]
         labels:
           connector: live_listener
