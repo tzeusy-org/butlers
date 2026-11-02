@@ -336,6 +336,7 @@ services:
     command: []
     environment:
       <<: *connector-env
+      CONNECTOR_HEALTH_PORT: "40081"
       # Apply gap-interview (bu-whhll.12) inline-button taps deterministically
       # via the chronicler dashboard API (the connector's own role cannot write
       # the chronicler schema). Override to disable the round-trip.
@@ -734,6 +735,7 @@ services:
     command: []
     environment:
       <<: *connector-env
+      CONNECTOR_HEALTH_PORT: "40082"
       CONNECTOR_BUTLER_DB_NAME: ${POSTGRES_DB:-butlers}
       CONNECTOR_BUTLER_DB_SCHEMA: shared
       BUTLER_SHARED_DB_NAME: ${POSTGRES_DB:-butlers}
