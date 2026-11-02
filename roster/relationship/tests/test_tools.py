@@ -2296,15 +2296,26 @@ async def test_contact_resolve_salience_zero_history(rel_pool):
         assert candidate["salience"] <= 2
 
 
+def _relationship_tools():
+    """``butlers.tools.relationship`` is a runtime alias of the roster package.
+
+    Loaded by name so the regression tests below add no new unresolved-import
+    diagnostics to the pyright baseline.
+    """
+    import importlib
+
+    return importlib.import_module("butlers.tools.relationship")
+
+
 async def test_contact_resolve_salience_tolerates_missing_relationships_table(rel_pool):
     """A deployment without the relationships table still disambiguates (no boost)."""
-    from butlers.tools.relationship import contact_create, contact_resolve
+    tools = _relationship_tools()
 
-    await contact_create(rel_pool, "Alex Smith")
-    await contact_create(rel_pool, "Alex Jones")
+    await tools.contact_create(rel_pool, "Alex Smith")
+    await tools.contact_create(rel_pool, "Alex Jones")
     await rel_pool.execute("DROP TABLE relationships")
 
-    result = await contact_resolve(rel_pool, "Alex")
+    result = await tools.contact_resolve(rel_pool, "Alex")
 
     assert len(result["candidates"]) == 2
     assert all("salience" in candidate for candidate in result["candidates"])
@@ -2319,14 +2330,14 @@ async def test_contact_resolve_salience_surfaces_relationships_column_errors(rel
     """
     import asyncpg
 
-    from butlers.tools.relationship import contact_create, contact_resolve
+    tools = _relationship_tools()
 
-    await contact_create(rel_pool, "Alex Smith")
-    await contact_create(rel_pool, "Alex Jones")
+    await tools.contact_create(rel_pool, "Alex Smith")
+    await tools.contact_create(rel_pool, "Alex Jones")
     await rel_pool.execute("ALTER TABLE relationships RENAME COLUMN contact_b TO contact_b_old")
 
     with pytest.raises(asyncpg.UndefinedColumnError):
-        await contact_resolve(rel_pool, "Alex")
+        await tools.contact_resolve(rel_pool, "Alex")
 
 
 async def test_contact_resolve_salience_only_when_multiple_candidates(rel_pool):
