@@ -417,6 +417,10 @@ async def test_edited_workout_supersedes_prior_fact_and_updates_one_episode(
         (UUID(str(edited["fact_id"])), "active"),
     ]
     assert rows[0]["invalid_at"] is not None
+    created = await health.fetchval(
+        "SELECT created_at FROM health.facts WHERE id = $1", rows[1]["id"]
+    )
+    assert rows[0]["invalid_at"] == created
     assert rows[1]["supersedes_id"] == rows[0]["id"]
     link = await health.fetchval(
         "SELECT count(*) FROM health.memory_links WHERE source_id = $1 AND target_id = $2 "
@@ -441,3 +445,94 @@ async def test_edited_workout_supersedes_prior_fact_and_updates_one_episode(
     assert episodes[0]["source_ref"] == f"health.facts:workout_session:{session_key}"
     assert episodes[0]["end_at"] == datetime(2026, 4, 24, 7, 50, tzinfo=UTC)
     assert episodes[0]["payload"]["fact_id"] == str(edited["fact_id"])
+
+
+async def _legacy_workout_fact(
+    health: asyncpg.Pool, embedding: Any, session_id: str, **envelope_kwargs: Any
+) -> UUID:
+    """Store a pre-versioning fact: bare idempotency key, no ``workout_session_key``."""
+    envelope = _envelope(session_id, **envelope_kwargs)
+    envelope["control"]["idempotency_key"] = f"google_health:{_EMAIL}:workout:{session_id}"
+    result = await wellness_ingest.translate_wellness_envelope(health, embedding, envelope)
+    assert result["status"] == "ok"
+    await health.execute(
+        "UPDATE health.facts SET metadata = metadata - 'workout_session_key' WHERE id = $1",
+        UUID(str(result["fact_id"])),
+    )
+    return UUID(str(result["fact_id"]))
+
+
+async def _validity(pool: asyncpg.Pool) -> list[tuple[UUID, str]]:
+    rows = await pool.fetch(
+        "SELECT id, validity FROM health.facts WHERE predicate = 'workout_session' "
+        "ORDER BY created_at, id"
+    )
+    return [(r["id"], r["validity"]) for r in rows]
+
+
+async def test_legacy_keyed_fact_is_not_resuperseded_when_unchanged_but_is_when_edited(
+    projection_pools: _ProjectionPools,
+) -> None:
+    """bu-q7vx1q.38: legacy bare-key facts take part in versioning (fails without that branch)."""
+    health = projection_pools.health
+    embedding = make_embedding_engine_mock()
+    legacy_id = await _legacy_workout_fact(
+        health, embedding, "run-old", detection="manual", heart_rate=False
+    )
+
+    unchanged = await wellness_ingest.translate_wellness_envelope(
+        health, embedding, _envelope("run-old", detection="manual", heart_rate=False)
+    )
+    assert unchanged["status"] == "ok" and UUID(str(unchanged["fact_id"])) == legacy_id
+    assert await _validity(health) == [(legacy_id, "active")]
+
+    edited = await wellness_ingest.translate_wellness_envelope(
+        health,
+        embedding,
+        _envelope("run-old", detection="manual", heart_rate=False, end_time="2026-04-24T07:50:00Z"),
+    )
+    edited_id = UUID(str(edited["fact_id"]))
+    assert await _validity(health) == [(legacy_id, "superseded"), (edited_id, "active")]
+    assert (
+        await health.fetchval("SELECT supersedes_id FROM health.facts WHERE id = $1", edited_id)
+        == legacy_id
+    )
+
+
+async def test_racing_versions_and_replays_leave_exactly_the_latest_active(
+    projection_pools: _ProjectionPools,
+) -> None:
+    """bu-q7vx1q.38: advisory lock serializes versions; replays never error or re-stamp."""
+    health = projection_pools.health
+    embedding = make_embedding_engine_mock()
+    ends = ["2026-04-24T07:45:00Z", "2026-04-24T07:50:00Z", "2026-04-24T07:55:00Z"]
+    envelopes = [
+        _envelope("run-race", detection="manual", heart_rate=False, end_time=end) for end in ends
+    ]
+
+    results = await asyncio.gather(
+        *(wellness_ingest.translate_wellness_envelope(health, embedding, e) for e in envelopes)
+    )
+    assert [r["status"] for r in results] == ["ok"] * 3
+
+    rows = await health.fetch(
+        "SELECT id, validity, supersedes_id, invalid_at, created_at FROM health.facts "
+        "WHERE predicate = 'workout_session' ORDER BY created_at, id"
+    )
+    assert [r["validity"] for r in rows] == ["superseded", "superseded", "active"]
+    stamped = {r["id"]: r["invalid_at"] for r in rows}
+    # Each retired row is stamped with the write time of the fact that retired it.
+    assert stamped[rows[0]["id"]] in {rows[1]["created_at"], rows[2]["created_at"]}
+    assert stamped[rows[1]["id"]] == rows[2]["created_at"]
+    assert rows[2]["invalid_at"] is None
+
+    before = [(r["id"], r["invalid_at"]) for r in rows]
+    again = await asyncio.gather(
+        *(wellness_ingest.translate_wellness_envelope(health, embedding, e) for e in envelopes * 2)
+    )
+    assert [r["status"] for r in again] == ["ok"] * 6
+    after = await health.fetch(
+        "SELECT id, invalid_at FROM health.facts WHERE predicate = 'workout_session' "
+        "ORDER BY created_at, id"
+    )
+    assert [(r["id"], r["invalid_at"]) for r in after] == before

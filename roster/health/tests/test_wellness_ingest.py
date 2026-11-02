@@ -16,6 +16,7 @@ All tests are unit tests (no DB required) — DB calls are mocked.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1596,7 +1597,9 @@ def _make_workout_envelope(
 
 class TestWorkoutSession:
     async def test_writes_one_workout_session_fact(self) -> None:
-        result, mock_store, _ = await _call_translate(_make_workout_envelope())
+        result, mock_store, _ = await _call_translate(
+            _make_workout_envelope(), pool=_make_pool(None, [])
+        )
 
         assert result["status"] == "ok"
         assert result["predicate"] == "workout_session"
@@ -1636,19 +1639,8 @@ class TestWorkoutSession:
 # ---------------------------------------------------------------------------
 
 
-class _FakeConn:
-    def __init__(self, executed: list[tuple[str, tuple]]) -> None:
-        self._executed = executed
-
-    async def execute(self, query: str, *args: object) -> None:
-        self._executed.append((query, args))
-
-    def transaction(self):
-        return _NullCtx(None)
-
-
 class _NullCtx:
-    def __init__(self, value: object) -> None:
+    def __init__(self, value: object = None) -> None:
         self._value = value
 
     async def __aenter__(self) -> object:
@@ -1659,23 +1651,72 @@ class _NullCtx:
 
 
 class _SupersessionPool:
-    """Pool double: one new-fact state row plus prior active versions."""
+    """Pool double: one new-fact state row plus prior active versions.
 
-    def __init__(self, new_state: dict | None, priors: list[uuid.UUID]) -> None:
+    SQL semantics (legacy key branch, created_at bound, conditional updates) are
+    pinned against real Postgres in the workout projection integration test; here
+    only the Python control flow is checked.
+    """
+
+    def __init__(
+        self,
+        new_state: dict | None,
+        priors: list[uuid.UUID],
+        unchanged_id: uuid.UUID | None = None,
+    ) -> None:
         self.new_state = new_state
         self.priors = priors
-        self.fetch_args: tuple = ()
+        self.unchanged_id = unchanged_id
         self.executed: list[tuple[str, tuple]] = []
 
     async def fetchrow(self, query: str, *args: object):
-        return self.new_state
-
-    async def fetch(self, query: str, *args: object):
-        self.fetch_args = args
-        return [{"id": p} for p in self.priors]
+        # Pre-store "already have this exact version?" probe.
+        if self.unchanged_id is None:
+            return None
+        return {
+            "id": self.unchanged_id,
+            "same_valid_at": True,
+            "same_content": True,
+            "same_metadata": True,
+        }
 
     def acquire(self):
-        return _NullCtx(_FakeConn(self.executed))
+        return _NullCtx(self)
+
+    def transaction(self):
+        return _NullCtx()
+
+    async def execute(self, query: str, *args: object) -> None:
+        self.executed.append((query, args))
+
+    async def _conn_fetchrow(self, query: str, *args: object):
+        return self.new_state
+
+    async def conn_fetch(self, query: str, *args: object):
+        return [{"id": p} for p in self.priors]
+
+
+class _Conn:
+    def __init__(self, pool: _SupersessionPool) -> None:
+        self._pool = pool
+
+    async def execute(self, query: str, *args: object) -> None:
+        await self._pool.execute(query, *args)
+
+    async def fetchrow(self, query: str, *args: object):
+        return self._pool.new_state
+
+    async def fetch(self, query: str, *args: object):
+        return await self._pool.conn_fetch(query, *args)
+
+    def transaction(self):
+        return _NullCtx()
+
+
+def _make_pool(new_state, priors, unchanged_id=None) -> _SupersessionPool:
+    pool = _SupersessionPool(new_state, priors, unchanged_id)
+    pool.acquire = lambda: _NullCtx(_Conn(pool))  # type: ignore[method-assign]
+    return pool
 
 
 _EDITED_KEY = "google_health:user@example.com:workout:run-1:beefbeefbeefbeef"
@@ -1692,7 +1733,10 @@ def _versioned_envelope(raw_overrides: dict | None = None) -> dict:
 class TestWorkoutEditSupersession:
     async def test_new_version_supersedes_prior_with_provenance(self) -> None:
         old_id, new_id = uuid.uuid4(), uuid.uuid4()
-        pool = _SupersessionPool({"validity": "active", "supersedes_id": None}, [old_id])
+        created = datetime(2026, 4, 24, 8, tzinfo=UTC)
+        pool = _make_pool(
+            {"validity": "active", "supersedes_id": None, "created_at": created}, [old_id]
+        )
 
         result, mock_store, _ = await _call_translate(
             _versioned_envelope({"durationMillis": 3_000_000}),
@@ -1704,32 +1748,40 @@ class TestWorkoutEditSupersession:
         kwargs = mock_store.await_args.kwargs
         assert kwargs["idempotency_key"] == _EDITED_KEY
         assert kwargs["metadata"]["workout_session_key"] == _SESSION_KEY
-        assert pool.fetch_args[0] == _SESSION_KEY
-        queries = " ".join(q for q, _ in pool.executed)
-        assert "validity = 'superseded'" in queries
-        assert "supersedes_id" in queries
-        assert "'supersedes'" in queries
-        assert any(old_id in args for _, args in pool.executed)
-        assert any(new_id in args for _, args in pool.executed)
+        by_effect = {q.split()[0] + q.split()[1]: a for q, a in pool.executed}
+        assert by_effect["UPDATEfacts"] in {(new_id, old_id), (old_id, created)}
+        assert any(a == (old_id, created) for _, a in pool.executed)  # invalid_at = new write time
+        assert any(a == (new_id, old_id) for _, a in pool.executed)  # link + supersedes_id
 
     async def test_replay_of_current_or_stale_version_changes_nothing(self) -> None:
         new_id = uuid.uuid4()
+        created = datetime(2026, 4, 24, 8, tzinfo=UTC)
         for state in (
-            {"validity": "active", "supersedes_id": uuid.uuid4()},  # already linked
-            {"validity": "superseded", "supersedes_id": None},  # stale older version replayed
+            {"validity": "active", "supersedes_id": uuid.uuid4(), "created_at": created},
+            {"validity": "superseded", "supersedes_id": None, "created_at": created},
             None,
         ):
-            pool = _SupersessionPool(state, [uuid.uuid4()])
+            pool = _make_pool(state, [uuid.uuid4()])
             result, _, _ = await _call_translate(
                 _versioned_envelope(), pool=pool, store_fact_return={"id": new_id}
             )
             assert result["status"] == "ok"
-            assert pool.executed == []
+            assert [q for q, _ in pool.executed if not q.startswith("SELECT")] == []
 
     async def test_first_version_has_nothing_to_supersede(self) -> None:
-        pool = _SupersessionPool({"validity": "active", "supersedes_id": None}, [])
+        created = datetime(2026, 4, 24, 8, tzinfo=UTC)
+        pool = _make_pool({"validity": "active", "supersedes_id": None, "created_at": created}, [])
         result, _, _ = await _call_translate(
             _versioned_envelope(), pool=pool, store_fact_return={"id": uuid.uuid4()}
         )
         assert result["status"] == "ok"
+        assert [q for q, _ in pool.executed if not q.startswith("SELECT")] == []
+
+    async def test_unchanged_repoll_writes_no_new_version(self) -> None:
+        existing = uuid.uuid4()
+        pool = _make_pool(None, [], unchanged_id=existing)
+        result, mock_store, _ = await _call_translate(_versioned_envelope(), pool=pool)
+        assert result["status"] == "ok"
+        assert result["fact_id"] == existing
+        mock_store.assert_not_awaited()
         assert pool.executed == []

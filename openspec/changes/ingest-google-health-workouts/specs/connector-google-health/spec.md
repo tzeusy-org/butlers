@@ -56,8 +56,12 @@ Scope: v1-mandatory
 - **AND** the Health ingest SHALL write the new `workout_session` fact, mark the
   earlier active fact for the same session `superseded` with `invalid_at`, set the
   new fact's `supersedes_id`, and record a `memory_links` `supersedes` edge
-- **AND** replaying the current or an older version SHALL change nothing, and no
-  fact SHALL be deleted
+- **AND** the new fact SHALL be skipped when the latest active version (including a
+  legacy bare-key fact) already has identical `valid_at`, content and metadata
+- **AND** replaying the current or an older version, or racing versions of one
+  session, SHALL leave exactly the latest-written version active, and no ingest
+  step SHALL delete a fact; the superseded version is retained until the
+  standard superseded-fact purge (`memory_purge_superseded`)
 - **AND** Chronicler SHALL keep one workout episode per session, updated to the
   edited values
 

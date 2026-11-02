@@ -27,6 +27,7 @@ emitted fact with labels ``predicate`` and ``outcome``
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -428,6 +429,44 @@ def _workout_session_key(external_event_id: str) -> str | None:
     return f"google_health:{parts[1]}:workout:{parts[3]}"
 
 
+_WORKOUT_TENANT = "shared"  # memory_store_fact's default tenant; this arm never overrides it
+
+
+async def _find_unchanged_workout_fact(
+    pool: Any,
+    workout_session_key: str,
+    *,
+    valid_at: str,
+    content: str,
+    metadata: dict[str, Any],
+) -> Any | None:
+    """Return the id of the latest active version when it already matches this write.
+
+    Legacy facts (stored under the bare session key, before content-versioned keys)
+    match too; ``workout_session_key`` itself is ignored in the metadata comparison
+    because legacy rows lack it.  Used to avoid a no-op supersession at rollout.
+    """
+    row = await pool.fetchrow(
+        "SELECT id, valid_at = $3::text::timestamptz AS same_valid_at, content = $4 AS same_content, "
+        "(metadata - 'workout_session_key') = ($5::text::jsonb - 'workout_session_key') "
+        "AS same_metadata "
+        "FROM facts WHERE predicate = 'workout_session' AND scope = 'health' "
+        "AND tenant_id = $2 AND validity IN ('active', 'fading') "
+        "AND (idempotency_key = $1 OR metadata->>'workout_session_key' = $1) "
+        "ORDER BY created_at DESC, id DESC LIMIT 1",
+        workout_session_key,
+        _WORKOUT_TENANT,
+        valid_at,
+        content,
+        json.dumps(metadata),
+    )
+    if row is None:
+        return None
+    if row["same_valid_at"] and row["same_content"] and row["same_metadata"]:
+        return row["id"]
+    return None
+
+
 async def _supersede_prior_workout_versions(
     pool: Any, new_fact_id: Any, workout_session_key: str
 ) -> None:
@@ -436,41 +475,58 @@ async def _supersede_prior_workout_versions(
     Temporal facts never supersede automatically in ``memory_store_fact``, so an
     edited session (new content-versioned key, new fact) retires its predecessors
     here with the same bookkeeping as property-fact supersession: old row
-    ``validity='superseded'`` + ``invalid_at``, ``supersedes_id`` on the new row,
-    and a ``memory_links`` ``supersedes`` edge.
+    ``validity='superseded'`` + ``invalid_at`` (the new fact's write time),
+    ``supersedes_id`` on the new row, and a ``memory_links`` ``supersedes`` edge.
 
-    Idempotent and replay-safe: acts only when the new fact is still the active,
-    not-yet-linked row, so replaying the current or a stale older version is a
-    no-op and can never retire a newer version.  Nothing is ever deleted.
+    Concurrency: one transaction holds a per-session advisory lock, so racing
+    versions and concurrent replays serialize.  Under the lock the new fact is
+    re-read and acts only while it is still active and unlinked; only rows written
+    before it are retired, and each retirement is conditional on the row still being
+    live, so a replay, a stale version, or a loser of a race changes nothing.  The
+    superseded row is retained until the standard superseded-fact purge.
     """
-    state = await pool.fetchrow(
-        "SELECT validity, supersedes_id FROM facts WHERE id = $1", new_fact_id
-    )
-    if state is None or state["validity"] != "active" or state["supersedes_id"] is not None:
-        return
-    priors = await pool.fetch(
-        "SELECT id FROM facts WHERE predicate = 'workout_session' AND scope = 'health' "
-        "AND validity IN ('active', 'fading') AND id <> $2 "
-        "AND (idempotency_key = $1 OR metadata->>'workout_session_key' = $1) "
-        "ORDER BY created_at DESC, id DESC",
-        workout_session_key,
-        new_fact_id,
-    )
-    if not priors:
-        return
     async with pool.acquire() as conn, conn.transaction():
         await conn.execute(
-            "UPDATE facts SET supersedes_id = $2 WHERE id = $1", new_fact_id, priors[0]["id"]
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            f"workout_session:{_WORKOUT_TENANT}:{workout_session_key}",
+        )
+        new = await conn.fetchrow(
+            "SELECT validity, supersedes_id, created_at FROM facts "
+            "WHERE id = $1 AND tenant_id = $2",
+            new_fact_id,
+            _WORKOUT_TENANT,
+        )
+        if new is None or new["validity"] != "active" or new["supersedes_id"] is not None:
+            return
+        priors = await conn.fetch(
+            "SELECT id FROM facts WHERE predicate = 'workout_session' AND scope = 'health' "
+            "AND tenant_id = $3 AND validity IN ('active', 'fading') AND id <> $2 "
+            "AND (created_at, id) < ($4, $2) "
+            "AND (idempotency_key = $1 OR metadata->>'workout_session_key' = $1) "
+            "ORDER BY created_at DESC, id DESC FOR UPDATE",
+            workout_session_key,
+            new_fact_id,
+            _WORKOUT_TENANT,
+            new["created_at"],
+        )
+        if not priors:
+            return
+        await conn.execute(
+            "UPDATE facts SET supersedes_id = $2 WHERE id = $1 AND supersedes_id IS NULL",
+            new_fact_id,
+            priors[0]["id"],
         )
         for prior in priors:
             await conn.execute(
-                "UPDATE facts SET validity = 'superseded', invalid_at = now() WHERE id = $1",
+                "UPDATE facts SET validity = 'superseded', invalid_at = $2 "
+                "WHERE id = $1 AND validity IN ('active', 'fading')",
                 prior["id"],
+                new["created_at"],
             )
             await conn.execute(
                 "INSERT INTO memory_links "
                 "(source_type, source_id, target_type, target_id, relation) "
-                "VALUES ('fact', $1, 'fact', $2, 'supersedes')",
+                "VALUES ('fact', $1, 'fact', $2, 'supersedes') ON CONFLICT DO NOTHING",
                 new_fact_id,
                 prior["id"],
             )
@@ -633,21 +689,34 @@ async def _translate_google_health_envelope(
         content = normalized_text or f"wellness:{predicate}:{valid_at}"
 
         try:
-            result = await memory_store_fact(
-                pool,
-                embedding_engine,
-                subject="owner",
-                predicate=predicate,
-                content=content,
-                scope="health",
-                permanence="standard",
-                valid_at=valid_at,
-                metadata=metadata if metadata else None,
-                entity_id=owner_entity_id_str,
-                idempotency_key=ikey,
-                retention_class="operational",
-                sensitivity="normal",
-            )
+            unchanged_id = None
+            if workout_session_key is not None:
+                unchanged_id = await _find_unchanged_workout_fact(
+                    pool,
+                    workout_session_key,
+                    valid_at=valid_at,
+                    content=content,
+                    metadata=metadata,
+                )
+            if unchanged_id is not None:
+                # Re-poll of an unchanged session (incl. a legacy bare-key fact): no new version.
+                result = {"id": unchanged_id, "supersedes_id": None}
+            else:
+                result = await memory_store_fact(
+                    pool,
+                    embedding_engine,
+                    subject="owner",
+                    predicate=predicate,
+                    content=content,
+                    scope="health",
+                    permanence="standard",
+                    valid_at=valid_at,
+                    metadata=metadata if metadata else None,
+                    entity_id=owner_entity_id_str,
+                    idempotency_key=ikey,
+                    retention_class="operational",
+                    sensitivity="normal",
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "wellness_ingest: memory_store_fact failed for predicate=%r: %s",
@@ -657,7 +726,11 @@ async def _translate_google_health_envelope(
             health_wellness_ingest_total.labels(predicate=predicate, outcome="error").inc()
             return {"status": "error", "reason": str(exc)}
 
-        if workout_session_key is not None and result.get("id") is not None:
+        if (
+            workout_session_key is not None
+            and unchanged_id is None
+            and result.get("id") is not None
+        ):
             try:
                 await _supersede_prior_workout_versions(pool, result["id"], workout_session_key)
             except Exception as exc:  # noqa: BLE001
