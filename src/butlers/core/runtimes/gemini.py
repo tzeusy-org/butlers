@@ -12,7 +12,9 @@ carrying text, tool calls, usage and the terminal result), ``-m`` for the config
 The system prompt (from GEMINI.md or AGENTS.md) is written to a per-invocation file named by
 ``GEMINI_SYSTEM_MD``, which replaces the CLI's built-in system prompt. MCP server configs
 and the turn limit (``model.maxSessionTurns``; the CLI has no turn flag) are written to a
-per-invocation temporary settings file that the CLI reads as its system settings.
+per-invocation temporary settings file that the CLI reads as its system settings. The CLI
+ignores a system settings file unless it sits on a root-owned path no group or other user
+can write, so it is staged under ``_SETTINGS_ROOT`` (see :func:`_settings_staging_root`).
 
 Runtime authentication is handled by CLI-level OAuth tokens
 (device-code flow via the dashboard).
@@ -58,6 +60,42 @@ _SYSTEM_MD_TOKEN = re.compile(
 def _escape_system_md(system_prompt: str) -> str:
     """Neutralize the CLI's system-prompt substitution tokens in literal prompt text."""
     return _SYSTEM_MD_TOKEN.sub("$\u200b", system_prompt)
+
+
+# Parent of the per-invocation settings directories. gemini-cli 0.66.0 reads a system
+# settings file only if the file and every ancestor directory are owned by uid 0 and not
+# group/other-writable; otherwise it warns on stderr and runs without it, so the session
+# loses its MCP servers and turn limit. ``/tmp`` (mode 1777) never passes.
+_SETTINGS_ROOT = Path("/run/butlers-gemini")
+
+
+def _settings_staging_root() -> Path:
+    """Return a settings staging root the CLI will trust, or raise ``RuntimeError``.
+
+    Creates ``_SETTINGS_ROOT`` (mode 0700) if needed, then applies the CLI's ownership
+    check to it and each ancestor. The butlers image runs as root, so this holds in the
+    container; an unprivileged process fails here rather than spawn an unconfined session.
+    """
+    try:
+        _SETTINGS_ROOT.mkdir(mode=0o700, exist_ok=True)
+        resolved = Path(os.path.realpath(_SETTINGS_ROOT))
+        for path in (resolved, *resolved.parents):
+            st = os.stat(path)
+            if st.st_uid != 0:
+                reason = f"{path} is not owned by root"
+            elif st.st_mode & 0o022:
+                reason = f"{path} is group- or world-writable"
+            else:
+                continue
+            break
+        else:
+            return _SETTINGS_ROOT
+    except OSError as exc:
+        reason = str(exc)
+    raise RuntimeError(
+        f"Gemini CLI would ignore settings staged under {_SETTINGS_ROOT}: {reason}. "
+        "It reads system settings only from root-owned, non-group/world-writable paths."
+    )
 
 
 def _find_gemini_binary() -> str:
@@ -119,14 +157,14 @@ def _to_gemini_server(server: Mapping[str, Any]) -> dict[str, Any]:
 def _parse_gemini_output(stdout: str, stderr: str) -> tuple[str | None, list[dict[str, Any]]]:
     """Parse Gemini CLI output into (result_text, tool_calls).
 
-    The adapter requests ``-o stream-json``, whose 0.46.0 JSONL events are parsed here
+    The adapter requests ``-o stream-json``, whose 0.66.0 JSONL events are parsed here
     (recorded shapes in ``tests/fixtures/gemini_stream_json``):
     - ``type: "message"`` — ``role`` plus string ``content``. The ``user`` echo of the
       prompt is skipped; consecutive ``assistant`` chunks marked ``delta: true`` are
       joined into one text segment, and segments split by other events join with newlines
     - ``type: "tool_use"`` (``tool_name``/``tool_id``/``parameters``) or the older
       ``functionCall`` shape — tool invocations
-    - ``type: "result"`` — terminal status and stats (no text in 0.46.0)
+    - ``type: "result"`` — terminal status and stats (no text in 0.66.0)
 
     If the output is not valid JSON, we treat the entire stdout as
     plain text result.
@@ -346,7 +384,8 @@ class GeminiAdapter(RuntimeAdapter):
         """Invoke the Gemini CLI with the given prompt and configuration.
 
         Builds the command line, stages the system prompt as the
-        ``GEMINI_SYSTEM_MD`` file in a per-invocation temporary directory, and
+        ``GEMINI_SYSTEM_MD`` file in a per-invocation temporary directory under
+        :func:`_settings_staging_root`, and
         parses the stream-json output. ``mcp_servers`` and the ``max_turns`` limit
         are written through :meth:`build_config_file` into that directory, which the
         CLI is pointed at as its system settings file
@@ -391,7 +430,8 @@ class GeminiAdapter(RuntimeAdapter):
         TimeoutError
             If the Gemini process exceeds the timeout.
         RuntimeError
-            If the Gemini process exits non-zero with no failed terminal result.
+            If the Gemini process exits non-zero with no failed terminal result, or
+            the settings staging root fails the CLI's ownership check (before spawn).
         TerminalResultError
             If the stream carries a failed terminal result (``status: "error"``),
             at any exit code; it keeps the attempt's usage and tool calls.
@@ -414,7 +454,9 @@ class GeminiAdapter(RuntimeAdapter):
         config_dir: tempfile.TemporaryDirectory[str] | None = None
 
         try:
-            config_dir = tempfile.TemporaryDirectory(prefix="butlers-gemini-")
+            config_dir = tempfile.TemporaryDirectory(
+                prefix="butlers-gemini-", dir=_settings_staging_root()
+            )
             staged_env: dict[str, str] = {}
             if system_prompt:
                 # The CLI has no system-prompt flag and its strict parser rejects unknown
@@ -577,6 +619,8 @@ class GeminiAdapter(RuntimeAdapter):
             config["model"] = {"maxSessionTurns": max_session_turns}
         config_path = tmp_dir / "gemini_mcp.json"
         config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        # The CLI skips a group/other-writable system settings file; don't depend on umask.
+        config_path.chmod(0o600)
         return config_path
 
     def parse_system_prompt_file(self, config_dir: Path) -> str:

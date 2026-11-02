@@ -66,6 +66,9 @@ Scope: v1-mandatory
   SHALL treat the attempt as an empty-response failure even if token usage was reported
 - **AND** when the merged records contain a confirmed non-command MCP tool call, the
   tool-only attempt SHALL remain successful and SHALL NOT trigger model failover
+- **AND** runtime-native tool records (`command_execution` shell work, or Claude CLI
+  built-ins marked `builtin: true`) SHALL NOT count as confirmed MCP tool calls; they
+  remain side-effect evidence, so the empty-response failure is not failover-eligible
 
 #### Scenario: Captured tool calls make failure ineligible
 - **WHEN** captured tool calls for the failed attempt are non-empty

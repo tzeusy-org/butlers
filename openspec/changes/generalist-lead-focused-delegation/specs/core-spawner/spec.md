@@ -58,6 +58,8 @@ ID: REQ-core-spawner-016
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
 - **AND** read the CLI's native shape, where content blocks nest under the event's `message`
 - **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
+- **AND** mark each call whose name is not `mcp__<server>__<tool>` as `builtin: true` (a CLI built-in such as `Bash`, `Read`, `ToolSearch` or `Agent`)
+- **AND** report `tool_use` made inside a subagent (an event with a non-null `parent_tool_use_id`) as session work, carrying that `parent_tool_use_id` on the record
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess
@@ -116,10 +118,10 @@ ID: REQ-core-spawner-016
 - **WHEN** the selected runtime type is `gemini`
 - **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag, `-o stream-json`, `--skip-trust` (headless runs in an untrusted folder exit 55), and `-m <model>` when a model is resolved
 - **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
-- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally`
+- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally` under a root-owned directory whose ancestors are not group/other-writable (the CLI silently skips a system settings file anywhere else), failing before spawn when that directory chain does not qualify
 - **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
 - **AND** passes only the environment its launcher provides plus its adapter-owned file pointers; for a goal invocation that is `PATH`, the staged model credential, the MCP config, the `GEMINI_SYSTEM_MD` pointer and the `GEMINI_CLI_SYSTEM_SETTINGS_PATH` pointer, which names a settings file staged inside the invocation's sandbox
-- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.46.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
+- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.66.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the selected runtime type is `opencode`

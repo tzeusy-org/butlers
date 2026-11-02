@@ -56,6 +56,8 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **AND** return them as normalized dicts in the tool_calls list of the `invoke()` return tuple
 - **AND** read the CLI's native shape, where content blocks nest under the event's `message`
 - **AND** use native assistant text as result text only when no `result` event carries text, so the final answer is not repeated
+- **AND** mark each call whose name is not `mcp__<server>__<tool>` as `builtin: true` (a CLI built-in such as `Bash`, `Read`, `ToolSearch` or `Agent`)
+- **AND** report `tool_use` made inside a subagent (an event with a non-null `parent_tool_use_id`) as session work, carrying that `parent_tool_use_id` on the record
 
 #### Scenario: Claude Code environment isolation
 - **WHEN** the adapter spawns the `claude` subprocess
@@ -116,10 +118,10 @@ The spawner SHALL maintain a lazy adapter pool (`dict[str, RuntimeAdapter]`) key
 - **WHEN** the butler's runtime type is `gemini`
 - **THEN** the GeminiAdapter runs the `gemini` binary with the `--prompt` flag, `-o stream-json`, `--skip-trust` (headless runs in an untrusted folder exit 55), and `-m <model>` when a model is resolved
 - **AND** passes the system prompt as a per-invocation utf-8 file named by the `GEMINI_SYSTEM_MD` env var (the CLI has no system-prompt flag and rejects unknown flags), breaking the CLI's `${AgentSkills}`, `${SubAgents}`, `${AvailableTools}` and `${<tool>_ToolName}` substitution tokens with a zero-width space so literal prompt text is not replaced
-- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally`
+- **AND** stages a per-invocation system settings file (`GEMINI_CLI_SYSTEM_SETTINGS_PATH`) carrying the MCP servers and `max_turns` as `model.maxSessionTurns` (the CLI has no turn flag), created and removed inside the invocation's `try`/`finally` under a root-owned directory whose ancestors are not group/other-writable (the CLI silently skips a system settings file anywhere else), failing before spawn when that directory chain does not qualify
 - **AND** parses stream-json events for result text (assistant `message` chunks, with `delta` chunks joined and the `user` prompt echo skipped), `tool_use` calls, and the `result` event's usage
 - **AND** passes declared butler env vars to the subprocess
-- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.46.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
+- **AND** when a non-zero exit's stdout carries a stream-json `result` with `status: "error"` (CLI 0.66.0 emits it, then exits with the error's code, 53 for the turn limit), the error SHALL be a `TerminalResultError` that keeps that result's usage and tool calls under the plain exit message, and `is_pre_tool_call` SHALL be false when a `tool_use` event was parsed
 
 #### Scenario: OpenCode adapter invocation
 - **WHEN** the butler's runtime type is `opencode`
@@ -514,6 +516,9 @@ failover is safe.
   SHALL treat the attempt as an empty-response failure even if token usage was reported
 - **AND** when the merged records contain a confirmed non-command MCP tool call, the
   tool-only attempt SHALL remain successful and SHALL NOT trigger model failover
+- **AND** runtime-native tool records (`command_execution` shell work, or Claude CLI
+  built-ins marked `builtin: true`) SHALL NOT count as confirmed MCP tool calls; they
+  remain side-effect evidence, so the empty-response failure is not failover-eligible
 
 #### Scenario: Captured tool calls make failure ineligible
 - **WHEN** captured tool calls for the failed attempt are non-empty
@@ -698,8 +703,8 @@ Guardrails are evaluated as **post-session checks**, not in-flight cancellation.
 
 Three independent budgets SHALL be enforced, each OR-combined with the others:
 
-1. **Consecutive-identical-call count** (`_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD`, default `6`): The maximum run of back-to-back tool calls sharing one `(name, input_fingerprint)` signature. Only *adjacent* duplicates count; any non-identical call resets the streak. The signature uses the call's `input_fingerprint` when present, otherwise a canonical fingerprint of the call's `input`/`args`/`arguments`/`parameters` payload.
-2. **Cumulative tool-call count** (`max_tool_calls`, default `_DEFAULT_MAX_TOOL_CALLS = 0`): Total tool calls observed in the merged session list. A value of `0` disables the check (the shipped default leaves it off).
+1. **Consecutive-identical-call count** (`_DEGENERATE_TOOL_LOOP_CONSECUTIVE_THRESHOLD`, default `6`): The maximum run of back-to-back tool calls sharing one `(name, input_fingerprint)` signature. Only *adjacent* duplicates count; any non-identical call resets the streak. The signature uses the call's `input_fingerprint` when present, otherwise a canonical fingerprint of the call's `input`/`args`/`arguments`/`parameters` payload. Adjacency is judged per thread: calls sharing a `parent_tool_use_id` (one subagent) form one thread and the session's own calls form another, because the runtime stream interleaves them.
+2. **Cumulative tool-call count** (`max_tool_calls`, default `_DEFAULT_MAX_TOOL_CALLS = 0`): Total tool calls observed in the merged session list, including subagent-internal calls and runtime built-ins: delegating to a subagent SHALL NOT shrink the session's count. A value of `0` disables the check (the shipped default leaves it off).
 3. **Cumulative input tokens** (`max_token_budget`, default `None`): Sum of `input_tokens` reported by the adapter for the session. `None` disables the check.
 
 These thresholds are spawner-level parameters / module constants, not `RuntimeConfigAccessor` HOT fields and not `RuntimeSeedConfig` columns. The defaults above are the shipped values; callers MAY pass overrides through `trigger()` / the internal invoke path.
@@ -714,6 +719,12 @@ These thresholds are spawner-level parameters / module constants, not `RuntimeCo
 - **WHEN** a session issues identical calls `A, A, A`, then a different call `B`, then `A` again
 - **THEN** the consecutive-identical streak SHALL reset at `B`
 - **AND** the session SHALL NOT be flagged as a degenerate loop unless a single uninterrupted run of identical calls reaches the threshold
+
+#### Scenario: Subagent calls are judged within their own thread
+- **WHEN** a Claude session's merged tool-call list interleaves calls carrying different `parent_tool_use_id` values (or none)
+- **THEN** the consecutive-identical streak SHALL count only calls of the same thread
+- **AND** a subagent repeating one call to the threshold SHALL trip the loop detector even when its parent's calls interleave
+- **AND** parallel subagents that each stay under the threshold SHALL NOT trip it, however their calls interleave
 
 #### Scenario: Tool-call budget exceeded
 - **WHEN** the cumulative tool-call count for a session exceeds a configured non-zero `max_tool_calls`

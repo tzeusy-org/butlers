@@ -37,6 +37,14 @@ unstamped steering artifact.
   sender (or marked unverified when the authority is NULL). Legacy rows are never
   backfilled by guessing; the migration SHALL report how many legacy rules and
   facts it left unclassified.
+- Every `public.memory_catalog` row SHALL carry the `content_authority` class of
+  its source fact or rule (never the sender entity, which stays in the owning
+  schema), written in the same statement as the rest of the row and re-copied by
+  the catalog backfill when it drifts; a legacy NULL source stays NULL. Every
+  cross-butler catalog reader (catalog search, `memory_catalog_search`, Fleet
+  Knowledge, `GET /api/memory/catalog/search`) SHALL return it, and the memory
+  tools SHALL attribute a non-owner item as from a third party (or mark it
+  unverified when the authority is NULL).
 - The owner SHALL be able to endorse a held rule through an owner surface only;
   endorsement SHALL NOT be LLM-presentable or grantable to any goal invocation.
   Endorsement sets `endorsed_at`
@@ -116,6 +124,15 @@ Scope: v1-mandatory
 - **WHEN** an episode is stored by a call with no verified assertion lineage, or under an `obligation` or `staffer` origin
 - **THEN** it SHALL be stamped `system`
 - **AND** a write under an exposed assertion of any origin SHALL also be stamped tainted, and a tainted owner-class fact SHALL NOT appear in Profile Facts
+
+#### Scenario: Catalog readers attribute non-owner content
+
+- **WHEN** an owner fact and a third-party fact are cataloged and a legacy fact
+  with NULL authority is backfilled
+- **THEN** their catalog rows SHALL carry `owner`, `third_party` and NULL
+- **AND** `memory_catalog_search` SHALL return each row's authority, with no
+  attribution on the owner fact, a third-party attribution on the third-party
+  fact and an unverified mark on the legacy fact
 
 ### Requirement: Owner-Isolated Session Memory Hooks
 

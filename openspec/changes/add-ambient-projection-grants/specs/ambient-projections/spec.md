@@ -25,6 +25,14 @@ Scope: v1-mandatory
 - **WHEN** a butler runtime role inserts or updates a row of `public.ambient_projections`, even after a bootstrap rerun re-grants it the DML privilege
 - **THEN** the insert SHALL fail with `insufficient_privilege` and the update SHALL change no row
 
+
+#### Scenario: Schema-local rollback preserves the shared grant boundary
+
+- **WHEN** one schema leaves core291 while another schema still consumes the shared ambient projection grant store
+- **THEN** the complete store, rows, owner, RLS, policies and privileges SHALL remain intact
+- **AND** the final consumer SHALL remove the boundary only when the store is empty; any live or revoked grant row or unestablished consumer history SHALL refuse destructive rollback with roll-forward guidance
+- **AND** an empty-store downgrade and ordinary-owner re-upgrade SHALL preserve grant authority and the served290 predecessor
+
 ### Requirement: Route-scoped grant boundary
 
 `OwnerAuthMiddleware` SHALL accept a projection grant only on the exact route its scope names, `GET /api/projections/{id}/glance`, with the token in the `X-Projection-Token` header or a single `token` query parameter (never both). A matching grant SHALL be verified by a constant-time digest comparison, SHALL NOT create an owner principal or session, and SHALL be refused on every other route, which falls through to owner authentication. A non-GET request bearing a grant SHALL be refused with 405 and a request with a body with 400. An unknown, revoked or mismatched grant, including a grant for a different projection, SHALL answer 404 so that a grant's existence is not disclosed. A store failure SHALL fail closed. Each successful grant fetch SHALL stamp the grant's last fetch time and status (`ok`, or `degraded` when a state source failed). A token carried in the URL can appear in proxy access logs; surfaces SHOULD prefer the header, and the glance route SHALL be excluded from request tracing.

@@ -130,9 +130,9 @@ enabled = true
 
 # Gemini: each model_id must be probed against the pinned gemini-cli before its
 # entry is enabled (tests/fixtures/gemini_stream_json/model_resolution.json).
-# gemini-cli 0.46.0 sends gemini-3.8-flash to the API as gemini-3.5-flash, so
-# that entry stays disabled until the pin moves (0.66.0 serves it unchanged).
-# gemini-4-argon is served as requested.
+# gemini-cli 0.66.0 serves gemini-3.8-flash and gemini-4-argon as requested
+# (0.46.0 sent gemini-3.8-flash as gemini-3.5-flash; 0.66.0 sends
+# gemini-3.5-flash as gemini-3.8-flash).
 [[models]]
 alias = "gemini-3.8-flash"
 runtime_type = "gemini"
@@ -140,7 +140,7 @@ model_id = "gemini-3.8-flash"
 extra_args = []
 complexity_tier = "cheap"
 priority = 10
-enabled = false
+enabled = true
 
 [[models]]
 alias = "gemini-4-argon"

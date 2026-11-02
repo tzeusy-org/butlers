@@ -47,7 +47,7 @@ _SUBTYPES = {
     "error_max_structured_output_retries": "structured_output_retries",
     "success": None,
 }
-# Pinned Gemini CLI 0.46.0 emits these names through getErrorType() in a
+# Pinned Gemini CLI 0.66.0 emits these names through getErrorType() in a
 # terminal result. Unrecognized types retain the generic category, never text.
 _GEMINI_ERROR_TYPES = {
     "FatalTurnLimitedError": "max_turns",

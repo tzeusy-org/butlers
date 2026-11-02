@@ -16,6 +16,23 @@ remote resource, and any doubt leaves the hold in place:
   ``resource_absent``; more than one stays held.
 - ``pr_update`` and ``pr_labels`` bind no observable object and stay held.
 
+Absence is trusted only once it has settled: a create or push that timed out
+can still land remotely, so a ``resource_absent`` observation is recorded only
+when the operation's outcome (``ended_at``) or, while still in flight, its egress
+(``egress_started_at``) is at least :data:`ABSENCE_SETTLE` old.  Otherwise a
+late-landing PR would arrive after its lineage was freed and a fresh attempt
+could open a duplicate.  The bind time (``started_at``) never counts: a resumed
+bind can egress long after it.  The database enforces the settle with its own
+clock inside the guarded write and requires the row to still be at the stage
+this module observed, so an outcome recorded mid-sweep wins; the check here is
+only a cheap pre-filter.
+
+:func:`sweep_held_operations` is the batch entry point: it rebuilds each held
+``branch_push``/``pr_create`` binding from the dispatcher's own records (the
+attempt's branch and the retained export's head) and reconciles it.  The stored
+digest still decides, so a rebuilt binding that differs in any field is refused
+with ``binding_mismatch`` and observes nothing.
+
 The caller must pass the dispatcher-held binding the operation was bound with;
 a binding whose digest differs from the stored one is refused, so a reconciler
 can never observe (or adopt) a resource the operation did not target.
@@ -25,16 +42,35 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 
+import asyncpg
+
 from butlers.core.qa.publication import state
-from butlers.core.qa.publication.binding import OperationKind, PublicationBinding
-from butlers.core.qa.publication.state import Observation, PublicationOperation, PublicationRefused
+from butlers.core.qa.publication.binding import (
+    QA_BASE_REF,
+    InvalidBinding,
+    OperationKind,
+    PublicationBinding,
+)
+from butlers.core.qa.publication.state import (
+    ABSENCE_SETTLE,
+    Observation,
+    PublicationOperation,
+    PublicationRefused,
+)
 
 logger = logging.getLogger(__name__)
 
 _QA_BRANCH_PREFIX = "qa/"
+_DATASTORE_ERRORS = (asyncpg.PostgresError, asyncpg.InterfaceError, OSError, TimeoutError)
+
+
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
 
 class PublicationReader(Protocol):
@@ -64,6 +100,8 @@ class ReconciliationLedger(Protocol):
         observation: Observation,
         *,
         observed_object_id: str | None,
+        expected_stage: str,
+        absence_settle: timedelta,
     ) -> bool: ...
 
 
@@ -82,9 +120,16 @@ class PoolReconciliationLedger:
         observation: Observation,
         *,
         observed_object_id: str | None,
+        expected_stage: str,
+        absence_settle: timedelta,
     ) -> bool:
         return await state.record_reconciliation(
-            self._pool, operation_id, observation, observed_object_id=observed_object_id
+            self._pool,
+            operation_id,
+            observation,
+            observed_object_id=observed_object_id,
+            expected_stage=expected_stage,
+            absence_settle=absence_settle,
         )
 
 
@@ -148,6 +193,8 @@ async def reconcile_operation(
     attempt_id: uuid.UUID,
     kind: OperationKind,
     binding: PublicationBinding,
+    settle: timedelta = ABSENCE_SETTLE,
+    now: Callable[[], datetime] = _utcnow,
 ) -> ReconciliationResult:
     """Observe the held operation's bound resource read-only and record the exact result.
 
@@ -180,10 +227,102 @@ async def reconcile_operation(
         return _held(observed)
 
     observation, object_id = observed
+    if observation == "resource_absent":
+        # Pre-filter only; record_reconciliation re-checks against database time.
+        anchor = operation.ended_at or operation.egress_started_at
+        if anchor is None:
+            return _held("absence_unanchored")
+        if now() - anchor < settle:
+            return _held("absence_settling")
     try:
-        recorded = await ledger.reconcile(operation.id, observation, observed_object_id=object_id)
+        recorded = await ledger.reconcile(
+            operation.id,
+            observation,
+            observed_object_id=object_id,
+            expected_stage=operation.stage,
+            absence_settle=settle,
+        )
     except PublicationRefused as exc:
         return _held(exc.code)
     if not recorded:
         return _held("not_recorded")
     return ReconciliationResult("reconciled", observation, observation, object_id)
+
+
+@dataclass(frozen=True, slots=True)
+class SweepEntry:
+    """One held operation the sweep visited.  Identifiers and categories only."""
+
+    operation_id: uuid.UUID
+    attempt_id: uuid.UUID
+    kind: str
+    status: ReconciliationStatus
+    category: str
+
+
+async def sweep_held_operations(
+    pool: Any,
+    reader: PublicationReader,
+    *,
+    ledger: ReconciliationLedger | None = None,
+    limit: int = 50,
+    settle: timedelta = ABSENCE_SETTLE,
+    now: Callable[[], datetime] = _utcnow,
+) -> tuple[SweepEntry, ...]:
+    """Reconcile up to ``limit`` held ``branch_push``/``pr_create`` operations, oldest first.
+
+    Each binding is rebuilt from dispatcher records: the reader's fixed origin,
+    the attempt's ``branch_name``, :data:`QA_BASE_REF` and the retained export's
+    ``head_sha``.  A row whose records cannot form a binding is reported
+    ``unbound_attempt`` and never read.  ``pr_update``/``pr_labels`` holds are
+    not swept: they bind no observable object.  A failed candidate query raises
+    :class:`PublicationRefused`; per-operation failures keep that hold only.
+    """
+    ledger = ledger if ledger is not None else PoolReconciliationLedger(pool)
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT op.id AS operation_id, op.attempt_id, op.kind,
+                   attempt.branch_name, export.head_sha
+            FROM public.qa_publication_operations AS op
+            JOIN public.healing_attempts AS attempt ON attempt.id = op.attempt_id
+            LEFT JOIN public.qa_publication_exports AS export
+                ON export.attempt_id = op.attempt_id
+            WHERE op.stage IN ('egress_started', 'ambiguous')
+              AND op.kind IN ('branch_push', 'pr_create')
+            ORDER BY op.started_at, op.id
+            LIMIT $1
+            """,
+            limit,
+        )
+    except _DATASTORE_ERRORS as exc:
+        raise PublicationRefused("datastore_unavailable") from exc
+
+    entries: list[SweepEntry] = []
+    for row in rows:
+        kind = OperationKind(row["kind"])
+        try:
+            binding = PublicationBinding(
+                repository=reader.repository,
+                branch=row["branch_name"],
+                base_ref=QA_BASE_REF,
+                head_sha=row["head_sha"],
+            )
+        except (InvalidBinding, TypeError):
+            result = _held("unbound_attempt")
+        else:
+            result = await reconcile_operation(
+                ledger,
+                reader,
+                attempt_id=row["attempt_id"],
+                kind=kind,
+                binding=binding,
+                settle=settle,
+                now=now,
+            )
+        entries.append(
+            SweepEntry(
+                row["operation_id"], row["attempt_id"], kind.value, result.status, result.category
+            )
+        )
+    return tuple(entries)

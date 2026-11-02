@@ -1738,6 +1738,7 @@ def _row_to_catalog_result(
         importance=float(r["importance"]) if r.get("importance") is not None else None,
         retention_class=r.get("retention_class"),
         sensitivity=r.get("sensitivity"),
+        content_authority=r.get("content_authority"),
         score=float(score) if score is not None else None,
         graph_coverage=graph_coverage,
     )

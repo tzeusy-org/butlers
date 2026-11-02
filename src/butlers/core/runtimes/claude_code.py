@@ -83,7 +83,34 @@ def _open_stderr_log(stderr_dir: Path, butler_name: str) -> TextIO:
     return stderr_log_file
 
 
-def _collect_content(content: Any, text_parts: list[str], tool_calls: list[dict[str, Any]]) -> None:
+def _tool_call_record(block: dict[str, Any], parent_tool_use_id: Any = None) -> dict[str, Any]:
+    """Normalize a ``tool_use`` block, tagging CLI built-ins and subagent calls.
+
+    MCP tools always reach Claude as ``mcp__<server>__<tool>``; any other name is a
+    CLI built-in (``Bash``, ``Read``, ``ToolSearch``, ``Agent``, ...) and is marked
+    ``builtin`` so the spawner never mistakes it for confirmed MCP work. A call
+    made inside a subagent keeps its ``parent_tool_use_id`` (the ``Agent`` call
+    that launched it) so guardrails can judge each thread on its own.
+    """
+    name = block.get("name", "")
+    record: dict[str, Any] = {
+        "id": block.get("id", ""),
+        "name": name,
+        "input": block.get("input", {}),
+    }
+    if not str(name or "").startswith("mcp__"):
+        record["builtin"] = True
+    if isinstance(parent_tool_use_id, str) and parent_tool_use_id:
+        record["parent_tool_use_id"] = parent_tool_use_id
+    return record
+
+
+def _collect_content(
+    content: Any,
+    text_parts: list[str],
+    tool_calls: list[dict[str, Any]],
+    parent_tool_use_id: Any = None,
+) -> None:
     """Append a message's text and ``tool_use`` blocks (string or block-list content)."""
     if isinstance(content, str):
         if content:
@@ -98,13 +125,7 @@ def _collect_content(content: Any, text_parts: list[str], tool_calls: list[dict[
         if block_type == "text" and block.get("text"):
             text_parts.append(block["text"])
         elif block_type == "tool_use":
-            tool_calls.append(
-                {
-                    "id": block.get("id", ""),
-                    "name": block.get("name", ""),
-                    "input": block.get("input", {}),
-                }
-            )
+            tool_calls.append(_tool_call_record(block, parent_tool_use_id))
 
 
 def _parse_claude_output(
@@ -202,19 +223,18 @@ def _parse_claude_output(
             if isinstance(message, dict):
                 # The CLI's native shape nests content under ``message``; its final
                 # text repeats as the result text, so it only answers without one.
-                _collect_content(message.get("content"), native_text_parts, tool_calls)
+                _collect_content(
+                    message.get("content"),
+                    native_text_parts,
+                    tool_calls,
+                    obj.get("parent_tool_use_id"),
+                )
             else:
                 _collect_content(obj.get("content", ""), text_parts, tool_calls)
 
         elif obj_type == "tool_use":
             # Standalone tool_use event
-            tool_calls.append(
-                {
-                    "id": obj.get("id", ""),
-                    "name": obj.get("name", ""),
-                    "input": obj.get("input", {}),
-                }
-            )
+            tool_calls.append(_tool_call_record(obj, obj.get("parent_tool_use_id")))
 
         else:
             # Unknown type — check for text or content fields (shared contract)

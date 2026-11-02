@@ -18,7 +18,7 @@ import uuid
 from pathlib import Path
 
 from butlers.core.qa.models import QaFinding
-from butlers.core.qa.publication.binding import InvalidBinding, PublicationBinding
+from butlers.core.qa.publication.binding import QA_BASE_REF, InvalidBinding, PublicationBinding
 from butlers.core.qa.publication.export import (
     ExportRefused,
     GitIdentity,
@@ -203,7 +203,7 @@ async def publish_investigation(
         binding = PublicationBinding(
             repository=publisher.repository,
             branch=branch_name,
-            base_ref="main",
+            base_ref=QA_BASE_REF,
             head_sha=head_sha,
         )
     except ExportRefused as exc:

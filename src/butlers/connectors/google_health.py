@@ -102,7 +102,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import uvicorn
 from fastapi import FastAPI
-from prometheus_client import REGISTRY, Counter, Gauge, generate_latest
+from prometheus_client import REGISTRY, Counter, Gauge
 
 from butlers.connectors.catalog import connector_descriptor
 from butlers.connectors.cursor_store import load_cursor, save_cursor
@@ -119,7 +119,7 @@ from butlers.connectors.google_health_client import (
     GoogleHealthTokenRevokedError,
     exponential_backoff_delay,
 )
-from butlers.connectors.health_socket import make_health_socket
+from butlers.connectors.health_socket import make_health_socket, prometheus_metrics_response
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
 from butlers.connectors.mcp_client import CachedMCPClient, wait_for_switchboard_ready
 from butlers.connectors.metrics import ConnectorMetrics
@@ -2412,9 +2412,11 @@ class GoogleHealthConnector:
                 self._metrics.record_error("ingest_error", "submit")
                 logger.warning("GoogleHealthConnector: ingest submission failed: %s", exc)
                 record_error(str(exc))
-                # Never a rejection: fastmcp raises RuntimeError for dropped sessions, and the
-                # ingest tool raises for transient persistence failures. Only the explicit
-                # ``status: error`` reply (envelope validation) is a durable refusal.
+                # Never a rejection: CachedMCPClient raises ConnectionError for dropped
+                # sessions and TransientToolError (a ConnectionError) for the ingest tool's
+                # transient persistence reply; a RuntimeError is an unexpected tool error.
+                # Only the explicit ``status: error`` reply (envelope validation) is a
+                # durable refusal.
                 return SubmissionOutcome.FAILED
 
     async def _submit_to_ingest_direct(self, envelope: dict[str, Any]) -> None:
@@ -2569,8 +2571,8 @@ class GoogleHealthConnector:
             }
 
         @app.get("/metrics")
-        async def metrics() -> bytes:
-            return generate_latest()
+        async def metrics():
+            return prometheus_metrics_response()
 
         port = self._config.health_port
         try:

@@ -158,7 +158,8 @@ from butlers.core.spawner_provider import (
 )
 from butlers.core.spawner_tool_calls import (
     _dedup_tool_calls_by_id,  # noqa: F401 — re-export for test patches
-    _has_non_command_tool_calls,
+    _has_mcp_tool_calls,
+    _is_mcp_tool_call,
     _looks_like_mcp_endpoint_alias,  # noqa: F401 — re-export for test patches
     _merge_tool_call_records,
     _normalize_tool_name,  # noqa: F401 — re-export for test patches
@@ -2805,7 +2806,7 @@ class Spawner:
                         executed_tool_calls,
                         butler_name=self._config.name,
                     )
-                    if not _has_non_command_tool_calls(merged_tool_calls):
+                    if not _has_mcp_tool_calls(merged_tool_calls):
                         # No confirmed MCP calls — eligible for failover classification.
                         _attempt_exc = exc
                         _attempt_tool_calls = list(preconsumed_runtime_tool_calls)
@@ -2819,13 +2820,7 @@ class Spawner:
                             "tool call(s)",
                             self._config.name,
                             session_id,
-                            len(
-                                [
-                                    c
-                                    for c in merged_tool_calls
-                                    if c.get("name") != "command_execution"
-                                ]
-                            ),
+                            sum(1 for c in merged_tool_calls if _is_mcp_tool_call(c)),
                         )
                         result_text, tool_calls, usage = (
                             exc.result_text,
@@ -2878,7 +2873,7 @@ class Spawner:
                         butler_name=self._config.name,
                     )
                     merged_runtime_capture = True
-                    if not _has_non_command_tool_calls(tool_calls):
+                    if not _has_mcp_tool_calls(tool_calls):
                         if (
                             usage
                             and self._pool is not None

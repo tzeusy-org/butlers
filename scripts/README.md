@@ -306,6 +306,7 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`dashboard_proxy_peer.py`](dashboard_proxy_peer.py) | `compose.sh` | Measures the host-published API's TCP peer for the dashboard-proxy readiness check. |
 | [`oauth_gate.py`](oauth_gate.py) | `docker-compose.yml`, Helm helpers | Polls the database for a Google refresh token and exits 0 when found. |
 | [`wait_for_butler_routes.py`](wait_for_butler_routes.py) | Helm Google Health connector init container | Waits within finite deadlines for the expected daemon identity and literal route acceptance; never recovers old events. |
+| [`connector_metrics_proxy.py`](connector_metrics_proxy.py) | Helm `metrics-proxy` sidecar of connectors with a `healthPort` | Republishes only `GET /metrics` from the connector's loopback health server on the pod network for cluster scraping. |
 | [`site-env.sh`](site-env.sh) | `.envrc`, `k8s/*.sh` | Loads site-specific environment. |
 | [`k8s/`](k8s/) | developers, `make` and Helm flows | Build, push and deploy helpers for the dev cluster. |
 | [`setup_worktree.sh`](setup_worktree.sh) | developers (`AGENTS.md`) | Prepares a newly created worktree with its machine-local pointers and cache links. |
@@ -341,6 +342,7 @@ criteria and dry-run controls before applying it to a database.
 | --- | --- | --- |
 | [`backfill_fleet_cases.py`](backfill_fleet_cases.py) | operators, per `REQ-fleet-case-file-011` in the [fleet-case-file spec](../openspec/specs/fleet-case-file/spec.md) | Previews or backfills resolved owner-condition episodes as closed historical cases using the Switchboard writer role; never scheduled. |
 | [`migrate_blobs_to_s3.py`](migrate_blobs_to_s3.py) | operators, per the `s3-blob-storage` spec and RFC 0016 | Moves scoped local attachment blobs to the S3-compatible backend. |
+| [`qa_reconcile_publications.py`](qa_reconcile_publications.py) | operators, with `bws run -- ...` supplying the GitHub token | Runs one read-only sweep of held QA publication operations against a fixed repository and prints a content-free JSON report. |
 | [`recover_chronicler_day_close_cache.py`](recover_chronicler_day_close_cache.py) | operators, per [`chronicler-day-close-recovery.md`](../docs/operations/chronicler-day-close-recovery.md), after separate operational authorization | Plans bounded day-close cache recovery; applying the reviewed plan requires separate authorization. |
 | [`repair_attention_ledger_metadata.py`](repair_attention_ledger_metadata.py) | operators, per [metadata repair](../docs/operations/attention-ledger-metadata-repair.md), after separate live allocation | Plans exact bounded UUID selections; owner-approved apply repairs one encoded object layer with CAS and committed readback. |
 | [`reconcile_whatsapp_entities.py`](reconcile_whatsapp_entities.py) | operators, per the active `repair-whatsapp-identity-reconciliation` change (tasks 6.3 and 6.4) | Content-blind WhatsApp entity reconciliation pass. Delete when that change archives. |
