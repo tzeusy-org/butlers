@@ -32,30 +32,14 @@ pytestmark = [
 ]
 
 
-# Actual migrations finish synchronously before the async native pool starts.
 @pytest.fixture
-def migrated_db_url(postgres_container):
-    from butlers.testing.migration import create_migrated_test_db, migration_db_name
-
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "finance"]
-    )
-
-
-@pytest.fixture
-async def pool(migrated_db_url):
-    import asyncpg
-
-    from butlers.db import register_jsonb_codec
-
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+async def finance_pool(db):
+    p = await db("core", "finance")
+    await p.executemany(
+        "INSERT INTO categories(name,display_name) VALUES($1,$2) ON CONFLICT(name) DO NOTHING",
+        [(name, name) for name in ("banking", "misc", "refunds", "rent")],
     )
     try:
-        await p.executemany(
-            "INSERT INTO categories(name,display_name) VALUES($1,$2) ON CONFLICT(name) DO NOTHING",
-            [(name, name) for name in ("banking", "misc", "refunds", "rent")],
-        )
         yield p
     finally:
         from butlers.tools.finance import bills as _bills_module
@@ -63,7 +47,6 @@ async def pool(migrated_db_url):
         pending = [t for t in _bills_module._background_tasks if not t.done()]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
-        await p.close()
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +76,7 @@ def _today() -> date:
 class TestTransactionToSpendingSummary:
     """Record transactions via record_transaction and verify spending_summary reflects them."""
 
-    async def test_spending_summary_reflects_recorded_transactions(self, pool):
+    async def test_spending_summary_reflects_recorded_transactions(self, finance_pool):
         """Transactions recorded via record_transaction appear in spending_summary."""
         from butlers.tools.finance import record_transaction, spending_summary
 
@@ -101,7 +84,7 @@ class TestTransactionToSpendingSummary:
         posted = _utcnow().replace(day=today.day, hour=12, minute=0, second=0, microsecond=0)
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Whole Foods",
             amount=-90.00,
@@ -109,7 +92,7 @@ class TestTransactionToSpendingSummary:
             category="groceries",
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Blue Bottle",
             amount=-12.00,
@@ -117,7 +100,7 @@ class TestTransactionToSpendingSummary:
             category="dining",
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="PayPal Refund",
             amount=30.00,
@@ -126,7 +109,7 @@ class TestTransactionToSpendingSummary:
         )  # credit — should NOT count in spend
 
         result = await spending_summary(
-            pool,
+            finance_pool,
             start_date=today.replace(day=1),
             end_date=today,
             group_by="category",
@@ -138,7 +121,7 @@ class TestTransactionToSpendingSummary:
         assert "dining" in keys
         assert "refunds" not in keys  # credits excluded
 
-    async def test_spending_summary_group_by_merchant_after_recording(self, pool):
+    async def test_spending_summary_group_by_merchant_after_recording(self, finance_pool):
         """group_by=merchant correctly aggregates transactions from record_transaction."""
         from butlers.tools.finance import record_transaction, spending_summary
 
@@ -148,7 +131,7 @@ class TestTransactionToSpendingSummary:
         # Record three Netflix charges (simulating different payment events)
         for _ in range(3):
             await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=posted,
                 merchant="Netflix",
                 amount=-15.49,
@@ -157,7 +140,7 @@ class TestTransactionToSpendingSummary:
             )
 
         result = await spending_summary(
-            pool,
+            finance_pool,
             start_date=today.replace(day=1),
             end_date=today,
             group_by="merchant",
@@ -167,7 +150,7 @@ class TestTransactionToSpendingSummary:
         assert Decimal(netflix_group["amount"]) == Decimal("46.47")
         assert netflix_group["count"] == 3
 
-    async def test_spending_summary_date_boundary_exactly_today(self, pool):
+    async def test_spending_summary_date_boundary_exactly_today(self, finance_pool):
         """A transaction posted exactly today is captured by spending_summary ending today."""
         from butlers.tools.finance import record_transaction, spending_summary
 
@@ -175,7 +158,7 @@ class TestTransactionToSpendingSummary:
         # Post at midnight (start of day) — boundary condition
         posted_midnight = datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=UTC)
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted_midnight,
             merchant="Midnight Shop",
             amount=-5.00,
@@ -183,10 +166,10 @@ class TestTransactionToSpendingSummary:
             category="misc",
         )
 
-        result = await spending_summary(pool, start_date=today, end_date=today)
+        result = await spending_summary(finance_pool, start_date=today, end_date=today)
         assert Decimal(result["total_spend"]) == Decimal("5.00")
 
-    async def test_spending_summary_excludes_transaction_before_start_date(self, pool):
+    async def test_spending_summary_excludes_transaction_before_start_date(self, finance_pool):
         """Transactions before start_date are excluded from spending_summary."""
         from butlers.tools.finance import record_transaction, spending_summary
 
@@ -197,7 +180,7 @@ class TestTransactionToSpendingSummary:
         new_posted = _utcnow().replace(day=today.day, hour=12)
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=old_posted,
             merchant="Old Merchant",
             amount=-100.00,
@@ -205,7 +188,7 @@ class TestTransactionToSpendingSummary:
             category="misc",
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=new_posted,
             merchant="New Merchant",
             amount=-20.00,
@@ -214,7 +197,7 @@ class TestTransactionToSpendingSummary:
         )
 
         result = await spending_summary(
-            pool,
+            finance_pool,
             start_date=today.replace(day=1),
             end_date=today,
         )
@@ -229,13 +212,13 @@ class TestTransactionToSpendingSummary:
 class TestBillPaymentWorkflow:
     """Full bill lifecycle: track → upcoming → mark paid → excluded from upcoming."""
 
-    async def test_paid_bill_excluded_from_upcoming(self, pool):
+    async def test_paid_bill_excluded_from_upcoming(self, finance_pool):
         """Marking a bill as paid removes it from upcoming_bills."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due = _today() + timedelta(days=5)
         bill = await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Electric Company",
             amount=120.00,
             currency="USD",
@@ -243,13 +226,13 @@ class TestBillPaymentWorkflow:
             status="pending",
         )
         # Verify it appears initially
-        result_before = await upcoming_bills(pool=pool, days_ahead=14)
+        result_before = await upcoming_bills(pool=finance_pool, days_ahead=14)
         ids_before = [item["bill"]["id"] for item in result_before["needs_action"]]
         assert bill["id"] in ids_before
 
         # Mark paid via upsert
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Electric Company",
             amount=120.00,
             currency="USD",
@@ -258,17 +241,17 @@ class TestBillPaymentWorkflow:
             paid_at=_utcnow(),
         )
 
-        result_after = await upcoming_bills(pool=pool, days_ahead=14)
+        result_after = await upcoming_bills(pool=finance_pool, days_ahead=14)
         ids_after = [item["bill"]["id"] for item in result_after["needs_action"]]
         assert bill["id"] not in ids_after
 
-    async def test_overdue_bill_appears_then_is_marked_paid(self, pool):
+    async def test_overdue_bill_appears_then_is_marked_paid(self, finance_pool):
         """An overdue bill transitions correctly from overdue → paid → excluded."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         past_due = _today() - timedelta(days=7)
         bill = await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Old Rent",
             amount=1500.00,
             currency="USD",
@@ -277,13 +260,15 @@ class TestBillPaymentWorkflow:
         )
 
         # Should appear as overdue
-        result_overdue = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result_overdue = await upcoming_bills(
+            pool=finance_pool, days_ahead=14, include_overdue=True
+        )
         overdue_ids = [item["bill"]["id"] for item in result_overdue["needs_action"]]
         assert bill["id"] in overdue_ids
 
         # Pay it
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Old Rent",
             amount=1500.00,
             currency="USD",
@@ -292,26 +277,30 @@ class TestBillPaymentWorkflow:
             paid_at=_utcnow(),
         )
 
-        result_after = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result_after = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         ids_after = [item["bill"]["id"] for item in result_after["needs_action"]]
         assert bill["id"] not in ids_after
 
-    async def test_upcoming_bills_totals_decrease_when_bill_paid(self, pool):
+    async def test_upcoming_bills_totals_decrease_when_bill_paid(self, finance_pool):
         """totals.amount_due decreases after marking a bill paid."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due_a = _today() + timedelta(days=3)
         due_b = _today() + timedelta(days=8)
 
-        await track_bill(pool=pool, payee="Bill A", amount=50.00, currency="USD", due_date=due_a)
-        await track_bill(pool=pool, payee="Bill B", amount=100.00, currency="USD", due_date=due_b)
+        await track_bill(
+            pool=finance_pool, payee="Bill A", amount=50.00, currency="USD", due_date=due_a
+        )
+        await track_bill(
+            pool=finance_pool, payee="Bill B", amount=100.00, currency="USD", due_date=due_b
+        )
 
-        result_before = await upcoming_bills(pool=pool, days_ahead=14)
+        result_before = await upcoming_bills(pool=finance_pool, days_ahead=14)
         assert Decimal(result_before["totals"]["needs_action_amount"]) == Decimal("150.00")
 
         # Pay Bill A
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Bill A",
             amount=50.00,
             currency="USD",
@@ -320,20 +309,24 @@ class TestBillPaymentWorkflow:
             paid_at=_utcnow(),
         )
 
-        result_after = await upcoming_bills(pool=pool, days_ahead=14)
+        result_after = await upcoming_bills(pool=finance_pool, days_ahead=14)
         assert Decimal(result_after["totals"]["needs_action_amount"]) == Decimal("100.00")
 
-    async def test_multiple_bills_same_payee_different_due_dates(self, pool):
+    async def test_multiple_bills_same_payee_different_due_dates(self, finance_pool):
         """Separate billing cycles for same payee are independent records."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due_1 = _today() + timedelta(days=4)
         due_2 = _today() + timedelta(days=34)  # beyond 14-day window
 
-        await track_bill(pool=pool, payee="Comcast", amount=89.99, currency="USD", due_date=due_1)
-        await track_bill(pool=pool, payee="Comcast", amount=89.99, currency="USD", due_date=due_2)
+        await track_bill(
+            pool=finance_pool, payee="Comcast", amount=89.99, currency="USD", due_date=due_1
+        )
+        await track_bill(
+            pool=finance_pool, payee="Comcast", amount=89.99, currency="USD", due_date=due_2
+        )
 
-        result = await upcoming_bills(pool=pool, days_ahead=14)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14)
         comcast_items = [i for i in result["needs_action"] if i["bill"]["payee"] == "Comcast"]
         assert len(comcast_items) == 1
         assert comcast_items[0]["bill"]["due_date"] == due_1
@@ -347,7 +340,7 @@ class TestBillPaymentWorkflow:
 class TestSubscriptionAndTransactionWorkflow:
     """Track subscription renewal AND record the corresponding transaction."""
 
-    async def test_subscription_renewal_with_matching_transaction(self, pool):
+    async def test_subscription_renewal_with_matching_transaction(self, finance_pool):
         """Subscription and transaction records for same service can coexist independently."""
         from butlers.tools.finance import record_transaction, spending_summary, track_subscription
 
@@ -357,7 +350,7 @@ class TestSubscriptionAndTransactionWorkflow:
         posted = _utcnow().replace(day=today.day, hour=9)
 
         sub = await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Netflix",
             amount=15.49,
             currency="USD",
@@ -366,7 +359,7 @@ class TestSubscriptionAndTransactionWorkflow:
             source_message_id=source_id,
         )
         txn = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Netflix",
             amount=-15.49,
@@ -381,14 +374,14 @@ class TestSubscriptionAndTransactionWorkflow:
 
         # Spending summary should include the transaction
         summary = await spending_summary(
-            pool,
+            finance_pool,
             start_date=today.replace(day=1),
             end_date=today,
             category_filter="subscriptions",
         )
         assert Decimal(summary["total_spend"]) >= Decimal("15.49")
 
-    async def test_subscription_upsert_after_price_change_and_new_transaction(self, pool):
+    async def test_subscription_upsert_after_price_change_and_new_transaction(self, finance_pool):
         """Price change: update subscription amount then record new transaction at new price."""
         from butlers.tools.finance import record_transaction, spending_summary, track_subscription
 
@@ -397,7 +390,7 @@ class TestSubscriptionAndTransactionWorkflow:
 
         # Original subscription at old price
         sub_v1 = await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Spotify",
             amount=9.99,
             currency="USD",
@@ -409,7 +402,7 @@ class TestSubscriptionAndTransactionWorkflow:
         from roster.finance.tests.test_tools import _registered_subscription_write
 
         sub_v2 = await _registered_subscription_write(
-            pool=pool,
+            pool=finance_pool,
             owner=True,
             service="Spotify",
             amount=11.99,
@@ -424,7 +417,7 @@ class TestSubscriptionAndTransactionWorkflow:
 
         # Record transaction at new price
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Spotify",
             amount=-11.99,
@@ -433,14 +426,14 @@ class TestSubscriptionAndTransactionWorkflow:
         )
 
         summary = await spending_summary(
-            pool,
+            finance_pool,
             start_date=today.replace(day=1),
             end_date=today,
             category_filter="subscriptions",
         )
         assert Decimal(summary["total_spend"]) == Decimal("11.99")
 
-    async def test_cancelled_subscription_transaction_still_tracked(self, pool):
+    async def test_cancelled_subscription_transaction_still_tracked(self, finance_pool):
         """Cancelling a subscription does not prevent the last transaction from appearing."""
         from butlers.tools.finance import record_transaction, spending_summary, track_subscription
 
@@ -448,7 +441,7 @@ class TestSubscriptionAndTransactionWorkflow:
         posted = _utcnow().replace(day=today.day, hour=8)
 
         await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Hulu",
             amount=7.99,
             currency="USD",
@@ -457,7 +450,7 @@ class TestSubscriptionAndTransactionWorkflow:
             status="cancelled",
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Hulu",
             amount=-7.99,
@@ -466,7 +459,7 @@ class TestSubscriptionAndTransactionWorkflow:
         )
 
         summary = await spending_summary(
-            pool,
+            finance_pool,
             start_date=today.replace(day=1),
             end_date=today,
             category_filter="subscriptions",
@@ -482,12 +475,12 @@ class TestSubscriptionAndTransactionWorkflow:
 class TestCurrencyEdgeCases:
     """Currency normalization, multi-currency, and non-USD scenarios."""
 
-    async def test_record_transaction_lowercase_currency_normalized(self, pool):
+    async def test_record_transaction_lowercase_currency_normalized(self, finance_pool):
         """Lowercase currency code is stored as uppercase."""
         from butlers.tools.finance import record_transaction
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Wise",
             amount=-50.00,
@@ -496,12 +489,12 @@ class TestCurrencyEdgeCases:
         )
         assert result["currency"] == "EUR"
 
-    async def test_record_transaction_mixed_case_currency_normalized(self, pool):
+    async def test_record_transaction_mixed_case_currency_normalized(self, finance_pool):
         """Mixed-case currency code is stored as uppercase."""
         from butlers.tools.finance import record_transaction
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="HSBC",
             amount=-200.00,
@@ -510,7 +503,7 @@ class TestCurrencyEdgeCases:
         )
         assert result["currency"] == "GBP"
 
-    async def test_spending_summary_mixed_currency_degrades_to_by_currency(self, pool):
+    async def test_spending_summary_mixed_currency_degrades_to_by_currency(self, finance_pool):
         """spending_summary never blends currencies: mixed input degrades the legacy
         scalar and reports honest per-currency buckets instead of picking a winner."""
         from butlers.tools.finance import record_transaction, spending_summary
@@ -521,7 +514,7 @@ class TestCurrencyEdgeCases:
         # 3 USD transactions, 1 EUR transaction
         for _ in range(3):
             await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=posted,
                 merchant="US Store",
                 amount=-10.00,
@@ -529,7 +522,7 @@ class TestCurrencyEdgeCases:
                 category="misc",
             )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="EU Store",
             amount=-20.00,
@@ -537,21 +530,23 @@ class TestCurrencyEdgeCases:
             category="misc",
         )
 
-        result = await spending_summary(pool, start_date=today.replace(day=1), end_date=today)
+        result = await spending_summary(
+            finance_pool, start_date=today.replace(day=1), end_date=today
+        )
         assert result["currency"] is None
         assert result["legacy_aggregate_degraded"] is True
         assert result["degraded_reason"] == "multiple_currencies_unconverted"
         by_currency = {item["currency"]: item["total_spend"] for item in result["by_currency"]}
         assert by_currency == {"USD": "30.00", "EUR": "20.00"}
 
-    async def test_list_transactions_multi_currency_coexist(self, pool):
+    async def test_list_transactions_multi_currency_coexist(self, finance_pool):
         """Transactions in different currencies are all stored and retrievable."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         posted = _utcnow()
         for currency in ["USD", "EUR", "GBP", "JPY"]:
             await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=posted,
                 merchant=f"Store-{currency}",
                 amount=-100.00,
@@ -559,17 +554,17 @@ class TestCurrencyEdgeCases:
                 category="shopping",
             )
 
-        result = await list_transactions(pool=pool, category="shopping")
+        result = await list_transactions(pool=finance_pool, category="shopping")
         currencies = {item["currency"] for item in result["items"]}
         assert {"USD", "EUR", "GBP", "JPY"}.issubset(currencies)
         assert result["total"] == 4
 
-    async def test_track_subscription_non_usd_currency(self, pool):
+    async def test_track_subscription_non_usd_currency(self, finance_pool):
         """Subscription can be tracked in non-USD currency."""
         from butlers.tools.finance import track_subscription
 
         result = await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Spotify UK",
             amount=9.99,
             currency="GBP",
@@ -578,12 +573,12 @@ class TestCurrencyEdgeCases:
         )
         assert result["currency"] == "GBP"
 
-    async def test_track_bill_non_usd_currency(self, pool):
+    async def test_track_bill_non_usd_currency(self, finance_pool):
         """Bill can be tracked in non-USD currency."""
         from butlers.tools.finance import track_bill
 
         result = await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="EDF Energy",
             amount=85.00,
             currency="GBP",
@@ -600,7 +595,7 @@ class TestCurrencyEdgeCases:
 class TestPagination:
     """Pagination correctness for list_transactions with large data sets."""
 
-    async def test_paginate_through_all_transactions(self, pool):
+    async def test_paginate_through_all_transactions(self, finance_pool):
         """Paginating with limit=10 returns all 50 transactions without overlap."""
         from butlers.tools.finance import list_transactions, record_transaction
 
@@ -608,7 +603,7 @@ class TestPagination:
         base = _utcnow()
         for i in range(50):
             await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=base - timedelta(hours=i),
                 merchant=f"Merchant-{i:02d}",
                 amount=-float(i + 1),
@@ -622,7 +617,7 @@ class TestPagination:
         total = None
 
         while True:
-            page = await list_transactions(pool=pool, limit=limit, offset=offset)
+            page = await list_transactions(pool=finance_pool, limit=limit, offset=offset)
             if total is None:
                 total = page["total"]
                 assert total == 50
@@ -637,14 +632,14 @@ class TestPagination:
 
         assert len(seen_ids) == 50
 
-    async def test_pagination_total_unchanged_across_pages(self, pool):
+    async def test_pagination_total_unchanged_across_pages(self, finance_pool):
         """Total reported is consistent across multiple page fetches."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         base = _utcnow()
         for i in range(15):
             await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=base - timedelta(minutes=i),
                 merchant=f"Shop-{i}",
                 amount=-5.00,
@@ -652,18 +647,18 @@ class TestPagination:
                 category="misc",
             )
 
-        page1 = await list_transactions(pool=pool, limit=5, offset=0)
-        page2 = await list_transactions(pool=pool, limit=5, offset=5)
-        page3 = await list_transactions(pool=pool, limit=5, offset=10)
+        page1 = await list_transactions(pool=finance_pool, limit=5, offset=0)
+        page2 = await list_transactions(pool=finance_pool, limit=5, offset=5)
+        page3 = await list_transactions(pool=finance_pool, limit=5, offset=10)
 
         assert page1["total"] == page2["total"] == page3["total"] == 15
 
-    async def test_offset_beyond_total_returns_empty_items(self, pool):
+    async def test_offset_beyond_total_returns_empty_items(self, finance_pool):
         """An offset beyond total returns an empty items list, not an error."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Solo Shop",
             amount=-1.00,
@@ -671,16 +666,16 @@ class TestPagination:
             category="misc",
         )
 
-        result = await list_transactions(pool=pool, limit=10, offset=100)
+        result = await list_transactions(pool=finance_pool, limit=10, offset=100)
         assert result["items"] == []
         assert result["total"] == 1
 
-    async def test_limit_clamped_to_maximum(self, pool):
+    async def test_limit_clamped_to_maximum(self, finance_pool):
         """A limit exceeding 500 is clamped to 500."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Test",
             amount=-1.00,
@@ -688,15 +683,15 @@ class TestPagination:
             category="misc",
         )
 
-        result = await list_transactions(pool=pool, limit=9999)
+        result = await list_transactions(pool=finance_pool, limit=9999)
         assert result["limit"] == 500
 
-    async def test_limit_minimum_clamped_to_one(self, pool):
+    async def test_limit_minimum_clamped_to_one(self, finance_pool):
         """A limit of 0 or negative is clamped to 1."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Test",
             amount=-1.00,
@@ -704,7 +699,7 @@ class TestPagination:
             category="misc",
         )
 
-        result = await list_transactions(pool=pool, limit=0)
+        result = await list_transactions(pool=finance_pool, limit=0)
         assert result["limit"] == 1
         assert len(result["items"]) <= 1
 
@@ -717,13 +712,13 @@ class TestPagination:
 class TestBoundaryDates:
     """Edge cases around date boundaries."""
 
-    async def test_bill_due_exactly_today_urgency_due_today(self, pool):
+    async def test_bill_due_exactly_today_urgency_due_today(self, finance_pool):
         """Bill due exactly today gets urgency=due_today."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         today = _today()
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Today Bill",
             amount=50.00,
             currency="USD",
@@ -731,54 +726,54 @@ class TestBoundaryDates:
             status="pending",
         )
 
-        result = await upcoming_bills(pool=pool, days_ahead=14)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14)
         assert len(result["needs_action"]) == 1
         item = result["needs_action"][0]
         assert item["urgency"] == "due_today"
         assert item["days_until_due"] == 0
 
-    async def test_bill_due_at_horizon_boundary_included(self, pool):
+    async def test_bill_due_at_horizon_boundary_included(self, finance_pool):
         """Bill due exactly at days_ahead boundary (day N) is included."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         horizon = _today() + timedelta(days=14)
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Horizon Bill",
             amount=75.00,
             currency="USD",
             due_date=horizon,
         )
 
-        result = await upcoming_bills(pool=pool, days_ahead=14)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14)
         payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Horizon Bill" in payees
 
-    async def test_bill_due_one_day_past_horizon_excluded(self, pool):
+    async def test_bill_due_one_day_past_horizon_excluded(self, finance_pool):
         """Bill due one day beyond the horizon is excluded."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         beyond = _today() + timedelta(days=15)
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Beyond Bill",
             amount=75.00,
             currency="USD",
             due_date=beyond,
         )
 
-        result = await upcoming_bills(pool=pool, days_ahead=14)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14)
         payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Beyond Bill" not in payees
 
-    async def test_transaction_posted_at_end_of_day_captured_same_day(self, pool):
+    async def test_transaction_posted_at_end_of_day_captured_same_day(self, finance_pool):
         """Transaction at 23:59:59 UTC is captured when querying that calendar day."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         today = _today()
         end_of_day = datetime(today.year, today.month, today.day, 23, 59, 59, tzinfo=UTC)
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=end_of_day,
             merchant="Late Night Shop",
             amount=-7.50,
@@ -787,19 +782,19 @@ class TestBoundaryDates:
         )
 
         result = await list_transactions(
-            pool=pool,
+            pool=finance_pool,
             start_date=datetime(today.year, today.month, today.day, 0, 0, 0, tzinfo=UTC),
             end_date=end_of_day,
         )
         merchants = [item["merchant"] for item in result["items"]]
         assert "Late Night Shop" in merchants
 
-    async def test_subscription_renewal_exactly_today(self, pool):
+    async def test_subscription_renewal_exactly_today(self, finance_pool):
         """Subscription with next_renewal=today is stored without error."""
         from butlers.tools.finance import track_subscription
 
         result = await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="SameDay Service",
             amount=5.00,
             currency="USD",
@@ -817,12 +812,12 @@ class TestBoundaryDates:
 class TestMetadataHandling:
     """Verify metadata field round-trips and edge cases."""
 
-    async def test_transaction_metadata_none_stored_as_empty_dict(self, pool):
+    async def test_transaction_metadata_none_stored_as_empty_dict(self, finance_pool):
         """metadata=None is stored and returned as an empty dict {}."""
         from butlers.tools.finance import record_transaction
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="No Meta",
             amount=-1.00,
@@ -832,12 +827,12 @@ class TestMetadataHandling:
         )
         assert result["metadata"] == {}
 
-    async def test_transaction_metadata_empty_dict_round_trips(self, pool):
+    async def test_transaction_metadata_empty_dict_round_trips(self, finance_pool):
         """metadata={} is stored and returned as {}."""
         from butlers.tools.finance import record_transaction
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Empty Meta",
             amount=-1.00,
@@ -847,13 +842,13 @@ class TestMetadataHandling:
         )
         assert result["metadata"] == {}
 
-    async def test_transaction_metadata_nested_dict_round_trips(self, pool):
+    async def test_transaction_metadata_nested_dict_round_trips(self, finance_pool):
         """Nested metadata dict is preserved through JSONB storage."""
         from butlers.tools.finance import record_transaction
 
         meta = {"order": {"id": "ORD-001", "items": [1, 2, 3]}, "tags": ["promo"]}
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Nested Meta",
             amount=-50.00,
@@ -865,13 +860,13 @@ class TestMetadataHandling:
         assert result["metadata"]["order"]["items"] == [1, 2, 3]
         assert result["metadata"]["tags"] == ["promo"]
 
-    async def test_subscription_metadata_merged_on_multiple_upserts(self, pool):
+    async def test_subscription_metadata_merged_on_multiple_upserts(self, finance_pool):
         """Metadata is accumulated (merged) across successive upserts, not replaced."""
         from butlers.tools.finance import track_subscription
 
         renewal = _today() + timedelta(days=30)
         await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Merge Test Sub",
             amount=10.00,
             currency="USD",
@@ -880,7 +875,7 @@ class TestMetadataHandling:
             metadata={"key_a": "value_a"},
         )
         await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Merge Test Sub",
             amount=10.00,
             currency="USD",
@@ -889,7 +884,7 @@ class TestMetadataHandling:
             metadata={"key_b": "value_b"},
         )
         final = await track_subscription(
-            pool=pool,
+            pool=finance_pool,
             service="Merge Test Sub",
             amount=10.00,
             currency="USD",
@@ -901,12 +896,12 @@ class TestMetadataHandling:
         assert "key_b" in final["metadata"]
         assert "key_c" in final["metadata"]
 
-    async def test_bill_metadata_none_stored_as_empty_dict(self, pool):
+    async def test_bill_metadata_none_stored_as_empty_dict(self, finance_pool):
         """Bill with metadata=None stores an empty dict."""
         from butlers.tools.finance import track_bill
 
         result = await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="No Meta Bill",
             amount=100.00,
             currency="USD",
@@ -915,13 +910,13 @@ class TestMetadataHandling:
         )
         assert result["metadata"] == {}
 
-    async def test_bill_metadata_account_info_preserved(self, pool):
+    async def test_bill_metadata_account_info_preserved(self, finance_pool):
         """Bill metadata containing account info survives round-trip."""
         from butlers.tools.finance import track_bill
 
         meta = {"account_number": "****1234", "statement_id": "S-2026-02"}
         result = await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Chase",
             amount=342.00,
             currency="USD",
@@ -940,17 +935,17 @@ class TestMetadataHandling:
 class TestListTransactionsAccountFilter:
     """list_transactions filtered by account_id."""
 
-    async def test_filter_by_account_id_returns_only_matching(self, pool):
+    async def test_filter_by_account_id_returns_only_matching(self, finance_pool):
         """list_transactions(account_id=X) returns only transactions linked to X."""
         from butlers.tools.finance import list_transactions, record_transaction
 
-        acct_id = await pool.fetchval(
+        acct_id = await finance_pool.fetchval(
             "INSERT INTO accounts (institution, type, currency) VALUES ($1, $2, $3) RETURNING id",
             "Chase",
             "credit",
             "USD",
         )
-        other_acct_id = await pool.fetchval(
+        other_acct_id = await finance_pool.fetchval(
             "INSERT INTO accounts (institution, type, currency) VALUES ($1, $2, $3) RETURNING id",
             "Amex",
             "credit",
@@ -959,7 +954,7 @@ class TestListTransactionsAccountFilter:
 
         posted = _utcnow()
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Chase Purchase",
             amount=-30.00,
@@ -968,7 +963,7 @@ class TestListTransactionsAccountFilter:
             account_id=str(acct_id),
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Amex Purchase",
             amount=-50.00,
@@ -977,7 +972,7 @@ class TestListTransactionsAccountFilter:
             account_id=str(other_acct_id),
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="No Account Purchase",
             amount=-10.00,
@@ -985,16 +980,16 @@ class TestListTransactionsAccountFilter:
             category="misc",
         )
 
-        result = await list_transactions(pool=pool, account_id=str(acct_id))
+        result = await list_transactions(pool=finance_pool, account_id=str(acct_id))
         assert result["total"] == 1
         assert result["items"][0]["merchant"] == "Chase Purchase"
 
-    async def test_filter_by_nonexistent_account_id_returns_empty(self, pool):
+    async def test_filter_by_nonexistent_account_id_returns_empty(self, finance_pool):
         """Filtering by a UUID that matches no transactions returns empty."""
         from butlers.tools.finance import list_transactions, record_transaction
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Any Store",
             amount=-10.00,
@@ -1002,15 +997,15 @@ class TestListTransactionsAccountFilter:
             category="misc",
         )
 
-        result = await list_transactions(pool=pool, account_id=str(uuid.uuid4()))
+        result = await list_transactions(pool=finance_pool, account_id=str(uuid.uuid4()))
         assert result["total"] == 0
         assert result["items"] == []
 
-    async def test_account_id_filter_combined_with_category(self, pool):
+    async def test_account_id_filter_combined_with_category(self, finance_pool):
         """account_id and category filters combine correctly (AND logic)."""
         from butlers.tools.finance import list_transactions, record_transaction
 
-        acct_id = await pool.fetchval(
+        acct_id = await finance_pool.fetchval(
             "INSERT INTO accounts (institution, type, currency) VALUES ($1, $2, $3) RETURNING id",
             "Wells Fargo",
             "checking",
@@ -1019,7 +1014,7 @@ class TestListTransactionsAccountFilter:
 
         posted = _utcnow()
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Grocery Store",
             amount=-40.00,
@@ -1028,7 +1023,7 @@ class TestListTransactionsAccountFilter:
             account_id=str(acct_id),
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Restaurant",
             amount=-25.00,
@@ -1037,7 +1032,9 @@ class TestListTransactionsAccountFilter:
             account_id=str(acct_id),
         )
 
-        result = await list_transactions(pool=pool, account_id=str(acct_id), category="groceries")
+        result = await list_transactions(
+            pool=finance_pool, account_id=str(acct_id), category="groceries"
+        )
         assert result["total"] == 1
         assert result["items"][0]["merchant"] == "Grocery Store"
 
@@ -1050,9 +1047,9 @@ class TestListTransactionsAccountFilter:
 class TestSchemaValidation:
     """Validate that all expected tables and indexes are created by the DDL."""
 
-    async def test_all_expected_tables_exist(self, pool):
+    async def test_all_expected_tables_exist(self, finance_pool):
         """All four finance tables exist in the database."""
-        tables = await pool.fetch(
+        tables = await finance_pool.fetch(
             """
             SELECT table_name
             FROM information_schema.tables
@@ -1064,9 +1061,9 @@ class TestSchemaValidation:
         for expected in ("accounts", "transactions", "subscriptions", "bills"):
             assert expected in table_names, f"Missing table: {expected}"
 
-    async def test_transactions_indexes_exist(self, pool):
+    async def test_transactions_indexes_exist(self, finance_pool):
         """All expected indexes on transactions table are present."""
-        indexes = await pool.fetch(
+        indexes = await finance_pool.fetch(
             """
             SELECT indexname
             FROM pg_indexes
@@ -1084,12 +1081,12 @@ class TestSchemaValidation:
         for idx in expected_indexes:
             assert idx in index_names, f"Missing index: {idx}"
 
-    async def test_transactions_direction_check_constraint_enforced(self, pool):
+    async def test_transactions_direction_check_constraint_enforced(self, finance_pool):
         """Invalid direction value is rejected by the CHECK constraint."""
         import asyncpg
 
         with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
+            await finance_pool.execute(
                 """
                 INSERT INTO transactions
                     (posted_at, merchant, amount, currency, direction, category)
@@ -1097,12 +1094,12 @@ class TestSchemaValidation:
                 """
             )
 
-    async def test_subscriptions_frequency_check_constraint_enforced(self, pool):
+    async def test_subscriptions_frequency_check_constraint_enforced(self, finance_pool):
         """Invalid frequency is rejected by the subscriptions CHECK constraint."""
         import asyncpg
 
         with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
+            await finance_pool.execute(
                 """
                 INSERT INTO subscriptions
                     (service, amount, currency, frequency, next_renewal, status)
@@ -1110,12 +1107,12 @@ class TestSchemaValidation:
                 """
             )
 
-    async def test_bills_status_check_constraint_enforced(self, pool):
+    async def test_bills_status_check_constraint_enforced(self, finance_pool):
         """Invalid status is rejected by the bills CHECK constraint."""
         import asyncpg
 
         with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
+            await finance_pool.execute(
                 """
                 INSERT INTO bills
                     (payee, amount, currency, due_date, frequency, status)
@@ -1123,24 +1120,24 @@ class TestSchemaValidation:
                 """
             )
 
-    async def test_accounts_type_check_constraint_enforced(self, pool):
+    async def test_accounts_type_check_constraint_enforced(self, finance_pool):
         """Invalid account type is rejected by the accounts CHECK constraint."""
         import asyncpg
 
         with pytest.raises(asyncpg.CheckViolationError):
-            await pool.execute(
+            await finance_pool.execute(
                 """
                 INSERT INTO accounts (institution, type, currency)
                 VALUES ('Bad Bank', 'brokerage', 'USD')
                 """
             )
 
-    async def test_transactions_uuid_dedupe_index_unique(self, pool):
+    async def test_transactions_uuid_dedupe_index_unique(self, finance_pool):
         """Unique partial index blocks (source_message_id, merchant, amount, posted_at) dupes."""
         import asyncpg
 
         posted = _utcnow()
-        await pool.execute(
+        await finance_pool.execute(
             """
             INSERT INTO transactions
                 (source_message_id, posted_at, merchant, amount, currency, direction, category)
@@ -1150,7 +1147,7 @@ class TestSchemaValidation:
         )
 
         with pytest.raises(asyncpg.UniqueViolationError):
-            await pool.execute(
+            await finance_pool.execute(
                 """
                 INSERT INTO transactions
                     (source_message_id, posted_at, merchant, amount, currency, direction, category)
@@ -1159,18 +1156,18 @@ class TestSchemaValidation:
                 posted,
             )
 
-    async def test_transactions_fk_account_id_on_delete_set_null(self, pool):
+    async def test_transactions_fk_account_id_on_delete_set_null(self, finance_pool):
         """Deleting an account sets account_id to NULL on linked transactions."""
         from butlers.tools.finance import record_transaction
 
-        acct_id = await pool.fetchval(
+        acct_id = await finance_pool.fetchval(
             "INSERT INTO accounts (institution, type, currency) VALUES ($1, $2, $3) RETURNING id",
             "Delete Me Bank",
             "checking",
             "USD",
         )
         txn = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Linked Store",
             amount=-20.00,
@@ -1180,19 +1177,19 @@ class TestSchemaValidation:
         )
         assert txn["account_id"] == str(acct_id)
 
-        await pool.execute("DELETE FROM accounts WHERE id = $1", acct_id)
+        await finance_pool.execute("DELETE FROM accounts WHERE id = $1", acct_id)
 
-        row = await pool.fetchrow(
+        row = await finance_pool.fetchrow(
             "SELECT account_id FROM transactions WHERE id = $1::uuid", txn["id"]
         )
         assert row["account_id"] is None
 
-    async def test_transactions_nullable_optional_columns(self, pool):
+    async def test_transactions_nullable_optional_columns(self, finance_pool):
         """Optional columns (description, payment_method, receipt_url, etc.) accept NULL."""
         from butlers.tools.finance import record_transaction
 
         result = await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=_utcnow(),
             merchant="Bare Minimum",
             amount=-1.00,
@@ -1215,7 +1212,7 @@ class TestSchemaValidation:
 class TestConcurrentAndRapidOperations:
     """Verify correctness under concurrent and rapid sequential operations."""
 
-    async def test_concurrent_transaction_inserts_all_succeed(self, pool):
+    async def test_concurrent_transaction_inserts_all_succeed(self, finance_pool):
         """Concurrent record_transaction calls complete without error."""
         from butlers.tools.finance import list_transactions, record_transaction
 
@@ -1223,7 +1220,7 @@ class TestConcurrentAndRapidOperations:
 
         async def insert_one(i: int):
             return await record_transaction(
-                pool=pool,
+                pool=finance_pool,
                 posted_at=posted - timedelta(seconds=i),
                 merchant=f"Concurrent-{i}",
                 amount=-float(i + 1),
@@ -1235,10 +1232,10 @@ class TestConcurrentAndRapidOperations:
         assert len(results) == 10
         assert len({r["id"] for r in results}) == 10  # all distinct
 
-        listing = await list_transactions(pool=pool, category="misc")
+        listing = await list_transactions(pool=finance_pool, category="misc")
         assert listing["total"] == 10
 
-    async def test_concurrent_dedupe_same_source_message_id(self, pool):
+    async def test_concurrent_dedupe_same_source_message_id(self, finance_pool):
         """Concurrent inserts with same source_message_id result in a single row."""
         from butlers.tools.finance import record_transaction
 
@@ -1248,7 +1245,7 @@ class TestConcurrentAndRapidOperations:
         results = await asyncio.gather(
             *[
                 record_transaction(
-                    pool=pool,
+                    pool=finance_pool,
                     posted_at=posted,
                     merchant="Same Merchant",
                     amount=-99.00,
@@ -1265,19 +1262,19 @@ class TestConcurrentAndRapidOperations:
         assert len(ids) == 1
 
         # Exactly one row in DB
-        count = await pool.fetchval(
+        count = await finance_pool.fetchval(
             "SELECT COUNT(*) FROM transactions WHERE source_message_id = $1", source_id
         )
         assert count == 1
 
-    async def test_rapid_bill_state_transitions(self, pool):
+    async def test_rapid_bill_state_transitions(self, finance_pool):
         """Rapid pending→overdue→paid transitions leave the bill in the final state."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due = _today() - timedelta(days=1)
 
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Rapid Bill",
             amount=200.00,
             currency="USD",
@@ -1285,7 +1282,7 @@ class TestConcurrentAndRapidOperations:
             status="pending",
         )
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Rapid Bill",
             amount=200.00,
             currency="USD",
@@ -1293,7 +1290,7 @@ class TestConcurrentAndRapidOperations:
             status="overdue",
         )
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Rapid Bill",
             amount=200.00,
             currency="USD",
@@ -1303,14 +1300,18 @@ class TestConcurrentAndRapidOperations:
         )
 
         # Should not appear in upcoming_bills (paid)
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Rapid Bill" not in payees
 
         # Verify final state
-        count = await pool.fetchval("SELECT COUNT(*) FROM bills WHERE payee = $1", "Rapid Bill")
+        count = await finance_pool.fetchval(
+            "SELECT COUNT(*) FROM bills WHERE payee = $1", "Rapid Bill"
+        )
         assert count == 1
-        status = await pool.fetchval("SELECT status FROM bills WHERE payee = $1", "Rapid Bill")
+        status = await finance_pool.fetchval(
+            "SELECT status FROM bills WHERE payee = $1", "Rapid Bill"
+        )
         assert status == "paid"
 
 
@@ -1322,14 +1323,14 @@ class TestConcurrentAndRapidOperations:
 class TestSpendingSummaryEdgeCases:
     """Additional edge cases for spending_summary."""
 
-    async def test_spending_summary_no_group_by_returns_single_total_bucket(self, pool):
+    async def test_spending_summary_no_group_by_returns_single_total_bucket(self, finance_pool):
         """Without group_by, a single 'total' bucket is returned."""
         from butlers.tools.finance import record_transaction, spending_summary
 
         today = _today()
         posted = _utcnow().replace(day=today.day, hour=10)
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Store A",
             amount=-30.00,
@@ -1337,19 +1338,19 @@ class TestSpendingSummaryEdgeCases:
             category="misc",
         )
 
-        result = await spending_summary(pool, start_date=today, end_date=today)
+        result = await spending_summary(finance_pool, start_date=today, end_date=today)
         assert len(result["groups"]) == 1
         assert result["groups"][0]["key"] == "total"
         assert Decimal(result["groups"][0]["amount"]) == Decimal("30.00")
 
-    async def test_spending_summary_start_equals_end_date(self, pool):
+    async def test_spending_summary_start_equals_end_date(self, finance_pool):
         """start_date == end_date captures transactions for exactly that day."""
         from butlers.tools.finance import record_transaction, spending_summary
 
         today = _today()
         posted = datetime(today.year, today.month, today.day, 14, 0, 0, tzinfo=UTC)
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Same Day",
             amount=-25.00,
@@ -1357,10 +1358,10 @@ class TestSpendingSummaryEdgeCases:
             category="misc",
         )
 
-        result = await spending_summary(pool, start_date=today, end_date=today)
+        result = await spending_summary(finance_pool, start_date=today, end_date=today)
         assert Decimal(result["total_spend"]) == Decimal("25.00")
 
-    async def test_spending_summary_group_by_category_sorted_by_amount_desc(self, pool):
+    async def test_spending_summary_group_by_category_sorted_by_amount_desc(self, finance_pool):
         """Categories are sorted highest spend first."""
         from butlers.tools.finance import record_transaction, spending_summary
 
@@ -1368,7 +1369,7 @@ class TestSpendingSummaryEdgeCases:
         posted = _utcnow().replace(day=today.day, hour=10)
 
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Small",
             amount=-5.00,
@@ -1376,7 +1377,7 @@ class TestSpendingSummaryEdgeCases:
             category="misc",
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Big",
             amount=-500.00,
@@ -1384,7 +1385,7 @@ class TestSpendingSummaryEdgeCases:
             category="rent",
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Medium",
             amount=-50.00,
@@ -1393,16 +1394,16 @@ class TestSpendingSummaryEdgeCases:
         )
 
         result = await spending_summary(
-            pool, start_date=today.replace(day=1), end_date=today, group_by="category"
+            finance_pool, start_date=today.replace(day=1), end_date=today, group_by="category"
         )
         amounts = [Decimal(g["amount"]) for g in result["groups"]]
         assert amounts == sorted(amounts, reverse=True)
 
-    async def test_spending_summary_account_id_filter_via_record_transaction(self, pool):
+    async def test_spending_summary_account_id_filter_via_record_transaction(self, finance_pool):
         """account_id filter in spending_summary works after transactions are recorded."""
         from butlers.tools.finance import record_transaction, spending_summary
 
-        acct_id = await pool.fetchval(
+        acct_id = await finance_pool.fetchval(
             "INSERT INTO accounts (institution, type, currency) VALUES ($1, $2, $3) RETURNING id",
             "Filter Bank",
             "checking",
@@ -1412,7 +1413,7 @@ class TestSpendingSummaryEdgeCases:
         today = _today()
         posted = _utcnow().replace(day=today.day, hour=10)
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Acct Store",
             amount=-80.00,
@@ -1421,7 +1422,7 @@ class TestSpendingSummaryEdgeCases:
             account_id=str(acct_id),
         )
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Other Store",
             amount=-200.00,
@@ -1430,11 +1431,11 @@ class TestSpendingSummaryEdgeCases:
         )
 
         result = await spending_summary(
-            pool, start_date=today.replace(day=1), end_date=today, account_id=str(acct_id)
+            finance_pool, start_date=today.replace(day=1), end_date=today, account_id=str(acct_id)
         )
         assert Decimal(result["total_spend"]) == Decimal("80.00")
 
-    async def test_spending_summary_zero_amount_debit_counted(self, pool):
+    async def test_spending_summary_zero_amount_debit_counted(self, finance_pool):
         """A debit transaction with amount 0 is included in the count (edge: free item)."""
         from butlers.tools.finance import record_transaction, spending_summary
 
@@ -1443,7 +1444,7 @@ class TestSpendingSummaryEdgeCases:
         # Negative zero stays debit in amount math; but amount=0 edge is unusual.
         # We use -0.01 to avoid the credit/debit sign ambiguity (0 is treated as credit).
         await record_transaction(
-            pool=pool,
+            pool=finance_pool,
             posted_at=posted,
             merchant="Near Zero",
             amount=-0.01,
@@ -1451,7 +1452,9 @@ class TestSpendingSummaryEdgeCases:
             category="misc",
         )
 
-        result = await spending_summary(pool, start_date=today.replace(day=1), end_date=today)
+        result = await spending_summary(
+            finance_pool, start_date=today.replace(day=1), end_date=today
+        )
         assert Decimal(result["total_spend"]) == Decimal("0.01")
 
 
@@ -1463,34 +1466,34 @@ class TestSpendingSummaryEdgeCases:
 class TestUpcomingBillsEdgeCases:
     """Additional edge cases not covered in test_tools.py."""
 
-    async def test_days_ahead_zero_only_includes_today(self, pool):
+    async def test_days_ahead_zero_only_includes_today(self, finance_pool):
         """days_ahead=0 includes only bills due today."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         today = _today()
         await track_bill(
-            pool=pool, payee="Today Only", amount=10.00, currency="USD", due_date=today
+            pool=finance_pool, payee="Today Only", amount=10.00, currency="USD", due_date=today
         )
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="Tomorrow Bill",
             amount=20.00,
             currency="USD",
             due_date=today + timedelta(days=1),
         )
 
-        result = await upcoming_bills(pool=pool, days_ahead=0)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=0)
         payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "Today Only" in payees
         assert "Tomorrow Bill" not in payees
 
-    async def test_multiple_overdue_bills_all_included(self, pool):
+    async def test_multiple_overdue_bills_all_included(self, finance_pool):
         """All overdue bills are included when include_overdue=True."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         for i in range(3):
             await track_bill(
-                pool=pool,
+                pool=finance_pool,
                 payee=f"Overdue Bill {i}",
                 amount=float(10 * (i + 1)),
                 currency="USD",
@@ -1498,33 +1501,33 @@ class TestUpcomingBillsEdgeCases:
                 status="overdue",
             )
 
-        result = await upcoming_bills(pool=pool, days_ahead=14, include_overdue=True)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14, include_overdue=True)
         overdue = [i for i in result["needs_action"] if i["urgency"] == "overdue"]
         assert len(overdue) == 3
         assert result["totals"]["needs_action_count"] == 3
 
-    async def test_bill_due_date_as_string_accepted_by_track_bill(self, pool):
+    async def test_bill_due_date_as_string_accepted_by_track_bill(self, finance_pool):
         """ISO string due_date in track_bill survives round-trip and appears in upcoming_bills."""
         from butlers.tools.finance import track_bill, upcoming_bills
 
         due_str = (_today() + timedelta(days=3)).isoformat()
         await track_bill(
-            pool=pool,
+            pool=finance_pool,
             payee="String Date Bill",
             amount=55.00,
             currency="USD",
             due_date=due_str,
         )
 
-        result = await upcoming_bills(pool=pool, days_ahead=14)
+        result = await upcoming_bills(pool=finance_pool, days_ahead=14)
         payees = [i["bill"]["payee"] for i in result["needs_action"]]
         assert "String Date Bill" in payees
 
-    async def test_as_of_timestamp_is_recent(self, pool):
+    async def test_as_of_timestamp_is_recent(self, finance_pool):
         """as_of timestamp in upcoming_bills response is close to current time."""
         from butlers.tools.finance import upcoming_bills
 
-        result = await upcoming_bills(pool=pool)
+        result = await upcoming_bills(pool=finance_pool)
         as_of = datetime.fromisoformat(result["as_of"])
         delta = abs((datetime.now(UTC) - as_of).total_seconds())
         assert delta < 5, f"as_of is too old: {delta}s ago"
@@ -1533,24 +1536,6 @@ class TestUpcomingBillsEdgeCases:
 # ---------------------------------------------------------------------------
 # Regression: import_transactions metadata JSONB round-trip (bu-69p63)
 # ---------------------------------------------------------------------------
-
-_DDL_TRANSACTIONS_METADATA = """
-CREATE TABLE IF NOT EXISTS transactions (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    account_id        UUID,
-    posted_at         TIMESTAMPTZ NOT NULL,
-    merchant          TEXT NOT NULL,
-    description       TEXT,
-    amount            NUMERIC(14,2) NOT NULL,
-    currency          CHAR(3) NOT NULL DEFAULT 'USD',
-    direction         TEXT NOT NULL,
-    category          TEXT NOT NULL DEFAULT 'uncategorized',
-    metadata          JSONB NOT NULL DEFAULT '{}'::jsonb,
-    source_message_id TEXT,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-)
-"""
 
 
 class TestImportTransactionsMetadataRoundtrip:
@@ -1562,13 +1547,15 @@ class TestImportTransactionsMetadataRoundtrip:
     After the fix, the asyncpg codec serialises the dict directly.
     """
 
-    @pytest.fixture
-    async def pool(self, provisioned_postgres_pool):
-        async with provisioned_postgres_pool() as p:
-            await p.execute(_DDL_TRANSACTIONS_METADATA)
-            yield p
+    @pytest.fixture(autouse=True)
+    async def _csv_category(self, finance_pool):
+        """transactions.category references categories(name); seed the CSV's category."""
+        await finance_pool.execute(
+            "INSERT INTO categories(name,display_name) VALUES('food & drink','Food & Drink')"
+            " ON CONFLICT(name) DO NOTHING"
+        )
 
-    async def test_metadata_stored_as_dict_not_string(self, pool):
+    async def test_metadata_stored_as_dict_not_string(self, finance_pool):
         """import_transactions stores metadata as a JSONB dict (not double-encoded string)."""
         from butlers.tools.finance.data_import import import_transactions
 
@@ -1581,13 +1568,13 @@ class TestImportTransactionsMetadataRoundtrip:
         blob_store.get = AsyncMock(return_value=csv_content.encode("utf-8"))
 
         result = await import_transactions(
-            pool=pool,
+            pool=finance_pool,
             blob_store=blob_store,
             storage_ref="s3://bucket/test.csv",
         )
         assert result["imported"] == 1, f"Expected 1 import, got: {result}"
 
-        row = await pool.fetchrow("SELECT metadata FROM transactions LIMIT 1")
+        row = await finance_pool.fetchrow("SELECT metadata FROM transactions LIMIT 1")
         assert row is not None
         # asyncpg JSONB codec returns a dict; a double-encoded value would be a str
         assert isinstance(row["metadata"], dict), (
