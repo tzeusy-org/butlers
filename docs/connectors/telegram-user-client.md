@@ -73,6 +73,15 @@ Telegram user-client credentials are resolved **exclusively from owner entity_in
 | `telegram_api_hash` | Owner entity_info (type: `telegram_api_hash`) |
 | `telegram_user_session` | Owner entity_info (type: `telegram_user_session`) |
 
+Owner-outbound point events (`connectors.owner_outbound_events`, shared with the WhatsApp
+user-client) also need the system secret `OWNER_OUTBOUND_DEDUP_KEY` in the shared credential
+store (`butler_secrets`, no environment fallback). It keys the HMAC over `chat_id:message_id`
+that forms the dedup key, so stored rows cannot be matched back to a chat by enumerating
+sequential message ids. If the key is missing, the connector logs one startup warning and
+records no point events; it never falls back to an unkeyed hash. Rotating the key only lets a
+replayed message be recorded once more. Rows written before the key existed hold a legacy
+unkeyed SHA-256 key; they cannot be rehashed, so removing them is an owner-gated data scrub.
+
 ### Obtaining Credentials
 
 1. Visit https://my.telegram.org and log in with your phone number.

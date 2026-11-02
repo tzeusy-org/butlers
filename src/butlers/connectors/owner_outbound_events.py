@@ -25,10 +25,20 @@ no content column and no counterpart-identity column. The one caveat is the
 idempotency key: replay-safety requires *some* stable per-message dedup
 handle, and the only stable handles connectors have are chat/thread and
 message identifiers, which are themselves derived from "who the owner was
-messaging". To avoid smuggling counterpart identity into the DB even as an
-inert dedup key, the raw identifier is SHA-256 hashed before it ever reaches
-SQL — the digest is deterministic (so replays still dedup correctly) but is
-not reversible back into the source chat/message id.
+messaging". An unkeyed hash is not enough: Telegram chat ids are contact
+handles and message ids are sequential, so a plain SHA-256 can be inverted by
+enumeration (bu-szrvwu). The identifier is therefore HMAC-SHA256'd under
+``OWNER_OUTBOUND_DEDUP_KEY`` from the shared credential store before it ever
+reaches SQL: deterministic under one key (replays still dedup) and not
+recoverable from stored rows without the key.
+
+Missing key fails closed: the connector logs one startup warning and records
+no point events at all, rather than falling back to a plain hash. Rotating
+the key only weakens dedup across the rotation (a replayed message may be
+recorded once more). Rows written before bu-szrvwu carry the legacy
+``owner_outbound:<provider>:<sha256>`` key; they cannot be rehashed (the hash
+is one-way) and do not age out, so scrubbing them is an owner-gated data
+operation, not something this module does.
 
 If counterpart-less point events turn out to limit corroboration value for a
 future consumer (e.g. wanting to distinguish "many short bursts" from "one
@@ -39,8 +49,10 @@ long exchange"), that is a known, accepted limitation of this Tier-1 signal
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
 from datetime import datetime
+from typing import Any
 
 import asyncpg
 
@@ -49,15 +61,60 @@ logger = logging.getLogger(__name__)
 _TABLE = "connectors.owner_outbound_events"
 
 
-def _hash_dedup_material(provider: str, dedup_material: str) -> str:
-    """One-way digest of a connector-native (chat, message) identifier pair.
+OWNER_OUTBOUND_DEDUP_KEY_NAME = "OWNER_OUTBOUND_DEDUP_KEY"
 
-    Never store the raw chat/message identifier, even as an opaque dedup
-    key: it is derived from who the owner was messaging, and the privacy
-    contract for this signal is "no counterpart identity", full stop.
+# Process-wide HMAC key; set once at connector startup by ``resolve_dedup_key``.
+_dedup_key: bytes | None = None
+
+
+def configure_dedup_key(value: str | None) -> bool:
+    """Set (or clear) the process-wide HMAC key. Returns whether a key is configured."""
+    global _dedup_key
+    if value is None or not str(value).strip():
+        _dedup_key = None
+        return False
+    _dedup_key = str(value).strip().encode("utf-8")
+    return True
+
+
+async def resolve_dedup_key(credential_store: Any) -> bool:
+    """Resolve the dedup HMAC key from the shared credential store, once, at startup.
+
+    ``env_fallback=False``: the key must come from the credential store. Logs a
+    single warning when the key is unavailable and never raises; while no key
+    is configured, ``record_owner_outbound_point`` writes nothing.
     """
-    digest = hashlib.sha256(f"{provider}:{dedup_material}".encode()).hexdigest()
-    return f"owner_outbound:{provider}:{digest}"
+    value: str | None = None
+    if credential_store is not None:
+        try:
+            value = await credential_store.resolve(
+                OWNER_OUTBOUND_DEDUP_KEY_NAME, env_fallback=False
+            )
+        except Exception:  # noqa: BLE001 - a probe failure must not block startup
+            value = None
+    configured = configure_dedup_key(value)
+    if not configured:
+        logger.warning(
+            "%s is not provisioned: owner-outbound point events will not be recorded",
+            OWNER_OUTBOUND_DEDUP_KEY_NAME,
+        )
+    return configured
+
+
+def _hash_dedup_material(provider: str, dedup_material: str) -> str | None:
+    """Keyed one-way digest of a connector-native (chat, message) identifier pair.
+
+    Never store the raw chat/message identifier, or an unkeyed hash of it: it
+    is derived from who the owner was messaging, and the privacy contract for
+    this signal is "no counterpart identity", full stop. ``None`` when no key
+    is configured.
+    """
+    key = _dedup_key
+    if key is None:
+        return None
+    message = f"{provider}:{dedup_material}".encode()
+    digest = hmac.new(key, message, hashlib.sha256).hexdigest()
+    return f"owner_outbound:{provider}:hmac:{digest}"
 
 
 async def record_owner_outbound_point(
@@ -86,16 +143,18 @@ async def record_owner_outbound_point(
             counterpart's).
         occurred_at: The message's own timestamp (not "now").
         dedup_material: Connector-native ``f"{chat_id}:{message_id}"`` (or
-            equivalent) — hashed before use, never persisted in cleartext.
+            equivalent) — HMAC'd before use, never persisted in cleartext.
 
     Returns:
         True if a new row was inserted, False if it already existed (or the
-        write was skipped/failed).
+        write was skipped/failed, including when no dedup key is configured).
     """
     if pool is None:
         return False
 
     idempotency_key = _hash_dedup_material(provider, dedup_material)
+    if idempotency_key is None:
+        return False
     try:
         result = await pool.fetchval(
             f"""
@@ -116,4 +175,9 @@ async def record_owner_outbound_point(
     return result is not None
 
 
-__all__ = ["record_owner_outbound_point"]
+__all__ = [
+    "OWNER_OUTBOUND_DEDUP_KEY_NAME",
+    "configure_dedup_key",
+    "record_owner_outbound_point",
+    "resolve_dedup_key",
+]
