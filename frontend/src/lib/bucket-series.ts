@@ -26,6 +26,18 @@ export function hourlySlotStarts(nowMs: number, count = 24): number[] {
   return Array.from({ length: count }, (_, i) => last - (count - 1 - i) * HOUR_MS);
 }
 
+export const DAY_MS = 86_400_000;
+
+/**
+ * Start instants (epoch ms) of `count` consecutive UTC-day slots, oldest
+ * first, the last one being the UTC day that contains `nowMs`. A backend
+ * `YYYY-MM-DD` day key parses (Date.parse) to exactly one of these instants.
+ */
+export function dailySlotStarts(nowMs: number, count: number): number[] {
+  const last = Math.floor(nowMs / DAY_MS) * DAY_MS;
+  return Array.from({ length: count }, (_, i) => last - (count - 1 - i) * DAY_MS);
+}
+
 /**
  * Place `rows` into `slotStarts` by their bucket-start timestamp.
  *

@@ -241,3 +241,38 @@ describe("ActivityStripe: optional bar interaction", () => {
     expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toBe("5 sessions, 11:00 UTC")
   })
 })
+
+// ---------------------------------------------------------------------------
+// Unreported slots (bu-s11n0s.5.1)
+// ---------------------------------------------------------------------------
+
+describe("ActivityStripe: unreported slots", () => {
+  it("draws a null slot as unreported, distinct from a measured zero, and leaves it out of the totals", () => {
+    const data: (number | null)[] = counts({ 4: 3 })
+    data[0] = null
+    data[1] = null
+    const { container } = render(<ActivityStripe counts={data} windowEnd={new Date("2026-05-10T14:30:00.000Z")} />)
+
+    const unreported = container.querySelectorAll('[data-slot="unreported"]')
+    expect(unreported).toHaveLength(2)
+    expect(unreported[0].className).toContain("border-dashed")
+    expect(unreported[0].className).not.toContain("bg-muted/40")
+    expect(container.querySelectorAll(".bg-muted\\/40")).toHaveLength(21)
+    expect(screen.getByRole("img").getAttribute("aria-label")).toBe(
+      "24-hour activity, total 3 sessions, peak 3 at 19:00 UTC, 2h not reported",
+    )
+  })
+
+  it("labels an interactive unreported slot as not reported instead of zero sessions", () => {
+    const data: (number | null)[] = zeros()
+    data[20] = null
+    render(<ActivityStripe counts={data} windowEnd={new Date("2026-05-10T14:30:00.000Z")} onBarClick={() => {}} />)
+
+    expect(screen.getAllByRole("button")[20].getAttribute("aria-label")).toBe("not reported, 11:00 UTC")
+  })
+
+  it("names an entirely unreported window instead of claiming zero sessions", () => {
+    render(<ActivityStripe counts={Array(24).fill(null)} />)
+    expect(screen.getByRole("img").getAttribute("aria-label")).toBe("24-hour activity not reported")
+  })
+})

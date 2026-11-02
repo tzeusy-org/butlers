@@ -39,6 +39,10 @@ describe('Sparkline accessibility', () => {
   it('reports "no events" when every bucket is zero', () => {
     const html = renderToStaticMarkup(<Sparkline data={Array(24).fill(0)} />)
     expect(html).toContain('aria-label="24h activity: no events"')
+    // A missing series (bu-s11n0s.5.1) is unreported, never drawn as 24 zeros.
+    const missing = renderToStaticMarkup(<Sparkline data={[]} />)
+    expect(missing).toContain('aria-label="24h activity: not reported"')
+    expect(missing).not.toContain('fill-border')
   })
 })
 

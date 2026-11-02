@@ -97,7 +97,8 @@ export function ConnectorRosterRow({
   const info = deriveConnectorDispatchInfo(c)
   const detailPath = `/ingestion/connectors/${encodeURIComponent(c.connector_type)}/${encodeURIComponent(c.endpoint_identity)}`
 
-  const bars = spark24h ?? Array(24).fill(0)
+  // Missing counts render as unreported slots (bu-s11n0s.5.1), not zeros.
+  const bars = spark24h ?? []
   // today.messages_ingested is already the 24h sum on the backend (derived from hourly_events).
   const eventsCount = events24h ?? c.today?.messages_ingested ?? 0
 

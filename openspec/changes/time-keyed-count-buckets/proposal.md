@@ -29,7 +29,13 @@ count strip that misplaces its buckets misleads the owner about when their sense
 - `deaf` means "no heartbeat recorded". The history append is best effort, so a lost append also
   reads as deaf; making the append durable is a separate, unadopted proposal on the bead.
 
-## Deferred (still bu-s11n0s.5)
+## Count-strip truth (S3)
 
-- S3: the ESLint ban on positional zero-fill in chart derivations, and migration of the
-  session/activity strips.
+- A `count-bucket/no-zero-fill` ESLint rule rejects `.fill(0)` and `Array.from({ length }, () => 0)` in
+  non-test frontend source. A genuine numeric table that is not a chart takes a line-level disable
+  with a reason.
+- The butler activity stripe, daily bars and overview stripe place buckets by their start instant.
+  A slot no successful read reported renders as not reported (dashed outline), left out of totals.
+- `GET /api/butlers/{name}/analytics/daily-activity` returns a dense window, so a quiet day is a
+  measured zero. The fleet board replaces the positional `hourly_stripe` with `hourly_buckets`
+  keyed by `hour_start`; a failed hourly query returns no buckets and a null `hourly_total`.

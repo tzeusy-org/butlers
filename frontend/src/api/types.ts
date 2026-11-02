@@ -138,9 +138,15 @@ export interface BoardRow {
   heartbeat_age_seconds: number | null;
   heartbeat_unavailable: boolean;
   schema_unreachable: boolean;
-  hourly_stripe: number[];
-  hourly_total: number;
-  /** True when this row's hourly-activity query failed -- hourly_stripe/hourly_total are a fabricated zero-fill in that case. */
+  /**
+   * Session counts for the last 24 UTC hours, keyed by bucket start
+   * (bu-s11n0s.5.1). Dense on success (a measured zero is a row); empty when
+   * the hourly query failed, so no hour is ever drawn as a fabricated zero.
+   */
+  hourly_buckets: { hour_start: string; sessions_count: number }[];
+  /** Sum of hourly_buckets; null when the hourly query failed. */
+  hourly_total: number | null;
+  /** True when this row's hourly-activity query failed -- hourly_buckets is empty and hourly_total null. */
   stripe_source_error?: boolean;
   cadence_seconds: number | null;
   cadence_label: "hourly" | "daily" | "weekly" | "custom" | null;
@@ -4072,8 +4078,9 @@ export interface ConnectorSummary {
   today: ConnectorDaySummary | null;
   /**
    * 24-bucket hourly event counts for the last 24 hours (oldest hour first,
-   * newest last). Sourced from ingestion_events — always present, never null.
-   * Zero-filled for hours with no events.
+   * newest last). Sourced from ingestion_events; a measured zero is a 0.
+   * Empty when the payload carried no counts (bu-s11n0s.5.1): consumers draw
+   * that as unreported, never as 24 zeros.
    */
   hourly_events: number[];
   /**

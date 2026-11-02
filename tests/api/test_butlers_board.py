@@ -111,7 +111,12 @@ class _FakeButlerPool:
         if "hours AS" in sql:
             if self.hourly_query_fails:
                 raise RuntimeError("hourly activity query failed")
-            return [{"sessions_count": c} for c in self.hourly_counts]
+            # Newest-first like the SQL: index 0 is the current UTC hour.
+            current = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+            return [
+                {"hour_start": current - timedelta(hours=i), "sessions_count": c}
+                for i, c in enumerate(reversed(self.hourly_counts))
+            ]
         if "AS marker" in sql:
             if self.cost_query_fails:
                 raise RuntimeError("cost query failed")
@@ -240,7 +245,7 @@ async def test_board_happy_path_running_row_has_all_fields():
                 active_count=2,
                 last_completed_at=now - timedelta(minutes=5),
                 max_concurrent=3,
-                hourly_counts=[1] * 24,
+                hourly_counts=[0] * 23 + [24],
                 cost_input_tokens=1000,
                 cost_output_tokens=500,
             )
@@ -257,6 +262,14 @@ async def test_board_happy_path_running_row_has_all_fields():
     assert row["load_pct"] == 67  # round(2/3 * 100)
     assert row["active_session_count"] == 2
     assert row["hourly_total"] == 24
+    # Time-keyed, oldest first (bu-s11n0s.5.1): every bucket carries its own
+    # hour_start, the newest is the current UTC hour, measured zeros stay rows.
+    buckets = row["hourly_buckets"]
+    starts = [datetime.fromisoformat(b["hour_start"]) for b in buckets]
+    assert starts == sorted(starts) and len(set(starts)) == 24
+    assert starts[-1] == now.replace(minute=0, second=0, microsecond=0)
+    assert [b["sessions_count"] for b in buckets] == [0] * 23 + [24]
+    assert "hourly_stripe" not in row
     assert row["cadence_label"] == "custom"
     assert row["cadence_status"] == "on_schedule"
     assert row["cost_today"] and row["cost_today"] > 0
@@ -511,10 +524,10 @@ async def test_board_hourly_stripe_failure_flags_error_never_fabricates_zero_str
 
     assert rows_by_name["finance"]["stripe_source_error"] is False
     assert rows_by_name["general"]["stripe_source_error"] is True
-    # The failed butler's stripe/total still degrade to an honest-looking zero
-    # array server-side, but the flag is what a client must gate on.
-    assert rows_by_name["general"]["hourly_stripe"] == [0] * 24
-    assert rows_by_name["general"]["hourly_total"] == 0
+    # The failed butler reports no buckets and no total (bu-s11n0s.5.1): never
+    # a fabricated row of zeros a client could draw as a quiet day.
+    assert rows_by_name["general"]["hourly_buckets"] == []
+    assert rows_by_name["general"]["hourly_total"] is None
     assert payload["aggregates"]["sessions_source_error"] is True
     assert payload["aggregates"]["sources_partially_degraded"] is True
     # Partial sum reflects only the known butler's sessions -- never a bare "0".

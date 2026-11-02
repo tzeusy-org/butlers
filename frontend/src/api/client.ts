@@ -4454,7 +4454,8 @@ function _toConnectorSummary(entry: _ConnectorDetailPayload): ConnectorSummary {
       messages_failed: entry.today_messages_failed,
       uptime_pct: null,
     },
-    hourly_events: entry.hourly_events ?? Array(24).fill(0),
+    // Absent counts are unreported (bu-s11n0s.5.1), never 24 fabricated zeros.
+    hourly_events: entry.hourly_events ?? [],
   };
 }
 

@@ -94,8 +94,11 @@ export function Sparkline({
 }: SparklineProps) {
   const patternId = useHatchPatternId()
   const hasDeaf = listening?.includes('deaf') ?? false
-  const bars = data.length > 0 ? data : Array(24).fill(0)
-  const peak = maxValue ?? Math.max(...bars, 1)
+  // An empty series is unreported (bu-s11n0s.5.1): draw the 24-slot frame with
+  // no bars and say so, never a row of measured zeros.
+  const unreported = data.length === 0
+  const bars = unreported ? Array<number | null>(24).fill(null) : data
+  const peak = maxValue ?? Math.max(...data, 1)
   const secondaryBars = secondaryData && secondaryData.length > 0 ? secondaryData : undefined
   const secondaryPeak = secondaryBars ? Math.max(...secondaryBars, 1) : 1
   // Quiet overlay caps at a small fraction of the row height so it never
@@ -111,12 +114,13 @@ export function Sparkline({
       viewBox={`0 0 ${totalWidth} ${height}`}
       preserveAspectRatio="none"
       role="img"
-      aria-label={describeSpark(bars, secondaryBars, listening)}
+      aria-label={unreported ? '24h activity: not reported' : describeSpark(data, secondaryBars, listening)}
       className={className}
       style={{ width: '100%', height }}
     >
       {hasDeaf && <NotListeningPattern id={patternId} />}
       {bars.map((v, i) => {
+        if (v === null) return <g key={i} data-slot="unreported" />
         const barH = Math.max(1, (v / peak) * height)
         const x = i * (barWidth + barGap)
         const y = height - barH
