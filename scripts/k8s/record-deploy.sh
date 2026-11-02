@@ -25,6 +25,15 @@ ns="$1" tag="$2" release="$3"
 shift 3
 [ "${1:-}" = "--" ] && shift
 
+# A READINESS_TIMEOUT override below the cadence-derived floor is refused before the
+# cluster changes; the in-pod wait revalidates against the released image's roster.
+if [ -n "${READINESS_TIMEOUT:-}" ]; then
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  uv run --project "$root" butlers deployments await-ready --check-only \
+    --timeout "$READINESS_TIMEOUT" --roster-dir "$root/roster" \
+    || { echo "READINESS_TIMEOUT refused before helm upgrade; nothing was released" >&2; exit 2; }
+fi
+
 # The image's ENTRYPOINT wraps the CLI in `uv run`, which `kubectl exec` skips, and the venv is not
 # on PATH. Call the installed console script directly (no sync step); Dockerfile.base sets
 # WORKDIR /app and `uv sync` puts the project venv in /app/.venv.

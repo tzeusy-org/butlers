@@ -289,7 +289,7 @@ def dashboard(host: str, port: int) -> None:
     "--ready-url",
     "ready_url",
     default=None,
-    help="Semantic readiness URL sampled after /health (default: http://localhost:41200/ready)",
+    help="Semantic readiness URL sampled after /health (default: --health-url's host with /ready)",
 )
 @click.option(
     "--readiness-timeout",
@@ -382,7 +382,9 @@ def deploy(
 
     try:
         readiness = _sustained_readiness_target(
-            repo_root.resolve() / "roster", ready_url, readiness_timeout_s
+            repo_root.resolve() / "roster",
+            ready_url or (_ready_url_for(health_url) if health_url else None),
+            readiness_timeout_s,
         )
     except ValueError as exc:
         click.echo(f"Invalid deploy configuration: {exc}", err=True)
@@ -421,6 +423,13 @@ def deploy(
     )
     if result.readiness_receipt is not None:
         click.echo(f"Semantic readiness receipt: {result.readiness_receipt}")
+
+
+def _ready_url_for(health_url: str) -> str:
+    """The same API's ``/ready``: a dev ``--health-url`` must not sample prod's port."""
+    from urllib.parse import urlsplit
+
+    return urlsplit(health_url)._replace(path="/ready", query="", fragment="").geturl()
 
 
 def _sustained_readiness_target(
@@ -496,8 +505,14 @@ def deployments_record(source: str, result: str, git_sha: str | None) -> None:
     default=None,
     help="Git roster directory (default: the installed roster)",
 )
+@click.option(
+    "--check-only",
+    is_flag=True,
+    default=False,
+    help="Validate the roster-derived policy and --timeout floor, then exit without waiting",
+)
 def deployments_await_ready(
-    ready_url: str | None, timeout_s: float | None, roster_dir: Path | None
+    ready_url: str | None, timeout_s: float | None, roster_dir: Path | None, check_only: bool
 ) -> None:
     """Hold until semantic readiness is sustained (REQ-dashboard-api-064).
 
@@ -505,6 +520,7 @@ def deployments_await_ready(
     one content-blind JSON receipt; exits 0 only when /ready stayed true beyond
     the longest liveness TTL across two distinct observer cycles and two
     distinct qualifying QA patrols, 1 on timeout, 2 on invalid configuration.
+    ``--check-only`` validates the configuration and exits without any read.
     """
     from butlers.api.deps import _DEFAULT_ROSTER_DIR
 
@@ -515,6 +531,11 @@ def deployments_await_ready(
     except ValueError as exc:
         click.echo(f"Invalid readiness configuration: {exc}", err=True)
         sys.exit(2)
+    if check_only:
+        click.echo(
+            f"Readiness configuration valid (timeout_s={target.policy.effective_timeout_s:g})"
+        )
+        return
     try:
         receipt = asyncio.run(_await_ready(target))
     except Exception as exc:

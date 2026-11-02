@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -133,18 +134,39 @@ async def test_ready_body_is_reduced_to_fixed_check_names() -> None:
         assert await read_ready(client, "http://api/odd") == (None, ())
 
 
-async def test_wait_times_out_without_success_when_evidence_never_advances() -> None:
-    """End-to-end loop: /ready stays green, nothing advances, the deadline fails it."""
+@pytest.mark.parametrize("stall", [None, "clock", "fleet_facts", "patrols"])
+async def test_wait_times_out_without_success_when_evidence_never_advances(stall) -> None:
+    """End-to-end loop: /ready stays green, nothing advances, the deadline fails it.
+
+    A database read that never resolves (asyncpg pools carry no command timeout)
+    is bounded and counts as unavailable evidence instead of hanging the wait.
+    """
+
+    async def never() -> None:
+        await asyncio.Event().wait()
 
     class Pool:
         async def fetchval(self, _sql):
+            if stall == "clock":
+                await never()
             return T0
 
         async def fetch(self, _sql, *_args):
+            if stall == "patrols":
+                await never()
             return []
 
         def acquire(self):
+            if stall == "fleet_facts":
+                return StalledConnection()
             raise ConnectionError("role view unavailable")
+
+    class StalledConnection:
+        async def __aenter__(self):
+            await never()
+
+        async def __aexit__(self, *_exc):
+            return False
 
     clock = SimpleNamespace(now=0.0)
 
@@ -153,17 +175,22 @@ async def test_wait_times_out_without_success_when_evidence_never_advances() -> 
 
     target = resolve_target(
         [SimpleNamespace(name="qa", liveness_ttl_seconds=300,
-                         qa_patrol_contract=QaPatrolContract(("infra_state",), 10))]
+                         qa_patrol_contract=QaPatrolContract(("infra_state",), 10))],
+        poll_interval_s=300.0,
     )  # fmt: skip
     transport = httpx.MockTransport(lambda _r: httpx.Response(200, json={"ready": True}))
-    receipt = await await_sustained_readiness(
-        target,
-        Pool(),
-        client_factory=lambda: httpx.AsyncClient(transport=transport),
-        clock=lambda: clock.now,
-        sleep=sleep,
+    receipt = await asyncio.wait_for(
+        await_sustained_readiness(
+            target,
+            Pool(),
+            client_factory=lambda: httpx.AsyncClient(transport=transport),
+            clock=lambda: clock.now,
+            sleep=sleep,
+            read_timeout_s=0.01,
+        ),
+        timeout=5.0,
     )
     assert receipt.passed is False
     assert receipt.timeout_s == 35 * 60 and receipt.elapsed_s >= receipt.timeout_s
-    assert receipt.rollback == "operator_review"
+    assert receipt.rollback == ("recommended" if stall == "clock" else "operator_review")
     assert "evidence_unavailable" in receipt.failing_categories

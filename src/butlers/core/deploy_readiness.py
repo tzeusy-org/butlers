@@ -56,6 +56,8 @@ DEFAULT_POLL_INTERVAL_S: Final[float] = 15.0
 DEFAULT_READY_URL: Final[str] = "http://localhost:41200/ready"
 MAX_READY_BYTES: Final[int] = 1024
 READY_REQUEST_TIMEOUT_S: Final[float] = 5.0
+#: Upper bound on any single evidence read; asyncpg pools carry no command timeout.
+READ_TIMEOUT_S: Final[float] = 10.0
 
 #: Gate-level failure categories beyond ``/ready``'s fixed check names.
 GATE_CATEGORIES: Final[tuple[str, ...]] = (
@@ -354,42 +356,35 @@ async def await_sustained_readiness(
     client_factory: Callable[[], httpx.AsyncClient] | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[Any]] = asyncio.sleep,
+    read_timeout_s: float = READ_TIMEOUT_S,
 ) -> ReadinessReceipt:
     """Poll until completion is proven or the validated deadline passes.
 
     Read-only and idempotent: re-running it only re-reads evidence. The window
     opens at the database clock when the wait starts, so earlier patrols and
-    observations never count.
+    observations never count. Every read is bounded by ``read_timeout_s`` and
+    by the remaining deadline budget, so a stalled database or ``/ready`` read
+    becomes unavailable evidence instead of hanging past the deadline.
     """
     policy = target.policy
     make_client = client_factory or (
         lambda: httpx.AsyncClient(trust_env=False, timeout=READY_REQUEST_TIMEOUT_S)
     )
     started = clock()
+
+    async def bounded(read: Awaitable[Any], cap_s: float = read_timeout_s) -> Any:
+        remaining = policy.effective_timeout_s - (clock() - started)
+        try:
+            return await asyncio.wait_for(read, max(0.0, min(cap_s, remaining)))
+        except Exception:  # noqa: BLE001 - a failed or timed-out read is unavailable evidence
+            return None
+
     gate: SustainedReadinessGate | None = None
     async with make_client() as client:
         while True:
+            # Deadline first: a sample taken with no budget left would only
+            # record unavailable reads and hide the last real evidence.
             now = clock()
-            if gate is None:
-                try:
-                    window_start = await pool.fetchval("SELECT clock_timestamp()")
-                except Exception:  # noqa: BLE001 - evidence failure is a category
-                    window_start = None
-                if isinstance(window_start, datetime):
-                    gate = SustainedReadinessGate(policy, window_start, started)
-            if gate is not None:
-                ready, failing = await read_ready(client, target.ready_url)
-                try:
-                    span = await read_observer_span(pool, target.expected)
-                except Exception:  # noqa: BLE001
-                    span = None
-                try:
-                    patrols = await read_patrols(pool, target.qa_digest, gate.window_start)
-                except Exception:  # noqa: BLE001
-                    patrols = None
-                now = clock()
-                if gate.observe(EvidenceSample(ready, failing, span, patrols), now):
-                    return gate.receipt(now)
             if now - started >= policy.effective_timeout_s:
                 if gate is None:
                     return ReadinessReceipt(
@@ -403,4 +398,17 @@ async def await_sustained_readiness(
                         timeout_s=policy.effective_timeout_s,
                     )
                 return gate.receipt(now)
+            if gate is None:
+                window_start = await bounded(pool.fetchval("SELECT clock_timestamp()"))
+                if isinstance(window_start, datetime):
+                    gate = SustainedReadinessGate(policy, window_start, started)
+            if gate is not None:
+                ready, failing = await bounded(
+                    read_ready(client, target.ready_url), READY_REQUEST_TIMEOUT_S + 1.0
+                ) or (None, ())
+                span = await bounded(read_observer_span(pool, target.expected))
+                patrols = await bounded(read_patrols(pool, target.qa_digest, gate.window_start))
+                now = clock()
+                if gate.observe(EvidenceSample(ready, failing, span, patrols), now):
+                    return gate.receipt(now)
             await sleep(policy.poll_interval_s)

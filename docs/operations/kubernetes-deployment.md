@@ -167,7 +167,14 @@ value below the derived minimum is refused before waiting. The wait prints one c
 receipt (`result`, `rollback` of `not_required`/`recommended`/`operator_review`, fixed
 `failing_categories`, cycle counts and durations) and never rolls back by itself; follow
 the [image rollback](#iterating-on-a-change) when it recommends one. It configures no external functional monitor
-(REQ-dashboard-api-065); the separate-host minimal health monitor is unchanged. The row is written by
+(REQ-dashboard-api-065); the separate-host minimal health monitor is unchanged.
+
+Plan for it: every Helm deploy now takes at least about 20 minutes after the rollouts (two QA
+patrol completions at the ten-minute cadence), and the namespace must be running scheduled QA
+patrols that complete with every enabled source succeeding. Without them, the release fails at
+the deadline (35 minutes by default) and records `failed`. A `READINESS_TIMEOUT` override is
+checked locally (`uv run butlers deployments await-ready --check-only`) before `helm upgrade`, so
+a value below the floor is refused before the cluster changes. The row is written by
 `butlers deployments record` inside the `dashboard-api` pod (`kubectl exec`), so no database
 credential leaves the cluster. The target keeps the release's exit status; if the pod is
 unreachable it prints that no row was recorded, and a failed write after a good release only
