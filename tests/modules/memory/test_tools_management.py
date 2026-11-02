@@ -20,7 +20,7 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.fixture()
-def pool() -> AsyncMock:
+def mock_pool() -> AsyncMock:
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value=0)
     pool.fetch = AsyncMock(return_value=[])
@@ -33,8 +33,8 @@ def pool() -> AsyncMock:
 
 
 class TestMemoryStats:
-    async def test_result_shape(self, pool: AsyncMock) -> None:
-        result = await memory_stats(pool)
+    async def test_result_shape(self, mock_pool: AsyncMock) -> None:
+        result = await memory_stats(mock_pool)
         assert set(result.keys()) == {"episodes", "facts", "rules"}
         assert set(result["episodes"].keys()) == {"total", "unconsolidated", "backlog_age_hours"}
         assert set(result["facts"].keys()) == {"active", "fading", "superseded", "expired"}
@@ -47,12 +47,14 @@ class TestMemoryStats:
             "retired",
         }
 
-    async def test_returns_integer_counts(self, pool: AsyncMock) -> None:
-        pool.fetchval = AsyncMock(return_value=5)
-        result = await memory_stats(pool)
+    async def test_returns_integer_counts(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetchval = AsyncMock(return_value=5)
+        result = await memory_stats(mock_pool)
         assert result["episodes"]["total"] == 5
 
-    async def test_every_maturity_bucket_excludes_forgotten_rules(self, pool: AsyncMock) -> None:
+    async def test_every_maturity_bucket_excludes_forgotten_rules(
+        self, mock_pool: AsyncMock
+    ) -> None:
         """bu-5ud8p.2: rules_anti_pattern used to be the one maturity bucket
         that didn't exclude forgotten rules, unlike its candidate/established/
         proven siblings in this same function -- an MCP-internal inconsistency.
@@ -65,15 +67,15 @@ class TestMemoryStats:
             queries.append(query)
             return 0
 
-        pool.fetchval = AsyncMock(side_effect=_fetchval)
-        await memory_stats(pool)
+        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+        await memory_stats(mock_pool)
 
         maturity_queries = [q for q in queries if "FROM rules WHERE maturity" in q]
         assert len(maturity_queries) == 4, maturity_queries
         for query in maturity_queries:
             assert "(metadata->>'forgotten')::boolean IS NOT TRUE" in query, query
 
-    async def test_every_maturity_bucket_excludes_retired_rules(self, pool: AsyncMock) -> None:
+    async def test_every_maturity_bucket_excludes_retired_rules(self, mock_pool: AsyncMock) -> None:
         """bu-rjdihn: a retired rule (retired_at set, bu-6t8ix.3) is a deliberate
         decommission, not a live standing order — every maturity bucket must
         exclude it the same way it excludes forgotten rules, and the retired
@@ -85,8 +87,8 @@ class TestMemoryStats:
             queries.append(query)
             return 0
 
-        pool.fetchval = AsyncMock(side_effect=_fetchval)
-        result = await memory_stats(pool)
+        mock_pool.fetchval = AsyncMock(side_effect=_fetchval)
+        result = await memory_stats(mock_pool)
 
         maturity_queries = [q for q in queries if "FROM rules WHERE maturity" in q]
         assert len(maturity_queries) == 4, maturity_queries
@@ -104,9 +106,9 @@ class TestMemoryStats:
 
 
 class TestPredicateList:
-    async def test_returns_empty_list_when_no_predicates(self, pool: AsyncMock) -> None:
-        pool.fetch = AsyncMock(return_value=[])
-        result = await predicate_list(pool)
+    async def test_returns_empty_list_when_no_predicates(self, mock_pool: AsyncMock) -> None:
+        mock_pool.fetch = AsyncMock(return_value=[])
+        result = await predicate_list(mock_pool)
         assert result == []
 
 
@@ -253,7 +255,7 @@ class TestMemoryContext:
             authored("bob likes tea", "Bob", None),
             authored("nightly digest ran", "Owner", "system"),
         ]
-        pool = AsyncMock()
+        mock_pool = AsyncMock()
 
         async def _fetch(sql: str, *args: Any) -> list[dict]:
             if "canonical_name" in sql:
@@ -261,14 +263,14 @@ class TestMemoryContext:
                 return [{"id": mallory, "canonical_name": "Mallory"}]
             return []
 
-        pool.fetch = _fetch
-        pool.fetchval = AsyncMock(return_value=None)
+        mock_pool.fetch = _fetch
+        mock_pool.fetchval = AsyncMock(return_value=None)
         with patch(
             "butlers.modules.memory.tools.context._search.recall",
             new_callable=AsyncMock,
             return_value=facts,
         ):
-            result = await memory_context(pool, MagicMock(), "prompt", "general")
+            result = await memory_context(mock_pool, MagicMock(), "prompt", "general")
 
         lines = {
             line.split("]: ", 1)[1].split(" (confidence")[0]
@@ -291,21 +293,21 @@ class TestMemoryContext:
             "content_authority": "third_party",
             "authority_entity_id": uuid.uuid4(),
         }
-        pool = AsyncMock()
+        mock_pool = AsyncMock()
 
         async def _fetch(sql: str, *args: Any) -> list[dict]:
             if "canonical_name" in sql:
                 raise RuntimeError("entities unavailable")
             return []
 
-        pool.fetch = _fetch
-        pool.fetchval = AsyncMock(return_value=None)
+        mock_pool.fetch = _fetch
+        mock_pool.fetchval = AsyncMock(return_value=None)
         with patch(
             "butlers.modules.memory.tools.context._search.recall",
             new_callable=AsyncMock,
             return_value=[fact],
         ):
-            result = await memory_context(pool, MagicMock(), "prompt", "general")
+            result = await memory_context(mock_pool, MagicMock(), "prompt", "general")
 
         assert "bob owes money (reported by a third party)" in result
 
@@ -329,17 +331,24 @@ class TestMemoryContext:
         captured: dict = {}
 
         async def _fake_recall(
-            pool: Any, topic: Any, engine: Any, *, scope: Any, limit: Any, tenant_id: str, **kw: Any
+            mock_pool: Any,
+            topic: Any,
+            engine: Any,
+            *,
+            scope: Any,
+            limit: Any,
+            tenant_id: str,
+            **kw: Any,
         ) -> list:
             captured["tenant_id"] = tenant_id
             return []
 
         with patch("butlers.modules.memory.tools.context._search.recall", side_effect=_fake_recall):
-            pool = AsyncMock()
-            pool.fetch = AsyncMock(return_value=[])
-            pool.execute = AsyncMock()
+            mock_pool = AsyncMock()
+            mock_pool.fetch = AsyncMock(return_value=[])
+            mock_pool.execute = AsyncMock()
             await memory_context(
-                pool,
+                mock_pool,
                 MagicMock(),
                 "p",
                 "g",
@@ -375,7 +384,7 @@ class TestMemoryContextFleetKnowledge:
         return pool
 
     async def test_default_off_no_catalog_search(self) -> None:
-        pool = await self._pool()
+        mock_pool = await self._pool()
         with (
             patch(
                 "butlers.modules.memory.tools.context._search.recall",
@@ -387,13 +396,13 @@ class TestMemoryContextFleetKnowledge:
                 new_callable=AsyncMock,
             ) as mock_catalog,
         ):
-            result = await memory_context(pool, MagicMock(), "prompt", "general")
+            result = await memory_context(mock_pool, MagicMock(), "prompt", "general")
 
         mock_catalog.assert_not_called()
         assert "Fleet Knowledge" not in result
 
     async def test_include_fleet_knowledge_adds_section_excluding_own_butler(self) -> None:
-        pool = await self._pool()
+        mock_pool = await self._pool()
         own_row = _catalog_row("general", "Own knowledge")
         other_row = _catalog_row("finance", "Budget rule")
         with (
@@ -409,7 +418,7 @@ class TestMemoryContextFleetKnowledge:
             ),
         ):
             result = await memory_context(
-                pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
+                mock_pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
             )
 
         assert "## Fleet Knowledge (cross-butler)" in result
@@ -418,7 +427,7 @@ class TestMemoryContextFleetKnowledge:
         assert "memory_ref=" not in result
 
     async def test_catalog_search_failure_degrades_to_empty_section(self) -> None:
-        pool = await self._pool()
+        mock_pool = await self._pool()
         with (
             patch(
                 "butlers.modules.memory.tools.context._search.recall",
@@ -432,7 +441,7 @@ class TestMemoryContextFleetKnowledge:
             ),
         ):
             result = await memory_context(
-                pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
+                mock_pool, MagicMock(), "prompt", "general", include_fleet_knowledge=True
             )
 
         assert "Fleet Knowledge" not in result
