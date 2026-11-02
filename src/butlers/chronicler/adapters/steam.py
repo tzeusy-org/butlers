@@ -67,7 +67,7 @@ class SteamPlayAdapter(ProjectionAdapter):
     The episode spans ``[date midnight UTC, date midnight UTC + playtime_minutes)``.
     """
 
-    keyset_cols = (("steam_id", "bigint"), ("app_id", "bigint"), ("date", "date"))
+    keyset_cols = (("id", "uuid"),)
 
     def __init__(self, *, batch_limit: int = DEFAULT_BATCH_LIMIT) -> None:
         super().__init__(SOURCE_NAME)
@@ -114,8 +114,8 @@ class SteamPlayAdapter(ProjectionAdapter):
             result.episodes_closed += 1
 
         result.watermark = latest_watermark
-        # ``watermark_id`` is BIGINT; the ``(recorded_at, steam_id, app_id,
-        # date)`` tiebreaker travels as ``watermark_key``.
+        # ``watermark_id`` is BIGINT; the ``(recorded_at, id)`` tiebreaker
+        # (``id`` is the table's UUID PK) travels as ``watermark_key``.
         if rows:
             result.watermark_key = cursor_key(rows[-1], self.keyset_cols)
         return result
@@ -150,9 +150,8 @@ class SteamPlayAdapter(ProjectionAdapter):
     ) -> list[asyncpg.Record] | None:
         """Fetch the next page of evidence rows after ``(since, since_key)``.
 
-        Pages by ``(recorded_at, steam_id, app_id, date)``; the stored
-        tiebreaker keeps rows sharing one ``recorded_at`` from being skipped at
-        a batch edge.
+        Pages by ``(recorded_at, id)``; the stored tiebreaker keeps rows
+        sharing one ``recorded_at`` from being skipped at a batch edge.
 
         Returns ``None`` if the evidence table is missing — degrade
         gracefully per RFC 0014 optional-schema guard.
@@ -173,7 +172,7 @@ class SteamPlayAdapter(ProjectionAdapter):
 
                 sql, args = keyset_page(
                     columns=(
-                        "steam_id, steam_account_id, app_id, app_name, date, "
+                        "id, steam_id, steam_account_id, app_id, app_name, date, "
                         "playtime_minutes, recorded_at"
                     ),
                     table=_EVIDENCE_TABLE,

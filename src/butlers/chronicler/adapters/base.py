@@ -157,6 +157,16 @@ class ProjectionAdapter(abc.ABC):
             return result
 
         await mark_source_active(chronicler_pool, self.source_name, active=True)
+        # Cursor first, then watermark. The cursor is tagged with its ts and is
+        # only honoured while that equals the stored watermark, so a crash
+        # between the two writes leaves a cursor ahead of the watermark: it is
+        # ignored and the next run re-reads (idempotently) from the old
+        # watermark. The reverse order would leave a stale cursor under a new
+        # watermark and skip the rest of that timestamp's run.
+        if result.success and result.watermark is not None and result.watermark_key:
+            await set_cursor(
+                chronicler_pool, self.source_name, result.watermark, result.watermark_key
+            )
         await upsert_checkpoint(
             chronicler_pool,
             self.source_name,
@@ -166,10 +176,6 @@ class ProjectionAdapter(abc.ABC):
             rows_projected=result.rows_projected,
             error=result.error,
         )
-        if result.success and result.watermark is not None and result.watermark_key:
-            await set_cursor(
-                chronicler_pool, self.source_name, result.watermark, result.watermark_key
-            )
         return result
 
     def _llm_probe(self) -> None:

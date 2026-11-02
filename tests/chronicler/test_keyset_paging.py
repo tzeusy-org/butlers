@@ -153,13 +153,14 @@ _SPECS = [
         lambda: SteamPlayAdapter(batch_limit=_BATCH),
         "_fetch_rows",
         "connectors.steam_play_history",
-        "steam_id INTEGER, steam_account_id TEXT, app_id INTEGER, app_name TEXT, date DATE, "
-        "playtime_minutes INT, recorded_at TIMESTAMPTZ",
+        "id TEXT, steam_id INTEGER, steam_account_id TEXT, app_id INTEGER, app_name TEXT, "
+        "date DATE, playtime_minutes INT, recorded_at TIMESTAMPTZ",
         "recorded_at",
         lambda i, ts: {
+            "id": _uuid(i),
             "steam_id": 76561,
             "steam_account_id": None,
-            "app_id": i,
+            "app_id": 1,  # (steam_id, app_id, date) repeats; only ``id`` is unique
             "app_name": "g",
             "date": date(2026, 3, 26),
             "playtime_minutes": 1,
@@ -273,7 +274,7 @@ def _seed(spec: _Spec) -> tuple[_FakeConn, list[str], list[str]]:
 
 
 def _identity(spec: _Spec, row: sqlite3.Row) -> str:
-    return _uuid(row["app_id"]) if spec.name == "steam" else row["id"]
+    return row["id"]
 
 
 async def _drain(spec: _Spec, conn: _FakeConn) -> list[list[str]]:
@@ -367,3 +368,76 @@ async def test_adapter_run_hands_the_stored_tiebreaker_to_project_and_saves_the_
     assert adapter.project.await_args.kwargs["since_key"] == ["old"]
     set_cursor.assert_awaited_once()
     assert set_cursor.await_args.args[2:] == (_T3, ["new"])
+
+
+class _Crash(Exception):
+    pass
+
+
+@pytest.mark.parametrize("crash_at", [0, 1, 2, 3, 4, 5, 6])
+@pytest.mark.parametrize("crash_in", ["upsert_checkpoint", "set_cursor"])
+async def test_crash_between_cursor_and_watermark_writes_loses_no_rows(crash_at, crash_in):
+    """A crash at any write of any run, then a retry, still projects every row.
+
+    Two long same-timestamp runs (T2, T3) are drained in pages of 3. The fault
+    fires on the ``crash_at``-th run's ``crash_in`` write, i.e. between the
+    cursor write and the watermark write (or just before the cursor write).
+    """
+    from unittest.mock import AsyncMock, patch
+
+    spec = _SPECS[0]  # spotify
+    db = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES)
+    db.row_factory = sqlite3.Row
+    db.execute("ATTACH DATABASE ':memory:' AS connectors")
+    db.execute(f"CREATE TABLE {spec.table} ({spec.ddl})")
+    plan = [(0, _T1), *[(n, _T2) for n in range(1, 9)], *[(n, _T3) for n in range(9, 17)]]
+    for n, ts in plan:
+        row = spec.row(n, ts)
+        marks = ", ".join(f":{c}" for c in row)
+        db.execute(f"INSERT INTO {spec.table} ({', '.join(row)}) VALUES ({marks})", row)
+    pool = _FakePool(_FakeConn(db))
+
+    store: dict[str, Any] = {"wm": None, "cursor": None, "run": 0}
+    projected: list[str] = []
+
+    async def get_checkpoint(*_: Any) -> Any:
+        return MagicMock(watermark=store["wm"], watermark_id=None)
+
+    async def get_cursor(*_: Any) -> Any:
+        return store["cursor"]
+
+    async def set_cursor(_conn: Any, _name: str, ts: datetime, key: list[str]) -> None:
+        if crash_in == "set_cursor" and store["run"] == crash_at:
+            raise _Crash
+        store["cursor"] = (ts, key)
+
+    async def upsert_checkpoint(_conn: Any, _name: str, *, watermark: Any, **_: Any) -> None:
+        if crash_in == "upsert_checkpoint" and store["run"] == crash_at:
+            raise _Crash
+        store["wm"] = watermark
+
+    async def project_row(_pool: Any, row: Any, **_: Any) -> None:
+        projected.append(row["id"])
+
+    adapter = SpotifySessionAdapter(batch_limit=_BATCH)
+    base = "butlers.chronicler.adapters.base"
+    sp = "butlers.chronicler.adapters.spotify"
+    with (
+        patch(f"{base}.get_checkpoint", get_checkpoint),
+        patch(f"{base}.get_cursor", get_cursor),
+        patch(f"{base}.set_cursor", set_cursor),
+        patch(f"{base}.upsert_checkpoint", upsert_checkpoint),
+        patch(f"{base}.mark_source_active", AsyncMock()),
+        patch(f"{sp}.resolve_owner_entity_id", AsyncMock(return_value=None)),
+        patch.object(adapter, "_project_row", project_row),
+    ):
+        for _ in range(30):
+            try:
+                result = await adapter.run(pool=pool, chronicler_pool=MagicMock())
+            except _Crash:
+                result = None
+            store["run"] += 1
+            if result is not None and result.rows_projected == 0 and store["run"] > crash_at:
+                break
+
+    assert set(projected) == {_uuid(n) for n, _ in plan}
