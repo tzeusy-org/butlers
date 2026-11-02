@@ -157,7 +157,9 @@ async def test_attachment_view_refuses_not_found(blob_store):
     ],
     ids=["other_butler", "connector_prefix", "no_origin"],
 )
-async def test_media_reads_enforce_rfc0016_prefix(blob_store, ref_owner, origin_butler, expected):
+async def test_media_reads_enforce_rfc0016_prefix(
+    blob_store, monkeypatch, ref_owner, origin_butler, expected
+):
     """attachment_view and get_attachment read only the caller's or connectors' blobs.
 
     A foreign ref is refused before any fetch, so its bytes never reach the caller.
@@ -172,6 +174,14 @@ async def test_media_reads_enforce_rfc0016_prefix(blob_store, ref_owner, origin_
     )
     image_ref = await owner_store.put(b"\x89PNG\r\n\x1a\nx", content_type="image/png")
     text_ref = await owner_store.put(b"private", content_type="text/plain")
+    fetched: list[str] = []
+    real_get = blob_store.get
+
+    async def spy_get(storage_ref: str) -> bytes:
+        fetched.append(storage_ref)
+        return await real_get(storage_ref)
+
+    monkeypatch.setattr(blob_store, "get", spy_get)
 
     view = await attachment_view(blob_store, image_ref, origin_butler=origin_butler)
     inline = await get_attachment(blob_store, text_ref, origin_butler=origin_butler)
@@ -184,6 +194,7 @@ async def test_media_reads_enforce_rfc0016_prefix(blob_store, ref_owner, origin_
         assert result["status"] == "refused"
         assert result["reason"] == expected
         assert "data_base64" not in result and "data" not in result
+    assert fetched == []
 
 
 # ---------------------------------------------------------------------------
