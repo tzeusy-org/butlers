@@ -533,8 +533,9 @@ class TestPremiseBoundDelivery:
             (("b3",), "edited", ["applied"]),
             (("b3", "b4"), "edited", ["applied", "applied"]),
             (("b3",), "rejected", ["fold"]),
+            (("b3", "b4"), "two-cycles", ["applied", "applied"]),
         ],
-        ids=["one-line", "two-lines-one-edit", "rejected-folds"],
+        ids=["one-line", "two-lines-one-edit", "rejected-folds", "second-cycle-keeps-first"],
     )
     async def test_a_resolved_digest_line_is_struck_inside_the_delivered_digest(
         self, premise_pool, resolved, status, expected_states
@@ -568,6 +569,10 @@ class TestPremiseBoundDelivery:
         sent = notify.await_args.args[0]
         assert "Water bill is overdue" in sent and "Rent bill is overdue" in sent
 
+        two_cycles = status == "two-cycles"
+        if two_cycles:
+            status = "edited"
+            resolved = ("b3",)
         remaining = [k for k in ("b3", "b4") if k not in resolved]
         observations = [Observation(fingerprint=prints[k], summary=k) for k in remaining]
         await reconcile_snapshot(
@@ -588,13 +593,32 @@ class TestPremiseBoundDelivery:
                 now=later + timedelta(minutes=5 * step),
             )
 
+        if two_cycles:
+            await reconcile_snapshot(
+                premise_pool,
+                source=source,
+                observations=[],
+                snapshot_complete=True,
+                initial_grace_seconds=3600,
+            )
+            await broker.delivery_cycle(
+                premise_pool, notify_fn=notify, amend_fn=amend, now=later + timedelta(hours=1)
+            )
+            assert amend.await_count == 2
+            final = amend.await_args.args[1]
+            assert "~~Water bill is overdue~~ Resolved" in final  # earlier strike kept
+            assert "~~Rent bill is overdue~~ Resolved" in final
+            resolved = ("b3", "b4")
         rows = await premise_pool.fetch("SELECT state FROM insight_amendments")
         assert sorted(r["state"] for r in rows) == sorted(expected_states)
-        amend.assert_awaited_once()  # the replayed cycle issues no second edit
+        if not two_cycles:
+            amend.assert_awaited_once()  # the replayed cycle issues no second edit
         text = amend.await_args_list[0].args[1]
-        assert text.count("~~") == 2 * len(resolved)
+        if not two_cycles:
+            assert text.count("~~") == 2 * len(resolved)
         assert "~~Water bill is overdue~~ Resolved" in text
-        assert ("~~Rent bill is overdue~~ Resolved" in text) is ("b4" in resolved)
+        if not two_cycles:
+            assert ("~~Rent bill is overdue~~ Resolved" in text) is ("b4" in resolved)
         if status == "edited":
             assert text.startswith(sent.split("\n")[0])  # other lines untouched
 
