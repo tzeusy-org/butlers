@@ -41,6 +41,9 @@ spec:
             - {name: DASHBOARD_URL, value: "https://{{ $u.host }}/{{ $u.dashboardPrefix }}"}
             - {name: WHATSAPP_BRIDGE_SOCKET, value: /tmp/wa-bridge/bridge.sock}
             - {name: BUTLERS_MAX_GLOBAL_SESSIONS, value: "{{ include "butlers.domainSessionCapacity" . }}"}
+            # The QA butler's infra_state patrol reads backup facts (BackupStale,
+            # BackupRunFailed); unset would silently skip those checks (bu-deqpzd).
+            - {name: BUTLERS_BACKUP_DIR, value: /backups}
           readinessProbe:
             httpGet: {path: /health, port: daemon}
             periodSeconds: 5
@@ -57,6 +60,7 @@ spec:
           volumeMounts:
             - {name: logs, mountPath: /app/logs}
             - {name: wa-bridge, mountPath: /tmp/wa-bridge}
+            - {name: backups, mountPath: /backups, readOnly: true}
             {{- range list "claude" "codex" "opencode" "gemini" }}
             - {name: runtime-home, mountPath: /root/.{{ . }}, subPath: {{ . }}}
             {{- end }}
@@ -65,6 +69,8 @@ spec:
         {{- include "butlers.logsVolume" . | nindent 8 }}
         - name: wa-bridge
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-wa-bridge}
+        - name: backups
+          persistentVolumeClaim: {claimName: {{ .Release.Name }}-backups}
         - name: runtime-home
           persistentVolumeClaim: {claimName: {{ .Release.Name }}-runtime-home}
         {{- include "butlers.verifiersVolume" . | nindent 8 }}
