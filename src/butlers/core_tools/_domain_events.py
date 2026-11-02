@@ -51,13 +51,13 @@ published by every butler, so it cannot rely on that identity check.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import timedelta
 from typing import Annotated, Any
 
 from pydantic import Field
 
-from butlers.config import ButlerType
+from butlers.config import ButlerType, ScheduleSpec
 from butlers.core.domain_event_contracts import get_contract_registry
 from butlers.core.domain_event_reactions import (
     REPORTABLE_REACTION_STATUSES,
@@ -226,6 +226,11 @@ def _record_failed_permanent_delivery_metric(
             reason,
             exc_info=True,
         )
+
+
+def schedules_reconciliation_sweep(schedules: Iterable[ScheduleSpec]) -> bool:
+    """Whether a daemon's schedules run the domain-event reconciliation sweep."""
+    return any(schedule.job_name == RECONCILIATION_SWEEP_JOB_NAME for schedule in schedules)
 
 
 def prime_failed_permanent_delivery_series(
