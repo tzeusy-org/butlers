@@ -13,7 +13,6 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-import asyncpg
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -22,8 +21,7 @@ from butlers.api.deps import get_db
 from butlers.api.owner_auth.config import OwnerAuthConfig
 from butlers.api.owner_auth.http import OwnerAuthMiddleware
 from butlers.api.routers import approvals as routes
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.db import open_pool
 from tests.api.auth_helpers import _DomainOwnerState
 
 pytestmark = [
@@ -35,25 +33,17 @@ pytestmark = [
 _ARGS = {"chat_id": "test-recipient", "text": "Original stored message"}
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "approvals"]
-    )
-
-
 async def _close_pool(pool):
     await asyncio.wait_for(pool.close(), timeout=10)
 
 
 @pytest.fixture
-async def databases(migrated_db_url):
+async def databases(fresh_db):
+    url = await asyncio.to_thread(fresh_db, "core", "approvals")
     async with AsyncExitStack() as cleanup:
         pools = []
         for _ in range(2):
-            pool = await asyncpg.create_pool(
-                migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
-            )
+            pool = await open_pool(url, max_size=2)
             cleanup.push_async_callback(_close_pool, pool)
             pools.append(pool)
         owner, observer = pools

@@ -8,7 +8,7 @@ Schema/code-drift guard (bead bu-offxh): ``_VALID_RESPONSE_TYPES`` in
 the Python validation in ``mastery_record_response`` and then fail the DB INSERT.
 
 These tests run the real ``core`` + ``education`` Alembic chains against a
-testcontainers PostgreSQL database (no hand-rolled CREATE TABLE) and assert:
+testcontainers PostgreSQL database (no hand-written DDL) and assert:
 
 1. Every value in ``_VALID_RESPONSE_TYPES`` inserts cleanly via
    ``mastery_record_response`` (no type passes Python validation but fails the
@@ -24,8 +24,6 @@ import shutil
 import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.education.mastery import _VALID_RESPONSE_TYPES, mastery_record_response
 
 _docker_available = shutil.which("docker") is not None
@@ -36,38 +34,10 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + education migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "education"],
-    )
-
-
-@pytest.fixture(scope="module")
-async def pool(migrated_db_url: str):
-    """Return a module-scoped asyncpg pool (event loop is session-scoped here)."""
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    try:
-        yield p
-    finally:
-        await p.close()
-
-
-@pytest.fixture(autouse=True)
-async def _clear_tables(pool: asyncpg.Pool):
-    """Truncate education quiz tables before each test (pool is module-scoped)."""
-    await pool.execute(
-        "TRUNCATE TABLE education.quiz_responses, education.mind_map_edges, "
-        "education.mind_map_nodes, education.mind_maps CASCADE"
-    )
+@pytest.fixture
+async def education_pool(db):
+    """A private clone migrated with the core and education chains."""
+    return await db("core", "education")
 
 
 async def _seed_map_and_node(pool: asyncpg.Pool) -> tuple[str, str]:
@@ -113,11 +83,11 @@ class TestResponseTypeValidValuesInsert:
     """Every Python-valid response_type must satisfy the DB CHECK and insert cleanly."""
 
     @pytest.mark.parametrize("response_type", sorted(_VALID_RESPONSE_TYPES))
-    async def test_valid_response_type_inserts_cleanly(self, pool, response_type):
-        mind_map_id, node_id = await _seed_map_and_node(pool)
+    async def test_valid_response_type_inserts_cleanly(self, education_pool, response_type):
+        mind_map_id, node_id = await _seed_map_and_node(education_pool)
 
         response_id = await mastery_record_response(
-            pool=pool,
+            pool=education_pool,
             node_id=node_id,
             mind_map_id=mind_map_id,
             question_text="What is a list comprehension?",
@@ -126,7 +96,7 @@ class TestResponseTypeValidValuesInsert:
             response_type=response_type,
         )
 
-        stored = await pool.fetchval(
+        stored = await education_pool.fetchval(
             "SELECT response_type FROM education.quiz_responses WHERE id = $1::uuid",
             response_id,
         )
@@ -136,8 +106,8 @@ class TestResponseTypeValidValuesInsert:
 class TestResponseTypeParity:
     """The Python allow-set and the DB CHECK allow-set must be exactly equal."""
 
-    async def test_python_and_db_allow_sets_match(self, pool):
-        db_values = await _db_response_type_check_values(pool)
+    async def test_python_and_db_allow_sets_match(self, education_pool):
+        db_values = await _db_response_type_check_values(education_pool)
         # 'quiz' is vestigial — the DB CHECK never permitted it (bu-offxh).
         assert "quiz" not in db_values
         assert db_values == _VALID_RESPONSE_TYPES, (

@@ -156,43 +156,59 @@ def _merge_tool_call_records(
             fingerprint = fingerprint_tool_call_payload(_payload_for_signature(call))
         return f"{name}|{fingerprint}"
 
-    merged: list[dict[str, Any]] = []
-    matched_parsed_indexes: set[int] = set()
-
-    for executed_call in executed_calls:
+    # Pair each executed (capture-side) record with the first unclaimed parser
+    # record of the same signature.
+    executed_for_parsed: dict[int, int] = {}
+    for executed_index, executed_call in enumerate(executed_calls):
         executed_signature = _signature(executed_call)
         parsed_index = next(
             (
                 idx
                 for idx, parsed_call in enumerate(parsed_calls)
                 if (
-                    idx not in matched_parsed_indexes
-                    and _signature(parsed_call) == executed_signature
+                    idx not in executed_for_parsed and _signature(parsed_call) == executed_signature
                 )
             ),
             None,
         )
-        if parsed_index is None:
-            # No parser counterpart; capture name is already bare. Keep as-is.
-            merged.append(executed_call)
+        if parsed_index is not None:
+            executed_for_parsed[parsed_index] = executed_index
+
+    # Emit in the parser's stream order, which interleaves MCP calls with
+    # runtime built-ins (Bash, Read, ...) the capture side never sees; the
+    # per-thread loop guard reads adjacency from this order. A capture record
+    # with no parser counterpart goes just before the next paired record that
+    # executed after it, or at the end.
+    merged: list[dict[str, Any]] = []
+    paired_executed = set(executed_for_parsed.values())
+    next_executed = 0
+
+    def _emit_executed_before(stop: int) -> None:
+        nonlocal next_executed
+        while next_executed < stop:
+            if next_executed not in paired_executed:
+                # No parser counterpart; capture name is already bare. Keep as-is.
+                merged.append(executed_calls[next_executed])
+            next_executed += 1
+
+    for idx, parsed_call in enumerate(parsed_calls):
+        executed_index = executed_for_parsed.get(idx)
+        if executed_index is None:
+            # Unmatched parser record: normalize the stored name so downstream
+            # consumers (dashboard, tool-call-scorecard) see one canonical form
+            # per tool even when no capture counterpart was recorded.
+            merged.append(_normalize_name_in_place(parsed_call))
             continue
-        matched_parsed_indexes.add(parsed_index)
-        merged_record = dict(parsed_calls[parsed_index])
-        merged_record.update(executed_call)
+        _emit_executed_before(executed_index)
+        merged_record = dict(parsed_call)
+        merged_record.update(executed_calls[executed_index])
         # Canonical stored name is the bare fn.__name__ form. The capture-side
         # record carries that form already, but we normalize defensively so a
         # single invocation always persists under one stable tool name.
         raw_name = str(merged_record.get("name", "") or "")
         merged_record["name"] = _normalize_tool_name(raw_name, butler_name)
         merged.append(merged_record)
-
-    for idx, parsed_call in enumerate(parsed_calls):
-        if idx in matched_parsed_indexes:
-            continue
-        # Unmatched parser record: normalize the stored name so downstream
-        # consumers (dashboard, tool-call-scorecard) see one canonical form
-        # per tool even when no capture counterpart was recorded.
-        merged.append(_normalize_name_in_place(parsed_call))
+    _emit_executed_before(len(executed_calls))
 
     return _dedup_tool_calls_by_id(merged)
 
