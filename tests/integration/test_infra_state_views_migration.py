@@ -11,6 +11,9 @@ Exercises migrations ``sw_024`` / ``sw_028`` (``public.v_qa_connector_state`` /
 - ``v_qa_butler_heartbeat`` surfaces a ``butler_registry`` row with its
   ``liveness_ttl_seconds`` / ``quarantined_at`` columns intact.
 - Downgrade cleanly drops both views.
+- Fleet readiness executes production PostgreSQL registry/provenance queries in
+  dedicated migrated clones. Only external route preflight and named job-health
+  inputs are synthetic; these scenarios certify neither live probes nor deploys.
 
 Uses ``schemas={"switchboard": "switchboard"}`` (rather than leaving both
 chains unmapped into ``public``) to prove the ACTUAL deployed shape works:
@@ -1636,3 +1639,392 @@ def test_downgrade_drops_both_views(postgres_container) -> None:
     import asyncio
 
     asyncio.run(_assert_views_gone())
+
+
+@pytest.fixture
+def fleet_readiness_db_url(postgres_container) -> str:
+    # Every fault scenario owns a clone: no committed DROP/REVOKE or seeded rows
+    # can escape into the module-shared migration carrier.
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core", "switchboard"],
+        schemas={"switchboard": "switchboard"},
+    )
+
+
+@pytest.fixture
+async def fleet_readiness_env(fleet_readiness_db_url):
+    from types import SimpleNamespace
+
+    from butlers.api.deps import ButlerConnectionInfo
+    from butlers.api.readiness import FleetReadiness
+    from butlers.config import load_config
+    from butlers.core.control_plane_identity import DashboardProbeRoleView, ShadowCycle
+    from butlers.core.qa.patrol_provenance import contract_from_module_config
+    from butlers.core.utils import generate_uuid7_string
+
+    contract = contract_from_module_config(
+        load_config(_THIS_FILE.parents[2] / "roster" / "qa").modules["qa"]
+    )
+    assert contract is not None
+    assert set(contract.enabled_sources) == {
+        "log_scanner",
+        "session_records",
+        "butler_reports",
+        "tool_call_failures",
+        "infra_state",
+    }
+    names = ("general", "qa", "switchboard")
+    p = await asyncpg.create_pool(
+        fleet_readiness_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    )
+    assert p is not None
+    clock = SimpleNamespace(now=1000.0)
+    calls = []
+
+    class SyntheticJobs:
+        async def read(self):
+            return {
+                "jobs_available": True,
+                "jobs": [{"name": "fleet_shadow_observer", "state": "ok"}],
+            }
+
+    def synthetic_preflight(request):
+        assert request.method == "GET"
+        assert request.url.path == "/internal/control-plane/route-preflight"
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"ready": True})
+
+    try:
+        receiver = DashboardProbeRoleView(p)
+        for index, name in enumerate(names):
+            await p.execute(
+                "INSERT INTO switchboard.butler_registry "
+                "(name, endpoint_url, last_seen_at, liveness_ttl_seconds) "
+                "VALUES ($1, $2, clock_timestamp(), 1800) "
+                "ON CONFLICT (name) DO UPDATE SET last_seen_at = clock_timestamp(), "
+                "liveness_ttl_seconds = 1800",
+                name,
+                f"http://{name}:{41100 + index}/mcp",
+            )
+            await p.fetchval("SELECT public.set_butler_registry_policy($1, 'active')", name)
+            await _as_role(
+                p,
+                f"butler_{name}_rw",
+                "SELECT public.register_butler_boot($1, $2)",
+                name,
+                UUID(generate_uuid7_string()),
+            )
+            fence = await receiver.fetchrow("SELECT * FROM public.reserve_butler_probe($1)", name)
+            assert await receiver.fetchval(
+                "SELECT public.record_butler_probe($1, $2, $3, true, true, true, NULL)",
+                name,
+                fence["boot_epoch"],
+                fence["probe_sequence"],
+            )
+        readiness = FleetReadiness(
+            lambda: p,
+            [
+                ButlerConnectionInfo(
+                    name=name,
+                    port=41100 + index,
+                    qa_patrol_contract=contract if name == "qa" else None,
+                )
+                for index, name in enumerate(names)
+            ],
+            SyntheticJobs(),
+            clock=lambda: clock.now,
+            client_factory=lambda: httpx.AsyncClient(
+                transport=httpx.MockTransport(synthetic_preflight)
+            ),
+        )
+        readiness.note_cycle(ShadowCycle(True, len(names), len(names), 0, len(names)))
+        yield SimpleNamespace(
+            pool=p,
+            readiness=readiness,
+            clock=clock,
+            contract=contract,
+            calls=calls,
+        )
+    finally:
+        await p.close()
+
+
+async def _insert_readiness_patrol(
+    connection,
+    contract,
+    *,
+    status="clean",
+    origin="scheduled",
+    complete=True,
+    digest=None,
+    age_s=10,
+):
+    return await connection.fetchval(
+        "INSERT INTO public.qa_patrols "
+        "(status, origin, discovery_complete, enabled_sources_snapshot, "
+        "enabled_sources_config_digest, sources_polled, started_at, completed_at, "
+        "findings_count, novel_count, dispatched_count) "
+        "VALUES ($1, $2, $3, $4, $5, coalesce($4, '{}'::text[]), "
+        "clock_timestamp() - make_interval(secs => $6::double precision) - interval '1 second', "
+        "CASE WHEN $1 = 'running' THEN NULL ELSE "
+        "clock_timestamp() - make_interval(secs => $6::double precision) END, "
+        "CASE WHEN $2 = 'scheduled' AND $1 IN ('suppressed', 'findings_dispatched') "
+        "THEN 1 ELSE 0 END, "
+        "CASE WHEN $2 = 'scheduled' AND $1 IN ('suppressed', 'findings_dispatched') "
+        "THEN 1 ELSE 0 END, "
+        "CASE WHEN $2 = 'scheduled' AND $1 = 'findings_dispatched' "
+        "THEN 1 ELSE 0 END) RETURNING id",
+        status,
+        origin,
+        complete,
+        list(contract.enabled_sources) if origin is not None else None,
+        (digest or contract.digest) if origin is not None else None,
+        age_s,
+    )
+
+
+async def _readiness_db_state(pool):
+    # Compare full rows, not just counts: sampling must not renew receiver or
+    # patrol timestamps, create episodes, or enqueue attention.
+    return [
+        await pool.fetchval(
+            f"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) "
+            f"FROM {table} AS t"
+        )
+        for table in (
+            "public.qa_patrols",
+            "switchboard.butler_registry",
+            "switchboard.butler_registry_control_plane",
+            "public.infra_conditions",
+            "public.runtime_attention_outbox",
+        )
+    ]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_readiness_real_patrol_provenance_lifetime_and_transaction_visibility(
+    fleet_readiness_env,
+) -> None:
+    env = fleet_readiness_env
+    pool, readiness, contract = env.pool, env.readiness, env.contract
+    assert not (await readiness.sample()).checks["qa_patrol"]
+    # Genuine suppressed discovery is coverage; operator-synthetic suppression
+    # is not. The real SQL must select max QUALIFYING completion, not newest row.
+    for status in ("clean", "suppressed", "findings_dispatched"):
+        await pool.execute("DELETE FROM public.qa_patrols")
+        real = await _insert_readiness_patrol(pool, contract, status=status, age_s=30)
+        assert (await readiness.sample()).ready is True, status
+        real_time = await pool.fetchval(
+            "SELECT completed_at FROM public.qa_patrols WHERE id=$1", real
+        )
+        await _insert_readiness_patrol(
+            pool,
+            contract,
+            status="suppressed",
+            origin="operator_synthetic",
+            complete=False,
+        )
+        assert (await readiness.sample()).ready is True, status
+        await pool.execute(
+            "UPDATE public.qa_patrols SET completed_at = clock_timestamp() "
+            "- make_interval(secs => $2::double precision), "
+            "started_at = clock_timestamp() - make_interval(secs => $2::double precision) "
+            "- interval '1 second' WHERE id = $1",
+            real,
+            contract.overdue_after_s + 60,
+        )
+        assert (await readiness.sample()).checks["qa_patrol"] is False, status
+        assert real_time is not None
+        await pool.execute("DELETE FROM public.qa_patrols WHERE id=$1", real)
+        assert (await readiness.sample()).checks["qa_patrol"] is False  # synthetic only
+
+    for label, kwargs in (
+        ("legacy-null", {"origin": None, "complete": None}),
+        ("incomplete", {"complete": False}),
+        ("wrong-digest", {"digest": "sha256:" + "0" * 64}),
+        ("running", {"status": "running", "complete": False}),
+        ("error", {"status": "error", "complete": False}),
+        ("skipped-overlap", {"status": "skipped_overlap", "complete": False}),
+    ):
+        await pool.execute("DELETE FROM public.qa_patrols")
+        await _insert_readiness_patrol(pool, contract, **kwargs)
+        snapshot = await readiness.sample()
+        assert snapshot.checks["qa_patrol"] is False, label
+        assert all(ok for key, ok in snapshot.checks.items() if key != "qa_patrol"), label
+        await _insert_readiness_patrol(pool, contract)
+        assert (await readiness.sample()).ready is True, label
+
+    await pool.execute("DELETE FROM public.qa_patrols")
+    async with pool.acquire() as writer:
+        transaction = writer.transaction()
+        await transaction.start()
+        try:
+            await _insert_readiness_patrol(writer, contract)
+            assert (await readiness.sample()).checks["qa_patrol"] is False
+        finally:
+            await transaction.rollback()
+        assert (await readiness.sample()).checks["qa_patrol"] is False
+        async with writer.transaction():
+            await _insert_readiness_patrol(writer, contract)
+        assert (await readiness.sample()).ready is True
+    before = await _readiness_db_state(pool)
+    cycle = readiness._last_cycle
+    assert (await readiness.sample()).ready is True
+    assert (await readiness.sample()).ready is True
+    assert await _readiness_db_state(pool) == before
+    assert readiness._last_cycle == cycle
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_readiness_real_receiver_database_observer_and_cached_reads(fleet_readiness_env):
+    from butlers.api.app import create_app
+    from butlers.api.readiness import CHECK_KEYS
+    from butlers.core.control_plane_identity import ShadowCycle
+
+    env = fleet_readiness_env
+    pool, readiness = env.pool, env.readiness
+    await _insert_readiness_patrol(pool, env.contract)
+    assert (await readiness.sample()).ready is True
+    await pool.execute(
+        "UPDATE switchboard.butler_registry SET eligibility_state='stale' WHERE name='qa'"
+    )
+    assert (await readiness.sample()).ready is True  # legacy activity is not authority
+    await pool.execute(
+        "UPDATE switchboard.butler_registry SET eligibility_state='active' WHERE name='qa'"
+    )
+    original = await pool.fetchval(
+        "SELECT to_jsonb(c) FROM switchboard.butler_registry_control_plane c WHERE name='general'"
+    )
+    # Real projection faults; registry heartbeat remains fresh throughout.
+    for label, assignments in (
+        ("boot-mismatch", "observed_boot_epoch=boot_epoch+1"),
+        ("receiver-ttl", "healthy_observed_at=clock_timestamp()-interval '2 hours'"),
+        ("incompatible", "route_compatible=false"),
+        ("not-accepting", "accepting_routes=false"),
+        ("quarantined", "policy_state='quarantined'"),
+        ("review-required", "policy_state='review_required'"),
+    ):
+        try:
+            await pool.execute(
+                "UPDATE switchboard.butler_registry_control_plane SET "
+                + assignments
+                + " WHERE name='general'"
+            )
+            snapshot = await readiness.sample()
+            assert snapshot.checks["roster"] is True, label
+            assert snapshot.checks["fleet"] is False, label
+            assert snapshot.checks["qa_patrol"] is True, label
+        finally:
+            await pool.execute(
+                "UPDATE switchboard.butler_registry_control_plane SET "
+                "observed_boot_epoch=$1, healthy_observed_at=$2, route_compatible=$3, "
+                "accepting_routes=$4, policy_state=$5 WHERE name='general'",
+                original["observed_boot_epoch"],
+                datetime.fromisoformat(original["healthy_observed_at"]),
+                original["route_compatible"],
+                original["accepting_routes"],
+                original["policy_state"],
+            )
+        assert (await readiness.sample()).ready is True, label
+
+    await pool.execute(
+        "UPDATE switchboard.butler_registry_control_plane SET policy_state='paused', "
+        "observed_state='unavailable' WHERE name='general'"
+    )
+    try:
+        assert (await readiness.sample()).ready is True
+        await pool.execute("DELETE FROM public.qa_patrols")
+        assert (await readiness.sample()).checks["qa_patrol"] is False
+    finally:
+        await pool.execute(
+            "UPDATE switchboard.butler_registry_control_plane SET policy_state='active', "
+            "observed_state='healthy' WHERE name='general'"
+        )
+    await _insert_readiness_patrol(pool, env.contract)
+    assert (await readiness.sample()).ready is True
+
+    try:
+        await pool.execute(
+            "DELETE FROM switchboard.butler_registry_control_plane WHERE name='general'"
+        )
+        snapshot = await readiness.sample()
+        assert {key for key, ok in snapshot.checks.items() if not ok} == {
+            "roster",
+            "fleet",
+            "observer",
+        }
+    finally:
+        await pool.execute(
+            "INSERT INTO switchboard.butler_registry_control_plane SELECT * FROM "
+            "jsonb_populate_record(NULL::switchboard.butler_registry_control_plane, $1::jsonb)",
+            original,
+        )
+    assert (await readiness.sample()).ready is True
+
+    for complete in (None, False, True):
+        readiness._last_cycle = None
+        if complete is not None:
+            readiness.note_cycle(ShadowCycle(complete, 3, 3, 0, 3))
+            if complete:
+                env.clock.now += 1801  # strictly beyond the actual seeded minimum row TTL
+        assert (await readiness.sample()).checks["observer"] is False
+        readiness.note_cycle(ShadowCycle(True, 3, 3, 0, 3))
+        assert (await readiness.sample()).ready is True
+
+    # Rename only inside this scenario's dedicated clone; always restore, even
+    # after an assertion failure. No failed SQL transaction is reused.
+    await pool.execute(
+        "ALTER TABLE switchboard.butler_registry_control_plane RENAME TO readiness_unreadable"
+    )
+    try:
+        snapshot = await readiness.sample()
+        assert snapshot.checks["postgres"] is True
+        assert {key for key, ok in snapshot.checks.items() if not ok} == {
+            "roster",
+            "fleet",
+            "observer",
+        }
+    finally:
+        await pool.execute(
+            "ALTER TABLE switchboard.readiness_unreadable RENAME TO butler_registry_control_plane"
+        )
+    assert (await readiness.sample()).ready is True
+
+    app = create_app(api_key="synthetic-mounted-owner-key")
+    app.state.ready = True
+    app.state.readiness = readiness
+    before = await _readiness_db_state(pool)
+    cycle, cached, calls = readiness._last_cycle, readiness._snapshot, len(env.calls)
+
+    def forbidden():
+        raise AssertionError("cached public reads must not sample DB or external preflight")
+
+    original_pool, original_client = readiness._pool, readiness._client_factory
+    readiness._pool = readiness._client_factory = forbidden
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            for _ in range(2):
+                response = await client.get("/ready")
+                assert (response.status_code, response.json()) == (200, {"ready": True})
+                assert response.headers["cache-control"] == "no-store"
+            env.clock.now += readiness.sample_interval_s * 3 + 1
+            stale = await client.get("/ready")
+            assert stale.status_code == 503
+            assert stale.json() == {"ready": False, "checks": dict.fromkeys(CHECK_KEYS, False)}
+            readiness._snapshot = None
+            assert (await client.get("/ready")).json() == stale.json()
+            assert (await client.get("/health")).status_code == 200
+    finally:
+        readiness._pool, readiness._client_factory = original_pool, original_client
+        readiness._snapshot = cached
+    assert len(env.calls) == calls
+    assert readiness._last_cycle == cycle
+    assert await _readiness_db_state(pool) == before
+    readiness.note_cycle(ShadowCycle(True, 3, 3, 0, 3))
+    assert (await readiness.sample()).ready is True
