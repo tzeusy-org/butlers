@@ -868,7 +868,6 @@
     "[\"roster/travel/tests/test_jobs.py\", \"reportMissingImports\", \"27535b620d85211e92b12b90fcd621f98ac169881c5c7afa0150e585d7dada52\"]": 1,
     "[\"roster/travel/tests/test_jobs.py\", \"reportMissingImports\", \"4c6c6a626e91d954d3408d7a415ef25496a60b991e0435f63c5065fd354bd0b7\"]": 54,
     "[\"roster/travel/tests/test_jobs.py\", \"reportMissingImports\", \"631c252baa53a1e9d7ba3c6f913e66219ae2faaea28fea788188c0d380a83313\"]": 6,
-    "[\"roster/travel/tests/test_jobs.py\", \"reportMissingImports\", \"83715520e51ce19f3ece7f97f60c1fc5b3419338f340ae04d57c9afc99d3256f\"]": 1,
     "[\"roster/travel/tests/test_migration_travel_002.py\", \"reportAttributeAccessIssue\", \"fb026c745035a2170f7dafe88344ace3d2f36e8906c41efda8b5783bd6fca191\"]": 2,
     "[\"roster/travel/tests/test_migration_travel_003.py\", \"reportAttributeAccessIssue\", \"fb026c745035a2170f7dafe88344ace3d2f36e8906c41efda8b5783bd6fca191\"]": 2,
     "[\"roster/travel/tests/test_tools.py\", \"reportMissingImports\", \"05c088058176b6f68158a582f24fde2f5ce746e6784cfdfa98b8a5d45fce9907\"]": 20,
