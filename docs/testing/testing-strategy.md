@@ -34,6 +34,24 @@ Tests that require Docker via testcontainers. The primary integration target is 
 
 A subset of integration tests specifically for database operations. These use testcontainers with real PostgreSQL and test migration chains, schema isolation, and query correctness.
 
+Every DB-backed test gets its database from one factory, `src/butlers/testing/db.py`, through
+three root `conftest.py` fixtures:
+
+- `db_pool`: a pool on a fresh core-migrated database.
+- `db`: an async factory for other chains, for example
+  `await db("core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard")`.
+- `fresh_db`: a sync factory returning a URL, for migration-subject tests, for example
+  `fresh_db("core", revisions={"core": "core_170"})`.
+
+Each xdist worker migrates once per distinct chain request into a template database; every
+test then gets its own `CREATE DATABASE ... TEMPLATE` clone, so isolation stays per test while
+the migration cost is paid once. The fixtures run on the session event loop, so async tests
+that use them carry `pytest.mark.asyncio(loop_scope="session")`. Do not add a per-file `pool` or `migrated_db_url` fixture or
+hand-written `CREATE TABLE` DDL: `scripts/check_test_db_fixtures.py` (run by
+`tests/scripts/test_check_test_db_fixtures.py`) freezes the existing ones per file in
+`scripts/test-db-fixtures-baseline.json` and fails on any new one (bu-rvgzmf.1). After removing
+some, lower the baseline with `python3 scripts/check_test_db_fixtures.py --update-baseline`.
+
 ### End-to-End Tests (`@pytest.mark.e2e`)
 
 Full-stack tests that require an authenticated `claude` CLI, `ANTHROPIC_API_KEY`, and Docker. These test the complete trigger-to-response flow; see the [E2E suite](e2e/README.md).
