@@ -901,8 +901,10 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
                   merchant_mappings_applied, mv_refreshed, baselines_triggered,
                   categories_learned, currency_warning (when currency fell back to USD)}.
           When the columns or date format cannot be detected, returns
-          {status: "unrecognized_format", headers, missing_columns, error}: retry with a
-          column_map naming the date, merchant, and amount columns from headers.
+          {status: "unrecognized_format", headers, headers_truncated, missing_columns,
+          error}: retry with a column_map naming the date, merchant, and amount columns
+          from headers. headers holds at most the first 50 names, each cut to 100 chars;
+          headers_truncated is true when either cap applied.
         """
         if module.blob_store is None:
             return {

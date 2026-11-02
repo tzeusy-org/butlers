@@ -350,6 +350,11 @@ def _resolve_generic_cols(headers: list[str]) -> dict[str, str | None]:
     }
 
 
+# Bounds on the untrusted CSV headers echoed back in an unrecognized_format response.
+_MAX_ECHOED_HEADERS = 50
+_MAX_ECHOED_HEADER_CHARS = 100
+
+
 def _unmapped_required_columns(
     fmt: dict[str, Any], headers: list[str], column_map: dict[str, str] | None
 ) -> list[str]:
@@ -1027,10 +1032,12 @@ async def import_transactions(
            categories_learned, preview (when dry_run=True, with is_duplicate flags),
            currency_warning (when currency fell back to USD)}``, or
         ``{status: "refused" | "error", ...}`` when the ref is out of scope or
-        unreadable, or ``{status: "unrecognized_format", headers, missing_columns,
-        error, ...}`` when the columns or date format cannot be detected (retry
-        with a ``column_map`` built from ``headers``). The pipeline itself lives in
-        ``_import_csv_content``.
+        unreadable, or ``{status: "unrecognized_format", headers,
+        headers_truncated, missing_columns, error, ...}`` when the columns or date
+        format cannot be detected (retry with a ``column_map`` built from
+        ``headers``). ``headers`` holds at most the first 50 names, each cut to
+        100 chars; ``headers_truncated`` is true when either cap applied. The
+        pipeline itself lives in ``_import_csv_content``.
     """
     import_batch_id = str(uuid.uuid4())
 
@@ -1355,13 +1362,19 @@ async def _import_csv_content(
             reason = f"No column found for: {', '.join(missing_columns)}."
         else:
             reason = f"Could not auto-detect date format. Sample values: {sample_dates[:5]}."
+        # Headers come from an untrusted file and go into model context: bound them.
+        echoed_headers = [h[:_MAX_ECHOED_HEADER_CHARS] for h in headers[:_MAX_ECHOED_HEADERS]]
+        headers_truncated = len(headers) > _MAX_ECHOED_HEADERS or any(
+            len(h) > _MAX_ECHOED_HEADER_CHARS for h in headers[:_MAX_ECHOED_HEADERS]
+        )
         return {
             "status": "unrecognized_format",
             "error": (
                 f"{reason} Provide a column_map naming the date, merchant, "
                 "and amount columns from the returned headers."
             ),
-            "headers": headers,
+            "headers": echoed_headers,
+            "headers_truncated": headers_truncated,
             "missing_columns": missing_columns,
             "import_batch_id": import_batch_id,
             "detected_format": fmt["name"],
