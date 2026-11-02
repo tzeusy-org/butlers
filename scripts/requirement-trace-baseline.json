@@ -160,8 +160,6 @@
   "generalist-lead-focused-delegation/core-spawner/Concurrency Control": "eb960690f4b5a841b4dac4591d495a0fc607b89b2aebba394d70e640a8331c99",
   "generalist-lead-focused-delegation/core-spawner/System Prompt Composition": "6d9822bd9de517e1e054c08159333a28f575720d697a4911e0bbf21d43597ce0",
   "generalist-lead-focused-delegation/core-telemetry/Active Session Context Propagation": "df76f5af2c00ed7a30f7906b399ba802864afc235183f770e158b91956fc51e7",
-  "generalist-lead-focused-delegation/csv-extraction-skill/CSV extraction skill definition": "73f7a714e7ffc1c8a9c05d9155bd22202f8f8763d909673984647ff126a4129d",
-  "generalist-lead-focused-delegation/csv-extraction-skill/Token budget protection": "ade658a3bce4e0e04530593c5467048cdd21de7db5818fe0448dcab4f37f690a",
   "generalist-lead-focused-delegation/deadline-tracking/Deadline Prompt Context Injection": "dfa532769df2838bed6acd67b6de8806e132d7870bfc56f354640f5851edf5c0",
   "generalist-lead-focused-delegation/deadline-tracking/Deadline Registration": "f73c0cfda2d7c205f6d377e8f0e55a3eed83e49ec5d1fc9244ddf0ea2678639e",
   "generalist-lead-focused-delegation/dispatch-intent/Dispatch Intent Derivation": "b893daedd630c8ad258486c4c563022bdec3690017b8031f742da0872e602b7a",
