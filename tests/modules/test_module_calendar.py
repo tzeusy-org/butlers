@@ -751,6 +751,26 @@ class TestCalendarWriteTools:
         # The parked call names the concrete calendar, not "resolve at replay".
         assert enqueue_calls[0][1]["calendar_id"] == "primary"
 
+        # An overlapping update that omits calendar_id parks the resolved home calendar too.
+        moved_start = created.start_at + timedelta(hours=1)
+        moved_end = created.end_at + timedelta(hours=1)
+        provider._conflicts = [
+            _make_event(event_id="busy-2", title="(busy)", start_at=moved_start, end_at=moved_end)
+        ]
+        updated = await (await tool_fn(mcp, "calendar_update_event"))(
+            event_id=created.event_id,
+            start_at=moved_start,
+            end_at=moved_end,
+            conflict_policy="allow_overlap",
+        )
+        assert updated["status"] == "approval_required"
+        assert provider.update_calls == []
+        assert [name for name, _ in enqueue_calls] == [
+            "calendar_create_event",
+            "calendar_update_event",
+        ]
+        assert enqueue_calls[1][1]["calendar_id"] == "primary"
+
 
 # ---------------------------------------------------------------------------
 # Permissions-matrix enforcement (public.permissions: calendar.write) [bu-tzlq6]
