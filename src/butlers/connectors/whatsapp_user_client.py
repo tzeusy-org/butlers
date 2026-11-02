@@ -77,10 +77,16 @@ from butlers.connectors.discretion_dispatcher import (
 )
 from butlers.connectors.filtered_event_buffer import FilteredEventBuffer, drain_replay_pending
 from butlers.connectors.heartbeat import ConnectorHeartbeat, HeartbeatConfig
+from butlers.connectors.known_contact_snapshot import (
+    PriorityContactSnapshotSource,
+    normalize_phone_digits,
+    phone_is_known,
+)
 from butlers.connectors.mcp_client import CachedMCPClient
 from butlers.connectors.metrics import ConnectorMetrics
 from butlers.connectors.owner_outbound_events import record_owner_outbound_point
 from butlers.conversation_identity import whatsapp_conversation_id
+from butlers.core.known_contact_state import not_applicable_classification
 from butlers.core.logging import configure_logging
 from butlers.credential_store import (
     CredentialStore,
@@ -682,6 +688,16 @@ class WhatsAppUserClientConnector:
             endpoint_identity=config.endpoint_identity,
         )
 
+        # Known-contact snapshot (phone facts of priority contacts): lets a dropped 1:1 chat
+        # be marked, and an "except people I know" rule be honored, as on Gmail.
+        self._known_contacts = PriorityContactSnapshotSource(
+            db_pool,
+            predicate="has-phone",
+            normalize=normalize_phone_digits,
+            label="WhatsAppKnownContacts",
+            provider="WhatsApp",
+        )
+
         # Discretion layer
         self._discretion_dispatcher: DiscretionDispatcher | None = (
             DiscretionDispatcher(
@@ -811,6 +827,8 @@ class WhatsAppUserClientConnector:
 
         # Start heartbeat
         self._start_heartbeat()
+        # Publish the unloaded classification before provider work; never blocks ingestion.
+        await self._publish_known_contacts()
 
         # Start flush scanner
         self._flush_scanner_task = asyncio.create_task(
@@ -1521,9 +1539,12 @@ class WhatsAppUserClientConnector:
             envelope = self._build_batch_envelope(chat_jid, buffered_events, batch_event_id)
 
             # c. Evaluate ingestion policy (connector scope)
+            await self._refresh_known_contacts()
+            _known_contact, _ = self._batch_known_contact(chat_jid)
             _ip_envelope = IngestionEnvelope(
                 source_channel=_DESCRIPTOR.channel,
                 raw_key=chat_jid,
+                known_contact=_known_contact,
             )
             _ip_decision = self._ingestion_policy.evaluate(_ip_envelope)
             if not _ip_decision.allowed:
@@ -1657,6 +1678,7 @@ class WhatsAppUserClientConnector:
         events: list[dict[str, Any]] | None = None,
     ) -> None:
         """Record a filtered or errored batch event."""
+        known_contact, classification = self._batch_known_contact(chat_jid)
         self._filtered_event_buffer.record(
             external_message_id=batch_event_id,
             source_channel=self._config.channel,
@@ -1687,6 +1709,8 @@ class WhatsAppUserClientConnector:
                     ]
                 )
                 or None,
+                important_dropped_basis="known_contact" if known_contact else None,
+                classification=classification,
                 raw={},
             ),
             status=status,
@@ -2232,8 +2256,41 @@ class WhatsAppUserClientConnector:
             metrics=self._metrics,
             get_health_state=self._get_health_state,
             get_checkpoint=self._get_checkpoint,
+            get_contact_snapshot=self._known_contacts.peek_snapshot,
         )
         self._switchboard_heartbeat.start()
+
+    async def _publish_known_contacts(self) -> None:
+        if self._switchboard_heartbeat is not None:
+            await self._switchboard_heartbeat.publish_once()
+
+    def _batch_known_contact(self, chat_jid: str) -> tuple[bool | None, dict[str, Any] | None]:
+        """Classify a chat for drop marking: ``(known_contact, frozen classification)``.
+
+        A group or broadcast batch has many senders, so it is not applicable (certain, never
+        counted). A 1:1 chat resolves its peer phone from the chat JID (through the LID map
+        for ``@lid``); ``known_contact`` is only ever set from a loaded snapshot. A 1:1 chat
+        whose peer cannot be resolved returns no classification, which reads as uncertain.
+        """
+        now = datetime.now(UTC)
+        if _derive_wa_chat_type(chat_jid) != "private":
+            return None, not_applicable_classification(now)
+        identity = self._participant_identity(chat_jid)
+        phone = (
+            identity.partition("@")[0] if identity and identity.endswith("@s.whatsapp.net") else ""
+        )
+        if not phone:
+            return None, None
+        snapshot = self._known_contacts.peek_snapshot()
+        known = phone_is_known(normalize_phone_digits(phone), snapshot.contacts)
+        return (known if snapshot.state == "loaded" else None), snapshot.historical(now)
+
+    async def _refresh_known_contacts(self) -> None:
+        """Refresh the TTL-bounded snapshot before policy evaluation; failure never blocks."""
+        try:
+            await self._known_contacts.get_snapshot(self._publish_known_contacts)
+        except Exception:
+            logger.warning("WhatsApp known-contact refresh failed")
 
     def _get_health_state(self) -> tuple[str, str | None]:
         """Determine current health state for heartbeat."""

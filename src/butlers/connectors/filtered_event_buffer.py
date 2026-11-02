@@ -797,8 +797,16 @@ class FilteredEventBuffer:
             }
         if classification is not None:
             # The producer freezes a fixed, content-free projection, never contacts.
-            from butlers.core.known_contact_state import parse_projection, utc_timestamp
+            from butlers.core.known_contact_state import (
+                parse_not_applicable,
+                parse_projection,
+                utc_timestamp,
+            )
 
+            not_applicable = parse_not_applicable(classification)
+            if not_applicable is not None:
+                stored.setdefault(DROP_CONTEXT_KEY, {})["classification"] = not_applicable
+                return stored
             projection = parse_projection(classification)
             observed = utc_timestamp(classification.get("observed_at"))
             if projection is not None and observed is not None:
