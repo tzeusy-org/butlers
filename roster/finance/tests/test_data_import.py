@@ -17,6 +17,7 @@ Issue: bu-w5dv
 from __future__ import annotations
 
 import csv
+import importlib
 import io
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -490,7 +491,7 @@ class TestGenericParsing:
 
 class TestDryRun:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -506,7 +507,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -532,7 +534,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/big.csv",
+            storage_ref="s3://bucket/finance/big.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -548,7 +551,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -569,7 +573,8 @@ class TestDryRun:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=True,
         )
 
@@ -586,7 +591,7 @@ class TestDryRun:
 
 class TestDeduplication:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -636,7 +641,8 @@ class TestDeduplication:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -660,7 +666,8 @@ class TestDeduplication:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -832,7 +839,7 @@ class TestBatchProcessing:
         return "\n".join(lines)
 
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -849,7 +856,8 @@ class TestBatchProcessing:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/big.csv",
+            storage_ref="s3://bucket/finance/big.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -870,7 +878,8 @@ class TestBatchProcessing:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/batch.csv",
+            storage_ref="s3://bucket/finance/batch.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -884,7 +893,7 @@ class TestBatchProcessing:
 
 class TestErrorHandling:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -892,18 +901,57 @@ class TestErrorHandling:
         """Blob fetch failure returns structured error, not exception."""
         from butlers.tools.finance.data_import import import_transactions
 
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(side_effect=RuntimeError("S3 unreachable"))
         pool = MagicMock()
 
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/missing.csv",
+            storage_ref="s3://bucket/finance/missing.csv",
+            origin_butler="finance",
         )
 
         assert result["status"] == "error"
         assert "error" in result
+
+    @pytest.mark.parametrize(
+        ("storage_ref", "origin_butler", "reason"),
+        [
+            ("s3://bucket/health/records.csv", "finance", "attachment_forbidden"),
+            ("s3://bucket/finance/chase.csv", "", "attachment_forbidden"),
+            ("s3://bucket/chase.csv", "finance", "invalid_storage_ref"),
+            ("s3://bucket/finance/../health/records.csv", "finance", "invalid_storage_ref"),
+            ("s3://other-bucket/finance/chase.csv", "finance", "invalid_storage_ref"),
+            ("s3://bucket/connectors/telegram/chase.csv", "finance", None),
+        ],
+    )
+    async def test_storage_ref_scoped_to_butler_and_connector_prefixes(
+        self, storage_ref, origin_butler, reason
+    ):
+        """RFC 0016: only the butler's own or the connector prefix is read; others refused unread."""
+        import_transactions = importlib.import_module(
+            "butlers.tools.finance.data_import"
+        ).import_transactions
+
+        blob_store = self._make_blob_store(CHASE_CSV)
+        blob_store.bucket = "bucket"
+
+        result = await import_transactions(
+            pool=MagicMock(),
+            blob_store=blob_store,
+            storage_ref=storage_ref,
+            origin_butler=origin_butler,
+            dry_run=True,
+        )
+
+        if reason is None:
+            assert result["detected_format"] == "chase"
+            blob_store.get.assert_awaited_once()
+        else:
+            assert result["status"] == "refused"
+            assert result["reason"] == reason
+            blob_store.get.assert_not_awaited()
 
     async def test_undetectable_date_format_returns_error(self):
         """CSV with unrecognizable date format returns structured error."""
@@ -916,7 +964,8 @@ class TestErrorHandling:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/bad.csv",
+            storage_ref="s3://bucket/finance/bad.csv",
+            origin_butler="finance",
         )
 
         assert result["status"] == "error"
@@ -939,7 +988,8 @@ class TestErrorHandling:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/partial.csv",
+            storage_ref="s3://bucket/finance/partial.csv",
+            origin_butler="finance",
             dry_run=False,
         )
 
@@ -960,7 +1010,8 @@ class TestErrorHandling:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert result["errors"] > 0
@@ -978,7 +1029,8 @@ class TestErrorHandling:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert "import_batch_id" in result
@@ -992,7 +1044,7 @@ class TestErrorHandling:
 
 class TestReturnShape:
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -1007,7 +1059,8 @@ class TestReturnShape:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert result["detected_format"] == "chase"
@@ -1023,7 +1076,8 @@ class TestReturnShape:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/amex.csv",
+            storage_ref="s3://bucket/finance/amex.csv",
+            origin_butler="finance",
         )
 
         assert result["detected_format"] == "amex"
@@ -1039,7 +1093,8 @@ class TestReturnShape:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/c1.csv",
+            storage_ref="s3://bucket/finance/c1.csv",
+            origin_butler="finance",
         )
 
         assert result["detected_format"] == "capital_one"
@@ -1055,7 +1110,8 @@ class TestReturnShape:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         for key in ("total", "imported", "skipped", "errors", "import_batch_id", "detected_format"):
@@ -1081,7 +1137,8 @@ class TestReturnShape:
             result = await import_transactions(
                 pool=pool,
                 blob_store=blob_store,
-                storage_ref="s3://bucket/chase.csv",
+                storage_ref="s3://bucket/finance/chase.csv",
+                origin_butler="finance",
             )
 
         assert result["imported"] == 4
@@ -1108,7 +1165,8 @@ class TestReturnShape:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
         )
 
         assert result["imported"] == 4
@@ -1150,7 +1208,7 @@ class TestCurrencyInference:
     """Tests for spec: finance-data-import "Currency inference"."""
 
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -1167,7 +1225,8 @@ class TestCurrencyInference:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             currency="EUR",  # explicit
         )
 
@@ -1190,7 +1249,8 @@ class TestCurrencyInference:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             account_id="11111111-1111-1111-1111-111111111111",
             currency=None,  # not specified — infer from account
         )
@@ -1213,7 +1273,8 @@ class TestCurrencyInference:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             account_id=None,
             currency=None,
         )
@@ -1235,7 +1296,8 @@ class TestCurrencyInference:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/chase.csv",
+            storage_ref="s3://bucket/finance/chase.csv",
+            origin_butler="finance",
             account_id="22222222-2222-2222-2222-222222222222",
             currency=None,
         )
@@ -1378,7 +1440,7 @@ class TestProgressNotify:
         return "\n".join(lines)
 
     def _make_blob_store(self, content: str):
-        blob_store = AsyncMock()
+        blob_store = AsyncMock(scheme="s3")
         blob_store.get = AsyncMock(return_value=content.encode("utf-8"))
         return blob_store
 
@@ -1397,7 +1459,8 @@ class TestProgressNotify:
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/small.csv",
+            storage_ref="s3://bucket/finance/small.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 
@@ -1419,7 +1482,8 @@ class TestProgressNotify:
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 
@@ -1442,7 +1506,8 @@ class TestProgressNotify:
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 
@@ -1472,7 +1537,8 @@ class TestProgressNotify:
         result = await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=None,
         )
 
@@ -1494,7 +1560,8 @@ class TestProgressNotify:
         await import_transactions(
             pool=pool,
             blob_store=blob_store,
-            storage_ref="s3://bucket/large.csv",
+            storage_ref="s3://bucket/finance/large.csv",
+            origin_butler="finance",
             notify_fn=notify_fn,
         )
 

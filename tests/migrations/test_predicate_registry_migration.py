@@ -204,42 +204,15 @@ async def _run_sqls(pool, sqls: list[str]) -> None:
             pass  # idempotent
 
 
-async def _provision_prerequisites(pool) -> None:
-    """Create public.entities + relationship.entity_facts (required by FK chain)."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.entities (
-            id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-            canonical_name TEXT        NOT NULL,
-            entity_type    TEXT        NOT NULL DEFAULT 'person',
-            roles          TEXT[]      NOT NULL DEFAULT '{}',
-            created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
-    # Ensure the relationship schema exists before creating facts.
-    await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-    # WARNING: This schema is a lightweight prerequisite fixture for predicate_registry tests.
-    # It intentionally omits some CHECK constraints present in the canonical migration to keep
-    # the fixture simple. Keep column names and NOT NULL constraints in sync with:
-    # roster/relationship/migrations/013_facts_table.py
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-            id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-            subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-            predicate   TEXT        NOT NULL,
-            object      TEXT        NOT NULL,
-            object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-            src         TEXT        NOT NULL,
-            conf        FLOAT       NOT NULL DEFAULT 1.0,
-            last_seen   TIMESTAMPTZ,
-            weight      INT,
-            verified    BOOL        NOT NULL DEFAULT false,
-            "primary"   BOOL,
-            validity    TEXT        NOT NULL DEFAULT 'active',
-            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-    """)
+_RELATIONSHIP = {"relationship": "relationship"}
+
+
+@pytest.fixture
+async def rel_013_pool(db):
+    """Core plus relationship at rel_014's predecessor (entities + entity_facts)."""
+    return await db(
+        "core", "relationship", schemas=_RELATIONSHIP, revisions={"relationship": "rel_013"}
+    )
 
 
 async def _run_upgrade(pool) -> None:
@@ -256,223 +229,195 @@ async def _run_downgrade(pool) -> None:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_table_exists_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_table_exists_after_upgrade(rel_013_pool) -> None:
     """relationship.entity_predicate_registry table exists with expected columns after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
 
-        table_oid = await pool.fetchval(
-            "SELECT to_regclass('relationship.entity_predicate_registry')"
-        )
-        assert table_oid is not None, (
-            "relationship.entity_predicate_registry must exist after upgrade"
-        )
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_predicate_registry')")
+    assert table_oid is not None, "relationship.entity_predicate_registry must exist after upgrade"
 
-        rows = await pool.fetch(
+    rows = await pool.fetch(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'relationship'
+          AND table_name   = 'entity_predicate_registry'
+        ORDER BY column_name
+        """
+    )
+    columns = {r["column_name"] for r in rows}
+    required_columns = {"predicate", "kind", "object_kind", "description", "created_at"}
+    missing = required_columns - columns
+    assert not missing, f"Missing columns in relationship.entity_predicate_registry: {missing}"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_upgrade_tolerates_existing_memory_predicate_registry_table(db) -> None:
+    """rel_014 must not mutate the memory module's relationship.predicate_registry table."""
+    # The relationship butler runs the memory module, whose chain owns
+    # relationship.predicate_registry.
+    pool = await db(
+        "core",
+        "memory",
+        "relationship",
+        schemas={"memory": "relationship", **_RELATIONSHIP},
+        revisions={"relationship": "rel_013"},
+    )
+
+    await _run_upgrade(pool)
+
+    memory_columns = {
+        row["column_name"]
+        for row in await pool.fetch(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'relationship'
+              AND table_name   = 'predicate_registry'
+            """
+        )
+    }
+    assert "name" in memory_columns
+    assert "predicate" not in memory_columns
+
+    entity_columns = {
+        row["column_name"]
+        for row in await pool.fetch(
             """
             SELECT column_name
             FROM information_schema.columns
             WHERE table_schema = 'relationship'
               AND table_name   = 'entity_predicate_registry'
-            ORDER BY column_name
             """
         )
-        columns = {r["column_name"] for r in rows}
-        required_columns = {"predicate", "kind", "object_kind", "description", "created_at"}
-        missing = required_columns - columns
-        assert not missing, f"Missing columns in relationship.entity_predicate_registry: {missing}"
+    }
+    assert {"predicate", "kind", "object_kind"} <= entity_columns
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_tolerates_existing_memory_predicate_registry_table(
-    provisioned_postgres_pool,
-) -> None:
-    """rel_014 must not mutate the memory module's relationship.predicate_registry table."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await pool.execute("""
-            CREATE TABLE relationship.predicate_registry (
-                name                  TEXT PRIMARY KEY,
-                expected_subject_type TEXT,
-                expected_object_type  TEXT,
-                is_edge               BOOLEAN NOT NULL DEFAULT false,
-                description           TEXT,
-                created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-                is_temporal           BOOLEAN NOT NULL DEFAULT false,
-                usage_count           INTEGER NOT NULL DEFAULT 0,
-                status                TEXT NOT NULL DEFAULT 'active',
-                scope                 TEXT NOT NULL DEFAULT 'global',
-                aliases               TEXT[] NOT NULL DEFAULT '{}'
-            )
-        """)
-
-        await _run_upgrade(pool)
-
-        memory_columns = {
-            row["column_name"]
-            for row in await pool.fetch(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'relationship'
-                  AND table_name   = 'predicate_registry'
-                """
-            )
-        }
-        assert "name" in memory_columns
-        assert "predicate" not in memory_columns
-
-        entity_columns = {
-            row["column_name"]
-            for row in await pool.fetch(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'relationship'
-                  AND table_name   = 'entity_predicate_registry'
-                """
-            )
-        }
-        assert {"predicate", "kind", "object_kind"} <= entity_columns
-
-
-@pytest.mark.integration
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_seed_rows_present_after_upgrade(provisioned_postgres_pool) -> None:
+async def test_seed_rows_present_after_upgrade(rel_013_pool) -> None:
     """All 18 seed predicates are present in the table after upgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
 
-        total = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_predicate_registry")
-        assert total == 18, f"Expected 18 seed predicates (6+11+1), got {total}"
+    total = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_predicate_registry")
+    assert total == 18, f"Expected 18 seed predicates (6+11+1), got {total}"
 
-        contact_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE kind = 'contact'"
-        )
-        assert contact_count == 6, f"Expected 6 contact predicates, got {contact_count}"
+    contact_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE kind = 'contact'"
+    )
+    assert contact_count == 6, f"Expected 6 contact predicates, got {contact_count}"
 
-        relational_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE kind = 'relational'"
-        )
-        assert relational_count == 11, f"Expected 11 relational predicates, got {relational_count}"
+    relational_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE kind = 'relational'"
+    )
+    assert relational_count == 11, f"Expected 11 relational predicates, got {relational_count}"
 
-        override_count = await pool.fetchval(
-            "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE kind = 'override'"
-        )
-        assert override_count == 1, f"Expected 1 override predicate, got {override_count}"
+    override_count = await pool.fetchval(
+        "SELECT COUNT(*) FROM relationship.entity_predicate_registry WHERE kind = 'override'"
+    )
+    assert override_count == 1, f"Expected 1 override predicate, got {override_count}"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_seed_is_idempotent(provisioned_postgres_pool) -> None:
+async def test_seed_is_idempotent(rel_013_pool) -> None:
     """ON CONFLICT DO NOTHING makes re-running upgrade() safe (no duplicate rows)."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
 
-        # Run upgrade SQL a second time to simulate re-run.
-        await _run_upgrade(pool)
+    # Run upgrade SQL a second time to simulate re-run.
+    await _run_upgrade(pool)
 
-        total = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_predicate_registry")
-        assert total == 18, (
-            f"Re-running upgrade must not duplicate seed rows; expected 18, got {total}"
-        )
+    total = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_predicate_registry")
+    assert total == 18, f"Re-running upgrade must not duplicate seed rows; expected 18, got {total}"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_no_verified_by_in_registry(provisioned_postgres_pool) -> None:
+async def test_no_verified_by_in_registry(rel_013_pool) -> None:
     """verified-by must not appear in the seeded registry.
 
     Per spec §"Requirement: verified is a column, not a triple".
     """
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
 
-        row = await pool.fetchrow(
-            "SELECT predicate FROM relationship.entity_predicate_registry WHERE predicate = 'verified-by'"
-        )
-        assert row is None, "'verified-by' must not be seeded in predicate_registry"
+    row = await pool.fetchrow(
+        "SELECT predicate FROM relationship.entity_predicate_registry WHERE predicate = 'verified-by'"
+    )
+    assert row is None, "'verified-by' must not be seeded in predicate_registry"
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_drops_table(provisioned_postgres_pool) -> None:
+async def test_downgrade_drops_table(rel_013_pool) -> None:
     """relationship.entity_predicate_registry is absent after downgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        table_oid = await pool.fetchval(
-            "SELECT to_regclass('relationship.entity_predicate_registry')"
-        )
-        assert table_oid is None, (
-            "relationship.entity_predicate_registry must be absent after downgrade"
-        )
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_predicate_registry')")
+    assert table_oid is None, (
+        "relationship.entity_predicate_registry must be absent after downgrade"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_does_not_drop_schema(provisioned_postgres_pool) -> None:
+async def test_downgrade_does_not_drop_schema(rel_013_pool) -> None:
     """The relationship schema survives downgrade."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        schema_exists = await pool.fetchval(
-            "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'relationship'"
-        )
-        assert schema_exists is not None, (
-            "relationship schema must survive downgrade — other tables may coexist"
-        )
+    schema_exists = await pool.fetchval(
+        "SELECT 1 FROM information_schema.schemata WHERE schema_name = 'relationship'"
+    )
+    assert schema_exists is not None, (
+        "relationship schema must survive downgrade — other tables may coexist"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_downgrade_preserves_facts_table(provisioned_postgres_pool) -> None:
+async def test_downgrade_preserves_facts_table(rel_013_pool) -> None:
     """relationship.entity_facts must survive rel_014 downgrade (owned by rel_013)."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
+    pool = rel_013_pool
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
 
-        table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
-        assert table_oid is not None, (
-            "relationship.entity_facts must survive rel_014 downgrade — owned by rel_013"
-        )
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_facts')")
+    assert table_oid is not None, (
+        "relationship.entity_facts must survive rel_014 downgrade — owned by rel_013"
+    )
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_upgrade_is_reversible(provisioned_postgres_pool) -> None:
+async def test_upgrade_is_reversible(rel_013_pool) -> None:
     """Upgrade → downgrade → upgrade again succeeds (reversibility contract)."""
-    async with provisioned_postgres_pool() as pool:
-        await _provision_prerequisites(pool)
+    pool = rel_013_pool
 
-        await _run_upgrade(pool)
-        await _run_downgrade(pool)
-        await _run_upgrade(pool)  # must not raise
+    await _run_upgrade(pool)
+    await _run_downgrade(pool)
+    await _run_upgrade(pool)  # must not raise
 
-        table_oid = await pool.fetchval(
-            "SELECT to_regclass('relationship.entity_predicate_registry')"
-        )
-        assert table_oid is not None, (
-            "relationship.entity_predicate_registry must exist after second upgrade"
-        )
+    table_oid = await pool.fetchval("SELECT to_regclass('relationship.entity_predicate_registry')")
+    assert table_oid is not None, (
+        "relationship.entity_predicate_registry must exist after second upgrade"
+    )
 
-        total = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_predicate_registry")
-        assert total == 18, f"Expected 18 seed rows after re-upgrade; got {total}"
+    total = await pool.fetchval("SELECT COUNT(*) FROM relationship.entity_predicate_registry")
+    assert total == 18, f"Expected 18 seed rows after re-upgrade; got {total}"

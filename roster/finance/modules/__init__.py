@@ -56,6 +56,9 @@ class FinanceModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
         self.blob_store: Any = None
+        # Hosting butler's name from the daemon; scopes which blob prefix
+        # import_transactions may read (RFC 0016). Never caller-supplied.
+        self.butler_name: str = ""
         # Optional async callable for progress notifications during large imports.
         # Signature matches the butler's notify() MCP tool:
         #   notify_fn(channel, message, intent) -> Any
@@ -104,6 +107,7 @@ class FinanceModule(Module):
     async def register_tools(self, mcp: Any, config: Any, db: Any, butler_name: str) -> None:
         """Register all finance MCP tools."""
         self._db = db
+        self.butler_name = butler_name
 
         from .tools import register_tools
 

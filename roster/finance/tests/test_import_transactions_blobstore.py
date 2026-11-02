@@ -12,6 +12,7 @@ Issue: bu-44my
 
 from __future__ import annotations
 
+import importlib
 import inspect
 from unittest.mock import AsyncMock, MagicMock
 
@@ -50,6 +51,14 @@ class TestFinanceModuleLifecycle:
         await mod.on_startup(config=None, db=fake_db, blob_store=fake_blob_store)
 
         assert mod.blob_store is fake_blob_store
+
+    async def test_register_tools_records_daemon_butler_name(self):
+        """register_tools keeps the daemon's butler name as the blob-prefix origin."""
+        mod = importlib.import_module("butlers.modules._roster_finance").FinanceModule()
+        assert mod.butler_name == ""  # fails closed: an empty origin matches no prefix
+        await mod.register_tools(FastMCP(), config=None, db=MagicMock(), butler_name="finance")
+
+        assert mod.butler_name == "finance"
 
     async def test_blob_store_none_when_not_provided(self):
         """on_startup without blob_store leaves blob_store as None."""
@@ -100,6 +109,7 @@ class _FakeModule:
         self._pool = pool
         self.blob_store = blob_store
         self.notify_fn = None  # matches FinanceModule.notify_fn
+        self.butler_name = "finance"  # set by FinanceModule.register_tools from the daemon
 
     def _get_pool(self):
         return self._pool
@@ -194,6 +204,9 @@ class TestImportTransactionsToolRegistration:
         call_kwargs = fake_data_import.import_transactions.call_args.kwargs
         assert call_kwargs.get("blob_store") is fake_blob
         assert call_kwargs.get("storage_ref") == "s3://bucket/my-export.csv"
+        # The blob-prefix origin is the daemon-provided butler name, never a tool argument.
+        assert call_kwargs.get("origin_butler") == "finance"
+        assert "origin_butler" not in inspect.signature(tools["import_transactions"]).parameters
 
     async def test_import_transactions_passes_optional_params_to_impl(self):
         """Optional parameters (account_id, currency, dry_run) are forwarded."""

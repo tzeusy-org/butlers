@@ -885,9 +885,10 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         Automatically detects Chase, Amex, Capital One, and generic CSV formats.
         Normalizes dates, amounts, and merchant names before ingestion.
 
-        storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/path/file.csv').
+        storage_ref: BlobStore reference to the CSV file (e.g. 's3://bucket/finance/file.csv').
           Upload the CSV first via the dashboard or attachment ingestion flow, then pass
-          the returned storage_ref here.
+          the returned storage_ref here. Only refs under this butler's blob prefix or the
+          connector prefix are read; any other ref returns status "refused".
         account_id: Account to associate all imported transactions with.
         currency: ISO-4217 currency code for the import. When omitted, the currency is
           inferred from the linked account's currency field; falls back to USD if unknown.
@@ -914,6 +915,7 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
             column_map=_parse_metadata(column_map),
             dry_run=dry_run,
             notify_fn=module.notify_fn,
+            origin_butler=module.butler_name,
         )
 
     @_tool("bulk")
