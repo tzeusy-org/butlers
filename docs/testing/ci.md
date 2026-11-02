@@ -150,6 +150,9 @@ No local gate command matches CI's scope; check which command produced a number.
 - `-q` prints no test names: confirm new files were collected, not skipped, with `-v` or `-q -rs`.
   The CI lane groups pass `-rs`, so every skip reason (for example a real-PG node's
   "Docker not available") appears in the group log; the group's junit evidence records it too.
+- The integration lane guarantees Docker, so `scripts/ci_lanes.py` sets `BUTLERS_REQUIRE_DOCKER=1`
+  for it and the root `conftest.py` turns a "Docker not available" skip into a failure there.
+  Local runs leave the flag unset, so Docker-less hosts keep skipping real-PG tests.
 
 ## Removing or weakening tests
 
