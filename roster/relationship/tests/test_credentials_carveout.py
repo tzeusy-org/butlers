@@ -21,7 +21,6 @@ Spec anchor: openspec/changes/archive/2026-05-20-relationship-tabs-to-entities/s
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import uuid
 from pathlib import Path
@@ -29,6 +28,7 @@ from pathlib import Path
 import asyncpg
 import pytest
 
+from butlers.testing.migration import load_migration
 from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
 
 # ---------------------------------------------------------------------------
@@ -38,17 +38,6 @@ from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
 # ---------------------------------------------------------------------------
 
 _MIGRATION_PATH = Path(__file__).parent.parent / "migrations" / "016_credentials_carveout.py"
-
-
-def _load_migration():
-    """Load 016_credentials_carveout.py as a module object."""
-    spec = importlib.util.spec_from_file_location("_migration_rel_016", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None, (
-        f"Cannot load migration from {_MIGRATION_PATH}"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -62,19 +51,19 @@ class TestMigrationStructure:
     """Migration module exposes the expected Alembic attributes."""
 
     def test_revision_is_rel_016(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH)
         assert mod.revision == "rel_016"
 
     def test_down_revision_is_rel_015(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH)
         assert mod.down_revision == "rel_015"
 
     def test_branch_labels_is_none(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH)
         assert mod.branch_labels is None
 
     def test_depends_on_is_none(self):
-        mod = _load_migration()
+        mod = load_migration(_MIGRATION_PATH)
         assert mod.depends_on is None
 
 

@@ -50,6 +50,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.testing.records import Record as _MockRecord
 from butlers.testing.records import Record as _make_row
 
@@ -58,44 +59,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers: mock asyncpg pool / connection builder
 # ---------------------------------------------------------------------------
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool (FIFO consumption)."""
-    pool = AsyncMock()
-    acquisition = MagicMock()
-    acquisition.__aenter__ = AsyncMock(return_value=pool)
-    acquisition.__aexit__ = AsyncMock(return_value=False)
-    pool.acquire = MagicMock(return_value=acquisition)
-    pool.transaction = MagicMock(return_value=acquisition)
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value="active")
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="UPDATE 1")
-
-    return pool
 
 
 def _make_state_row(state: dict[str, Any], version: int = 1) -> _MockRecord:
@@ -230,7 +193,9 @@ class TestGetStateWithVersion:
         state = _pending_state(map_id)
         # With the JSONB codec registered, asyncpg decodes JSONB columns to Python
         # objects on read — the mock therefore provides a dict directly.
-        pool = _make_pool(fetchrow_returns=[_make_row({"value": state, "version": 1})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"value": state, "version": 1})])
+        )
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict), f"Expected dict, got {type(result).__name__}"
@@ -244,7 +209,9 @@ class TestGetStateWithVersion:
 
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
-        pool = _make_pool(fetchrow_returns=[_make_row({"value": state, "version": 2})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"value": state, "version": 2})])
+        )
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict)
@@ -257,7 +224,9 @@ class TestGetStateWithVersion:
 
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
-        pool = _make_pool(fetchrow_returns=[_make_row({"value": state, "version": 3})])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_row({"value": state, "version": 3})])
+        )
 
         result, version = await _get_state_with_version(pool, map_id)
         assert isinstance(result, dict)
@@ -268,7 +237,7 @@ class TestGetStateWithVersion:
         """_get_state_with_version returns (None, None) for missing keys."""
         from butlers.tools.education.teaching_flows import _get_state_with_version
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
         result, version = await _get_state_with_version(pool, str(uuid.uuid4()))
         assert result is None
         assert version is None
@@ -283,7 +252,7 @@ class TestTeachingFlowGet:
     async def test_returns_none_for_unknown_map(self) -> None:
         from butlers.tools.education.teaching_flows import teaching_flow_get
 
-        pool = _make_pool(fetchval_returns=[None])
+        pool = fake_pool(fetchval=AsyncMock(side_effect=[None]))
         result = await teaching_flow_get(pool, str(uuid.uuid4()))
         assert result is None
 
@@ -296,7 +265,7 @@ class TestTeachingFlowGet:
         with patch(
             "butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=state)
         ):
-            result = await teaching_flow_get(_make_pool(), map_id)
+            result = await teaching_flow_get(fake_pool(), map_id)
 
         assert result is not None
         assert result["status"] == "pending"
@@ -317,9 +286,9 @@ class TestTeachingFlowAdvance:
         map_id = str(uuid.uuid4())
         state = _pending_state(map_id)
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_state_row(state, version=1)],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=1)]),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         with patch(
@@ -342,7 +311,7 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=2)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=2)]))
 
         with patch(
             "butlers.tools.education.teaching_flows.state_compare_and_set",
@@ -364,7 +333,9 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=3)])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=3)]), fetchval="active"
+        )
 
         mock_frontier = [{"id": node_id, "label": "Basics", "mastery_status": "unseen"}]
 
@@ -394,7 +365,9 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=3)])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=3)]), fetchval="active"
+        )
 
         with (
             patch(
@@ -418,7 +391,7 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=4)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=4)]))
 
         with patch(
             "butlers.tools.education.teaching_flows.state_compare_and_set",
@@ -444,7 +417,7 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=5)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=5)]))
 
         mock_summary = {
             "total_nodes": 5,
@@ -491,7 +464,7 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=5)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=5)]))
 
         mock_summary = {
             "total_nodes": 5,
@@ -536,7 +509,9 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=5)])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=5)]), fetchval="active"
+        )
 
         mock_summary = {
             "total_nodes": 5,
@@ -580,7 +555,7 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=6)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=6)]))
 
         mock_summary = {
             "total_nodes": 5,
@@ -627,7 +602,9 @@ class TestTeachingFlowAdvance:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=6)])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=6)]), fetchval="active"
+        )
 
         mock_summary = {
             "total_nodes": 5,
@@ -662,7 +639,7 @@ class TestTeachingFlowAdvance:
         state = _flow_state(status="completed", current_node_id=None, current_phase=None)
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=10)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=10)]))
 
         with pytest.raises(ValueError, match="terminal"):
             await teaching_flow_advance(pool, map_id)
@@ -674,7 +651,7 @@ class TestTeachingFlowAdvance:
         state = _flow_state(status="abandoned", current_node_id=None, current_phase=None)
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=10)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=10)]))
 
         with pytest.raises(ValueError, match="terminal"):
             await teaching_flow_advance(pool, map_id)
@@ -682,7 +659,7 @@ class TestTeachingFlowAdvance:
     async def test_raises_when_no_flow_exists(self) -> None:
         from butlers.tools.education.teaching_flows import teaching_flow_advance
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
 
         with pytest.raises(ValueError, match="No flow found"):
             await teaching_flow_advance(pool, str(uuid.uuid4()))
@@ -694,7 +671,7 @@ class TestTeachingFlowAdvance:
         state = _pending_state(map_id)
         state["session_count"] = 5
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=5)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=5)]))
 
         with patch(
             "butlers.tools.education.teaching_flows.state_compare_and_set",
@@ -711,7 +688,7 @@ class TestTeachingFlowAdvance:
         state = _pending_state(map_id)
         state["last_session_at"] = "2020-01-01T00:00:00+00:00"
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=1)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=1)]))
 
         with patch(
             "butlers.tools.education.teaching_flows.state_compare_and_set",
@@ -743,7 +720,7 @@ class TestTeachingFlowAdvance:
 
         # This should fail invariant validation (teaching without node_id is invalid input,
         # but advance would produce quizzing with no node_id from it)
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=4)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=4)]))
 
         # The quizzing state would have current_node_id=None which violates invariants
         with pytest.raises(ValueError, match="current_node_id"):
@@ -761,12 +738,14 @@ class TestTeachingFlowStart:
 
         map_id = str(uuid.uuid4())
 
-        pool = _make_pool(
-            fetchrow_returns=[
-                _make_row({"id": map_id}),  # mind_map_create RETURNING id
-                _make_state_row(_pending_state(map_id), version=1),  # advance fetch state
-            ],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _make_row({"id": map_id}),  # mind_map_create RETURNING id
+                    _make_state_row(_pending_state(map_id), version=1),  # advance fetch state
+                ]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         with (
@@ -786,12 +765,14 @@ class TestTeachingFlowStart:
 
         map_id = str(uuid.uuid4())
 
-        pool = _make_pool(
-            fetchrow_returns=[
-                _make_row({"id": map_id}),
-                _make_state_row(_pending_state(map_id), version=1),
-            ],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _make_row({"id": map_id}),
+                    _make_state_row(_pending_state(map_id), version=1),
+                ]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         with (
@@ -814,12 +795,14 @@ class TestTeachingFlowStart:
         initial = _pending_state(map_id)
         initial["session_count"] = 0
 
-        pool = _make_pool(
-            fetchrow_returns=[
-                _make_row({"id": map_id}),
-                _make_state_row(initial, version=1),
-            ],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _make_row({"id": map_id}),
+                    _make_state_row(initial, version=1),
+                ]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         with (
@@ -853,14 +836,16 @@ class TestTeachingFlowAbandon:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_state_row(state, version=3)],
-            fetch_returns=[
-                [_make_row({"id": node_id})],  # node list
-                [],  # node schedule names (empty)
-                [],  # batch schedule names (empty)
-            ],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=3)]),
+            fetch=AsyncMock(
+                side_effect=[
+                    [_make_row({"id": node_id})],  # node list
+                    [],  # node schedule names (empty)
+                    [],  # batch schedule names (empty)
+                ]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         schedule_delete = AsyncMock()
@@ -881,7 +866,7 @@ class TestTeachingFlowAbandon:
         state = _flow_state(status="completed", current_node_id=None, current_phase=None)
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=10)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=10)]))
 
         with pytest.raises(ValueError, match="terminal"):
             await teaching_flow_abandon(pool, map_id)
@@ -893,7 +878,7 @@ class TestTeachingFlowAbandon:
         state = _flow_state(status="abandoned", current_node_id=None, current_phase=None)
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=10)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=10)]))
 
         with pytest.raises(ValueError, match="terminal"):
             await teaching_flow_abandon(pool, map_id)
@@ -901,7 +886,7 @@ class TestTeachingFlowAbandon:
     async def test_abandon_raises_when_no_flow(self) -> None:
         from butlers.tools.education.teaching_flows import teaching_flow_abandon
 
-        pool = _make_pool(fetchrow_returns=[None])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[None]))
 
         with pytest.raises(ValueError, match="No flow found"):
             await teaching_flow_abandon(pool, str(uuid.uuid4()))
@@ -920,14 +905,16 @@ class TestTeachingFlowAbandon:
         )
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_state_row(state, version=3)],
-            fetch_returns=[
-                [_make_row({"id": node_id})],  # node list
-                [_make_row({"name": schedule_name})],  # node schedule names
-                [],  # batch schedule names
-            ],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=3)]),
+            fetch=AsyncMock(
+                side_effect=[
+                    [_make_row({"id": node_id})],  # node list
+                    [_make_row({"name": schedule_name})],  # node schedule names
+                    [],  # batch schedule names
+                ]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         schedule_delete = AsyncMock()
@@ -950,10 +937,10 @@ class TestTeachingFlowAbandon:
         state = _flow_state(status="planning", current_node_id=None, current_phase=None)
         state["mind_map_id"] = map_id
 
-        pool = _make_pool(
-            fetchrow_returns=[_make_state_row(state, version=2)],
-            fetch_returns=[[], []],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=2)]),
+            fetch=AsyncMock(side_effect=[[], []]),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         schedule_delete = AsyncMock()
@@ -970,7 +957,7 @@ class TestTeachingFlowAbandon:
         ):
             await teaching_flow_abandon(pool, map_id, schedule_delete=schedule_delete)
 
-        mock_update_status.assert_called_once_with(pool, map_id, "abandoned")
+        mock_update_status.assert_called_once_with(pool.connection, map_id, "abandoned")
 
 
 # ---------------------------------------------------------------------------
@@ -985,13 +972,15 @@ class TestTeachingFlowList:
         map_id1 = str(uuid.uuid4())
         map_id2 = str(uuid.uuid4())
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row({"id": map_id1, "title": "Python"}),
-                    _make_row({"id": map_id2, "title": "Rust"}),
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row({"id": map_id1, "title": "Python"}),
+                        _make_row({"id": map_id2, "title": "Rust"}),
+                    ]
                 ]
-            ]
+            )
         )
 
         state1 = _flow_state(
@@ -1049,13 +1038,15 @@ class TestTeachingFlowList:
         map_id1 = str(uuid.uuid4())
         map_id2 = str(uuid.uuid4())
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row({"id": map_id1, "title": "Python"}),
-                    _make_row({"id": map_id2, "title": "Rust"}),
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row({"id": map_id1, "title": "Python"}),
+                        _make_row({"id": map_id2, "title": "Rust"}),
+                    ]
                 ]
-            ]
+            )
         )
 
         state1 = _flow_state(
@@ -1095,7 +1086,7 @@ class TestTeachingFlowList:
     async def test_empty_list_when_no_flows(self) -> None:
         from butlers.tools.education.teaching_flows import teaching_flow_list
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         result = await teaching_flow_list(pool)
         assert result == []
@@ -1105,7 +1096,9 @@ class TestTeachingFlowList:
 
         map_id = str(uuid.uuid4())
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id, "title": "Python"})]])
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[[_make_row({"id": map_id, "title": "Python"})]])
+        )
 
         with patch(
             "butlers.tools.education.teaching_flows.state_get", AsyncMock(return_value=None)
@@ -1119,7 +1112,9 @@ class TestTeachingFlowList:
 
         map_id = str(uuid.uuid4())
 
-        pool = _make_pool(fetch_returns=[[_make_row({"id": map_id, "title": "Math"})]])
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[[_make_row({"id": map_id, "title": "Math"})]])
+        )
 
         state = _flow_state(
             status="teaching", mind_map_id=map_id, current_node_id=str(uuid.uuid4())
@@ -1168,7 +1163,7 @@ class TestAssembleSessionContext:
             current_phase="explaining",
         )
 
-        pool = _make_pool(fetch_returns=[[]])  # quiz responses
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))  # quiz responses
 
         mock_frontier = [{"id": node_id, "label": "Basics"}]
         mock_memory = {"facts": ["User knows Python basics"]}
@@ -1207,7 +1202,7 @@ class TestAssembleSessionContext:
             current_phase="explaining",
         )
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         async def _failing_memory():
             raise RuntimeError("Memory service unavailable")
@@ -1243,7 +1238,7 @@ class TestAssembleSessionContext:
             current_phase=None,
         )
 
-        pool = _make_pool()  # No fetch calls expected for responses
+        pool = fake_pool()  # No fetch calls expected for responses
 
         with (
             patch(
@@ -1284,7 +1279,7 @@ class TestAssembleSessionContext:
             for i in range(10)
         ]
 
-        pool = _make_pool(fetch_returns=[mock_responses])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[mock_responses]))
 
         with (
             patch(
@@ -1310,7 +1305,7 @@ class TestAssembleSessionContext:
             current_phase="explaining",
         )
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
 
         with (
             patch(
@@ -1338,23 +1333,25 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         stale_time = (datetime.now(tz=UTC) - timedelta(days=31)).isoformat()
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": map_id,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
-                ],  # mind_maps query
-                [],  # node list for cleanup
-                [],  # batch schedules for cleanup
-            ],
-            execute_returns=["UPDATE 1"],
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                    ],  # mind_maps query
+                    [],  # node list for cleanup
+                    [],  # batch schedules for cleanup
+                ]
+            ),
+            execute=AsyncMock(side_effect=["UPDATE 1"]),
         )
 
         state = _flow_state(
@@ -1390,21 +1387,23 @@ class TestCheckStaleFlows:
         outcomes = []
         for node_days, flow_days in [(2, 45), (45, 2), (2, None), (45, None)]:
             now = datetime.now(tz=UTC)
-            candidate = _make_pool(
-                fetch_returns=[
-                    [
-                        _make_row(
-                            {
-                                "id": map_id,
-                                "status": "active",
-                                "created_at": now,
-                                "node_count": 1,
-                                "last_activity": now - timedelta(days=node_days),
-                                "all_mastered": False,
-                            }
-                        )
+            candidate = fake_pool(
+                fetch=AsyncMock(
+                    side_effect=[
+                        [
+                            _make_row(
+                                {
+                                    "id": map_id,
+                                    "status": "active",
+                                    "created_at": now,
+                                    "node_count": 1,
+                                    "last_activity": now - timedelta(days=node_days),
+                                    "all_mastered": False,
+                                }
+                            )
+                        ]
                     ]
-                ]
+                )
             )
             flow = (
                 _flow_state(
@@ -1445,20 +1444,22 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         recent_time = (datetime.now(tz=UTC) - timedelta(days=5)).isoformat()
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": map_id,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         state = _flow_state(
@@ -1484,20 +1485,22 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         old_time = (datetime.now(tz=UTC) - timedelta(days=60)).isoformat()
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": map_id,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         state = _flow_state(
@@ -1523,20 +1526,22 @@ class TestCheckStaleFlows:
         map_id = str(uuid.uuid4())
         old_time = (datetime.now(tz=UTC) - timedelta(days=60)).isoformat()
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": map_id,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         state = _flow_state(
@@ -1562,21 +1567,23 @@ class TestCheckStaleFlows:
         map_ids = [str(uuid.uuid4()) for _ in range(3)]
         stale_time = (datetime.now(tz=UTC) - timedelta(days=40)).isoformat()
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": mid,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
-                    for mid in map_ids
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": mid,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                        for mid in map_ids
+                    ]
                 ]
-            ]
+            )
         )
 
         states = [
@@ -1608,7 +1615,7 @@ class TestCheckStaleFlows:
     async def test_no_flows_exist(self) -> None:
         from butlers.tools.education.teaching_flows import check_stale_flows
 
-        pool = _make_pool(fetch_returns=[[]])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[[]]))
         result = await check_stale_flows(pool)
         assert result == []
 
@@ -1616,20 +1623,22 @@ class TestCheckStaleFlows:
         from butlers.tools.education.teaching_flows import check_stale_flows
 
         map_id = str(uuid.uuid4())
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": map_id,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         with patch(
@@ -1648,20 +1657,22 @@ class TestCheckStaleFlows:
         check_time = datetime.now(tz=UTC)
         boundary_time = (check_time - timedelta(days=30)).isoformat()
 
-        pool = _make_pool(
-            fetch_returns=[
-                [
-                    _make_row(
-                        {
-                            "id": map_id,
-                            "status": "active",
-                            "created_at": datetime.now(tz=UTC),
-                            "node_count": 1,
-                            "last_activity": datetime.now(tz=UTC),
-                        }
-                    )
+        pool = fake_pool(
+            fetch=AsyncMock(
+                side_effect=[
+                    [
+                        _make_row(
+                            {
+                                "id": map_id,
+                                "status": "active",
+                                "created_at": datetime.now(tz=UTC),
+                                "node_count": 1,
+                                "last_activity": datetime.now(tz=UTC),
+                            }
+                        )
+                    ]
                 ]
-            ]
+            )
         )
 
         state = _flow_state(
@@ -1707,7 +1718,9 @@ class TestTechniqueRecording:
         map_id = str(uuid.uuid4())
         state = _flow_state(status="planning", current_node_id=None, current_phase=None)
         state["mind_map_id"] = map_id
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=3)])
+        pool = fake_pool(
+            fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=3)]), fetchval="active"
+        )
 
         with (
             patch(
@@ -1767,7 +1780,7 @@ class TestTechniqueRecording:
             status="quizzing", current_node_id=str(uuid.uuid4()), current_phase=None
         )
         state["mind_map_id"] = map_id
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=5)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=5)]))
 
         summary = {"total_nodes": 5, "mastered_count": 1}
         frontier = [
@@ -1804,7 +1817,7 @@ class TestTechniqueRecording:
         state = _flow_state(status="teaching", current_node_id=node_id, current_phase="questioning")
         state["mind_map_id"] = map_id
         state["current_technique"] = {"id": "worked-example", "concept_type": "procedural"}
-        pool = _make_pool(fetchrow_returns=[_make_state_row(state, version=4)])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_state_row(state, version=4)]))
 
         with patch(
             "butlers.tools.education.teaching_flows.state_compare_and_set",
@@ -1830,7 +1843,12 @@ async def test_start_uses_one_transaction_and_propagates_either_write_failure():
     from butlers.tools.education.teaching_flows import teaching_flow_start
 
     for failure in ("map", "state"):
-        pool = _make_pool(fetchrow_returns=[_make_row({"id": "map"})])
+        pool = fake_pool(fetchrow=AsyncMock(side_effect=[_make_row({"id": "map"})]))
+        # A recording transaction context so the test can read __aexit__'s exc type.
+        transaction = MagicMock()
+        transaction.__aenter__ = AsyncMock(return_value=None)
+        transaction.__aexit__ = AsyncMock(return_value=False)
+        pool.connection.transaction = MagicMock(return_value=transaction)
         if failure == "map":
             pool.fetchrow.side_effect = RuntimeError("map write refused")
         with patch("butlers.tools.education.teaching_flows.state_set", AsyncMock()) as write:
@@ -1841,22 +1859,26 @@ async def test_start_uses_one_transaction_and_propagates_either_write_failure():
             if failure == "map":
                 write.assert_not_awaited()
             else:
-                assert write.call_args.args[0] is pool
-            assert pool.transaction.call_count == 1
-            assert pool.transaction.return_value.__aexit__.call_args.args[0] is RuntimeError
+                assert write.call_args.args[0] is pool.connection
+            assert pool.connection.transaction.call_count == 1
+            assert (
+                pool.connection.transaction.return_value.__aexit__.call_args.args[0] is RuntimeError
+            )
 
 
 async def test_planning_requires_an_active_map_before_frontier_or_state_write():
     from butlers.tools.education.teaching_flows import teaching_flow_advance
 
     for status in ("draft", "abandoned", "completed"):
-        pool = _make_pool(
-            fetchrow_returns=[
-                _make_state_row(
-                    _flow_state(status="planning", current_node_id=None, current_phase=None)
-                )
-            ],
-            fetchval_returns=[status],
+        pool = fake_pool(
+            fetchrow=AsyncMock(
+                side_effect=[
+                    _make_state_row(
+                        _flow_state(status="planning", current_node_id=None, current_phase=None)
+                    )
+                ]
+            ),
+            fetchval=AsyncMock(side_effect=[status]),
         )
         with patch(
             "butlers.tools.education.teaching_flows.mind_map_frontier", AsyncMock()
@@ -1873,20 +1895,22 @@ async def test_stalled_draft_sweep_reaches_orphans_and_respects_24_hour_boundary
     now = datetime.now(tz=UTC)
     for has_state in (False, True):
         for age in (timedelta(hours=23), timedelta(hours=24), timedelta(hours=25)):
-            pool = _make_pool(
-                fetch_returns=[
-                    [
-                        _make_row(
-                            {
-                                "id": "map",
-                                "status": "draft",
-                                "created_at": now - age,
-                                "node_count": 0,
-                                "last_activity": None,
-                            }
-                        )
+            pool = fake_pool(
+                fetch=AsyncMock(
+                    side_effect=[
+                        [
+                            _make_row(
+                                {
+                                    "id": "map",
+                                    "status": "draft",
+                                    "created_at": now - age,
+                                    "node_count": 0,
+                                    "last_activity": None,
+                                }
+                            )
+                        ]
                     ]
-                ]
+                )
             )
             state = (
                 _flow_state(
@@ -1923,7 +1947,7 @@ async def test_stalled_draft_sweep_reaches_orphans_and_respects_24_hour_boundary
 async def test_sweep_retries_abandoned_cleanup_without_rewriting_map_or_flow():
     from butlers.tools.education.teaching_flows import check_stale_flows
 
-    pool = _make_pool()
+    pool = fake_pool(fetch=[])
     map_row = _make_row({"id": "map", "status": "abandoned"})
     # Both passes exercise the real cleanup helper; the first callback fails,
     # the second succeeds. Already-abandoned state is never written again.
