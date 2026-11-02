@@ -41,7 +41,6 @@ from butlers.core.model_routing import (
     resolve_dispatch,
     resolve_model_with_effective_tier,
 )
-from butlers.db import register_jsonb_codec
 
 docker_available = shutil.which("docker") is not None
 
@@ -58,16 +57,11 @@ BUTLER = "general"
 TOOL_INTENT = derive_dispatch_intent("external", Complexity.CHEAP)
 
 
-async def _jsonb_as_text(conn: asyncpg.Connection) -> None:
-    # These tests write JSON text into jsonb parameters; keep asyncpg's text codec.
-    await conn.reset_type_codec("jsonb", schema="pg_catalog")
-
-
 @pytest.fixture
 async def dispatch_pool(db) -> asyncpg.Pool:
-    """Single-connection core pool with the seeded model catalog emptied."""
+    """Core pool with the seeded model catalog emptied."""
     clear_routing_decision_cache()
-    pool = await db("core", init=_jsonb_as_text, max_size=1)
+    pool = await db("core")
     await pool.execute(
         "TRUNCATE public.model_round_robin_counters, public.butler_model_overrides, "
         "public.token_limits, public.token_usage_ledger, public.model_catalog CASCADE"
@@ -82,7 +76,7 @@ async def _insert_entry(
     runtime_type: str = "claude",
     complexity_tier: str = "cheap",
     priority: int = 0,
-    capabilities: str = "{}",
+    capabilities: dict | None = None,
     max_context_tokens: int | None = None,
 ) -> uuid.UUID:
     """Insert one enabled catalog entry. Model ids are synthetic and unpriced."""
@@ -99,7 +93,7 @@ async def _insert_entry(
         f"synthetic-{alias}",
         complexity_tier,
         priority,
-        capabilities,
+        capabilities or {},
         max_context_tokens,
     )
     return row["id"]
@@ -159,7 +153,7 @@ async def test_discretion_receipt_capture_matches_legacy_selection(
         alias="ctl-api",
         runtime_type="api",
         priority=30,
-        capabilities=json.dumps({"no_such_feature": True}),
+        capabilities={"no_such_feature": True},
     )
     await _insert_entry(dispatch_pool, alias="ctl-claude", runtime_type="claude", priority=10)
 
@@ -259,7 +253,7 @@ async def test_row_capabilities_override_the_adapter_baseline(dispatch_pool: asy
         alias="ov-api",
         runtime_type="api",
         priority=30,
-        capabilities=json.dumps({"tool_use": True}),
+        capabilities={"tool_use": True},
     )
     await _insert_entry(dispatch_pool, alias="ov-claude", priority=10)
 
@@ -280,7 +274,7 @@ async def test_unusable_capability_envelope_excludes_the_entry(dispatch_pool: as
         dispatch_pool,
         alias="bad-envelope",
         priority=30,
-        capabilities=json.dumps({"no_such_feature": True}),
+        capabilities={"no_such_feature": True},
     )
     good_id = await _insert_entry(dispatch_pool, alias="good-envelope", priority=10)
 
@@ -406,8 +400,6 @@ async def test_breaker_open_candidate_is_explained_and_receipt_persists(
     assert excluded["outcome"] == "excluded_breaker"
     assert excluded["exclusion"] == "breaker_open"
 
-    async with dispatch_pool.acquire() as connection:
-        await register_jsonb_codec(connection)
     attempt_id = await record_dispatch_attempt(
         dispatch_pool,
         catalog_entry_id=selected_id,

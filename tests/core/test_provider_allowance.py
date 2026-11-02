@@ -8,7 +8,6 @@ the state writer's idempotence rules, and honest rendering of unknown state.
 
 from __future__ import annotations
 
-import json
 import shutil
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -103,16 +102,11 @@ async def test_deferral_ignores_non_datetime_rows() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _jsonb_as_text(conn: asyncpg.Connection) -> None:
-    # These tests write JSON text into jsonb parameters; keep asyncpg's text codec.
-    await conn.reset_type_codec("jsonb", schema="pg_catalog")
-
-
 @pytest.fixture
 async def allowance_pool(db):
     """Core pool with the seeded model catalog emptied."""
     clear_routing_decision_cache()
-    pool = await db("core", init=_jsonb_as_text)
+    pool = await db("core")
     await pool.execute(
         "TRUNCATE public.model_round_robin_counters, public.butler_model_overrides, "
         "public.token_limits, public.token_usage_ledger, public.model_catalog, "
@@ -141,7 +135,7 @@ async def _entry(
         alias,
         runtime_type,
         f"{alias}-model",
-        json.dumps([]),
+        [],
         tier,
         priority,
         allowance_account,
@@ -204,7 +198,7 @@ class TestAccountScopedExclusion:
         from tests.api.auth_helpers import create_authenticated_domain_app
         from tests.three_seams_helpers import baseline_function
 
-        # A separate production-codec database: the string-JSON fixture stays as it was.
+        # A second, empty database for the API seam; nothing above carries over.
         api_pool = await db("core")
         try:
             await api_pool.execute(

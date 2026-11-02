@@ -226,11 +226,6 @@ async def test_quota_unit_behaviors() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _jsonb_as_text(conn: asyncpg.Connection) -> None:
-    # The original pool had no JSONB codec; keep asyncpg's text codec.
-    await conn.reset_type_codec("jsonb", schema="pg_catalog")
-
-
 @pytest.fixture
 async def quota_pool(db) -> asyncpg.Pool:
     """Core pool with quota tables and the seeded catalog emptied.
@@ -238,7 +233,7 @@ async def quota_pool(db) -> asyncpg.Pool:
     Also ensures historical monthly partitions exist for the token_usage_ledger
     (needed by tests that insert rows with recorded_at 30+ days in the past).
     """
-    pool = await db("core", init=_jsonb_as_text)
+    pool = await db("core")
     await _create_past_ledger_partitions(pool)
     await pool.execute(
         "TRUNCATE public.token_usage_ledger, public.token_limits, public.model_catalog CASCADE"
