@@ -12,12 +12,9 @@ their own decisions (distance, SSID match) in process.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
-PlaceKind = Literal["home", "work", "airport", "other"]
-
-PLACE_KINDS: tuple[PlaceKind, ...] = ("home", "work", "airport", "other")
 LABEL_MAX_CHARS = 80
 RADIUS_MIN_M = 50
 RADIUS_MAX_M = 2000
@@ -29,11 +26,14 @@ SSID_MAX_BYTES = 32
 
 @dataclass(frozen=True)
 class OwnerPlace:
-    """One live owner place as a deterministic reader sees it."""
+    """One live owner place as a deterministic reader sees it.
+
+    ``kind`` is one of home, work, airport or other (``ck_owner_places_kind``).
+    """
 
     id: UUID
     label: str
-    kind: PlaceKind
+    kind: str
     lat: float
     lon: float
     radius_m: int
@@ -77,12 +77,10 @@ __all__ = [
     "LABEL_MAX_CHARS",
     "MAX_ALIASES",
     "MAX_SSIDS",
-    "PLACE_KINDS",
     "RADIUS_MAX_M",
     "RADIUS_MIN_M",
     "SSID_MAX_BYTES",
     "OwnerPlace",
-    "PlaceKind",
     "load_active_owner_places",
     "owner_place_from_row",
 ]
