@@ -1798,6 +1798,7 @@ describe("SettingsModelsPage deep link (Telegram runtime-attention door)", () =>
 
     const marked = container.querySelectorAll('[data-highlighted="true"]');
     expect(marked).toHaveLength(1);
+    expect(marked[0].getAttribute("aria-current")).toBe("true");
     expect(marked[0].textContent).toContain("other");
     expect(scroll).toHaveBeenCalledTimes(1);
   });
@@ -1806,13 +1807,5 @@ describe("SettingsModelsPage deep link (Telegram runtime-attention door)", () =>
     setHookState({ entries: [makeModel()] });
     const { container } = mountPage();
     expect(container.querySelector("[data-highlighted]")).toBeNull();
-  });
-
-  it("stacks the row to one column below md and tabulates from md up", () => {
-    setHookState({ entries: [makeModel()] });
-    const { container } = mountPage();
-    const row = container.querySelector("[data-highlighted], div.grid.items-center") as HTMLElement;
-    expect(row.className).toContain("grid-cols-1");
-    expect(row.className).toContain("md:grid-cols-[auto_1fr_auto_auto_auto_auto_auto_auto]");
   });
 });

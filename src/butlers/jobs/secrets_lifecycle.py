@@ -401,9 +401,10 @@ def _compose_message(snapshot: CredentialSnapshot, dashboard_url: str | None) ->
     """
     description = _STATE_DESCRIPTIONS.get(snapshot.state, f"is now '{snapshot.state}'")
     lines = [f"Credential '{snapshot.label}' {description}."]
-    if dashboard_url:
-        # No configured dashboard origin means no link: a localhost URL is dead on a phone.
-        lines.append(f"{dashboard_url.rstrip('/')}{_focus_fragment(snapshot.key)}")
+    # The focus fragment is always its own line: retry supersession matches on it. With no
+    # configured dashboard origin it is the bare path, a marker rather than a dead localhost link.
+    origin = dashboard_url.rstrip("/") if dashboard_url else ""
+    lines.append(f"{origin}{_focus_fragment(snapshot.key)}")
 
     if snapshot.provider is not None:
         provider_meta = PROVIDER_CATALOG.get(snapshot.provider)

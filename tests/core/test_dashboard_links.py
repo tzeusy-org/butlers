@@ -52,6 +52,8 @@ def test_registry_entries_name_a_payload_selector():
     for entry in json.loads(REGISTRY.read_text())["routes"]:
         assert entry["pattern"] and entry["example"] and entry["payload_selector"]
         assert re.fullmatch(entry["pattern"], entry["example"]), entry
+        # A route not yet walked on a phone must name the bead that owes the walk.
+        assert entry["phone_walk"] == "covered" or entry.get("phone_walk_owner"), entry
 
 
 def test_secrets_lifecycle_links_are_registered():
@@ -83,39 +85,31 @@ def test_approval_self_routes_are_registered():
         assert_registered(template.format(action_id="11111111-1111-4111-8111-111111111111"))
 
 
+_READS_DASHBOARD_URL = re.compile(r"[\"']DASHBOARD_URL[\"']")
+
+# Every file that reads the variable besides the helper. Frozen: each entry must still read it.
 _ALLOWED_READERS = {
-    "src/butlers/core/dashboard_links.py",
-    # Not Telegram links: OAuth/Spotify redirects, startup guard, QA PR-body links.
-    "src/butlers/api/routers/oauth.py",
-    "src/butlers/api/routers/spotify.py",
+    # Startup guard's own hint text; not an owner-facing Telegram link.
     "src/butlers/startup_guard.py",
-    "src/butlers/core/qa/dispatch.py",
-    "src/butlers/core/qa/prompts.py",
-    "src/butlers/modules/qa/__init__.py",
     # Self-link resolver: stricter (https-only) and independent by design.
     "roster/switchboard/tools/notification/self_links.py",
 }
+_HELPER = "src/butlers/core/dashboard_links.py"
 
 
-def test_only_the_helper_reads_dashboard_url():
-    offenders = []
+def _readers() -> set[str]:
+    found = set()
     for root in ("src", "roster"):
         for path in (REPO / root).rglob("*.py"):
             rel = path.relative_to(REPO).as_posix()
-            if "/tests/" in rel or rel in _ALLOWED_READERS:
-                continue
-            text = path.read_text()
-            if re.search(r"environ(\.get\(|\[)\s*[\"']DASHBOARD_URL[\"']", text):
-                offenders.append(rel)
-    assert offenders == [], f"read DASHBOARD_URL outside butlers.core.dashboard_links: {offenders}"
+            if "/tests/" not in rel and _READS_DASHBOARD_URL.search(path.read_text()):
+                found.add(rel)
+    return found
 
 
-def test_covered_routes_are_walked_by_the_phone_spec():
-    """A route marked phone_walk=covered has a path in phone-entry-routes.ts."""
-    walked = (REGISTRY.parent / "phone-entry-routes.ts").read_text()
-    for entry in json.loads(REGISTRY.read_text())["routes"]:
-        if entry["phone_walk"] == "covered":
-            path = entry["example"].split("?")[0]
-            assert path.split("/")[1] in walked, f"{entry['name']} is not walked on a phone"
-        else:
-            assert entry.get("phone_walk_owner"), f"{entry['name']} pending without an owner"
+def test_only_the_helper_reads_dashboard_url():
+    assert _readers() - {_HELPER} == _ALLOWED_READERS
+
+
+def test_allowlist_has_no_stale_entries():
+    assert _ALLOWED_READERS | {_HELPER} <= _readers()

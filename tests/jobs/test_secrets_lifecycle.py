@@ -358,15 +358,19 @@ def test_compose_message_embeds_no_api_url():
     assert "https://host.example/butlers-dev/secrets?focus=u%3Aspotify" in message
 
 
-def test_compose_message_without_dashboard_origin_carries_no_link():
-    """With DASHBOARD_URL unset the message still sends, minus a dead link."""
+def test_compose_message_without_dashboard_origin_keeps_the_supersede_marker():
+    """No origin: no URL, but the focus fragment stays a whole line so retry supersession matches."""
     snapshot = CredentialSnapshot(
         key="u:google", family="user", label="Google", state="expired", provider="google"
     )
     message = _compose_message(snapshot, None)
-    assert "http" not in message and "/secrets" not in message
+    assert "http" not in message
     assert "has expired" in message
     assert "Re-authorize from the credential card" in message
+    # The predicate cancel_pending_notifications_matching_line applies.
+    marker = _focus_fragment(snapshot.key)
+    assert marker + "\n" in message or message.endswith(marker)
+    assert message.splitlines()[1] == marker
 
 
 def test_compose_message_omits_reauthorize_for_non_oauth():

@@ -1543,6 +1543,7 @@ function ModelRow({
     <div
       ref={rowRef}
       data-highlighted={highlighted ? "true" : undefined}
+      aria-current={highlighted ? "true" : undefined}
       className={[
         // One column on a phone (the 8-track row overflows 390px); the table row from md up.
         "grid grid-cols-1 items-center gap-3 px-4 py-2.5 border-b border-border/50",
