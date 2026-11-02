@@ -544,11 +544,25 @@ async def _project_run(
         cp = _chronicler_pool()
         if stored is not None:
             conn = await cp.acquire().__aenter__()
-            conn.fetchrow = AsyncMock(return_value=stored)
+            conn.fetchrow = AsyncMock(side_effect=_stored_episode_lookup(stored))
         result = await OwnTracksPointAdapter(batch_limit=batch_limit).project(
             table.pool(), chronicler_pool=cp, since=since
         )
     return result, projected
+
+
+def _stored_episode_lookup(stored: dict):
+    """Overlap lookup honouring the query's ``start_at <= $5 AND end_at >= $4`` bounds."""
+
+    async def _fetchrow(query: str, *args: object) -> dict | None:
+        if "FROM episodes" not in query:
+            return None
+        start_at, end_at = args[3], args[4]
+        if stored["start_at"] <= end_at and stored["end_at"] >= start_at:
+            return stored
+        return None
+
+    return _fetchrow
 
 
 def _arrived(ts: datetime, arrived_at: datetime, key: str) -> dict:
@@ -625,6 +639,44 @@ async def test_queue_flush_within_movement_gap_does_not_split_the_trip() -> None
 
     assert sorted(flushed) == ["queued-4", "queued-6", "queued-8"]
     assert {ep.source_ref for ep in episodes} == {open_episode["source_ref"]}
+    assert store[_ENDPOINT] == open_episode
+
+
+@pytest.mark.asyncio
+async def test_late_span_near_a_stored_episode_is_point_only_far_one_stands_alone() -> None:
+    """Stored-episode lookup is padded by the movement gap, not literal overlap."""
+    stored = {
+        "source_ref": "connectors.owntracks_points:movement:closed",
+        "start_at": _NOW - timedelta(minutes=30),
+        "end_at": _NOW,
+        "payload": {"start_lat": 1.0, "start_lon": 103.0, "point_count": 4},
+        "linked_event_ids": [],
+    }
+    later = _NOW + timedelta(hours=2)
+    table = _ArrivalTable(
+        *(_arrived(later + timedelta(minutes=m), later, f"open-{m}") for m in (0, 5)),
+        now=later + timedelta(hours=1),
+    )
+    store: dict = {}
+    await _project_run(table, store, stored=stored)
+    open_episode = dict(store[_ENDPOINT])
+
+    def _late(*minutes: int) -> list[dict]:
+        arrived = later + timedelta(minutes=minutes[0])  # each flush arrives later
+        return [_arrived(_NOW + timedelta(minutes=m), arrived, f"late-{m}") for m in minutes]
+
+    near: list[Episode] = []
+    table.rows += _late(20, 25)
+    _, near_keys = await _project_run(table, store, episodes=near, stored=stored)
+    far: list[Episode] = []
+    table.rows += _late(45, 50)
+    _, far_keys = await _project_run(table, store, episodes=far, stored=stored)
+
+    assert (sorted(near_keys), near) == (["late-20", "late-25"], [])
+    assert sorted(far_keys) == ["late-45", "late-50"]
+    assert [(ep.start_at, ep.end_at) for ep in far] == [
+        (_NOW + timedelta(minutes=45), _NOW + timedelta(minutes=50))
+    ]
     assert store[_ENDPOINT] == open_episode
 
 
