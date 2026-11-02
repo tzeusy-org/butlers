@@ -82,6 +82,48 @@ async def test_a_quantity_change_resets_the_dose_count(health_pool):
     assert "Lisinopril supply estimated to run out in 12 day(s)" in message
 
 
+@pytest.fixture
+async def health_schema_pool(db):
+    """The production layout: Health's memory facts live in ``health.facts``, the table
+    the Switchboard's send-time definer (core_311) reads."""
+    return await db(
+        "core",
+        "memory",
+        "health",
+        "switchboard",
+        schemas={"memory": "health", "health": "health", "switchboard": "switchboard"},
+        schema="health",
+    )
+
+
+async def test_the_scan_and_the_send_time_probe_agree_after_a_dosage_edit(health_schema_pool):
+    from butlers.core.insight_premise import probe_premise
+    from butlers.tools.health import medication_add, medication_update
+    from butlers.tools.switchboard.insight import premises
+
+    pool = health_schema_pool
+    med = await medication_add(pool, "Metformin", "500mg", "daily", quantity=10)
+    await _log_doses(pool, str(med["id"]), 3)
+    edited = await medication_update(pool, str(med["id"]), dosage="850mg")
+    await _log_doses(pool, str(edited["id"]), 3)
+
+    (message,) = await _refill_messages(pool)
+    assert "Metformin supply estimated to run out in 4 day(s)" in message
+
+    async def probe(warning_days: int) -> bool | None:
+        args = {
+            "subject": "medication:Metformin",
+            "doses_per_day": 1.0,
+            "warning_days": warning_days,
+        }
+        premise = probe_premise("health", "medication_refill_still_due", args)
+        return await premises.check_premise(pool, premise)
+
+    # The probe sees the same 4 days left: due at a 4-day window, not at 3.
+    assert await probe(4) is True
+    assert await probe(3) is False
+
+
 async def test_another_medications_doses_are_not_counted(health_pool):
     from butlers.tools.health import medication_add, medication_update
 
