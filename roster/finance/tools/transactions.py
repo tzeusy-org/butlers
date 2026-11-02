@@ -2113,9 +2113,12 @@ async def bulk_record_transactions(
 
     Returns:
         {total, imported, skipped, errors, error_details, large_transaction_alerts}
+        imported counts fresh inserts only; dedup replays count as skipped.
         error_details items have: {index, reason}
         reason is "duplicate" for dedup skips, "invalid_date" for
-        unparseable dates, "invalid_amount" for non-numeric amounts.
+        unparseable dates, "invalid_amount" for non-numeric amounts,
+        "invalid_row: ..." for per-row ValueErrors (unresolvable account,
+        bad direction).
         large_transaction_alerts lists rows whose amount exceeded the configured
         `large_transaction` alert threshold, each as
         {index, threshold, amount, merchant, exceeds_by}.
@@ -2225,6 +2228,11 @@ async def bulk_record_transactions(
             logger.warning("bulk_record_transactions: row %d failed: %s", idx, exc)
             errors += 1
             error_details.append({"index": idx, "reason": f"db_error: {exc}"})
+        except ValueError as exc:
+            # Unresolvable account label or invalid direction: fail this row only,
+            # earlier rows are already committed.
+            errors += 1
+            error_details.append({"index": idx, "reason": f"invalid_row: {exc}"})
 
     return {
         "total": len(transactions),

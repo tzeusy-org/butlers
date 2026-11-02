@@ -428,6 +428,28 @@ async def test_bulk_record_transactions_skips_duplicates():
 
 
 @pytest.mark.asyncio(loop_scope="session")
+async def test_bulk_record_transactions_row_value_error_does_not_abort_batch():
+    """A per-row ValueError (e.g. unresolvable account) errors that row; later rows import."""
+    from butlers.tools.finance.transactions import bulk_record_transactions
+
+    async def _record(*args, **kwargs):
+        if kwargs["merchant"] == "Bad Account":
+            raise ValueError("unknown account 'nope'")
+        return {"id": "new-id", "_inserted": True}
+
+    rows = [
+        {"posted_at": _utcnow().isoformat(), "merchant": m, "amount": "-5.00"}
+        for m in ("Bad Account", "Good Co")
+    ]
+    with patch("butlers.tools.finance.transactions.record_transaction", side_effect=_record):
+        result = await bulk_record_transactions(pool=MagicMock(), transactions=rows)
+
+    assert (result["imported"], result["errors"]) == (1, 1)
+    assert result["error_details"][0]["index"] == 0
+    assert result["error_details"][0]["reason"].startswith("invalid_row:")
+
+
+@pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_inherits_account_id():
     """Top-level account_id is passed to record_transaction when not overridden per-row."""
     from butlers.tools.finance.transactions import bulk_record_transactions

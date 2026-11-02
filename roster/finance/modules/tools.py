@@ -696,11 +696,11 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
         account_id: str | None = None,
         source: str | None = None,
     ) -> dict[str, Any]:
-        """Bulk-ingest normalized transaction objects as bitemporal facts.
+        """Bulk-ingest normalized transaction objects into the transactions ledger.
 
-        Processes up to 500 transactions per call. Embeddings are skipped for
-        performance (NULL stored); tsvector (full-text search) is still computed.
-        Returns per-row counts for imported, skipped, and errored rows.
+        Processes up to 500 transactions per call, each through record_transaction
+        (finance.transactions, the store the dashboard lists). Returns exact
+        counts: imported (fresh inserts), skipped (duplicates), errors.
 
         transactions: JSON string — array of transaction objects. Each must have:
           - posted_at: ISO 8601 datetime string (required)
@@ -717,17 +717,18 @@ def register_tools(mcp: Any, module: Any, config: Any = None) -> None:
           - metadata: dict of additional fields
 
         account_id: Top-level account_id inherited by all rows unless overridden
-          per row. Included in composite dedup key.
+          per row. Part of the composite dedup key.
 
-        source: Stored as import_source in fact metadata for all rows.
+        source: Stored as import_source in each row's metadata.
           Use e.g. "csv-import" to tag the ingestion origin.
 
         Returns: {total, imported, skipped, errors, error_details, large_transaction_alerts}
           large_transaction_alerts lists rows exceeding the configured
           "large_transaction" alert threshold: [{index, threshold, amount, merchant, exceeds_by}].
         error_details entries: [{index, reason}]
-          reason: "duplicate" (dedup skip), "cross_source_match" (fuzzy dedup skip),
-          "invalid_date", "invalid_amount", "missing_merchant", or "db_error: ..."
+          reason: "duplicate" (dedup skip), "invalid_date", "invalid_amount",
+          "missing_merchant", "invalid_row: ..." (e.g. unresolvable account), or
+          "db_error: ..."
         """
         import json as _json
 
