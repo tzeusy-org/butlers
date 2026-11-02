@@ -238,6 +238,9 @@ changes infrastructure or historical data.
 
 | Script | Caller | Purpose |
 | --- | --- | --- |
+| [`fact_source_capture_before_control.py`](fact_source_capture_before_control.py) | `.github/workflows/fact-source-capture-before-control.yml` | Runs the fixed fact-source capture BEFORE/AFTER control and validates its closed receipts. |
+| [`fact_source_capture_before_observer.py`](fact_source_capture_before_observer.py) | `fact_source_capture_before_control.py` (pytest plugin) | Records bounded lifecycle observations for the fixed control carrier. |
+| [`fact_source_capture_before_supervisor.py`](fact_source_capture_before_supervisor.py) | `fact_source_capture_before_control.py::run_owned` | Supervises bounded control children and verifies owned-process cleanup. |
 | [`check-no-em-dashes.py`](check-no-em-dashes.py) | `ci.yml`, `make check-em-dashes`, `pre_push.py`, frontend copy lint | Ratchets prohibited em dashes in doctrine and roster prose; frontend copy is enforced separately by ESLint. |
 | [`check_archived_requirements_landed.py`](check_archived_requirements_landed.py) | `ci.yml`, Make, `pre_push.py` | Confirms archived OpenSpec requirements reached their canonical specs, honouring `archived-capability-homes.json`. |
 | [`check_cited_requirements_resolve.py`](check_cited_requirements_resolve.py) | `ci.yml`, Make, `pre_push.py` | Confirms requirement IDs cited by tests resolve to a live or active definition. |

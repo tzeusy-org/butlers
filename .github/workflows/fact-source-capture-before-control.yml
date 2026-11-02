@@ -6,6 +6,7 @@ on:
       - .github/workflows/fact-source-capture-before-control.yml
       - scripts/fact_source_capture_before_control.py
       - scripts/fact_source_capture_before_observer.py
+      - scripts/fact_source_capture_before_supervisor.py
       - tests/scripts/test_fact_source_capture_before_control.py
 
 permissions:
