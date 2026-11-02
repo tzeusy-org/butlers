@@ -1426,19 +1426,19 @@ async def _insert_event(
     all_day: bool = False,
     metadata: dict | None = None,
     booked: bool = False,
-    source_butler: str | None = None,
+    source_butler: str = "health",
 ) -> str:
-    """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row."""
+    """A calendar event; ``booked`` adds Health's applied ``workspace_user_create`` log row.
+
+    ``source_butler`` is NOT NULL in the real schema (core_076); the brief never reads it.
+    """
     event_id = str(uuid.uuid4())
-    source_column = ", source_butler" if source_butler is not None else ""
-    source_parameter = ", $10" if source_butler is not None else ""
-    source_args = (source_butler,) if source_butler is not None else ()
     await pool.execute(
-        f"""
+        """
         INSERT INTO calendar_events
             (id, source_id, origin_ref, title, timezone, starts_at, ends_at, all_day,
-             status, metadata{source_column})
-        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9{source_parameter})
+             status, metadata, source_butler)
+        VALUES ($1::uuid, $2::uuid, $3, $4, 'UTC', $5, $6, $7, $8, $9, $10)
         """,
         event_id,
         source_id,
@@ -1449,7 +1449,7 @@ async def _insert_event(
         all_day,
         status,
         metadata or {},
-        *source_args,
+        source_butler,
     )
     if booked:
         await pool.execute(
