@@ -1,13 +1,16 @@
-"""Tests for the get_attachment and attachment_read shared tools."""
+"""Tests for the get_attachment, attachment_read and attachment_page_view shared tools."""
 
 import asyncio
 import base64
+import io
 import time
 import zlib
 
 import boto3
 import pytest
+from fastmcp.utilities.types import Image
 from moto.server import ThreadedMotoServer
+from PIL import Image as PILImage
 
 from butlers.storage import BlobNotFoundError, S3BlobStore
 from butlers.tools import attachments
@@ -17,6 +20,9 @@ from butlers.tools.attachments import (
     MAX_ATTACHMENT_SIZE_BYTES,
     MAX_INLINE_BASE64_BYTES,
     MAX_READ_CHARS,
+    MAX_RENDER_EDGE_PX,
+    MAX_RENDER_PIXELS,
+    attachment_page_view,
     attachment_read,
     get_attachment,
 )
@@ -122,7 +128,13 @@ async def test_get_attachment_reports_blob_store_unavailable():
         )
 
 
-def _pdf(pages: list[str | None], *, encrypted: bool = False, flate: bool = False) -> bytes:
+def _pdf(
+    pages: list[str | None],
+    *,
+    encrypted: bool = False,
+    flate: bool = False,
+    media_box: tuple[int, int] = (595, 842),
+) -> bytes:
     """Build a small uncompressed PDF; ``None`` is a page with no text layer."""
     count = len(pages)
     font_id = 3 + 2 * count
@@ -137,7 +149,7 @@ def _pdf(pages: list[str | None], *, encrypted: bool = False, flate: bool = Fals
             lines = " ".join(f"({line}) '" for line in text.split("\n"))
             stream = f"BT /F1 10 Tf 12 TL 40 800 Td {lines} ET".encode("latin-1")
         objects.append(
-            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {media_box[0]} {media_box[1]}] "
             f"/Resources << /Font << /F1 {font_id} 0 R >> >> /Contents {4 + 2 * i} 0 R >>".encode()
         )
         filters = b""
@@ -252,28 +264,82 @@ async def test_attachment_read_pages_and_refusals(
         assert result["next_page_start"] is None
 
 
-async def test_attachment_read_caps_concurrent_extraction_children(monkeypatch):
-    """At most EXTRACT_CONCURRENCY children run at once; a saturated queue refuses."""
+_VIEW_CASES = (
+    ("scanned_page", "scan.pdf", _pdf(["Cover", None]), {"page": 2}, "ok"),
+    # A 200 x 200 inch page still renders inside the pixel bounds.
+    ("huge_media_box", "poster.pdf", _pdf([None], media_box=(14400, 14400)), {}, "ok"),
+    ("encrypted", "locked.pdf", _pdf(["secret"], encrypted=True), {}, "encrypted_pdf"),
+    ("page_out_of_range", "short.pdf", _pdf(["only"]), {"page": 2}, "invalid_page_range"),
+    ("page_zero", "short.pdf", _pdf(["only"]), {"page": 0}, "invalid_page_range"),
+    ("not_pdf_type", "photo.png", b"\x89PNG\r\n\x1a\n" + b"x" * 64, {}, "unsupported_media_type"),
+    (
+        "foreign_prefix",
+        "scan.pdf",
+        _pdf([None]),
+        {"origin_butler": "finance"},
+        "attachment_forbidden",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "filename", "data", "kwargs", "expected"),
+    _VIEW_CASES,
+    ids=[case[0] for case in _VIEW_CASES],
+)
+async def test_attachment_page_view_renders_bounded_png_or_refuses(
+    blob_store, case, filename, data, kwargs, expected
+):
+    """attachment_page_view returns untrusted metadata plus a bounded PNG, or a typed refusal."""
+    ref = await blob_store.put(data, content_type="application/octet-stream", filename=filename)
+    result = await attachment_page_view(blob_store, ref, **{"origin_butler": TEST_BUTLER, **kwargs})
+
+    if expected != "ok":
+        assert isinstance(result, dict)
+        assert result["status"] == "refused"
+        assert result["reason"] == expected
+        return
+
+    metadata, image = result
+    assert metadata["status"] == "ok"
+    assert metadata["content_trust"] == "untrusted"
+    assert "not instructions" in metadata["notice"]
+    assert metadata["page"] == kwargs.get("page", 1)
+    assert isinstance(image, Image)
+    content = image.to_image_content()
+    assert content.type == "image" and content.mimeType == "image/png"
+    rendered = PILImage.open(io.BytesIO(base64.b64decode(content.data)))
+    width, height = rendered.size
+    assert (width, height) == (metadata["width"], metadata["height"])
+    assert max(width, height) <= MAX_RENDER_EDGE_PX
+    assert width * height <= MAX_RENDER_PIXELS
+    # Rendered near the bound, not shrunk to a thumbnail.
+    assert width * height > MAX_RENDER_PIXELS * 0.9
+
+
+async def test_pdf_children_share_capped_concurrency_slots(monkeypatch):
+    """Text and render children share EXTRACT_CONCURRENCY slots; a saturated queue refuses."""
     running = peak = 0
 
-    async def fake_child(data, page_start, page_count):
+    async def fake_child(data, argv, max_output):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
         await asyncio.sleep(0.05)
         running -= 1
-        return {"total": 1, "pages": []}
+        return b'{"total": 1, "pages": []}'
 
-    monkeypatch.setattr(attachments, "_run_extractor_child", fake_child)
+    monkeypatch.setattr(attachments, "_spawn_child", fake_child)
     results = await asyncio.gather(
-        *(attachments._extract_in_child(b"%PDF-", 1, 1) for _ in range(3 * EXTRACT_CONCURRENCY))
+        *(attachments._extract_in_child(b"%PDF-", 1, 1) for _ in range(2 * EXTRACT_CONCURRENCY)),
+        *(attachments._render_in_child(b"%PDF-", 1) for _ in range(EXTRACT_CONCURRENCY)),
     )
     assert peak == EXTRACT_CONCURRENCY
-    assert all(result == {"total": 1, "pages": []} for result in results)
+    assert results[0] == {"total": 1, "pages": []}
 
     monkeypatch.setattr(attachments, "EXTRACT_QUEUE_WAIT_SECONDS", 0.01)
     results = await asyncio.gather(
-        *(attachments._extract_in_child(b"%PDF-", 1, 1) for _ in range(3 * EXTRACT_CONCURRENCY))
+        *(attachments._render_in_child(b"%PDF-", 1) for _ in range(3 * EXTRACT_CONCURRENCY))
     )
     assert peak == EXTRACT_CONCURRENCY
     assert {"refusal": "extraction_busy"} in results
