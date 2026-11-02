@@ -8,5 +8,5 @@
 - [x] 2.1 Plan test: template pinning, issuer sanitizing, late-threshold collapse and typed refusals.
 - [x] 2.2 Real-Postgres test: create, unchanged, supersede, job-mode firing through `tick()` and the name-conflict refusal.
 - [x] 2.3 Notice job test through the registry and the owner-notify boundary, including suppressed (deferred, no ledger row) and failed (raised) notices.
-- [x] 2.5 Real-Postgres: an undelivered notice leaves `fired_thresholds` unchanged; supersede keeps an owner's disable.
+- [x] 2.5 Real-Postgres: an undelivered notice leaves `fired_thresholds` unchanged; supersede keeps an owner's disable and re-enables an expired deadline.
 - [x] 2.4 Inventory contract test: cataloged with D4 metadata, not listed to current sessions.

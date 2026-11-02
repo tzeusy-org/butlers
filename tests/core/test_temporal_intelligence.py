@@ -815,7 +815,14 @@ class TestTickIntegration:
             await tick_pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE name = $1", name)
             is False
         )
-        await tick_pool.execute("UPDATE scheduled_tasks SET enabled = true WHERE name = $1", name)
+        # Expiry is a system disable, not an owner's: a later date re-enables and re-arms it.
+        await tick_pool.execute(
+            "UPDATE scheduled_tasks SET deadline_status = 'expired' WHERE name = $1", name
+        )
+        assert await document_deadline_set(tick_pool, plan(3)) == {**first, "status": "superseded"}
+        row = await tick_pool.fetchrow("SELECT * FROM scheduled_tasks WHERE name = $1", name)
+        assert (row["enabled"], row["deadline_status"]) == (True, "pending")
+        assert await document_deadline_set(tick_pool, plan(2)) == {**first, "status": "superseded"}
 
         # A notice that was not delivered (deferred or failed) leaves the threshold unfired.
         async def not_delivered(**kwargs):

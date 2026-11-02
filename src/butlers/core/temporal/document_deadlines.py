@@ -9,7 +9,8 @@ prompt-bearing deadlines stay ``administer``.
 
 One deadline exists per ``(document_id, kind)``: setting it again with the same date and
 preset changes nothing, and a new date supersedes in place and re-arms its thresholds
-without re-enabling a deadline the owner disabled.
+without re-enabling a deadline the owner disabled (an expired one, disabled by the
+scheduler, is re-enabled).
 The row's ``job_args`` carries the D6 taint marker, since the date came from untrusted
 document text.
 
@@ -186,8 +187,9 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
 
     ``status`` is ``created``, ``unchanged`` (same date and preset; only the issuer text
     may be refreshed, fired thresholds and status are kept) or ``superseded`` (a new date
-    or preset: thresholds re-arm and the status returns to ``pending``, but ``enabled`` is
-    kept, so document text never overrides an owner's disable). A name already
+    or preset: thresholds re-arm and the status returns to ``pending``; ``enabled`` is kept,
+    so document text never overrides an owner's disable, except that an ``expired``
+    deadline, which the scheduler disabled itself, is re-enabled). A name already
     held by any other task (a prompt-bearing deadline, a cron schedule) is refused as
     ``name_conflict`` and left untouched.
     """
@@ -252,6 +254,7 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
             UPDATE scheduled_tasks
             SET target_date = $2, lead_time_days = $3, alert_thresholds = $4,
                 job_args = $5, fired_thresholds = '[]'::jsonb, deadline_status = 'pending',
+                enabled = enabled OR deadline_status = 'expired',
                 next_run_at = now(), updated_at = now()
             WHERE id = $1
             """,
