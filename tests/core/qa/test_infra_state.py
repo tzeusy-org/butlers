@@ -584,8 +584,18 @@ async def test_backup_unconfigured_is_a_legitimate_absence_not_a_finding(monkeyp
         (None, "missing"),
         (_snapshot(age=timedelta(minutes=31)), "stale"),
         ({"observed_at": "not-a-time", "interval_s": 600, "configured": False}, "missing"),
+        (_snapshot(age=-timedelta(minutes=10)), "stale"),
+        ({**_snapshot("/x"), "last_backup_at": "garbage", "reachable": True}, "missing"),
+        (
+            {
+                **_snapshot("/x"),
+                "reachable": True,
+                "last_run": {"result": "failed", "finished_at": "?"},
+            },
+            "missing",
+        ),
     ],
-    ids=["missing", "stale", "malformed"],
+    ids=["missing", "stale", "malformed", "future", "bad-last-backup-at", "bad-finished-at"],
 )
 async def test_unseen_backup_facts_trip_a_finding_not_a_silent_skip(monkeypatch, snapshot, state):
     """bu-deqpzd: the patrol cannot see the dumps; not seeing the facts is a finding."""

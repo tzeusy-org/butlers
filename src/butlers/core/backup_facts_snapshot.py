@@ -13,12 +13,18 @@ So the facts cross the boundary instead of the files:
 - Writer (dashboard-api, the only process with the mount;
   ``butlers.jobs.backup_facts_snapshot``): every ``interval_s`` reads the
   directory and upserts a content-free summary into ``public.state`` under
-  :data:`STATE_KEY`, through the shared pool (the ``public`` schema owner).
-  Butler roles hold only ``SELECT`` on ``public``, so no daemon session can forge
-  a healthy snapshot.
+  :data:`STATE_KEY`, through the shared pool.
 - Reader (:func:`load_backup_facts_snapshot`): ``InfraStateSource`` reads the
-  row through its own pool. A missing or stale row is itself a finding; the
-  patrol never falls back to "not configured" when it cannot see the facts.
+  row through its own pool. A missing, malformed, future-dated, or stale row
+  is itself a finding; the patrol never falls back to "not configured" when it
+  cannot see the facts.
+
+Forgery: butler DB roles DO hold DML on ``public`` (``scripts/init-db.sql``),
+so the role grants are not what protects this row. A runtime session cannot
+forge it because it holds no DB credential (``butlers.core.child_env`` strips
+``POSTGRES_*`` and ``DATABASE_URL`` from every runtime child) and no MCP tool
+writes ``public.state`` (the core ``state_*`` tools write the butler's own
+schema-local ``state`` table). Daemon code itself is trusted.
 
 The summary holds timestamps, booleans, and the fixed run-reason vocabulary
 only, never file names, sizes, or dump content.
@@ -37,6 +43,7 @@ from typing import Any
 import asyncpg
 
 from butlers.core.backup_facts import read_backup_facts_from_dir
+from butlers.core.liveness import CLOCK_SKEW_TOLERANCE
 from butlers.core.state import decode_jsonb
 
 logger = logging.getLogger(__name__)
@@ -72,8 +79,15 @@ class BackupFactsSnapshot:
     last_run_finished_at: str | None
 
     def is_stale(self, now: datetime) -> bool:
-        """True once the writer has missed :data:`STALE_MULTIPLIER` intervals."""
-        return (now - self.observed_at).total_seconds() > self.interval_s * STALE_MULTIPLIER
+        """True once the writer has missed :data:`STALE_MULTIPLIER` intervals.
+
+        A future ``observed_at`` beyond :data:`CLOCK_SKEW_TOLERANCE` is also
+        stale: otherwise one bad clock would read as fresh forever.
+        """
+        age = now - self.observed_at
+        if age < -CLOCK_SKEW_TOLERANCE:
+            return True
+        return age.total_seconds() > self.interval_s * STALE_MULTIPLIER
 
 
 def build_snapshot_value(backup_dir_raw: str, *, interval_s: float) -> dict[str, Any]:
@@ -125,6 +139,11 @@ async def load_backup_facts_snapshot(pool: asyncpg.Pool) -> BackupFactsSnapshot 
             return None
         configured = value["configured"] is True
         last_run = value.get("last_run") or {}
+        # Timestamps InfraStateSource parses must parse here, so a bad row is
+        # "unavailable" rather than an exception out of the patrol.
+        for stamp in (value.get("last_backup_at"), last_run.get("finished_at")):
+            if stamp is not None:
+                datetime.fromisoformat(stamp)
         return BackupFactsSnapshot(
             observed_at=observed_at,
             interval_s=interval_s,

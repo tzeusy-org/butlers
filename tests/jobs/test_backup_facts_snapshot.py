@@ -68,7 +68,7 @@ async def test_unset_dir_publishes_unconfigured_and_absent_row_reads_none():
 
 
 async def test_loop_writes_through_the_public_schema_owner_pool(monkeypatch):
-    """Butler roles only SELECT public; the shared (owner) pool is the sole writer."""
+    """The dashboard writes through its shared pool, never a butler pool."""
     pool = _StatePool()
     db = MagicMock()
     db.credential_shared_pool.return_value = pool
