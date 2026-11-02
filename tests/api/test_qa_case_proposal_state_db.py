@@ -14,6 +14,7 @@ ledger cutover has no ledger rows, export or receipt.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import uuid
@@ -39,7 +40,6 @@ from butlers.core.qa.publication.state import (
     record_reconciliation,
 )
 from butlers.core.qa.publication.transport import ProviderRejected
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.core.qa.publication_fakes import FakeProvider, binding_for, synthetic_export
 
@@ -55,20 +55,21 @@ _BINDING = PublicationBinding(
 _DIFF = [{"kind": "+", "text": "fixed = True"}]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 async def _set_qa_role(connection: asyncpg.Connection) -> None:
     await connection.execute("SET ROLE butler_qa_rw")
 
 
 @pytest.fixture
-async def pools(migrated_db_url: str):  # type: ignore[no-untyped-def]
-    """An admin pool for the API and seeding, and the only ledger writer role."""
-    admin = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
-    qa = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3, setup=_set_qa_role)
+async def pools(fresh_db):  # type: ignore[no-untyped-def]
+    """An admin pool for the API and seeding, and the only ledger writer role.
+
+    Plain asyncpg pools on one core clone: the role is set per acquire
+    (``setup=``) because pool release runs ``RESET ALL``, and the seeding SQL
+    binds JSONB as text, so neither pool registers the JSONB codec.
+    """
+    db_url = await asyncio.to_thread(fresh_db, "core")
+    admin = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+    qa = await asyncpg.create_pool(db_url, min_size=1, max_size=3, setup=_set_qa_role)
     try:
         yield admin, qa
     finally:

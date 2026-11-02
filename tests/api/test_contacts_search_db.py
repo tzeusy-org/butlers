@@ -32,8 +32,6 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 docker_available = shutil.which("docker") is not None
@@ -47,35 +45,19 @@ SEARCH_PATH = "/api/contacts/search"
 BASE_URL = "http://test"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core + memory + relationship chains (public.entities + entity_facts)."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory", "relationship"],
-    )
-
-
 @pytest.fixture
-async def pool(postgres_container, migrated_db_url: str):
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    # entity_facts + entity_info FK → public.entities; TRUNCATE CASCADE clears all.
+async def contacts_pool(db) -> asyncpg.Pool:
+    """Core + memory + relationship chains (public.entities + entity_facts)."""
+    p = await db("core", "memory", "relationship")
     await p.execute("TRUNCATE TABLE public.entities CASCADE")
-    yield p
-    await p.close()
+    return p
 
 
 @pytest.fixture
-def search_app(pool: asyncpg.Pool) -> FastAPI:
+def search_app(contacts_pool: asyncpg.Pool) -> FastAPI:
     """FastAPI app whose contacts router is wired to the real migrated pool."""
     mock_db = MagicMock(spec=DatabaseManager)
-    mock_db.credential_shared_pool.return_value = pool
+    mock_db.credential_shared_pool.return_value = contacts_pool
 
     application = create_app()
     application.dependency_overrides[get_db] = lambda: mock_db
@@ -166,8 +148,8 @@ async def _search(app: FastAPI, q: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def test_name_match(search_app, pool):
-    ids = await _seed(pool)
+async def test_name_match(search_app, contacts_pool):
+    ids = await _seed(contacts_pool)
     results = await _search(search_app, "alice and")  # case-insensitive substring
     matched = {r["entity_id"] for r in results}
     assert ids["alice"] in matched
@@ -175,8 +157,8 @@ async def test_name_match(search_app, pool):
     assert alice["matched_identifier"] is None
 
 
-async def test_alias_match(search_app, pool):
-    ids = await _seed(pool)
+async def test_alias_match(search_app, contacts_pool):
+    ids = await _seed(contacts_pool)
     results = await _search(search_app, "andy")
     assert ids["alice"] in {r["entity_id"] for r in results}
 
@@ -188,8 +170,8 @@ async def test_alias_match(search_app, pool):
 
 # REQ-contacts-identity-001: real non-secret search SQL; the adjacent real
 # secret/person/blank controls retain the full existing matching contract.
-async def test_non_secret_identifier_match(search_app, pool):
-    ids = await _seed(pool)
+async def test_non_secret_identifier_match(search_app, contacts_pool):
+    ids = await _seed(contacts_pool)
     results = await _search(search_app, "bob.secret@")
     bob = next(r for r in results if r["entity_id"] == ids["bob"])
     assert bob["canonical_name"] == "Bob Brown"
@@ -201,8 +183,8 @@ async def test_non_secret_identifier_match(search_app, pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_secret_value_excluded(search_app, pool):
-    ids = await _seed(pool)
+async def test_secret_value_excluded(search_app, contacts_pool):
+    ids = await _seed(contacts_pool)
     results = await _search(search_app, "topsecret")
     # Carol is only reachable via her secured token → must not be returned.
     assert ids["carol"] not in {r["entity_id"] for r in results}
@@ -215,8 +197,8 @@ async def test_secret_value_excluded(search_app, pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_no_match_empty(search_app, pool):
-    await _seed(pool)
+async def test_no_match_empty(search_app, contacts_pool):
+    await _seed(contacts_pool)
     assert await _search(search_app, "zzz-no-such-person") == []
 
 
@@ -225,8 +207,8 @@ async def test_no_match_empty(search_app, pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_blank_q_empty(search_app, pool):
-    await _seed(pool)
+async def test_blank_q_empty(search_app, contacts_pool):
+    await _seed(contacts_pool)
     assert await _search(search_app, "   ") == []
 
 
@@ -235,8 +217,8 @@ async def test_blank_q_empty(search_app, pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_person_only_excludes_org_and_merged(search_app, pool):
-    ids = await _seed(pool)
+async def test_person_only_excludes_org_and_merged(search_app, contacts_pool):
+    ids = await _seed(contacts_pool)
     results = await _search(search_app, "alice")
     matched = {r["entity_id"] for r in results}
     assert ids["alice"] in matched

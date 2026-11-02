@@ -51,7 +51,6 @@ from butlers.api.routers.secrets_v2 import (
     rotate_cli_credential,
     set_system_credential,
 )
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -73,39 +72,23 @@ _MEMORY_RELATIONS = ("episodes", "facts", "rules", "memory_links", "episode_tomb
 
 
 @pytest.fixture
-def migrated_db_url(postgres_container) -> str:
-    """Provision one schema with the real core and memory tables."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory"],
-        schemas={"core": "lifecycle", "memory": "lifecycle"},
-    )
+def lifecycle_db_url(fresh_db) -> str:
+    """One schema with the real core and memory tables."""
+    return fresh_db("core", "memory", schemas={"core": "lifecycle", "memory": "lifecycle"})
 
 
 @pytest.fixture
-def chronicler_memory_db_url(postgres_container) -> str:
-    """Provision Chronicler's domain and private memory schemas separately."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "chronicler", "memory"],
-        schemas={
-            "core": "chronicler",
-            "chronicler": "chronicler",
-            "memory": "chronicler_mem",
-        },
-    )
+def chronicler_memory_db_url(fresh_db) -> str:
+    """Chronicler's domain and private memory schemas, separately."""
+    schemas = {"core": "chronicler", "chronicler": "chronicler", "memory": "chronicler_mem"}
+    return fresh_db("core", "chronicler", "memory", schemas=schemas)
 
 
 @pytest.fixture
-def chronicler_domain_only_db_url(postgres_container) -> str:
-    """Provision Chronicler without its optional private memory schema."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "chronicler"],
-        schemas={"core": "chronicler", "chronicler": "chronicler"},
+def chronicler_domain_only_db_url(fresh_db) -> str:
+    """Chronicler without its optional private memory schema."""
+    return fresh_db(
+        "core", "chronicler", schemas={"core": "chronicler", "chronicler": "chronicler"}
     )
 
 
@@ -524,11 +507,11 @@ async def test_configured_chronicler_memory_loss_fails_closed_without_public_fal
 
 
 async def test_absent_at_startup_is_an_expected_optional_schema(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A never-migrated schema is skipped by both surfaces without degradation."""
     bootstrap = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -539,7 +522,7 @@ async def test_absent_at_startup_is_an_expected_optional_schema(
         )
         await bootstrap.pool("lifecycle").execute("CREATE SCHEMA never_installed")
         manager = await _manager_for_schema(
-            migrated_db_url,
+            lifecycle_db_url,
             butler_name="never_installed",
             schema="never_installed",
         )
@@ -575,11 +558,11 @@ async def test_absent_at_startup_is_an_expected_optional_schema(
 
 
 async def test_dropped_after_startup_is_a_degraded_source(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """Real post-startup drops surface on both secrets and memory trackers."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -620,11 +603,11 @@ async def test_dropped_after_startup_is_a_degraded_source(
 
 
 async def test_preferences_skip_public_fact_shadow_when_memory_absent_at_startup(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A never-installed memory schema must not read public preference facts."""
     bootstrap = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -636,7 +619,7 @@ async def test_preferences_skip_public_fact_shadow_when_memory_absent_at_startup
         await _shadow_preference_in_public(pool, uuid4(), owner_id)
 
         manager = await _manager_for_schema(
-            migrated_db_url,
+            lifecycle_db_url,
             butler_name="never_installed",
             schema="never_installed",
         )
@@ -653,11 +636,11 @@ async def test_preferences_skip_public_fact_shadow_when_memory_absent_at_startup
 
 
 async def test_activity_feed_skips_public_episode_shadow_when_memory_absent_at_startup(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A never-installed memory schema must not read public activity episodes."""
     bootstrap = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -668,7 +651,7 @@ async def test_activity_feed_skips_public_episode_shadow_when_memory_absent_at_s
         await _shadow_episode_in_public(pool, uuid4())
 
         manager = await _manager_for_schema(
-            migrated_db_url,
+            lifecycle_db_url,
             butler_name="never_installed",
             schema="never_installed",
         )
@@ -685,11 +668,11 @@ async def test_activity_feed_skips_public_episode_shadow_when_memory_absent_at_s
 
 
 async def test_post_boot_preferences_memory_loss_blocks_public_fact_shadow(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A lost private facts table makes preferences unavailable, never public-backed."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -710,11 +693,11 @@ async def test_post_boot_preferences_memory_loss_blocks_public_fact_shadow(
 
 
 async def test_post_boot_activity_memory_loss_blocks_public_episode_shadow(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A lost private episodes table makes the raw activity feed unavailable."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -734,11 +717,11 @@ async def test_post_boot_activity_memory_loss_blocks_public_episode_shadow(
 
 
 async def test_unknown_preferences_memory_loss_blocks_public_fact_shadow(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """An unsnapshotted facts loss must fail closed instead of reading public.facts."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -758,11 +741,11 @@ async def test_unknown_preferences_memory_loss_blocks_public_fact_shadow(
 
 
 async def test_unknown_activity_memory_loss_blocks_public_episode_shadow(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """An unsnapshotted episodes loss must fail closed instead of reading public.episodes."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -781,11 +764,11 @@ async def test_unknown_activity_memory_loss_blocks_public_episode_shadow(
 
 
 async def test_post_boot_butler_memory_stats_never_reads_public_facts(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A dropped private facts table must not become a healthy public-table count."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -809,11 +792,11 @@ async def test_post_boot_butler_memory_stats_never_reads_public_facts(
 
 
 async def test_unknown_butler_memory_stats_schema_loss_is_unavailable(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """No startup marker must fail closed rather than return invented zero stats."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -830,11 +813,11 @@ async def test_unknown_butler_memory_stats_schema_loss_is_unavailable(
 
 
 async def test_memory_list_detail_and_inspect_do_not_read_public_episodes(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """Memory fan-out must retain private ownership after a table drops."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -909,11 +892,11 @@ async def test_memory_list_detail_and_inspect_do_not_read_public_episodes(
 
 
 async def test_boot_time_private_absence_can_use_a_public_system_secret(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """An optional private table absent at boot may legitimately defer to public."""
     bootstrap = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -922,7 +905,7 @@ async def test_boot_time_private_absence_can_use_a_public_system_secret(
     try:
         await bootstrap.pool("lifecycle").execute("CREATE SCHEMA boot_absent")
         manager = await _manager_for_schema(
-            migrated_db_url,
+            lifecycle_db_url,
             butler_name="boot_absent",
             schema="boot_absent",
             with_shared_pool=True,
@@ -957,11 +940,11 @@ async def test_boot_time_private_absence_can_use_a_public_system_secret(
 
 
 async def test_post_boot_private_loss_blocks_get_and_probe_public_fallback(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A dropped private table is degraded, never a route to a public credential."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1012,11 +995,11 @@ async def test_post_boot_private_loss_blocks_get_and_probe_public_fallback(
 
 
 async def test_post_boot_shared_public_loss_blocks_system_credential_get(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A shared credential table lost after boot is unavailable, not absent."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1043,11 +1026,11 @@ async def test_post_boot_shared_public_loss_blocks_system_credential_get(
 
 
 async def test_post_boot_shared_public_loss_blocks_system_credential_probe(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A shared credential table lost after boot cannot be probed as missing."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1076,11 +1059,11 @@ async def test_post_boot_shared_public_loss_blocks_system_credential_probe(
 
 
 async def test_post_boot_shared_public_loss_blocks_cli_credential_get(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A shared CLI credential table lost after boot is unavailable, not absent."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1113,11 +1096,11 @@ async def test_post_boot_shared_public_loss_blocks_cli_credential_get(
 
 
 async def test_unknown_private_absence_blocks_public_fallback(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """Without a startup marker, a missing private relation is never an optional absence."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1136,11 +1119,11 @@ async def test_unknown_private_absence_blocks_public_fallback(
 
 
 async def test_post_boot_private_loss_cannot_set_or_delete_public_secret(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """Per-butler mutations must target the private relation, never search_path public."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1184,11 +1167,11 @@ async def test_post_boot_private_loss_cannot_set_or_delete_public_secret(
 
 
 async def test_post_boot_memory_shadow_is_degraded_for_stats_and_catalog(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """Local memory loss must not make a same-named public table look healthy."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -1210,11 +1193,11 @@ async def test_post_boot_memory_shadow_is_degraded_for_stats_and_catalog(
 
 
 async def test_post_boot_memory_shadow_cannot_confirm_public_fact(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A dashboard confirmation must never mutate public.facts after local loss."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -1241,11 +1224,11 @@ async def test_post_boot_memory_shadow_cannot_confirm_public_fact(
 
 
 async def test_post_boot_memory_shadow_cannot_retract_public_fact(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A dashboard retraction must never mutate public.facts after local loss."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -1269,11 +1252,11 @@ async def test_post_boot_memory_shadow_cannot_retract_public_fact(
 
 
 async def test_post_boot_memory_shadow_cannot_report_reembed_pending(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A private facts drop cannot become a public stale-embedding count."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -1304,7 +1287,7 @@ async def test_post_boot_memory_shadow_cannot_report_reembed_pending(
 
 
 async def test_post_boot_memory_shadow_cannot_reembed_public_fact(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A re-embedding run must fail closed before it can update public.facts."""
@@ -1319,7 +1302,7 @@ async def test_post_boot_memory_shadow_cannot_reembed_public_fact(
 
     monkeypatch.setattr(memory_tools, "get_embedding_engine", lambda _: _Engine())
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
     )
@@ -1355,11 +1338,11 @@ async def test_post_boot_memory_shadow_cannot_reembed_public_fact(
 
 
 async def test_post_boot_shared_public_loss_blocks_cli_rotation(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """CLI rotation must surface a dropped shared credential table as unavailable."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1388,11 +1371,11 @@ async def test_post_boot_shared_public_loss_blocks_cli_rotation(
 
 
 async def test_post_boot_shared_public_loss_blocks_cli_revocation(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """CLI revocation must surface a dropped shared credential table as unavailable."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
@@ -1421,11 +1404,11 @@ async def test_post_boot_shared_public_loss_blocks_cli_revocation(
 
 
 async def test_absent_at_boot_shared_public_cli_source_remains_not_found(
-    migrated_db_url: str,
+    lifecycle_db_url: str,
 ) -> None:
     """A shared CLI table deliberately absent at startup still follows 404 semantics."""
     manager = await _manager_for_schema(
-        migrated_db_url,
+        lifecycle_db_url,
         butler_name="lifecycle",
         schema="lifecycle",
         with_shared_pool=True,
