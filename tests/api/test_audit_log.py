@@ -33,6 +33,7 @@ from butlers.api.models.audit import AuditLogEntry
 from butlers.api.routers import audit as audit_module
 from butlers.api.routers.audit import AuditTableNotAvailableError, append, audit_log_appended_total
 from butlers.core.credential_keys import normalize_credential_key
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 from tests.migrations.test_core_279_audit_writer_integrity import (
     _RUNTIME_ROLES,
@@ -293,7 +294,7 @@ def test_direct_audit_result_guard_scans_roster_fixture():
 # ---------------------------------------------------------------------------
 
 
-def _make_row(**kwargs) -> MagicMock:
+def _audit_row(**kwargs) -> Record:
     defaults = {
         "id": 1,
         "ts": datetime.now(tz=UTC),
@@ -304,15 +305,12 @@ def _make_row(**kwargs) -> MagicMock:
         "ip": None,
         "request_id": None,
     }
-    data = {**defaults, **kwargs}
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda k: data[k])
-    return row
+    return Record({**defaults, **kwargs})
 
 
 def test_audit_log_entry_from_record_with_ip_address_object():
     """ip can arrive as an ipaddress.IPv4Address from asyncpg; None fields stay None."""
-    row = _make_row(ip=ipaddress.IPv4Address("10.0.0.1"))
+    row = _audit_row(ip=ipaddress.IPv4Address("10.0.0.1"))
     entry = AuditLogEntry.from_record(row)
     assert entry.ip == "10.0.0.1"
     assert entry.target is None
@@ -324,7 +322,7 @@ def test_audit_log_entry_from_record_projects_core_122_fields():
     """from_record() now reads metadata/result/error when the query selected them
     (JARVIS audit move 6 -- previously they were documented as intentionally
     unwired and always defaulted to None regardless of what the row carried)."""
-    row = _make_row(
+    row = _audit_row(
         metadata={"path": "/api/x"},
         result="error",
         error="boom",
@@ -346,12 +344,12 @@ class TestFromRecordMetadataJsonbTypeofCases:
     """
 
     def test_object_typed_metadata_passes_through_unchanged(self) -> None:
-        row = _make_row(metadata={"path": "/api/x"})
+        row = _audit_row(metadata={"path": "/api/x"})
         entry = AuditLogEntry.from_record(row)
         assert entry.metadata == {"path": "/api/x"}
 
     def test_null_typed_metadata_stays_none(self) -> None:
-        row = _make_row(metadata=None)
+        row = _audit_row(metadata=None)
         entry = AuditLogEntry.from_record(row)
         assert entry.metadata is None
 
@@ -360,21 +358,21 @@ class TestFromRecordMetadataJsonbTypeofCases:
         object (i.e. the original writer effectively called
         ``json.dumps(json.dumps(data))``). asyncpg hands this back as a
         Python ``str``; from_record must decode it back to the dict."""
-        row = _make_row(metadata='{"path": "/api/x", "n": 1}')
+        row = _audit_row(metadata='{"path": "/api/x", "n": 1}')
         entry = AuditLogEntry.from_record(row)
         assert entry.metadata == {"path": "/api/x", "n": 1}
 
     def test_string_typed_metadata_that_is_not_json_is_wrapped_not_raised(self) -> None:
         """A string that isn't itself valid JSON (some poisoned rows genuinely
         aren't double-encoded) must not raise -- wrap it losslessly instead."""
-        row = _make_row(metadata="actor started session")
+        row = _audit_row(metadata="actor started session")
         entry = AuditLogEntry.from_record(row)
         assert entry.metadata == {"_raw": "actor started session"}
 
     def test_string_typed_metadata_decoding_to_a_non_dict_is_wrapped(self) -> None:
         """A string that IS valid JSON but decodes to a scalar/array (not an
         object) still can't satisfy `dict[str, Any]` -- wrap it too."""
-        row = _make_row(metadata='"just a string"')
+        row = _audit_row(metadata='"just a string"')
         entry = AuditLogEntry.from_record(row)
         assert entry.metadata == {"_raw": '"just a string"'}
 
@@ -408,7 +406,7 @@ def test_audit_log_entry_from_record_missing_core_122_columns_defaults_none():
 def test_audit_log_entry_from_record_full():
     rid = uuid.uuid4()
     ts = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
-    row = _make_row(
+    row = _audit_row(
         id=42,
         ts=ts,
         actor="butler:qa",
@@ -1348,7 +1346,7 @@ def test_audit_log_entry_withholds_every_credential_namespace(target):
     """Every accepted credential-key spelling is withheld, not just the short form."""
     sentinel = f"synthetic-withheld-{uuid.uuid4().hex}"
     entry = AuditLogEntry.from_record(
-        _make_row(target=target, note=sentinel, error=sentinel, metadata={"detail": sentinel})
+        _audit_row(target=target, note=sentinel, error=sentinel, metadata={"detail": sentinel})
     )
     assert entry.note is None
     assert entry.error is None
@@ -1406,7 +1404,7 @@ def test_audit_log_keeps_free_text_for_non_credential_rows():
 def test_audit_log_credential_row_without_free_text_is_not_marked_redacted():
     """`redacted` reports a real withholding, never a decorative flag."""
     entry = AuditLogEntry.from_record(
-        _make_row(target="u:google", note=None, error=None, metadata=None)
+        _audit_row(target="u:google", note=None, error=None, metadata=None)
     )
     assert entry.redacted is False
 
