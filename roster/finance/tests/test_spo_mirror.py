@@ -399,17 +399,16 @@ async def test_bulk_record_transactions_handles_missing_merchant():
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_bulk_record_transactions_skips_duplicates():
-    """Rows that raise UniqueViolationError are counted as skipped."""
-    import asyncpg
-
+    """Dedup replays (``_inserted=False``) are skipped, not imported."""
     from butlers.tools.finance.transactions import bulk_record_transactions
 
-    async def _raise_unique(*args, **kwargs):
-        raise asyncpg.UniqueViolationError()
+    async def _replay(*args, **kwargs):
+        assert kwargs["_include_insert_status"] is True
+        return {"id": "existing-id", "_inserted": False}
 
     with patch(
         "butlers.tools.finance.transactions.record_transaction",
-        side_effect=_raise_unique,
+        side_effect=_replay,
     ):
         result = await bulk_record_transactions(
             pool=MagicMock(),

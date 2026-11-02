@@ -599,11 +599,13 @@ async def record_transaction(
     external_id: str | None = None,
     *,
     _expected_signal_source: FinanceSignalSource | None = None,
+    _include_insert_status: bool = False,
 ) -> dict[str, Any]:
     """Record a transaction through the public Finance tool surface.
 
     Provenance remains an internal concern so existing MCP callers retain the
-    established signature and manual-source behavior.
+    established signature and manual-source behavior. ``_include_insert_status``
+    is internal: bulk import uses it to tell fresh rows from dedup replays.
     """
     return await _record_transaction(
         pool,
@@ -622,6 +624,7 @@ async def record_transaction(
         metadata,
         external_id,
         source="manual",
+        include_insert_status=_include_insert_status,
         expected_signal_source=_expected_signal_source,
     )
 
@@ -2203,7 +2206,14 @@ async def bulk_record_transactions(
                 external_id=external_id,
                 metadata=extra_metadata if extra_metadata else None,
                 _expected_signal_source=_expected_signal_source,
+                _include_insert_status=True,
             )
+            # record_transaction swallows dedup hits and returns the existing row,
+            # flagged ``_inserted=False``; only fresh inserts count as imported.
+            if _recorded.get("_inserted") is False:
+                skipped += 1
+                error_details.append({"index": idx, "reason": "duplicate"})
+                continue
             imported += 1
             _lta = _recorded.get("large_transaction_alert")
             if _lta is not None:
