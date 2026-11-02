@@ -214,6 +214,13 @@ async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(
     assert first is not None and second is not None
     assert first.presentation_id != second.presentation_id
     assert first.claim_fence == second.claim_fence == 1
+    # The default claim lease is 30 seconds of database time.
+    lease = await delivery_pool.fetchval(
+        "SELECT EXTRACT(EPOCH FROM claim_expires_at - updated_at)::double precision "
+        "FROM approval_delivery_presentations WHERE id = $1",
+        first.presentation_id,
+    )
+    assert 29.9 <= lease <= 30.0
     await delivery_pool.execute(
         "UPDATE approval_delivery_presentations "
         "SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1",
@@ -265,6 +272,34 @@ async def test_missing_current_owner_is_prestart_retry_scheduled_from_database_t
     assert await delivery_pool.fetchval(
         "SELECT outcome = 'safe_retry' FROM approval_delivery_attempts"
     )
+
+    # Drive the same presentation through the ladder: 15s doubling over six
+    # exponent steps plus 0-20% jitter, capped at 15 minutes, measured from
+    # each attempt's database completion time.
+    delay_sql = """
+        SELECT a.attempt_number,
+               EXTRACT(EPOCH FROM p.next_attempt_at - a.completed_at)::double precision
+          FROM approval_delivery_attempts AS a
+          JOIN approval_delivery_presentations AS p ON p.id = a.presentation_id
+         WHERE p.presentation_key = $1
+         ORDER BY a.attempt_number DESC
+         LIMIT 1
+    """
+    delays = [tuple(await delivery_pool.fetchrow(delay_sql, admission.presentation_key))]
+    for _ in range(7):
+        await delivery_pool.execute(
+            "UPDATE approval_delivery_presentations "
+            "SET next_attempt_at = clock_timestamp() - interval '1 second' "
+            "WHERE presentation_key = $1",
+            admission.presentation_key,
+        )
+        assert await worker.process_one() is True
+        delays.append(tuple(await delivery_pool.fetchrow(delay_sql, admission.presentation_key)))
+    assert [attempt for attempt, _ in delays] == list(range(1, 9))
+    for (attempt, delay), base in zip(delays, (15, 30, 60, 120, 240, 480, 900, 900), strict=True):
+        assert base - 1e-3 <= delay <= min(900, base * 1.2) + 1e-3, (attempt, delay)
+    assert delays[-1][1] == pytest.approx(900.0, abs=1e-3)
+    assert runtime.handoffs == []
 
 
 # Spec: REQ-approval-delivery-intent-recovery-002; current render, recipient and callback stay out of durable local state.

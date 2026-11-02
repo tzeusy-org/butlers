@@ -18,6 +18,7 @@ approval gate's explicitly auto-approved path.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -183,3 +184,99 @@ def test_relationship_library_helper_delegates_to_choke_point() -> None:
             "(butlers.core.approvals_hooks.park_pending_action) to park PENDING actions."
         )
         assert "park_pending_action(" in text
+
+
+_PENDING_ACTIONS_UPDATE = re.compile(r"\bupdate\s+(?:\w+\.)?pending_actions\b", re.IGNORECASE)
+_SETS_STATUS = re.compile(r"\bset\b(?:(?!\bwhere\b).)*?\bstatus\s*=", re.IGNORECASE | re.DOTALL)
+# The one canonical pending-to-terminal writer. Every decision, expiry and
+# rejection path reaches it so presentation cancellation and cohort eligibility
+# commit with the status change.
+_CANONICAL_TERMINAL_WRITER = (
+    "src/butlers/modules/approvals/delivery_lifecycle.py",
+    "transition_pending_action",
+)
+# Complete current inventory of production status writers on pending_actions.
+# Only the canonical helper may leave ``pending``; the others move an already
+# approved action to executed/abandoned and must bind APPROVED as their guard.
+_PENDING_ACTION_STATUS_WRITERS: dict[tuple[str, str], int] = {
+    _CANONICAL_TERMINAL_WRITER: 1,
+    ("src/butlers/modules/approvals/executor.py", "execute_approved_action"): 1,
+    ("src/butlers/modules/approvals/operations.py", "mark_executed"): 1,
+    ("src/butlers/modules/approvals/operations.py", "abandon_approved_action"): 1,
+}
+
+
+def _status_writers(rel: str, source: str) -> tuple[dict[tuple[str, str], int], list[str]]:
+    """Return (status-writer inventory, violations) for one source file."""
+    inventory: dict[tuple[str, str], int] = {}
+    violations: list[str] = []
+    tree = ast.parse(source)
+
+    def _visit(node: ast.AST, function: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            name = function
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                name = child.name
+            if isinstance(child, ast.Call) and child.args:
+                sql = " ".join(
+                    part.value
+                    for part in ast.walk(child.args[0])
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                )
+                if _PENDING_ACTIONS_UPDATE.search(sql) and _SETS_STATUS.search(sql):
+                    key = (rel, function)
+                    inventory[key] = inventory.get(key, 0) + 1
+                    guard = {
+                        arg.value.attr
+                        for arg in child.args[1:]
+                        if isinstance(arg, ast.Attribute)
+                        and arg.attr == "value"
+                        and isinstance(arg.value, ast.Attribute)
+                    }
+                    if key != _CANONICAL_TERMINAL_WRITER and (
+                        "pending" in sql.lower().split("where", 1)[-1]
+                        or "APPROVED" not in guard
+                        or not guard & {"EXECUTED", "ABANDONED"}
+                    ):
+                        violations.append(f"{rel}:{child.lineno} ({function})")
+            _visit(child, name)
+
+    _visit(tree, "<module>")
+    return inventory, violations
+
+
+# Spec: REQ-approval-delivery-intent-recovery-005, REQ-module-approvals-002; only the canonical helper may move an action out of pending, so cancellation commits with every decision.
+def test_pending_to_terminal_writers_are_the_canonical_inventory() -> None:
+    repo_root = _repo_root()
+    inventory: dict[tuple[str, str], int] = {}
+    violations: list[str] = []
+    for source_root in (repo_root / "src", repo_root / "roster"):
+        for py_file in sorted(source_root.rglob("*.py")):
+            if any(part in {"tests", "testing", "migrations"} for part in py_file.parts):
+                continue
+            rel = str(py_file.relative_to(repo_root))
+            found, bad = _status_writers(rel, py_file.read_text(encoding="utf-8"))
+            inventory.update(found)
+            violations.extend(bad)
+    assert not violations, "pending_actions status writer bypasses the canonical helper:\n" + (
+        "\n".join(violations)
+    )
+    assert inventory == _PENDING_ACTION_STATUS_WRITERS
+
+    planted = (
+        "async def expire_quietly(conn, action_id):\n"
+        "    await conn.execute(\n"
+        "        \"UPDATE relationship.pending_actions SET status = 'expired' \"\n"
+        "        \"WHERE id = $1 AND status = 'pending'\",\n"
+        "        action_id,\n"
+        "    )\n"
+    )
+    found, bad = _status_writers("roster/relationship/planted.py", planted)
+    assert found == {("roster/relationship/planted.py", "expire_quietly"): 1}
+    assert bad == ["roster/relationship/planted.py:2 (expire_quietly)"]
+    non_status = (
+        "async def defer(conn):\n"
+        '    await conn.execute("UPDATE pending_actions SET expires_at = $1 "\n'
+        "                       \"WHERE id = $2 AND status = 'pending'\")\n"
+    )
+    assert _status_writers("src/x.py", non_status) == ({}, [])

@@ -166,6 +166,18 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   Protected peer admission and the owning source's durable presentation proof
   are separate prerequisites. Ordinary TCP or caller correlation cannot enable
   recovery, and constructing the opt-in transport does not activate rollout.
+- The recovery worker reports each scan/claim/handoff outcome on
+  `approval_delivery_worker_outcomes_total{schema,stage,outcome,reason}` and a matching log
+  line. Labels come only from the closed vocabularies in
+  `src/butlers/core/approval_delivery_worker.py` (`OBSERVATION_OUTCOMES`, `SAFE_REASON_CODES`);
+  identifiers, recipients, callback material, provider references and exception text never
+  appear. A handoff outcome is recorded only after its repository write commits; a refused
+  compare-and-set records `start_refused`/`write_refused`, and a failed transaction records only
+  `scan/failed`. Observer failures are swallowed and never change the action or presentation.
+- Only `transition_pending_action` (`delivery_lifecycle.py`) may move an action out of
+  `pending`. `tests/contracts/test_relationship_pending_actions_choke_point.py` pins the full
+  inventory of `UPDATE pending_actions SET status` writers; the other writers move `approved` to
+  `executed`/`abandoned` and must bind `ActionStatus.APPROVED` as their guard.
 
 - Owner-entity mutations park for approval unless `src` is in `_OWNER_AUTO_APPLY_SOURCES`
   (`roster/relationship/tools/relationship_assert_fact.py`): owner self-registration plus
