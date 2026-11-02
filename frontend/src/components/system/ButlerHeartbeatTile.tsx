@@ -159,14 +159,16 @@ export function ButlerHeartbeatTile() {
   const { rows, aggregates } = useButlerStatusBoard();
   const { isLoading, isError } = aggregates;
   const heartbeat = useButlerHeartbeats();
-  const heartbeatRows = heartbeat.data?.data?.butlers ?? [];
-  const byName = new Map(heartbeatRows.map((entry) => [entry.name, entry]));
+  const heartbeatRows = heartbeat.data?.data?.butlers;
+  const byName = new Map(heartbeatRows?.map((entry) => [entry.name, entry]));
   const combined: HeartbeatRow[] = rows.map((row) => ({ ...row, facts: byName.get(row.name) }));
   const boardNames = new Set(rows.map((row) => row.name));
-  for (const entry of heartbeatRows) {
-    if (!boardNames.has(entry.name)) combined.push({ name: entry.name, activity: "unknown",
-      activeSessionCount: 0, schemaUnreachable: entry.error === "schema_unreachable",
-      lastHeartbeatISO: entry.last_heartbeat_at, facts: entry });
+  if (heartbeatRows) {
+    for (const entry of heartbeatRows) {
+      if (!boardNames.has(entry.name)) combined.push({ name: entry.name, activity: "unknown",
+        activeSessionCount: 0, schemaUnreachable: entry.error === "schema_unreachable",
+        lastHeartbeatISO: entry.last_heartbeat_at, facts: entry });
+    }
   }
   const forceTick = useForceButlerTick();
 
@@ -215,7 +217,7 @@ export function ButlerHeartbeatTile() {
       <TileContent>
         {heartbeat.isPending && <p role="status" className="text-xs text-muted-foreground">Loading heartbeat facts…</p>}
         {heartbeat.isError && <p role="status" className="text-sm text-destructive">Failed to load heartbeat data. {heartbeat.data ? "Last-known facts; current observation unknown." : "Heartbeat facts unavailable."}</p>}
-        {!heartbeat.isPending && !heartbeat.isError && heartbeatRows.length === 0 && <p className="text-xs text-muted-foreground">No heartbeat facts recorded.</p>}
+        {!heartbeat.isPending && !heartbeat.isError && (!heartbeatRows || heartbeatRows.length === 0) && <p className="text-xs text-muted-foreground">No heartbeat facts recorded.</p>}
         {heartbeat.isFetching && !heartbeat.isPending && <p role="status" className="text-xs text-muted-foreground">Updating heartbeat facts…</p>}
         {isError && <p className="text-xs text-muted-foreground">Board activity unavailable.</p>}
         {sortedRows.length === 0 ? (
