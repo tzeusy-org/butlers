@@ -10,10 +10,10 @@ prompt-bearing deadlines stay ``administer``.
 One deadline exists per ``(document_id, kind)``: setting it again with the same date and
 preset changes nothing, and a new date supersedes in place and re-arms its thresholds
 without re-enabling a deadline the owner disabled (an expired one, disabled by the
-scheduler, is re-enabled). A later-dated deadline from the same issuer and kind replaces
-those of other documents dated on or before it and keeps an owner's disable from them; an
-earlier date never drops a reminder. Per-issuer and per-butler caps bound how many active
-deadlines document text can create.
+scheduler, is re-enabled). A later-dated deadline from the same issuer and kind
+disables and marks (never deletes) those of other documents dated up to 400 days before it,
+keeping an owner's disable from them; an earlier or far later date keeps both. Per-issuer
+and per-butler caps bound how many active deadlines document text can create.
 The row's ``job_args`` carries the D6 taint marker, since the date came from untrusted
 document text.
 
@@ -65,9 +65,15 @@ MAX_ISSUER_CHARS = 60
 MAX_HORIZON_DAYS = 3660
 # Safety bounds on reminders created from untrusted document text: a tainted goal cannot
 # fill the owner's chat by varying document ids or issuer names. Active means not
-# ``expired`` or ``completed``; documents without an issuer share one bucket.
+# ``expired`` or ``completed`` and not superseded; documents without an issuer share one
+# bucket.
 MAX_ACTIVE_PER_ISSUER = 10
 MAX_ACTIVE_DOCUMENT_DEADLINES = 200
+# A newer document replaces another's deadline only when its date is at most this far
+# later, so a forged far-future date cannot retire a reminder that is still ahead.
+MAX_SUPERSEDE_GAP_DAYS = 400
+# job_args keys a cross-document supersession adds to the replaced row.
+_SUPERSESSION_KEYS = ("superseded_by", "enabled_before_supersede")
 _WRITE_LOCK = "butlers.paperwork_deadline_set"
 
 # Issuer text is printed to the owner as inert text: letters, digits, spaces and a few
@@ -191,59 +197,90 @@ def plan_document_deadline(
     )
 
 
-async def _supersede_siblings(
-    conn: asyncpg.Connection, plan: DocumentDeadlinePlan
-) -> tuple[list[str], bool]:
-    """Delete same-issuer, same-kind deadlines of other documents dated on or before the plan.
+# Rows of this job that are live: not replaced by another document's deadline.
+_LIVE = (
+    "job_name = $1 AND task_type = 'deadline' AND dispatch_mode = 'job'"
+    " AND NOT job_args ? 'superseded_by'"
+)
+_ACTIVE = "deadline_status NOT IN ('expired', 'completed')"
 
-    Return the deleted ids and whether any was disabled by the owner (not ``expired`` or
-    ``completed``), whose disable the replacement then keeps. A deadline without an issuer
-    cannot be matched to another document, and an earlier date never drops a later reminder.
+
+def _issuer_key(job_args: dict[str, Any]) -> str | None:
+    issuer = job_args.get("issuer")
+    return issuer.lower() if isinstance(issuer, str) else None
+
+
+def _counts_as_active(row: asyncpg.Record) -> bool:
+    args = row["job_args"] if isinstance(row["job_args"], dict) else {}
+    return "superseded_by" not in args and row["deadline_status"] not in ("expired", "completed")
+
+
+async def _find_superseded(
+    conn: asyncpg.Connection, plan: DocumentDeadlinePlan
+) -> list[asyncpg.Record]:
+    """Lock the live same-issuer, same-kind deadlines of other documents this plan replaces.
+
+    Those are dated on or before the plan's date and at most
+    ``MAX_SUPERSEDE_GAP_DAYS`` before it, so neither an earlier date nor a far-off one
+    (a mis-read or forged year) ever retires a reminder that is still ahead. A deadline
+    without an issuer cannot be matched to another document.
     """
     issuer = plan.job_args.get("issuer")
     if issuer is None:
-        return [], False
-    deleted = await conn.fetch(
-        """
-        DELETE FROM scheduled_tasks
-        WHERE task_type = 'deadline' AND dispatch_mode = 'job' AND job_name = $1
+        return []
+    return await conn.fetch(
+        f"""
+        SELECT id,
+            (NOT enabled AND deadline_status NOT IN ('expired', 'completed')) AS owner_disabled
+        FROM scheduled_tasks
+        WHERE {_LIVE}
           AND name <> $2
           AND job_args->>'kind' = $3
           AND lower(job_args->>'issuer') = lower($4::text)
-          AND target_date <= $5
-        RETURNING id,
-            (NOT enabled AND deadline_status NOT IN ('expired', 'completed')) AS owner_disabled
+          AND target_date BETWEEN $5::date - $6::int AND $5::date
+        ORDER BY target_date, id
+        FOR UPDATE
         """,
         plan.job_name,
         plan.name,
         plan.job_args["kind"],
         issuer,
         plan.target_date,
+        MAX_SUPERSEDE_GAP_DAYS,
     )
-    return [str(r["id"]) for r in deleted], any(r["owner_disabled"] for r in deleted)
 
 
-async def _check_caps(conn: asyncpg.Connection, plan: DocumentDeadlinePlan) -> None:
-    """Refuse a new row once the issuer's or the butler's active document deadlines are full."""
+async def _check_caps(
+    conn: asyncpg.Connection,
+    plan: DocumentDeadlinePlan,
+    *,
+    excluded: list[Any],
+    check_total: bool,
+) -> None:
+    """Refuse once the issuer's (or, for a new active row, the butler's) deadlines are full.
+
+    Counts live, active deadlines other than the plan's own row and the rows it replaces.
+    """
     counts = await conn.fetchrow(
-        """
+        f"""
         SELECT count(*) AS total,
                count(*) FILTER (
-                   WHERE lower(job_args->>'issuer') IS NOT DISTINCT FROM lower($2::text)
+                   WHERE lower(job_args->>'issuer') IS NOT DISTINCT FROM lower($3::text)
                ) AS issuer
         FROM scheduled_tasks
-        WHERE task_type = 'deadline' AND dispatch_mode = 'job' AND job_name = $1
-          AND deadline_status NOT IN ('expired', 'completed')
+        WHERE {_LIVE} AND {_ACTIVE} AND name <> $2 AND NOT (id = ANY($4::uuid[]))
         """,
         plan.job_name,
+        plan.name,
         plan.job_args.get("issuer"),
+        excluded,
     )
     if counts["issuer"] >= MAX_ACTIVE_PER_ISSUER:
         raise DocumentDeadlineRefused(
             "issuer_cap_reached",
             f"at most {MAX_ACTIVE_PER_ISSUER} active document deadlines per issuer",
         )
-    if counts["total"] >= MAX_ACTIVE_DOCUMENT_DEADLINES:
+    if check_total and counts["total"] >= MAX_ACTIVE_DOCUMENT_DEADLINES:
         raise DocumentDeadlineRefused(
             "total_cap_reached",
             f"at most {MAX_ACTIVE_DOCUMENT_DEADLINES} active document deadlines",
@@ -254,29 +291,38 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
     """Upsert the plan's deadline; return ``{"id", "status", "replaced"}``.
 
     ``status`` is ``created``, ``unchanged`` (same date and preset; only the issuer text
-    may be refreshed, fired thresholds and status are kept) or ``superseded`` (a new date
-    or preset: thresholds re-arm and the status returns to ``pending``; ``enabled`` is kept,
-    so document text never overrides an owner's disable, except that an ``expired``
-    deadline, which the scheduler disabled itself, is re-enabled). A name already
+    may be refreshed, fired thresholds, status and any supersession are kept) or
+    ``superseded`` (a new date or preset: thresholds re-arm and the status returns to
+    ``pending``; ``enabled`` is kept, so document text never overrides an owner's disable,
+    except that an ``expired`` deadline, which the scheduler disabled itself, is
+    re-enabled, and a superseded one gets back the flag it had before). A name already
     held by any other task (a prompt-bearing deadline, a cron schedule) is refused as
     ``name_conflict`` and left untouched.
 
-    A created or superseded deadline also replaces the same issuer's deadlines of the same
-    kind from other documents dated on or before it (``replaced`` lists their ids) and keeps
-    an owner's disable from any of them. A new row is refused as ``issuer_cap_reached`` or
-    ``total_cap_reached`` once the active document deadlines are full; every refusal
-    writes nothing. One transaction-scoped lock serializes these writes, so the caps hold
-    under concurrent calls.
+    A created or superseded deadline also replaces the live same-issuer, same-kind
+    deadlines of other documents dated on or up to ``MAX_SUPERSEDE_GAP_DAYS`` before it
+    (``replaced`` lists their ids). A replaced row is not deleted: it is disabled and
+    marked ``superseded_by`` in ``job_args``, so it never fires, stays visible to the owner
+    and leaves the caps and later supersessions. Any owner's disable among them carries
+    over. A write that adds an active deadline to an issuer is refused as
+    ``issuer_cap_reached``, and one that adds an active row as ``total_cap_reached``; every
+    refusal writes nothing. A per-schema transaction lock serializes these writes, so the
+    caps hold under concurrent calls.
     """
     async with pool.acquire() as conn, conn.transaction():
-        await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1::text))", _WRITE_LOCK)
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))",
+            _WRITE_LOCK,
+        )
         row = await conn.fetchrow(
             """
-            SELECT id, task_type, dispatch_mode, job_name, target_date, job_args
+            SELECT id, task_type, dispatch_mode, job_name, target_date, job_args,
+                   deadline_status
             FROM scheduled_tasks WHERE name = $1 FOR UPDATE
             """,
             plan.name,
         )
+        existing_args: dict[str, Any] = {}
         if row is not None:
             if (row["task_type"], row["dispatch_mode"], row["job_name"]) != (
                 "deadline",
@@ -291,19 +337,31 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
                 row["target_date"] == plan.target_date
                 and existing_args.get("preset") == plan.preset
             ):
-                if existing_args != plan.job_args:
+                kept = {k: v for k, v in existing_args.items() if k in _SUPERSESSION_KEYS}
+                new_args = {**plan.job_args, **kept}
+                if _counts_as_active(row) and _issuer_key(existing_args) != _issuer_key(
+                    plan.job_args
+                ):
+                    await _check_caps(conn, plan, excluded=[], check_total=False)
+                if existing_args != new_args:
                     await conn.execute(
                         "UPDATE scheduled_tasks SET job_args = $2, updated_at = now() "
                         "WHERE id = $1",
                         row["id"],
-                        plan.job_args,
+                        new_args,
                     )
                 return {"id": str(row["id"]), "status": "unchanged", "replaced": []}
 
-        replaced, owner_disabled = await _supersede_siblings(conn, plan)
+        superseded = await _find_superseded(conn, plan)
+        replaced = [r["id"] for r in superseded]
+        owner_disabled = any(r["owner_disabled"] for r in superseded)
+        # The written row is active afterwards; check a cap it was not already counted in.
+        was_active = row is not None and _counts_as_active(row)
+        if not was_active or _issuer_key(existing_args) != _issuer_key(plan.job_args):
+            await _check_caps(conn, plan, excluded=replaced, check_total=not was_active)
+
         if row is None:
-            await _check_caps(conn, plan)
-            new_id = await conn.fetchval(
+            task_id = await conn.fetchval(
                 """
                 INSERT INTO scheduled_tasks (
                     name, cron, dispatch_mode, job_name, job_args, source, enabled,
@@ -325,27 +383,46 @@ async def document_deadline_set(pool: asyncpg.Pool, plan: DocumentDeadlinePlan) 
                 plan.alert_thresholds,
                 not owner_disabled,
             )
-            if new_id is None:
+            if task_id is None:
                 # Another writer took the name between the lookup and the insert.
                 raise DocumentDeadlineRefused(
                     "name_conflict", f"{plan.name} is held by another scheduled task"
                 )
-            return {"id": str(new_id), "status": "created", "replaced": replaced}
+            status = "created"
+        else:
+            task_id = row["id"]
+            # A superseded row returns to the flag it had before supersession disabled it.
+            await conn.execute(
+                """
+                UPDATE scheduled_tasks
+                SET target_date = $2, lead_time_days = $3, alert_thresholds = $4,
+                    job_args = $5, fired_thresholds = '[]'::jsonb, deadline_status = 'pending',
+                    enabled = (
+                        COALESCE((job_args->>'enabled_before_supersede')::boolean, enabled)
+                        OR deadline_status = 'expired'
+                    ) AND NOT $6,
+                    next_run_at = now(), updated_at = now()
+                WHERE id = $1
+                """,
+                task_id,
+                plan.target_date,
+                plan.lead_time_days,
+                plan.alert_thresholds,
+                plan.job_args,
+                owner_disabled,
+            )
+            status = "superseded"
 
-        await conn.execute(
-            """
-            UPDATE scheduled_tasks
-            SET target_date = $2, lead_time_days = $3, alert_thresholds = $4,
-                job_args = $5, fired_thresholds = '[]'::jsonb, deadline_status = 'pending',
-                enabled = (enabled OR deadline_status = 'expired') AND NOT $6,
-                next_run_at = now(), updated_at = now()
-            WHERE id = $1
-            """,
-            row["id"],
-            plan.target_date,
-            plan.lead_time_days,
-            plan.alert_thresholds,
-            plan.job_args,
-            owner_disabled,
-        )
-        return {"id": str(row["id"]), "status": "superseded", "replaced": replaced}
+        if replaced:
+            await conn.execute(
+                """
+                UPDATE scheduled_tasks
+                SET job_args = job_args || jsonb_build_object(
+                        'superseded_by', $2::text, 'enabled_before_supersede', enabled),
+                    enabled = false, updated_at = now()
+                WHERE id = ANY($1::uuid[])
+                """,
+                replaced,
+                str(task_id),
+            )
+        return {"id": str(task_id), "status": status, "replaced": [str(i) for i in replaced]}
