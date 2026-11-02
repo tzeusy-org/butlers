@@ -92,7 +92,11 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
         await asyncpg.connect(
             dsn="postgresql://unreachable:synthetic@127.0.0.1:1/absent", timeout=1
         )
-    migrated = await create_migrated_test_pool(postgres_container, chains=["core"])
+    # The core chain lives in the butler schema, as in production: public.state is
+    # dashboard-owned and read-only to runtime roles (core_306).
+    migrated = await create_migrated_test_pool(
+        postgres_container, chains=["core"], schemas={"core": "general"}, pool_schema="general"
+    )
     try:
         async with migrated.acquire() as connection, connection.transaction():
             await connection.execute('SET LOCAL ROLE "butler_general_rw"')
@@ -100,13 +104,13 @@ async def test_provision_connect_pool_close(db_factory, postgres_container, monk
             assert int(await connection.fetchval("SHOW server_version_num")) >= 170000
             assert await connection.fetchval("SELECT vector_dims('[1,2,3]'::vector)") == 3
             await connection.execute(
-                "INSERT INTO public.state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
+                "INSERT INTO state (key, value) VALUES ('ci_service_retirement', $1::jsonb)",
                 {"probe": "committed"},
             )
         async with migrated.acquire() as readback, readback.transaction():
             await readback.execute('SET LOCAL ROLE "butler_general_rw"')
             assert await readback.fetchval(
-                "SELECT value FROM public.state WHERE key = 'ci_service_retirement'"
+                "SELECT value FROM general.state WHERE key = 'ci_service_retirement'"
             ) == {"probe": "committed"}
     finally:
         await migrated.close()

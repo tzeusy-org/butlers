@@ -177,44 +177,34 @@ docker_available = shutil.which("docker") is not None
 
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
-async def test_real_postgres_owner_beats_device_and_device_row_survives(
-    provisioned_postgres_pool,
-) -> None:
+@pytest.mark.asyncio(loop_scope="session")
+async def test_real_postgres_owner_beats_device_and_device_row_survives(db) -> None:
     """Real facts + public.state: the owner zone comes from public.state (not an empty
     health.state), and device rows are kept."""
-    async with provisioned_postgres_pool(schema="health") as pool:
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS health")
+    # core migrates health.state (core_001) and public.state (core_087); memory adds health.facts.
+    pool = await db(
+        "core", "memory", schemas={"core": "health", "memory": "health"}, schema="health"
+    )
+    await pool.execute(
+        "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
+        {"timezone": SGT},
+    )
+    # An empty health.state shadows nothing: the zone must still come from public.state.
+    assert await pool.fetchval("SELECT count(*) FROM health.state") == 0
+    for valid_at, source, value in (
+        ("2026-10-17T17:00:00Z", "owner_log", 70.0),
+        ("2026-10-18T02:00:00Z", "google_health", 71.2),
+        ("2026-10-18T17:00:00Z", "google_health", 72.0),
+    ):
         await pool.execute(
-            "CREATE TABLE IF NOT EXISTS public.state (key TEXT PRIMARY KEY, value JSONB NOT NULL,"
-            " updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
+            "INSERT INTO health.facts"
+            " (subject, predicate, scope, validity, content, valid_at, metadata)"
+            " VALUES ('owner', 'measurement_weight', 'health', 'active', 'w', $1, $2)",
+            _at(valid_at),
+            {"value": value, "source": source},
         )
-        await pool.execute(
-            "INSERT INTO public.state (key, value) VALUES ('settings.general', $1)",
-            {"timezone": SGT},
-        )
-        # An empty health.state shadows nothing: the zone must still come from public.state.
-        await pool.execute(
-            "CREATE TABLE IF NOT EXISTS health.state (key TEXT PRIMARY KEY, value JSONB NOT NULL,"
-            " updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), version INTEGER NOT NULL DEFAULT 1)"
-        )
-        await pool.execute(
-            "CREATE TABLE IF NOT EXISTS health.facts (id uuid PRIMARY KEY DEFAULT"
-            " gen_random_uuid(), predicate text, scope text, validity text, content text,"
-            " valid_at timestamptz, created_at timestamptz DEFAULT now(), metadata jsonb)"
-        )
-        for valid_at, source, value in (
-            ("2026-10-17T17:00:00Z", "owner_log", 70.0),
-            ("2026-10-18T02:00:00Z", "google_health", 71.2),
-            ("2026-10-18T17:00:00Z", "google_health", 72.0),
-        ):
-            await pool.execute(
-                "INSERT INTO health.facts (predicate, scope, validity, content, valid_at, metadata)"
-                " VALUES ('measurement_weight', 'health', 'active', 'w', $1, $2)",
-                _at(valid_at),
-                {"value": value, "source": source},
-            )
 
-        history = await meas.measurement_history(pool, "weight")
-        assert sorted(h["value"] for h in history) == [70.0, 72.0]
-        assert (await meas.measurement_latest(pool, "weight"))["value"] == 72.0
-        assert await pool.fetchval("SELECT count(*) FROM health.facts") == 3
+    history = await meas.measurement_history(pool, "weight")
+    assert sorted(h["value"] for h in history) == [70.0, 72.0]
+    assert (await meas.measurement_latest(pool, "weight"))["value"] == 72.0
+    assert await pool.fetchval("SELECT count(*) FROM health.facts") == 3

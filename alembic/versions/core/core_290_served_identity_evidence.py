@@ -90,7 +90,7 @@ def downgrade() -> None:
         SELECT namespace.nspname FROM pg_class version_table
         JOIN pg_namespace namespace ON namespace.oid=version_table.relnamespace
         WHERE version_table.relname='alembic_version'
-          AND version_table.relkind IN ('r','p') AND namespace.nspname NOT LIKE 'pg_%%'
+          AND version_table.relkind IN ('r','p') AND left(namespace.nspname, 3) <> 'pg_'
     """).scalars()
     quote = bind.dialect.identifier_preparer.quote
     count = sum(

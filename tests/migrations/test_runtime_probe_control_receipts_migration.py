@@ -33,7 +33,6 @@ from butlers.core.runtime_probe_control.receipts import (
     nonce_digest,
 )
 from butlers.core.runtime_probe_control.verification import RuntimeProbeVerificationPersistence
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -166,9 +165,9 @@ def test_downgrade_removes_everything_it_installed() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def core_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
+@pytest.fixture
+def core_db_url(fresh_db) -> str:
+    return fresh_db("core")
 
 
 async def _connect(db_url: str, *, role: str | None = None) -> asyncpg.Connection:

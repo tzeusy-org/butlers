@@ -285,9 +285,9 @@ def test_marker_topology_rejects_direct_asyncio_marker_on_sync_test() -> None:
     _assert_marker_topology(ast.parse(direct_session_markers), relative_path)
 
     conflicting_markers = source.replace(
-        "@_asyncio_session\nasync def test_session_create_and_get(pool):",
+        "@_asyncio_session\nasync def test_session_create_and_get(db_pool):",
         '@pytest.mark.asyncio(loop_scope="function")\n'
-        "@_asyncio_session\nasync def test_session_create_and_get(pool):",
+        "@_asyncio_session\nasync def test_session_create_and_get(db_pool):",
         1,
     )
     with pytest.raises(AssertionError, match="session-loop marker"):

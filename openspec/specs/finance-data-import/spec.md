@@ -25,6 +25,14 @@ The system SHALL auto-detect common bank export CSV formats by analyzing header 
 - **AND** required mapped columns SHALL be: `date`, `merchant` (or `description`), and `amount`
 - **AND** optional mapped columns SHALL include: `category`, `currency`, `account`, `reference`
 
+### Requirement: Blob Prefix Scoping
+`import_transactions(storage_ref, ...)` SHALL read only a blob under the importing butler's RFC 0016 key prefix (`{bucket}/{butler}/...`) or the connector prefix (`{bucket}/connectors/...`), where the butler name comes from the daemon context and never from the caller.
+
+#### Scenario: Foreign or malformed storage_ref refused before fetch
+- **WHEN** `import_transactions` receives a `storage_ref` under another butler's prefix, outside the deployment's bucket or scheme, without an owner segment, or with a `.`/`..` segment
+- **THEN** the system SHALL return `status="refused"` with `reason="attachment_forbidden"` (foreign prefix) or `reason="invalid_storage_ref"` (malformed ref)
+- **AND** it SHALL NOT fetch any bytes from blob storage
+
 ### Requirement: Data Normalization
 The system SHALL normalize transaction data from different bank formats into the canonical `finance.transactions` table schema.
 

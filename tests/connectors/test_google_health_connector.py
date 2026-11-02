@@ -1155,6 +1155,43 @@ async def test_per_account_token_mint_isolation(monkeypatch: pytest.MonkeyPatch)
     assert ctx_b.cached_access_token == f"token-for-{_UUID_B}"
 
 
+@pytest.mark.asyncio
+async def test_resolve_owner_pre_initialises_alert_counters_per_resource() -> None:
+    """Alertable counters exist at zero before their first event, per account and resource.
+
+    ``increase()`` needs a prior sample, so a lazily created child would hide the
+    first-ever page-cap or quarantine event. An email change re-keys the identity
+    and must prime the new label set too.
+    """
+    from prometheus_client import REGISTRY
+
+    connector = _make_connector()
+    connector._shared_pool = MagicMock()
+    connector._spinup_account_heartbeat = MagicMock()  # type: ignore[method-assign]
+    account = HealthScopedAccount(
+        id=_UUID_A, email="prime@example.com", entity_id=_ENTITY_A, refresh_token_present=True
+    )
+    renamed = HealthScopedAccount(
+        id=_UUID_A, email="primed@example.com", entity_id=_ENTITY_A, refresh_token_present=True
+    )
+
+    for registry_rows in ([account], [renamed]):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                "butlers.connectors.google_health.list_health_scoped_accounts",
+                AsyncMock(return_value=registry_rows),
+            )
+            await connector._resolve_owner_and_scopes()
+        identity = _endpoint_identity_for_user(registry_rows[0].email)
+        for bundle in RESOURCE_BUNDLES:
+            labels = {"endpoint_identity": identity, "resource": bundle.resource}
+            for sample in (
+                "connector_google_health_window_page_cap_exceeded_total",
+                "connector_google_health_quarantined_envelopes_total",
+            ):
+                assert REGISTRY.get_sample_value(sample, labels) == 0.0, (sample, labels)
+
+
 def test_prometheus_labels_distinct_per_account() -> None:
     """Two accounts produce two distinct Prometheus label sets keyed by endpoint_identity.
 

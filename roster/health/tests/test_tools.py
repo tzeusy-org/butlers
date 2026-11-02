@@ -7,10 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import asyncpg
 import pytest
-
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 # All async tests in this file must share the session event loop so that the
 # asyncpg pool (created in the session-scoped fixture loop per
@@ -30,30 +27,10 @@ def _utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core + memory migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "memory"],
-    )
-
-
 @pytest.fixture
-async def pool(migrated_db_url: str):
-    """Return an asyncpg pool with fact tables cleared between tests."""
-    from butlers.db import register_jsonb_codec
-
-    p = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=3,
-        init=register_jsonb_codec,
-    )
-    await p.execute("TRUNCATE TABLE public.memory_links, public.facts CASCADE")
-    yield p
-    await p.close()
+async def memory_pool(db):
+    """A private clone migrated with the core and memory chains."""
+    return await db("core", "memory")
 
 
 # ------------------------------------------------------------------
@@ -61,87 +38,87 @@ async def pool(migrated_db_url: str):
 # ------------------------------------------------------------------
 
 
-async def test_measurement_log_weight(pool):
+async def test_measurement_log_weight(memory_pool):
     """measurement_log inserts a weight measurement and returns it."""
     from butlers.tools.health import measurement_log
 
-    result = await measurement_log(pool, "weight", {"kg": 75.5})
+    result = await measurement_log(memory_pool, "weight", {"kg": 75.5})
     assert result["type"] == "weight"
     assert result["value"] == {"kg": 75.5}
     assert result["id"] is not None
 
 
-async def test_measurement_log_blood_pressure(pool):
+async def test_measurement_log_blood_pressure(memory_pool):
     """measurement_log supports compound JSONB values like blood pressure."""
     from butlers.tools.health import measurement_log
 
     bp = {"systolic": 120, "diastolic": 80}
-    result = await measurement_log(pool, "blood_pressure", bp)
+    result = await measurement_log(memory_pool, "blood_pressure", bp)
     assert result["value"] == bp
     assert result["type"] == "blood_pressure"
 
 
-async def test_measurement_log_with_timestamp(pool):
+async def test_measurement_log_with_timestamp(memory_pool):
     """measurement_log accepts a custom measured_at timestamp."""
     from butlers.tools.health import measurement_log
 
     ts = _utcnow() - timedelta(hours=2)
-    result = await measurement_log(pool, "heart_rate", 72, measured_at=ts)
+    result = await measurement_log(memory_pool, "heart_rate", 72, measured_at=ts)
     assert result["measured_at"] is not None
 
 
-async def test_measurement_log_with_notes(pool):
+async def test_measurement_log_with_notes(memory_pool):
     """measurement_log accepts optional notes."""
     from butlers.tools.health import measurement_log
 
-    result = await measurement_log(pool, "weight", {"kg": 80}, notes="After workout")
+    result = await measurement_log(memory_pool, "weight", {"kg": 80}, notes="After workout")
     assert result["notes"] == "After workout"
 
 
-async def test_measurement_log_rejects_invalid_type(pool):
+async def test_measurement_log_rejects_invalid_type(memory_pool):
     """measurement_log rejects unrecognized measurement types."""
     from butlers.tools.health import measurement_log
 
     with pytest.raises(ValueError, match="Unrecognized measurement type"):
-        await measurement_log(pool, "cholesterol", 200)
+        await measurement_log(memory_pool, "cholesterol", 200)
 
 
-async def test_measurement_log_valid_types(pool):
+async def test_measurement_log_valid_types(memory_pool):
     """measurement_log accepts all five valid measurement types."""
     from butlers.tools.health import measurement_log
 
     for mtype in ("weight", "blood_pressure", "heart_rate", "blood_sugar", "temperature"):
-        result = await measurement_log(pool, mtype, 42)
+        result = await measurement_log(memory_pool, mtype, 42)
         assert result["type"] == mtype
 
 
-async def test_measurement_history(pool):
+async def test_measurement_history(memory_pool):
     """measurement_history returns measurements filtered by type."""
     from butlers.tools.health import measurement_history, measurement_log
 
     now = _utcnow()
-    await measurement_log(pool, "weight", {"kg": 70}, measured_at=now - timedelta(hours=3))
-    await measurement_log(pool, "weight", {"kg": 71}, measured_at=now - timedelta(hours=1))
-    await measurement_log(pool, "heart_rate", 72, measured_at=now)
+    await measurement_log(memory_pool, "weight", {"kg": 70}, measured_at=now - timedelta(hours=3))
+    await measurement_log(memory_pool, "weight", {"kg": 71}, measured_at=now - timedelta(hours=1))
+    await measurement_log(memory_pool, "heart_rate", 72, measured_at=now)
 
-    history = await measurement_history(pool, "weight")
+    history = await measurement_history(memory_pool, "weight")
     assert len(history) >= 2
     # Most recent first
     types = [m["type"] for m in history]
     assert all(t == "weight" for t in types)
 
 
-async def test_measurement_history_with_date_filters(pool):
+async def test_measurement_history_with_date_filters(memory_pool):
     """measurement_history respects start_date and end_date filters."""
     from butlers.tools.health import measurement_history, measurement_log
 
     now = _utcnow()
-    await measurement_log(pool, "temperature", 98.0, measured_at=now - timedelta(days=5))
-    await measurement_log(pool, "temperature", 99.0, measured_at=now - timedelta(days=2))
-    await measurement_log(pool, "temperature", 97.5, measured_at=now)
+    await measurement_log(memory_pool, "temperature", 98.0, measured_at=now - timedelta(days=5))
+    await measurement_log(memory_pool, "temperature", 99.0, measured_at=now - timedelta(days=2))
+    await measurement_log(memory_pool, "temperature", 97.5, measured_at=now)
 
     history = await measurement_history(
-        pool,
+        memory_pool,
         "temperature",
         start_date=now - timedelta(days=3),
         end_date=now - timedelta(days=1),
@@ -150,123 +127,123 @@ async def test_measurement_history_with_date_filters(pool):
     assert history[0]["value"] == 99.0
 
 
-async def test_measurement_history_empty(pool):
+async def test_measurement_history_empty(memory_pool):
     """measurement_history returns empty list when no measurements exist for a valid type."""
     from butlers.tools.health import measurement_history
 
     # Use a valid type that has no data inserted (each test gets an isolated DB)
-    result = await measurement_history(pool, "heart_rate")
+    result = await measurement_history(memory_pool, "heart_rate")
     assert result == []
 
 
-async def test_measurement_history_rejects_invalid_type(pool):
+async def test_measurement_history_rejects_invalid_type(memory_pool):
     """measurement_history raises ValueError for unrecognized measurement types."""
     from butlers.tools.health import measurement_history
 
     with pytest.raises(ValueError, match="Unrecognized measurement type"):
-        await measurement_history(pool, "cholesterol_hist")
+        await measurement_history(memory_pool, "cholesterol_hist")
 
 
-async def test_measurement_latest(pool):
+async def test_measurement_latest(memory_pool):
     """measurement_latest returns the most recent measurement of a type."""
     from butlers.tools.health import measurement_latest, measurement_log
 
     now = _utcnow()
-    await measurement_log(pool, "blood_sugar", 95, measured_at=now - timedelta(hours=2))
-    await measurement_log(pool, "blood_sugar", 110, measured_at=now)
+    await measurement_log(memory_pool, "blood_sugar", 95, measured_at=now - timedelta(hours=2))
+    await measurement_log(memory_pool, "blood_sugar", 110, measured_at=now)
 
-    latest = await measurement_latest(pool, "blood_sugar")
+    latest = await measurement_latest(memory_pool, "blood_sugar")
     assert latest is not None
     assert latest["value"] == 110
 
 
-async def test_measurement_latest_no_data(pool):
+async def test_measurement_latest_no_data(memory_pool):
     """measurement_latest returns None when no measurements exist for a valid type."""
     from butlers.tools.health import measurement_latest
 
-    result = await measurement_latest(pool, "temperature")
+    result = await measurement_latest(memory_pool, "temperature")
     assert result is None
 
 
-async def test_measurement_update_edits_in_place(pool):
+async def test_measurement_update_edits_in_place(memory_pool):
     """measurement_update edits the existing temporal fact in place (same id)."""
     from butlers.tools.health import measurement_history, measurement_log, measurement_update
 
-    m = await measurement_log(pool, "weight", 70, notes="morning")
-    updated = await measurement_update(pool, str(m["id"]), value=72, notes="evening")
+    m = await measurement_log(memory_pool, "weight", 70, notes="morning")
+    updated = await measurement_update(memory_pool, str(m["id"]), value=72, notes="evening")
     # Same identity — temporal facts are not superseded.
     assert updated["id"] == m["id"]
     assert updated["value"] == 72
     assert updated["notes"] == "evening"
 
     # Exactly one active weight reading remains (no duplicate coexisting fact).
-    history = await measurement_history(pool, "weight")
+    history = await measurement_history(memory_pool, "weight")
     assert len(history) == 1
     assert history[0]["value"] == 72
 
 
-async def test_measurement_update_rewrites_type_predicate(pool):
+async def test_measurement_update_rewrites_type_predicate(memory_pool):
     """measurement_update changing type rewrites the measurement_{type} predicate."""
     from butlers.tools.health import measurement_history, measurement_log, measurement_update
 
-    m = await measurement_log(pool, "heart_rate", 70)
-    updated = await measurement_update(pool, str(m["id"]), type="blood_sugar", value=95)
+    m = await measurement_log(memory_pool, "heart_rate", 70)
+    updated = await measurement_update(memory_pool, str(m["id"]), type="blood_sugar", value=95)
     assert updated["type"] == "blood_sugar"
     assert updated["value"] == 95
 
     # The reading now lives under the new type and is gone from the old one.
-    assert [h["value"] for h in await measurement_history(pool, "blood_sugar")] == [95]
-    assert await measurement_history(pool, "heart_rate") == []
+    assert [h["value"] for h in await measurement_history(memory_pool, "blood_sugar")] == [95]
+    assert await measurement_history(memory_pool, "heart_rate") == []
 
 
-async def test_measurement_update_rejects_invalid_type(pool):
+async def test_measurement_update_rejects_invalid_type(memory_pool):
     """measurement_update rejects an unrecognized target type."""
     from butlers.tools.health import measurement_log, measurement_update
 
-    m = await measurement_log(pool, "weight", 70)
+    m = await measurement_log(memory_pool, "weight", 70)
     with pytest.raises(ValueError, match="Unrecognized measurement type"):
-        await measurement_update(pool, str(m["id"]), type="cholesterol")
+        await measurement_update(memory_pool, str(m["id"]), type="cholesterol")
 
 
-async def test_measurement_update_not_found(pool):
+async def test_measurement_update_not_found(memory_pool):
     """measurement_update raises ValueError for a non-existent measurement."""
     from butlers.tools.health import measurement_update
 
     with pytest.raises(ValueError, match="not found"):
-        await measurement_update(pool, str(uuid.uuid4()), value=1)
+        await measurement_update(memory_pool, str(uuid.uuid4()), value=1)
 
 
-async def test_measurement_update_no_valid_fields(pool):
+async def test_measurement_update_no_valid_fields(memory_pool):
     """measurement_update raises ValueError when no allowed fields are given."""
     from butlers.tools.health import measurement_log, measurement_update
 
-    m = await measurement_log(pool, "weight", 70)
+    m = await measurement_log(memory_pool, "weight", 70)
     with pytest.raises(ValueError, match="No valid fields"):
-        await measurement_update(pool, str(m["id"]), bogus_field="nope")
+        await measurement_update(memory_pool, str(m["id"]), bogus_field="nope")
 
 
-async def test_measurement_delete_retracts(pool):
+async def test_measurement_delete_retracts(memory_pool):
     """measurement_delete soft-deletes so the reading disappears from history."""
     from butlers.tools.health import measurement_delete, measurement_history, measurement_log
 
-    m = await measurement_log(pool, "weight", 70)
-    assert len(await measurement_history(pool, "weight")) == 1
+    m = await measurement_log(memory_pool, "weight", 70)
+    assert len(await measurement_history(memory_pool, "weight")) == 1
 
-    ok = await measurement_delete(pool, str(m["id"]))
+    ok = await measurement_delete(memory_pool, str(m["id"]))
     assert ok is True
-    assert await measurement_history(pool, "weight") == []
+    assert await measurement_history(memory_pool, "weight") == []
 
     # The fact is retained but retracted (audit-preserving soft delete).
-    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", m["id"])
+    validity = await memory_pool.fetchval("SELECT validity FROM facts WHERE id = $1", m["id"])
     assert validity == "retracted"
 
 
-async def test_measurement_delete_not_found(pool):
+async def test_measurement_delete_not_found(memory_pool):
     """measurement_delete raises ValueError for a non-existent measurement."""
     from butlers.tools.health import measurement_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await measurement_delete(pool, str(uuid.uuid4()))
+        await measurement_delete(memory_pool, str(uuid.uuid4()))
 
 
 # ------------------------------------------------------------------
@@ -274,11 +251,11 @@ async def test_measurement_delete_not_found(pool):
 # ------------------------------------------------------------------
 
 
-async def test_medication_add(pool):
+async def test_medication_add(memory_pool):
     """medication_add creates a medication with required fields."""
     from butlers.tools.health import medication_add
 
-    med = await medication_add(pool, "Metformin", "500mg", "twice daily")
+    med = await medication_add(memory_pool, "Metformin", "500mg", "twice daily")
     assert med["name"] == "Metformin"
     assert med["dosage"] == "500mg"
     assert med["frequency"] == "twice daily"
@@ -286,12 +263,12 @@ async def test_medication_add(pool):
     assert med["schedule"] == []
 
 
-async def test_medication_add_with_schedule(pool):
+async def test_medication_add_with_schedule(memory_pool):
     """medication_add supports schedule and notes."""
     from butlers.tools.health import medication_add
 
     med = await medication_add(
-        pool,
+        memory_pool,
         "Ibuprofen",
         "200mg",
         "twice daily",
@@ -302,12 +279,14 @@ async def test_medication_add_with_schedule(pool):
     assert med["notes"] == "Take with food"
 
 
-async def test_medication_update_merges_fields(pool):
+async def test_medication_update_merges_fields(memory_pool):
     """medication_update merges supplied fields and the change is read back by list."""
     from butlers.tools.health import medication_add, medication_list, medication_update
 
-    med = await medication_add(pool, "UpdMed", "100mg", "daily", notes="orig")
-    updated = await medication_update(pool, str(med["id"]), dosage="250mg", notes="after meals")
+    med = await medication_add(memory_pool, "UpdMed", "100mg", "daily", notes="orig")
+    updated = await medication_update(
+        memory_pool, str(med["id"]), dosage="250mg", notes="after meals"
+    )
     # Unchanged fields are preserved; supplied fields are applied.
     assert updated["name"] == "UpdMed"
     assert updated["dosage"] == "250mg"
@@ -316,142 +295,148 @@ async def test_medication_update_merges_fields(pool):
 
     # The superseding write means exactly one active "UpdMed" remains, with the
     # new values.
-    actives = [m for m in await medication_list(pool, active_only=False) if m["name"] == "UpdMed"]
+    actives = [
+        m for m in await medication_list(memory_pool, active_only=False) if m["name"] == "UpdMed"
+    ]
     assert len(actives) == 1
     assert actives[0]["dosage"] == "250mg"
 
 
-async def test_medication_update_no_fields(pool):
+async def test_medication_update_no_fields(memory_pool):
     """medication_update raises when no updatable fields are provided."""
     from butlers.tools.health import medication_add, medication_update
 
-    med = await medication_add(pool, "NoFieldMed", "10mg", "daily")
+    med = await medication_add(memory_pool, "NoFieldMed", "10mg", "daily")
     with pytest.raises(ValueError, match="No valid fields"):
-        await medication_update(pool, str(med["id"]))
+        await medication_update(memory_pool, str(med["id"]))
 
 
-async def test_medication_update_not_found(pool):
+async def test_medication_update_not_found(memory_pool):
     """medication_update raises ValueError for a non-existent medication."""
     from butlers.tools.health import medication_update
 
     with pytest.raises(ValueError, match="not found"):
-        await medication_update(pool, str(uuid.uuid4()), dosage="5mg")
+        await medication_update(memory_pool, str(uuid.uuid4()), dosage="5mg")
 
 
-async def test_medication_delete_retracts(pool):
+async def test_medication_delete_retracts(memory_pool):
     """medication_delete soft-deletes so the medication disappears from list."""
     from butlers.tools.health import medication_add, medication_delete, medication_list
 
-    med = await medication_add(pool, "DelMed", "10mg", "daily")
-    assert "DelMed" in [m["name"] for m in await medication_list(pool, active_only=False)]
+    med = await medication_add(memory_pool, "DelMed", "10mg", "daily")
+    assert "DelMed" in [m["name"] for m in await medication_list(memory_pool, active_only=False)]
 
-    ok = await medication_delete(pool, str(med["id"]))
+    ok = await medication_delete(memory_pool, str(med["id"]))
     assert ok is True
-    assert "DelMed" not in [m["name"] for m in await medication_list(pool, active_only=False)]
+    assert "DelMed" not in [
+        m["name"] for m in await medication_list(memory_pool, active_only=False)
+    ]
 
     # The fact is retained but retracted (audit-preserving soft delete).
-    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", med["id"])
+    validity = await memory_pool.fetchval("SELECT validity FROM facts WHERE id = $1", med["id"])
     assert validity == "retracted"
 
 
-async def test_medication_delete_not_found(pool):
+async def test_medication_delete_not_found(memory_pool):
     """medication_delete raises ValueError for a non-existent medication."""
     from butlers.tools.health import medication_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await medication_delete(pool, str(uuid.uuid4()))
+        await medication_delete(memory_pool, str(uuid.uuid4()))
 
 
-async def test_medication_list_active_only(pool):
+async def test_medication_list_active_only(memory_pool):
     """medication_list returns only active medications by default."""
     from butlers.tools.health import medication_add, medication_list
 
-    await medication_add(pool, "ActiveMed_A2", "10mg", "daily")
-    med_b = await medication_add(pool, "InactiveMed_B2", "20mg", "daily")
+    await medication_add(memory_pool, "ActiveMed_A2", "10mg", "daily")
+    med_b = await medication_add(memory_pool, "InactiveMed_B2", "20mg", "daily")
     # Mark the fact's metadata as inactive (SPO model — patch the JSONB field directly)
-    await pool.execute(
+    await memory_pool.execute(
         "UPDATE facts SET metadata = metadata || '{\"active\": false}'::jsonb WHERE id = $1",
         med_b["id"],  # already a uuid.UUID
     )
 
-    active = await medication_list(pool, active_only=True)
+    active = await medication_list(memory_pool, active_only=True)
     names = [m["name"] for m in active]
     assert "ActiveMed_A2" in names
     assert "InactiveMed_B2" not in names
 
 
-async def test_medication_list_all(pool):
+async def test_medication_list_all(memory_pool):
     """medication_list with active_only=False returns all medications."""
     from butlers.tools.health import medication_add, medication_list
 
-    await medication_add(pool, "AllMed_X2", "5mg", "daily")
-    med_y = await medication_add(pool, "AllMed_Y2", "10mg", "daily")
+    await medication_add(memory_pool, "AllMed_X2", "5mg", "daily")
+    med_y = await medication_add(memory_pool, "AllMed_Y2", "10mg", "daily")
     # Mark one as inactive in the fact metadata
-    await pool.execute(
+    await memory_pool.execute(
         "UPDATE facts SET metadata = metadata || '{\"active\": false}'::jsonb WHERE id = $1",
         med_y["id"],  # already a uuid.UUID
     )
 
-    all_meds = await medication_list(pool, active_only=False)
+    all_meds = await medication_list(memory_pool, active_only=False)
     names = [m["name"] for m in all_meds]
     assert "AllMed_X2" in names
     assert "AllMed_Y2" in names
 
 
-async def test_medication_list_empty(pool):
+async def test_medication_list_empty(memory_pool):
     """medication_list returns empty list when no medications exist (filtered)."""
     from butlers.tools.health import medication_list
 
     # This just checks it doesn't error; there may be meds from other tests
-    result = await medication_list(pool)
+    result = await medication_list(memory_pool)
     assert isinstance(result, list)
 
 
-async def test_medication_log_dose(pool):
+async def test_medication_log_dose(memory_pool):
     """medication_log_dose records a dose for a medication."""
     from butlers.tools.health import medication_add, medication_log_dose
 
-    med = await medication_add(pool, "DoseMed2", "100mg", "daily")
-    dose = await medication_log_dose(pool, str(med["id"]), notes="Taken with food")
+    med = await medication_add(memory_pool, "DoseMed2", "100mg", "daily")
+    dose = await medication_log_dose(memory_pool, str(med["id"]), notes="Taken with food")
     assert dose["medication_id"] == med["id"]
     assert dose["notes"] == "Taken with food"
     assert dose["skipped"] is False
 
 
-async def test_medication_log_dose_skipped(pool):
+async def test_medication_log_dose_skipped(memory_pool):
     """medication_log_dose supports skipped=True for missed doses."""
     from butlers.tools.health import medication_add, medication_log_dose
 
-    med = await medication_add(pool, "SkipMed", "50mg", "daily")
-    dose = await medication_log_dose(pool, str(med["id"]), skipped=True, notes="Forgot")
+    med = await medication_add(memory_pool, "SkipMed", "50mg", "daily")
+    dose = await medication_log_dose(memory_pool, str(med["id"]), skipped=True, notes="Forgot")
     assert dose["skipped"] is True
 
 
-async def test_medication_log_dose_invalid_id(pool):
+async def test_medication_log_dose_invalid_id(memory_pool):
     """medication_log_dose raises ValueError for non-existent medication."""
     from butlers.tools.health import medication_log_dose
 
     with pytest.raises(ValueError, match="not found"):
-        await medication_log_dose(pool, str(uuid.uuid4()))
+        await medication_log_dose(memory_pool, str(uuid.uuid4()))
 
 
-async def test_medication_history_with_adherence(pool):
+async def test_medication_history_with_adherence(memory_pool):
     """medication_history returns doses and adherence rate based on skipped flag."""
     from butlers.tools.health import medication_add, medication_history, medication_log_dose
 
     now = _utcnow()
-    med = await medication_add(pool, "AdherenceMed2", "50mg", "daily")
+    med = await medication_add(memory_pool, "AdherenceMed2", "50mg", "daily")
 
     # Log 10 doses: 8 taken, 2 skipped
     for i in range(8):
-        await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=10 - i))
+        await medication_log_dose(
+            memory_pool, str(med["id"]), taken_at=now - timedelta(days=10 - i)
+        )
     for i in range(2):
         await medication_log_dose(
-            pool, str(med["id"]), taken_at=now - timedelta(hours=i + 1), skipped=True
+            memory_pool, str(med["id"]), taken_at=now - timedelta(hours=i + 1), skipped=True
         )
 
     result = await medication_history(
-        pool,
+        memory_pool,
         str(med["id"]),
         start_date=now - timedelta(days=11),
         end_date=now + timedelta(hours=1),
@@ -463,36 +448,36 @@ async def test_medication_history_with_adherence(pool):
     assert result["adherence_rate"] == 80.0
 
 
-async def test_medication_history_no_doses(pool):
+async def test_medication_history_no_doses(memory_pool):
     """medication_history returns empty doses and null adherence when no doses exist."""
     from butlers.tools.health import medication_add, medication_history
 
-    med = await medication_add(pool, "NoDoseMed", "10mg", "daily")
-    result = await medication_history(pool, str(med["id"]))
+    med = await medication_add(memory_pool, "NoDoseMed", "10mg", "daily")
+    result = await medication_history(memory_pool, str(med["id"]))
     assert result["doses"] == []
     assert result["adherence_rate"] is None
 
 
-async def test_medication_history_not_found(pool):
+async def test_medication_history_not_found(memory_pool):
     """medication_history raises ValueError for non-existent medication."""
     from butlers.tools.health import medication_history
 
     with pytest.raises(ValueError, match="not found"):
-        await medication_history(pool, str(uuid.uuid4()))
+        await medication_history(memory_pool, str(uuid.uuid4()))
 
 
-async def test_medication_history_date_range(pool):
+async def test_medication_history_date_range(memory_pool):
     """medication_history respects start_date and end_date."""
     from butlers.tools.health import medication_add, medication_history, medication_log_dose
 
     now = _utcnow()
-    med = await medication_add(pool, "DateRangeMed", "25mg", "daily")
-    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=5))
-    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=2))
-    await medication_log_dose(pool, str(med["id"]), taken_at=now)
+    med = await medication_add(memory_pool, "DateRangeMed", "25mg", "daily")
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now - timedelta(days=5))
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now - timedelta(days=2))
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now)
 
     result = await medication_history(
-        pool,
+        memory_pool,
         str(med["id"]),
         start_date=now - timedelta(days=3),
         end_date=now - timedelta(days=1),
@@ -515,14 +500,14 @@ async def test_medication_history_date_range(pool):
 
 
 @pytest.fixture
-async def owner_entity(pool):
+async def owner_entity(memory_pool):
     """Seed an owner entity into public.entities for the duration of one test.
 
     The ``pool`` fixture truncates facts/memory_links but NOT public.entities,
     so this fixture inserts the owner row and removes it on teardown to avoid
     leaking owner state into other tests (which rely on the no-owner fallback).
     """
-    entity_id = await pool.fetchval(
+    entity_id = await memory_pool.fetchval(
         """
         INSERT INTO public.entities (canonical_name, entity_type, roles)
         VALUES ('Owner', 'person', $1)
@@ -532,11 +517,13 @@ async def owner_entity(pool):
     )
     yield entity_id
     # facts reference entity_id via FK-less column, but clear them first to be safe.
-    await pool.execute("DELETE FROM public.facts WHERE entity_id = $1", entity_id)
-    await pool.execute("DELETE FROM public.entities WHERE id = $1", entity_id)
+    await memory_pool.execute("DELETE FROM public.facts WHERE entity_id = $1", entity_id)
+    await memory_pool.execute("DELETE FROM public.entities WHERE id = $1", entity_id)
 
 
-async def test_medication_add_two_distinct_meds_coexist_with_owner_entity(owner_entity, pool):
+async def test_medication_add_two_distinct_meds_coexist_with_owner_entity(
+    owner_entity, memory_pool
+):
     """Two different medications stay active even when an owner entity exists.
 
     Regression for bu-k402w: previously the second medication superseded the
@@ -547,48 +534,52 @@ async def test_medication_add_two_distinct_meds_coexist_with_owner_entity(owner_
     from butlers.core.owner import fetch_owner_entity_id
     from butlers.tools.health import medication_add, medication_list
 
-    assert await fetch_owner_entity_id(pool) == owner_entity
+    assert await fetch_owner_entity_id(memory_pool) == owner_entity
 
-    await medication_add(pool, "Metformin", "500mg", "twice daily")
-    await medication_add(pool, "Lisinopril", "10mg", "daily")
+    await medication_add(memory_pool, "Metformin", "500mg", "twice daily")
+    await medication_add(memory_pool, "Lisinopril", "10mg", "daily")
 
-    names = {m["name"] for m in await medication_list(pool, active_only=False)}
+    names = {m["name"] for m in await medication_list(memory_pool, active_only=False)}
     assert names == {"Metformin", "Lisinopril"}
 
 
-async def test_medication_add_same_name_supersedes_with_owner_entity(owner_entity, pool):
+async def test_medication_add_same_name_supersedes_with_owner_entity(owner_entity, memory_pool):
     """Re-adding the same medication name supersedes the previous fact (idempotent update)."""
     from butlers.tools.health import medication_add, medication_list
 
-    await medication_add(pool, "Metformin", "500mg", "twice daily")
-    await medication_add(pool, "Metformin", "1000mg", "twice daily")
+    await medication_add(memory_pool, "Metformin", "500mg", "twice daily")
+    await medication_add(memory_pool, "Metformin", "1000mg", "twice daily")
 
     metformin = [
-        m for m in await medication_list(pool, active_only=False) if m["name"] == "Metformin"
+        m for m in await medication_list(memory_pool, active_only=False) if m["name"] == "Metformin"
     ]
     assert len(metformin) == 1
     assert metformin[0]["dosage"] == "1000mg"
 
 
-async def test_condition_add_two_distinct_conditions_coexist_with_owner_entity(owner_entity, pool):
+async def test_condition_add_two_distinct_conditions_coexist_with_owner_entity(
+    owner_entity, memory_pool
+):
     """Sibling check: two distinct conditions coexist with an owner entity present."""
     from butlers.tools.health import condition_add, condition_list
 
-    await condition_add(pool, "Asthma")
-    await condition_add(pool, "Hypertension")
+    await condition_add(memory_pool, "Asthma")
+    await condition_add(memory_pool, "Hypertension")
 
-    names = {c["name"] for c in await condition_list(pool)}
+    names = {c["name"] for c in await condition_list(memory_pool)}
     assert names == {"Asthma", "Hypertension"}
 
 
-async def test_research_save_two_distinct_notes_coexist_with_owner_entity(owner_entity, pool):
+async def test_research_save_two_distinct_notes_coexist_with_owner_entity(
+    owner_entity, memory_pool
+):
     """Sibling check: two distinct research notes coexist with an owner entity present."""
     from butlers.tools.health import research_save, research_search
 
-    await research_save(pool, "Vitamin D study", "Body A")
-    await research_save(pool, "Magnesium study", "Body B")
+    await research_save(memory_pool, "Vitamin D study", "Body A")
+    await research_save(memory_pool, "Magnesium study", "Body B")
 
-    titles = {r["title"] for r in await research_search(pool, "study")}
+    titles = {r["title"] for r in await research_search(memory_pool, "study")}
     assert titles == {"Vitamin D study", "Magnesium study"}
 
 
@@ -597,126 +588,128 @@ async def test_research_save_two_distinct_notes_coexist_with_owner_entity(owner_
 # ------------------------------------------------------------------
 
 
-async def test_condition_add(pool):
+async def test_condition_add(memory_pool):
     """condition_add creates a condition with default active status."""
     from butlers.tools.health import condition_add
 
-    cond = await condition_add(pool, "Asthma2", notes="Mild case")
+    cond = await condition_add(memory_pool, "Asthma2", notes="Mild case")
     assert cond["name"] == "Asthma2"
     assert cond["status"] == "active"
     assert cond["notes"] == "Mild case"
 
 
-async def test_condition_add_with_status(pool):
+async def test_condition_add_with_status(memory_pool):
     """condition_add supports custom valid status."""
     from butlers.tools.health import condition_add
 
-    cond = await condition_add(pool, "Flu2", status="resolved")
+    cond = await condition_add(memory_pool, "Flu2", status="resolved")
     assert cond["status"] == "resolved"
 
 
-async def test_condition_add_invalid_status(pool):
+async def test_condition_add_invalid_status(memory_pool):
     """condition_add rejects invalid status values."""
     from butlers.tools.health import condition_add
 
     with pytest.raises(ValueError, match="Invalid condition status"):
-        await condition_add(pool, "BadStatus", status="unknown")
+        await condition_add(memory_pool, "BadStatus", status="unknown")
 
 
-async def test_condition_add_all_valid_statuses(pool):
+async def test_condition_add_all_valid_statuses(memory_pool):
     """condition_add accepts all valid statuses: active, managed, resolved."""
     from butlers.tools.health import condition_add
 
     for status in ("active", "managed", "resolved"):
-        cond = await condition_add(pool, f"Status_{status}", status=status)
+        cond = await condition_add(memory_pool, f"Status_{status}", status=status)
         assert cond["status"] == status
 
 
-async def test_condition_list_all(pool):
+async def test_condition_list_all(memory_pool):
     """condition_list without filter returns all conditions ordered by created_at desc."""
     from butlers.tools.health import condition_add, condition_list
 
-    await condition_add(pool, "CondAll_A2", status="active")
-    await condition_add(pool, "CondAll_B2", status="resolved")
+    await condition_add(memory_pool, "CondAll_A2", status="active")
+    await condition_add(memory_pool, "CondAll_B2", status="resolved")
 
-    all_conds = await condition_list(pool)
+    all_conds = await condition_list(memory_pool)
     names = [c["name"] for c in all_conds]
     assert "CondAll_A2" in names
     assert "CondAll_B2" in names
 
 
-async def test_condition_list_filtered(pool):
+async def test_condition_list_filtered(memory_pool):
     """condition_list filters by status when provided."""
     from butlers.tools.health import condition_add, condition_list
 
-    await condition_add(pool, "FilterActive2", status="active")
-    await condition_add(pool, "FilterResolved2", status="resolved")
+    await condition_add(memory_pool, "FilterActive2", status="active")
+    await condition_add(memory_pool, "FilterResolved2", status="resolved")
 
-    active = await condition_list(pool, status="active")
+    active = await condition_list(memory_pool, status="active")
     names = [c["name"] for c in active]
     assert "FilterActive2" in names
     assert "FilterResolved2" not in names
 
 
-async def test_condition_update(pool):
+async def test_condition_update(memory_pool):
     """condition_update modifies allowed fields and updates updated_at."""
     from butlers.tools.health import condition_add, condition_update
 
-    cond = await condition_add(pool, "UpdateCond2", status="active")
-    updated = await condition_update(pool, str(cond["id"]), status="managed", notes="Under control")
+    cond = await condition_add(memory_pool, "UpdateCond2", status="active")
+    updated = await condition_update(
+        memory_pool, str(cond["id"]), status="managed", notes="Under control"
+    )
     assert updated["status"] == "managed"
     assert updated["notes"] == "Under control"
     assert updated["name"] == "UpdateCond2"
 
 
-async def test_condition_update_invalid_status(pool):
+async def test_condition_update_invalid_status(memory_pool):
     """condition_update rejects invalid status values."""
     from butlers.tools.health import condition_add, condition_update
 
-    cond = await condition_add(pool, "UpdateBadStatus")
+    cond = await condition_add(memory_pool, "UpdateBadStatus")
     with pytest.raises(ValueError, match="Invalid condition status"):
-        await condition_update(pool, str(cond["id"]), status="cured")
+        await condition_update(memory_pool, str(cond["id"]), status="cured")
 
 
-async def test_condition_update_not_found(pool):
+async def test_condition_update_not_found(memory_pool):
     """condition_update raises ValueError for non-existent condition."""
     from butlers.tools.health import condition_update
 
     with pytest.raises(ValueError, match="not found"):
-        await condition_update(pool, str(uuid.uuid4()), status="resolved")
+        await condition_update(memory_pool, str(uuid.uuid4()), status="resolved")
 
 
-async def test_condition_update_no_valid_fields(pool):
+async def test_condition_update_no_valid_fields(memory_pool):
     """condition_update raises ValueError when no valid fields are given."""
     from butlers.tools.health import condition_add, condition_update
 
-    cond = await condition_add(pool, "NoFieldCond2")
+    cond = await condition_add(memory_pool, "NoFieldCond2")
     with pytest.raises(ValueError, match="No valid fields"):
-        await condition_update(pool, str(cond["id"]), bogus_field="nope")
+        await condition_update(memory_pool, str(cond["id"]), bogus_field="nope")
 
 
-async def test_condition_delete_retracts(pool):
+async def test_condition_delete_retracts(memory_pool):
     """condition_delete soft-deletes so the condition disappears from list."""
     from butlers.tools.health import condition_add, condition_delete, condition_list
 
-    cond = await condition_add(pool, "DelCond2", status="active")
-    assert "DelCond2" in [c["name"] for c in await condition_list(pool)]
+    cond = await condition_add(memory_pool, "DelCond2", status="active")
+    assert "DelCond2" in [c["name"] for c in await condition_list(memory_pool)]
 
-    ok = await condition_delete(pool, str(cond["id"]))
+    ok = await condition_delete(memory_pool, str(cond["id"]))
     assert ok is True
-    assert "DelCond2" not in [c["name"] for c in await condition_list(pool)]
+    assert "DelCond2" not in [c["name"] for c in await condition_list(memory_pool)]
 
     # The fact is retained but retracted (audit-preserving soft delete).
-    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", cond["id"])
+    validity = await memory_pool.fetchval("SELECT validity FROM facts WHERE id = $1", cond["id"])
     assert validity == "retracted"
 
 
-async def test_condition_delete_not_found(pool):
+async def test_condition_delete_not_found(memory_pool):
     """condition_delete raises ValueError for a non-existent condition."""
     from butlers.tools.health import condition_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await condition_delete(pool, str(uuid.uuid4()))
+        await condition_delete(memory_pool, str(uuid.uuid4()))
 
 
 # ------------------------------------------------------------------
@@ -724,82 +717,82 @@ async def test_condition_delete_not_found(pool):
 # ------------------------------------------------------------------
 
 
-async def test_symptom_log(pool):
+async def test_symptom_log(memory_pool):
     """symptom_log inserts a symptom with severity."""
     from butlers.tools.health import symptom_log
 
-    symptom = await symptom_log(pool, "Headache2", 7, notes="After exercise")
+    symptom = await symptom_log(memory_pool, "Headache2", 7, notes="After exercise")
     assert symptom["name"] == "Headache2"
     assert symptom["severity"] == 7
     assert symptom["notes"] == "After exercise"
 
 
-async def test_symptom_log_with_condition(pool):
+async def test_symptom_log_with_condition(memory_pool):
     """symptom_log links a symptom to a condition."""
     from butlers.tools.health import condition_add, symptom_log
 
-    cond = await condition_add(pool, "Migraine")
-    symptom = await symptom_log(pool, "Headache_linked", 6, condition_id=str(cond["id"]))
+    cond = await condition_add(memory_pool, "Migraine")
+    symptom = await symptom_log(memory_pool, "Headache_linked", 6, condition_id=str(cond["id"]))
     assert symptom["condition_id"] == cond["id"]
 
 
-async def test_symptom_log_invalid_condition(pool):
+async def test_symptom_log_invalid_condition(memory_pool):
     """symptom_log rejects invalid condition_id."""
     from butlers.tools.health import symptom_log
 
     with pytest.raises(ValueError, match="Condition.*not found"):
-        await symptom_log(pool, "BadLink", 5, condition_id=str(uuid.uuid4()))
+        await symptom_log(memory_pool, "BadLink", 5, condition_id=str(uuid.uuid4()))
 
 
-async def test_symptom_log_invalid_severity_low(pool):
+async def test_symptom_log_invalid_severity_low(memory_pool):
     """symptom_log rejects severity below 1."""
     from butlers.tools.health import symptom_log
 
     with pytest.raises(ValueError, match="Severity must be between 1 and 10"):
-        await symptom_log(pool, "LowSev", 0)
+        await symptom_log(memory_pool, "LowSev", 0)
 
 
-async def test_symptom_log_invalid_severity_high(pool):
+async def test_symptom_log_invalid_severity_high(memory_pool):
     """symptom_log rejects severity above 10."""
     from butlers.tools.health import symptom_log
 
     with pytest.raises(ValueError, match="Severity must be between 1 and 10"):
-        await symptom_log(pool, "HighSev", 11)
+        await symptom_log(memory_pool, "HighSev", 11)
 
 
-async def test_symptom_log_with_timestamp(pool):
+async def test_symptom_log_with_timestamp(memory_pool):
     """symptom_log accepts a custom occurred_at timestamp."""
     from butlers.tools.health import symptom_log
 
     ts = _utcnow() - timedelta(hours=3)
-    symptom = await symptom_log(pool, "Nausea2", 4, occurred_at=ts)
+    symptom = await symptom_log(memory_pool, "Nausea2", 4, occurred_at=ts)
     assert symptom["occurred_at"] is not None
 
 
-async def test_symptom_history_all(pool):
+async def test_symptom_history_all(memory_pool):
     """symptom_history returns all symptoms when no filters provided."""
     from butlers.tools.health import symptom_history, symptom_log
 
-    await symptom_log(pool, "HistAll_A2", 3)
-    await symptom_log(pool, "HistAll_B2", 5)
+    await symptom_log(memory_pool, "HistAll_A2", 3)
+    await symptom_log(memory_pool, "HistAll_B2", 5)
 
-    history = await symptom_history(pool)
+    history = await symptom_history(memory_pool)
     names = [s["name"] for s in history]
     assert "HistAll_A2" in names
     assert "HistAll_B2" in names
 
 
-async def test_symptom_history_with_date_filters(pool):
+async def test_symptom_history_with_date_filters(memory_pool):
     """symptom_history respects start_date and end_date filters."""
     from butlers.tools.health import symptom_history, symptom_log
 
     now = _utcnow()
-    await symptom_log(pool, "DateSym2", 3, occurred_at=now - timedelta(days=5))
-    await symptom_log(pool, "DateSym2", 5, occurred_at=now - timedelta(days=2))
-    await symptom_log(pool, "DateSym2", 7, occurred_at=now)
+    await symptom_log(memory_pool, "DateSym2", 3, occurred_at=now - timedelta(days=5))
+    await symptom_log(memory_pool, "DateSym2", 5, occurred_at=now - timedelta(days=2))
+    await symptom_log(memory_pool, "DateSym2", 7, occurred_at=now)
 
     history = await symptom_history(
-        pool,
+        memory_pool,
         start_date=now - timedelta(days=3),
         end_date=now - timedelta(days=1),
     )
@@ -809,42 +802,42 @@ async def test_symptom_history_with_date_filters(pool):
     assert date_syms[0]["severity"] == 5
 
 
-async def test_symptom_search_by_name(pool):
+async def test_symptom_search_by_name(memory_pool):
     """symptom_search finds symptoms by name (case-insensitive)."""
     from butlers.tools.health import symptom_log, symptom_search
 
-    await symptom_log(pool, "SearchHeadache", 8)
-    await symptom_log(pool, "BackPain_search", 5)
+    await symptom_log(memory_pool, "SearchHeadache", 8)
+    await symptom_log(memory_pool, "BackPain_search", 5)
 
-    results = await symptom_search(pool, name="SearchHeadache")
+    results = await symptom_search(memory_pool, name="SearchHeadache")
     assert all(s["name"] == "SearchHeadache" for s in results)
     assert len(results) >= 1
 
 
-async def test_symptom_search_by_severity_range(pool):
+async def test_symptom_search_by_severity_range(memory_pool):
     """symptom_search filters by min and max severity."""
     from butlers.tools.health import symptom_log, symptom_search
 
-    await symptom_log(pool, "SevSearch_low", 2)
-    await symptom_log(pool, "SevSearch_mid", 6)
-    await symptom_log(pool, "SevSearch_high", 9)
+    await symptom_log(memory_pool, "SevSearch_low", 2)
+    await symptom_log(memory_pool, "SevSearch_mid", 6)
+    await symptom_log(memory_pool, "SevSearch_high", 9)
 
-    results = await symptom_search(pool, min_severity=7, max_severity=10)
+    results = await symptom_search(memory_pool, min_severity=7, max_severity=10)
     severities = [s["severity"] for s in results]
     assert all(7 <= s <= 10 for s in severities)
 
 
-async def test_symptom_search_combined(pool):
+async def test_symptom_search_combined(memory_pool):
     """symptom_search combines name, severity, and date filters with AND logic."""
     from butlers.tools.health import symptom_log, symptom_search
 
     now = _utcnow()
-    await symptom_log(pool, "CombinedSearch", 8, occurred_at=now - timedelta(days=1))
-    await symptom_log(pool, "CombinedSearch", 3, occurred_at=now - timedelta(days=1))
-    await symptom_log(pool, "OtherSymptom", 8, occurred_at=now - timedelta(days=1))
+    await symptom_log(memory_pool, "CombinedSearch", 8, occurred_at=now - timedelta(days=1))
+    await symptom_log(memory_pool, "CombinedSearch", 3, occurred_at=now - timedelta(days=1))
+    await symptom_log(memory_pool, "OtherSymptom", 8, occurred_at=now - timedelta(days=1))
 
     results = await symptom_search(
-        pool,
+        memory_pool,
         name="CombinedSearch",
         min_severity=5,
         start_date=now - timedelta(days=2),
@@ -854,22 +847,22 @@ async def test_symptom_search_combined(pool):
     assert all(s["name"] == "CombinedSearch" and s["severity"] >= 5 for s in results)
 
 
-async def test_symptom_search_no_matches(pool):
+async def test_symptom_search_no_matches(memory_pool):
     """symptom_search returns empty list when no symptoms match."""
     from butlers.tools.health import symptom_search
 
-    results = await symptom_search(pool, name="ZZZ_NoMatch_ZZZ")
+    results = await symptom_search(memory_pool, name="ZZZ_NoMatch_ZZZ")
     assert results == []
 
 
-async def test_symptom_update_edits_in_place(pool):
+async def test_symptom_update_edits_in_place(memory_pool):
     """symptom_update edits in place and repairs legacy catalog exposure."""
     from butlers.tools.health import symptom_log, symptom_search, symptom_update
 
-    sym = await symptom_log(pool, "UpdSym", 4, notes="mild")
-    source_schema = await pool.fetchval("SELECT current_schema()")
-    await pool.execute("UPDATE facts SET sensitivity = 'normal' WHERE id = $1", sym["id"])
-    await pool.execute(
+    sym = await symptom_log(memory_pool, "UpdSym", 4, notes="mild")
+    source_schema = await memory_pool.fetchval("SELECT current_schema()")
+    await memory_pool.execute("UPDATE facts SET sensitivity = 'normal' WHERE id = $1", sym["id"])
+    await memory_pool.execute(
         "INSERT INTO public.memory_catalog"
         " (source_schema, source_table, source_id, summary, sensitivity)"
         " VALUES ($1, 'facts', $2, 'legacy symptom summary', 'normal')",
@@ -877,15 +870,17 @@ async def test_symptom_update_edits_in_place(pool):
         sym["id"],
     )
 
-    updated = await symptom_update(pool, str(sym["id"]), severity=8, notes="worse now")
+    updated = await symptom_update(memory_pool, str(sym["id"]), severity=8, notes="worse now")
     # Same identity — temporal facts are not superseded.
     assert updated["id"] == sym["id"]
     assert updated["severity"] == 8
     assert updated["notes"] == "worse now"
 
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", sym["id"])
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", sym["id"]
+    )
     assert sensitivity == "confidential"
-    catalog_visible = await pool.fetchval(
+    catalog_visible = await memory_pool.fetchval(
         "SELECT count(*) FROM public.memory_catalog"
         " WHERE source_schema = $1 AND source_table = 'facts' AND source_id = $2"
         " AND invalid_at IS NULL",
@@ -895,68 +890,68 @@ async def test_symptom_update_edits_in_place(pool):
     assert catalog_visible == 0
 
     # Exactly one active entry remains (no duplicate coexisting symptom).
-    matches = [s for s in await symptom_search(pool, name="UpdSym")]
+    matches = [s for s in await symptom_search(memory_pool, name="UpdSym")]
     assert len(matches) == 1
     assert matches[0]["severity"] == 8
 
 
-async def test_symptom_update_invalid_severity(pool):
+async def test_symptom_update_invalid_severity(memory_pool):
     """symptom_update rejects severity outside 1-10."""
     from butlers.tools.health import symptom_log, symptom_update
 
-    sym = await symptom_log(pool, "BadSevUpd", 5)
+    sym = await symptom_log(memory_pool, "BadSevUpd", 5)
     with pytest.raises(ValueError, match="Severity must be between 1 and 10"):
-        await symptom_update(pool, str(sym["id"]), severity=0)
+        await symptom_update(memory_pool, str(sym["id"]), severity=0)
 
 
-async def test_symptom_update_invalid_condition(pool):
+async def test_symptom_update_invalid_condition(memory_pool):
     """symptom_update rejects a condition_id that does not exist."""
     from butlers.tools.health import symptom_log, symptom_update
 
-    sym = await symptom_log(pool, "BadCondUpd", 5)
+    sym = await symptom_log(memory_pool, "BadCondUpd", 5)
     with pytest.raises(ValueError, match="Condition.*not found"):
-        await symptom_update(pool, str(sym["id"]), condition_id=str(uuid.uuid4()))
+        await symptom_update(memory_pool, str(sym["id"]), condition_id=str(uuid.uuid4()))
 
 
-async def test_symptom_update_not_found(pool):
+async def test_symptom_update_not_found(memory_pool):
     """symptom_update raises ValueError for a non-existent symptom."""
     from butlers.tools.health import symptom_update
 
     with pytest.raises(ValueError, match="not found"):
-        await symptom_update(pool, str(uuid.uuid4()), severity=5)
+        await symptom_update(memory_pool, str(uuid.uuid4()), severity=5)
 
 
-async def test_symptom_update_no_valid_fields(pool):
+async def test_symptom_update_no_valid_fields(memory_pool):
     """symptom_update raises ValueError when no allowed fields are given."""
     from butlers.tools.health import symptom_log, symptom_update
 
-    sym = await symptom_log(pool, "NoFieldsUpd", 5)
+    sym = await symptom_log(memory_pool, "NoFieldsUpd", 5)
     with pytest.raises(ValueError, match="No valid fields"):
-        await symptom_update(pool, str(sym["id"]), bogus_field="nope")
+        await symptom_update(memory_pool, str(sym["id"]), bogus_field="nope")
 
 
-async def test_symptom_delete_retracts(pool):
+async def test_symptom_delete_retracts(memory_pool):
     """symptom_delete soft-deletes so the symptom disappears from history."""
     from butlers.tools.health import symptom_delete, symptom_log, symptom_search
 
-    sym = await symptom_log(pool, "DelSym", 6)
-    assert "DelSym" in [s["name"] for s in await symptom_search(pool, name="DelSym")]
+    sym = await symptom_log(memory_pool, "DelSym", 6)
+    assert "DelSym" in [s["name"] for s in await symptom_search(memory_pool, name="DelSym")]
 
-    ok = await symptom_delete(pool, str(sym["id"]))
+    ok = await symptom_delete(memory_pool, str(sym["id"]))
     assert ok is True
-    assert "DelSym" not in [s["name"] for s in await symptom_search(pool, name="DelSym")]
+    assert "DelSym" not in [s["name"] for s in await symptom_search(memory_pool, name="DelSym")]
 
     # The fact is retained but retracted (audit-preserving soft delete).
-    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", sym["id"])
+    validity = await memory_pool.fetchval("SELECT validity FROM facts WHERE id = $1", sym["id"])
     assert validity == "retracted"
 
 
-async def test_symptom_delete_not_found(pool):
+async def test_symptom_delete_not_found(memory_pool):
     """symptom_delete raises ValueError for a non-existent symptom."""
     from butlers.tools.health import symptom_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await symptom_delete(pool, str(uuid.uuid4()))
+        await symptom_delete(memory_pool, str(uuid.uuid4()))
 
 
 # ------------------------------------------------------------------
@@ -1023,7 +1018,7 @@ def mock_embedding_engine(patch_embedding_engine):
     return patch_embedding_engine
 
 
-async def test_meal_log(pool, mock_embedding_engine):
+async def test_meal_log(memory_pool, mock_embedding_engine):
     """meal_log stores a fact and returns the expected API shape."""
     from butlers.tools.health import meal_log
 
@@ -1031,7 +1026,7 @@ async def test_meal_log(pool, mock_embedding_engine):
     sf_rv = {"id": fixed_id, "supersedes_id": None}
     with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=sf_rv)):
         meal = await meal_log(
-            pool,
+            memory_pool,
             "lunch",
             "Grilled chicken salad",
             eaten_at=_utcnow(),
@@ -1044,56 +1039,58 @@ async def test_meal_log(pool, mock_embedding_engine):
     assert meal["id"] == str(fixed_id)
 
 
-async def test_meal_log_without_nutrition(pool, mock_embedding_engine):
+async def test_meal_log_without_nutrition(memory_pool, mock_embedding_engine):
     """meal_log works without nutrition data (returns null nutrition fields)."""
     from butlers.tools.health import meal_log
 
     mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
-        meal = await meal_log(pool, "snack", "Apple", eaten_at=_utcnow())
+        meal = await meal_log(memory_pool, "snack", "Apple", eaten_at=_utcnow())
     assert meal["description"] == "Apple"
     assert meal["estimated_calories"] is None
     assert meal["macros"] is None
 
 
-async def test_meal_log_with_notes(pool, mock_embedding_engine):
+async def test_meal_log_with_notes(memory_pool, mock_embedding_engine):
     """meal_log accepts optional notes."""
     from butlers.tools.health import meal_log
 
     mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
-        meal = await meal_log(pool, "dinner", "Pasta", eaten_at=_utcnow(), notes="Homemade")
+        meal = await meal_log(memory_pool, "dinner", "Pasta", eaten_at=_utcnow(), notes="Homemade")
     assert meal["notes"] == "Homemade"
 
 
-async def test_meal_log_rejects_missing_eaten_at(pool):
+async def test_meal_log_rejects_missing_eaten_at(memory_pool):
     """meal_log rejects None eaten_at with an actionable error message."""
     from butlers.tools.health import meal_log
 
     with pytest.raises(ValueError, match="eaten_at is required"):
-        await meal_log(pool, "lunch", "Salad", eaten_at=None)
+        await meal_log(memory_pool, "lunch", "Salad", eaten_at=None)
 
 
-async def test_meal_log_rejects_invalid_type(pool):
+async def test_meal_log_rejects_invalid_type(memory_pool):
     """meal_log rejects invalid meal types before touching the DB."""
     from butlers.tools.health import meal_log
 
     with pytest.raises(ValueError, match="Invalid meal type"):
-        await meal_log(pool, "brunch", "Eggs Benedict", eaten_at=_utcnow())
+        await meal_log(memory_pool, "brunch", "Eggs Benedict", eaten_at=_utcnow())
 
 
-async def test_meal_log_valid_types(pool, mock_embedding_engine):
+async def test_meal_log_valid_types(memory_pool, mock_embedding_engine):
     """meal_log accepts all valid meal types."""
     from butlers.tools.health import meal_log
 
     for mtype in ("breakfast", "lunch", "dinner", "snack"):
         sf_rv = {"id": uuid.uuid4(), "supersedes_id": None}
         with patch("butlers.modules.memory.storage.store_fact", new=AsyncMock(return_value=sf_rv)):
-            meal = await meal_log(pool, mtype, f"Test {mtype}", eaten_at=_utcnow())
+            meal = await meal_log(memory_pool, mtype, f"Test {mtype}", eaten_at=_utcnow())
         assert meal["type"] == mtype
 
 
-async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embedding_engine):
+async def test_meal_log_store_fact_called_with_correct_predicate(
+    memory_pool, mock_embedding_engine
+):
     """meal_log calls store_fact with meal_{type} predicate and correct metadata."""
     from butlers.tools.health import meal_log
 
@@ -1102,7 +1099,7 @@ async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embe
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         eaten = datetime(2026, 3, 7, 12, 0, 0, tzinfo=UTC)
         await meal_log(
-            pool,
+            memory_pool,
             "breakfast",
             "Oatmeal",
             nutrition={"calories": 300},
@@ -1124,7 +1121,7 @@ async def test_meal_log_store_fact_called_with_correct_predicate(pool, mock_embe
     assert kwargs["metadata"]["meal_items"] == []
 
 
-async def test_meal_log_creates_calendar_event_for_future_meal(pool, mock_embedding_engine):
+async def test_meal_log_creates_calendar_event_for_future_meal(memory_pool, mock_embedding_engine):
     """meal_log calls create_calendar_event_fn for meals at or after now."""
     from butlers.tools.health import meal_log
 
@@ -1134,7 +1131,7 @@ async def test_meal_log_creates_calendar_event_for_future_meal(pool, mock_embedd
 
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         await meal_log(
-            pool,
+            memory_pool,
             "lunch",
             "Grilled salmon",
             eaten_at=future,
@@ -1151,7 +1148,7 @@ async def test_meal_log_creates_calendar_event_for_future_meal(pool, mock_embedd
     assert "with lemon" in kwargs["description"]
 
 
-async def test_meal_log_skips_calendar_event_for_past_meal(pool, mock_embedding_engine):
+async def test_meal_log_skips_calendar_event_for_past_meal(memory_pool, mock_embedding_engine):
     """meal_log does NOT call create_calendar_event_fn for historical meals."""
     from butlers.tools.health import meal_log
 
@@ -1161,7 +1158,7 @@ async def test_meal_log_skips_calendar_event_for_past_meal(pool, mock_embedding_
 
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         await meal_log(
-            pool,
+            memory_pool,
             "dinner",
             "Old pasta",
             eaten_at=past,
@@ -1171,7 +1168,7 @@ async def test_meal_log_skips_calendar_event_for_past_meal(pool, mock_embedding_
     mock_cal.assert_not_awaited()
 
 
-async def test_meal_log_calendar_error_does_not_fail_log(pool, mock_embedding_engine):
+async def test_meal_log_calendar_error_does_not_fail_log(memory_pool, mock_embedding_engine):
     """A calendar event creation failure does not prevent the meal from being logged."""
     from butlers.tools.health import meal_log
 
@@ -1181,7 +1178,7 @@ async def test_meal_log_calendar_error_does_not_fail_log(pool, mock_embedding_en
 
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(
-            pool,
+            memory_pool,
             "breakfast",
             "Eggs",
             eaten_at=future,
@@ -1192,16 +1189,16 @@ async def test_meal_log_calendar_error_does_not_fail_log(pool, mock_embedding_en
     mock_sf.assert_awaited_once()
 
 
-async def test_meal_history_all(pool):
+async def test_meal_history_all(memory_pool):
     """meal_history returns all meals in reverse chronological order."""
     from butlers.tools.health import meal_history
 
     now = _utcnow()
-    await _insert_fact(pool, "meal_breakfast", "BH_first", now - timedelta(hours=8))
-    await _insert_fact(pool, "meal_lunch", "BH_second", now - timedelta(hours=4))
-    await _insert_fact(pool, "meal_dinner", "BH_third", now - timedelta(minutes=1))
+    await _insert_fact(memory_pool, "meal_breakfast", "BH_first", now - timedelta(hours=8))
+    await _insert_fact(memory_pool, "meal_lunch", "BH_second", now - timedelta(hours=4))
+    await _insert_fact(memory_pool, "meal_dinner", "BH_third", now - timedelta(minutes=1))
 
-    history = await meal_history(pool, start_date=now - timedelta(hours=9), end_date=now)
+    history = await meal_history(memory_pool, start_date=now - timedelta(hours=9), end_date=now)
     descriptions = [m["description"] for m in history]
     assert "BH_third" in descriptions
     assert "BH_first" in descriptions
@@ -1209,41 +1206,41 @@ async def test_meal_history_all(pool):
     assert descriptions.index("BH_third") < descriptions.index("BH_first")
 
 
-async def test_meal_history_by_type(pool):
+async def test_meal_history_by_type(memory_pool):
     """meal_history filters by meal type."""
     from butlers.tools.health import meal_history
 
     now = _utcnow()
-    await _insert_fact(pool, "meal_breakfast", "TypeFilter_B", now - timedelta(hours=2))
-    await _insert_fact(pool, "meal_dinner", "TypeFilter_D", now - timedelta(minutes=1))
+    await _insert_fact(memory_pool, "meal_breakfast", "TypeFilter_B", now - timedelta(hours=2))
+    await _insert_fact(memory_pool, "meal_dinner", "TypeFilter_D", now - timedelta(minutes=1))
 
     history = await meal_history(
-        pool, type="dinner", start_date=now - timedelta(hours=3), end_date=now
+        memory_pool, type="dinner", start_date=now - timedelta(hours=3), end_date=now
     )
     descriptions = [m["description"] for m in history]
     assert "TypeFilter_D" in descriptions
     assert "TypeFilter_B" not in descriptions
 
 
-async def test_meal_history_rejects_invalid_type(pool):
+async def test_meal_history_rejects_invalid_type(memory_pool):
     """meal_history raises ValueError for invalid meal type."""
     from butlers.tools.health import meal_history
 
     with pytest.raises(ValueError, match="Invalid meal type"):
-        await meal_history(pool, type="brunch")
+        await meal_history(memory_pool, type="brunch")
 
 
-async def test_meal_history_with_date_range(pool):
+async def test_meal_history_with_date_range(memory_pool):
     """meal_history respects start_date and end_date."""
     from butlers.tools.health import meal_history
 
     now = _utcnow()
-    await _insert_fact(pool, "meal_lunch", "DateRange_old", now - timedelta(days=5))
-    await _insert_fact(pool, "meal_lunch", "DateRange_mid", now - timedelta(days=2))
-    await _insert_fact(pool, "meal_lunch", "DateRange_new", now - timedelta(minutes=1))
+    await _insert_fact(memory_pool, "meal_lunch", "DateRange_old", now - timedelta(days=5))
+    await _insert_fact(memory_pool, "meal_lunch", "DateRange_mid", now - timedelta(days=2))
+    await _insert_fact(memory_pool, "meal_lunch", "DateRange_new", now - timedelta(minutes=1))
 
     history = await meal_history(
-        pool, start_date=now - timedelta(days=3), end_date=now - timedelta(days=1)
+        memory_pool, start_date=now - timedelta(days=3), end_date=now - timedelta(days=1)
     )
     descriptions = [m["description"] for m in history]
     assert "DateRange_mid" in descriptions
@@ -1251,13 +1248,13 @@ async def test_meal_history_with_date_range(pool):
     assert "DateRange_new" not in descriptions
 
 
-async def test_meal_history_returns_correct_shape(pool):
+async def test_meal_history_returns_correct_shape(memory_pool):
     """meal_history returns rows with the expected API fields."""
     from butlers.tools.health import meal_history
 
     now = _utcnow()
     await _insert_fact(
-        pool,
+        memory_pool,
         "meal_dinner",
         "Roast chicken",
         now - timedelta(hours=1),
@@ -1270,7 +1267,7 @@ async def test_meal_history_returns_correct_shape(pool):
         },
     )
 
-    history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
+    history = await meal_history(memory_pool, start_date=now - timedelta(hours=2), end_date=now)
     assert len(history) == 1
     m = history[0]
     assert m["type"] == "dinner"
@@ -1288,7 +1285,7 @@ async def test_meal_history_returns_correct_shape(pool):
 # ---------------------------------------------------------------------------
 
 
-async def test_meal_log_with_contextual_metadata(pool, mock_embedding_engine):
+async def test_meal_log_with_contextual_metadata(memory_pool, mock_embedding_engine):
     """meal_log persists and returns the optional contextual metadata fields."""
     from butlers.tools.health import meal_log
 
@@ -1296,7 +1293,7 @@ async def test_meal_log_with_contextual_metadata(pool, mock_embedding_engine):
     mock_sf = AsyncMock(return_value={"id": fixed_id, "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(
-            pool,
+            memory_pool,
             "lunch",
             "Grilled salmon",
             eaten_at=_utcnow(),
@@ -1312,14 +1309,14 @@ async def test_meal_log_with_contextual_metadata(pool, mock_embedding_engine):
     assert meal["tags"] == ["high-protein", "gluten-free"]
 
 
-async def test_meal_log_contextual_metadata_stored_in_fact(pool, mock_embedding_engine):
+async def test_meal_log_contextual_metadata_stored_in_fact(memory_pool, mock_embedding_engine):
     """meal_log passes contextual metadata to store_fact in the metadata dict."""
     from butlers.tools.health import meal_log
 
     mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         await meal_log(
-            pool,
+            memory_pool,
             "dinner",
             "Pasta carbonara",
             eaten_at=_utcnow(),
@@ -1338,13 +1335,15 @@ async def test_meal_log_contextual_metadata_stored_in_fact(pool, mock_embedding_
     assert meta["tags"] == ["comfort-food", "high-carb"]
 
 
-async def test_meal_log_omitted_contextual_fields_absent_from_metadata(pool, mock_embedding_engine):
+async def test_meal_log_omitted_contextual_fields_absent_from_metadata(
+    memory_pool, mock_embedding_engine
+):
     """meal_log does NOT inject contextual keys into metadata when not provided."""
     from butlers.tools.health import meal_log
 
     mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
-        meal = await meal_log(pool, "breakfast", "Oatmeal", eaten_at=_utcnow())
+        meal = await meal_log(memory_pool, "breakfast", "Oatmeal", eaten_at=_utcnow())
 
     mock_sf.assert_called_once()
     _, kwargs = mock_sf.call_args
@@ -1361,14 +1360,14 @@ async def test_meal_log_omitted_contextual_fields_absent_from_metadata(pool, moc
     assert meal["tags"] is None
 
 
-async def test_meal_log_partial_contextual_fields(pool, mock_embedding_engine):
+async def test_meal_log_partial_contextual_fields(memory_pool, mock_embedding_engine):
     """meal_log accepts any subset of the optional contextual fields."""
     from butlers.tools.health import meal_log
 
     mock_sf = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     with patch("butlers.modules.memory.storage.store_fact", new=mock_sf):
         meal = await meal_log(
-            pool,
+            memory_pool,
             "snack",
             "Apple",
             eaten_at=_utcnow(),
@@ -1384,13 +1383,13 @@ async def test_meal_log_partial_contextual_fields(pool, mock_embedding_engine):
     assert "mood_before" not in kwargs["metadata"]
 
 
-async def test_meal_history_returns_contextual_metadata(pool):
+async def test_meal_history_returns_contextual_metadata(memory_pool):
     """meal_history surfaces contextual metadata fields from stored facts."""
     from butlers.tools.health import meal_history
 
     now = _utcnow()
     await _insert_fact(
-        pool,
+        memory_pool,
         "meal_lunch",
         "CtxMeta_meal",
         now - timedelta(hours=2),
@@ -1406,7 +1405,7 @@ async def test_meal_history_returns_contextual_metadata(pool):
         },
     )
 
-    history = await meal_history(pool, start_date=now - timedelta(hours=3), end_date=now)
+    history = await meal_history(memory_pool, start_date=now - timedelta(hours=3), end_date=now)
     ctx_meals = [m for m in history if m["description"] == "CtxMeta_meal"]
     assert len(ctx_meals) == 1
     m = ctx_meals[0]
@@ -1416,13 +1415,13 @@ async def test_meal_history_returns_contextual_metadata(pool):
     assert m["tags"] == ["vegetarian", "spicy"]
 
 
-async def test_meal_history_contextual_fields_none_when_absent(pool):
+async def test_meal_history_contextual_fields_none_when_absent(memory_pool):
     """meal_history returns None for contextual fields when not stored in the fact."""
     from butlers.tools.health import meal_history
 
     now = _utcnow()
     await _insert_fact(
-        pool,
+        memory_pool,
         "meal_breakfast",
         "PlainMeal_ctx",
         now - timedelta(hours=1),
@@ -1434,7 +1433,7 @@ async def test_meal_history_contextual_fields_none_when_absent(pool):
         },
     )
 
-    history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
+    history = await meal_history(memory_pool, start_date=now - timedelta(hours=2), end_date=now)
     plain = [m for m in history if m["description"] == "PlainMeal_ctx"]
     assert len(plain) == 1
     m = plain[0]
@@ -1444,13 +1443,13 @@ async def test_meal_history_contextual_fields_none_when_absent(pool):
     assert m["tags"] is None
 
 
-async def test_nutrition_summary(pool):
+async def test_nutrition_summary(memory_pool):
     """nutrition_summary aggregates totals and daily averages from metadata JSONB."""
     from butlers.tools.health import nutrition_summary
 
     now = _utcnow()
     await _insert_fact(
-        pool,
+        memory_pool,
         "meal_breakfast",
         "NutrSum_1",
         now - timedelta(days=3),
@@ -1460,7 +1459,7 @@ async def test_nutrition_summary(pool):
         },
     )
     await _insert_fact(
-        pool,
+        memory_pool,
         "meal_lunch",
         "NutrSum_2",
         now - timedelta(days=1),
@@ -1470,7 +1469,7 @@ async def test_nutrition_summary(pool):
         },  # noqa: E501
     )
 
-    summary = await nutrition_summary(pool, start_date=now - timedelta(days=7), end_date=now)
+    summary = await nutrition_summary(memory_pool, start_date=now - timedelta(days=7), end_date=now)
     assert summary["total_calories"] == 1000.0
     assert summary["total_protein_g"] == 55.0
     assert summary["total_carbs_g"] == 120.0
@@ -1480,13 +1479,13 @@ async def test_nutrition_summary(pool):
     assert summary["daily_avg_calories"] == round(1000.0 / 7, 1)
 
 
-async def test_nutrition_summary_empty(pool):
+async def test_nutrition_summary_empty(memory_pool):
     """nutrition_summary returns zeros when no meal facts with nutrition exist in range."""
     from butlers.tools.health import nutrition_summary
 
     now = _utcnow()
     summary = await nutrition_summary(
-        pool,
+        memory_pool,
         start_date=now - timedelta(hours=1),
         end_date=now - timedelta(minutes=30),
     )
@@ -1495,16 +1494,16 @@ async def test_nutrition_summary_empty(pool):
     assert summary["meal_count"] == 0
 
 
-async def test_nutrition_summary_excludes_facts_without_nutrition(pool):
+async def test_nutrition_summary_excludes_facts_without_nutrition(memory_pool):
     """nutrition_summary excludes meal facts that have no nutrition key in metadata."""
     from butlers.tools.health import nutrition_summary
 
     now = _utcnow()
     # Fact without nutrition in metadata
-    await _insert_fact(pool, "meal_snack", "Plain apple", now - timedelta(hours=2))
+    await _insert_fact(memory_pool, "meal_snack", "Plain apple", now - timedelta(hours=2))
     # Fact with nutrition
     await _insert_fact(
-        pool,
+        memory_pool,
         "meal_lunch",
         "Chicken bowl",
         now - timedelta(hours=1),
@@ -1514,7 +1513,9 @@ async def test_nutrition_summary_excludes_facts_without_nutrition(pool):
         },
     )
 
-    summary = await nutrition_summary(pool, start_date=now - timedelta(hours=3), end_date=now)
+    summary = await nutrition_summary(
+        memory_pool, start_date=now - timedelta(hours=3), end_date=now
+    )
     assert summary["meal_count"] == 1
     assert summary["total_calories"] == 300.0
 
@@ -1524,12 +1525,12 @@ async def test_nutrition_summary_excludes_facts_without_nutrition(pool):
 # ------------------------------------------------------------------
 
 
-async def test_research_save(pool):
+async def test_research_save(memory_pool):
     """research_save creates a research entry with title, content, tags."""
     from butlers.tools.health import research_save
 
     entry = await research_save(
-        pool,
+        memory_pool,
         "Vitamin D Benefits",
         "Important for bone health.",
         tags=["vitamins", "bones"],
@@ -1541,23 +1542,23 @@ async def test_research_save(pool):
     assert entry["source_url"] == "https://example.com/vitd"
 
 
-async def test_research_save_minimal(pool):
+async def test_research_save_minimal(memory_pool):
     """research_save works with only title and content."""
     from butlers.tools.health import research_save
 
-    entry = await research_save(pool, "Sleep", "8 hours is recommended.")
+    entry = await research_save(memory_pool, "Sleep", "8 hours is recommended.")
     assert entry["tags"] == []
     assert entry["source_url"] is None
     assert entry["condition_id"] is None
 
 
-async def test_research_save_with_condition(pool):
+async def test_research_save_with_condition(memory_pool):
     """research_save links to a condition when condition_id provided."""
     from butlers.tools.health import condition_add, research_save
 
-    cond = await condition_add(pool, "Diabetes_research")
+    cond = await condition_add(memory_pool, "Diabetes_research")
     entry = await research_save(
-        pool,
+        memory_pool,
         "Metformin Study",
         "Longevity benefits.",
         condition_id=str(cond["id"]),
@@ -1565,69 +1566,69 @@ async def test_research_save_with_condition(pool):
     assert entry["condition_id"] == cond["id"]
 
 
-async def test_research_save_invalid_condition(pool):
+async def test_research_save_invalid_condition(memory_pool):
     """research_save rejects invalid condition_id."""
     from butlers.tools.health import research_save
 
     with pytest.raises(ValueError, match="Condition.*not found"):
-        await research_save(pool, "Bad research", "Content", condition_id=str(uuid.uuid4()))
+        await research_save(memory_pool, "Bad research", "Content", condition_id=str(uuid.uuid4()))
 
 
-async def test_research_search_by_query(pool):
+async def test_research_search_by_query(memory_pool):
     """research_search finds entries by text query in title and content."""
     from butlers.tools.health import research_save, research_search
 
-    await research_save(pool, "Omega-3 RSearch", "Good for heart health.")
-    await research_save(pool, "Exercise RSearch", "Improves omega-3 absorption.")
+    await research_save(memory_pool, "Omega-3 RSearch", "Good for heart health.")
+    await research_save(memory_pool, "Exercise RSearch", "Improves omega-3 absorption.")
 
-    results = await research_search(pool, query="omega")
+    results = await research_search(memory_pool, query="omega")
     titles = [r["title"] for r in results]
     assert any("Omega-3" in t for t in titles)
 
 
-async def test_research_search_by_tags(pool):
+async def test_research_search_by_tags(memory_pool):
     """research_search filters by tags (any match)."""
     from butlers.tools.health import research_save, research_search
 
-    await research_save(pool, "TagSearch1", "Content", tags=["longevity", "diabetes"])
-    await research_save(pool, "TagSearch2", "Content", tags=["fitness"])
+    await research_save(memory_pool, "TagSearch1", "Content", tags=["longevity", "diabetes"])
+    await research_save(memory_pool, "TagSearch2", "Content", tags=["fitness"])
 
-    results = await research_search(pool, tags=["longevity"])
+    results = await research_search(memory_pool, tags=["longevity"])
     titles = [r["title"] for r in results]
     assert "TagSearch1" in titles
     assert "TagSearch2" not in titles
 
 
-async def test_research_search_by_condition(pool):
+async def test_research_search_by_condition(memory_pool):
     """research_search filters by condition_id."""
     from butlers.tools.health import condition_add, research_save, research_search
 
-    cond = await condition_add(pool, "CondSearch_research")
-    await research_save(pool, "CondLinked", "Content", condition_id=str(cond["id"]))
-    await research_save(pool, "CondUnlinked", "Content")
+    cond = await condition_add(memory_pool, "CondSearch_research")
+    await research_save(memory_pool, "CondLinked", "Content", condition_id=str(cond["id"]))
+    await research_save(memory_pool, "CondUnlinked", "Content")
 
-    results = await research_search(pool, condition_id=str(cond["id"]))
+    results = await research_search(memory_pool, condition_id=str(cond["id"]))
     titles = [r["title"] for r in results]
     assert "CondLinked" in titles
     assert "CondUnlinked" not in titles
 
 
-async def test_research_search_no_matches(pool):
+async def test_research_search_no_matches(memory_pool):
     """research_search returns empty list when no entries match."""
     from butlers.tools.health import research_search
 
-    results = await research_search(pool, query="ZZZ_no_match_ZZZ")
+    results = await research_search(memory_pool, query="ZZZ_no_match_ZZZ")
     assert results == []
 
 
-async def test_research_summarize_all(pool):
+async def test_research_summarize_all(memory_pool):
     """research_summarize returns count, tags, titles for all entries."""
     from butlers.tools.health import research_save, research_summarize
 
-    await research_save(pool, "SumAll_1", "Content1", tags=["tag_a"])
-    await research_save(pool, "SumAll_2", "Content2", tags=["tag_b", "tag_a"])
+    await research_save(memory_pool, "SumAll_1", "Content1", tags=["tag_a"])
+    await research_save(memory_pool, "SumAll_2", "Content2", tags=["tag_b", "tag_a"])
 
-    summary = await research_summarize(pool)
+    summary = await research_summarize(memory_pool)
     assert summary["count"] >= 2
     assert "SumAll_1" in summary["titles"]
     assert "SumAll_2" in summary["titles"]
@@ -1635,43 +1636,43 @@ async def test_research_summarize_all(pool):
     assert "tag_b" in summary["tags"]
 
 
-async def test_research_summarize_by_condition(pool):
+async def test_research_summarize_by_condition(memory_pool):
     """research_summarize scoped by condition."""
     from butlers.tools.health import condition_add, research_save, research_summarize
 
-    cond = await condition_add(pool, "SumCond_research")
+    cond = await condition_add(memory_pool, "SumCond_research")
     await research_save(
-        pool, "SumCond_linked", "Content", tags=["cond_tag"], condition_id=str(cond["id"])
+        memory_pool, "SumCond_linked", "Content", tags=["cond_tag"], condition_id=str(cond["id"])
     )
-    await research_save(pool, "SumCond_unlinked", "Content", tags=["other_tag"])
+    await research_save(memory_pool, "SumCond_unlinked", "Content", tags=["other_tag"])
 
-    summary = await research_summarize(pool, condition_id=str(cond["id"]))
+    summary = await research_summarize(memory_pool, condition_id=str(cond["id"]))
     assert summary["count"] >= 1
     assert "SumCond_linked" in summary["titles"]
     assert "SumCond_unlinked" not in summary["titles"]
 
 
-async def test_research_summarize_by_tags(pool):
+async def test_research_summarize_by_tags(memory_pool):
     """research_summarize scoped by tags."""
     from butlers.tools.health import research_save, research_summarize
 
-    await research_save(pool, "SumTag_match", "Content", tags=["rare_tag_sum"])
-    await research_save(pool, "SumTag_no", "Content", tags=["other_rare_tag_sum"])
+    await research_save(memory_pool, "SumTag_match", "Content", tags=["rare_tag_sum"])
+    await research_save(memory_pool, "SumTag_no", "Content", tags=["other_rare_tag_sum"])
 
-    summary = await research_summarize(pool, tags=["rare_tag_sum"])
+    summary = await research_summarize(memory_pool, tags=["rare_tag_sum"])
     assert summary["count"] >= 1
     assert "SumTag_match" in summary["titles"]
 
 
-async def test_research_update(pool):
+async def test_research_update(memory_pool):
     """research_update supersedes the note's prior property fact (subject-keyed)."""
     from butlers.tools.health import research_save, research_search, research_update
 
     entry = await research_save(
-        pool, "UpdateNote", "Original body.", tags=["a"], source_url="https://x/old"
+        memory_pool, "UpdateNote", "Original body.", tags=["a"], source_url="https://x/old"
     )
     updated = await research_update(
-        pool,
+        memory_pool,
         str(entry["id"]),
         content="Revised body.",
         tags=["a", "b"],
@@ -1683,60 +1684,62 @@ async def test_research_update(pool):
     assert updated["title"] == "UpdateNote"
 
     # Only the superseding note remains active for that title.
-    results = await research_search(pool, query="UpdateNote")
+    results = await research_search(memory_pool, query="UpdateNote")
     matching = [r for r in results if r["title"] == "UpdateNote"]
     assert len(matching) == 1
     assert matching[0]["content"] == "Revised body."
 
 
-async def test_research_update_not_found(pool):
+async def test_research_update_not_found(memory_pool):
     """research_update raises ValueError for a non-existent note."""
     from butlers.tools.health import research_update
 
     with pytest.raises(ValueError, match="not found"):
-        await research_update(pool, str(uuid.uuid4()), content="x")
+        await research_update(memory_pool, str(uuid.uuid4()), content="x")
 
 
-async def test_research_update_no_valid_fields(pool):
+async def test_research_update_no_valid_fields(memory_pool):
     """research_update raises ValueError when no valid fields are given."""
     from butlers.tools.health import research_save, research_update
 
-    entry = await research_save(pool, "NoFieldNote", "Body")
+    entry = await research_save(memory_pool, "NoFieldNote", "Body")
     with pytest.raises(ValueError, match="No valid fields"):
-        await research_update(pool, str(entry["id"]), bogus_field="nope")
+        await research_update(memory_pool, str(entry["id"]), bogus_field="nope")
 
 
-async def test_research_update_invalid_condition(pool):
+async def test_research_update_invalid_condition(memory_pool):
     """research_update rejects an invalid condition_id."""
     from butlers.tools.health import research_save, research_update
 
-    entry = await research_save(pool, "BadCondNote", "Body")
+    entry = await research_save(memory_pool, "BadCondNote", "Body")
     with pytest.raises(ValueError, match="Condition.*not found"):
-        await research_update(pool, str(entry["id"]), condition_id=str(uuid.uuid4()))
+        await research_update(memory_pool, str(entry["id"]), condition_id=str(uuid.uuid4()))
 
 
-async def test_research_delete_retracts(pool):
+async def test_research_delete_retracts(memory_pool):
     """research_delete soft-deletes so the note disappears from search."""
     from butlers.tools.health import research_delete, research_save, research_search
 
-    entry = await research_save(pool, "DelNote", "Body")
-    assert "DelNote" in [r["title"] for r in await research_search(pool, query="DelNote")]
+    entry = await research_save(memory_pool, "DelNote", "Body")
+    assert "DelNote" in [r["title"] for r in await research_search(memory_pool, query="DelNote")]
 
-    ok = await research_delete(pool, str(entry["id"]))
+    ok = await research_delete(memory_pool, str(entry["id"]))
     assert ok is True
-    assert "DelNote" not in [r["title"] for r in await research_search(pool, query="DelNote")]
+    assert "DelNote" not in [
+        r["title"] for r in await research_search(memory_pool, query="DelNote")
+    ]
 
     # The fact is retained but retracted (audit-preserving soft delete).
-    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", entry["id"])
+    validity = await memory_pool.fetchval("SELECT validity FROM facts WHERE id = $1", entry["id"])
     assert validity == "retracted"
 
 
-async def test_research_delete_not_found(pool):
+async def test_research_delete_not_found(memory_pool):
     """research_delete raises ValueError for a non-existent note."""
     from butlers.tools.health import research_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await research_delete(pool, str(uuid.uuid4()))
+        await research_delete(memory_pool, str(uuid.uuid4()))
 
 
 # ------------------------------------------------------------------
@@ -1744,7 +1747,7 @@ async def test_research_delete_not_found(pool):
 # ------------------------------------------------------------------
 
 
-async def test_health_summary(pool):
+async def test_health_summary(memory_pool):
     """health_summary returns measurements, medications, and conditions."""
     from butlers.tools.health import (
         condition_add,
@@ -1753,11 +1756,11 @@ async def test_health_summary(pool):
         medication_add,
     )
 
-    await measurement_log(pool, "weight", {"kg": 80})
-    await medication_add(pool, "SummaryMed2", "10mg", "daily")
-    await condition_add(pool, "SummaryCond2", status="active")
+    await measurement_log(memory_pool, "weight", {"kg": 80})
+    await medication_add(memory_pool, "SummaryMed2", "10mg", "daily")
+    await condition_add(memory_pool, "SummaryCond2", status="active")
 
-    summary = await health_summary(pool)
+    summary = await health_summary(memory_pool)
     assert "recent_measurements" in summary
     assert "active_medications" in summary
     assert "active_conditions" in summary
@@ -1774,19 +1777,19 @@ async def test_health_summary(pool):
     assert "SummaryCond2" in cond_names
 
 
-async def test_health_summary_sparse(pool):
+async def test_health_summary_sparse(memory_pool):
     """health_summary works with minimal data."""
     from butlers.tools.health import health_summary
 
     # Just check it doesn't error
-    summary = await health_summary(pool)
+    summary = await health_summary(memory_pool)
     assert isinstance(summary["recent_measurements"], list)
     assert isinstance(summary["absent_measurement_types"], list)
     assert isinstance(summary["active_medications"], list)
     assert isinstance(summary["active_conditions"], list)
 
 
-async def test_health_summary_lists_live_type_outside_frozen_five(pool):
+async def test_health_summary_lists_live_type_outside_frozen_five(memory_pool):
     """health_summary is not blind to measurement types outside the write-gate five.
 
     Wellness ingestion (Google Health) writes measurement_resting_hr directly
@@ -1797,29 +1800,29 @@ async def test_health_summary_lists_live_type_outside_frozen_five(pool):
     from butlers.tools.health import health_summary
 
     await _insert_fact(
-        pool, "measurement_resting_hr", "Resting HR: 58 bpm", _utcnow(), {"value": 58}
+        memory_pool, "measurement_resting_hr", "Resting HR: 58 bpm", _utcnow(), {"value": 58}
     )
 
-    summary = await health_summary(pool)
+    summary = await health_summary(memory_pool)
     types = {m["type"] for m in summary["recent_measurements"]}
     assert "resting_hr" in types
 
 
-async def test_health_summary_reports_absent_canonical_type_with_reason(pool):
+async def test_health_summary_reports_absent_canonical_type_with_reason(memory_pool):
     """A canonical (write-gate) measurement type with no data is named absent, not omitted."""
     from butlers.tools.health import health_summary, measurement_log
 
     # Seed only one canonical type; blood_sugar (also canonical) stays unseeded.
-    await measurement_log(pool, "blood_pressure", {"systolic": 120, "diastolic": 80})
+    await measurement_log(memory_pool, "blood_pressure", {"systolic": 120, "diastolic": 80})
 
-    summary = await health_summary(pool)
+    summary = await health_summary(memory_pool)
     absent_types = {a["type"]: a["reason"] for a in summary["absent_measurement_types"]}
     assert "blood_sugar" in absent_types
     assert "blood_sugar" in absent_types["blood_sugar"]
     assert "blood_pressure" not in absent_types
 
 
-async def test_trend_report_week(pool):
+async def test_trend_report_week(memory_pool):
     """trend_report returns weekly trend data with measurements, adherence, symptoms."""
     from butlers.tools.health import (
         measurement_log,
@@ -1831,25 +1834,27 @@ async def test_trend_report_week(pool):
 
     now = _utcnow()
     # Add data within the last 7 days
-    await measurement_log(pool, "weight", {"kg": 75}, measured_at=now - timedelta(days=5))
-    await measurement_log(pool, "weight", {"kg": 74}, measured_at=now - timedelta(days=1))
+    await measurement_log(memory_pool, "weight", {"kg": 75}, measured_at=now - timedelta(days=5))
+    await measurement_log(memory_pool, "weight", {"kg": 74}, measured_at=now - timedelta(days=1))
 
-    med = await medication_add(pool, "TrendMed", "10mg", "daily")
+    med = await medication_add(memory_pool, "TrendMed", "10mg", "daily")
     # Backdate the medication itself well before the trend window so the
     # frequency-expected denominator (below) sees the full 7-day window
     # rather than capping at a med "created" seconds ago in this test.
-    await pool.execute(
+    await memory_pool.execute(
         "UPDATE facts SET created_at = $1 WHERE id = $2",
         now - timedelta(days=30),
         med["id"],
     )
-    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=2))
-    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=1), skipped=True)
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now - timedelta(days=2))
+    await medication_log_dose(
+        memory_pool, str(med["id"]), taken_at=now - timedelta(days=1), skipped=True
+    )
 
-    await symptom_log(pool, "TrendHeadache", 6, occurred_at=now - timedelta(days=3))
-    await symptom_log(pool, "TrendHeadache", 4, occurred_at=now - timedelta(days=1))
+    await symptom_log(memory_pool, "TrendHeadache", 6, occurred_at=now - timedelta(days=3))
+    await symptom_log(memory_pool, "TrendHeadache", 4, occurred_at=now - timedelta(days=1))
 
-    report = await trend_report(pool, period="week")
+    report = await trend_report(memory_pool, period="week")
     assert report["period"] == "week"
     assert report["days"] == 7
 
@@ -1876,7 +1881,7 @@ async def test_trend_report_week(pool):
     assert "TrendHeadache" in report["symptom_severity_avg"]
 
 
-async def test_trend_report_medication_adherence_caps_expected_at_medication_age(pool):
+async def test_trend_report_medication_adherence_caps_expected_at_medication_age(memory_pool):
     """A medication created 3 days ago is not scored against a full 30-day expectation.
 
     Denominator-reconciliation fix (bu-2jtfw.2): expected_doses must be capped
@@ -1886,51 +1891,51 @@ async def test_trend_report_medication_adherence_caps_expected_at_medication_age
     from butlers.tools.health import medication_add, medication_log_dose, trend_report
 
     now = _utcnow()
-    med = await medication_add(pool, "NewMed", "5mg", "daily")
-    await pool.execute(
+    med = await medication_add(memory_pool, "NewMed", "5mg", "daily")
+    await memory_pool.execute(
         "UPDATE facts SET created_at = $1 WHERE id = $2",
         now - timedelta(days=3),
         med["id"],
     )
     # Perfectly adherent for the 3 days the medication has existed.
-    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=2))
-    await medication_log_dose(pool, str(med["id"]), taken_at=now - timedelta(days=1))
-    await medication_log_dose(pool, str(med["id"]), taken_at=now)
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now - timedelta(days=2))
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now - timedelta(days=1))
+    await medication_log_dose(memory_pool, str(med["id"]), taken_at=now)
 
-    report = await trend_report(pool, period="month")
+    report = await trend_report(memory_pool, period="month")
     med_adh = [m for m in report["medication_adherence"] if m["name"] == "NewMed"]
     assert len(med_adh) == 1
     assert med_adh[0]["expected_doses"] == 3
     assert med_adh[0]["adherence_rate"] == pytest.approx(100.0, abs=0.1)
 
 
-async def test_trend_report_month(pool):
+async def test_trend_report_month(memory_pool):
     """trend_report with period=month covers 30 days."""
     from butlers.tools.health import trend_report
 
-    report = await trend_report(pool, period="month")
+    report = await trend_report(memory_pool, period="month")
     assert report["period"] == "month"
     assert report["days"] == 30
 
 
-async def test_trend_report_empty(pool):
+async def test_trend_report_empty(memory_pool):
     """trend_report returns empty data when no health data exists in period."""
     from butlers.tools.health import trend_report
 
     # This is OK even if other tests added data, we just check structure
-    report = await trend_report(pool, period="week")
+    report = await trend_report(memory_pool, period="week")
     assert isinstance(report["measurement_trends"], dict)
     assert isinstance(report["medication_adherence"], list)
     assert isinstance(report["symptom_frequency"], dict)
     assert isinstance(report["symptom_severity_avg"], dict)
 
 
-async def test_trend_report_invalid_period(pool):
+async def test_trend_report_invalid_period(memory_pool):
     """trend_report rejects invalid period values."""
     from butlers.tools.health import trend_report
 
     with pytest.raises(ValueError, match="Invalid period"):
-        await trend_report(pool, period="year")
+        await trend_report(memory_pool, period="year")
 
 
 # ---------------------------------------------------------------------------
@@ -1959,16 +1964,16 @@ async def _insert_meal_fact(
     return meal_id
 
 
-async def test_meal_update_edits_in_place(pool):
+async def test_meal_update_edits_in_place(memory_pool):
     """meal_update edits the existing temporal fact in place (same id)."""
     from butlers.tools.health import meal_history, meal_update
 
     now = _utcnow()
     meal_id = await _insert_meal_fact(
-        pool, "meal_lunch", "UpdMeal", now - timedelta(hours=1), metadata={"notes": "ok"}
+        memory_pool, "meal_lunch", "UpdMeal", now - timedelta(hours=1), metadata={"notes": "ok"}
     )
     updated = await meal_update(
-        pool,
+        memory_pool,
         str(meal_id),
         description="UpdMeal v2",
         notes="much better",
@@ -1981,77 +1986,79 @@ async def test_meal_update_edits_in_place(pool):
     assert updated["estimated_calories"] == 500
 
     # Exactly one active entry remains (no duplicate coexisting meal).
-    history = await meal_history(pool, start_date=now - timedelta(hours=2), end_date=now)
+    history = await meal_history(memory_pool, start_date=now - timedelta(hours=2), end_date=now)
     matches = [m for m in history if m["description"] == "UpdMeal v2"]
     assert len(matches) == 1
     assert "UpdMeal" not in [m["description"] for m in history if m["description"] != "UpdMeal v2"]
 
 
-async def test_meal_update_type_rewrites_predicate(pool):
+async def test_meal_update_type_rewrites_predicate(memory_pool):
     """meal_update changes the predicate when the meal type changes."""
     from butlers.tools.health import meal_update
 
     now = _utcnow()
-    meal_id = await _insert_meal_fact(pool, "meal_lunch", "TypeChange", now)
-    updated = await meal_update(pool, str(meal_id), type="dinner")
+    meal_id = await _insert_meal_fact(memory_pool, "meal_lunch", "TypeChange", now)
+    updated = await meal_update(memory_pool, str(meal_id), type="dinner")
     assert updated["type"] == "dinner"
-    predicate = await pool.fetchval("SELECT predicate FROM facts WHERE id = $1", meal_id)
+    predicate = await memory_pool.fetchval("SELECT predicate FROM facts WHERE id = $1", meal_id)
     assert predicate == "meal_dinner"
 
 
-async def test_meal_update_invalid_type(pool):
+async def test_meal_update_invalid_type(memory_pool):
     """meal_update rejects an invalid meal type."""
     from butlers.tools.health import meal_update
 
     now = _utcnow()
-    meal_id = await _insert_meal_fact(pool, "meal_lunch", "BadTypeUpd", now)
+    meal_id = await _insert_meal_fact(memory_pool, "meal_lunch", "BadTypeUpd", now)
     with pytest.raises(ValueError, match="Invalid meal type"):
-        await meal_update(pool, str(meal_id), type="brunch")
+        await meal_update(memory_pool, str(meal_id), type="brunch")
 
 
-async def test_meal_update_not_found(pool):
+async def test_meal_update_not_found(memory_pool):
     """meal_update raises ValueError for a non-existent meal."""
     from butlers.tools.health import meal_update
 
     with pytest.raises(ValueError, match="not found"):
-        await meal_update(pool, str(uuid.uuid4()), description="nope")
+        await meal_update(memory_pool, str(uuid.uuid4()), description="nope")
 
 
-async def test_meal_update_no_valid_fields(pool):
+async def test_meal_update_no_valid_fields(memory_pool):
     """meal_update raises ValueError when no allowed fields are given."""
     from butlers.tools.health import meal_update
 
     now = _utcnow()
-    meal_id = await _insert_meal_fact(pool, "meal_lunch", "NoFieldsMeal", now)
+    meal_id = await _insert_meal_fact(memory_pool, "meal_lunch", "NoFieldsMeal", now)
     with pytest.raises(ValueError, match="No valid fields"):
-        await meal_update(pool, str(meal_id), bogus_field="nope")
+        await meal_update(memory_pool, str(meal_id), bogus_field="nope")
 
 
-async def test_meal_delete_retracts(pool):
+async def test_meal_delete_retracts(memory_pool):
     """meal_delete soft-deletes so the meal disappears from history."""
     from butlers.tools.health import meal_delete, meal_history
 
     now = _utcnow()
-    meal_id = await _insert_meal_fact(pool, "meal_dinner", "DelMeal", now - timedelta(minutes=5))
-    history = await meal_history(pool, start_date=now - timedelta(hours=1), end_date=now)
+    meal_id = await _insert_meal_fact(
+        memory_pool, "meal_dinner", "DelMeal", now - timedelta(minutes=5)
+    )
+    history = await meal_history(memory_pool, start_date=now - timedelta(hours=1), end_date=now)
     assert "DelMeal" in [m["description"] for m in history]
 
-    ok = await meal_delete(pool, str(meal_id))
+    ok = await meal_delete(memory_pool, str(meal_id))
     assert ok is True
-    history2 = await meal_history(pool, start_date=now - timedelta(hours=1), end_date=now)
+    history2 = await meal_history(memory_pool, start_date=now - timedelta(hours=1), end_date=now)
     assert "DelMeal" not in [m["description"] for m in history2]
 
     # The fact is retained but retracted (audit-preserving soft delete).
-    validity = await pool.fetchval("SELECT validity FROM facts WHERE id = $1", meal_id)
+    validity = await memory_pool.fetchval("SELECT validity FROM facts WHERE id = $1", meal_id)
     assert validity == "retracted"
 
 
-async def test_meal_delete_not_found(pool):
+async def test_meal_delete_not_found(memory_pool):
     """meal_delete raises ValueError for a non-existent meal."""
     from butlers.tools.health import meal_delete
 
     with pytest.raises(ValueError, match="not found"):
-        await meal_delete(pool, str(uuid.uuid4()))
+        await meal_delete(memory_pool, str(uuid.uuid4()))
 
 
 # ------------------------------------------------------------------
@@ -2066,62 +2073,74 @@ async def test_meal_delete_not_found(pool):
 # ------------------------------------------------------------------
 
 
-async def test_condition_add_is_confidential(pool):
+async def test_condition_add_is_confidential(memory_pool):
     from butlers.tools.health import condition_add
 
-    cond = await condition_add(pool, "AorticValveRegurgitation")
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", cond["id"])
+    cond = await condition_add(memory_pool, "AorticValveRegurgitation")
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", cond["id"]
+    )
     assert sensitivity == "confidential"
 
 
-async def test_condition_update_stays_confidential(pool):
+async def test_condition_update_stays_confidential(memory_pool):
     from butlers.tools.health import condition_add, condition_update
 
-    cond = await condition_add(pool, "UpdateSensitivityCond")
-    updated = await condition_update(pool, str(cond["id"]), status="managed")
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", updated["id"])
+    cond = await condition_add(memory_pool, "UpdateSensitivityCond")
+    updated = await condition_update(memory_pool, str(cond["id"]), status="managed")
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", updated["id"]
+    )
     assert sensitivity == "confidential"
 
 
-async def test_symptom_log_is_confidential(pool):
+async def test_symptom_log_is_confidential(memory_pool):
     from butlers.tools.health import symptom_log
 
-    symptom = await symptom_log(pool, "Chest pain", severity=7)
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", symptom["id"])
+    symptom = await symptom_log(memory_pool, "Chest pain", severity=7)
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", symptom["id"]
+    )
     assert sensitivity == "confidential"
 
 
-async def test_medication_add_is_confidential(pool):
+async def test_medication_add_is_confidential(memory_pool):
     from butlers.tools.health import medication_add
 
-    med = await medication_add(pool, "SensitivityMed", "10mg", "daily")
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", med["id"])
+    med = await medication_add(memory_pool, "SensitivityMed", "10mg", "daily")
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", med["id"]
+    )
     assert sensitivity == "confidential"
 
 
-async def test_medication_update_stays_confidential(pool):
+async def test_medication_update_stays_confidential(memory_pool):
     from butlers.tools.health import medication_add, medication_update
 
-    med = await medication_add(pool, "SensitivityUpdateMed", "10mg", "daily")
-    updated = await medication_update(pool, str(med["id"]), dosage="20mg")
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", updated["id"])
+    med = await medication_add(memory_pool, "SensitivityUpdateMed", "10mg", "daily")
+    updated = await medication_update(memory_pool, str(med["id"]), dosage="20mg")
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", updated["id"]
+    )
     assert sensitivity == "confidential"
 
 
-async def test_medication_log_dose_is_confidential(pool):
+async def test_medication_log_dose_is_confidential(memory_pool):
     from butlers.tools.health import medication_add, medication_log_dose
 
-    med = await medication_add(pool, "SensitivityDoseMed", "10mg", "daily")
-    dose = await medication_log_dose(pool, str(med["id"]))
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", dose["id"])
+    med = await medication_add(memory_pool, "SensitivityDoseMed", "10mg", "daily")
+    dose = await medication_log_dose(memory_pool, str(med["id"]))
+    sensitivity = await memory_pool.fetchval(
+        "SELECT sensitivity FROM facts WHERE id = $1", dose["id"]
+    )
     assert sensitivity == "confidential"
 
 
-async def test_measurement_log_stays_normal(pool):
+async def test_measurement_log_stays_normal(memory_pool):
     """Control case: measurements are deliberately NOT reclassified -- they
     remain fleet-discoverable trend data at store_fact's 'normal' default."""
     from butlers.tools.health import measurement_log
 
-    m = await measurement_log(pool, "weight", 70.5)
-    sensitivity = await pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", m["id"])
+    m = await measurement_log(memory_pool, "weight", 70.5)
+    sensitivity = await memory_pool.fetchval("SELECT sensitivity FROM facts WHERE id = $1", m["id"])
     assert sensitivity == "normal"

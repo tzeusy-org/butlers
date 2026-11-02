@@ -435,6 +435,13 @@ their separate authority contract or equate the trusted migration owner with run
   reads ids/count/provenance through a separate connection, and compares the final schema and
   vocabulary with a fresh dynamic-head database. Test downgrade/reupgrade separately at each
   bounded revision, preserving every row and all provenance outside the documented outcome fold.
+- A shared-DDL downgrade that counts schema-local consumers selects `alembic_version` namespaces
+  with `left(namespace.nspname, 3) <> 'pg_'`, never `NOT LIKE 'pg_%'`: LIKE's `_` is a wildcard, so
+  supported names such as `pgpeer` or `pga` would be omitted, undercounting retained consumers and
+  dropping shared objects they still use. The core246-305 consumer scans were corrected in place
+  (a forward revision cannot change an earlier downgrade); the real-PG pgpeer control in
+  `tests/migrations/test_dashboard_job_health_migration.py` executes every core scan and rejects the
+  old clause.
 - Table rewrites (rename old, create new) keep the old index names on the backup table; new index
   names must not collide.
 - `run_migrations` builds its Alembic config through

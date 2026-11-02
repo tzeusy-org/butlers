@@ -21,7 +21,6 @@ from butlers.core.approval_delivery_worker import (
     HandoffResult,
     start_approval_delivery_worker,
 )
-from butlers.db import register_jsonb_codec
 from butlers.modules.approvals import delivery_lifecycle
 from butlers.modules.approvals.delivery_lifecycle import (
     defer_pending_action,
@@ -34,7 +33,6 @@ from butlers.modules.approvals.delivery_recovery import (
 from butlers.modules.approvals.models import ActionStatus
 from butlers.modules.approvals.module import ApprovalsModule
 from butlers.modules.approvals.park import ParkAdmission, park_pending_action
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -44,28 +42,9 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "approvals"],
-    )
-
-
 @pytest.fixture
-async def delivery_pool(migrated_db_url: str):
-    pool = await asyncpg.create_pool(
-        migrated_db_url,
-        min_size=1,
-        max_size=8,
-        init=register_jsonb_codec,
-    )
-    await pool.execute(
-        "TRUNCATE approval_delivery_attempts, approval_delivery_cohort_members, "
-        "approval_delivery_presentations, approval_delivery_cohorts, "
-        "approval_delivery_intents, approval_events, pending_actions CASCADE"
-    )
+async def delivery_pool(db):
+    pool = await db("core", "approvals", max_size=8)
     await pool.execute(
         "UPDATE public.approvals_policy SET quiet_start_hour = NULL, "
         "quiet_end_hour = NULL, timezone = 'UTC' WHERE id = 1"
@@ -74,8 +53,7 @@ async def delivery_pool(migrated_db_url: str):
         "UPDATE approval_delivery_rollout "
         "SET admission_enabled = true, worker_enabled = false WHERE singleton"
     )
-    yield pool
-    await pool.close()
+    return pool
 
 
 async def _park(pool: asyncpg.Pool, *, ordinal: int = 0) -> ParkAdmission:
