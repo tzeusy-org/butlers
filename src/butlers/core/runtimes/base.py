@@ -199,7 +199,8 @@ class RuntimeAdapter(abc.ABC):
           side-effect gate. Set on all failure paths (non-zero exit, timeout).
         - ``terminal_error_text`` (str): The provider's structured terminal
           error (Claude failed result envelope ``result``, Codex ``turn.failed``
-          message), never tool output. With ``stderr`` it is the only text
+          message, Gemini failed ``result`` ``error.message``, OpenCode ``error``
+          event payload), never tool output. With ``stderr`` it is the only text
           usage-limit detection trusts on suppressed failures.
 
         Codex-specific:

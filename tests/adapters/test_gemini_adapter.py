@@ -417,6 +417,7 @@ async def test_recorded_streams_parse_to_text_tools_usage_and_terminal_error() -
     assert [call["name"] for call in error.tool_calls] == ["list_directory"]
     assert error.usage["input_tokens"] == 100
     assert info["is_pre_tool_call"] is False and info["exit_code"] == 53
+    assert info["terminal_error_text"].startswith("Reached max session turns for this session.")
 
 
 def test_catalog_gemini_model_ids_were_probed_against_the_pinned_cli() -> None:

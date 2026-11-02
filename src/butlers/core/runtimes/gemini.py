@@ -324,6 +324,31 @@ def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _gemini_terminal_error_text(stdout: str) -> str | None:
+    """Return the last failed ``result`` event's ``error.message``, else ``None``.
+
+    Stream-json writes the CLI's fatal error there (``status: "error"``). Each
+    stdout line is a CLI-encoded event, so model text and tool output stay
+    nested inside ``message``/``tool_result`` events and cannot forge one;
+    usage-limit detection can trust it where ``error_detail`` falls back to
+    raw stdout.
+    """
+    text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict) or obj.get("type") != "result":
+            continue
+        if obj.get("status") != "error":
+            continue
+        error = obj.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        text = message.strip() if isinstance(message, str) and message.strip() else None
+    return text
+
+
 class GeminiAdapter(RuntimeAdapter):
     """Runtime adapter for the Google Gemini CLI.
 
@@ -517,6 +542,8 @@ class GeminiAdapter(RuntimeAdapter):
             aggregate = served["executions"][0]["aggregate_usage"] if served["executions"] else {}
             usage = aggregate if aggregate.get("input_tokens") is not None else None
             terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
+            if terminal_error and (terminal_text := _gemini_terminal_error_text(stdout)):
+                self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
                 error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)

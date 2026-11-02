@@ -711,7 +711,7 @@ class UsageLimitSignal:
 # suppressed (Gate 1 / Gate 6a), but the account must be marked exhausted so the
 # next session does not retry it. Only text the adapter attributes to the
 # provider counts: its structured terminal error (``terminal_error_text``, the
-# failed result envelope / ``turn.failed`` message) and raw stderr. The
+# CLI's failed result / ``turn.failed`` / ``error`` event) and raw stderr. The
 # exception message and ``error_detail`` fall back to the stdout transcript,
 # where tool output can quote "usage limit" verbatim.
 _USAGE_LIMIT_TRUSTED_SOURCES: tuple[str, ...] = ("terminal_error_text", "stderr")
