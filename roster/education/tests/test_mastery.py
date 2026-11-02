@@ -71,7 +71,7 @@ def _node_row(
     }
 
 
-def _make_pool_with_conn(conn: AsyncMock) -> AsyncMock:
+def _make_pool_with_conn(conn: FakeConnection) -> AsyncMock:
     """Build a pool whose acquire() context manager yields the given conn."""
     pool = MagicMock()
     # pool.acquire() is an async context manager: __aenter__ returns conn
@@ -89,7 +89,7 @@ def _make_pool_with_conn(conn: AsyncMock) -> AsyncMock:
     return pool
 
 
-def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
+def _make_conn_with_transaction(conn: FakeConnection) -> FakeConnection:
     """Wire conn.transaction() as an async context manager."""
     tx_ctx = MagicMock()
     tx_ctx.__aenter__ = AsyncMock(return_value=None)
@@ -451,7 +451,7 @@ class TestMasteryRecordResponseScoring:
         quality: int,
         response_type: str = "review",
         review_qualities: list[int] | None = None,
-    ) -> tuple[Any, AsyncMock]:
+    ) -> tuple[Any, FakeConnection]:
         """Helper: set up mock and call mastery_record_response. Returns (result, conn)."""
         from butlers.tools.education.mastery import mastery_record_response
 
@@ -544,7 +544,7 @@ class TestMasteryStateMachineInRecordResponse:
         review_qualities: list[int] | None = None,
         qualities_from_db: list[int] | None = None,
         expect_mastery_graduation: bool = False,
-    ) -> tuple[Any, AsyncMock]:
+    ) -> tuple[Any, FakeConnection]:
         """Set up mock and call mastery_record_response."""
         from butlers.tools.education.mastery import mastery_record_response
 
@@ -581,7 +581,7 @@ class TestMasteryStateMachineInRecordResponse:
         )
         return response_id, conn
 
-    def _get_status_from_update_call(self, conn: AsyncMock) -> str | None:
+    def _get_status_from_update_call(self, conn: FakeConnection) -> str | None:
         """Extract the mastery_status value from the UPDATE execute call."""
         update_call = conn.execute.call_args
         if update_call is None:
