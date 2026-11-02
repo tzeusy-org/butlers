@@ -106,3 +106,46 @@ async def test_an_earlier_applied_strike_survives_a_later_edit():
     assert "~~Bill is overdue~~ Resolved" in sent
     assert "~~Bill is overdue soon~~" not in sent
     assert counts["applied"] == 1
+
+
+async def test_a_correlated_cluster_row_rendered_by_format_digest_is_struck():
+    def cand(name: str, entity: str | None) -> dict:
+        meta = {"entity_id": entity} if entity else {}
+        return {"origin_butler": "finance", "message": name, "metadata": meta}
+
+    rendered = await broker._format_digest(
+        [
+            cand("Water bill is overdue", "e1"),
+            cand("Rent bill is overdue", "e1"),
+            cand("Solo", None),
+        ]
+    )
+    assert "\n- [Finance] Rent bill is overdue" in rendered  # a stripped cluster row
+    text, anchored = broker.strike_digest_lines(
+        rendered, [("Rent bill is overdue", "Resolved"), ("Solo", "Resolved")]
+    )
+    assert anchored == [True, True]
+    assert "- [Finance] ~~Rent bill is overdue~~ Resolved" in text
+
+
+async def test_a_message_locked_by_another_run_stays_pending_and_is_not_edited():
+    conn = MagicMock()
+    conn.fetchval = AsyncMock(return_value=False)  # pg_try_advisory_xact_lock lost
+    conn.transaction = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+    )
+    acquire = MagicMock(
+        __aenter__=AsyncMock(return_value=conn), __aexit__=AsyncMock(return_value=False)
+    )
+    pool = _pool()
+    pool.acquire = MagicMock(return_value=acquire)
+    pool.fetchrow = AsyncMock(return_value={"delivery_ref": None})
+    row = _row("a", "Refill due")
+    pool.fetch = AsyncMock(return_value=[row])
+    amend = AsyncMock(return_value={"status": "edited"})
+
+    counts = await broker.apply_pending_amendments(pool, amend, now=_NOW)
+
+    amend.assert_not_awaited()
+    pool.execute.assert_not_awaited()  # no state change: the rows stay pending
+    assert counts == {"applied": 0, "folded": 0, "retry": 0}

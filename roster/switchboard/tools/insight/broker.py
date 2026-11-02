@@ -2015,7 +2015,7 @@ def strike_digest_lines(
     lines = delivery_text.split("\n")
     anchored = [False] * len(strikes)
     for n, (line_text, note) in enumerate(strikes):
-        pattern = re.compile(r"^(?:\d+\. |   - )(?:\[[^\]]*\] )?" + re.escape(line_text) + r"$")
+        pattern = re.compile(r"^(?:\d+\. |- )(?:\[[^\]]*\] )?" + re.escape(line_text) + r"$")
         hits = [i for i, row in enumerate(lines) if pattern.match(row)]
         if len(hits) != 1 or "~~" in lines[hits[0]]:
             continue
