@@ -520,6 +520,7 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
         expect(item, `list item for ${name}`).not.toBeNull();
         return within(item!).getByRole("link", {name: `View ${name}`});
       };
+      const rowsBeforeDuplicate = visibleRows;
       const duplicate = document.createElement("a");
       duplicate.href = "/butlers/service-1";
       duplicate.setAttribute("aria-label", "View   service-1");
@@ -533,7 +534,9 @@ describe("ButlerHeartbeatTile -- actual heartbeat consumer", () => {
         expect(() => rowFor("service-1")).toThrow();
       } finally {
         duplicate.remove();
-        visibleRows = indexVisibleRows();
+        expect(duplicate.isConnected).toBe(false);
+        // Only the external duplicate changed; the original rows stayed mounted.
+        visibleRows = rowsBeforeDuplicate;
       }
       for (const entry of facts) {
         const row = rowFor(entry.name);
