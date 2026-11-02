@@ -8,6 +8,7 @@ instead of wedging forever.  No live provider is contacted.
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from butlers.core.qa.publication.binding import OperationKind
+from butlers.core.qa.publication.binding import (
+    OperationKind,
+    PublicationBinding,
+    pr_text_payload,
+    request_digest,
+)
 from butlers.core.qa.publication.publisher import PublicationStatus, QaPublisher
 from butlers.core.qa.publication.reconcile import (
     ABSENCE_SETTLE,
@@ -29,6 +35,8 @@ pytestmark = pytest.mark.unit
 
 _EXPORT = synthetic_export()
 _BINDING = binding_for(_EXPORT)
+_LABELS = ("self-healing", "automated")
+_PR = 100
 
 
 async def _publish(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.UUID):
@@ -42,7 +50,7 @@ async def _publish(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.
         export=_EXPORT,
         title="fix(qa): ValueError in module:1",
         body="## Root Cause\nA missing guard.",
-        labels=["self-healing", "automated"],
+        labels=list(_LABELS),
         whitelist=whitelist,
     )
 
@@ -51,9 +59,24 @@ def _settled() -> datetime:
     return datetime.now(UTC) + ABSENCE_SETTLE + timedelta(seconds=1)
 
 
-async def _reconcile(provider, ledger, attempt_id, kind, binding=_BINDING, now=_settled):
+def _bound(kind: OperationKind) -> PublicationBinding:
+    """The binding the publisher used: PR follow-ups bind the created PR (the fake's first)."""
+    if kind in (OperationKind.PR_LABELS, OperationKind.PR_UPDATE):
+        return dataclasses.replace(_BINDING, pr_number=_PR)
+    return _BINDING
+
+
+async def _reconcile(
+    provider, ledger, attempt_id, kind, binding=None, now=_settled, labels=_LABELS
+):
     return await reconcile_operation(
-        ledger, provider, attempt_id=attempt_id, kind=kind, binding=binding, now=now
+        ledger,
+        provider,
+        attempt_id=attempt_id,
+        kind=kind,
+        binding=binding or _bound(kind),
+        now=now,
+        labels=labels,
     )
 
 
@@ -62,8 +85,9 @@ async def _reconcile(provider, ledger, attempt_id, kind, binding=_BINDING, now=_
     [
         ("create_pull_request", OperationKind.PR_CREATE),
         ("update_ref", OperationKind.BRANCH_PUSH),
+        ("set_labels", OperationKind.PR_LABELS),
     ],
-    ids=["pr_create-adopted", "branch_push-found"],
+    ids=["pr_create-adopted", "branch_push-found", "pr_labels-found"],
 )
 async def test_found_resource_releases_the_hold_and_a_rerun_finishes(lost, kind) -> None:
     provider, ledger, attempt_id = FakeProvider(lose_response_on=lost), FakeLedger(), uuid.uuid4()
@@ -84,7 +108,8 @@ async def test_found_resource_releases_the_hold_and_a_rerun_finishes(lost, kind)
     assert again.pr_number == pr_number
     names = [name for name, _ in provider.calls]
     assert names.count("update_ref") == 1 and names.count("create_pull_request") == 1
-    assert provider.prs[pr_number]["labels"] == ("self-healing", "automated")
+    assert names.count("set_labels") == 1
+    assert provider.prs[pr_number]["labels"] == _LABELS
 
 
 async def test_absent_pr_releases_the_hold_only_after_settling_and_never_recreates() -> None:
@@ -111,6 +136,100 @@ async def test_absent_pr_releases_the_hold_only_after_settling_and_never_recreat
     again = await _publish(provider, ledger, attempt_id)
     assert (again.status, again.category) == (PublicationStatus.FAILED, "pr_create_reconciled")
     assert [name for name, _ in provider.calls].count("create_pull_request") == 1
+
+
+async def test_absent_labels_release_the_hold_after_settling_and_are_never_reapplied() -> None:
+    provider = FakeProvider(raise_on_labels=AmbiguousOutcome("timed out before the remote"))
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+    await _publish(provider, ledger, attempt_id)
+    assert ledger.row(attempt_id, OperationKind.PR_LABELS).expected_object_id == str(_PR)
+
+    ledger.clock = _settled
+    result = await _reconcile(provider, ledger, attempt_id, OperationKind.PR_LABELS)
+
+    assert (result.status, result.observation) == ("reconciled", "resource_absent")
+    provider.raise_on_labels = None
+    again = await _publish(provider, ledger, attempt_id)
+    assert (again.status, again.category) == (PublicationStatus.FAILED, "pr_labels_reconciled")
+    assert [name for name, _ in provider.calls].count("set_labels") == 1
+
+
+async def _held_update(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.UUID):
+    """A ``pr_update`` of the published PR whose response was lost (no publisher path yet)."""
+    await _publish(provider, ledger, attempt_id)
+    binding = _bound(OperationKind.PR_UPDATE)
+    operation = await ledger.begin(
+        attempt_id=attempt_id,
+        kind=OperationKind.PR_UPDATE,
+        binding=binding,
+        request_digest=request_digest(pr_text_payload("fix(qa): retitled", "New body.")),
+        expected_object_id=str(_PR),
+    )
+    assert await ledger.start_egress(operation.id)
+    assert await ledger.record(operation.id, "ambiguous", new_object_id=None)
+
+
+@pytest.mark.parametrize(
+    ("title", "observation"),
+    [
+        ("fix(qa): retitled", "resource_found"),
+        ("fix(qa): ValueError in module:1", "resource_absent"),
+    ],
+    ids=["text-landed", "text-not-landed"],
+)
+async def test_pr_update_is_observed_by_the_bound_pr_text_digest(title, observation) -> None:
+    provider, ledger, attempt_id = FakeProvider(), FakeLedger(), uuid.uuid4()
+    await _held_update(provider, ledger, attempt_id)
+    provider.prs[_PR] |= {"title": title, "body": "New body."}
+    ledger.clock = _settled
+    effects = list(provider.calls)
+
+    result = await _reconcile(provider, ledger, attempt_id, OperationKind.PR_UPDATE, labels=None)
+
+    expected_object = str(_PR) if observation == "resource_found" else None
+    assert (result.status, result.observation, result.object_id) == (
+        "reconciled",
+        observation,
+        expected_object,
+    )
+    assert provider.calls == effects
+
+
+def _other_head(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.UUID) -> None:
+    provider.prs[_PR]["head"] = "qa/finance/somebody-else"
+
+
+def _missing_pr(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.UUID) -> None:
+    del provider.prs[_PR]
+
+
+def _unbound_row(provider: FakeProvider, ledger: FakeLedger, attempt_id: uuid.UUID) -> None:
+    # A row bound before follow-ups named their PR: nothing exact to observe.
+    ledger._replace(ledger.row(attempt_id, OperationKind.PR_LABELS).id, expected_object_id=None)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "labels", "category"),
+    [
+        (None, ("self-healing",), "payload_mismatch"),
+        (None, None, "labels_unbound"),
+        (_other_head, _LABELS, "foreign_pr"),
+        (_missing_pr, _LABELS, "pr_missing"),
+        (_unbound_row, _LABELS, "unbound_pr"),
+    ],
+    ids=["other-labels", "no-labels", "other-head", "missing-pr", "unbound-row"],
+)
+async def test_inexact_label_observation_keeps_the_hold(tamper, labels, category) -> None:
+    provider = FakeProvider(lose_response_on="set_labels")
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
+    await _publish(provider, ledger, attempt_id)
+    if tamper is not None:
+        tamper(provider, ledger, attempt_id)
+
+    result = await _reconcile(provider, ledger, attempt_id, OperationKind.PR_LABELS, labels=labels)
+
+    assert (result.status, result.category) == ("held", category)
+    assert ledger.row(attempt_id, OperationKind.PR_LABELS).holds_lineage
 
 
 async def _in_flight_create(
@@ -265,14 +384,18 @@ async def test_operation_that_holds_nothing_is_left_alone() -> None:
 
 async def test_sweep_rebuilds_each_binding_from_dispatcher_records_and_reconciles() -> None:
     provider, ledger = FakeProvider(lose_response_on="create_pull_request"), FakeLedger()
-    adopted, foreign = uuid.uuid4(), uuid.uuid4()
+    adopted, foreign, labelled = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     await _publish(provider, ledger, adopted)
     provider.lose_response_on = "update_ref"
     provider.refs.clear()
     await _publish(provider, ledger, foreign)
+    provider.lose_response_on = "set_labels"
+    provider.refs.clear()
+    provider.prs.clear()
+    await _publish(provider, ledger, labelled)
     effects = list(provider.calls)
 
-    def row(attempt_id, kind, branch):
+    def row(attempt_id, kind, branch, pr_number=None):
         op = ledger.row(attempt_id, kind)
         return {
             "operation_id": op.id,
@@ -280,6 +403,7 @@ async def test_sweep_rebuilds_each_binding_from_dispatcher_records_and_reconcile
             "kind": kind.value,
             "branch_name": branch,
             "head_sha": _EXPORT.head_sha,
+            "pr_number": pr_number,
         }
 
     pool = MagicMock()
@@ -289,18 +413,26 @@ async def test_sweep_rebuilds_each_binding_from_dispatcher_records_and_reconcile
             # The dispatcher records disagree with the stored digest: never observed.
             row(foreign, OperationKind.BRANCH_PUSH, "qa/finance/somebody-else"),
             {**row(foreign, OperationKind.BRANCH_PUSH, None), "operation_id": uuid.uuid4()},
+            # The PR comes from the attempt's own created-PR record.
+            row(labelled, OperationKind.PR_LABELS, _BINDING.branch, str(_PR)),
+            {**row(labelled, OperationKind.PR_LABELS, _BINDING.branch), "attempt_id": foreign},
         ]
     )
 
-    entries = await sweep_held_operations(pool, provider, ledger=ledger, now=_settled)
+    entries = await sweep_held_operations(
+        pool, provider, ledger=ledger, now=_settled, labels=_LABELS
+    )
 
     assert [(e.kind, e.status, e.category) for e in entries] == [
         ("pr_create", "reconciled", "resource_found"),
         ("branch_push", "held", "binding_mismatch"),
         ("branch_push", "held", "unbound_attempt"),
+        ("pr_labels", "reconciled", "resource_found"),
+        ("pr_labels", "held", "unbound_attempt"),
     ]
     assert not ledger.row(adopted, OperationKind.PR_CREATE).holds_lineage
     assert ledger.row(foreign, OperationKind.BRANCH_PUSH).holds_lineage
+    assert not ledger.row(labelled, OperationKind.PR_LABELS).holds_lineage
     assert provider.calls == effects
     (sql, limit) = pool.fetch.await_args.args
     assert "stage IN ('egress_started', 'ambiguous')" in sql and limit == 50

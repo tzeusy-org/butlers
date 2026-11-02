@@ -1,8 +1,9 @@
 """Read-only GitHub :class:`~butlers.core.qa.publication.reconcile.PublicationReader`.
 
-Reconciliation (REQ-qa-publication-authority-006) needs exactly two observations
-of the fixed-origin repository: where a ``qa/`` branch points, and which PRs run
-from a head branch onto a base.  This reader makes them with ``GET`` requests
+Reconciliation (REQ-qa-publication-authority-006) needs exactly three
+observations of the fixed-origin repository: where a ``qa/`` branch points, which
+PRs run from a head branch onto a base, and the state (head, base, title, body,
+labels) of one bound PR.  This reader makes them with ``GET`` requests
 only; it has no method that could send anything else, and it never follows a
 redirect, so a renamed or transferred repository is an error, not a new origin.
 
@@ -15,6 +16,9 @@ reconciler keeps the hold on any error:
 - Every listed PR must run from the bound head branch in this repository onto
   the bound base in this repository.  Anything else means the filter did not
   hold and the listing proves nothing.
+- A read PR must be the requested number with both sides in this repository and
+  well-formed text and labels; a PR 404 is ``None`` only once the repository is
+  confirmed, like a ref 404.
 
 Every response body is streamed under :data:`_MAX_RESPONSE_BYTES` (checked
 against ``Content-Length`` first when present); a larger one raises
@@ -35,6 +39,8 @@ from typing import Any, TypeGuard
 from urllib.parse import quote
 
 import httpx
+
+from butlers.core.qa.publication.reconcile import PullRequestView
 
 _GITHUB_API_BASE = "https://api.github.com"
 _REQUEST_TIMEOUT_SECONDS = 10.0
@@ -176,6 +182,42 @@ class GithubPublicationReader:
             if len(items) < _PAGE_SIZE:
                 return tuple(sorted(numbers))
         raise PublicationReadError("too_many_results")
+
+    async def read_pull_request(self, *, number: int) -> PullRequestView | None:
+        """PR ``number``'s observed state, or ``None`` if it provably does not exist."""
+        if not _is_pr_number(number):
+            raise PublicationReadError("invalid_pull_request_number")
+        status, item = await self._get(f"/repos/{self.repository}/pulls/{number}")
+        if status == 404:
+            await self._confirm_repository()
+            return None
+        if not isinstance(item, dict) or item.get("number") != number:
+            raise PublicationReadError("unexpected_pull_request")
+        head, base = self._branch_here(item.get("head")), self._branch_here(item.get("base"))
+        title, body = item.get("title"), item.get("body") or ""
+        labels = item.get("labels")
+        if (
+            head is None
+            or base is None
+            or not isinstance(title, str)
+            or not isinstance(body, str)
+            or not isinstance(labels, list)
+        ):
+            raise PublicationReadError("unexpected_pull_request")
+        names: list[str] = []
+        for label in labels:
+            name = label.get("name") if isinstance(label, dict) else None
+            if not isinstance(name, str):
+                raise PublicationReadError("unexpected_pull_request")
+            names.append(name)
+        return PullRequestView(number, head, base, title, body, tuple(names))
+
+    def _branch_here(self, side: object) -> str | None:
+        """The branch name of ``side`` (a PR's ``head`` or ``base``) if it is in this repository."""
+        ref = side.get("ref") if isinstance(side, dict) else None
+        if isinstance(ref, str) and self._in_this_repository(side, ref):
+            return ref
+        return None
 
     def _in_this_repository(self, side: object, ref: str) -> bool:
         """``side`` (a PR's ``head`` or ``base``) is ``ref`` in this repository."""

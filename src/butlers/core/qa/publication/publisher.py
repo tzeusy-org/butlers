@@ -26,7 +26,14 @@ from typing import Any, Protocol
 
 from butlers.core.healing.anonymizer import anonymize, sanitize_labels, validate_anonymized
 from butlers.core.qa.publication import retention, state
-from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
+from butlers.core.qa.publication.binding import (
+    OperationKind,
+    PublicationBinding,
+    expected_object_id,
+    labels_payload,
+    pr_text_payload,
+    request_digest,
+)
 from butlers.core.qa.publication.export import ExportRefused, SealedExport
 from butlers.core.qa.publication.state import PublicationOperation, PublicationRefused
 from butlers.core.qa.publication.transport import (
@@ -223,8 +230,8 @@ class QaPublisher:
         ]
         payloads = {
             OperationKind.BRANCH_PUSH: {"export": export.digest, "head": binding.head_sha},
-            OperationKind.PR_CREATE: {"title": sanitized.title, "body": sanitized.body},
-            OperationKind.PR_LABELS: {"labels": list(sanitized.labels)},
+            OperationKind.PR_CREATE: pr_text_payload(sanitized.title, sanitized.body),
+            OperationKind.PR_LABELS: labels_payload(sanitized.labels),
         }
         for kind, make_request in steps:
             op_binding = (
@@ -312,7 +319,7 @@ class QaPublisher:
                 kind=kind,
                 binding=binding,
                 request_digest=payload_digest,
-                expected_object_id=binding.head_sha if kind is OperationKind.BRANCH_PUSH else None,
+                expected_object_id=expected_object_id(kind, binding),
             )
             if operation.stage != "bound":
                 return self._resume(operation, kind, transport)
