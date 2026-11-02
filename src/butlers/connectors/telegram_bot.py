@@ -142,16 +142,21 @@ _APPROVAL_CALLBACK_RESOLVED_TEXT = {
 }
 
 
-def _gap_interview_toast(data: dict[str, Any], answer: str) -> str:
-    """Map a resolve-endpoint response to a short owner-facing toast."""
+def _gap_interview_toast(data: dict[str, Any], answer: str) -> tuple[str, bool]:
+    """Map a resolve-endpoint response to ``(owner-facing toast, settled)``.
+
+    ``settled`` is true only for a terminal outcome (applied, already answered,
+    expired): those retire the question's buttons. Any other response keeps
+    them so the owner can retry the tap.
+    """
     status = data.get("status") if isinstance(data, dict) else None
     if status == "applied":
-        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓")
+        return _GAP_INTERVIEW_ANSWER_TOASTS.get(answer.strip().lower(), "Recorded ✓"), True
     if status == "already_answered":
-        return "Already recorded — thanks!"
+        return "Already recorded — thanks!", True
     if status == "error" and data.get("error") == "unknown_or_expired_interview":
-        return "This confirmation has expired."
-    return "Recorded ✓"
+        return "This confirmation has expired.", True
+    return "Recorded ✓", False
 
 
 _MEDIA_TYPE_LABELS: dict[str, str] = {
@@ -1381,11 +1386,16 @@ class TelegramBotConnector:
     ) -> None:
         """Render one terminal approval state and remove its inline keyboard."""
         text = _APPROVAL_CALLBACK_RESOLVED_TEXT.get(status)
+        if text is not None:
+            await self._retire_callback_message(callback_query, text)
+
+    async def _retire_callback_message(self, callback_query: dict[str, Any], text: str) -> None:
+        """Replace a settled callback prompt's text and remove its inline keyboard."""
         message = callback_query.get("message")
         chat = message.get("chat") if isinstance(message, dict) else None
         message_id = message.get("message_id") if isinstance(message, dict) else None
         chat_id = chat.get("id") if isinstance(chat, dict) else None
-        if text is None or chat_id is None or not isinstance(message_id, int):
+        if chat_id is None or not isinstance(message_id, int):
             return
         try:
             await edit_telegram_message_text(
@@ -1396,7 +1406,7 @@ class TelegramBotConnector:
                 text=text,
             )
         except Exception:  # noqa: BLE001 -- resolution already persisted
-            logger.warning("Failed to edit resolved Telegram approval prompt", exc_info=True)
+            logger.warning("Failed to edit resolved Telegram callback prompt", exc_info=True)
         try:
             await remove_telegram_inline_keyboard(
                 self._http_client,
@@ -1405,7 +1415,7 @@ class TelegramBotConnector:
                 message_id=message_id,
             )
         except Exception:  # noqa: BLE001 -- resolution already persisted
-            logger.warning("Failed to remove Telegram approval keyboard", exc_info=True)
+            logger.warning("Failed to remove Telegram callback keyboard", exc_info=True)
 
     async def _maybe_handle_gap_interview_callback(self, update: dict[str, Any]) -> bool:
         """Handle a chronicler gap-interview (bu-whhll.12) inline-button tap.
@@ -1436,18 +1446,25 @@ class TelegramBotConnector:
 
         interview_id, answer = parsed
         callback_query_id = str(callback_query.get("id", ""))
+        settled = False
         if await self._is_primary_owner_callback(callback_query):
-            toast = await self._apply_gap_interview_answer(interview_id, answer)
+            toast, settled = await self._apply_gap_interview_answer(interview_id, answer)
         else:
             # The unsigned cgi: payload only carries authority from the owner chat.
             logger.warning("gap-interview callback from a non-owner sender ignored")
             toast = ""
         if callback_query_id:
             await self._answer_callback_query(callback_query_id, toast)
+        if settled:
+            # Like approval prompts: show the outcome under the question and
+            # drop the buttons. Unsettled taps keep them for a retry.
+            question = (callback_query.get("message") or {}).get("text")
+            text = f"{question}\n\n{toast}" if isinstance(question, str) and question else toast
+            await self._retire_callback_message(callback_query, text)
         return True
 
-    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> str:
-        """POST the answer to the chronicler API; return an owner-facing toast."""
+    async def _apply_gap_interview_answer(self, interview_id: str, answer: str) -> tuple[str, bool]:
+        """POST the answer to the chronicler API; return ``(toast, settled)``."""
         connector_token = self._config.approval_callback_connector_token
         if not self._config.internal_api_url or not connector_token:
             logger.warning(
@@ -1455,7 +1472,7 @@ class TelegramBotConnector:
                 "connector callback credential; cannot apply (interview_id=%s)",
                 interview_id,
             )
-            return "Couldn't record that — please use the dashboard."
+            return "Couldn't record that — please use the dashboard.", False
 
         url = f"{self._config.internal_api_url.rstrip('/')}/api/chronicler/gap-interview/resolve"
         try:
@@ -1466,10 +1483,10 @@ class TelegramBotConnector:
             )
         except Exception as exc:  # noqa: BLE001 — network hiccup ⇒ graceful toast
             logger.warning("gap-interview resolve POST failed: %s", exc)
-            return "Couldn't record that right now — please try from the dashboard."
+            return "Couldn't record that right now — please try from the dashboard.", False
         if resp.status_code >= 400:
             logger.warning("gap-interview resolve HTTP %d for %s", resp.status_code, interview_id)
-            return "Couldn't record that right now — please try from the dashboard."
+            return "Couldn't record that right now — please try from the dashboard.", False
         try:
             data = resp.json()
         except Exception:  # noqa: BLE001

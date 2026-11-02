@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
@@ -151,3 +153,83 @@ async def test_cgi_callback_from_non_owner_is_acked_but_not_applied():
     assert len(posts) == 1
     assert posts[0].args[0].endswith("/answerCallbackQuery")
     assert posts[0].kwargs["json"]["text"] == ""
+
+
+# --- Settled taps retire the question's buttons (bu-paj2a3) -------------------
+
+
+def _cgi_update_with_message(data: str = "cgi:2026-07-02:confirm") -> dict[str, Any]:
+    return {
+        "update_id": 1,
+        "callback_query": {
+            "id": "cbq1",
+            "data": data,
+            "message": {
+                "message_id": 77,
+                "chat": {"id": 4242},
+                "text": "Did you work on 2 Jul?",
+            },
+        },
+    }
+
+
+def _posts_by_method(connector: TelegramBotConnector) -> dict[str, list[Any]]:
+    by_method: dict[str, list[Any]] = {}
+    for call in connector._http_client.post.call_args_list:
+        by_method.setdefault(call.args[0].rsplit("/", 1)[-1], []).append(call)
+    return by_method
+
+
+def _edit_ok() -> MagicMock:
+    resp = _resp(body={"ok": True})
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
+async def _tap_with_resolve(resolve_resp: Any) -> dict[str, list[Any]]:
+    connector = _make_connector(internal_api_url="http://dashboard-api:41200")
+    connector._http_client = MagicMock()
+
+    async def _post(url: str, **_: Any) -> Any:
+        if url.endswith("/gap-interview/resolve"):
+            if isinstance(resolve_resp, BaseException):
+                raise resolve_resp
+            return resolve_resp
+        return _edit_ok()
+
+    connector._http_client.post = AsyncMock(side_effect=_post)
+    assert await connector._maybe_handle_gap_interview_callback(_cgi_update_with_message())
+    return _posts_by_method(connector)
+
+
+@pytest.mark.parametrize(
+    ("body", "outcome"),
+    [
+        ({"status": "applied"}, "Logged as a work day ✅"),
+        ({"status": "already_answered"}, "Already recorded"),
+        ({"status": "error", "error": "unknown_or_expired_interview"}, "expired"),
+    ],
+)
+async def test_settled_tap_shows_outcome_and_removes_keyboard(body, outcome):
+    posts = await _tap_with_resolve(_resp(body=body))
+
+    (edit,) = posts["editMessageText"]
+    assert edit.kwargs["json"]["chat_id"] == "4242"
+    assert edit.kwargs["json"]["message_id"] == 77
+    # The question stays legible; the outcome is appended beneath it.
+    assert "Did you work on 2 Jul?" in edit.kwargs["json"]["text"]
+    assert outcome in edit.kwargs["json"]["text"]
+    (markup,) = posts["editMessageReplyMarkup"]
+    assert markup.kwargs["json"] == {"chat_id": "4242", "message_id": 77, "reply_markup": None}
+
+
+@pytest.mark.parametrize(
+    "resolve_resp",
+    [RuntimeError("conn refused"), _resp(status_code=503), _resp(body={"status": "weird"})],
+)
+async def test_unsettled_tap_keeps_buttons_for_retry(resolve_resp):
+    posts = await _tap_with_resolve(resolve_resp)
+
+    assert "answerCallbackQuery" in posts
+    assert "editMessageText" not in posts
+    assert "editMessageReplyMarkup" not in posts
