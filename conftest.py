@@ -536,7 +536,7 @@ def _docker_required() -> bool:
     return os.environ.get(REQUIRE_DOCKER_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
-def _is_docker_unavailable_skip(report: pytest.TestReport) -> bool:
+def _is_docker_unavailable_skip(report: pytest.TestReport | pytest.CollectReport) -> bool:
     """True for a plain skip (not an xfail) whose reason is the Docker one."""
     if not report.skipped or hasattr(report, "wasxfail"):
         return False
@@ -547,18 +547,33 @@ def _is_docker_unavailable_skip(report: pytest.TestReport) -> bool:
     return reason == DOCKER_UNAVAILABLE_SKIP_REASON
 
 
+def _fail_required_docker_skip(report: pytest.TestReport | pytest.CollectReport) -> None:
+    if _docker_required() and _is_docker_unavailable_skip(report):
+        report.outcome = "failed"
+        report.longrepr = (
+            f"{REQUIRE_DOCKER_ENV}=1, but this skipped with "
+            f"{DOCKER_UNAVAILABLE_SKIP_REASON!r}: this lane guarantees Docker, "
+            "so a real-PG skip here means the runner lost it."
+        )
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
 ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     report: pytest.TestReport = yield
-    if _docker_required() and _is_docker_unavailable_skip(report):
-        report.outcome = "failed"
-        report.longrepr = (
-            f"{REQUIRE_DOCKER_ENV}=1, but this test skipped with "
-            f"{DOCKER_UNAVAILABLE_SKIP_REASON!r}: this lane guarantees Docker, "
-            "so a real-PG skip here means the runner lost it."
-        )
+    _fail_required_docker_skip(report)
+    return report
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(
+    collector: pytest.Collector,
+) -> Generator[None, pytest.CollectReport, pytest.CollectReport]:
+    # A module-level ``pytest.skip(..., allow_module_level=True)`` skips at
+    # collection, so it reaches a CollectReport and never a TestReport.
+    report: pytest.CollectReport = yield
+    _fail_required_docker_skip(report)
     return report
 
 
