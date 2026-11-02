@@ -96,6 +96,7 @@ from butlers.core.backup_facts import (
     BACKUP_DIR_ENV,
     BackupFacts,
     RestoreDrillFacts,
+    offsite_copy_expected_from_env,
     read_backup_facts_from_dir,
 )
 from butlers.core.fleet_conditions import (
@@ -911,7 +912,10 @@ async def get_backup_facts(
     Graceful degradation: always returns HTTP 200, never HTTP 503.
     """
     backup_dir_env = os.environ.get(BACKUP_DIR_ENV, "").strip()
-    facts = read_backup_facts_from_dir(Path(backup_dir_env) if backup_dir_env else None)
+    facts = read_backup_facts_from_dir(
+        Path(backup_dir_env) if backup_dir_env else None,
+        offsite_copy_expected=offsite_copy_expected_from_env(),
+    )
 
     facts.restore_drill = await _read_restore_drill_facts(db)
     return ApiResponse(data=facts)

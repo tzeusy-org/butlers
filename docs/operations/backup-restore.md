@@ -41,6 +41,9 @@ BACKUP_RETAIN_DAYS=14
 The `butlers_backups` volume remains the local recovery artifact store. Keep a
 separate, owner-controlled off-host copy for disaster recovery: a host failure
 can otherwise destroy both the database and the volume that holds its dumps.
+On k8s, the chart's `offsiteCopy` CronJob provides that copy: an encrypted
+restic repository on the owner's tailnet device. It ships disabled. See
+[Off-Node Backup Copy](offsite-backup-copy.md) for the owner-gated steps.
 
 ### How a failed run reports itself
 
