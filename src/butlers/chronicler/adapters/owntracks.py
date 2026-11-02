@@ -1082,7 +1082,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     @staticmethod
     def _late_segments(late_rows: list[dict[str, Any]], gap: timedelta) -> list[dict]:
         """Group late fixes by endpoint and gap into standalone segments."""
-        segments: list[dict] = []
+        segments: list[list[dict[str, Any]]] = []
         current: list[dict[str, Any]] = []
         for row in sorted(late_rows, key=lambda r: (r["endpoint_identity"], *trail_order_key(r))):
             if current and (

@@ -12,12 +12,15 @@ sort the whole table. The ``(ts, id)`` index stays: ``owntracks.ssid_presence``
 and the legacy-watermark cutover still read by device time.
 
 Concurrent DDL in Alembic's autocommit block lets the OwnTracks connector keep
-writing while the index builds.
+writing while the index builds. Because that block commits, the downgrade first
+runs the protected core_198 rollback preflight: a deep downgrade that core_198
+will refuse must fail before this revision drops the index or its stamp lands.
 """
 
 from __future__ import annotations
 
-from alembic import op
+from alembic import context, op
+from butlers.migration_preflight import preflight_runtime_attention_downgrade
 
 revision = "core_309"
 down_revision = "core_308"
@@ -36,6 +39,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    preflight_runtime_attention_downgrade(op, context)
     with op.get_context().autocommit_block():
         op.execute(
             "DROP INDEX CONCURRENTLY IF EXISTS connectors.idx_owntracks_points_recorded_at_id"
