@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from butlers.core.qa.publication.binding import OperationKind, PublicationBinding
 from butlers.core.qa.publication.export import GitIdentity, SealedExport
+from butlers.core.qa.publication.reconcile import PullRequestView
 from butlers.core.qa.publication.state import PublicationOperation, PublicationRefused
 from butlers.core.qa.publication.transport import AmbiguousOutcome, StaleExpectedHead
 
@@ -30,6 +32,7 @@ class FakeProvider:
     lose_response_on: str | None = None
     raise_on_push: Exception | None = None
     raise_on_create: Exception | None = None
+    raise_on_labels: Exception | None = None
 
     def _maybe_lose(self, name: str) -> None:
         if self.lose_response_on == name:
@@ -55,10 +58,15 @@ class FakeProvider:
 
     async def update_pull_request(self, *, number, title, body) -> None:
         self.calls.append(("update_pull_request", {"number": number}))
+        self.prs[number] |= {"title": title, "body": body}
+        self._maybe_lose("update_pull_request")
 
     async def set_labels(self, *, number, labels) -> None:
         self.calls.append(("set_labels", {"number": number, "labels": labels}))
+        if self.raise_on_labels is not None:
+            raise self.raise_on_labels
         self.prs[number]["labels"] = labels
+        self._maybe_lose("set_labels")
 
     # Read-only ``PublicationReader`` view; never appended to ``calls`` (the effect log).
 
@@ -67,6 +75,19 @@ class FakeProvider:
 
     async def find_pull_requests(self, *, head, base) -> tuple[int, ...]:
         return tuple(n for n, pr in self.prs.items() if (pr["head"], pr["base"]) == (head, base))
+
+    async def read_pull_request(self, *, number) -> PullRequestView | None:
+        pr = self.prs.get(number)
+        if pr is None:
+            return None
+        return PullRequestView(
+            number=number,
+            head=pr["head"],
+            base=pr["base"],
+            title=pr["title"],
+            body=pr["body"],
+            labels=tuple(pr.get("labels", ())),
+        )
 
 
 @dataclass
@@ -77,6 +98,9 @@ class FakeLedger:
     rows: dict[tuple[uuid.UUID, str], PublicationOperation] = field(default_factory=dict)
     exports: dict[uuid.UUID, SealedExport] = field(default_factory=dict)
     retain_refusal: str | None = None
+    #: Refusal receipts by attempt: ``(status, category)``, first receipt wins.
+    refusals: dict[uuid.UUID, tuple[str, str]] = field(default_factory=dict)
+    refusal_unrecordable: bool = False
     #: Stands in for database ``now()``: stamps egress/outcome and judges the settle.
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(UTC))
 
@@ -86,6 +110,18 @@ class FakeLedger:
         stored = self.exports.setdefault(attempt_id, export)
         if stored.digest != export.digest:
             raise PublicationRefused("export_changed")
+
+    async def record_refusal(self, attempt_id, *, status, category) -> None:
+        """Mirror core_302: the CHECKs and the insert policy's never-retained rule."""
+        if self.refusal_unrecordable:
+            raise PublicationRefused("datastore_unavailable")
+        if status not in ("refused", "anonymization_failed") or not re.fullmatch(
+            r"[a-z][a-z0-9_]{0,63}", category
+        ):
+            raise PublicationRefused("refusal_check_violation")
+        if attempt_id in self.exports or any(key[0] == attempt_id for key in self.rows):
+            raise PublicationRefused("refusal_policy_violation")
+        self.refusals.setdefault(attempt_id, (status, category))
 
     async def begin(self, *, attempt_id, kind, binding, request_digest, expected_object_id):
         key = (attempt_id, kind.value)

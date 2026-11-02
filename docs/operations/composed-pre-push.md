@@ -57,7 +57,7 @@ origin/main refuses.
 | SQL join hygiene | existing for-update-joins predicate |
 | Strict spec grammar | explicit `openspec validate --all --strict` |
 | Commit attribution | exact base..HEAD existing session-link scanner |
-| Current partition/budget | ordinary `check_ci_test_shards.py`, one actual collector supplying both unchanged budgets and computed 5+6 membership |
+| Current budget | `scripts/check_test_budget.py`, one fresh collection per lane against `scripts/test-budget-baseline.json` |
 
 Every push currently collects the complete actual default selected membership.
 Imports and parametrization can read documentation, spec or frontend assets; no

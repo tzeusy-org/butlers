@@ -547,6 +547,8 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "-p",
                 "--output-format",
                 "stream-json",
+                # Claude Code rejects -p with stream-json unless --verbose is set.
+                "--verbose",
                 "--bare",
                 "--no-session-persistence",
                 "--permission-mode",

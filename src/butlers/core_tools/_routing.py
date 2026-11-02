@@ -42,6 +42,7 @@ from butlers.core.approvals_hooks import (
 )
 from butlers.core.dashboard_turns import claim_target, mark_route_enqueued, mark_terminal
 from butlers.core.model_routing import Complexity, coerce_complexity_tier
+from butlers.core.notify_attachments import AttachmentError, redact_attachment_content
 from butlers.core.permissions import PermissionDenied, PermissionUnavailable
 from butlers.core.route_inbox import (
     RouteInboxLeaseLost,
@@ -400,6 +401,40 @@ ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
 }
 
 
+def _telegram_files_command(
+    telegram_module: Any,
+    origin: str,
+    chat_id: str,
+    text: str,
+    attachments: list[dict[str, Any]],
+    reply_to_message_id: int | None,
+    rendering_kwargs: dict[str, Any],
+) -> _RoutedDeliveryCommand:
+    """Telegram file delivery; rule args pin refs and digests, not file text."""
+    tool_args: dict[str, Any] = {
+        "chat_id": chat_id,
+        "text": text,
+        "attachments": redact_attachment_content(attachments),
+    }
+    if reply_to_message_id is not None:
+        tool_args["message_id"] = reply_to_message_id
+    return _RoutedDeliveryCommand(
+        channel="telegram",
+        approval_target=chat_id,
+        tool_name="telegram_send_files",
+        tool_args=tool_args,
+        execute=partial(
+            telegram_module._send_files,
+            chat_id,
+            text,
+            attachments,
+            reply_to_message_id,
+            origin_butler=origin,
+            **rendering_kwargs,
+        ),
+    )
+
+
 async def _build_routed_delivery_command(
     *,
     daemon: Any,
@@ -412,10 +447,20 @@ async def _build_routed_delivery_command(
     subject: str | None,
     notify_context: Any,
     render_links_inert: bool = False,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> _RoutedDeliveryCommand | None:
-    """Materialize the registered native command before approval evaluation."""
+    """Materialize the registered native command before approval evaluation.
+
+    Attachments ride only on Telegram (``telegram_send_files``); any other
+    channel refuses them with ``unsupported_attachment`` before approval or
+    provider traffic.  Rule-matching args carry refs and digests, never text.
+    """
     if intent not in {"send", "reply"}:
         return None
+    if attachments and channel != "telegram":
+        raise AttachmentError(
+            "unsupported_attachment", f"{channel} delivery cannot carry attachments"
+        )
     if channel not in ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES:
         if render_links_inert:
             return None
@@ -497,6 +542,16 @@ async def _build_routed_delivery_command(
         if intent == "send":
             if not recipient:
                 raise ValueError("notify_request.delivery.recipient is required for send intent.")
+            if attachments:
+                return _telegram_files_command(
+                    telegram_module,
+                    origin,
+                    recipient,
+                    rendered_text,
+                    attachments,
+                    None,
+                    rendering_kwargs,
+                )
             return _RoutedDeliveryCommand(
                 channel=channel,
                 approval_target=recipient,
@@ -511,6 +566,16 @@ async def _build_routed_delivery_command(
         parsed_thread = _parse_telegram_thread_identity(thread_identity)
         if parsed_thread is not None:
             chat_id, reply_message_id = parsed_thread
+            if attachments:
+                return _telegram_files_command(
+                    telegram_module,
+                    origin,
+                    chat_id,
+                    rendered_text,
+                    attachments,
+                    reply_message_id,
+                    rendering_kwargs,
+                )
             return _RoutedDeliveryCommand(
                 channel=channel,
                 approval_target=chat_id,
@@ -548,6 +613,16 @@ async def _build_routed_delivery_command(
             raise ValueError(
                 "Cannot fall back to send: no recipient available "
                 "and source_thread_identity is not valid Telegram format."
+            )
+        if attachments:
+            return _telegram_files_command(
+                telegram_module,
+                origin,
+                fallback_recipient,
+                rendered_text,
+                attachments,
+                None,
+                rendering_kwargs,
             )
         return _RoutedDeliveryCommand(
             channel=channel,
@@ -613,8 +688,11 @@ async def _check_routed_delivery_approval(
 
     channel = notify_request.delivery.channel
     adapter = modules_by_name.get(channel)
+    # File contents cannot be made inert, so inert-required delivery with
+    # attachments always needs per-event owner approval (REQ-core-notify-033).
     unsupported_rendering = notify_request.render_links_inert and (
         getattr(adapter, "supports_inert_link_delivery", False) is not True
+        or bool(notify_request.delivery.attachments)
     )
     if command is None and not unsupported_rendering:
         return None
@@ -1858,6 +1936,14 @@ def register_routing_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> 
                 subject=notify_request.delivery.subject,
                 notify_context=notify_context,
                 render_links_inert=notify_request.render_links_inert,
+                attachments=(
+                    [
+                        item.model_dump(exclude_none=True)
+                        for item in notify_request.delivery.attachments
+                    ]
+                    if notify_request.delivery.attachments
+                    else None
+                ),
             )
 
             decision = await _check_routed_delivery_approval(

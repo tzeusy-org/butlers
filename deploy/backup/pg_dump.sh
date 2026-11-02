@@ -107,6 +107,10 @@
 #         (core_294). Same forced-RLS fence as the ledger above. A restore comes
 #         back without retained exports, so an unpublished proposal from before
 #         the dump is recoverable only from the remote, never from this file.
+#   - public.qa_publication_refusals           QA publisher refusal receipts
+#         (core_302). Same forced-RLS fence as the ledger above. A restore comes
+#         back without them, so a refused attempt from before the dump reads
+#         "ambiguous" instead of "unpublished" (conservative, never wrong).
 #   - *_admin schemas                          bootstrap configuration rows
 #         (role names) plus the fixed installer/finalizer functions.
 #
@@ -170,7 +174,7 @@ BACKUP_EXCLUDE_SCHEMAS="restore_drill_executor restore_drill_executor_admin dnd_
 # public.audit_log is deliberately NOT here: it carries the restore-drill
 # evidence projection, and excluding it is the one edit that would silently
 # empty that path. Four tests across two files fail if it is added.
-BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations public.qa_publication_exports"
+BACKUP_EXCLUDE_TABLES="public.dnd_generation_mutations public.user_context public.runtime_attention_outbox public.runtime_attention_delivery_lease public.runtime_attention_producer_control public.runtime_attention_condition_episodes public.expected_signals public.runtime_probe_control_receipts public.task_continuity public.qa_publication_operations public.qa_publication_exports public.qa_publication_refusals"
 # Durable FORCE RLS application data carried by the scoped staging block.
 # Parsed and policy-verified by tests/scripts/test_pg_dump_backup.py.
 BACKUP_SCOPED_DATA_TABLES="public.cost_claims public.cost_claim_resolutions public.cost_claim_events public.captures public.capture_operations public.capture_service_control public.fleet_cases public.fleet_case_links"

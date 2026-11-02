@@ -61,6 +61,8 @@ async def test_invoke_flags_and_output():
     assert cmd[0] == "/usr/bin/claude"
     for flag in [
         "--output-format",
+        # Claude Code rejects -p with stream-json unless --verbose is set.
+        "--verbose",
         "--bare",
         "--no-session-persistence",
         "--permission-mode",

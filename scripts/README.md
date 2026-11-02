@@ -247,6 +247,7 @@ changes infrastructure or historical data.
 | [`check_spec_overwrites.py`](check_spec_overwrites.py) | `ci.yml`, `make check-spec-overwrites`, `pre_push.py` | Compares active OpenSpec MODIFIED blocks against current canonical bodies. |
 | [`check_pyright_baseline.py`](check_pyright_baseline.py) | `pyright_runtime.py`, `make typecheck` | Strict diagnostic JSON and shrinking error-Counter comparison. |
 | [`check_test_budget.py`](check_test_budget.py) | Make, `ci.yml` preflight | Per-lane collected-test budget ratchet against `test-budget-baseline.json`. |
+| [`check_test_kit_copies.py`](check_test_kit_copies.py) | `tests/scripts/test_check_test_kit_copies.py` (unit lane) | Ratchet against per-file copies of the `src/butlers/testing/` kit (`_make_row`, `_FakePool`, `_load_migration`, ...) frozen in `test-kit-copies-baseline.json`. |
 | [`extract-frontend-copy.py`](extract-frontend-copy.py) | Manual, on demand | Writes the bounded frontend copy report to stdout and diagnostics to stderr; redirect to ignored `.tmp/` for a local copy. |
 | [`frontend_guards.py`](frontend_guards.py) | Make, `pre_push.py` | Runs the frontend guard steps locally in the order CI runs them. |
 | [`lint_tools.py`](lint_tools.py) | `make install-lint-tools`, `make lint`, CI | Installs pinned gitleaks and actionlint, scans source and workflows, and self-tests the detectors and allowances. |
@@ -267,7 +268,6 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | Script | Caller | Purpose |
 | --- | --- | --- |
 | [`check_ci_coverage.py`](check_ci_coverage.py) | `nightly.yml` | Binds and validates the complete same-run coverage population before reporting. |
-| [`check_ci_test_shards.py`](check_ci_test_shards.py) | its own contract tests | Legacy file-level shard runner; retained outside this retirement scope. Current hosted lanes use `ci_lanes.py`. |
 | [`ci_affected.py`](ci_affected.py) | `ci.yml` | Scoped collection, execution and reconciliation for the PR affected-test lane. |
 | [`ci_affected_collector.py`](ci_affected_collector.py) | `ci_affected.py` (pytest plugin) | Source-owned collector for that scoped run. |
 | [`ci_evidence.py`](ci_evidence.py) | `ci_affected.py`, `ci_affected_collector.py` | Shared identity and evidence helpers for the scoped CI lane. |
@@ -275,17 +275,14 @@ pipeline beads (`bu-29wkwj.2`, `bu-29wkwj.3`), not to this index.
 | [`ci_lanes.py`](ci_lanes.py) | `ci.yml`, `nightly.yml` | Runs pytest-split backend groups, reconciles their counts against fresh collection, and merges measured durations. |
 | [`pyright_runtime.py`](pyright_runtime.py) | `make typecheck`, `make prepare-typecheck`, `make update-type-baseline` | Pinned offline checker supervision, immutable-public bootstrap and atomic baseline shrink. |
 | [`ci_environment.py`](ci_environment.py) | `ci.yml`, `ci-python-environment` action, watchdog workflow | Advisory CI environment cache with mandatory frozen repair on every restore. |
-| [`ci_inventory_collector.py`](ci_inventory_collector.py) | `ci_partition.py` (pytest plugin) | Source-owned collector that records the test inventory used for sharding. |
 | [`ci_latency.py`](ci_latency.py) | `ci-latency.yml` | Bounded, read-only Actions timestamp report; never a required merge gate. |
-| [`ci_partition.py`](ci_partition.py) | `ci_watchdog_diagnostics.py` (imports) | Legacy recorded-inventory partition helpers; current hosted lanes use `ci_lanes.py`. |
 | [`ci_route.py`](ci_route.py) | `ci.yml` | Conservative classification of a change into the lanes it needs. |
 | [`ci_shard_comparison.py`](ci_shard_comparison.py) | none; documented in `docs/operations/ci-shard-overhead.md`, imported by one test | Compares genuine shard observations. Kept for `bu-29wkwj.3`, which owns the observer and comparison scripts. |
-| [`ci_shard_observer.py`](ci_shard_observer.py) | `check_ci_test_shards.py`, `ci_partition.py`, `ci_watchdog_diagnostics.py` (imports) | Private testcase identities and completion times for CI shards. |
+| [`ci_shard_observer.py`](ci_shard_observer.py) | `ci_affected_collector.py` (imports its hooks) | Private testcase identities and completion times for CI shards. |
 | [`ci_test_images.py`](ci_test_images.py) | root `conftest.py`, `test_owner_auth_browser.py` | Preloads the test container images by public immutable content, without credentials. |
 | [`ci_test_plan.py`](ci_test_plan.py) | none; imported only by its own test | Wrapper that decides scoped versus full mode for the affected lane. Kept for `bu-29wkwj.3`, which deletes CI routing. |
 | [`ci_vitest.py`](ci_vitest.py) | `ci.yml` | Executes the locked Vitest shards and retains actual-item evidence. |
 | [`ci_vitest_reporter.mjs`](ci_vitest_reporter.mjs) | `ci_vitest.py` | Vitest reporter. |
-| [`ci_watchdog_diagnostics.py`](ci_watchdog_diagnostics.py) | `ci-shard-watchdog-capture` action, watchdog workflow | Bounded incomplete CI observations, separate from every execution verifier. |
 | [`combine_review_comment_sources.py`](combine_review_comment_sources.py) | `ci.yml` | Flattens raw GitHub review-comment dumps into the session-link guard's input shape. |
 | [`fetch_pr_metadata.py`](fetch_pr_metadata.py) | `ci.yml` | Producer of validated PR title/body guard inputs. |
 | [`install_ci_uv.py`](install_ci_uv.py) | `ci.yml`, `nightly.yml`, `ci-python-environment` action, watchdog workflow | Installs the pinned `uv` in CI. |

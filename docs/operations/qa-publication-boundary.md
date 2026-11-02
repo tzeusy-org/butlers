@@ -114,9 +114,24 @@ run. A prune failure is logged and does not fail the evidence cleanup. Only the 
 read back as tampered.
 
 The retained bytes exist only for an attempt whose publisher reached retention. A refusal before
-retention (`anonymization_failed`, a denied whitelist) leaves no export. A trusted receipt for those
-refusals is separate work (bu-mc01y5.28). Pruning never removes the row such a receipt would be
-read alongside.
+retention leaves no export, so the publisher records a receipt instead (migration `core_302`,
+bu-mc01y5.28): one row per attempt in `public.qa_publication_refusals` holding the refusal's
+content-free status (`refused` or `anonymization_failed`) and snake_case category code (for example
+`repo_not_whitelisted`, `pr_labels_unsanitized`; the CHECK admits `^[a-z][a-z0-9_]{0,63}$` only). It covers every refusal
+before retention: an export that cannot be sealed or bound, a failed preflight (tampered export,
+unbound head, denied or missing whitelist), residual sensitive content in the PR text or labels, and
+an export that cannot be retained. The insert policy refuses a receipt for an attempt that already
+has a ledger operation, a retained export or a PR number, so a receipt only ever marks an attempt
+that never reached retention. The first receipt wins and a BEFORE UPDATE trigger
+(`qa_publication_refusals_immutable`) refuses rewrites from every role. The fence matches the
+exports table: only `butler_qa_rw` inserts (forced row security), every runtime role reads, there is
+no DELETE policy, the table is excluded from `deploy/backup/pg_dump.sh`, and only the last schema to
+leave `core_302` drops it, and only while it is empty. A receipt that cannot be written is logged
+and changes nothing, so the attempt reads `ambiguous`.
+
+The case API reads `proposal_state` as `unpublished` only with a publisher trace (a retained export,
+pruned or not, or a refusal receipt) and the ledger's proof that no PR egress can have landed. A
+receipt alone never proves absence: a later run that reached egress is still judged by the ledger.
 
 Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
 kept, and no remote branch or PR is deleted.
@@ -146,15 +161,24 @@ The trusted dispatcher drives `butlers.core.qa.publication.state`:
 
 `butlers.core.qa.publication.reconcile.reconcile_operation` is the read-only reconciler. It takes the
 dispatcher-held binding (refused with `binding_mismatch` unless its digest matches the stored one) and
-a `PublicationReader`, whose protocol has only two reads: `read_ref` and `find_pull_requests`. For
+a `PublicationReader`, whose protocol has only three reads: `read_ref`, `find_pull_requests` and
+`read_pull_request`. For
 `branch_push`, the bound `qa/` branch at exactly the bound head is found and a missing branch is
 absent; any other head stays held (`unexpected_head`). For `pr_create`, the adoption rule is a
 head/base match: exactly one PR, open or closed, from the bound head branch onto the bound base is
 adopted, none is absent, and more than one stays held (`multiple_candidates`). `pr_update` and
-`pr_labels` bind no observable object and stay held (`unsupported_kind`). A reader error, a foreign
+`pr_labels` bind the bound PR's number as `expected_object_id`, and the reconciler reads that PR, which
+must still run from the bound head onto the bound base (`foreign_pr`; a PR that cannot be found stays
+held as `pr_missing`, and a row bound without a PR number as `unbound_pr`). A `pr_update` is found when
+the digest of the observed title and body equals the stored request digest, else absent. A
+`pr_labels` takes the dispatcher's labels, refused with `payload_mismatch` unless their digest equals
+the stored request digest (`labels_unbound` without them). It is found when every bound label is on
+the PR, else absent. Both effects are idempotent, so a late landing after a recorded absence
+duplicates nothing. A reader error, a foreign
 reader origin or a lost ledger write also keeps the hold. A rerun of the publisher treats a
 `resource_found` reconciliation as success: it adopts the PR and continues to the labels, while a
-`resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create. Absence
+`resource_absent` `pr_create` ends `failed` (`pr_create_reconciled`) without a fresh create (likewise
+`pr_labels_reconciled` without reapplying labels). Absence
 is believed only once it has settled: a `resource_absent` observation stays held (`absence_settling`)
 until the operation's outcome (`ended_at`) or, while still in flight, its egress (`egress_started_at`)
 is at least `ABSENCE_SETTLE` (15 minutes) old, so a create or push that timed out but still lands
@@ -169,17 +193,20 @@ fixed to one `owner/name` origin, sends only `GET`s, never follows a redirect, a
 `PublicationReadError` (closed code, no provider text) on anything it cannot prove, which keeps the
 hold. A ref 404 counts as absent only after `GET /repos/{origin}` answers with the origin's own name
 (GitHub also answers 404 for a repository the token cannot see), and every PR it lists must run from
-the bound head branch in the origin onto the bound base in the origin. It ignores environment proxy,
+the bound head branch in the origin onto the bound base in the origin. A read PR must be the requested
+number with both sides in the origin; a PR 404 is absent only after the same repository check. It
+ignores environment proxy,
 netrc and CA settings (`trust_env=False`), and streams every body under a 2 MiB cap (checked against
 `Content-Length` first), raising `response_too_large` past it.
 
-`reconcile.sweep_held_operations` is the batch entry point. It visits held `branch_push` and
-`pr_create` operations oldest first and rebuilds each binding from dispatcher records: the reader's
-origin, the attempt's `branch_name`, `QA_BASE_REF` and the retained export's `head_sha`. The stored
-digest still decides, so a rebuilt binding that differs is refused (`binding_mismatch`), and a row whose
-records cannot form a binding is reported `unbound_attempt` without a read. `pr_update` and `pr_labels`
-holds are not swept. Operators run it with `scripts/qa_reconcile_publications.py --repository
-<owner/name>`: the connection string is read from stdin, the token from `BUTLERS_QA_GH_TOKEN` in the
+`reconcile.sweep_held_operations` is the batch entry point. It visits every held operation oldest
+first and rebuilds each binding from dispatcher records: the reader's origin, the attempt's
+`branch_name`, `QA_BASE_REF`, the retained export's `head_sha` and, for `pr_update` and `pr_labels`, the
+PR number the attempt's own `pr_create` recorded (succeeded, or reconciled `resource_found`). The
+stored digest still decides, so a rebuilt binding that differs is refused (`binding_mismatch`), and a
+row whose records cannot form a binding is reported `unbound_attempt` without a read. Operators run it
+with `scripts/qa_reconcile_publications.py --repository <owner/name>`, repeating `--label` when the
+configured QA PR labels differ from the dispatch defaults: the connection string is read from stdin, the token from `BUTLERS_QA_GH_TOKEN` in the
 environment (`bws run -- ...` or a pod `secretKeyRef`), the pool assumes `butler_qa_rw`, and the report
 is identifiers and categories only (exit 2 while anything stays held). Nothing schedules the sweep yet;
 the patrol wiring lands with the production publisher, which owns the fixed origin.

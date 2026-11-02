@@ -112,11 +112,9 @@ required lane groups publish per-test durations, and the nightly `durations-refr
 those of the latest successful merge group and opens a pull request with the merged file instead
 of pushing to main (bu-29wkwj.2, bu-q1hzqn.13).
 
-The scheduled weight observer is retired. The computed partition, inventory collector and
-shard observer remain only for the manual `ci-shard-watchdog-diagnostic.yml` workflow, whose
-retirement is tracked in bu-29wkwj.8. Required and nightly lanes use `scripts/ci_lanes.py` and
-do not consume that diagnostic's identity or phase receipts. Diagnostic UNKNOWN results remain
-explicit and cannot supply missing required-CI evidence or change lane membership.
+The scheduled weight observer, the computed partition and inventory collector, and the manual
+shard-watchdog diagnostic are retired (owner decision on bu-29wkwj.8, 2026-11-02). Required and
+nightly lanes use `scripts/ci_lanes.py`; every job keeps its finite `timeout-minutes` watchdog.
 
 Preflight runs the dedicated smoke command
 `uv run pytest tests/ --ignore=tests/e2e -m smoke -q --tb=short` in both full and scoped CI modes,

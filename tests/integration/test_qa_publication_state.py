@@ -16,7 +16,12 @@ import asyncpg
 import pytest
 
 from butlers.core.healing.tracking import get_publication_hold
-from butlers.core.qa.publication.binding import OperationKind, PublicationBinding, request_digest
+from butlers.core.qa.publication.binding import (
+    OperationKind,
+    PublicationBinding,
+    labels_payload,
+    request_digest,
+)
 from butlers.core.qa.publication.state import (
     ABSENCE_SETTLE,
     PublicationRefused,
@@ -268,7 +273,7 @@ async def test_inactive_attempt_cannot_enter_egress(pool, attempt, terminal_stat
 
 async def test_sweep_adopts_the_only_pr_for_a_lost_pr_create(pool, attempt) -> None:
     """The sweep rebuilds the binding from the attempt and export, then adopts the match."""
-    from butlers.core.qa.publication.reconcile import sweep_held_operations
+    from butlers.core.qa.publication.reconcile import PullRequestView, sweep_held_operations
 
     attempt_id, fingerprint = attempt
     binding = _binding()
@@ -324,6 +329,32 @@ async def test_sweep_adopts_the_only_pr_for_a_lost_pr_create(pool, attempt) -> N
         operation.id,
     )
     assert tuple(row) == ("reconciled", "resource_found", "17")
+
+    # A lost label set on the adopted PR binds that PR and is swept against its labels.
+    labels = ("self-healing", "automated")
+    labelled = await begin_operation(
+        pool,
+        attempt_id=attempt_id,
+        kind=OperationKind.PR_LABELS,
+        binding=_binding(pr_number=17),
+        request_digest=request_digest(labels_payload(labels)),
+        expected_object_id="17",
+    )
+    assert await mark_egress_started(pool, labelled.id)
+    assert await record_outcome(pool, labelled.id, "ambiguous")
+
+    class LabelReader(Reader):
+        async def read_pull_request(self, *, number):
+            assert number == 17
+            return PullRequestView(17, binding.branch, binding.base_ref, "Fix", "", labels)
+
+    entries = await sweep_held_operations(pool, LabelReader(), limit=1000, labels=labels)
+
+    mine = [e for e in entries if e.attempt_id == attempt_id]
+    assert [(e.kind, e.status, e.category) for e in mine] == [
+        ("pr_labels", "reconciled", "resource_found")
+    ]
+    assert not await get_publication_hold(pool, fingerprint)
 
 
 # --- core_300: absence settles from egress, judged by database time in the write ---
