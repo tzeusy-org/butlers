@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from butlers.testing.fake_pool import FakeConnection
 from butlers.testing.records import Record as _MockRecord
 from butlers.testing.records import Record as _make_row
 
@@ -31,72 +32,6 @@ pytestmark = pytest.mark.unit
 # Helpers — minimal mock record and pool builders
 # (mirrors the pattern in test_mastery.py)
 # ---------------------------------------------------------------------------
-
-
-def _make_pool(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg.Pool (direct pool calls)."""
-    pool = AsyncMock()
-
-    if fetchrow_returns is not None:
-        pool.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        pool.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        pool.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        pool.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        pool.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        pool.fetchval = AsyncMock(return_value=None)
-
-    if execute_returns is not None:
-        pool.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        pool.execute = AsyncMock(return_value="INSERT 0 1")
-
-    return pool
-
-
-def _make_conn(
-    *,
-    fetchrow_returns: list[Any] | None = None,
-    fetch_returns: list[Any] | None = None,
-    fetchval_returns: list[Any] | None = None,
-    execute_returns: list[str] | None = None,
-) -> AsyncMock:
-    """Build an AsyncMock behaving like an asyncpg connection."""
-    conn = AsyncMock()
-
-    if fetchrow_returns is not None:
-        conn.fetchrow = AsyncMock(side_effect=list(fetchrow_returns))
-    else:
-        conn.fetchrow = AsyncMock(return_value=None)
-
-    if fetch_returns is not None:
-        conn.fetch = AsyncMock(side_effect=list(fetch_returns))
-    else:
-        conn.fetch = AsyncMock(return_value=[])
-
-    if fetchval_returns is not None:
-        conn.fetchval = AsyncMock(side_effect=list(fetchval_returns))
-    else:
-        conn.fetchval = AsyncMock(return_value=None)
-
-    if execute_returns is not None:
-        conn.execute = AsyncMock(side_effect=list(execute_returns))
-    else:
-        conn.execute = AsyncMock(return_value="INSERT 0 1")
-
-    return conn
 
 
 def _make_conn_with_transaction(conn: AsyncMock) -> AsyncMock:
@@ -310,9 +245,11 @@ def _make_record_probe_pool(
 
     # Connection inside acquire() context manager
     conn = _make_conn_with_transaction(
-        _make_conn(
-            fetchrow_returns=[_make_row({"id": NODE_ID_A, "mastery_status": node_mastery_status})],
-            execute_returns=["INSERT 0 1", "UPDATE 1"],
+        FakeConnection(
+            fetchrow=AsyncMock(
+                side_effect=[_make_row({"id": NODE_ID_A, "mastery_status": node_mastery_status})]
+            ),
+            execute=AsyncMock(side_effect=["INSERT 0 1", "UPDATE 1"]),
         )
     )
     acquire_ctx = MagicMock()
