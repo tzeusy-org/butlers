@@ -174,3 +174,37 @@ async def test_paperwork_deadline_notice_sends_only_a_fixed_template_to_the_owne
     request = boundary["client"].call_tool.await_args.args[1]["notify_request"]
     assert request["origin_butler"] == "finance"
     assert request["delivery"]["message"] == message
+
+
+@pytest.mark.parametrize(
+    "seam",
+    ["suppression", "client_getter"],
+    ids=["suppressed_defers_without_ledger_row", "failed_raises"],
+)
+async def test_undelivered_paperwork_notice_raises_so_the_threshold_stays_unfired(boundary, seam):
+    """A deadline threshold has no next run: a dropped notice must fail the dispatch."""
+    from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
+    from butlers.scheduled_jobs import get_deterministic_schedule_job_registry
+
+    if seam == "suppression":
+        boundary["suppression"].return_value = "quiet_hours"
+    else:
+        boundary["client_getter"].return_value = None
+    handler = get_deterministic_schedule_job_registry()["finance"]["paperwork_deadline_notify"]
+    job_args = {"kind": "due", "deadline": {"target_date": "2026-10-28", "days_remaining": 1}}
+
+    expected = DeadlineDispatchDeferred if seam == "suppression" else RuntimeError
+    with pytest.raises(expected):
+        await handler(MagicMock(), job_args)
+
+    boundary["client"].call_tool.assert_not_awaited()
+    if seam == "suppression":
+        # Retried every tick while quiet hours last: no ledger row per attempt.
+        boundary["ledger"].assert_not_awaited()
+    else:
+        boundary["ledger"].assert_awaited_once()
+        row = boundary["ledger"].await_args.kwargs
+        assert (row["origin_butler"], row["reason"]) == (
+            "finance",
+            "switchboard_client_unavailable",
+        )

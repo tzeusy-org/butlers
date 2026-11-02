@@ -5,7 +5,8 @@ threshold (``butlers.core.temporal.document_deadlines``). It starts no session: 
 message is built from a fixed template whose only variable parts are the deadline kind
 (one of five fixed labels), the date and the issuer, re-sanitized here to inert text. It
 goes only to the owner through :func:`butlers.jobs.owner_notify.send_owner_telegram`, so
-quiet hours, the owner-only recipient and the attention ledger all apply.
+the owner-only recipient and the attention ledger apply. A notice that is not delivered
+raises, so the deadline pass leaves its threshold unfired and retries on a later tick.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
 from butlers.core.temporal.document_deadlines import NOTICE_JOB_NAME, sanitize_issuer
 from butlers.jobs import owner_notify
 
@@ -57,10 +59,26 @@ async def run_paperwork_deadline_notice(
     pool: asyncpg.Pool, job_args: dict[str, Any] | None, *, origin_butler: str
 ) -> dict[str, Any]:
     """Send one templated reminder to the owner and return the recorded outcome."""
+    """Send one templated reminder to the owner, or raise so the threshold stays unfired.
+
+    A deadline threshold has no later run, so a notice that is not delivered must not
+    consume it. Quiet hours or a dnd/sleeping signal raise
+    :class:`DeadlineDispatchDeferred` before any send, so the pass retries on a later
+    tick without writing an attention-ledger row per attempt. A failed send is recorded
+    once by the notify boundary and raised, so the pass retries it as a failure.
+    """
     message = render_document_deadline_notice(job_args or {})
     if message is None:
         return {"outcome": "skipped", "reason": "invalid_kind"}
+    reason = await owner_notify.check_owner_notify_suppression(pool, log_context=NOTICE_JOB_NAME)
+    if reason is not None:
+        raise DeadlineDispatchDeferred(reason)
     outcome = await owner_notify.send_owner_telegram(
         pool, origin_butler=origin_butler, message=message, log_context=NOTICE_JOB_NAME
     )
+    if outcome == owner_notify.SUPPRESSED:
+        # Suppression began between the check and the send: still retry later.
+        raise DeadlineDispatchDeferred("suppressed")
+    if outcome != owner_notify.DELIVERED:
+        raise RuntimeError(f"{NOTICE_JOB_NAME}: owner notice {outcome}")
     return {"outcome": outcome}

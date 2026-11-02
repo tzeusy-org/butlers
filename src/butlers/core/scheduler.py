@@ -1186,6 +1186,7 @@ async def _tick_deadline_pass(
         (deadlines_evaluated, deadlines_dispatched) counts.
     """
     from butlers.core.temporal.deadlines import (
+        DeadlineDispatchDeferred,
         build_deadline_prompt_context,
         compute_days_remaining,
         compute_expiry_transition,
@@ -1298,6 +1299,14 @@ async def _tick_deadline_pass(
                     },
                     trigger_source=f"deadline:{name}",
                 )
+            except DeadlineDispatchDeferred as exc:
+                # The job declined to act yet (e.g. owner quiet hours): retry next tick.
+                logger.info("Deadline job %s deferred: %s", name, exc)
+                if metrics is not None:
+                    metrics.record_task_dispatched(
+                        butler=stagger_key or "unknown", task_name=name, outcome="deferred"
+                    )
+                continue
             except Exception:
                 logger.exception("Failed to dispatch deadline job: %s", name)
                 if metrics is not None:

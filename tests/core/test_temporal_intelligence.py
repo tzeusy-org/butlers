@@ -765,9 +765,11 @@ class TestTickIntegration:
         assert row["deadline_status"] == "expired" and row["enabled"] is False
 
     async def test_document_deadline_is_set_idempotently_and_fires_as_a_job(self, tick_pool):
-        """paperwork_deadline_set upserts on (document, kind); a due threshold runs the
-        fixed notice job with threshold context and no prompt; prompt deadlines are untouched."""
+        """paperwork_deadline_set upserts on (document, kind) without overriding an owner
+        disable; a due threshold runs the fixed notice job with threshold context and no
+        prompt, and stays unfired until the notice is delivered; prompt deadlines are untouched."""
         from butlers.core.scheduler import tick
+        from butlers.core.temporal.deadlines import DeadlineDispatchDeferred
         from butlers.core.temporal.deadlines_db import deadline_create
         from butlers.core.temporal.document_deadlines import (
             NOTICE_JOB_NAME,
@@ -798,16 +800,30 @@ class TestTickIntegration:
         )
         assert row["job_args"]["taint"] == "untrusted_document"
 
-        # A newer date supersedes in place and re-arms thresholds that had fired.
+        # A newer date supersedes in place and re-arms thresholds that had fired,
+        # but never re-enables a deadline the owner disabled.
         await tick_pool.execute(
             """
-            UPDATE scheduled_tasks SET deadline_status = 'alerted',
+            UPDATE scheduled_tasks SET deadline_status = 'alerted', enabled = false,
                 fired_thresholds = '[{"days_before": 14, "severity": "info"}]'
             WHERE name = $1
             """,
             name,
         )
         assert await document_deadline_set(tick_pool, plan(2)) == {**first, "status": "superseded"}
+        assert (
+            await tick_pool.fetchval("SELECT enabled FROM scheduled_tasks WHERE name = $1", name)
+            is False
+        )
+        await tick_pool.execute("UPDATE scheduled_tasks SET enabled = true WHERE name = $1", name)
+
+        # A notice that was not delivered (deferred or failed) leaves the threshold unfired.
+        async def not_delivered(**kwargs):
+            raise DeadlineDispatchDeferred("quiet_hours")
+
+        await tick(tick_pool, not_delivered)
+        row = await tick_pool.fetchrow("SELECT * FROM scheduled_tasks WHERE name = $1", name)
+        assert (row["deadline_status"], row["fired_thresholds"]) == ("pending", [])
 
         calls: list[dict[str, Any]] = []
 
