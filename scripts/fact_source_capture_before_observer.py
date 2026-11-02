@@ -119,7 +119,7 @@ async def observe_registered_context(request, authority_env, single_slot_pool):
     from butlers.core import fact_authority
 
     root = Path(CONFIG["root"])
-    runtime = Path(fact_authority.__file__).resolve()
+    runtime = await asyncio.to_thread(Path(fact_authority.__file__).resolve)
     if (
         runtime != root / RUNTIME
         or runtime.is_symlink()
