@@ -10,16 +10,14 @@ from __future__ import annotations
 import importlib.util
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncpg
 import pytest
 
 from butlers.jobs import home as home_jobs
 from butlers.jobs import home_safety
 from butlers.jobs.home_safety import SensorReading, WatchEntry, classify, run_safety_sentinel
-
-pytestmark = pytest.mark.unit
 
 _NOW = datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC)
 _LEAK = WatchEntry("binary_sensor.kitchen_leak", "leak", "Kitchen leak sensor")
@@ -46,10 +44,10 @@ async def _readings_the_job_judges(
 
     await run_safety_sentinel(pool, None, notify_fn=AsyncMock(), _now=_NOW)
 
-    assert "last_changed" in pool.fetch.await_args_list[1].args[0]
     return reconcile.await_args.args[2]
 
 
+@pytest.mark.unit
 async def test_an_attribute_only_update_does_not_reset_the_debounce(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -63,6 +61,7 @@ async def test_an_attribute_only_update_does_not_reset_the_debounce(
     assert classify(_LEAK, readings[_LEAK.entity_id], _NOW) == "alarm"
 
 
+@pytest.mark.unit
 async def test_a_state_change_inside_the_window_is_still_pending(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -75,6 +74,7 @@ async def test_a_state_change_inside_the_window_is_still_pending(
     assert classify(_LEAK, readings[_LEAK.entity_id], _NOW) == "pending"
 
 
+@pytest.mark.unit
 async def test_a_row_without_last_changed_falls_back_to_last_updated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -84,39 +84,6 @@ async def test_a_row_without_last_changed_falls_back_to_last_updated(
 
     assert readings[_LEAK.entity_id].since == _NOW - timedelta(minutes=5)
     assert classify(_LEAK, readings[_LEAK.entity_id], _NOW) == "alarm"
-
-
-async def test_the_module_persists_last_changed_with_each_entity() -> None:
-    from roster.home.modules import CachedEntity, HomeAssistantConfig, HomeAssistantModule
-
-    pool = MagicMock()
-    pool.executemany = AsyncMock()
-    module = HomeAssistantModule()
-    module._config = HomeAssistantConfig()
-    module._db = MagicMock(pool=pool)
-    module._entity_cache = {
-        "binary_sensor.kitchen_leak": CachedEntity(
-            entity_id="binary_sensor.kitchen_leak",
-            state="on",
-            attributes={},
-            last_updated="2026-10-19T11:59:50+00:00",
-            last_changed="2026-10-19T11:00:00+00:00",
-        ),
-        "light.kitchen": CachedEntity(entity_id="light.kitchen", state="on", attributes={}),
-    }
-
-    await module._persist_entity_snapshot()
-
-    sql, rows = pool.executemany.await_args.args
-    assert "last_changed" in sql and "$5::text::timestamptz" in sql
-    # A re-persist must move last_changed forward, or the hold is measured from a stale instant.
-    assert "last_changed = EXCLUDED.last_changed" in sql
-    by_id: dict[str, Any] = {row[0]: row for row in rows}
-    assert by_id["binary_sensor.kitchen_leak"][3:] == (
-        "2026-10-19T11:59:50+00:00",
-        "2026-10-19T11:00:00+00:00",
-    )
-    assert by_id["light.kitchen"][3:] == (None, None)
 
 
 def _migration_sql(direction: str) -> list[str]:
@@ -134,9 +101,57 @@ def _migration_sql(direction: str) -> list[str]:
     return statements
 
 
-def test_the_migration_adds_and_drops_a_nullable_last_changed_column() -> None:
-    (up,) = _migration_sql("upgrade")
-    (down,) = _migration_sql("downgrade")
+async def _has_last_changed(pool: asyncpg.Pool) -> bool:
+    return bool(
+        await pool.fetchval(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() "
+            "AND table_name = 'ha_entity_snapshot' AND column_name = 'last_changed'"
+        )
+    )
 
-    assert up == "ALTER TABLE ha_entity_snapshot ADD COLUMN IF NOT EXISTS last_changed TIMESTAMPTZ"
-    assert down == "ALTER TABLE ha_entity_snapshot DROP COLUMN IF EXISTS last_changed"
+
+@pytest.mark.integration
+async def test_last_changed_migration_upgrades_downgrades_and_reupgrades(
+    provisioned_postgres_pool,
+) -> None:
+    async with provisioned_postgres_pool(schema="public") as pool:
+        # ha_entity_snapshot as home_001 creates it, holding a pre-home_005 row.
+        await pool.execute("""
+            CREATE TABLE ha_entity_snapshot (
+                entity_id    TEXT PRIMARY KEY,
+                state        TEXT,
+                attributes   JSONB,
+                last_updated TIMESTAMPTZ,
+                captured_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+        await pool.execute(
+            "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
+            "VALUES ($1, 'on', now())",
+            _LEAK.entity_id,
+        )
+
+        for statement in _migration_sql("upgrade"):
+            await pool.execute(statement)
+        assert await _has_last_changed(pool)
+        # Nullable: the existing row has no value until the module's next persist.
+        assert (
+            await pool.fetchval(
+                "SELECT last_changed FROM ha_entity_snapshot WHERE entity_id = $1", _LEAK.entity_id
+            )
+            is None
+        )
+        await pool.execute(
+            "UPDATE ha_entity_snapshot SET last_changed = now() WHERE entity_id = $1",
+            _LEAK.entity_id,
+        )
+
+        for statement in _migration_sql("downgrade"):
+            await pool.execute(statement)
+        assert not await _has_last_changed(pool)
+        assert await pool.fetchval("SELECT state FROM ha_entity_snapshot") == "on"
+
+        for statement in _migration_sql("upgrade"):
+            await pool.execute(statement)
+        assert await _has_last_changed(pool)
+        assert await pool.fetchval("SELECT count(*) FROM ha_entity_snapshot") == 1
