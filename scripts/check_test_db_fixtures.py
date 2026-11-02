@@ -55,7 +55,7 @@ def _is_fixture(decorator: ast.expr) -> bool:
 def scan_source(source: str) -> dict[str, int]:
     """Count banned fixtures and ``CREATE TABLE`` string literals in one file."""
     tree = ast.parse(source)
-    counts = dict.fromkeys(KINDS, 0)
+    counts: dict[str, int] = dict.fromkeys(KINDS, 0)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             if node.name in FIXTURE_NAMES and any(map(_is_fixture, node.decorator_list)):
@@ -116,7 +116,7 @@ def tightened(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--baseline", type=Path, default=BASELINE)
     parser.add_argument(

@@ -73,11 +73,14 @@ async def open_pool(
         if init is not None:
             await init(conn)
 
-    kwargs: dict[str, object] = {"min_size": min_size, "max_size": max_size, "init": _init}
     search_path = schema_search_path(schema)
-    if search_path is not None:
-        kwargs["server_settings"] = {"search_path": search_path}
-    return await asyncpg.create_pool(db_url, **kwargs)
+    return await asyncpg.create_pool(
+        db_url,
+        min_size=min_size,
+        max_size=max_size,
+        init=_init,
+        server_settings=None if search_path is None else {"search_path": search_path},
+    )
 
 
 async def migrated_pool(

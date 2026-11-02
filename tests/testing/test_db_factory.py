@@ -10,7 +10,12 @@ from butlers.testing.migration import table_exists
 
 pytestmark = pytest.mark.integration
 
+# Async fixtures run on the session loop (asyncio_default_fixture_loop_scope), so tests
+# that use their pools must too.
+session_loop = pytest.mark.asyncio(loop_scope="session")
 
+
+@session_loop
 async def test_db_pool_is_a_private_core_migrated_database(db_pool, db) -> None:
     other = await db("core")
     for pool in (db_pool, other):
@@ -21,6 +26,7 @@ async def test_db_pool_is_a_private_core_migrated_database(db_pool, db) -> None:
     assert await other.fetchval("SELECT count(*) FROM state WHERE key = 'k'") == 0
 
 
+@session_loop
 async def test_db_scopes_a_butler_schema_and_round_trips_jsonb(db) -> None:
     pool = await db(
         "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"

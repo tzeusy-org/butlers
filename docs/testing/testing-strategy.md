@@ -45,7 +45,8 @@ three root `conftest.py` fixtures:
 
 Each xdist worker migrates once per distinct chain request into a template database; every
 test then gets its own `CREATE DATABASE ... TEMPLATE` clone, so isolation stays per test while
-the migration cost is paid once. Do not add a per-file `pool` or `migrated_db_url` fixture or
+the migration cost is paid once. The fixtures run on the session event loop, so async tests
+that use them carry `pytest.mark.asyncio(loop_scope="session")`. Do not add a per-file `pool` or `migrated_db_url` fixture or
 hand-written `CREATE TABLE` DDL: `scripts/check_test_db_fixtures.py` (run by
 `tests/scripts/test_check_test_db_fixtures.py`) freezes the existing ones per file in
 `scripts/test-db-fixtures-baseline.json` and fails on any new one (bu-rvgzmf.1). After removing
