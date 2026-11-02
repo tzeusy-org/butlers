@@ -24,6 +24,7 @@ from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -31,13 +32,6 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _make_record(row: dict) -> MagicMock:
-    """Return a MagicMock that supports dict-style item access."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
 
 
 def _wire_app(app: FastAPI, *, pool: AsyncMock) -> None:
@@ -66,8 +60,8 @@ async def test_contact_found_by_name(app: FastAPI) -> None:
     """Person entity matched by canonical_name ILIKE → appears with correct title."""
     entity_id = uuid4()
 
-    contact_row = _make_record({"id": entity_id, "name": "Alice Smith", "entity_id": entity_id})
-    ef_snippet_row = _make_record(
+    contact_row = Record({"id": entity_id, "name": "Alice Smith", "entity_id": entity_id})
+    ef_snippet_row = Record(
         {"entity_id": entity_id, "predicate": "has-email", "object": "alice@example.com"}
     )
 
@@ -106,7 +100,7 @@ async def test_contact_without_entity_no_snippet(app: FastAPI) -> None:
     """Contact with entity_id=None → no snippet, still appears."""
     contact_id = uuid4()
 
-    contact_row = _make_record({"id": contact_id, "name": "Bob", "entity_id": None})
+    contact_row = Record({"id": contact_id, "name": "Bob", "entity_id": None})
 
     pool = AsyncMock()
 
@@ -180,10 +174,8 @@ async def test_contact_snippet_includes_phone(app: FastAPI) -> None:
     contact_id = uuid4()
     entity_id = uuid4()
 
-    contact_row = _make_record({"id": contact_id, "name": "Charlie", "entity_id": entity_id})
-    ef_row = _make_record(
-        {"entity_id": entity_id, "predicate": "has-phone", "object": "+6591234567"}
-    )
+    contact_row = Record({"id": contact_id, "name": "Charlie", "entity_id": entity_id})
+    ef_row = Record({"entity_id": entity_id, "predicate": "has-phone", "object": "+6591234567"})
 
     pool = AsyncMock()
 
@@ -214,13 +206,11 @@ async def test_contact_snippet_email_and_phone_both_shown(app: FastAPI) -> None:
     contact_id = uuid4()
     entity_id = uuid4()
 
-    contact_row = _make_record({"id": contact_id, "name": "Dana", "entity_id": entity_id})
-    ef_email = _make_record(
+    contact_row = Record({"id": contact_id, "name": "Dana", "entity_id": entity_id})
+    ef_email = Record(
         {"entity_id": entity_id, "predicate": "has-email", "object": "dana@example.com"}
     )
-    ef_phone = _make_record(
-        {"entity_id": entity_id, "predicate": "has-phone", "object": "+6599887766"}
-    )
+    ef_phone = Record({"entity_id": entity_id, "predicate": "has-phone", "object": "+6599887766"})
 
     pool = AsyncMock()
 

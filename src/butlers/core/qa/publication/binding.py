@@ -74,6 +74,11 @@ class PublicationBinding:
         )
 
 
+def pull_request_url(repository: str, number: int) -> str:
+    """The web URL of PR ``number`` in ``repository`` (stored on ``healing_attempts``)."""
+    return f"https://github.com/{repository}/pull/{number}"
+
+
 def canonical_digest(value: Mapping[str, Any]) -> str:
     """SHA-256 hex of canonical JSON (sorted keys, no whitespace)."""
     canonical = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
