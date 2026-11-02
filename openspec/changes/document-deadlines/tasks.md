@@ -14,3 +14,4 @@
 - [x] 2.6 Real-Postgres: cross-document supersession kept as disabled rows that never fire, owner-disable carry-over, earlier and far-later date coexistence, issuer-change capping, issuer-less isolation and both cap refusals.
 - [x] 2.7 Notice backoff: the job defers within the backoff window and keys attempts per threshold (unit); through `tick()` an outage writes one failed row across ticks and the threshold fires on recovery (real Postgres).
 - [x] 2.4 Inventory contract test: cataloged with D4 metadata, not listed to current sessions.
+- [x] 2.8 Issuer name set: adversarial phone, URL, email, markup, non-ASCII digit and length cases reduce to a short name at write and render (unit).

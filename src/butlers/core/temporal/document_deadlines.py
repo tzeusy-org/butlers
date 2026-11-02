@@ -60,7 +60,7 @@ DOCUMENT_DEADLINE_PRESETS = MappingProxyType(
 DEFAULT_PRESET = "two_weeks"
 
 MAX_DOCUMENT_ID_CHARS = 512
-MAX_ISSUER_CHARS = 60
+MAX_ISSUER_CHARS = 40
 # About ten years: a passport expiry fits, a mis-read year does not.
 MAX_HORIZON_DAYS = 3660
 # Safety bounds on reminders created from untrusted document text: a tainted goal cannot
@@ -76,9 +76,10 @@ MAX_SUPERSEDE_GAP_DAYS = 400
 _SUPERSESSION_KEYS = ("superseded_by", "superseded_at", "enabled_before_supersede")
 _WRITE_LOCK = "butlers.paperwork_deadline_set"
 
-# Issuer text is printed to the owner as inert text: letters, digits, spaces and a few
-# name punctuation marks only, so no markup, link or URL survives.
-_ISSUER_DROP = re.compile(r"[^\w &',\-]|_")
+# Issuer text comes from an untrusted document and is printed to the owner, so it is
+# reduced to a short name: letters, spaces and ``& ' -`` only. With no digits, dots or
+# ``@``, no phone number, link or email address can survive as something to act on.
+_ISSUER_NAME_MARKS = frozenset(" &'-")
 _SPACES = re.compile(r"\s+")
 
 
@@ -105,11 +106,27 @@ class DocumentDeadlinePlan:
 
 
 def sanitize_issuer(value: Any) -> str | None:
-    """Reduce an issuer name to inert text, or ``None`` when nothing usable is left."""
+    """Reduce an issuer to a short name, or ``None`` when no letters are left.
+
+    Characters outside the name set are dropped, words left without a letter (the
+    remains of a phone number) are removed except a lone ``&``, and the result is cut to
+    ``MAX_ISSUER_CHARS`` at a word boundary. The writer and the notice renderer both
+    apply it, so rows stored under an older rule are reduced again when shown.
+    """
     if not isinstance(value, str):
         return None
-    cleaned = _SPACES.sub(" ", _ISSUER_DROP.sub("", _SPACES.sub(" ", value))).strip()
-    return cleaned[:MAX_ISSUER_CHARS].strip() or None
+    kept = "".join(
+        ch if ch.isalpha() or ch in _ISSUER_NAME_MARKS else "" for ch in _SPACES.sub(" ", value)
+    )
+    words = [w for w in kept.split() if w == "&" or any(ch.isalpha() for ch in w)]
+    name = ""
+    for word in words:
+        candidate = f"{name} {word}" if name else word
+        if len(candidate) > MAX_ISSUER_CHARS:
+            name = name or word[:MAX_ISSUER_CHARS]
+            break
+        name = candidate
+    return name or None
 
 
 def _today() -> date:

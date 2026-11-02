@@ -284,7 +284,12 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             ] = DEFAULT_PRESET,
             issuer: Annotated[
                 str | None,
-                Field(description="Who issued the document, e.g. 'SP Group'. Shown as text."),
+                Field(
+                    description=(
+                        "Who issued the document, e.g. 'SP Group'. Shown as a short name: "
+                        "letters, spaces and & ' - only, at most 40 characters."
+                    )
+                ),
             ] = None,
         ) -> dict:
             """Remind the owner of a date read from a document; starts no session.
