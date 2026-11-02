@@ -59,11 +59,13 @@ async def test_migration_creates_indexes_rls_and_columns(db) -> None:
 
     assert await pool.fetchval(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'sessions' AND column_name = 'continuation_of_session_id'"
+        "WHERE table_schema = 'public' "
+        "AND table_name = 'sessions' AND column_name = 'continuation_of_session_id'"
     )
     assert await pool.fetchval(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'scheduled_tasks' AND column_name = 'continuity'"
+        "WHERE table_schema = 'public' "
+        "AND table_name = 'scheduled_tasks' AND column_name = 'continuity'"
     )
 
     # Two live rows for the same (butler, task) is rejected by the partial
@@ -98,9 +100,11 @@ async def test_migration_creates_indexes_rls_and_columns(db) -> None:
     assert await pool.fetchval("SELECT to_regclass('public.task_continuity')") is None
     assert not await pool.fetchval(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'sessions' AND column_name = 'continuation_of_session_id'"
+        "WHERE table_schema = 'public' "
+        "AND table_name = 'sessions' AND column_name = 'continuation_of_session_id'"
     )
     assert not await pool.fetchval(
         "SELECT column_name FROM information_schema.columns "
-        "WHERE table_name = 'scheduled_tasks' AND column_name = 'continuity'"
+        "WHERE table_schema = 'public' "
+        "AND table_name = 'scheduled_tasks' AND column_name = 'continuity'"
     )
