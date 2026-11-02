@@ -1361,6 +1361,233 @@ async def test_insight_scan_budget_warn_then_exceeded_escalates_distinct_keys(
         assert by_key[exceeded_key]["priority"] == 70
 
 
+# ---------------------------------------------------------------------------
+# bu-5rjeup: budget thresholds -> owner condition ledger (REQ-owner-condition-ledger-010)
+# ---------------------------------------------------------------------------
+
+
+def _budget_month_tx_date() -> datetime:
+    today = _today()
+    return datetime(today.year, today.month, min(today.day, 28), 12, 0, 0, tzinfo=UTC)
+
+
+def _budget_condition_fp(category: str = "dining", period: str = "monthly") -> str:
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+        owner_condition_fingerprint,
+    )
+
+    today = _today()
+    return owner_condition_fingerprint(
+        _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+        1,
+        {
+            "category": category,
+            "period": period,
+            "period_start": date(today.year, today.month, 1).isoformat(),
+        },
+    )
+
+
+async def _active_budget_condition(pool, fp: str):
+    from butlers.jobs._roster.finance_jobs import _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE
+
+    return await get_active_condition(
+        pool, source=_OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE, fingerprint=fp
+    )
+
+
+async def test_insight_scan_budget_warning_opens_then_exceeded_confirms_same_episode(
+    provisioned_postgres_pool,
+):
+    """A warning opens one budget-threshold condition carrying only the owner
+    surface (category, period, utilisation, spent, budget); escalating to
+    exceeded in the same window confirms that episode with the new status as
+    evidence instead of opening a second one."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="dining", amount="500.00")
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount="420.00",
+            category="dining",
+            posted_at=_budget_month_tx_date(),
+        )
+        fp = _budget_condition_fp()
+
+        await run_insight_scan(pool)
+        opened = await _active_budget_condition(pool, fp)
+        assert opened is not None
+        assert opened["state"] == "open"
+        assert "dining" in opened["summary"]
+        meta = opened["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        assert set(meta) == {
+            "category",
+            "period",
+            "period_start",
+            "status",
+            "utilisation_pct",
+            "spent",
+            "budget",
+        }
+        assert meta["status"] == "warning"
+        assert meta["spent"] == "420.00"
+        assert "Bistro" not in json.dumps(meta) + opened["summary"]
+
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount="100.00",
+            category="dining",
+            posted_at=_budget_month_tx_date(),
+        )
+        await run_insight_scan(pool)
+        confirmed = await _active_budget_condition(pool, fp)
+        assert confirmed is not None
+        assert confirmed["id"] == opened["id"]
+        assert confirmed["episode"] == opened["episode"]
+        meta = confirmed["metadata"]
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        assert meta["status"] == "exceeded"
+
+
+@pytest.mark.parametrize("change", ["lower_total", "budget_removed", "new_period"])
+async def test_insight_scan_budget_condition_resolves_on_complete_snapshot(
+    provisioned_postgres_pool, change
+):
+    """A later complete scan that no longer observes the crossing resolves it:
+    a deleted transaction, a deactivated budget (empty budget_status result is
+    a complete snapshot), or the period rolling over."""
+    from butlers.jobs._roster.finance_jobs import run_insight_scan
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="dining", amount="500.00")
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount="420.00",
+            category="dining",
+            posted_at=_budget_month_tx_date(),
+        )
+        fp = _budget_condition_fp()
+        await run_insight_scan(pool)
+        assert await _active_budget_condition(pool, fp) is not None
+
+        later_now = None
+        if change == "lower_total":
+            await pool.execute("DELETE FROM finance.transactions WHERE category = 'dining'")
+        elif change == "budget_removed":
+            await pool.execute("UPDATE finance.budgets SET is_active = false")
+        else:
+            today = _today()
+            first_next = date(today.year + today.month // 12, today.month % 12 + 1, 1)
+            later_now = datetime(first_next.year, first_next.month, 1, 12, tzinfo=UTC)
+        await run_insight_scan(pool, now=later_now)
+
+        assert await _active_budget_condition(pool, fp) is None
+
+
+async def test_insight_scan_budget_status_failure_skips_only_budget_source(
+    provisioned_postgres_pool,
+):
+    """budget_status() raising never resolves an active budget condition, and
+    the rest of the scan (overdue-bill ledger source, later candidates) runs."""
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_BILL_OVERDUE_SOURCE,
+        owner_condition_fingerprint,
+        run_insight_scan,
+    )
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="dining", amount="500.00")
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount="420.00",
+            category="dining",
+            posted_at=_budget_month_tx_date(),
+        )
+        fp = _budget_condition_fp()
+        await run_insight_scan(pool)
+        assert await _active_budget_condition(pool, fp) is not None
+
+        bill_id = await _insert_bill_returning_id(
+            pool, payee="Electric Co", amount="75.00", due_date=_today() - timedelta(days=2)
+        )
+        await _insert_subscription(
+            pool,
+            service="Annual Cloud",
+            amount="120.00",
+            frequency="yearly",
+            next_renewal=_today() + timedelta(days=2),
+        )
+        await pool.execute("DELETE FROM finance.transactions WHERE category = 'dining'")
+        with patch.object(
+            _fj_module(), "budget_status", AsyncMock(side_effect=RuntimeError("boom"))
+        ):
+            result = await run_insight_scan(pool)
+
+        assert result["early_exit"] is False
+        assert await _active_budget_condition(pool, fp) is not None
+        bill_fp = owner_condition_fingerprint(
+            _OWNER_CONDITION_BILL_OVERDUE_SOURCE, 1, {"bill_id": bill_id}
+        )
+        assert (
+            await get_active_condition(
+                pool, source=_OWNER_CONDITION_BILL_OVERDUE_SOURCE, fingerprint=bill_fp
+            )
+        ) is not None
+        renewal = [
+            c for c in await _fetch_candidates(pool) if c["category"] == "subscription-renewal"
+        ]
+        assert len(renewal) == 1
+
+
+async def test_insight_scan_budget_reconciliation_failure_does_not_break_scan(
+    provisioned_postgres_pool,
+):
+    """A ledger failure for the budget source is logged and swallowed: the
+    budget candidate is still submitted and the scan completes."""
+    from butlers.jobs._roster.finance_jobs import (
+        _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE,
+        run_insight_scan,
+    )
+
+    real_reconcile = _fj_module().reconcile_owner_condition
+
+    async def _fail_budget_source(pool, *, source, **kwargs):
+        if source == _OWNER_CONDITION_BUDGET_THRESHOLD_SOURCE:
+            raise RuntimeError("ledger down")
+        return await real_reconcile(pool, source=source, **kwargs)
+
+    async with provisioned_postgres_pool() as pool:
+        await _setup_insight_schema(pool)
+        await _insert_budget(pool, category="dining", amount="500.00")
+        await _insert_transaction(
+            pool,
+            merchant="Bistro",
+            amount="420.00",
+            category="dining",
+            posted_at=_budget_month_tx_date(),
+        )
+        with patch.object(_fj_module(), "reconcile_owner_condition", _fail_budget_source):
+            result = await run_insight_scan(pool)
+
+        assert result["early_exit"] is False
+        assert result["errors"] == 0
+        budget = [c for c in await _fetch_candidates(pool) if c["category"] == "budget-threshold"]
+        assert len(budget) == 1
+        assert await _active_budget_condition(pool, _budget_condition_fp()) is None
+
+
 async def test_insight_scan_subscription_renewal_within_3_days_priority_75(
     provisioned_postgres_pool,
 ):
