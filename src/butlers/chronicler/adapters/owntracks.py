@@ -23,9 +23,23 @@ Semantics:
   per the ``Map Render Privacy Contract`` requirement, not by blanket
   classification at the adapter layer.  The ``restricted`` class still
   exists for episodes that must be hidden entirely (bu-6c5i6).
-- Watermark on ``ts`` only. ``connectors.owntracks_points.id`` is a UUID,
-  not an integer serial, so this adapter must not use the integer
-  ``watermark_id`` tuple-watermark path.
+- Ingestion progress is an arrival-order cursor, not device time
+  (bu-e6lrho). OwnTracks uploads offline-queued fixes late, so a fix with an
+  older device ``ts`` can arrive after a newer one was projected; a ``ts``
+  watermark would skip it forever. The adapter pages ``(recorded_at, id)``
+  (server arrival time, UUID tie-break) and stores that cursor in the
+  checkpoint carryover under ``_ingest_cursor``: the relational
+  ``watermark_id`` column is an integer and cannot hold a UUID. Rows newer
+  than ``now() - ingest_settle_seconds`` wait for the next run, so a
+  slow-committing insert stamped with an earlier ``recorded_at`` cannot land
+  behind an already-advanced cursor. Device ``ts`` still orders points and
+  bounds episodes; the relational ``watermark`` reports the newest device
+  ``ts`` projected, as before.
+- Cutover from a legacy ``ts``-only checkpoint (no ``_ingest_cursor``) does not
+  rescan history: the cursor starts at the earliest-arrived row with
+  ``ts > watermark`` (inclusive), or after the newest settled row when every
+  row is already covered. Only rows that arrived since then are re-read;
+  their projections are idempotent by ``source_ref``.
 - Missing evidence table degrades gracefully (module not enabled /
   migration not run on this deployment).
 - No LLM call per event — Tier-0 projection only (RFC 0014 §D5).
@@ -52,6 +66,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -128,6 +143,44 @@ MIN_MOVEMENT_POINTS = 2
 # ``OwnTracksPointAdapter(clock_skew_threshold_hours=...)``.
 CLOCK_SKEW_THRESHOLD_HOURS = 4
 
+# Carryover key of the arrival-order ingestion cursor (see module docstring).
+INGEST_CURSOR_CARRYOVER_KEY = "_ingest_cursor"
+
+# Rows whose ``recorded_at`` is newer than ``now()`` minus this many seconds are
+# left for the next run. ``recorded_at`` defaults to the inserting
+# transaction's start time, so an insert that commits late can carry a stamp
+# older than rows already visible; the settle window keeps the cursor behind it.
+INGEST_SETTLE_SECONDS = 60
+
+
+@dataclass(frozen=True)
+class IngestCursor:
+    """Position in ``connectors.owntracks_points`` arrival order.
+
+    ``inclusive`` is only set by the legacy-checkpoint cutover, whose start row
+    has not been projected yet; every persisted cursor is exclusive.
+    """
+
+    recorded_at: datetime
+    id: UUID
+    inclusive: bool = False
+
+    def dump(self) -> dict[str, Any]:
+        return {"version": 1, "recorded_at": self.recorded_at.isoformat(), "id": str(self.id)}
+
+    @classmethod
+    def load(cls, raw: object) -> IngestCursor | None:
+        if not isinstance(raw, dict) or raw.get("version") != 1:
+            return None
+        try:
+            recorded_at = datetime.fromisoformat(raw["recorded_at"])
+            row_id = UUID(raw["id"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if recorded_at.tzinfo is None:
+            return None
+        return cls(recorded_at=recorded_at, id=row_id)
+
 
 class OwnTracksPointAdapter(ProjectionAdapter):
     """Project ``connectors.owntracks_points`` rows into Chronicler.
@@ -143,9 +196,15 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         batch_limit: int = DEFAULT_BATCH_LIMIT,
         movement_gap_minutes: int = MOVEMENT_GAP_MINUTES,
         clock_skew_threshold_hours: int = CLOCK_SKEW_THRESHOLD_HOURS,
+        ingest_settle_seconds: int = INGEST_SETTLE_SECONDS,
     ) -> None:
         super().__init__(SOURCE_NAME)
         self.batch_limit = batch_limit
+        if ingest_settle_seconds < 0:
+            raise ValueError(
+                f"ingest_settle_seconds must be non-negative, got {ingest_settle_seconds}"
+            )
+        self.ingest_settle_seconds = ingest_settle_seconds
         self.movement_gap_minutes = movement_gap_minutes
         if clock_skew_threshold_hours < 0:
             raise ValueError(
@@ -197,19 +256,35 @@ class OwnTracksPointAdapter(ProjectionAdapter):
     ) -> AdapterResult:
         result = AdapterResult(source_name=self.source_name)
 
-        rows = await self._fetch_points(pool, since)
-        if rows is None:
+        prior_carryover = await get_carryover(chronicler_pool, self.source_name)
+        stored_cursor = IngestCursor.load(prior_carryover.get(INGEST_CURSOR_CARRYOVER_KEY))
+        fetched = await self._fetch_points(pool, since, cursor=stored_cursor)
+        if fetched is None:
             result.skipped = True
             result.skipped_reason = (
                 f"{_EVIDENCE_TABLE} not found; OwnTracks evidence surface unavailable"
             )
             return result
+        rows, start_cursor = fetched
 
         if not rows:
+            # A cutover cursor positioned after every settled row completes the
+            # upgrade now; an inclusive one still points at an unread row.
+            if (
+                start_cursor is not None
+                and not start_cursor.inclusive
+                and start_cursor != stored_cursor
+            ):
+                await save_carryover(
+                    chronicler_pool,
+                    self.source_name,
+                    {**prior_carryover, INGEST_CURSOR_CARRYOVER_KEY: start_cursor.dump()},
+                )
             result.watermark = since
             return result
 
         latest_watermark = since
+        new_carryover: dict = dict(prior_carryover)
         valid_rows: list[dict[str, Any]] = []
         for row in rows:
             ts = row["ts"]
@@ -228,7 +303,6 @@ class OwnTracksPointAdapter(ProjectionAdapter):
             # Judge plausibility in device-time order with the shared trail
             # policy (owntracks_trail.py); anchors persist across batches.
             valid_rows.sort(key=trail_order_key)
-            prior_carryover = await get_carryover(chronicler_pool, self.source_name)
             state = load_trail_state(prior_carryover)
             # Classification may reset this bounded state during replay. Keep
             # its historical identities before that mutation: a fetched overlap
@@ -318,7 +392,7 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                         f"{_EVIDENCE_TABLE}:{previous['idempotency_key']}",
                         verdict.to_payload() if verdict else None,
                     )
-            new_carryover: dict = {
+            new_carryover = {
                 key: value for key, value in prior_carryover.items() if not key.startswith("_")
             }
             if accepted_rows:
@@ -333,7 +407,14 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                 new_carryover.update(movement_carryover)
             new_carryover[TRAIL_ANCHORS_CARRYOVER_KEY] = dump_anchors(anchors)
             new_carryover[TRAIL_STATE_CARRYOVER_KEY] = {"version": 1, "endpoints": state}
-            await save_carryover(chronicler_pool, self.source_name, new_carryover)
+
+        # Advance arrival-order progress past every fetched row, valid or not,
+        # in the same transaction as the projections it covers.
+        last_row = rows[-1]
+        new_carryover[INGEST_CURSOR_CARRYOVER_KEY] = IngestCursor(
+            recorded_at=last_row["recorded_at"], id=last_row["id"]
+        ).dump()
+        await save_carryover(chronicler_pool, self.source_name, new_carryover)
 
         result.watermark = latest_watermark
         # Leave watermark_id unset: owntracks_points.id is UUID, while the
@@ -453,19 +534,21 @@ class OwnTracksPointAdapter(ProjectionAdapter):
         self,
         pool: asyncpg.Pool | asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
         since: datetime | None,
-        since_id: int | None = None,
-    ) -> list[asyncpg.Record] | None:
-        """Fetch evidence rows since the watermark.
+        *,
+        cursor: IngestCursor | None,
+    ) -> tuple[list[asyncpg.Record], IngestCursor | None] | None:
+        """Fetch the next settled rows in arrival order after ``cursor``.
 
-        ``since_id`` is intentionally ignored. The evidence table primary key
-        is UUID, while ``projection_checkpoints.watermark_id`` is an integer
-        field for serial-id sources. Use single-column ``WHERE ts > $1`` so a
-        stale integer checkpoint cannot make Postgres compare UUIDs to ints.
-
-        Returns ``None`` if the evidence table is missing — degrade
-        gracefully per RFC 0014 optional-schema guard.
+        Returns ``(rows, start_cursor)``; ``start_cursor`` is ``cursor`` or, for
+        a legacy ``ts``-only checkpoint, the derived cutover position. Returns
+        ``None`` if the evidence table is missing — degrade gracefully per
+        RFC 0014 optional-schema guard.
         """
-        del since_id
+        columns = (
+            "id, idempotency_key, ts, lat, lon, accuracy, trigger, event, "
+            "endpoint_identity, raw_payload, recorded_at"
+        )
+        settled = "recorded_at <= now() - make_interval(secs => $1)"
         try:
             async with owntracks_connection(pool) as conn:
                 # Roll back a caught read error before updating projection status.
@@ -482,37 +565,82 @@ class OwnTracksPointAdapter(ProjectionAdapter):
                     if not exists:
                         return None
 
-                    if since is None:
+                    if cursor is None and since is not None:
+                        cursor = await self._cutover_cursor(conn, since)
+
+                    if cursor is None:
                         rows = await conn.fetch(
                             f"""
-                            SELECT id, idempotency_key, ts, lat, lon,
-                                   accuracy, trigger, event, endpoint_identity,
-                                   raw_payload, recorded_at
+                            SELECT {columns}
                             FROM {_EVIDENCE_TABLE}
-                            ORDER BY ts ASC, id ASC
-                            LIMIT $1
+                            WHERE {settled}
+                            ORDER BY recorded_at ASC, id ASC
+                            LIMIT $2
                             """,
+                            float(self.ingest_settle_seconds),
                             self.batch_limit,
                         )
                     else:
+                        op = ">=" if cursor.inclusive else ">"
                         rows = await conn.fetch(
                             f"""
-                            SELECT id, idempotency_key, ts, lat, lon,
-                                   accuracy, trigger, event, endpoint_identity,
-                                   raw_payload, recorded_at
+                            SELECT {columns}
                             FROM {_EVIDENCE_TABLE}
-                            WHERE ts > $1
-                            ORDER BY ts ASC, id ASC
-                            LIMIT $2
+                            WHERE {settled}
+                              AND (recorded_at, id) {op} ($2, $3)
+                            ORDER BY recorded_at ASC, id ASC
+                            LIMIT $4
                             """,
-                            since,
+                            float(self.ingest_settle_seconds),
+                            cursor.recorded_at,
+                            cursor.id,
                             self.batch_limit,
                         )
         except asyncpg.PostgresError:
             logger.exception("Failed reading %s", _EVIDENCE_TABLE)
             return None
 
-        return list(rows)
+        return list(rows), cursor
+
+    async def _cutover_cursor(
+        self,
+        conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
+        since: datetime,
+    ) -> IngestCursor | None:
+        """Translate a legacy device-``ts`` watermark without rescanning history.
+
+        Rows with ``ts > since`` were never projected, so start at the
+        earliest-arrived of them (inclusive). If none exist, every row is
+        covered: start after the newest settled row. ``None`` (empty table)
+        starts from the beginning.
+        """
+        first_unprojected = await conn.fetchrow(
+            f"""
+            SELECT recorded_at, id FROM {_EVIDENCE_TABLE}
+            WHERE ts > $1
+            ORDER BY recorded_at ASC, id ASC
+            LIMIT 1
+            """,
+            since,
+        )
+        if first_unprojected is not None:
+            return IngestCursor(
+                recorded_at=first_unprojected["recorded_at"],
+                id=first_unprojected["id"],
+                inclusive=True,
+            )
+        newest_settled = await conn.fetchrow(
+            f"""
+            SELECT recorded_at, id FROM {_EVIDENCE_TABLE}
+            WHERE recorded_at <= now() - make_interval(secs => $1)
+            ORDER BY recorded_at DESC, id DESC
+            LIMIT 1
+            """,
+            float(self.ingest_settle_seconds),
+        )
+        if newest_settled is None:
+            return None
+        return IngestCursor(recorded_at=newest_settled["recorded_at"], id=newest_settled["id"])
 
     async def _project_point_event(
         self,
@@ -1083,6 +1211,9 @@ __all__ = [
     "DEFAULT_BATCH_LIMIT",
     "EPISODE_TYPE_MOVEMENT",
     "EVENT_TYPE_LOCATION",
+    "INGEST_CURSOR_CARRYOVER_KEY",
+    "INGEST_SETTLE_SECONDS",
+    "IngestCursor",
     "MIN_MOVEMENT_POINTS",
     "MOVEMENT_GAP_MINUTES",
     "OwnTracksPointAdapter",
