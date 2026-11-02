@@ -675,7 +675,8 @@ async def budget_pool(db):
     """A core+finance clone; seeds the non-system categories budgeted below."""
     pool = await db("core", "finance")
     await pool.execute(
-        "INSERT INTO categories (name, display_name) VALUES ('gifts', 'gifts') ON CONFLICT DO NOTHING"
+        "INSERT INTO categories (name, display_name) VALUES ('gifts', 'gifts'), ('food', 'food') "
+        "ON CONFLICT DO NOTHING"
     )
     return pool
 
