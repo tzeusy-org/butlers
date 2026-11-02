@@ -3,6 +3,8 @@
 import asyncio
 import base64
 import io
+import json
+import struct
 import time
 import zlib
 
@@ -321,25 +323,112 @@ async def test_pdf_children_share_capped_concurrency_slots(monkeypatch):
     """Text and render children share EXTRACT_CONCURRENCY slots; a saturated queue refuses."""
     running = peak = 0
 
+    png = _png(10, 10)
+    rendered = _render_stdout({"total": 1, "page": 1, "width": 10, "height": 10}, png)
+
     async def fake_child(data, argv, max_output):
         nonlocal running, peak
         running += 1
         peak = max(peak, running)
         await asyncio.sleep(0.05)
         running -= 1
-        return b'{"total": 1, "pages": []}'
+        return rendered if argv[0] == "render" else b'{"total": 1, "pages": []}'
 
+    text_ok = {"total": 1, "pages": []}
+    render_ok = {"total": 1, "page": 1, "width": 10, "height": 10, "png": png}
     monkeypatch.setattr(attachments, "_spawn_child", fake_child)
     results = await asyncio.gather(
         *(attachments._extract_in_child(b"%PDF-", 1, 1) for _ in range(2 * EXTRACT_CONCURRENCY)),
         *(attachments._render_in_child(b"%PDF-", 1) for _ in range(EXTRACT_CONCURRENCY)),
     )
     assert peak == EXTRACT_CONCURRENCY
-    assert results[0] == {"total": 1, "pages": []}
+    assert results == [text_ok] * (2 * EXTRACT_CONCURRENCY) + [render_ok] * EXTRACT_CONCURRENCY
 
     monkeypatch.setattr(attachments, "EXTRACT_QUEUE_WAIT_SECONDS", 0.01)
     results = await asyncio.gather(
         *(attachments._render_in_child(b"%PDF-", 1) for _ in range(3 * EXTRACT_CONCURRENCY))
     )
     assert peak == EXTRACT_CONCURRENCY
-    assert {"refusal": "extraction_busy"} in results
+    busy = {"refusal": "extraction_busy"}
+    assert busy in results
+    assert all(result in (render_ok, busy) for result in results)
+
+
+def _png(width: int, height: int) -> bytes:
+    buffer = io.BytesIO()
+    PILImage.new("RGB", (width, height)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _forge_ihdr(png: bytes, width: int, height: int) -> bytes:
+    """Rewrite the IHDR dimensions (bytes 16-24) without touching anything else."""
+    return png[:16] + struct.pack(">II", width, height) + png[24:]
+
+
+def _render_stdout(header: dict, png: bytes) -> bytes:
+    return json.dumps(header).encode() + b"\n" + png
+
+
+_GOOD_PNG = _png(10, 10)
+_HEADER = {"total": 3, "page": 1, "width": 10, "height": 10}
+_PARENT_CASES = (
+    ("valid", _render_stdout(_HEADER, _GOOD_PNG), "ok"),
+    ("bad_signature", _render_stdout(_HEADER, b"GIF89a" + _GOOD_PNG[6:]), "reject"),
+    ("short_png", _render_stdout(_HEADER, _GOOD_PNG[:20]), "reject"),
+    (
+        "ihdr_header_mismatch",
+        _render_stdout(_HEADER, _forge_ihdr(_GOOD_PNG, 100_000, 100_000)),
+        "reject",
+    ),
+    (
+        "zero_width",
+        _render_stdout({**_HEADER, "width": 0}, _forge_ihdr(_GOOD_PNG, 0, 10)),
+        "reject",
+    ),
+    (
+        "edge_too_long",
+        _render_stdout(
+            {**_HEADER, "width": MAX_RENDER_EDGE_PX + 1, "height": 10},
+            _forge_ihdr(_GOOD_PNG, MAX_RENDER_EDGE_PX + 1, 10),
+        ),
+        "reject",
+    ),
+    (
+        "area_too_large",
+        _render_stdout(
+            {**_HEADER, "width": 1500, "height": 1500}, _forge_ihdr(_GOOD_PNG, 1500, 1500)
+        ),
+        "reject",
+    ),
+    ("wrong_page", _render_stdout({**_HEADER, "page": 7}, _GOOD_PNG), "reject"),
+    ("malformed_header", b"not json\n" + _GOOD_PNG, "reject"),
+    ("header_missing_field", _render_stdout({"total": 3, "page": 1}, _GOOD_PNG), "reject"),
+    (
+        "output_over_cap",
+        _render_stdout(_HEADER, _GOOD_PNG + b"\0" * attachments._MAX_RENDER_OUTPUT_BYTES),
+        "reject",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "stdout", "expected"), _PARENT_CASES, ids=[case[0] for case in _PARENT_CASES]
+)
+async def test_render_parent_rejects_untrusted_child_output(
+    monkeypatch, tmp_path, case, stdout, expected
+):
+    """The parent trusts only the PNG it can verify, never the child's header alone.
+
+    A stub child echoes canned stdout through the real spawn path, so the
+    output cap is exercised too.
+    """
+    echo = tmp_path / "echo_child.py"
+    echo.write_text("import sys\nsys.stdout.buffer.write(sys.stdin.buffer.read())\n")
+    monkeypatch.setattr(attachments, "_EXTRACTOR_SCRIPT", echo)
+
+    result = await attachments._render_in_child(stdout, 1)
+
+    if expected == "ok":
+        assert result == {"total": 3, "page": 1, "width": 10, "height": 10, "png": _GOOD_PNG}
+    else:
+        assert result == {"refusal": "extraction_limit_exceeded"}

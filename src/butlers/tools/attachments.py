@@ -423,8 +423,10 @@ async def _render_in_child(data: bytes, page: int) -> dict[str, Any]:
     """One page as PNG from a bounded child.
 
     Returns ``{"total", "page", "width", "height", "png"}`` or ``{"refusal"}``.
-    The parent re-checks the child's dimensions and PNG signature, so a
-    misbehaving child cannot hand back an out-of-bounds image.
+    The child's header is not trusted on its own: the dimensions come from
+    the PNG's IHDR chunk and must match the header, both must be at least 1
+    and inside the render bounds, and the page must be the one requested.
+    Anything else is ``extraction_limit_exceeded``.
     """
     stdout = await _in_child(
         data, "render", (page, MAX_RENDER_EDGE_PX, MAX_RENDER_PIXELS), _MAX_RENDER_OUTPUT_BYTES
@@ -440,10 +442,17 @@ async def _render_in_child(data: bytes, page: int) -> dict[str, Any]:
         total, number = int(header["total"]), int(header["page"])
     except (KeyError, TypeError, ValueError):
         return _LIMIT_BREACH
+    # PNG layout: 8-byte signature, then the IHDR chunk (length, b"IHDR",
+    # width, height as big-endian uint32), so the dimensions sit at 16:24.
+    if len(png) < 24 or png[:8] != _PNG_SIGNATURE or png[12:16] != b"IHDR":
+        return _LIMIT_BREACH
+    if (int.from_bytes(png[16:20]), int.from_bytes(png[20:24])) != (width, height):
+        return _LIMIT_BREACH
     if (
-        not png.startswith(_PNG_SIGNATURE)
-        or not 0 < max(width, height) <= MAX_RENDER_EDGE_PX
+        min(width, height) < 1
+        or max(width, height) > MAX_RENDER_EDGE_PX
         or width * height > MAX_RENDER_PIXELS
+        or number != page
     ):
         return _LIMIT_BREACH
     return {"total": total, "page": number, "width": width, "height": height, "png": png}
