@@ -85,6 +85,7 @@ from butlers.modules.calendar import (
     classify_sync_error_kind,
 )
 from butlers.testing.mcp import registered_tools, tool_fn
+from butlers.testing.records import Record
 
 # The retained historical permission-test narratives describe the original enforcement.
 # Effects now refuse unavailable state; the real-lookup availability test below covers
@@ -1808,7 +1809,7 @@ def _make_home_resolver_pool(*, projected_calendar_id: str | None) -> MagicMock:
     None the join returns no row, simulating a projection miss.
     """
     pool = MagicMock()
-    availability = _FakeRecord(
+    availability = Record(
         {
             "has_sources": True,
             "has_events": True,
@@ -1829,7 +1830,7 @@ def _make_home_resolver_pool(*, projected_calendar_id: str | None) -> MagicMock:
             lookup_calls.append(args)
             if projected_calendar_id is None:
                 return None
-            return _FakeRecord({"calendar_id": projected_calendar_id})
+            return Record({"calendar_id": projected_calendar_id})
         return None
 
     pool.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
@@ -1953,7 +1954,7 @@ class TestHomeCalendarResolution:
 
         async def fetchrow_side_effect(query, *args):
             if "to_regclass" in query:
-                return _FakeRecord(
+                return Record(
                     {
                         "has_sources": True,
                         "has_events": True,
@@ -3252,9 +3253,9 @@ class TestProjectSchedulerSourceDispatchModeFilter:
         # Scheduled-tasks query returns caller-supplied rows; other fetch calls
         # (e.g. stale-event cancel) return an empty list.
         #
-        # Use _FakeRecord instead of MagicMock so that dict(row) works correctly.
+        # Use Record instead of MagicMock so that dict(row) works correctly.
         # asyncpg Records support dict() via keys(); MagicMock does not.
-        rows_to_return = [_FakeRecord(r) for r in (scheduled_rows or [])]
+        rows_to_return = [Record(r) for r in (scheduled_rows or [])]
 
         async def fetch_side_effect(query, *args):
             if "scheduled_tasks" in query:
@@ -3414,34 +3415,6 @@ def _row_to_record(d: dict) -> MagicMock:
     rec = MagicMock()
     rec.__getitem__ = lambda self, key: d[key]
     return rec
-
-
-class _FakeRecord:
-    """Minimal asyncpg Record substitute that supports ``dict(record)`` conversion.
-
-    ``dict(record)`` works via the mapping protocol (keys() + __getitem__).
-    ``MagicMock`` does not implement ``keys()`` so dict() on it returns ``{}``.
-    Use this class wherever the production code calls ``dict(row)`` on a fetched
-    asyncpg record.
-    """
-
-    def __init__(self, data: dict) -> None:
-        self._data = data
-
-    def __getitem__(self, key: str):
-        return self._data[key]
-
-    def get(self, key: str, default=None):
-        return self._data.get(key, default)
-
-    def keys(self):
-        return self._data.keys()
-
-    def items(self):
-        return self._data.items()
-
-    def values(self):
-        return self._data.values()
 
 
 def _make_module_with_pool(pool) -> CalendarModule:
@@ -4798,9 +4771,9 @@ class TestProjectionFreshnessErrorKind:
     """``_projection_freshness_metadata`` surfaces a per-source ``error_kind``."""
 
     @staticmethod
-    def _source_row(*, source_key: str, last_error: str | None) -> _FakeRecord:
+    def _source_row(*, source_key: str, last_error: str | None) -> Record:
         now = datetime.now(UTC)
-        return _FakeRecord(
+        return Record(
             {
                 "id": uuid.uuid4(),
                 "source_key": source_key,
