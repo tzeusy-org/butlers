@@ -716,8 +716,13 @@ class ButlerDaemon:
 
         # The credential store is passed as the Codex authority explicitly, the
         # same way the dashboard's verification path passes it: a probe must
-        # never infer authority from the pool it happens to hold.
-        return RuntimeProbeCoordinator(pool, codex_auth_authority=self._credential_store)
+        # never infer authority from the pool it happens to hold. Other runtimes
+        # get the same store for their keys, as the spawner's adapters do.
+        return RuntimeProbeCoordinator(
+            pool,
+            codex_auth_authority=self._credential_store,
+            credential_store=self._credential_store,
+        )
 
     def _build_route_preflight(self) -> Any | None:
         """Mount the effect-free route canary only on Switchboard's backend port."""
