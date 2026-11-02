@@ -22,7 +22,7 @@
               "datasourceUid": "prometheus",
               "model": {
                 "editorMode": "code",
-                "expr": "sum by(source_butler, destination_butler, reason) (increase(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[15m]))",
+                "expr": "sum by(source_butler, destination_butler, reason) ((butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"} unless butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"} offset 15m) or increase(butlers_domain_event_delivery_failed_permanent_deliveries_total{job=\"butlers\"}[15m]))",
                 "intervalMs": 1000,
                 "maxDataPoints": 43200,
                 "range": true,
@@ -108,6 +108,7 @@
             "no_data": "The configured NoData policy takes effect only after an owner explicitly enables evaluation; it then keeps a missing series visible rather than treating it as healthy.",
             "exec_error": "The configured Error policy takes effect only after an owner explicitly enables evaluation; it then surfaces rule execution failures.",
             "reset": "increase() treats an exporter counter reset as zero rather than a new delivery failure.",
+            "first_event": "A route series appears only on its first failure, which increase() cannot see without a prior sample; for its first 15 minutes the rule reads the series value itself.",
             "deduplication": "The query preserves source_butler, destination_butler, and reason; Grafana creates one alert instance per label tuple.",
             "disabled": "isPaused=true: Grafana performs no evaluation and creates no alert instances, receiver, notification policy, or route."
           },

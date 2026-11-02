@@ -263,6 +263,10 @@ notification policy. While `isPaused=true`, Grafana performs no evaluation and
 creates no alert instances, so this rule cannot diagnose a missing series or
 evaluation error. Its configured `NoData` and `Error` policies take effect only
 after an owner explicitly enables evaluation.
+Because a route's series is created by its first failure, `increase()` has no
+prior sample to compare against; the rule therefore also reads a series that
+did not exist 15 minutes earlier (`unless ... offset 15m`), so the first-ever
+failure on a route still alerts.
 Enabling evaluation or notification delivery, changing a route, or exercising
 an alert requires a separate owner-approved operational change.
 
@@ -290,7 +294,10 @@ account and resource:
 They follow the same posture as the domain-event rule above: `isPaused=true`,
 `severity=warning`, and no contact point or notification policy. `NoData`
 resolves to OK, because a missing series means the connector is down or has not
-seen the condition; connector liveness belongs to its heartbeat. Enabling
+seen the condition; connector liveness belongs to its heartbeat. The connector
+creates the page-cap and quarantine counters at zero for every account and
+resource when it discovers the account, so `increase()` sees the first-ever
+event instead of mistaking the series' creation for its baseline. Enabling
 evaluation or routing notifications is a separate owner-approved operational
 change. A quarantined envelope is replayed from its `poison_quarantine` row in
 `connectors.filtered_events`.
