@@ -11,63 +11,49 @@ import pytest
 from butlers.core.confirm_models import ConfirmOption, ConfirmPrompt, Recipient
 from butlers.core.confirm_service import ConfirmService, SinkRegistration
 from butlers.core.confirm_tokens import mint_confirm_token
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
-from tests.switchboard.goal_ledger_fixtures import codec
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture(scope="module")
-def confirm_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        ["core", "switchboard", "relationship"],
+@pytest.fixture
+async def confirms(db):
+    pool = await db(
+        "core",
+        "switchboard",
+        "relationship",
         schemas={
             "core": "switchboard",
             "switchboard": "switchboard",
             "relationship": "relationship",
         },
+        max_size=4,
+    )
+    await pool.execute(
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='connector_writer') THEN CREATE ROLE connector_writer NOLOGIN; END IF; END $$"
     )
 
+    class RolePool:
+        @asynccontextmanager
+        async def acquire(self):
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+                    yield conn
 
-@pytest.fixture
-async def confirms(confirm_url):
-    import asyncpg
-
-    async with asyncpg.create_pool(confirm_url, init=codec, min_size=1, max_size=4) as pool:
-        await pool.execute("TRUNCATE public.pending_confirms")
-        await pool.execute("DROP TABLE IF EXISTS sink_receipts")
-        await pool.execute(
-            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='connector_writer') THEN CREATE ROLE connector_writer NOLOGIN; END IF; END $$"
-        )
-
-        class RolePool:
-            @asynccontextmanager
-            async def acquire(self):
-                async with pool.acquire() as conn:
-                    async with conn.transaction():
-                        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
-                        yield conn
-
-        yield pool, RolePool()
+    return pool, RolePool()
 
 
 async def test_recipient_expiry_race_and_restart_application(confirms):
     admin, role_pool = confirms
-    await admin.execute("CREATE TABLE sink_receipts (id UUID PRIMARY KEY, ref TEXT, value TEXT)")
+    # The sink's own idempotent store: one receipt per application key.
+    sink_receipts: dict = {}
     calls = []
     lose_reply = True
 
     async def sink(key, ref, value):
         nonlocal lose_reply
         calls.append((key, ref, value))
-        await admin.execute(
-            "INSERT INTO sink_receipts VALUES ($1,$2,$3) ON CONFLICT (id) DO NOTHING",
-            key,
-            ref,
-            value,
-        )
+        sink_receipts.setdefault(key, (ref, value))
         if lose_reply:
             lose_reply = False
             raise TimeoutError("synthetic lost response")
@@ -95,7 +81,7 @@ async def test_recipient_expiry_race_and_restart_application(confirms):
     await restarted.dispatch_one()
     result = await restarted.get(card["id"])
     assert result["application_status"] == "applied"
-    assert len(calls) == 2 and await admin.fetchval("SELECT count(*) FROM sink_receipts") == 1
+    assert len(calls) == 2 and len(sink_receipts) == 1
     assert calls[0] == calls[1]
     await restarted.dispatch_one()
     assert len(calls) == 2
@@ -235,12 +221,11 @@ async def test_real_callback_mount_preserves_auth_and_applies_once(confirms):
     from tests.api.test_confirms import app_with_confirms
 
     admin, role_pool = confirms
-    await admin.execute("CREATE TABLE sink_receipts (id UUID PRIMARY KEY,value TEXT)")
+    # The sink's own idempotent store: one receipt per application key.
+    sink_receipts: dict = {}
 
     async def sink(key, ref, value):
-        await admin.execute(
-            "INSERT INTO sink_receipts VALUES ($1,$2) ON CONFLICT DO NOTHING", key, value
-        )
+        sink_receipts.setdefault(key, value)
         return {"status": "applied"}
 
     service = ConfirmService(
@@ -305,7 +290,7 @@ async def test_real_callback_mount_preserves_auth_and_applies_once(confirms):
         assert "already" in acks[-1]["text"].lower()
         assert await service.dispatch_one() == row["id"]
         assert await service.dispatch_one() is None
-        assert await admin.fetchval("SELECT count(*) FROM sink_receipts") == 1
+        assert len(sink_receipts) == 1
         # Reusing the owner dashboard credential is not how callback ingress works.
         response = await client.post(
             "http://dashboard/api/confirms/callback",
