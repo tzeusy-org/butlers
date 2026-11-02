@@ -21,6 +21,7 @@ from butlers.credential_store import (
     create_system_global_credential_store_from_env,
     shared_db_name_from_env,
 )
+from butlers.testing.fake_pool import FakePool, fake_pool
 from butlers.testing.records import row as _make_row
 
 pytestmark = pytest.mark.unit
@@ -28,23 +29,14 @@ pytestmark = pytest.mark.unit
 _NOW = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
-def _make_pool(
+def _store_pool(
     *,
     fetchrow_return=None,
     fetch_return=None,
     execute_return: str = "DELETE 0",
-) -> MagicMock:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = fetchrow_return
-    conn.fetch.return_value = fetch_return or []
-    conn.execute.return_value = execute_return
-    cm = AsyncMock()
-    cm.__aenter__ = AsyncMock(return_value=conn)
-    cm.__aexit__ = AsyncMock(return_value=False)
-    pool = MagicMock()
-    pool.acquire.return_value = cm
-    pool._conn = conn
-    return pool
+) -> FakePool:
+    """Kit pool with the store's read/list/write results; asserts read ``.connection``."""
+    return fake_pool(fetchrow=fetchrow_return, fetch=fetch_return or [], execute=execute_return)
 
 
 # ---------------------------------------------------------------------------
@@ -54,18 +46,18 @@ def _make_pool(
 
 async def test_store_validates_and_upserts(caplog: pytest.LogCaptureFixture) -> None:
     """store() upserts correctly; rejects empty keys/values; doesn't log secret values."""
-    pool = _make_pool(execute_return="INSERT 0 1")
+    pool = _store_pool(execute_return="INSERT 0 1")
     store = CredentialStore(pool)
     await store.store("MY_KEY", "my-value")
-    sql, *args = pool._conn.execute.call_args[0]
+    sql, *args = pool.connection.execute.call_args[0]
     assert "INSERT INTO" in sql and "butler_secrets" in sql and "ON CONFLICT" in sql
     assert args[0] == "MY_KEY" and args[1] == "my-value"
 
     # Category default and custom
     await store.store("KEY", "value")
-    assert pool._conn.execute.call_args[0][3] == "general"
+    assert pool.connection.execute.call_args[0][3] == "general"
     await store.store("KEY", "value", category="telegram")
-    assert pool._conn.execute.call_args[0][3] == "telegram"
+    assert pool.connection.execute.call_args[0][3] == "telegram"
 
     # Rejects empty / whitespace
     for key, value in [("", "val"), ("   ", "val"), ("KEY", "")]:
@@ -92,8 +84,8 @@ async def test_store_shared_if_unchanged_uses_authoritative_compare_and_set(
     expected_sql_fragment: str,
 ) -> None:
     """Conditional shared writes prevent a stale runtime from overwriting a dashboard refresh."""
-    local_pool = _make_pool()
-    shared_pool = _make_pool(execute_return=execute_return)
+    local_pool = _store_pool()
+    shared_pool = _store_pool(execute_return=execute_return)
     store = CredentialStore(local_pool, fallback_pools=[shared_pool])
 
     stored = await store.store_shared_if_unchanged(
@@ -104,17 +96,17 @@ async def test_store_shared_if_unchanged_uses_authoritative_compare_and_set(
     )
 
     assert stored is True
-    shared_sql, *shared_args = shared_pool._conn.execute.call_args[0]
+    shared_sql, *shared_args = shared_pool.connection.execute.call_args[0]
     assert expected_sql_fragment in shared_sql
     assert shared_args[0] == "cli-auth/codex"
     assert shared_args[1] == "new-value"
-    local_pool._conn.execute.assert_not_awaited()
+    local_pool.connection.execute.assert_not_awaited()
 
 
 async def test_store_shared_if_unchanged_reports_compare_and_set_conflict() -> None:
     """A zero-row conditional update leaves the newer shared credential untouched."""
-    shared_pool = _make_pool(execute_return="UPDATE 0")
-    store = CredentialStore(_make_pool(), fallback_pools=[shared_pool])
+    shared_pool = _store_pool(execute_return="UPDATE 0")
+    store = CredentialStore(_store_pool(), fallback_pools=[shared_pool])
 
     stored = await store.store_shared_if_unchanged(
         "cli-auth/codex",
@@ -133,12 +125,12 @@ async def test_dashboard_value_replacement_clears_prior_runtime_health_atomicall
     statement, so row-lock ordering cannot let A's old failure/success state
     survive once ``secret_value`` becomes B.
     """
-    shared_pool = _make_pool(execute_return="INSERT 0 1")
-    store = CredentialStore(_make_pool(), fallback_pools=[shared_pool])
+    shared_pool = _store_pool(execute_return="INSERT 0 1")
+    store = CredentialStore(_store_pool(), fallback_pools=[shared_pool])
 
     await store.store_shared("cli-auth/codex", "dashboard-B", category="cli-auth")
 
-    sql, *_ = shared_pool._conn.execute.call_args[0]
+    sql, *_ = shared_pool.connection.execute.call_args[0]
     assert "last_test_ok = CASE" in sql
     assert "last_verified = CASE" in sql
     assert "last_test_code = CASE" in sql
@@ -153,8 +145,8 @@ async def test_runtime_rotation_value_replacement_clears_prior_health_atomically
     rotation, so the conditional value write itself must reset the old health
     columns for C.
     """
-    shared_pool = _make_pool(execute_return="UPDATE 1")
-    store = CredentialStore(_make_pool(), fallback_pools=[shared_pool])
+    shared_pool = _store_pool(execute_return="UPDATE 1")
+    store = CredentialStore(_store_pool(), fallback_pools=[shared_pool])
 
     stored = await store.store_shared_if_unchanged(
         "cli-auth/codex",
@@ -164,7 +156,7 @@ async def test_runtime_rotation_value_replacement_clears_prior_health_atomically
     )
 
     assert stored is True
-    sql, *_ = shared_pool._conn.execute.call_args[0]
+    sql, *_ = shared_pool.connection.execute.call_args[0]
     assert "last_test_ok = CASE" in sql
     assert "last_verified = CASE" in sql
     assert "last_test_code = CASE" in sql
@@ -174,8 +166,8 @@ async def test_runtime_rotation_value_replacement_clears_prior_health_atomically
 
 async def test_record_test_result_if_unchanged_uses_shared_authority_and_value_fence() -> None:
     """A stale runtime health result cannot update a dashboard-replaced token."""
-    local_pool = _make_pool()
-    shared_pool = _make_pool(execute_return="UPDATE 0")
+    local_pool = _store_pool()
+    shared_pool = _store_pool(execute_return="UPDATE 0")
     store = CredentialStore(local_pool, fallback_pools=[shared_pool])
 
     recorded = await store.record_test_result_if_unchanged(
@@ -187,16 +179,16 @@ async def test_record_test_result_if_unchanged_uses_shared_authority_and_value_f
     )
 
     assert recorded is False
-    sql, *args = shared_pool._conn.execute.call_args[0]
+    sql, *args = shared_pool.connection.execute.call_args[0]
     assert "secret_value = $4" in sql
     assert args == [False, "old refresh failed", "cli-auth/codex", "old-token"]
-    local_pool._conn.execute.assert_not_awaited()
+    local_pool.connection.execute.assert_not_awaited()
 
 
 async def test_codex_authority_is_explicit_and_never_falls_back_to_local_scope() -> None:
     """REQ-core-credentials-001: Codex reads/writes use only a selected authority."""
-    local_pool = _make_pool(fetchrow_return=_make_row(secret_value="local-document"))
-    authority_pool = _make_pool(fetchrow_return=_make_row(secret_value="authority-document"))
+    local_pool = _store_pool(fetchrow_return=_make_row(secret_value="local-document"))
+    authority_pool = _store_pool(fetchrow_return=_make_row(secret_value="authority-document"))
     store = CredentialStore(
         local_pool,
         fallback_pools=[authority_pool],
@@ -204,26 +196,26 @@ async def test_codex_authority_is_explicit_and_never_falls_back_to_local_scope()
     )
 
     assert await store.load_codex_cli_auth() == "authority-document"
-    local_pool._conn.fetchrow.assert_not_awaited()
+    local_pool.connection.fetchrow.assert_not_awaited()
 
     replacement_document = '{"valid": true}'
     await store.store_codex_cli_auth(replacement_document)
-    sql, *args = authority_pool._conn.execute.call_args[0]
+    sql, *args = authority_pool.connection.execute.call_args[0]
     assert "INSERT INTO" in sql
     assert args[0] == "cli-auth/codex"
     assert args[1] == replacement_document
-    local_pool._conn.execute.assert_not_awaited()
+    local_pool.connection.execute.assert_not_awaited()
 
     with pytest.raises(ValueError, match="Codex CLI auth document"):
         await store.store_codex_cli_auth("not-json")
 
-    authority_pool._conn.execute.reset_mock()
-    authority_pool._conn.execute.return_value = "DELETE 1"
+    authority_pool.connection.execute.reset_mock()
+    authority_pool.connection.execute.return_value = "DELETE 1"
     assert await store.delete_codex_cli_auth() is True
-    delete_sql, delete_key = authority_pool._conn.execute.call_args.args
+    delete_sql, delete_key = authority_pool.connection.execute.call_args.args
     assert "DELETE FROM" in delete_sql
     assert delete_key == "cli-auth/codex"
-    local_pool._conn.execute.assert_not_awaited()
+    local_pool.connection.execute.assert_not_awaited()
 
     without_authority = CredentialStore(local_pool, fallback_pools=[authority_pool])
     with pytest.raises(RuntimeError, match="system-global.*authority"):
@@ -231,17 +223,17 @@ async def test_codex_authority_is_explicit_and_never_falls_back_to_local_scope()
 
     # A one-pool deployment is compatible, but must opt in explicitly rather
     # than inheriting generic local-first behavior.
-    flat_pool = _make_pool(fetchrow_return=_make_row(secret_value="flat-authority-document"))
+    flat_pool = _store_pool(fetchrow_return=_make_row(secret_value="flat-authority-document"))
     flat_store = CredentialStore(flat_pool, system_global_pool=flat_pool)
     assert await flat_store.load_codex_cli_auth() == "flat-authority-document"
-    flat_pool._conn.fetchrow.assert_awaited_once()
+    flat_pool.connection.fetchrow.assert_awaited_once()
 
 
 async def test_daemon_flat_topology_marks_its_pool_as_explicit_codex_authority() -> None:
     """REQ-core-credentials-001: flat daemon topology opts in explicitly."""
     from butlers.daemon import ButlerDaemon
 
-    local_pool = _make_pool()
+    local_pool = _store_pool()
     daemon = ButlerDaemon.__new__(ButlerDaemon)
     daemon.config = SimpleNamespace(db_schema=None, db_name="butlers")
     daemon.db = SimpleNamespace(db_name="shared-credentials-db")
@@ -260,7 +252,7 @@ def _established_owner(schema: str = "chronicler"):
     from butlers.db import Database
 
     owner = Database(db_name="butlers", schema=schema, role=f"butler_{schema}_rw")
-    owner.pool = _make_pool()
+    owner.pool = _store_pool()
     owner._role_verified = True
     owner._verified_role = owner.role
     return owner
@@ -283,8 +275,8 @@ async def test_daemon_schema_topology_reads_shared_credentials_under_its_role() 
     from butlers.daemon import ButlerDaemon
     from butlers.db import Database
 
-    local_pool = _make_pool()
-    shared_pool = _make_pool()
+    local_pool = _store_pool()
+    shared_pool = _store_pool()
     daemon = ButlerDaemon.__new__(ButlerDaemon)
     daemon.config = SimpleNamespace(db_schema="chronicler", db_name="butlers")
     daemon.db = _established_owner()
@@ -323,7 +315,7 @@ async def test_connector_global_codex_authority_uses_its_own_writable_pool(
     monkeypatch.setenv("POSTGRES_USER", "db-user")
     monkeypatch.setenv("POSTGRES_PASSWORD", "db-password")
     monkeypatch.setenv("BUTLER_SHARED_DB_NAME", "shared-credentials-db")
-    created_pool = _make_pool()
+    created_pool = _store_pool()
 
     with patch("asyncpg.create_pool", new=AsyncMock(return_value=created_pool)) as create_pool:
         store = await create_system_global_credential_store_from_env()
@@ -339,12 +331,12 @@ async def test_connector_global_codex_authority_uses_its_own_writable_pool(
 async def test_load_has_delete() -> None:
     """load/has/delete return correct values based on row presence."""
     row = _make_row(secret_value="tok_abc123")
-    assert await CredentialStore(_make_pool(fetchrow_return=row)).load("K") == "tok_abc123"
-    assert await CredentialStore(_make_pool(fetchrow_return=None)).load("K") is None
-    assert await CredentialStore(_make_pool(fetchrow_return=row)).has("K") is True
-    assert await CredentialStore(_make_pool(fetchrow_return=None)).has("K") is False
-    assert await CredentialStore(_make_pool(execute_return="DELETE 1")).delete("K") is True
-    assert await CredentialStore(_make_pool(execute_return="DELETE 0")).delete("K") is False
+    assert await CredentialStore(_store_pool(fetchrow_return=row)).load("K") == "tok_abc123"
+    assert await CredentialStore(_store_pool(fetchrow_return=None)).load("K") is None
+    assert await CredentialStore(_store_pool(fetchrow_return=row)).has("K") is True
+    assert await CredentialStore(_store_pool(fetchrow_return=None)).has("K") is False
+    assert await CredentialStore(_store_pool(execute_return="DELETE 1")).delete("K") is True
+    assert await CredentialStore(_store_pool(execute_return="DELETE 0")).delete("K") is False
 
 
 # ---------------------------------------------------------------------------
@@ -357,22 +349,22 @@ async def test_resolve_db_wins_env_fallback_optional_and_fallback_pool() -> None
     row = _make_row(secret_value="db-value")
     with patch.dict(os.environ, {"MY_KEY": "env-value"}):
         assert (
-            await CredentialStore(_make_pool(fetchrow_return=row)).resolve("MY_KEY") == "db-value"
+            await CredentialStore(_store_pool(fetchrow_return=row)).resolve("MY_KEY") == "db-value"
         )
-        assert await CredentialStore(_make_pool(fetchrow_return=None)).resolve("MY_KEY") is None
+        assert await CredentialStore(_store_pool(fetchrow_return=None)).resolve("MY_KEY") is None
         assert (
-            await CredentialStore(_make_pool(fetchrow_return=None)).resolve(
+            await CredentialStore(_store_pool(fetchrow_return=None)).resolve(
                 "MY_KEY", env_fallback=True
             )
             == "env-value"
         )
 
-    fallback_pool = _make_pool(fetchrow_return=_make_row(secret_value="shared"))
-    store = CredentialStore(_make_pool(fetchrow_return=None), fallback_pools=[fallback_pool])
+    fallback_pool = _store_pool(fetchrow_return=_make_row(secret_value="shared"))
+    store = CredentialStore(_store_pool(fetchrow_return=None), fallback_pools=[fallback_pool])
     assert await store.resolve("K", env_fallback=False) == "shared"
     assert fallback_pool.acquire.call_count == 1
 
-    local_pool = _make_pool(fetchrow_return=row)
+    local_pool = _store_pool(fetchrow_return=row)
     store2 = CredentialStore(local_pool, fallback_pools=[fallback_pool])
     assert await store2.resolve("K") == "db-value"
     assert fallback_pool.acquire.call_count == 1  # not called again
@@ -404,7 +396,7 @@ async def test_list_secrets() -> None:
         return r
 
     rows = [_db_row("K1"), _db_row("K2", "telegram")]
-    pool = _make_pool(fetch_return=rows)
+    pool = _store_pool(fetch_return=rows)
     result = await CredentialStore(pool).list_secrets()
     assert len(result) == 2 and all(isinstance(m, SecretMetadata) for m in result)
     assert result[0].is_set is True and result[0].source == "database"
@@ -455,7 +447,7 @@ async def test_list_secrets_test_state_columns() -> None:
         return r
 
     rows = [_db_row_probed("OK_KEY"), _db_row_failing("FAIL_KEY")]
-    pool = _make_pool(fetch_return=rows)
+    pool = _store_pool(fetch_return=rows)
     result = await CredentialStore(pool).list_secrets()
 
     assert len(result) == 2
@@ -489,7 +481,7 @@ def test_helpers_and_repr() -> None:
     with patch.dict(os.environ, {"BUTLER_SHARED_DB_NAME": "my_shared"}):
         assert shared_db_name_from_env() == "my_shared"
 
-    store = CredentialStore(_make_pool(), fallback_pools=[_make_pool()])
+    store = CredentialStore(_store_pool(), fallback_pools=[_store_pool()])
     r = repr(store)
     assert "CredentialStore" in r and "fallback_pools=1" in r
 

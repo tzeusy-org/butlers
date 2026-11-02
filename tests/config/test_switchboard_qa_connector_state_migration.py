@@ -2,28 +2,21 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
-from types import ModuleType
 
+from butlers.testing.migration import load_migration
 
-def _load_migration() -> ModuleType:
-    path = (
-        Path(__file__).parents[2]
-        / "roster"
-        / "switchboard"
-        / "migrations"
-        / "028_qa_connector_state_checkpoint_rows.py"
-    )
-    spec = importlib.util.spec_from_file_location("sw_028_checkpoint_rows", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+_MIGRATION_PATH = (
+    Path(__file__).parents[2]
+    / "roster"
+    / "switchboard"
+    / "migrations"
+    / "028_qa_connector_state_checkpoint_rows.py"
+)
 
 
 def test_upgrade_excludes_checkpoint_only_rows(monkeypatch) -> None:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "sw_028_checkpoint_rows")
     statements: list[str] = []
     monkeypatch.setattr(migration.op, "execute", statements.append)
 
@@ -39,7 +32,7 @@ def test_upgrade_excludes_checkpoint_only_rows(monkeypatch) -> None:
 
 
 def test_downgrade_restores_previous_view(monkeypatch) -> None:
-    migration = _load_migration()
+    migration = load_migration(_MIGRATION_PATH, "sw_028_checkpoint_rows")
     statements: list[str] = []
     monkeypatch.setattr(migration.op, "execute", statements.append)
 
