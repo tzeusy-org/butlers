@@ -956,17 +956,37 @@ class TestErrorHandling:
             assert result["reason"] == reason
             blob_store.get.assert_not_awaited()
 
+    _WIDE_HEADERS = ["Date", "Description", "Amount", "x" * 150] + [f"c{i}" for i in range(56)]
+
     @pytest.mark.parametrize(
-        ("csv_text", "missing_columns"),
+        ("csv_text", "headers", "headers_truncated", "missing_columns"),
         [
             # Columns resolve, but the date values match no known format.
-            ("Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n", []),
+            (
+                "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n",
+                ["Transaction Date", "Description", "Amount"],
+                False,
+                [],
+            ),
             # Dates parse, but no merchant or amount column can be found.
-            ("Date,Memo,Sum\n2024-01-15,MERCHANT,-10.00\n", ["merchant", "amount"]),
+            (
+                "Date,Memo,Sum\n2024-01-15,MERCHANT,-10.00\n",
+                ["Date", "Memo", "Sum"],
+                False,
+                ["merchant", "amount"],
+            ),
+            # Untrusted headers are bounded: first 50 names, each cut to 100 chars.
+            (
+                ",".join(_WIDE_HEADERS) + "\nJanuary 15 2024,MERCHANT,-10.00\n",
+                ["Date", "Description", "Amount", "x" * 100] + [f"c{i}" for i in range(46)],
+                True,
+                [],
+            ),
         ],
+        ids=["bad-date", "no-merchant-amount", "oversized-headers"],
     )
     async def test_unknown_format_returns_unrecognized_format_with_headers(
-        self, csv_text, missing_columns
+        self, csv_text, headers, headers_truncated, missing_columns
     ):
         """Spec 'Unknown format fallback': unrecognized_format plus the headers to map."""
         from butlers.tools.finance.data_import import import_transactions
@@ -982,7 +1002,8 @@ class TestErrorHandling:
         )
 
         assert result["status"] == "unrecognized_format"
-        assert result["headers"] == csv_text.split("\n", 1)[0].split(",")
+        assert result["headers"] == headers
+        assert result["headers_truncated"] is headers_truncated
         assert result["missing_columns"] == missing_columns
         pool.execute.assert_not_called()
 
