@@ -233,3 +233,10 @@ async def test_unsettled_tap_keeps_buttons_for_retry(resolve_resp):
     assert "answerCallbackQuery" in posts
     assert "editMessageText" not in posts
     assert "editMessageReplyMarkup" not in posts
+
+
+async def test_unrecognised_resolve_status_does_not_claim_success():
+    posts = await _tap_with_resolve(_resp(body={"status": "weird"}))
+
+    (ack,) = posts["answerCallbackQuery"]
+    assert ack.kwargs["json"]["text"] == "Couldn't confirm that was recorded — please try again."

@@ -156,7 +156,7 @@ def _gap_interview_toast(data: dict[str, Any], answer: str) -> tuple[str, bool]:
         return "Already recorded — thanks!", True
     if status == "error" and data.get("error") == "unknown_or_expired_interview":
         return "This confirmation has expired.", True
-    return "Recorded ✓", False
+    return "Couldn't confirm that was recorded — please try again.", False
 
 
 _MEDIA_TYPE_LABELS: dict[str, str] = {
