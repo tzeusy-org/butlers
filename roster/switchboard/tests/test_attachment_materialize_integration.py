@@ -228,3 +228,17 @@ async def test_a_runtime_never_fails_or_releases_a_claim_taken_over(db, fresh_db
         )
         assert row["fetch_error"] is None
         assert row["still_taken"] is True
+
+
+@session_loop
+async def test_a_ref_declared_over_the_cap_is_refused_without_a_download(db, fresh_db) -> None:
+    switchboard, connector = await _pools(db, fresh_db)
+    download = AsyncMock(return_value=b"%PDF")
+    owner = _runtime(connector, _Blobs(), _OWNER, download)
+    await owner._write_attachment_ref("m9", "a9", "huge.pdf", "application/pdf", 26 * 1024 * 1024)
+
+    refused = await _materialize_while_connector_runs(switchboard, owner, "m9", "a9")
+    assert refused["status"] == "refused"
+    assert refused["reason"] == "attachment_too_large"
+    assert refused["size_bytes"] == 26 * 1024 * 1024
+    assert download.await_count == 0

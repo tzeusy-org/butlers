@@ -80,6 +80,14 @@ async def attachment_materialize(
         row = await pool.fetchrow(_SELECT, message_id, attachment_id)
         if row is not None and row["fetched"] and row["blob_ref"]:
             return _ready(row)
+        if row is not None and row["fetch_error"] == "too_large":
+            return {
+                "status": "refused",
+                "reason": "attachment_too_large",
+                "size_bytes": row["size_bytes"],
+                "hint": "It is over the 25 MB attachment cap and will not be fetched.",
+                **_ref(*ids),
+            }
         if row is not None and row["fetch_error"]:
             return {
                 "status": "refused",

@@ -3709,7 +3709,9 @@ class GmailConnectorRuntime:
 
         Claims up to ``_MATERIALIZE_BATCH`` requested rows written by this account
         (or by no recorded account), downloads each through ``fetch_attachment``
-        and records a failure as ``fetch_error`` so the waiting caller is told.
+        and records a failure as ``fetch_error`` so the waiting caller is told:
+        ``too_large`` without a download when the row declares more than the
+        global cap, otherwise ``fetch_failed``.
         If the batch is interrupted, its unfinished claims are released for the
         next poll. A claim older than ``_MATERIALIZE_CLAIM_STALE_S`` (a crashed
         runtime's) is reclaimed.
@@ -3736,7 +3738,7 @@ class GmailConnectorRuntime:
                 SET fetch_claimed_at = now()
                 FROM claimable c
                 WHERE r.message_id = c.message_id AND r.attachment_id = c.attachment_id
-                RETURNING r.message_id, r.attachment_id, r.fetch_claimed_at
+                RETURNING r.message_id, r.attachment_id, r.fetch_claimed_at, r.size_bytes
                 """,
                 self._config.connector_endpoint_identity,
                 _MATERIALIZE_BATCH,
@@ -3745,21 +3747,35 @@ class GmailConnectorRuntime:
         unfinished = [
             (row["message_id"], row["attachment_id"], row["fetch_claimed_at"]) for row in claimed
         ]
+        declared_size = {
+            (row["message_id"], row["attachment_id"]): row["size_bytes"] for row in claimed
+        }
         try:
             while unfinished:
                 message_id, attachment_id, claimed_at = unfinished[0]
-                if await self.fetch_attachment(message_id, attachment_id) is None:
+                # size_bytes is the decoded size Gmail declared, so it compares
+                # with the cap as is; the base64 response would be about a third
+                # larger. Refusing here avoids buffering that response at all.
+                # fetch_attachment still checks the downloaded bytes, since a
+                # declared size can be wrong.
+                error: str | None = None
+                if declared_size[message_id, attachment_id] > GLOBAL_MAX_ATTACHMENT_SIZE_BYTES:
+                    error = "too_large"
+                elif await self.fetch_attachment(message_id, attachment_id) is None:
+                    error = "fetch_failed"
+                if error is not None:
                     async with self._db_pool.acquire() as conn:
                         await conn.execute(
                             """
                             UPDATE switchboard.attachment_refs
-                            SET fetch_error = 'fetch_failed', fetch_claimed_at = NULL
+                            SET fetch_error = $4, fetch_claimed_at = NULL
                             WHERE message_id = $1 AND attachment_id = $2 AND NOT fetched
                               AND fetch_claimed_at = $3
                             """,
                             message_id,
                             attachment_id,
                             claimed_at,
+                            error,
                         )
                 unfinished.pop(0)
         finally:
