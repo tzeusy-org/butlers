@@ -16,8 +16,6 @@ import shutil
 import asyncpg
 import pytest
 
-from butlers.testing.db import open_pool
-
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.db,
@@ -67,19 +65,15 @@ async def isolated_db(isolation_url: str) -> str:
 
 
 @pytest.fixture
-async def alpha_pool(isolated_db):
+async def alpha_pool(db, isolated_db):
     """Pool scoped to the alpha butler's search path."""
-    pool = await open_pool(isolated_db, schema=_ALPHA)
-    yield pool
-    await pool.close()
+    return await db.open(isolated_db, schema=_ALPHA)
 
 
 @pytest.fixture
-async def beta_pool(isolated_db):
+async def beta_pool(db, isolated_db):
     """Pool scoped to the beta butler's search path."""
-    pool = await open_pool(isolated_db, schema=_BETA)
-    yield pool
-    await pool.close()
+    return await db.open(isolated_db, schema=_BETA)
 
 
 # ---------------------------------------------------------------------------
