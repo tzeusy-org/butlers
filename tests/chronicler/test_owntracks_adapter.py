@@ -32,6 +32,8 @@ from butlers.chronicler.adapters.owntracks import (  # noqa: E402
     OwnTracksPointAdapter,
 )
 from butlers.chronicler.models import Episode, PointEvent, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
@@ -42,7 +44,7 @@ _ENDPOINT = "owntracks:alice"
 # ---------------------------------------------------------------------------
 
 
-def _make_row(
+def _location_row(
     ts: datetime = _NOW,
     lat: float = 1.2345,
     lon: float = 103.8765,
@@ -67,19 +69,14 @@ def _make_row(
     }
 
 
-def _make_mock_row(r: dict) -> MagicMock:
-    """Build a MagicMock that supports dict-style access via __getitem__."""
-    return MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]})
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     """Build a mock asyncpg pool that returns the given row dicts for fetch()."""
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
-    conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
+    conn.fetch = AsyncMock(return_value=[Record(r) for r in rows])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -95,40 +92,27 @@ def _tie_boundary_pool(*rows: dict) -> AsyncMock:
             candidates = list(rows)
         limit = args[-1]
         assert isinstance(limit, int)
-        return [_make_mock_row(row) for row in candidates[:limit]]
+        return [Record(row) for row in candidates[:limit]]
 
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)
     conn.fetch = _fetch
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
 def _pool_table_missing() -> AsyncMock:
     """Build a pool whose table-existence check returns False."""
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
-
-
-class _AsyncCtx:
-    """Async context manager that yields ``obj``."""
-
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 def _chronicler_pool() -> AsyncMock:
@@ -138,7 +122,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.fetchrow = AsyncMock(return_value=None)
 
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -189,7 +173,7 @@ def test_no_llm_imports_in_owntracks_adapter() -> None:
 
 @pytest.mark.asyncio
 async def test_project_single_row_produces_one_point_event() -> None:
-    row = _make_row()
+    row = _location_row()
     adapter = OwnTracksPointAdapter()
 
     upserted_events: list[PointEvent] = []
@@ -218,7 +202,7 @@ async def test_project_single_row_produces_one_point_event() -> None:
 
 @pytest.mark.asyncio
 async def test_point_event_fields_from_row() -> None:
-    row = _make_row(
+    row = _location_row(
         ts=_NOW,
         lat=1.2345,
         lon=103.8765,
@@ -258,7 +242,7 @@ async def test_point_event_fields_from_row() -> None:
 
 @pytest.mark.asyncio
 async def test_nonfinite_lat_skips_row_and_advances_watermark() -> None:
-    row = _make_row(lat=float("nan"), idempotency_key="bad-lat")
+    row = _location_row(lat=float("nan"), idempotency_key="bad-lat")
     adapter = OwnTracksPointAdapter()
     pool = _pool_returning(row)
     cp = _chronicler_pool()
@@ -287,7 +271,7 @@ async def test_nonfinite_lat_skips_row_and_advances_watermark() -> None:
 @pytest.mark.asyncio
 async def test_single_point_emits_no_movement_episode_but_carries_over() -> None:
     """One fix is a location, not a movement (bu-2tsgqb.6)."""
-    row = _make_row()
+    row = _location_row()
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
 
@@ -322,10 +306,10 @@ async def test_gap_beyond_threshold_produces_two_episodes() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(minutes=5 + MOVEMENT_GAP_MINUTES + 1)
     rows = [
-        _make_row(ts=t1, idempotency_key="k1"),
-        _make_row(ts=t1 + timedelta(minutes=5), idempotency_key="k1b"),
-        _make_row(ts=t2, idempotency_key="k2"),
-        _make_row(ts=t2 + timedelta(minutes=5), idempotency_key="k2b"),
+        _location_row(ts=t1, idempotency_key="k1"),
+        _location_row(ts=t1 + timedelta(minutes=5), idempotency_key="k1b"),
+        _location_row(ts=t2, idempotency_key="k2"),
+        _location_row(ts=t2 + timedelta(minutes=5), idempotency_key="k2b"),
     ]
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -356,10 +340,10 @@ async def test_endpoint_identity_change_splits_episode() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(minutes=5)
     rows = [
-        _make_row(ts=t1, endpoint_identity="owntracks:alice", idempotency_key="k1"),
-        _make_row(ts=t1, endpoint_identity="owntracks:bob", idempotency_key="k1b"),
-        _make_row(ts=t2, endpoint_identity="owntracks:alice", idempotency_key="k2"),
-        _make_row(ts=t2, endpoint_identity="owntracks:bob", idempotency_key="k2b"),
+        _location_row(ts=t1, endpoint_identity="owntracks:alice", idempotency_key="k1"),
+        _location_row(ts=t1, endpoint_identity="owntracks:bob", idempotency_key="k1b"),
+        _location_row(ts=t2, endpoint_identity="owntracks:alice", idempotency_key="k2"),
+        _location_row(ts=t2, endpoint_identity="owntracks:bob", idempotency_key="k2b"),
     ]
     adapter = OwnTracksPointAdapter()
     upserted_episodes: list[Episode] = []
@@ -417,14 +401,14 @@ async def test_missing_evidence_table_returns_skipped_result() -> None:
 @pytest.mark.asyncio
 async def test_undefined_table_exception_returns_skipped_result() -> None:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(
         side_effect=asyncpg.exceptions.UndefinedTableError(
             'relation "connectors.owntracks_points" does not exist'
         )
     )
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     adapter = OwnTracksPointAdapter()
     cp = _chronicler_pool()
@@ -452,8 +436,8 @@ async def test_watermark_advances_to_latest_ts() -> None:
     t1 = _NOW
     t2 = _NOW + timedelta(hours=1)
     rows = [
-        _make_row(ts=t1, idempotency_key="k1"),
-        _make_row(ts=t2, idempotency_key="k2"),
+        _location_row(ts=t1, idempotency_key="k1"),
+        _location_row(ts=t2, idempotency_key="k2"),
     ]
     adapter = OwnTracksPointAdapter()
 
@@ -483,9 +467,9 @@ async def test_single_column_ts_watermark_skips_equal_tie_after_split_batch() ->
     """
     tied_at = _NOW
     rows = [
-        _make_row(ts=tied_at, idempotency_key="tie-1"),
-        _make_row(ts=tied_at, idempotency_key="tie-2"),
-        _make_row(ts=tied_at, idempotency_key="tie-3"),
+        _location_row(ts=tied_at, idempotency_key="tie-1"),
+        _location_row(ts=tied_at, idempotency_key="tie-2"),
+        _location_row(ts=tied_at, idempotency_key="tie-3"),
     ]
     adapter = OwnTracksPointAdapter(batch_limit=2)
     pool = _tie_boundary_pool(*rows)
@@ -541,11 +525,11 @@ async def test_implausible_device_ts_clamped_to_recorded_at_no_inversion() -> No
     recorded_at_b = good_ts
 
     row_a = {
-        **_make_row(ts=skewed_ts, idempotency_key="skew-clamp-a"),
+        **_location_row(ts=skewed_ts, idempotency_key="skew-clamp-a"),
         "recorded_at": recorded_at_a,
     }
     row_b = {
-        **_make_row(ts=good_ts, idempotency_key="skew-clamp-b"),
+        **_location_row(ts=good_ts, idempotency_key="skew-clamp-b"),
         "recorded_at": recorded_at_b,
     }
 
@@ -618,19 +602,19 @@ async def test_buffered_offline_points_keep_device_ts_and_split_by_ts() -> None:
     # Fetched in ts order (as the SQL does), but recorded_at order differs.
     rows = [
         {
-            **_make_row(ts=taoyuan_late, lat=25.077, lon=121.236, idempotency_key="tpe-a"),
+            **_location_row(ts=taoyuan_late, lat=25.077, lon=121.236, idempotency_key="tpe-a"),
             "recorded_at": upload,
         },
         {
-            **_make_row(ts=taoyuan_b, lat=25.071, lon=121.224, idempotency_key="tpe-b"),
+            **_location_row(ts=taoyuan_b, lat=25.071, lon=121.224, idempotency_key="tpe-b"),
             "recorded_at": upload + timedelta(seconds=2),
         },
         {
-            **_make_row(ts=taoyuan_c, lat=25.053, lon=121.223, idempotency_key="tpe-c"),
+            **_location_row(ts=taoyuan_c, lat=25.053, lon=121.223, idempotency_key="tpe-c"),
             "recorded_at": upload + timedelta(seconds=1),
         },
         {
-            **_make_row(ts=narita, lat=35.762, lon=140.385, idempotency_key="nrt-a"),
+            **_location_row(ts=narita, lat=35.762, lon=140.385, idempotency_key="nrt-a"),
             "recorded_at": upload + timedelta(seconds=3),
         },
     ]
@@ -725,9 +709,11 @@ async def test_impossible_jump_kept_as_flagged_evidence_and_excluded_from_moveme
     """The Oct 16 landing-time eastern-Poland fix must not become a movement."""
     beijing = (40.08, 116.58)
     rows = [
-        _make_row(ts=_NOW, lat=beijing[0], lon=beijing[1], idempotency_key="b1"),
-        _make_row(ts=_NOW + timedelta(minutes=4), lat=52.12, lon=22.06, idempotency_key="poland"),
-        _make_row(
+        _location_row(ts=_NOW, lat=beijing[0], lon=beijing[1], idempotency_key="b1"),
+        _location_row(
+            ts=_NOW + timedelta(minutes=4), lat=52.12, lon=22.06, idempotency_key="poland"
+        ),
+        _location_row(
             ts=_NOW + timedelta(minutes=10), lat=beijing[0], lon=beijing[1], idempotency_key="b2"
         ),
     ]
@@ -742,9 +728,10 @@ async def test_impossible_jump_kept_as_flagged_evidence_and_excluded_from_moveme
     ]
     assert saved["_trail_anchors"][_ENDPOINT]["ts"] == (_NOW + timedelta(minutes=10)).isoformat()
 
-    cold = [_make_row(ts=_NOW, lat=52.12, lon=22.06, idempotency_key="seed")]
+    cold = [_location_row(ts=_NOW, lat=52.12, lon=22.06, idempotency_key="seed")]
     cold += [
-        _make_row(ts=_NOW + timedelta(minutes=m), idempotency_key=f"good-{m}") for m in (5, 15, 25)
+        _location_row(ts=_NOW + timedelta(minutes=m), idempotency_key=f"good-{m}")
+        for m in (5, 15, 25)
     ]
     _, projected, movements, _ = await _project_capturing(cold)
     assert {e.payload["idempotency_key"] for e in projected if "trail_outlier" in e.payload} == {
@@ -890,7 +877,7 @@ async def test_carryover_extension_counts_the_whole_episode() -> None:
             "point_count": 6,
         }
     }
-    _, _, episodes, saved = await _project_capturing([_make_row(ts=_NOW)], carryover=carry)
+    _, _, episodes, saved = await _project_capturing([_location_row(ts=_NOW)], carryover=carry)
 
     assert len(episodes) == 1
     assert episodes[0].start_at == start
@@ -915,8 +902,8 @@ async def test_fresh_segment_overlapping_stored_episode_widens_it_not_duplicates
         "linked_event_ids": [],  # legacy episode: no linked evidence yet
     }
     rows = [
-        _make_row(ts=_NOW, idempotency_key="a"),
-        _make_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+        _location_row(ts=_NOW, idempotency_key="a"),
+        _location_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
     ]
     _, _, episodes, saved = await _project_capturing(rows, stored=stored)
 
@@ -955,8 +942,8 @@ async def test_replaying_a_merged_batch_keeps_the_point_count_stable() -> None:
         "linked_event_ids": others,
     }
     rows = [
-        _make_row(ts=_NOW, idempotency_key="a"),
-        _make_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
+        _location_row(ts=_NOW, idempotency_key="a"),
+        _location_row(ts=_NOW + timedelta(minutes=20), idempotency_key="b"),
     ]
     _, _, first, _ = await _project_capturing(rows, stored=stored)
     assert first[0].payload["point_count"] == 42
@@ -982,16 +969,16 @@ async def test_tied_fixes_have_identical_order_and_verdicts_in_both_adapters() -
     from butlers.chronicler.adapters.owntracks_trail import classify_trail
 
     early = {
-        **_make_row(lat=40.08, lon=116.58, idempotency_key="early"),
+        **_location_row(lat=40.08, lon=116.58, idempotency_key="early"),
         "id": UUID(int=1),
         "recorded_at": _NOW + timedelta(minutes=2),
     }
     late = {
-        **_make_row(lat=52.12, lon=22.06, idempotency_key="late"),
+        **_location_row(lat=52.12, lon=22.06, idempotency_key="late"),
         "id": UUID(int=2),
         "recorded_at": _NOW + timedelta(minutes=1),
     }
-    other = {**_make_row(endpoint_identity="other", idempotency_key="other"), "id": UUID(int=3)}
+    other = {**_location_row(endpoint_identity="other", idempotency_key="other"), "id": UUID(int=3)}
     for rows in ([late, early, other], [other, early, late]):
         seen: list[tuple[list[str], set[str]]] = []
 
@@ -1029,11 +1016,11 @@ async def test_tied_fixes_have_identical_order_and_verdicts_in_both_adapters() -
     # isolated seeds are rejected; neither input order may fragment places.
     endpoints = ("owntracks:retained", "owntracks:expired", "owntracks:tombstoned")
     seeds = [
-        _make_row(lat=52.12, lon=22.06, endpoint_identity=e, idempotency_key=f"{e}:seed")
+        _location_row(lat=52.12, lon=22.06, endpoint_identity=e, idempotency_key=f"{e}:seed")
         for e in endpoints
     ]
     candidates = [
-        _make_row(
+        _location_row(
             ts=_NOW + timedelta(minutes=minute),
             endpoint_identity=e,
             idempotency_key=f"{e}:{minute}",

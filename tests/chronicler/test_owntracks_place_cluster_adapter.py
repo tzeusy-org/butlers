@@ -39,6 +39,7 @@ from butlers.chronicler.adapters.owntracks_place_cluster import (
     parse_place_references,
 )
 from butlers.chronicler.models import Episode
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _ENDPOINT = "owntracks:alice"
@@ -401,34 +402,23 @@ def test_label_for_returns_place_unknown_with_no_reference_points_configured() -
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 def _pool_returning(*rows: dict) -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=True)  # table-exists check
     conn.fetch = AsyncMock(return_value=[_make_mock_row(r) for r in rows])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
 def _pool_table_missing() -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetchval = AsyncMock(return_value=False)
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -438,10 +428,10 @@ def _make_mock_row(r: dict) -> MagicMock:
 
 def _chronicler_pool(point_event_ids: list | None = None) -> AsyncMock:
     conn = AsyncMock(spec=asyncpg.Connection)
-    conn.transaction = MagicMock(return_value=_AsyncCtx(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     conn.fetch = AsyncMock(return_value=[{"id": i} for i in (point_event_ids or [])])
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 

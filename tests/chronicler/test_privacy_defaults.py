@@ -25,6 +25,7 @@ import pytest
 from butlers.chronicler.adapters.owntracks import OwnTracksPointAdapter
 from butlers.chronicler.adapters.spotify import SpotifySessionAdapter
 from butlers.chronicler.models import Episode, PointEvent, Privacy
+from butlers.testing.fake_pool import AsyncCtx
 
 _NOW = datetime(2026, 3, 26, 10, 0, 0, tzinfo=UTC)
 _SPOTIFY_ENDPOINT = "spotify_user_client:spotify:user123"
@@ -34,17 +35,6 @@ _OWNTRACKS_ENDPOINT = "owntracks:alice"
 # ---------------------------------------------------------------------------
 # Helpers (copied from per-adapter test modules to keep this file self-contained)
 # ---------------------------------------------------------------------------
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 class _NullCtx:
@@ -62,7 +52,7 @@ def _spotify_pool(row: dict) -> AsyncMock:
         return_value=[MagicMock(**row, **{"__getitem__": lambda s, k, _r=row: _r[k]})]
     )
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -74,7 +64,7 @@ def _owntracks_pool(*rows: dict) -> AsyncMock:
         return_value=[MagicMock(**r, **{"__getitem__": lambda s, k, _r=r: _r[k]}) for r in rows]
     )
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -83,7 +73,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.fetchrow = AsyncMock(return_value=None)
     pool = AsyncMock(spec=asyncpg.Pool)
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
