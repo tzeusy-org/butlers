@@ -19,7 +19,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.ingestion_connectors import ConnectorSettingsUpdateRequest, _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.routers.ingestion_connectors import ConnectorSettingsUpdateRequest
 
 pytestmark = pytest.mark.unit
 
@@ -60,7 +61,7 @@ def _connector_row(**overrides: object) -> dict[str, object]:
 def _wire_db(app, pool: AsyncMock) -> MagicMock:
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     return db
 
 

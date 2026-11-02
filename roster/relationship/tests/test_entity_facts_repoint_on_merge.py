@@ -43,6 +43,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg
 import pytest
 
+from butlers.testing.fake_pool import AsyncCtx
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -76,19 +78,6 @@ _COLS = {
     "name",
     "updated_at",
 }
-
-
-class _AsyncCM:
-    """Minimal async context manager (for pool.acquire() / conn.transaction())."""
-
-    def __init__(self, value: Any) -> None:
-        self._value = value
-
-    async def __aenter__(self) -> Any:
-        return self._value
-
-    async def __aexit__(self, *args: Any) -> bool:
-        return False
 
 
 def _make_contact_row(
@@ -186,7 +175,7 @@ def _make_pool(
     conn = AsyncMock()
     conn.execute = AsyncMock(return_value=None)
     conn.fetchval = AsyncMock(return_value=False)
-    conn.transaction = MagicMock(return_value=_AsyncCM(None))
+    conn.transaction = MagicMock(side_effect=lambda: AsyncCtx(None))
     # conn.fetch is called once per entity_facts block (subject then object).
     conn.fetch = AsyncMock(
         side_effect=[
@@ -200,7 +189,7 @@ def _make_pool(
     else:
         conn.fetchrow = AsyncMock(return_value=None)  # default: no conflict
 
-    pool.acquire = MagicMock(return_value=_AsyncCM(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool, conn
 
 

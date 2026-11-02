@@ -157,3 +157,285 @@ Scope: v1-mandatory
 - **AND** it is picked up on the next patrol tick
 - **AND** if the finding's severity is 0 (critical), an immediate mini-patrol is triggered without waiting for the next timer tick
 - **AND** that mini-patrol is a full patrol across every enabled source, recorded with `origin='scheduled'`, and counts as scheduled patrol coverage exactly as a timer-driven patrol does (a full patrol by the QA module, timer or reactive, qualifies)
+
+### Requirement: Dashboard Report Durable Inbox Lifecycle
+
+QA SHALL permit the validated Switchboard-router service principal defined in
+REQ-staffer-qa-001 to call `report_finding` in dashboard mode only when it
+supplies all of
+`terminal_action_id` (UUID),
+`terminal_effect_id` (UUID), and `terminal_effect_idempotency_key` (opaque
+stable string) in addition to ordinary canonical finding arguments. QA SHALL
+reject a partial dashboard identity, a caller other than the internal
+Switchboard relay, a duplicate identity with a different idempotency key or
+canonical payload hash, or dashboard delivery while `butler_reports` is
+disabled. A source-disabled rejection SHALL create neither a receipt nor a
+buffered finding and SHALL be a proven terminal delivery failure for the calling
+Switchboard effect.
+In dashboard mode, QA SHALL durably upsert one dashboard-report inbox record
+before it returns `accepted`. The inbox uniqueness boundary SHALL be
+`(terminal_action_id, terminal_effect_id)` and SHALL retain the stable
+idempotency key, canonical payload hash, creation timestamp, current lifecycle
+state, and any canonical finding linkage. The acceptance receipt SHALL be
+`{"accepted": true, "delivery": "dashboard_durable", "receipt":
+{"terminal_action_id": "...", "terminal_effect_id": "...",
+"inbox_state": "pending", "created_at": "..."}}`; it SHALL NOT expose or
+invent a `finding_id` before a patrol has durably acknowledged one.
+When `butler_reports` is enabled, its patrol path SHALL drain durable
+dashboard-report inbox records as well as the ordinary volatile relay buffer. A
+durable inbox record SHALL transition only through `pending`, fenced `claimed`,
+and `acknowledged`. The patrol SHALL claim `pending` with a generation/lease
+fence; it MAY reclaim an expired `claimed` record only by advancing that fence.
+It SHALL create or resolve exactly one patrol-owned canonical finding and then
+conditionally transition the same claimed generation to `acknowledged`, storing
+the immutable finding linkage. Canonical storage SHALL enforce a unique
+dashboard-inbox-to-finding mapping. If the source is disabled after a receipt
+exists, the inbox SHALL remain inspectable but no patrol claim SHALL occur until
+the source is enabled; it SHALL never become a volatile substitute or proof of
+absence.
+
+The staffer-goal admission obligations in this requirement SHALL apply only in
+`ISOLATED_CANDIDATE` and `SWITCHED_RELEASE`. Candidate admission SHALL be invoked
+only by the closed trusted test harness, with no live dashboard wiring. Current
+legacy and `KEY_ABSENT_STAGE` SHALL retain their existing deterministic QA
+triage and SHALL NOT admit dashboard reports as staffer goals. The durable
+inbox/receipt guarantees remain distinct from goal activation: their accepted
+records SHALL survive the eventual switch and SHALL never imply that a goal was
+admitted. Live staffer admission requires the actual owner-authorized switch;
+this specification does not perform or authorize it.
+
+The dashboard-to-triage work kind SHALL be `qa_triage_v1`, selected by trusted
+configuration, not a report field. Its exact domain-capability ceiling SHALL be
+`capabilities: []` (the explicit empty tuple of `Grant` values) and its resource
+grant map SHALL be empty. An explicitly declared empty ceiling is not an absent
+contract, a wildcard, or unrestricted resource access. The complete persisted,
+anonymized canonical finding is supplied as exposed starting evidence; consuming
+that evidence requires no model-callable inbox/finding reader. Existing
+deterministic discovery, canonical fingerprint/severity scoring, ordered
+deduplication and investigation admission SHALL remain infrastructure operations
+under their existing owners. The model may return a bounded triage judgment and
+uncertainty over the supplied finding, but its output SHALL NOT overwrite those
+authorities, authenticate a source, mutate a receipt, grant capabilities, launch
+an executor, approve communication, or prove that any effect occurred. Missing
+or insufficient diagnostic evidence SHALL remain explicitly unknown; QA SHALL
+NOT invent a read tool, substitute a broader profile or use a shell/network
+capability to fill that gap. Additional collection/investigation stays with the
+existing discovery sources and D18 executor contract, not this goal.
+
+The finite descriptor disposition SHALL be exactly: `qa__report_finding`
+(`record`, sensitive/untrusted, no resource selectors), `qa__force_patrol`
+(`administer`, sensitive/untrusted, no resource selectors), and
+`qa__get_qa_status` (`read`, sensitive/untrusted, no resource selectors) are all
+ungranted because their registered descriptors are non-presentable control
+surfaces. `get_dashboard_report_receipt` remains an infrastructure-only future
+lookup, not a fourth grant or an invented current catalog entry. All other
+catalog capabilities, notifications, domain reads/writes, `transact`,
+`actuate`, `administer` and executor/shell/network operations SHALL be absent
+from this ceiling. There are therefore zero granted descriptor/resource rows;
+no effect or communication is justified by the report. The two owner rules
+remain universal: transact is disabled for every goal, and communication to
+anyone other than the owner requires per-event approval or an owner-created
+standing rule. This contract grants no communication at all.
+
+Before a new admission, the trusted staffer-source adapter SHALL construct
+`StafferContract(staffer="qa", owner_domain="qa", version=1,
+capabilities=(), catalog_digest=<verified current fleet digest>,
+digest=<verified contract digest>)` from the git-declared work-kind definition.
+The contract digest SHALL bind that definition, its version, the explicit empty
+ceiling and the exact verified catalog digest using the existing canonical JSON
+SHA-256 digest convention. The adapter SHALL verify the declared bytes and
+select the profile from trusted configuration; a nonempty digest string supplied
+by a caller is not verification. It SHALL use the existing complete published
+catalog reader even for the empty ceiling; absent, expired, incomplete,
+mismatched or unverifiable catalog/contract/schema/descriptor evidence SHALL
+refuse new admission, never fall back to all tools or a cached unrelated
+contract. Any publication change requires a newly verified binding before new
+admission, with the ceiling still empty; descriptor/schema/digest changes SHALL
+NOT add capabilities automatically. Existing admitted goals retain their
+immutable source/contract/decision lineage; a retry cannot replace them with a
+newly widened goal. QA SHALL always start exposed (`origin="staffer"`), and
+exposure SHALL never be reduced by trusted storage, an owner filing the report,
+a source name or a model's answer. D8 goal-control tools are not additional
+domain grants: `context.search` has no permitted data domain here and child
+delegation with an empty capability request is refused by D9. Only authorized
+policy/guidance and the supplied exposed evidence may be used; no implicit
+context, domain or executor capability is created. The existing D10 finite
+staffer budget, per-invocation limits and deadline SHALL be reserved by admission
+and enforced across recovery/escalation; unavailable limits refuse, and no new
+budget default or unmetered model use is defined here.
+
+After the fenced inbox claim has durably created/resolved its canonical finding
+and acknowledged the immutable linkage, the QA-owned adapter SHALL derive
+`SourceRef(kind="staffer", id="qa:triage:<canonical-finding-UUID>")` from that
+stored finding, never from payload identities. The trusted source partition
+SHALL identify QA triage; complete action/effect/idempotency/payload identity,
+accepted relay provenance, acknowledged finding linkage and the winning stored
+claim generation SHALL be verified before source construction. Payload text,
+`source_butler`, `trigger_source`, a supplied staffer/contract/grant or an
+unverified dashboard UUID SHALL grant no authority. Finding summary/context are
+exposed data, with existing anonymization/sensitivity rules, never a trusted
+instruction. No new cross-domain SQL access is authorized: .17's adapter SHALL
+use the released service/owner evidence boundary supplied by the relay and goal
+admission owners; if unavailable, it refuses instead of inventing an endpoint,
+credential or direct foreign-schema reader.
+
+The existing goal admission/ledger SHALL be the only logical admission journal.
+The source and attempt locks, existing decision lookup and immutable attempt
+bindings SHALL coalesce concurrent/restarted submissions for this one stable
+finding source into at most one admitted logical goal. An inbox with no
+acknowledged finding SHALL not admit; a stale claimant SHALL not acknowledge or
+submit authority from a superseded generation. A crash before finding/ack
+commit leaves the inbox pending/reclaimable; a crash after commit but before
+admission leaves that same stored source recoverable. A crash after goal commit
+but before QA records/observes the result SHALL reconcile the same source and
+attempt through the existing durable admission decision, never invent a new
+finding, source id or second ledger. The inbox/finding handoff may retain its
+existing linkage/pending-intent metadata, not a competing goal ledger.
+Commit/lookup uncertainty SHALL remain unavailable with bounded reconciliation,
+never proof of absence or a second delivery/admission. A durably refused attempt
+SHALL replay its recorded refusal; after its prerequisite is repaired, only the
+trusted adapter may retry with a fresh attempt and the same immutable source,
+under existing source deduplication. A prior admitted source always returns its
+existing goal, including across contract drift, with no new work or reset.
+
+When `butler_reports` is disabled, new dashboard deliveries and new claims or
+admissions SHALL refuse without effects. Already accepted inbox/finding evidence
+and authenticated receipt lookup SHALL remain readable, and already durable
+admission decisions SHALL remain reconcilable; none is volatile, absent or a
+new permission to run. Re-enabling resumes only the same fenced stored work.
+Receipt acceptance proves durable inbox custody, `acknowledged` proves the one
+finding link, and an admitted staffer decision proves only that logical goal;
+none implies executor launch, fix, PR, delivery, triage completion or activation.
+The terminal-action reconciler retains its existing five-attempt/15-minute bound
+for unresolved delivery/lookup and explicit ambiguity, not unbounded report or
+goal retries. Only an authenticated durable `not_found` for the exact effect
+permits same-key/same-payload redelivery when the source is enabled. `found`
+pending/claimed is positive retained evidence, and `unavailable` never is absence.
+
+ID: REQ-staffer-qa-003
+Source: staffer-qa § Pluggable Discovery Source Architecture; staffer-qa § V1 Discovery Sources; RFC 0015 § V1 sources; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-002; design.md Decision 4
+Scope: v1-mandatory
+
+#### Scenario: Dashboard report is durably accepted
+
+- **WHEN** an authenticated Switchboard relay calls `report_finding` with all
+  three dashboard identity fields
+- **THEN** QA SHALL durably upsert one dashboard-report inbox record for that
+  action/effect identity before it returns the `dashboard_durable` acceptance
+  receipt with `inbox_state: "pending"`
+- **AND** it SHALL not return a `finding_id` until a patrol-owned finding is
+  durably acknowledged
+
+#### Scenario: Dashboard inbox is claimed after a restart
+
+- **WHEN** QA restarts after accepting a dashboard report whose inbox remains
+  `pending` or whose `claimed` lease has expired
+- **THEN** the enabled `butler_reports` source SHALL fence a claim and create or
+  resolve exactly one patrol-owned canonical finding
+- **AND** it SHALL record that finding linkage only by conditionally advancing
+  the claimed inbox record to `acknowledged`
+
+#### Scenario: Dashboard inbox source is disabled after acceptance
+
+- **WHEN** a dashboard-report inbox receipt exists but `butler_reports` is
+  disabled before patrol acknowledgement
+- **THEN** the receipt lookup SHALL continue to report the durable inbox record
+  and its `pending` or `claimed` lifecycle state
+- **AND** QA SHALL not create a volatile substitute, a second receipt, or a
+  canonical finding until the source is enabled and a fenced patrol claim runs
+
+#### Scenario: Caller supplies invalid identity or authority
+
+- **WHEN** a caller supplies only part of the dashboard identity, a mismatched
+  duplicate idempotency key or canonical payload hash, is anonymous, presents
+  the wrong subject or audience, spoofs `source_butler` without the validated
+  Switchboard principal, or calls while `butler_reports` is disabled
+- **THEN** QA SHALL reject the request without creating a receipt, finding, or
+  buffered report
+
+#### Scenario: A declared QA triage contract grants no domain tools
+
+- **WHEN** the trusted adapter verifies `qa_triage_v1` and the complete current catalog
+- **THEN** it SHALL submit the explicit empty ceiling and resource map, start QA exposed and supply only the stored canonical finding as evidence
+- **AND** the three QA control descriptors, receipt lookup, all domain effects, shell/network and D18 executors SHALL remain outside the goal grant
+- **AND** insufficient diagnostic evidence SHALL yield an explicit unknown judgment, not invented authority or a broader read
+
+#### Scenario: QA contract or catalog evidence cannot be verified
+
+- **WHEN** the contract is missing, stale, wrong-version, nonempty contrary to this profile, supplied by report text, or mismatched to an incomplete/expired/current catalog publication
+- **THEN** new admission SHALL refuse under the existing source-evidence/catalog checks and SHALL create no goal or effect
+- **AND** the durable report/finding evidence SHALL remain intact for authenticated inspection and a same-source trusted retry after repair, without broad fallback
+
+#### Scenario: A report attempts to choose staffer authority
+
+- **WHEN** report fields claim owner origin, an alternate staffer, source id, contract digest, grants, unexposed status or a different finding link
+- **THEN** those fields SHALL not establish authority and a missing or mismatched trusted binding SHALL refuse before admission
+- **AND** canonical scoring/fingerprint and exposed content handling SHALL remain authoritative
+
+#### Scenario: Finding acknowledgement and logical admission race with restart
+
+- **WHEN** concurrent claimants or retries cross finding/ack or goal-admission commit boundaries
+- **THEN** only the winning inbox generation SHALL establish the immutable finding link and its one `qa:triage:<canonical-finding-UUID>` source
+- **AND** the existing admission source/attempt locks and decision bindings SHALL return at most the one logical admitted goal, including a crash after commit but before the caller observes it
+- **AND** an unknown commit outcome SHALL reconcile without a second ledger, source identity, delivery or fabricated success
+
+#### Scenario: Disabled source retains accepted evidence without new admission
+
+- **WHEN** the source is disabled after inbox acceptance or finding acknowledgement
+- **THEN** authenticated receipt/decision inspection SHALL retain that evidence while new delivery, claim and admission refuse
+- **AND** re-enabling SHALL reuse only the same stored source and fences, and an existing admitted goal SHALL not be recreated under a newer contract
+
+### Requirement: Dashboard Report Receipt Lookup
+
+The QA staffer SHALL register an authenticated internal MCP tool named
+`get_dashboard_report_receipt`. Only the validated Switchboard-router service
+principal may invoke it with
+`{terminal_action_id: UUID, terminal_effect_id: UUID}`. Direct callers SHALL NOT
+enumerate receipts by supplying tool arguments alone. It SHALL return
+exactly either `{"status": "found", "receipt": {"terminal_action_id": "...",
+"terminal_effect_id": "...", "inbox_state":
+"pending|claimed|acknowledged", "created_at": "...", "finding_id": "..."}}`,
+where `finding_id` is present only for `acknowledged`, `{"status":
+"not_found"}`, or `{"status": "unavailable"}`. The result SHALL query the
+durable inbox store and SHALL NOT infer a receipt from the volatile
+`butler_reports` buffer. `not_found` SHALL mean a successful durable lookup
+proved that no record exists for that exact action/effect identity; only then
+may Switchboard repeat the same-key, same-payload-hash delivery. `unavailable`
+shall mean the lookup itself could not establish that proof (for example, the
+durable store is unavailable); it is not proof of absence. Switchboard SHALL
+retain that effect pending for bounded lookup and mark it ambiguous without
+another delivery call if proof remains unavailable.
+
+ID: REQ-staffer-qa-004
+Source: staffer-qa § Pluggable Discovery Source Architecture; RFC 0015 § V1 sources; dashboard-terminal-action-recovery REQ-dashboard-terminal-action-recovery-003; design.md Decision 4
+Scope: v1-mandatory
+
+#### Scenario: Switchboard reconciles a possibly delivered report
+
+- **WHEN** the terminal-action reconciler needs to determine whether a
+  dashboard QA-report effect completed after a crash
+- **THEN** it SHALL call `get_dashboard_report_receipt` with the stable action
+  and child-effect identities
+- **AND** QA SHALL return `found`, `not_found`, or `unavailable` exactly as the
+  durable receipt lookup establishes
+
+#### Scenario: Acknowledged finding is looked up
+
+- **WHEN** a fenced patrol claim has created and linked the one canonical
+  finding for a dashboard inbox record
+- **THEN** the lookup SHALL return `found` with `inbox_state: "acknowledged"`
+  and its safe `finding_id`
+- **AND** a pending or claimed record SHALL return `found` without a
+  `finding_id`, never a fabricated acknowledgement
+
+#### Scenario: Direct caller probes a receipt identity
+
+- **WHEN** an anonymous caller, wrong-subject or wrong-audience service, or
+  source-spoofing caller invokes `get_dashboard_report_receipt`
+- **THEN** QA SHALL reject the request before querying or disclosing receipt data
+
+#### Scenario: Lookup unavailability is not missing work
+
+- **WHEN** the exact authenticated receipt or admission lookup cannot prove its durable result
+- **THEN** the caller SHALL retain unavailable/unknown status and reconcile only within the existing finite bound
+- **AND** it SHALL not redeliver, create another source/goal, expose sensitive evidence or turn an accepted inbox receipt into a fabricated finding or completed triage result

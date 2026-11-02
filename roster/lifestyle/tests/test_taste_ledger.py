@@ -20,6 +20,8 @@ import pytest
 
 from butlers.testing.migration import create_migrated_test_pool
 
+_THIS_FILE = Path(__file__).resolve()
+
 docker_available = shutil.which("docker") is not None
 pytestmark = [
     pytest.mark.integration,
@@ -384,11 +386,7 @@ class TestBackfillFromTrackPlays:
 class TestPredicateRegistrySeeding:
     async def test_every_memory_taxonomy_predicate_is_registered(self, lifestyle_pool) -> None:
         taxonomy = (
-            Path(__file__).resolve().parents[1]
-            / ".agents"
-            / "skills"
-            / "memory-taxonomy"
-            / "SKILL.md"
+            _THIS_FILE.parents[1] / ".agents" / "skills" / "memory-taxonomy" / "SKILL.md"
         ).read_text()
         predicate_section = taxonomy.split("**Permanence levels**", maxsplit=1)[0]
         expected = set(

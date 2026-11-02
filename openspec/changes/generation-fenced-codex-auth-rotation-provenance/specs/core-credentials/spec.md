@@ -2,7 +2,7 @@
 
 ### Requirement: Opaque System-Global Codex Authority Generation
 
-The system SHALL bind the existing system-global `cli-auth/codex` credential
+The control-plane credential store SHALL bind the existing system-global `cli-auth/codex` credential
 row to exactly one opaque, database-generated authority generation whenever
 that credential is valid and current.  The binding SHALL consist of a singleton
 current-generation state, the existing credential row's matching opaque
@@ -12,12 +12,26 @@ generation/state/provenance records SHALL contain no raw credential,
 credential-derived fingerprint or digest, credential-shaped metadata, secret
 error, PID, local-file identity, timestamp heuristic, or capability.
 
+The control-plane goal runner SHALL resolve and stage the selected model
+credential over its authenticated control channel to the session host. Runtime
+OAuth projection and synchronization SHALL use the session-host credential
+volume; dashboard CLI login SHALL reach it through the control plane's service
+listener, with no inbound session-host dashboard port. Domain daemons SHALL
+receive neither provider credentials nor that volume. The session host SHALL
+receive no database, domain, or connector credentials and SHALL NOT read the
+database or credential store. D18's existing narrow deterministic-caller model
+function credentials SHALL NOT authorize domain goal execution.
+
 An absent or revoked authority SHALL have no current generation.  A missing,
 malformed, duplicated, stale, or inconsistent state/generation/credential
 binding is unprovable and SHALL be unavailable for new Codex launch,
 rotation, health attachment, or automatic repair.  The system SHALL not infer
 authority from a local runtime file, process cache, process identifier,
 timestamp, session identifier, or a matching-looking document.
+
+ID: REQ-core-credentials-005
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Valid shared authority receives an opaque generation
 - **WHEN** the selected system-global pool has one valid `cli-auth/codex`
@@ -50,7 +64,7 @@ timestamp, session identifier, or a matching-looking document.
 
 ### Requirement: Generation-Fenced Codex Operation Completion
 
-The credential store SHALL prepare every Codex runtime invocation, prewarm,
+The control-plane credential store SHALL prepare every Codex goal invocation, prewarm,
 device-auth flow, and health probe as a durable internal operation bound to the
 exact current opaque generation.  An operation record SHALL be a server-side
 row identity, not a bearer capability, and SHALL not be exposed through an API,
@@ -71,6 +85,13 @@ session, device code, local file, or time observation as an authority proof.
 Once any generation has existed, including after revoke, an absent authority
 is not bootstrap-eligible.
 
+The trusted control-plane caller SHALL retain the redacted lease across the
+authenticated session-host prepare/launch/result path; the child SHALL receive
+only its staged credential and strict broker-only MCP configuration, not an
+operation identifier or database authority. Missing or unavailable transport
+SHALL fail closed under the same absolute operation deadline, with no local
+credential fallback or new browser-facing provenance surface.
+
 An operation may launch only after a conditional recheck proves that it is
 prepared, unexpired, bound to the expected generation, and that generation is
 still current.  Its completion may attach a health outcome or create a new
@@ -90,6 +111,10 @@ and return an idempotent non-commit result for duplicate abandonment. A
 launched operation SHALL be abandoned only after its complete child domain is
 proven dead. Ordinary completion SHALL remain the only path that may write a
 successor or health outcome.
+
+ID: REQ-core-credentials-006
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Runtime rotation is conditional on its exact launch generation
 - **WHEN** a runtime operation launched on current generation `G` returns a
@@ -208,10 +233,16 @@ days after terminalization.  Current generations, referenced generations, and
 the Tier 1 credential row SHALL not be garbage-collected by that path.
 
 After restart, the system SHALL reconstruct eligibility only from a complete
-current shared binding.  It SHALL not complete an operation from an orphaned
+current shared binding read in the control plane and staged onto the
+session-host volume, never restored into a domain daemon. It SHALL not
+complete an operation from an orphaned
 stage/local file or infer a successor from a process/cache/file observation.
 Generation records remain append-only and value-free in this version; a future
 generation-compaction policy requires a separate contract.
+
+ID: REQ-core-credentials-007
+Source: RFC 0038 D3; approved opaque-generation Option-A authority and generation-fenced-codex-auth-rotation-provenance design D0-D10
+Scope: v1-mandatory
 
 #### Scenario: Crash leaves an orphaned local result non-authoritative
 - **WHEN** the parent of a launched operation crashes before completion and a

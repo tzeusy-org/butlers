@@ -59,9 +59,29 @@ _runtime_approval_push_runtime_var: contextvars.ContextVar[Any | None] = context
 _runtime_codex_auth_authority_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
     "_runtime_codex_auth_authority_var", default=None
 )
+# Borrowed daemon-selected credential store, only for one deterministic job task.
+# This is independent of Codex system-global authority and never serialized.
+_runtime_credential_store_var: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_runtime_credential_store_var", default=None
+)
 _captured_tool_calls: dict[str, list[dict[str, Any]]] = defaultdict(list)
 _runtime_routing_context: dict[str, dict[str, Any]] = {}
 _capture_lock = threading.Lock()
+
+
+def set_current_credential_store(store: Any | None) -> contextvars.Token[Any | None]:
+    """Bind the daemon-selected store for the current deterministic dispatch."""
+    return _runtime_credential_store_var.set(store)
+
+
+def reset_current_credential_store(token: contextvars.Token[Any | None]) -> None:
+    """Restore the prior task's binding without closing the borrowed store."""
+    _runtime_credential_store_var.reset(token)
+
+
+def get_current_credential_store() -> Any | None:
+    """Return this task's selected store, never a caller-supplied credential value."""
+    return _runtime_credential_store_var.get()
 
 
 def set_current_runtime_session_id(session_id: str | None) -> contextvars.Token[str | None]:

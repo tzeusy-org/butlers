@@ -29,7 +29,7 @@ import { Switch } from '@/components/ui/switch'
 
 /** Convert a condition object to a short, readable summary. */
 function conditionSummary(condition: Record<string, unknown>): string {
-  const entries = Object.entries(condition)
+  const entries = Object.entries(condition).filter(([k]) => k !== 'except_known_contacts')
   if (entries.length === 0) return 'always'
   const summary = entries
     .slice(0, 2)
@@ -106,6 +106,15 @@ export function RuleRow({ rule, linked = false, onLinkedRowReady, onToggle, onEd
           <span>{conditionSummary(rule.condition)}</span>
           <span className="text-muted-foreground"> → </span>
           <span className={colorClass}>{rule.action}</span>
+          {rule.condition.except_known_contacts === true && (
+            <span
+              className="text-muted-foreground"
+              data-testid={`rule-except-known-${rule.id}`}
+            >
+              {' '}
+              · except people I know
+            </span>
+          )}
         </code>
       </div>
 

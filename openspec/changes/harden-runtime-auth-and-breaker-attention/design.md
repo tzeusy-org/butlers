@@ -1,3 +1,40 @@
+## Goal-runtime amendment and evidence boundary
+
+RFC 0038 D3 and D18 already settle the runtime placement. The collision ledger
+explicitly assigns this change a re-scope before archive; generalist task 4.2
+must consume the amended deltas rather than overwrite them with the old daemon
+architecture. This amendment makes no RFC decision and performs no cutover.
+
+| Concern | Goal-runtime owner and retained contract |
+| --- | --- |
+| Codex authority and device auth | The trusted goal runner resolves the explicit system-global authority. The dashboard/control-plane service path retargets login and synchronization to the session host's credential volume. The host exposes no dashboard listener and reads no database or credential store. Domain daemons do not restore provider credentials for reasoning. |
+| Per-invocation material | Only that invocation's staged model credential, broker MCP config, PATH and adapter-owned non-secret pointers to files inside its domain. No domain/database/connector credential or private deployment signing key reaches the host or invocation. |
+| Credential consistency | Matching-file no-op, atomic 0600 writes, explicit flat authority, launch-bound compare-and-set rotation and health, no local bootstrap/fallback, conservative post-crash recovery, and safe unavailable results remain. No running work is replayed by a credential refresh. |
+| Runtime isolation | Preserve exclusive kernel containment, peer isolation, exact image-owned shim closure, inherited-FD closure, bounded descendant termination, same-descriptor output validation, scratch allowlists and no persistence on any failure. Retargeting does not turn a file mount or process group into an isolation boundary. |
+| Catalog verification and benchmark | D18 tool-less, single-turn fixed-prompt/structured-output measurement functions. Deterministic callers keep only their applicable narrow provider credentials; they gain no goal token, broker or domain tools. Same runtime tuple means applicable auth/adapter/model mapping/config, not a goal's MCP authority. |
+| Probe control | Retain the dedicated Dashboard signer/public-verifier contract, owner authentication, nonce receipt before work, readiness, exact safe outcomes, 30-second deadline and bounded concurrency. It is distinct from GOAL_BROKER_SIGNING_KEY; neither private key reaches the session host. All remaining untrusted CLI children must be isolated from signers before activation. |
+| Breaker evidence | The deterministic runner records actual qualifying goal-invocation outcomes through the serialized recorder. Canonical catalog identity, threshold/cooldown, stable attempt ordering, half-open behavior, operator override and same-tier failover survive. A D18 measurement is never synthetic routed success. |
+| Operational attention | Existing validated producer, edge/outbox transaction and unique identities; Switchboard service-plane claimant; sending before transport; lease/token/epoch fencing; proven-pre-send retry only; terminal uncertainty and one explicit reissue successor. Neither broker authority nor ledger telemetry replaces delivery idempotence. |
+| Models/Spend | Keep independent verification, breaker, denial and attention facts, owner-control boundaries and honest source degradation. D19 owns the later goal/region surface; this change invents no new URL or UI and does not activate it. |
+
+### Historical source and target conformance
+
+The incident context and detailed reliability decisions below retain their
+original pre-switch implementation provenance, including the adopted Option B
+shim closure. Their security and failure invariants survive. Actor references
+to daemon reasoning, a shared all-butlers runtime home or dashboard CLI children
+are not target placement: apply the table above and the amended capability
+deltas. Ordinary domain credential resolution and D18's narrow deterministic
+caller credentials remain distinct from goal invocation credential staging.
+The target placement has not been proven by historical tests or receipts.
+
+Existing completed tasks stay historical; open 3.4 and 6.3 stay open. The
+owner-initiation gates bu-j8crr9/bu-kwyq6, .15/.16 and reconciliation/report .7/.8
+remain unchanged. The original ten implementation children are not redispatched.
+The pending target conformance is recorded separately in tasks.md, using the
+existing generalist runner/sandbox/cutover owners. No new runtime feature,
+credential operation, key provisioning, provider probe or archive is authorized.
+
 ## Context
 
 [Observed] The runtime has one shared `runtime_codex` filesystem volume while
@@ -59,7 +96,7 @@ observability rather than delivery authority (RFC 0011 Amendment 1).
   dashboard remains the truthful view of those existing incidents and an
   operator can explicitly issue a new page if needed.
 
-## Decisions
+## Retained pre-switch reliability decisions
 
 ### 1. CLI auth gets an explicit authority channel, not a special fallback order
 
@@ -625,7 +662,12 @@ it does not grow a generic alert administration surface.
   no recipient or provider detail, and remains installed when producers are
   disabled for rollback.
 
-## Migration Plan
+## Historical staged reliability rollout
+
+This sequence records the original reliability delivery and its remaining
+owner-run gates. It is not the goal-runtime switch plan and does not redispatch
+closed implementation children. The target switch is solely RFC 0038 Hard
+cutover and generalist tasks 2.4, 3 and 4.
 
 1. Merge and adopt the process-bound deployment-control doctrine/source
    correction; keep every implementation lane held until fresh graph GO.
@@ -695,3 +737,21 @@ removal cannot start while the signer mount exists.
 
 None. The documented at-most-once policy is the explicit owner decision for
 ambiguous transport outcomes.
+
+## Pending goal-runtime conformance and rollback
+
+Before the switch, existing generalist owners must demonstrate the actual
+control-plane-to-session-host credential transfer, isolated invocation and D18
+configurations, no domain/database/channel/private-key exposure, exact adapter
+and canonical identity parity, and the same credential-race and signed-control
+failure cases. Real goal outcome recording must preserve breaker/outbox
+transaction ordering and every recovery/reissue no-duplicate case. Historical
+source or fixture receipts do not earn these target outcomes.
+
+This docs-only amendment changes no running deployment. Runtime rollback keeps
+credentials, receipts, outbox and dispatch history; it never restores local
+credential fallback, dashboard-local verification, direct alert delivery or
+ambiguous automatic replay. Existing signer/sandbox rollback fences remain.
+The goal switch/rollback follows RFC 0038, without inventing a dual-running
+mode or authorizing an operator action here. Archive waits for the existing
+reconciliation and separately authorized evidence; this patch does not tick it.

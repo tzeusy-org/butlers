@@ -36,6 +36,8 @@ from butlers.chronicler.adapters.comms import (
     _predicate_for,
 )
 from butlers.chronicler.models import Confidence, Episode, Layer, PointEvent, Precision, Privacy
+from butlers.testing.fake_pool import AsyncCtx
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -47,17 +49,6 @@ _NOW = datetime(2026, 6, 20, 9, 0, 0, tzinfo=UTC)
 # ---------------------------------------------------------------------------
 
 
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
-
-
 class _NullCtx:
     async def __aenter__(self) -> None:
         return None
@@ -66,18 +57,14 @@ class _NullCtx:
         pass
 
 
-def _make_row(**kwargs: object) -> MagicMock:
-    return MagicMock(**kwargs, **{"__getitem__": lambda s, k, _kwargs=kwargs: _kwargs[k]})
-
-
 def _event_row(
     *,
     event_id: object | None = None,
     received_at: datetime = _NOW,
     source_channel: str = "telegram_bot",
     source_sender_identity: str = "12345",
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return row(
         id=event_id or uuid4(),
         received_at=received_at,
         source_channel=source_channel,
@@ -87,10 +74,10 @@ def _event_row(
 
 def _pool_returning(
     *,
-    events: list[MagicMock],
-    participant_rows: list[MagicMock] | None = None,
+    events: list[Record],
+    participant_rows: list[Record] | None = None,
     table_exists: bool = True,
-    owner_row: MagicMock | None = None,
+    owner_row: Record | None = None,
 ) -> AsyncMock:
     """Mock cross-butler read pool serving (in order): exists-check, events
     fetch, owner-entity fetchrow, participant-resolution fetch."""
@@ -99,7 +86,7 @@ def _pool_returning(
     conn.fetch = AsyncMock(side_effect=[events, participant_rows or []])
     conn.fetchrow = AsyncMock(return_value=owner_row)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool
 
 
@@ -108,7 +95,7 @@ def _chronicler_pool() -> AsyncMock:
     conn.transaction = MagicMock(return_value=_NullCtx())
     conn.execute = AsyncMock(return_value=None)
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool, conn
 
 
@@ -247,7 +234,7 @@ async def test_resolve_participants_reads_entity_facts_not_contact_info() -> Non
     conn = AsyncMock()
     conn.fetch = AsyncMock(return_value=[])
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     await CommsSocialAdapter()._resolve_participants(pool, [_BurstGroupKey("discord", "u1")])
 
@@ -264,7 +251,7 @@ async def test_resolve_participants_postgres_error_degrades_to_empty() -> None:
     conn = AsyncMock()
     conn.fetch = AsyncMock(side_effect=_asyncpg.PostgresError())
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
 
     result = await CommsSocialAdapter()._resolve_participants(
         pool, [_BurstGroupKey("discord", "u1")]
@@ -370,9 +357,7 @@ async def test_resolved_participant_yields_high_confidence_and_participant_row()
     entity_id = uuid4()
     rows = [_event_row(received_at=_NOW, source_channel="discord", source_sender_identity="u1")]
     participant_rows = [
-        _make_row(
-            channel="discord", sender_identity="u1", entity_id=entity_id, display_name="Alex"
-        ),
+        row(channel="discord", sender_identity="u1", entity_id=entity_id, display_name="Alex"),
     ]
     pool = _pool_returning(events=rows, participant_rows=participant_rows)
     cp, conn = _chronicler_pool()

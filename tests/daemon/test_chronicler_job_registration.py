@@ -71,3 +71,56 @@ async def test_chronicler_dispatch_recovers_when_registry_entry_is_missing(tmp_p
     assert result == expected
     mock_handler.assert_awaited_once_with(daemon.db.pool, None)
     daemon.spawner.trigger.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_real_daemon_attaches_postcommit_owner_only_to_projection_jobs(tmp_path, monkeypatch):
+    """A real registered wrapper completes before the private owner sees it."""
+    from butlers.core.tool_call_capture import get_current_credential_store
+
+    prior_store = get_current_credential_store()
+    selected_store = object()
+    daemon = ButlerDaemon(tmp_path)
+    daemon.config = ButlerConfig(name="chronicler", port=41111)
+    daemon.db = MagicMock()
+    daemon.db.pool = AsyncMock()
+    daemon.spawner = MagicMock()
+    daemon._credential_store = selected_store
+    events = []
+
+    class Owner:
+        day_close_ran = False
+
+        def after_job(self, name, result):
+            assert get_current_credential_store() is selected_store
+            events.append((name, result))
+
+    owner = Owner()
+    daemon._chronicler_continuation = owner
+
+    async def rollup(pool, job_args):
+        assert get_current_credential_store() is selected_store
+        assert pool is daemon.db.pool
+        events.append("committed")
+        return {"days_processed": 1}
+
+    monkeypatch.setattr("butlers.chronicler.jobs.run_rollup_daily", rollup)
+    result = await daemon._dispatch_scheduled_task(
+        trigger_source="schedule:chronicler_rollup_daily", job_name="chronicler_rollup_daily"
+    )
+    assert result == {"days_processed": 1}
+    assert get_current_credential_store() is prior_store
+    assert events == ["committed", ("chronicler_rollup_daily", result)]
+    daemon.spawner.trigger.assert_not_called()
+
+    async def refusal(pool, job_args):
+        assert get_current_credential_store() is selected_store
+        raise RuntimeError("not committed")
+
+    monkeypatch.setattr("butlers.chronicler.jobs.run_rollup_daily", refusal)
+    with pytest.raises(RuntimeError, match="not committed"):
+        await daemon._dispatch_scheduled_task(
+            trigger_source="schedule:chronicler_rollup_daily", job_name="chronicler_rollup_daily"
+        )
+    assert len(events) == 2
+    assert get_current_credential_store() is prior_store

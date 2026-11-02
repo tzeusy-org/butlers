@@ -4,12 +4,12 @@ description: >
   Run, debug, QA, test, and observe the Butlers dev stack. Routes to one workflow: debug a live
   dev-stack (k3s, namespace butlers-dev) session / routing / connector / runtime failure (given a session, request, or
   trace id); invoke an end-to-end QA validation canary against the dashboard API; work a QA
-  investigation PR to green (review threads, no PII/secrets, required checks); discover and prune the
-  test suite (condensation); or generate/refresh Grafana dashboards from live Prometheus/Tempo.
+  investigation PR to green (review threads, no PII/secrets, required checks); or generate/refresh
+  Grafana dashboards from live Prometheus/Tempo.
   Triggers: "debug this session", "why did routing fail", "session id ...", "run the QA canary",
-  "work this QA PR", "answer the review threads", "prune the test suite", "condense tests",
-  "make/refresh a Grafana dashboard", "observability". Not for building butlers, connectors,
-  schemas, specs, or UX — use /butlers-development.
+  "work this QA PR", "answer the review threads", "make/refresh a Grafana dashboard",
+  "observability". Not for building butlers, connectors, schemas, specs, or UX — use
+  /butlers-development.
 metadata:
   owner: tze
   authors:
@@ -40,7 +40,6 @@ rg -n "^name:|^description:" "$PKG"/subskills/*/SKILL.md
 | Debug a dev-stack session failure, routing problem, or connector/runtime error — including from a session / request / trace id | [subskills/butler-dev-debug/SKILL.md](subskills/butler-dev-debug/SKILL.md) | "debug this session", "why did routing fail", "session id ..." |
 | Run an end-to-end QA validation canary against the dashboard API and confirm the investigation ends unfixable | [subskills/butler-qa-invoke/SKILL.md](subskills/butler-qa-invoke/SKILL.md) | "run the QA canary", "invoke a QA validation" |
 | Work a GitHub PR for a QA investigation to done: answer review threads inline, scrub PII/secrets, drive required checks green | [subskills/butler-qa-pr-review/SKILL.md](subskills/butler-qa-pr-review/SKILL.md) | "work this QA PR", "answer the review threads" |
-| Discover, analyze, and prune the test suite toward contract-driven tests (condensation) | [subskills/butler-test-condensation/SKILL.md](subskills/butler-test-condensation/SKILL.md) | "prune the test suite", "condense tests", "assess test bloat" |
 | Generate or refresh Grafana dashboard JSONs from live Prometheus/Tempo data | [subskills/generate-grafana-dashboards/SKILL.md](subskills/generate-grafana-dashboards/SKILL.md) | "make a Grafana dashboard", "refresh dashboards", "observability" |
 
 ## Routing rules
@@ -52,4 +51,6 @@ rg -n "^name:|^description:" "$PKG"/subskills/*/SKILL.md
 - **Project knowledge vs execution**: doctrine, specs, topology, non-negotiables → `/doctrine`.
   Change-level engineering judgment (test rigor, diagnosis root-cause, flaky failures) →
   `/th-engineering`. Task tracking → `bd` (see `AGENTS.md`).
+- Pruning or condensing tests has no subskill: follow the review rule in
+  `about/craft-and-care/testing-and-verification.md` (§ Removing or Weakening Tests).
 - No subskill fits → answer from this router or say so. Do not load a subskill to browse.

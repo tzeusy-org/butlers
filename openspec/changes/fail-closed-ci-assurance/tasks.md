@@ -34,6 +34,6 @@ as the original hosted branch, current calibration, second merge-group or two-we
 - [ ] Compare check p50 over ten named before and ten named after merge-group runs.
 - [ ] Compare job p95/caps over ten clean exact-main merge-group runs, with rare/unhealthy calibration debt explicit.
 - [ ] Audit complete two-week repository jobs and verify zero longer than60minutes without excluding failure/cancel/old branches.
-- [ ] Retain five named before/after samples for affected jobs or exact no-wall-clock-gain statement; this does not replace specific original observations.
+- [x] Retain five named before/after samples for affected jobs or exact no-wall-clock-gain statement (moot: bu-29wkwj.3 deleted the affected lane); this does not replace specific original observations.
 - [ ] Deliver every original slice or coordinator-record exact lawful slice deferrals; preserve all enforcing survivors and full terminal population.
 - [ ] Synchronize/archive only after whole accepted outcome/dispositions are complete and all mandatory requirements retain their full bodies.

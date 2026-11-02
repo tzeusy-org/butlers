@@ -24,8 +24,6 @@ def _request(method: str, path: str) -> Request:
         ("GET", f"/api/approvals/{_ID}"),
         ("POST", f"/api/approvals/{_ID}/approve"),
         ("POST", f"/api/approvals/{_ID}/deny"),
-        ("GET", f"/api/decisions/prompts/{_ID}"),
-        ("POST", f"/api/decisions/prompts/{_ID}/choose"),
     ],
 )
 def test_callback_routes_are_admitted(method, path) -> None:
@@ -35,6 +33,8 @@ def test_callback_routes_are_admitted(method, path) -> None:
 @pytest.mark.parametrize(
     ("method", "path"),
     [
+        ("GET", f"/api/decisions/prompts/{_ID}"),
+        ("POST", f"/api/decisions/prompts/{_ID}/choose"),
         ("GET", "/api/decisions"),
         ("POST", "/api/decisions/bu-a/intent"),
         ("POST", f"/api/decisions/prompts/{_ID}"),

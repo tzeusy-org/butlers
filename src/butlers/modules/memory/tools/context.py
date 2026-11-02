@@ -27,8 +27,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from asyncpg import Pool
 
-from butlers.core.owner import fetch_owner_entity_id
-from butlers.modules.memory.content_authority import is_owner_class
+from butlers.modules.memory.content_authority import catalog_attribution, is_owner_class
 from butlers.modules.memory.tools._helpers import _search, validate_tenant_id
 from butlers.modules.memory.tools.references import format_memory_ref
 
@@ -259,28 +258,26 @@ def _format_fact_line(f: dict[str, Any]) -> str:
     )
 
 
-async def _attribute_owner_anchored_facts(pool: Pool, facts: list[dict[str, Any]]) -> None:
-    """Label owner-anchored facts that the owner did not author.
+async def _attribute_non_owner_facts(pool: Pool, facts: list[dict[str, Any]]) -> None:
+    """Qualify every rendered fact the owner did not author, whatever its subject.
 
-    A fact about the owner that came from a third party's session is a report
-    by that party, not something the owner said.  Mutates ``facts`` in place,
-    adding ``_attribution`` to each such fact: ``reported by <sender>`` when the
-    sender is known, ``source unverified`` for legacy rows with no stamp.
-    ``system`` authority (deterministic server code) is not relabelled.
+    A fact from a third party's session is that party's report, whether it is
+    about the owner or about someone else (bu-dhloi1.1).  Mutates ``facts`` in
+    place, adding ``_attribution``: ``reported by <sender>`` for
+    ``third_party``, ``partly reported by <sender>`` for ``mixed`` evidence
+    and ``source unverified`` for a legacy row with no stamp.  A sender whose
+    name cannot be resolved is rendered generically (``a third party``); the
+    qualification itself never depends on the lookup.  ``source_butler`` is the
+    curating butler, never the reporter, so it plays no part.  Owner-class and
+    ``system`` (deterministic server code) facts are not relabelled.
     """
     candidates = [
         f
         for f in facts
-        if f.get("entity_id") is not None
-        and not is_owner_class(f.get("content_authority"))
-        and f.get("content_authority") != "system"
+        if not is_owner_class(f.get("content_authority")) and f.get("content_authority") != "system"
     ]
     if not candidates:
         return
-    owner_id = await fetch_owner_entity_id(pool)
-    if owner_id is None:
-        return
-    candidates = [f for f in candidates if f.get("entity_id") == owner_id]
     sender_ids = list(
         {f["authority_entity_id"] for f in candidates if f.get("authority_entity_id")}
     )
@@ -291,15 +288,17 @@ async def _attribute_owner_anchored_facts(pool: Pool, facts: list[dict[str, Any]
                 "SELECT id, canonical_name FROM public.entities WHERE id = ANY($1::uuid[])",
                 sender_ids,
             )
-            names = {r["id"]: r["canonical_name"] for r in rows}
+            names = {r["id"]: r["canonical_name"] for r in rows if r["canonical_name"]}
         except Exception:
             logger.debug("Attribution name lookup failed", exc_info=True)
     for f in candidates:
-        if f.get("content_authority") is None:
+        authority = f.get("content_authority")
+        if authority is None:
             f["_attribution"] = "source unverified"
-        else:
-            sender = names.get(f.get("authority_entity_id")) or "a third party"
-            f["_attribution"] = f"reported by {sender}"
+            continue
+        sender = names.get(f.get("authority_entity_id")) or "a third party"
+        prefix = "partly reported by" if authority == "mixed" else "reported by"
+        f["_attribution"] = f"{prefix} {sender}"
 
 
 def _format_rule_line(r: dict[str, Any]) -> str:
@@ -316,7 +315,9 @@ def _format_rule_line(r: dict[str, Any]) -> str:
 def _format_fleet_knowledge_line(r: dict[str, Any]) -> str:
     source_butler = r.get("source_butler") or "?"
     title = r.get("title") or (r.get("summary") or "")[:80]
-    return f"- [{source_butler}] {title}\n"
+    attribution = catalog_attribution(r.get("content_authority"))
+    attributed = f" ({attribution})" if attribution else ""
+    return f"- [{source_butler}] {title}{attributed}\n"
 
 
 def _format_episode_line(ep: dict[str, Any]) -> str:
@@ -513,7 +514,7 @@ async def memory_context(
         )
     )
 
-    await _attribute_owner_anchored_facts(pool, task_facts)
+    await _attribute_non_owner_facts(pool, task_facts)
 
     # --- 3. Fetch active rules ---
     rules = [r for r in recall_results if r.get("memory_type") == "rule"]

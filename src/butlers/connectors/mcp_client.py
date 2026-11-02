@@ -19,8 +19,23 @@ from urllib.parse import urlparse
 
 import httpx
 from fastmcp import Client as MCPClient
+from fastmcp.exceptions import ToolError
 
 logger = logging.getLogger(__name__)
+
+# Tool reply status for a transient server-side failure (e.g. the Switchboard ingest
+# tool could not persist a valid envelope). See ``TransientToolError``.
+TRANSIENT_ERROR_STATUS = "transient_error"
+
+
+class TransientToolError(ConnectionError):
+    """The tool ran but hit a transient failure; the same call may succeed later.
+
+    A ``ConnectionError`` subclass so callers that already hold their checkpoint on
+    transport failures stay fail-closed, while callers that bound poison retries can
+    tell it apart from a ``RuntimeError`` tool error without string matching.
+    """
+
 
 # Readiness probe defaults
 _PROBE_INITIAL_DELAY_S: float = 0.5
@@ -202,9 +217,14 @@ class CachedMCPClient:
         Raises
         ------
         ConnectionError
-            If both the initial call and the reconnect attempt fail.
+            If both the initial call and the reconnect attempt fail at the
+            transport layer (including fastmcp session-drop RuntimeErrors).
+        TransientToolError
+            If the tool replies ``status="transient_error"``; never retried here,
+            the caller's own loop retries.
         RuntimeError
-            If the tool returns an MCP error result.
+            If the tool returns an MCP error result (fastmcp ``ToolError``);
+            never retried.
         """
         first_exc: Exception | None = None
 
@@ -226,12 +246,16 @@ class CachedMCPClient:
 
             try:
                 result = await client.call_tool(tool_name, args)
-                return self._parse_result(result, tool_name)
-            except RuntimeError:
-                # Application-level MCP errors (e.g. tool returned is_error=True)
-                # should not be retried — propagate immediately.
-                raise
+            except ToolError as exc:
+                # The tool ran and reported is_error: an application error, so
+                # a reconnect would only repeat it. Surface it as RuntimeError,
+                # the documented contract callers already handle.
+                raise RuntimeError(str(exc) or f"Tool '{tool_name}' returned an error.") from exc
             except Exception as exc:
+                # Everything else is transport: fastmcp raises RuntimeError for a
+                # dropped session ("Server session was closed unexpectedly",
+                # "Session task completed unexpectedly", "Client is not
+                # connected"), alongside httpx/anyio/timeout errors.
                 if reconnect:
                     msg = f"Failed to call {tool_name} on {self._endpoint_url}: {exc}"
                     if first_exc is not None:
@@ -243,6 +267,13 @@ class CachedMCPClient:
                     self._endpoint_url,
                     tool_name,
                 )
+                continue
+            parsed = self._parse_result(result, tool_name)
+            if isinstance(parsed, dict) and parsed.get("status") == TRANSIENT_ERROR_STATUS:
+                raise TransientToolError(
+                    str(parsed.get("error") or f"Tool '{tool_name}' reported a transient error.")
+                )
+            return parsed
 
     @staticmethod
     def _parse_result(result: Any, tool_name: str) -> Any:

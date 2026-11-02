@@ -102,48 +102,6 @@ class SetEligibilityResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ConnectorStatsHourly(BaseModel):
-    """Hourly rollup stats for a single connector.
-
-    Drives volume trend charts with 24h/7d/30d period support.
-    """
-
-    connector_type: str
-    endpoint_identity: str
-    hour: str
-    messages_ingested: int = 0
-    messages_failed: int = 0
-    # Skip-aware (bu-c48im): connectors.filtered_events volume for this bucket, a
-    # DISTINCT series never folded into messages_ingested (mirrors the overview's
-    # hourly_filtered_events, bu-scyro). 0 when the connector self-persists no
-    # skips or the filtered source degraded.
-    messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
-
-
-class ConnectorStatsDaily(BaseModel):
-    """Daily rollup stats for a single connector.
-
-    Drives volume trend charts for the 7d/30d period options.
-    """
-
-    connector_type: str
-    endpoint_identity: str
-    day: str
-    messages_ingested: int = 0
-    messages_failed: int = 0
-    # Skip-aware (bu-c48im): connectors.filtered_events volume for this bucket.
-    messages_filtered: int = 0
-    heartbeat_count: int = 0
-    healthy_count: int = 0
-    degraded_count: int = 0
-    error_count: int = 0
-    uptime_pct: float | None = None
-
-
 class FanoutRow(BaseModel):
     """A single row in the connector × butler fanout matrix.
 
@@ -155,25 +113,6 @@ class FanoutRow(BaseModel):
     endpoint_identity: str
     target_butler: str
     message_count: int = 0
-
-
-class IngestionOverviewStats(BaseModel):
-    """Aggregate ingestion overview statistics for the Overview tab.
-
-    Covers the stat-row cards and derived metrics needed by the Overview tab.
-    All counts are for the requested period (default 24h).
-    """
-
-    period: str = "24h"
-    total_ingested: int = 0
-    total_skipped: int = 0
-    total_metadata_only: int = 0
-    llm_calls_saved: int = 0
-    active_connectors: int = 0
-    # Tier breakdown counts (for donut chart)
-    tier1_full_count: int = 0
-    tier2_metadata_count: int = 0
-    tier3_skip_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -322,12 +261,37 @@ class ChannelIdCondition(BaseModel):
         return v
 
 
-def validate_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
+#: Per-rule opt-in stored in the condition JSONB (bu-q7vx1q.88.3): a block or skip rule passes a
+#: known contact. Stored only when true; an absent key means off.
+EXCEPT_KNOWN_CONTACTS_KEY = "except_known_contacts"
+_EXCEPT_KNOWN_CONTACTS_ACTIONS = frozenset({"block", "skip"})
+
+
+def validate_condition(
+    rule_type: str, condition: dict[str, Any], action: str | None = None
+) -> dict[str, Any]:
     """Validate condition JSONB against the rule_type schema.
 
-    Returns the validated condition dict.
+    Returns the validated condition dict, keeping the optional ``except_known_contacts`` flag
+    (a bool, true only on a block or skip ``action`` when one is given).
     Raises ValueError on schema mismatch.
     """
+    base = {k: v for k, v in condition.items() if k != EXCEPT_KNOWN_CONTACTS_KEY}
+    validated = _validate_rule_condition(rule_type, base)
+    if EXCEPT_KNOWN_CONTACTS_KEY in condition:
+        flag = condition[EXCEPT_KNOWN_CONTACTS_KEY]
+        if not isinstance(flag, bool):
+            raise ValueError(f"{EXCEPT_KNOWN_CONTACTS_KEY} must be a boolean")
+        if flag:
+            if action is not None and action not in _EXCEPT_KNOWN_CONTACTS_ACTIONS:
+                raise ValueError(
+                    f"{EXCEPT_KNOWN_CONTACTS_KEY} is only valid on block or skip rules"
+                )
+            validated[EXCEPT_KNOWN_CONTACTS_KEY] = True
+    return validated
+
+
+def _validate_rule_condition(rule_type: str, condition: dict[str, Any]) -> dict[str, Any]:
     if rule_type == "sender_domain":
         return SenderDomainCondition(**condition).model_dump()
     elif rule_type == "sender_address":
@@ -494,7 +458,7 @@ class IngestionRuleCreate(BaseModel):
             raise ValueError(str(exc)) from exc
         # Validate condition schema
         try:
-            validate_condition(self.rule_type, self.condition)
+            validate_condition(self.rule_type, self.condition, self.action)
         except (ValueError, TypeError) as exc:
             raise ValueError(f"condition invalid for rule_type={self.rule_type!r}: {exc}") from exc
         # Validate rule_type is compatible with scope
@@ -543,6 +507,9 @@ class IngestionRuleTestEnvelope(BaseModel):
     headers: dict[str, str] = {}
     mime_parts: list[str] = []
     raw_key: str = ""
+    known_contact: bool | None = None
+    """Optional: pretend the sender is (``true``) or is not (``false``) a known contact, to try
+    a rule's "except people I know" option. Omitted means unclassified, so the rule applies."""
 
 
 class IngestionRuleTestRequest(BaseModel):
@@ -580,49 +547,6 @@ class IngestionRuleTestResponse(BaseModel):
 
 _BULK_OPS = frozenset({"enable", "disable", "delete"})
 _BULK_MAX_IDS = 100
-
-
-class BulkIngestionRuleRequest(BaseModel):
-    """Request body for POST /api/switchboard/ingestion-rules/bulk.
-
-    ``op`` must be one of: enable, disable, delete.
-    ``ids`` is a list of rule UUIDs (max 100).
-    """
-
-    op: str
-    ids: list[str]
-
-    @field_validator("op")
-    @classmethod
-    def op_valid(cls, v: str) -> str:
-        if v not in _BULK_OPS:
-            raise ValueError(f"op must be one of {sorted(_BULK_OPS)!r}, got {v!r}")
-        return v
-
-    @field_validator("ids")
-    @classmethod
-    def ids_non_empty_and_capped(cls, v: list[str]) -> list[str]:
-        if not v:
-            raise ValueError("ids must not be empty")
-        if len(v) > _BULK_MAX_IDS:
-            raise ValueError(f"ids must not exceed {_BULK_MAX_IDS} entries; got {len(v)}")
-        return v
-
-
-class BulkIngestionRuleOutcome(BaseModel):
-    """Per-id outcome in a bulk operation response."""
-
-    id: str
-    outcome: str  # 'ok' | 'not_found' | 'error_reason'
-    error_reason: str | None = None
-
-
-class BulkIngestionRuleResponse(BaseModel):
-    """Response body for POST /api/switchboard/ingestion-rules/bulk."""
-
-    op: str
-    results: list[BulkIngestionRuleOutcome]
-    affected: int  # count of successfully mutated rules
 
 
 # Backfill job models
@@ -762,23 +686,6 @@ class ThreadOverrideEntry(BaseModel):
 # ---------------------------------------------------------------------------
 # Routing instruction models
 # ---------------------------------------------------------------------------
-
-
-class EligibilitySegment(BaseModel):
-    """A single segment in the eligibility timeline."""
-
-    state: str
-    start_at: str
-    end_at: str
-
-
-class EligibilityHistoryResponse(BaseModel):
-    """24h eligibility timeline for a butler."""
-
-    butler_name: str
-    segments: list[EligibilitySegment]
-    window_start: str
-    window_end: str
 
 
 class RoutingInstruction(BaseModel):

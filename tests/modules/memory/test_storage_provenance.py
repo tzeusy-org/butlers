@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +16,7 @@ from butlers.core.tool_call_capture import (
 )
 from butlers.modules.memory import storage
 from butlers.modules.memory.tools import context
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -24,9 +25,8 @@ class _PoolStub:
     def __init__(self, conn) -> None:
         self._conn = conn
 
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._conn
+    def acquire(self):
+        return AsyncCtx(self._conn)
 
 
 @contextmanager
@@ -308,6 +308,66 @@ class TestConsolidationNarrativeEdgeBoundary:
                 object_entity_id=uuid.uuid4(),
                 enforce_consolidation_edge_allowlist=True,
                 consolidation_edge_classification="planned_dinner_with",
+            )
+
+        engine.embed.assert_not_called()
+        pool.acquire.assert_not_called()
+
+
+class TestFactConfidence:
+    """A caller-supplied base confidence reaches the fact row, bounded to [0, 1]."""
+
+    async def test_insert_binds_caller_confidence(self) -> None:
+        conn = MagicMock()
+        conn.execute = AsyncMock()
+        now = MagicMock()
+
+        await storage._insert_fact_record(
+            conn,
+            fact_id=uuid.uuid4(),
+            subject="sleep",
+            predicate="sleep-debt",
+            content="debt",
+            embedding=[0.0],
+            search_text="sleep",
+            importance=6.0,
+            decay_rate=0.1,
+            permanence="volatile",
+            source_butler="chronicler",
+            source_episode_id=None,
+            supersedes_id=None,
+            scope="global",
+            now=now,
+            tags_json=[],
+            meta_json={},
+            entity_id=None,
+            object_entity_id=None,
+            fact_valid_at=None,
+            tenant_id="shared",
+            request_id=None,
+            idempotency_key=None,
+            retention_class="operational",
+            sensitivity="normal",
+            confidence=0.65,
+        )
+
+        sql, *params = conn.execute.await_args.args
+        columns = [c.strip() for c in sql.split("(", 1)[1].split(")", 1)[0].split(",")]
+        assert params[columns.index("confidence")] == 0.65
+
+    @pytest.mark.parametrize("confidence", [-0.1, 1.1])
+    async def test_store_fact_rejects_out_of_range_confidence(self, confidence: float) -> None:
+        pool = MagicMock()
+        engine = MagicMock()
+
+        with pytest.raises(ValueError, match="confidence"):
+            await storage.store_fact(
+                pool,
+                subject="sleep",
+                predicate="sleep-debt",
+                content="debt",
+                embedding_engine=engine,
+                confidence=confidence,
             )
 
         engine.embed.assert_not_called()

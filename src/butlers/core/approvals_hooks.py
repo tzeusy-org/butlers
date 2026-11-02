@@ -302,6 +302,7 @@ class ApprovalHooksRuntime:
     email_guard: Callable[..., Coroutine[Any, Any, Any]]
     recipient_guard: Callable[..., Coroutine[Any, Any, Any]]
     park_pending_action: Callable[..., Coroutine[Any, Any, Any]]
+    approved_execution_matches: Callable[..., bool] | None = None
 
 
 # ``butlers up`` hosts every butler daemon in one Python process.  The optional
@@ -334,6 +335,21 @@ def is_approval_parking_available(pool: Any) -> bool:
     return _resolve_pool_runtime(pool) is not None
 
 
+def is_approved_tool_execution(pool: Any, *, tool_name: str, tool_args: dict[str, Any]) -> bool:
+    """Check existing executor authority for this pool, exact task/tool/raw args.
+
+    This is a read-only dependency-inversion seam. Missing, stale or unavailable
+    approvals implementations never authorize a replay.
+    """
+    runtime = _resolve_pool_runtime(pool)
+    if runtime is None or runtime.approved_execution_matches is None:
+        return False
+    try:
+        return runtime.approved_execution_matches(tool_name=tool_name, tool_args=tool_args) is True
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Registration API (called by modules.approvals)
 # ---------------------------------------------------------------------------
@@ -345,6 +361,7 @@ def register_approval_hooks(
     email_guard: Callable[..., Coroutine[Any, Any, Any]],
     recipient_guard: Callable[..., Coroutine[Any, Any, Any]],
     park_pending_action: Callable[..., Coroutine[Any, Any, Any]],
+    approved_execution_matches: Callable[..., bool] | None = None,
 ) -> ApprovalHooksRuntime:
     """Register all production hooks atomically for one owning pool.
 
@@ -355,6 +372,7 @@ def register_approval_hooks(
         email_guard=email_guard,
         recipient_guard=recipient_guard,
         park_pending_action=park_pending_action,
+        approved_execution_matches=approved_execution_matches,
     )
     _approval_hooks_by_pool[id(pool)] = (pool, runtime)
     return runtime

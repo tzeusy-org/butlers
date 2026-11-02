@@ -28,10 +28,12 @@ from butlers.modules.memory import storage
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import ConsolidationResult, NewFact, NewRule
 from butlers.modules.memory.content_authority import (
+    catalog_attribution,
     classify_routing_context,
     combine_authorities,
 )
 from butlers.modules.memory.tools import context as _context
+from butlers.modules.memory.tools import reading as _reading
 from butlers.modules.memory.tools import writing as _writing
 
 # Re-used so the migrated-DB provisioning stays defined in exactly one place.
@@ -91,6 +93,32 @@ def test_classify_routing_context(routing_context, owner_id, expected) -> None:
 )
 def test_combine_authorities(evidence, expected) -> None:
     assert combine_authorities(evidence) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "label"),
+    [
+        ("owner", None),
+        ("owner_device", None),
+        ("system", None),
+        (None, "source unverified"),
+        ("third_party", "from a third party"),
+        ("mixed", "partly from a third party"),
+    ],
+)
+def test_catalog_attribution_label(authority, label) -> None:
+    assert catalog_attribution(authority) == label
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("authority", "suffix"),
+    [("mixed", " (partly from a third party)"), ("owner", "")],
+)
+def test_fleet_knowledge_line_attribution_suffix(authority, suffix) -> None:
+    row = {"source_butler": "health", "title": "Sleep", "content_authority": authority}
+    assert _context._format_fleet_knowledge_line(row) == f"- [health] Sleep{suffix}\n"
 
 
 @pytest.mark.unit
@@ -406,3 +434,69 @@ async def test_legacy_rule_without_authority_is_excluded(pool_factory) -> None:
         rule_id,
     )
     assert rule_id not in await _admitted_rule_ids(pool)
+
+
+# REQ-module-memory-013 "Catalog readers attribute non-owner content".
+@_docker
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+async def test_catalog_rows_carry_fact_authority_and_tool_attributes_it(pool_factory) -> None:
+    pool, owner, stranger = await pool_factory()
+    engine = _engine()
+    tag = uuid.uuid4().hex[:8]
+    catalog = {"enable_shared_catalog": True, "source_schema": "public"}
+
+    with _session(owner):
+        own = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"tea_{tag}", f"oolong {tag}", entity_id=str(owner), **catalog
+        )
+    with _session(stranger):
+        reported = await _writing.memory_store_fact(
+            pool,
+            engine,
+            "Owner",
+            f"coffee_{tag}",
+            f"espresso {tag}",
+            entity_id=str(owner),
+            **catalog,
+        )
+    with _session(owner):
+        legacy = await _writing.memory_store_fact(
+            pool, engine, "Owner", f"juice_{tag}", f"orange {tag}", entity_id=str(owner)
+        )
+    own_id, reported_id, legacy_id = (uuid.UUID(f["id"]) for f in (own, reported, legacy))
+    await pool.execute(
+        "UPDATE facts SET content_authority = NULL, authority_entity_id = NULL WHERE id = $1",
+        legacy_id,
+    )
+    # A row cataloged before the column existed starts NULL; the backfill syncs it.
+    await pool.execute(
+        "UPDATE public.memory_catalog SET content_authority = NULL WHERE source_id = $1", own_id
+    )
+
+    await storage.run_memory_catalog_backfill(pool, source_schema="public")
+
+    rows = await pool.fetch(
+        "SELECT source_id, content_authority FROM public.memory_catalog"
+        " WHERE source_table = 'facts' AND source_id = ANY($1::uuid[])",
+        [own_id, reported_id, legacy_id],
+    )
+    assert {r["source_id"]: r["content_authority"] for r in rows} == {
+        own_id: "owner",
+        reported_id: "third_party",
+        legacy_id: None,
+    }
+
+    results = await _reading.memory_catalog_search(
+        pool,
+        engine,
+        tag,
+        mode="keyword",
+        limit=50,
+        read_policy=await _search.load_catalog_read_policy(pool),
+    )
+    by_id = {r["source_id"]: r for r in results}
+    assert by_id[str(own_id)]["content_authority"] == "owner"
+    assert by_id[str(own_id)]["attribution"] is None
+    assert by_id[str(reported_id)]["attribution"] == "from a third party"
+    assert by_id[str(legacy_id)]["attribution"] == "source unverified"

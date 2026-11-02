@@ -75,6 +75,12 @@ butler in the roster runs one daemon instance.
 | **Skills** | `core/skills.py` | Discovers skill directories under `roster/{butler}/.agents/skills/`, reads system prompts, and injects them into spawned sessions. | Stable |
 | **Audit** | `core/audit.py` | Append-only audit trail for security-relevant operations (tool gating, credential access). | Evolving |
 
+The dev `KEY_ABSENT_STAGE` control workload (`src/butlers/control.py`) runs the
+existing Switchboard daemon separately from domains. It owns an additional
+refusal-only session listener on internal port 41199, without a GOAL signer or
+broker. The service listener stays on 41100. Production remains unsplit; see
+[profile and deployment boundaries](../../docs/architecture/key-absent-control.md).
+
 ### What the daemon owns
 
 - Its FastMCP SSE/HTTP server on the configured port
@@ -102,7 +108,9 @@ which defines episodes, facts, and rules). `modules/registry.py` scans both
 
 Butlers in the roster can define their own modules under `roster/{butler}/modules/`.
 These are discovered at startup by the registry via synthetic module names
-(`butlers.modules._roster_{butler}`).
+(`butlers.modules._roster_{butler}`). Roster Python execution is owned by
+`butlers.roster_imports`: tools, modules, jobs and API aliases share canonical
+per-process objects. Its module docstring records the identity map.
 
 ---
 
@@ -143,7 +151,8 @@ It runs as a standard ButlerDaemon with additional Switchboard-specific tools.
 | **Triage / Thread Affinity** | `tools/triage/thread_affinity.py` | Assigns incoming messages to existing conversation threads or creates new ones. | Maturing |
 | **Classifier** | `tools/routing/classify.py` | LLM-based message classification. Determines target butler using capability matching, intent detection, and regex heuristics. | Maturing |
 | **Router** | `tools/routing/route.py` | Dispatches classified messages to target butler via MCP `route.execute` call. | Stable |
-| **Contracts** | `tools/routing/contracts.py` | Pydantic models for `ingest.v1` and `route.v1` envelope schemas. Defines source channels, providers, notify channels, and policy tiers. | Stable |
+| **Contracts** | `tools/contracts.py`, `tools/routing/contracts.py` | Pydantic models for the `ingest.v1` and `notify.v1` wire contracts (source channels, providers, notify channels, policy tiers) and, separately, the `route.v1` envelope. | Stable |
+| **Transport outcomes** | `tools/transport.py` | Closed delivery outcome and error-class vocabulary shared by `notify` delivery and the runtime-attention worker. | Stable |
 | **Butler Registry** | `tools/registry/` | Tracks which butlers are online, their capabilities, and liveness state. Eligibility sweep job. | Maturing |
 | **Connector Registry** | `tools/connector/` | Tracks connector instances, heartbeats, and health state. | Maturing |
 | **Identity Resolution** | `tools/identity/` | Maps channel identifiers to known contacts before routing. | Stable |

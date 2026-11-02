@@ -208,6 +208,9 @@ async def test_concurrent_operator_narrowing_wins_over_stale_startup_reconciliat
         def __init__(self) -> None:
             self.initial_read_seen = False
 
+        def acquire(self, *args, **kwargs):
+            return pool.acquire(*args, **kwargs)
+
         async def execute(self, query, *args):
             return await pool.execute(query, *args)
 
@@ -356,8 +359,8 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
                     "test",
                     request,
                     runtime_config.RuntimeConfigPatch(core_groups_narrowing_reason=None),
-                    DBManager(),
-                    roster_dir,
+                    db=DBManager(),
+                    roster_dir=roster_dir,
                 ),
                 name="clear-reason",
             ),
@@ -366,8 +369,8 @@ async def test_concurrent_authority_patches_never_commit_a_subset_without_a_reas
                     "test",
                     request,
                     runtime_config.RuntimeConfigPatch(core_groups=["infra", "delegation"]),
-                    DBManager(),
-                    roster_dir,
+                    db=DBManager(),
+                    roster_dir=roster_dir,
                 ),
                 name="change-groups",
             ),

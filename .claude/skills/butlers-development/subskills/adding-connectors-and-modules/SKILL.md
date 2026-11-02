@@ -69,8 +69,22 @@ Key requirements:
 - Default to owner's primary account when ID parameters are omitted
 - Privacy-aware errors with actionable `hint` fields
 - `tool_metadata()` marking credentials as sensitive
+- Declare every LLM-presentable canonical tool's RFC0038 D4 authorization fields in
+  `tool_presentation_inventory.py`, or through complete `ToolMeta` declarations
+  for configuration-specific module registrations. Include named and inherited
+  recipients, resource selectors, current sensitivity pins and store writers. Keep owner-decision/private-custody tools nonpresentable and transact
+  nongrantable. Extend the actual post-approval catalog gate for every affected
+  roster and registration variant; never use missing lexical writers as a trust
+  proof. See [the metadata guide](../../../../../docs/concepts/mcp-model.md#authorization-declarations-rfc-0038-d4).
 
 ### Phase 4: Connector Spec
+
+Give each connector one canonical frozen row in `src/butlers/connectors/catalog.py`
+and obtain runtime identity through `connector_descriptor()`. Keep aliases,
+secondary pairs and stored-event spellings explicit; do not add configurable
+identity environment variables or duplicate connector lists. A descriptor row
+does not authorize a new wire pair, credential store or registration. Follow the
+existing RFC/spec change process for any genuinely new contract.
 
 Implement the connector base contract from `openspec/specs/connector-base-spec/spec.md`. **This is the most complex component.** See [references/connector-base-obligations.md](references/connector-base-obligations.md) for the full checklist.
 
@@ -108,7 +122,13 @@ Use `/opsx:ff` to fast-forward artifact creation:
 /opsx:ff <service>-integration
 ```
 
-This creates: proposal → design → specs (one per capability) → tasks.
+This creates proposal, specs (one per capability), and tasks, plus a design
+when required or chosen. Follow `about/heart-and-soul/development.md`: design
+is required if the integration alters a cross-butler contract, a schema shared
+across butlers, or a security boundary. An eligible single-butler change can
+use the `single-butler` schema without a design; integrations that introduce
+shared account, credential or ingestion contracts must use `spec-driven` and
+include one. Existing designs and all spec/review/verification gates remain.
 
 ## Codex Adapter
 

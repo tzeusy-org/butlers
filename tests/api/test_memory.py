@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,8 +21,10 @@ import httpx
 import pytest
 from asyncpg.exceptions import UndefinedTableError
 
-from butlers.api.routers.memory import _get_db_manager
+from butlers.api.deps import get_db
+from butlers.api.deps import get_db as ingestion_db
 from butlers.modules.memory.consolidation import REAPABLE_EXPIRED_EPISODE_SQL
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -51,27 +54,6 @@ def _make_episode_row(
     }
 
 
-def _make_mock_record(row: dict) -> MagicMock:
-    """Return a MagicMock that behaves like an asyncpg Record for row access."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
-
-
-class _Record(dict):
-    """Dict subclass standing in for an asyncpg Record.
-
-    Supports both ``record[key]`` and ``record.get(key)`` with real None
-    values, unlike MagicMock-based records whose ``.get`` returns a truthy
-    mock.  Used by fact rows where ``_row_to_fact`` calls ``r.get(...)``.
-    """
-
-
-def _make_record(row: dict) -> _Record:
-    """Return an asyncpg-Record-like mapping for the given row dict."""
-    return _Record(row)
-
-
 class _MockDB:
     """Minimal DatabaseManager stand-in for fan-out tests.
 
@@ -85,7 +67,7 @@ class _MockDB:
     """
 
     def __init__(self, *, rows: list[dict], total: int, known_butlers: list[str]) -> None:
-        mock_records = [_make_mock_record(r) for r in rows]
+        mock_records = [Record(r) for r in rows]
 
         self.pool_mock = AsyncMock()
         self.pool_mock.fetchval = AsyncMock(return_value=total)
@@ -124,7 +106,7 @@ def _wire_memory_db(
         known_butlers = ["atlas", "memory"]
 
     mock_db = _MockDB(rows=rows, total=total, known_butlers=known_butlers)
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return mock_db
 
 
@@ -314,7 +296,7 @@ class _FactsPool:
     """
 
     def __init__(self, *, rows: list[dict], total: int) -> None:
-        self._rows = [_make_record(r) for r in rows]
+        self._rows = [Record(r) for r in rows]
         self._total = total
         self.fetch_calls: list[tuple] = []
 
@@ -349,7 +331,7 @@ async def test_facts_source_episode_id_filter_adds_where_clause(app):
     row["source_episode_id"] = episode_id
     pool = _FactsPool(rows=[row], total=1)
     db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -372,7 +354,7 @@ async def test_facts_nonexistent_episode_returns_empty_not_error(app):
     episode_id = str(uuid.uuid4())
     pool = _FactsPool(rows=[], total=0)
     db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -396,7 +378,7 @@ async def test_facts_importance_min_filter_adds_where_clause(app):
     row["importance"] = 8.0
     pool = _FactsPool(rows=[row], total=1)
     db = _FactsDB({"atlas": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -519,7 +501,7 @@ class _StatsDB:
 async def test_stats_retention_healthy_with_zero_eligible_denominator(app):
     """Completed zero coverage has no fabricated retention ratio."""
     db = _StatsDB({"atlas": _StatsPool(schema="atlas")})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -573,7 +555,7 @@ async def test_stats_retention_failure_is_unknown_without_discarding_ordinary_st
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -634,7 +616,7 @@ async def test_stats_graph_health_marks_partial_memory_schema_as_unknown(app):
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -677,7 +659,7 @@ async def test_stats_graph_health_is_unknown_when_only_partial_memory_schema_fai
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -706,7 +688,7 @@ async def test_stats_graph_health_is_unknown_when_only_partial_memory_schema_fai
 async def test_stats_graph_health_is_unknown_without_memory_pool_evidence(app):
     """No completed pool is unknown evidence, never a zero/healthy graph claim."""
     db = _StatsDB({})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -726,7 +708,7 @@ async def test_stats_graph_health_reuses_the_consolidation_aware_retention_popul
     """Graph coverage inherits the cleanup predicate and expiry denominator verbatim."""
     pool = _StatsPool(schema="relationship", retention={"expired": 2, "eligible": 4})
     db = _StatsDB({"relationship": pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -764,7 +746,7 @@ async def test_stats_retention_omits_pool_without_memory_schema(app):
         },
         memory_schema_absent={"switchboard"},
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -794,7 +776,7 @@ async def test_stats_consolidation_fields_aggregate_across_pools(app):
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -887,7 +869,7 @@ async def test_memory_list_endpoints_report_genuine_failed_pools(endpoint: str, 
             "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -939,7 +921,7 @@ async def test_memory_entities_reports_genuine_failed_fact_count_pool(app) -> No
             "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -963,7 +945,7 @@ async def test_stats_reports_pools_failed_for_a_genuine_query_failure(app):
             "finance": _RaisingStatsPool(RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -990,7 +972,7 @@ async def test_stats_does_not_flag_pools_failed_for_missing_memory_schema(app):
         },
         memory_schema_absent={"switchboard"},
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1027,7 +1009,7 @@ async def test_stats_facts_produced_tracks_latest_run_not_max(app):
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1051,7 +1033,7 @@ async def test_stats_consolidation_fields_default_when_no_runs(app):
             "atlas": _StatsPool(counts={}, last_runs={"atlas": None}),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1111,7 +1093,7 @@ async def test_stats_catalog_drift_gauge_aggregates_across_pools(app):
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1141,7 +1123,7 @@ async def test_stats_catalog_drift_omitted_when_schema_unresolved(app):
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1172,7 +1154,7 @@ async def test_stats_catalog_drift_flags_genuine_failure(app):
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1208,7 +1190,7 @@ async def test_stats_catalog_drift_not_flagged_for_missing_memory_schema(app):
         },
         memory_schema_absent={"switchboard"},
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1248,7 +1230,7 @@ def _make_reembed_db(
         return pool_mock
 
     db_mock.pool = MagicMock(side_effect=_pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+    app.dependency_overrides[get_db] = lambda: db_mock
     return pool_mock, db_mock
 
 
@@ -1324,7 +1306,7 @@ async def test_reembed_pending_without_butler_skips_non_memory_pools(app, monkey
     db_mock = MagicMock()
     db_mock.butler_names = list(pools)
     db_mock.pool = MagicMock(side_effect=lambda name: pools[name])
-    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+    app.dependency_overrides[get_db] = lambda: db_mock
 
     async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         if pool is chronicler_pool:
@@ -1356,7 +1338,7 @@ async def test_reembed_pending_reports_genuine_failed_pool(app, monkeypatch):
     healthy_pool = object()
     failed_pool = object()
     db = _MemoryFanOutDB({"general": healthy_pool, "health": failed_pool})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async def _fake_count_pending(pool, current_model, tier=None, *, memory_schema=None):
         if pool is failed_pool:
@@ -1599,7 +1581,7 @@ class _ConfirmPool:
             and "FROM facts WHERE id" in query
             and args[0] == self._fact["id"]
         ):
-            return _make_record(self._fact)
+            return Record(self._fact)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -1632,7 +1614,7 @@ async def test_confirm_fact_reinks_and_returns_updated_fact(app):
     fact_id = uuid.uuid4()
     holding = _ConfirmPool(fact=_make_fact_row(fact_id=fact_id, last_confirmed_at=None))
     db = _ConfirmDB({"atlas": holding, "memory": _ConfirmPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1653,7 +1635,7 @@ async def test_confirm_fact_404_when_not_found(app):
     """POST confirm returns 404 when no pool holds the fact."""
     fact_id = uuid.uuid4()
     db = _ConfirmDB({"atlas": _ConfirmPool(fact=None), "memory": _ConfirmPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1666,7 +1648,7 @@ async def test_confirm_fact_404_when_not_found(app):
 async def test_confirm_fact_400_on_malformed_id(app):
     """POST confirm returns 400 when the path id is not a valid UUID."""
     db = _ConfirmDB({"atlas": _ConfirmPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1680,7 +1662,7 @@ async def test_confirm_fact_503_when_no_pools_available(app):
     """POST confirm returns 503 when no memory pools are registered."""
     fact_id = uuid.uuid4()
     db = _ConfirmDB({})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1751,7 +1733,7 @@ class _RetractPool:
             and "FROM facts WHERE id" in query
             and args[0] == self._fact["id"]
         ):
-            return _make_record(self._fact)
+            return Record(self._fact)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -1784,7 +1766,7 @@ async def test_retract_fact_invalidates_and_returns_updated_fact(app):
     fact_id = uuid.uuid4()
     holding = _RetractPool(fact=_make_fact_row(fact_id=fact_id))
     db = _ConfirmDB({"atlas": holding, "memory": _RetractPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1812,7 +1794,7 @@ async def test_retract_fact_404_when_not_found(app):
     """POST retract returns 404 when no pool holds the fact."""
     fact_id = uuid.uuid4()
     db = _ConfirmDB({"atlas": _RetractPool(fact=None), "memory": _RetractPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1825,7 +1807,7 @@ async def test_retract_fact_404_when_not_found(app):
 async def test_retract_fact_400_on_malformed_id(app):
     """POST retract returns 400 when the path id is not a valid UUID."""
     db = _ConfirmDB({"atlas": _RetractPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1839,7 +1821,7 @@ async def test_retract_fact_503_when_no_pools_available(app):
     """POST retract returns 503 when no memory pools are registered."""
     fact_id = uuid.uuid4()
     db = _ConfirmDB({})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1910,7 +1892,7 @@ class _RetireRulePool:
             and "FROM rules WHERE id" in query
             and args[0] == self._rule["id"]
         ):
-            return _make_record(self._rule)
+            return Record(self._rule)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -1942,7 +1924,7 @@ async def test_retire_rule_sets_retired_at_and_returns_updated_rule(app):
     rule_id = uuid.uuid4()
     holding = _RetireRulePool(rule=_make_rule_row(rule_id=rule_id))
     db = _ConfirmDB({"atlas": holding, "memory": _RetireRulePool(rule=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1970,7 +1952,7 @@ async def test_retire_rule_404_when_not_found(app):
     """PATCH retire returns 404 when no pool holds the rule."""
     rule_id = uuid.uuid4()
     db = _ConfirmDB({"atlas": _RetireRulePool(rule=None), "memory": _RetireRulePool(rule=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1983,7 +1965,7 @@ async def test_retire_rule_404_when_not_found(app):
 async def test_retire_rule_400_on_malformed_id(app):
     """PATCH retire returns 400 when the path id is not a valid UUID."""
     db = _ConfirmDB({"atlas": _RetireRulePool(rule=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -1997,7 +1979,7 @@ async def test_retire_rule_503_when_no_pools_available(app):
     """PATCH retire returns 503 when no memory pools are registered."""
     rule_id = uuid.uuid4()
     db = _ConfirmDB({})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2015,7 +1997,7 @@ async def test_retire_rule_503_when_no_pools_available(app):
 async def _post_endorse(app, rule_id, **endorse_kwargs):
     holding = _RetireRulePool(rule=None)
     db = _ConfirmDB({"atlas": holding})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     with (
         patch("butlers.api.routers.memory.fetch_owner_entity_id", AsyncMock(return_value=None)),
         patch("butlers.api.routers.memory.endorse_rule", AsyncMock(**endorse_kwargs)),
@@ -2083,11 +2065,11 @@ class _MemoryDetailPool:
         if "WHERE supersedes_id" in query:
             return None
         if "FROM episodes" in query:
-            return _make_record(self._episode) if self._episode is not None else None
+            return Record(self._episode) if self._episode is not None else None
         if "FROM facts" in query:
-            return _make_record(self._fact) if self._fact is not None else None
+            return Record(self._fact) if self._fact is not None else None
         if "FROM rules" in query:
-            return _make_record(self._rule) if self._rule is not None else None
+            return Record(self._rule) if self._rule is not None else None
         return None
 
     async def fetch(self, query: str, *args: object) -> list[object]:
@@ -2121,7 +2103,7 @@ async def test_memory_detail_miss_reports_degraded_source_instead_of_false_404(
             "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2142,7 +2124,7 @@ async def test_memory_detail_found_row_wins_over_degraded_sibling(kind: str, app
             "finance": _MemoryDetailPool(error=RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2164,7 +2146,7 @@ async def test_memory_detail_missing_schema_stays_a_truthful_404(kind: str, app)
         },
         memory_schema_absent={"switchboard"},
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2183,7 +2165,7 @@ async def test_memory_detail_unknown_schema_state_is_degraded(app) -> None:
             "switchboard": _MemoryDetailPool(error=UndefinedTableError("relation does not exist")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2230,7 +2212,7 @@ class _EntityMemoryPool:
 
     async def fetchrow(self, query: str, *args: object):
         if "FROM public.entities" in query:
-            return _make_record(self._entity) if self._entity is not None else None
+            return Record(self._entity) if self._entity is not None else None
         return None
 
     async def fetchval(self, query: str, *args: object):
@@ -2244,7 +2226,7 @@ class _EntityMemoryPool:
 
     async def fetch(self, query: str, *args: object) -> list[object]:
         if "FROM public.entity_rebind_log" in query:
-            return [_make_record(row) for row in self._rebind_receipts]
+            return [Record(row) for row in self._rebind_receipts]
         if "FROM facts" in query and self._fact_error is not None:
             raise self._fact_error
         return []
@@ -2267,7 +2249,7 @@ async def test_entity_detail_names_failed_fact_pool(app) -> None:
             "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2300,7 +2282,7 @@ async def test_entity_detail_returns_rebind_receipt_cohort(app) -> None:
             )
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2333,9 +2315,9 @@ async def test_entity_responses_and_schemas_omit_retired_linked_contact_fields(a
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        app.dependency_overrides[_get_db_manager] = lambda: list_db
+        app.dependency_overrides[get_db] = lambda: list_db
         listed = await client.get("/api/memory/entities")
-        app.dependency_overrides[_get_db_manager] = lambda: detail_db
+        app.dependency_overrides[get_db] = lambda: detail_db
         detail = await client.get(f"/api/memory/entities/{entity_id}")
 
     assert (listed.status_code, detail.status_code) == (200, 200)
@@ -2369,7 +2351,7 @@ async def test_entity_detail_skips_absent_fact_schema_without_degraded_flag(app)
         },
         memory_schema_absent={"switchboard"},
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2385,7 +2367,7 @@ async def test_retired_linked_contact_routes_are_absent_and_touch_no_pool(app) -
     assert not [path for path in app.openapi()["paths"] if path.endswith("/linked-contact")]
 
     db = MagicMock()
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
     path = f"/api/memory/entities/{uuid.uuid4()}/linked-contact"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2409,7 +2391,7 @@ async def test_delete_entity_stops_on_failed_fact_precheck(app) -> None:
             "finance": _EntityMemoryPool(fact_error=RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2432,7 +2414,7 @@ async def test_delete_entity_does_not_soft_delete_after_failed_fact_retirement(a
             ),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2460,9 +2442,9 @@ class _InspectPool:
         facts: list[dict] | None = None,
         rules: list[dict] | None = None,
     ) -> None:
-        self._episodes = [_make_record(r) for r in (episodes or [])]
-        self._facts = [_make_record(r) for r in (facts or [])]
-        self._rules = [_make_record(r) for r in (rules or [])]
+        self._episodes = [Record(r) for r in (episodes or [])]
+        self._facts = [Record(r) for r in (facts or [])]
+        self._rules = [Record(r) for r in (rules or [])]
         self.fetch_calls: list[tuple] = []
 
     async def fetchval(self, query: str, *args: object):
@@ -2492,7 +2474,7 @@ async def test_inspect_reports_genuine_failed_pool(app) -> None:
             "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
         }
     )
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2510,7 +2492,7 @@ async def test_inspect_fact_result_carries_full_register_fields(app):
     fact_id = uuid.uuid4()
     row = _make_fact_row(fact_id=fact_id, subject="owner", predicate="likes")
     pool = _InspectPool(facts=[row])
-    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+    app.dependency_overrides[get_db] = lambda: _inspect_db(pool)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2543,7 +2525,7 @@ async def test_inspect_rule_result_carries_maturity_and_tally(app):
     rule_id = uuid.uuid4()
     row = _make_rule_row(rule_id=rule_id, maturity="proven")
     pool = _InspectPool(rules=[row])
-    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+    app.dependency_overrides[get_db] = lambda: _inspect_db(pool)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2569,7 +2551,7 @@ async def test_inspect_episode_result_carries_importance_and_status(app):
     """An episode inspect result embeds the full Episode register row."""
     row = _make_episode_row(content="Logged in", consolidation_status="dead_letter")
     pool = _InspectPool(episodes=[row])
-    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+    app.dependency_overrides[get_db] = lambda: _inspect_db(pool)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2596,7 +2578,7 @@ async def test_inspect_all_kinds_each_carry_their_register_payload(app):
         facts=[_make_fact_row(fact_id=uuid.uuid4())],
         rules=[_make_rule_row(rule_id=uuid.uuid4())],
     )
-    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+    app.dependency_overrides[get_db] = lambda: _inspect_db(pool)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2629,7 +2611,7 @@ class _InspectEntityPool(_InspectPool):
         if "FROM public.entities" in query:
             requested = set(args[0])
             return [
-                _make_record({"id": eid, "canonical_name": name})
+                Record({"id": eid, "canonical_name": name})
                 for eid, name in self._entities.items()
                 if eid in requested
             ]
@@ -2655,7 +2637,7 @@ async def test_inspect_fact_result_resolves_embedded_entity_names(app):
         facts=[row],
         entities={subject_entity_id: "Owner", object_entity_id: "Green Tea"},
     )
-    app.dependency_overrides[_get_db_manager] = lambda: _inspect_db(pool)
+    app.dependency_overrides[get_db] = lambda: _inspect_db(pool)
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2703,10 +2685,10 @@ class _GetFactPool:
         got = str(args[0]) if args else None
         if "WHERE supersedes_id" in query:
             if self._superseder_id is not None and got == wanted:
-                return _make_record({"id": self._superseder_id})
+                return Record({"id": self._superseder_id})
             return None
         if "FROM facts WHERE id" in query and got == wanted:
-            return _make_record(self._fact)
+            return Record(self._fact)
         return None
 
     async def fetch(self, query: str, *args: object):
@@ -2720,7 +2702,7 @@ async def test_get_fact_superseded_by_set_when_another_fact_supersedes_it(app):
     superseder_id = uuid.uuid4()
     holding = _GetFactPool(fact=_make_fact_row(fact_id=fact_id), superseder_id=superseder_id)
     db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2740,7 +2722,7 @@ async def test_get_fact_superseded_by_none_when_nothing_supersedes_it(app):
     fact_id = uuid.uuid4()
     holding = _GetFactPool(fact=_make_fact_row(fact_id=fact_id), superseder_id=None)
     db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2766,7 +2748,7 @@ async def test_get_fact_preserves_existing_fields_additively(app):
         superseder_id=None,
     )
     db = _ConfirmDB({"atlas": holding, "memory": _GetFactPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2787,7 +2769,7 @@ async def test_get_fact_404_when_not_found(app):
     """GET fact returns 404 when no pool holds the fact."""
     fact_id = uuid.uuid4()
     db = _ConfirmDB({"atlas": _GetFactPool(fact=None), "memory": _GetFactPool(fact=None)})
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2810,6 +2792,7 @@ def _catalog_search_row(
     memory_type: str = "fact",
     score_key: str = "rrf_score",
     score: float = 0.42,
+    content_authority: str | None = "owner",
 ) -> dict:
     """Build a dict mimicking a public.memory_catalog search_catalog() result row."""
     return {
@@ -2830,6 +2813,7 @@ def _catalog_search_row(
         "importance": 6.0,
         "retention_class": "operational",
         "sensitivity": "normal",
+        "content_authority": content_authority,
         score_key: score,
     }
 
@@ -2841,7 +2825,7 @@ def _wire_catalog_search_db(app) -> MagicMock:
     pool = AsyncMock()
     pool.fetchval = AsyncMock(return_value="normal")
     db_mock.pool = MagicMock(return_value=pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+    app.dependency_overrides[get_db] = lambda: db_mock
     return db_mock
 
 
@@ -2854,7 +2838,7 @@ async def test_catalog_search_returns_normalized_results(app, monkeypatch):
         "butlers.modules.memory.tools.get_embedding_engine", lambda model: MagicMock()
     )
 
-    row = _catalog_search_row()
+    row = _catalog_search_row(content_authority="third_party")
     captured: dict = {}
 
     async def _fake_search_catalog(pool, query, embedding_engine, **kwargs):
@@ -2877,6 +2861,8 @@ async def test_catalog_search_returns_normalized_results(app, monkeypatch):
     assert result["title"] == "Budget review cadence"
     assert result["memory_type"] == "fact"
     assert result["score"] == pytest.approx(0.42)
+    # REQ-module-memory-013: the catalog row's authority class reaches the caller.
+    assert result["content_authority"] == "third_party"
     # Defaults propagated through to search_catalog.
     assert captured["query"] == "budget review"
     assert captured["mode"] == "hybrid"
@@ -2918,7 +2904,7 @@ async def test_catalog_search_without_switchboard_authority_source_fails_closed(
     db_mock = MagicMock()
     db_mock.butler_names = ["finance"]
     db_mock.pool.side_effect = KeyError("switchboard")
-    app.dependency_overrides[_get_db_manager] = lambda: db_mock
+    app.dependency_overrides[get_db] = lambda: db_mock
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -3153,7 +3139,7 @@ def _wire_gaps(app, monkeypatch, per_pool: dict[str, list[dict] | Exception]):
         return rows[:limit]
 
     monkeypatch.setattr("butlers.modules.memory.knowledge_gaps.list_gaps", fake_list_gaps)
-    app.dependency_overrides[_get_db_manager] = lambda: _GapDB()
+    app.dependency_overrides[get_db] = lambda: _GapDB()
 
 
 async def _get_gaps(app, **params):
@@ -3172,18 +3158,35 @@ async def test_gaps_keyset_pages_merge_pools_newest_first(app, monkeypatch):
     )
 
     first = (await _get_gaps(app, limit=2)).json()
-    second = (await _get_gaps(app, limit=2, cursor=first["meta"]["next_cursor"])).json()
-    last = (await _get_gaps(app, limit=2, cursor=second["meta"]["next_cursor"])).json()
+    second = (await _get_gaps(app, limit=2, cursor=first["next_cursor"])).json()
+    last = (await _get_gaps(app, limit=2, cursor=second["next_cursor"])).json()
 
-    ids = [g["gap_id"] for page in (first, second, last) for g in page["data"]]
+    ids = [g["gap_id"] for page in (first, second, last) for g in page["items"]]
     assert ids == [str(r["id"]) for r in rows]
-    assert [first["meta"]["has_more"], second["meta"]["has_more"], last["meta"]["has_more"]] == [
+    assert first["limit"] == 2
+    assert [bool(first["next_cursor"]), bool(second["next_cursor"]), bool(last["next_cursor"])] == [
         True,
         True,
         False,
     ]
-    assert last["meta"]["next_cursor"] is None
-    assert {g["butler"] for g in first["data"]} == {"atlas", "memory"}
+    assert {g["butler"] for g in first["items"]} == {"atlas", "memory"}
+
+    # A cursor minted by the real memory route must not seek the same-shaped
+    # ingestion keyset. The normal second/last memory pages above remain valid.
+
+    pool = AsyncMock()
+    db = MagicMock()
+    db.credential_shared_pool.return_value = pool
+    app.dependency_overrides[ingestion_db] = lambda: db
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(
+            "/api/ingestion/events", params={"cursor": first["next_cursor"]}
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid cursor"
+    pool.fetch.assert_not_awaited()
 
 
 async def test_gaps_name_a_failing_pool_instead_of_reading_as_empty(app, monkeypatch):
@@ -3201,11 +3204,106 @@ async def test_gaps_name_a_failing_pool_instead_of_reading_as_empty(app, monkeyp
 
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["data"]) == 1
-    assert body["meta"]["sources_degraded"] == ["broken"]
+    assert len(body["items"]) == 1
+    assert body["sources_degraded"] == ["broken"]
 
 
 async def test_gaps_reject_a_malformed_cursor(app, monkeypatch):
     _wire_gaps(app, monkeypatch, {"atlas": [], "memory": [], "broken": []})
 
     assert (await _get_gaps(app, cursor="not-a-cursor")).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Exact totals: episode/fact/rule registers and inspect (bu-kqnum.14.5)
+# ---------------------------------------------------------------------------
+
+_RELATION_RE = re.compile(r"FROM\s+(?:\w+\.)?(episodes|facts|rules)\b")
+
+
+def _where_tail(query: str) -> str:
+    """The filter text between WHERE and the ordering/limit clause ('' if none)."""
+    m = re.search(r"WHERE (.*?)(?: ORDER BY| LIMIT|$)", query, re.S)
+    return m.group(1) if m else ""
+
+
+class _CountingPool:
+    """Answers count(*) and row queries from one row list per relation.
+
+    Records both so a test can compare the count filter with the row filter.
+    """
+
+    def __init__(self, **rows: list[dict]) -> None:
+        self._rows = {rel: [Record(r) for r in rs] for rel, rs in rows.items()}
+        self.count_calls: list[tuple[str, tuple]] = []
+        self.fetch_calls: list[tuple[str, tuple]] = []
+
+    def _for(self, query: str) -> list[Record]:
+        m = _RELATION_RE.search(query)
+        return self._rows.get(m.group(1) if m else "", [])
+
+    async def fetchval(self, query: str, *args: object) -> int:
+        self.count_calls.append((query, args))
+        return len(self._for(query))
+
+    async def fetch(self, query: str, *args: object) -> list[Record]:
+        self.fetch_calls.append((query, args))
+        return self._for(query)[: int(args[-1])]
+
+
+_REGISTER_CASES = [
+    ("/api/memory/episodes", {}, "episodes", lambda: _make_episode_row()),
+    ("/api/memory/facts", {}, "facts", lambda: _make_fact_row(fact_id=uuid.uuid4())),
+    ("/api/memory/rules", {}, "rules", lambda: _make_rule_row(rule_id=uuid.uuid4())),
+    ("/api/memory/inspect", {"kind": "episode"}, "episodes", lambda: _make_episode_row()),
+]
+
+
+@pytest.mark.parametrize(("path", "params", "relation", "make_row"), _REGISTER_CASES)
+async def test_memory_lists_report_exact_total_has_more_and_degraded_count(
+    path: str, params: dict, relation: str, make_row, app
+) -> None:
+    """Two healthy pools plus a failed one: total is the exact reachable count, not
+    the page size, has_more follows it, and the failed pool is named."""
+    db = _MemoryFanOutDB(
+        {
+            "atlas": _CountingPool(**{relation: [make_row() for _ in range(3)]}),
+            "health": _CountingPool(**{relation: [make_row() for _ in range(2)]}),
+            "finance": _RaisingMemoryPool(RuntimeError("connection reset by peer")),
+        }
+    )
+    app.dependency_overrides[get_db] = lambda: db
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = (await client.get(path, params={**params, "limit": 2})).json()
+        last = (await client.get(path, params={**params, "offset": 4, "limit": 2})).json()
+
+    assert first["meta"]["total"] == last["meta"]["total"] == 5
+    assert first["meta"]["pools_failed"] == ["finance"]
+    assert (len(first["data"]), first["meta"]["has_more"]) == (2, True)
+    assert (len(last["data"]), last["meta"]["has_more"]) == (1, False)
+
+
+@pytest.mark.parametrize("q", ["dentist", None])
+@pytest.mark.parametrize("kind", ["episode", "fact", "rule"])
+async def test_inspect_count_filters_exactly_like_the_row_query(
+    kind: str, q: str | None, app
+) -> None:
+    """meta.total is only exact while count(*) and the row fetch share one filter."""
+    pool = _CountingPool()
+    app.dependency_overrides[get_db] = lambda: _MemoryFanOutDB({"atlas": pool})
+    params = {"kind": kind, **({"q": q} if q else {})}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/memory/inspect", params=params)
+
+    assert resp.status_code == 200
+    (count_query, count_args), (row_query, row_args) = pool.count_calls[0], pool.fetch_calls[0]
+    assert _where_tail(count_query) == _where_tail(row_query)
+    assert count_args == row_args[:-1]
+    # Guard against comparing two empty filters: q, or the rule forgotten clause.
+    assert (q is not None or kind == "rule") == bool(_where_tail(count_query))

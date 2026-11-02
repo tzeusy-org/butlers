@@ -1,3 +1,4 @@
+import { mockJson } from "./fixtures/api-responses";
 /**
  * Settings Permissions Page — /settings/permissions
  *
@@ -21,7 +22,7 @@
  *   npm run test:e2e:install (once per machine to install Chromium)
  */
 
-import { test, expect, Page } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // ---------------------------------------------------------------------------
 // Shared fixture data
@@ -54,6 +55,7 @@ const MOCK_WEBHOOKS = {
       endpoint: "https://example.com/hook",
       events: ["permission.set"],
       enabled: true,
+      secret_prefix: null,
       last_test_at: null,
       last_test_ok: null,
       retry_policy: { max_attempts: 3, backoff_seconds: 5 },
@@ -64,7 +66,7 @@ const MOCK_WEBHOOKS = {
   meta: {},
 };
 
-const MOCK_AUDIT_LOG = { data: [], meta: {} };
+const MOCK_AUDIT_LOG = { data: [], meta: { total: 0, offset: 0, limit: 50, has_more: false } };
 
 // ---------------------------------------------------------------------------
 // Helper: install all baseline API mocks
@@ -74,7 +76,7 @@ async function installBaseMocks(page: Page) {
   // Permissions matrix
   await page.route("**/api/permissions", (route) => {
     if (route.request().method() === "GET") {
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_MATRIX) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getPermissions", MOCK_MATRIX) });
     } else {
       route.continue();
     }
@@ -82,13 +84,13 @@ async function installBaseMocks(page: Page) {
 
   // Audit log
   await page.route("**/api/audit-log**", (route) =>
-    route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_AUDIT_LOG) }),
+    route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getAuditLog", MOCK_AUDIT_LOG) }),
   );
 
   // Webhooks list
   await page.route("**/api/webhooks", (route) => {
     if (route.request().method() === "GET") {
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_WEBHOOKS) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getWebhooks", MOCK_WEBHOOKS) });
     } else {
       route.continue();
     }
@@ -132,13 +134,13 @@ test("permissions: matrix cell flip requires reason and calls PUT", async ({ pag
       // Intercept the subsequent GET /api/permissions after PUT to return updated data
       await page.route("**/api/permissions", (r) => {
         if (r.request().method() === "GET") {
-          r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(updatedMatrix) });
+          r.fulfill({ status: 200, contentType: "application/json", body: mockJson("getPermissions", updatedMatrix) });
         } else {
           r.continue();
         }
       });
 
-      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: null, meta: {} }) });
+      route.fulfill({ status: 200, contentType: "application/json", body: mockJson("putPermission", { data: { butler: "inbox", permission: "email.read", granted: true, reason: "testing grant", updated_at: new Date().toISOString() }, meta: {} }) });
     } else {
       route.continue();
     }
@@ -241,7 +243,7 @@ test("permissions: webhook test action updates last-tested indicator", async ({ 
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ data: { ok: true, status_code: 200, latency_ms: 42 }, meta: {} }),
+        body: mockJson("testWebhook", { data: { ok: true, status_code: 200, latency_ms: 42 }, meta: {} }),
       });
     } else {
       route.continue();
@@ -264,9 +266,9 @@ test("permissions: webhook test action updates last-tested indicator", async ({ 
           ],
           meta: {},
         };
-        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(updated) });
+        route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getWebhooks", updated) });
       } else {
-        route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(MOCK_WEBHOOKS) });
+        route.fulfill({ status: 200, contentType: "application/json", body: mockJson("getWebhooks", MOCK_WEBHOOKS) });
       }
     } else {
       route.continue();

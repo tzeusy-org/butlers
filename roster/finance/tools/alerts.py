@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -459,7 +459,7 @@ async def detect_price_changes(
 # ---------------------------------------------------------------------------
 
 
-async def register_obligations(pool: asyncpg.Pool) -> dict[str, Any]:
+async def register_obligations(pool: asyncpg.Pool, *, today: date | None = None) -> dict[str, Any]:
     """Derive and upsert a forward obligation ledger row for every active
     subscription's next renewal (bu-8cdl1.10 slice 2).
 
@@ -498,7 +498,7 @@ async def register_obligations(pool: asyncpg.Pool) -> dict[str, Any]:
     """
     subscriptions = await pool.fetch(
         """
-        SELECT id, amount, next_renewal, cancellation_url, notice_period_days,
+        SELECT id, amount, next_renewal, field_claims, cancellation_url, notice_period_days,
                cancel_by, metadata
         FROM subscriptions
         WHERE status = 'active'
@@ -510,7 +510,14 @@ async def register_obligations(pool: asyncpg.Pool) -> dict[str, Any]:
     price_change_count = 0
 
     for sub in subscriptions:
-        period = sub["next_renewal"]
+        from butlers.tools.finance.subscriptions import selected_renewal
+
+        start = today or datetime.now(UTC).date()
+        period = selected_renewal(sub, start, start + timedelta(days=14))
+        if period is None:
+            # Retain the baseline for the ledger outside the warning window; this does not
+            # mint an elapsed renewal/overdue alert.
+            period = sub["next_renewal"]
         cancellation_url = sub["cancellation_url"]
         notice_period_days = sub["notice_period_days"]
         cancel_by = sub["cancel_by"]

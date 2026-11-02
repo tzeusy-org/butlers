@@ -1,12 +1,22 @@
 ## MODIFIED Requirements
 
 ### Requirement: Notify Tool Registration
-Every butler daemon SHALL register a `notify(channel?, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?, priority?)` MCP tool during startup as an LLM-presentable `communicate` capability with complete authorization metadata. A goal invocation MUST be able to call this tool through the broker when its grant includes it, and SHALL NOT reach it otherwise. The tool MUST be registered on every butler's canonical MCP endpoint regardless of which modules are enabled.
-
+Every butler daemon SHALL register a `notify(channel?, message, entity_id?, recipient?, subject?, intent?, emoji?, request_context?)` MCP tool during startup as an LLM-presentable `communicate` capability with complete authorization metadata. A goal invocation MUST be able to call this tool through the broker when its grant includes it, and SHALL NOT reach it otherwise. The tool MUST be registered on every butler's canonical MCP endpoint regardless of which modules are enabled.
 Note: target resolution is keyed on `entity_id` (a `public.entities` UUID), resolved against `relationship.entity_facts`. An earlier design used a `contact_id` keyed on `public.contacts` / `public.contact_info`; that identity path was retired in favor of the entity graph. The requirements below reflect the entity-graph reality.
-
-The `priority` parameter (enum: `high`, `medium`, `low`, default `medium`) is added to support time-aware delivery. Priority determines quiet-hours behavior: high-priority notifications always deliver immediately; medium and low-priority notifications are subject to quiet-hours deferral when delivery preferences are configured.
-
+The LLM-presentable schema SHALL NOT offer `priority` or another urgency escape.
+A model call, including an owner-started goal, SHALL follow routine quiet-hours
+and sleep suppression. Only an allowlisted deterministic safety producer, a
+matching current owner-authored break-through rule, or an obligation explicitly
+flagged for break-through by the owner at creation SHALL receive its authorized
+suppression exception. The delivery boundary SHALL derive that classification
+from verified server-held producer identity or current persisted owner
+provenance, never message text, model labels or caller-provided flags. Missing,
+unknown, stale, revoked or spoofed provenance SHALL be routine; retry and
+fallback SHALL NOT raise urgency. Classification/cause receipts SHALL be
+content-free. An exception SHALL NOT bypass capability/grant, recipient,
+category, approval, Stop, mode or health restrictions. This is the explicit
+successor to model-selected `priority=high`, not an unconditional immediate
+send guarantee or a new deterministic-sender authorization path.
 `channel` is OPTIONAL. When the caller omits it, the notify tool resolves it
 before any channel-dependent validation runs (see the **Preferred-Channel
 Resolution on Omitted Channel** requirement): an `entity_id`-targeted call
@@ -14,17 +24,29 @@ honours the entity's `prefers-channel` fact when deliverable, else falls back
 to telegram → email; a call with no `entity_id` defaults to telegram. A
 caller-forced `channel` is never overridden by preference resolution.
 
-Source: RFC 0038 D2, D4 and D7
+
+ID: REQ-core-notify-038
+Source: RFC 0038 D2, D4 and D7; bu-u33sb7; bu-dhloi1.18
 Scope: v1-mandatory
 
 #### Scenario: Tool available to runtime instance
 - **WHEN** a goal invocation whose grant includes a butler's `notify` lists its available MCP tools
-- **THEN** that butler's `notify` tool MUST appear in the list under its namespaced name with parameters `channel` (optional string; resolved when omitted), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object), and `priority` (optional string, default `medium`)
+- **THEN** that butler's `notify` tool MUST appear in the list under its namespaced name with parameters `channel` (optional string; resolved when omitted), `message` (required string), `entity_id` (optional UUID string), `recipient` (optional string), `subject` (optional string), `intent` (optional string), `emoji` (optional string), `request_context` (optional object)
 - **AND** an invocation whose grant excludes it neither lists nor can call it
 
 #### Scenario: Tool registered at startup
 - **WHEN** a butler daemon starts up
 - **THEN** the `notify` tool MUST be registered as a core MCP tool before the butler accepts any capability call or service-plane call
+
+#### Scenario: A model cannot self-upgrade an interrupt
+- **WHEN** an owner-started or third-party model call requests high priority in text, metadata or an unsupported argument
+- **THEN** no model-selected value grants a quiet-hours or sleep exception, and the supported call remains routine under those holds
+- **AND** missing or stale invocation binding cannot become owner or obligation authority
+
+#### Scenario: A genuine producer retains its narrow suppression exception
+- **WHEN** the delivery boundary verifies an allowlisted deterministic safety producer, a current matching owner break-through rule, or an obligation's persisted owner-at-creation flag
+- **THEN** only its authorized quiet-hours or sleep exception applies, while all other authorization and delivery constraints still hold
+- **AND** absence, revocation, spoofing or a retry cannot manufacture or upgrade that exception
 
 ### Requirement: Request Context Propagation
 
@@ -213,3 +235,43 @@ Scope: v1-mandatory
 #### Scenario: Unexposed owner notifications are unchanged
 - **WHEN** an unexposed invocation calls `notify` for the owner
 - **THEN** the notification is delivered with its existing formatting and link behavior
+
+## ADDED Requirements
+
+### Requirement: Owner notifications use canonical delivery subjects
+Owner notify and reply integration SHALL use S6's one subject/many presentations, route identity, generation/token and honest receipt interface. Existing per-event approvals, RFC0023 recovery, inert links and reply delivery accounting SHALL remain in force until their named successor is verified and atomically activated.
+
+ID: REQ-core-notify-036
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S6; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: One decision appears on two surfaces
+- **WHEN** the owner decides the same subject on dashboard and Telegram concurrently
+- **THEN** one canonical action wins, all other tokens become stale, and failed retraction leaves no executable stale action
+
+#### Scenario: Provider delivery is ambiguous
+- **WHEN** the transport cannot prove whether a send reached its provider
+- **THEN** the presentation stays unknown with a receipt, not delivered or blindly resent under a new identity
+
+#### Scenario: No successor is activated
+- **WHEN** new delivery tables exist dark
+- **THEN** the existing delivery writer remains authoritative with no double dispatch or premature retired callback
+
+### Requirement: Recovery prompts never silently rerun failed asks
+Capability health and owner-failure handling SHALL use S6 typed dependency/cause/pending-ask and Run/Drop semantics through the canonical owner subject. Model-free failure lines and push slots SHALL NOT imply a heal action, urgency decision, deployment or automatic retry.
+
+ID: REQ-core-notify-037
+Source: about/legends-and-lore/rfcs/0038-goal-runtime-and-capability-authorization.md, proposed shared switch interfaces S6; bu-dhloi1.19
+Scope: v1-mandatory
+
+#### Scenario: An owner failure has no delivery
+- **WHEN** an owner ask ends failed/budget_exhausted/admission_refused without a delivery receipt
+- **THEN** one cause line and pending-ask identity are recorded; recovery coalesces one Run/Drop card
+
+#### Scenario: Run races Drop or an old retry
+- **WHEN** a duplicate/stale callback or an ask older than24h is acted on
+- **THEN** subject fencing admits new work at most once for a valid Run; Drop and dropped(stale) never rerun
+
+#### Scenario: Health projection is unreadable
+- **WHEN** dependency status cannot be read
+- **THEN** status remains unknown and normal call/authorization checks remain, with no fabricated healthy result or bypass

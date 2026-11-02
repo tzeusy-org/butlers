@@ -27,6 +27,7 @@ import type {
   ConnectorIncidentsResponse,
   ConnectorRoutingRulesResponse,
   ConnectorStats,
+  ConnectorStatsBucket,
 } from '@/api/types'
 import { ConnectorDetailView } from './ConnectorDetailView'
 import type { ConnectorRecovery } from './connector-auth'
@@ -751,6 +752,38 @@ describe('[bu-5ywn2] Routing rules section', () => {
     expect(
       container.querySelector('[data-testid="histogram-degraded-note"]'),
     ).toBeNull()
+  })
+
+  it('places each bucket at its real hour, not its array position (bu-s11n0s.5)', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-11-02T10:37:00Z'))
+    try {
+      // Slot i of the rolling window starts (23 - i) hours before 10:00Z.
+      const row = (hour: string, ingested: number): ConnectorStatsBucket => ({
+        bucket: hour,
+        messages_ingested: ingested,
+        messages_failed: 0,
+        messages_filtered: 0,
+        healthy_count: 0,
+        degraded_count: 0,
+        error_count: 0,
+      })
+      // Sparse and shuffled: slot 20 (07:00Z) before slot 2 (13:00Z yesterday).
+      renderDetail(root, BASE_CONNECTOR, {
+        stats: makeStats({
+          timeseries: [row('2026-11-02T07:00:00+00:00', 3), row('2026-11-01T13:00:00+00:00', 5)],
+        }),
+      })
+      const slots = Array.from(
+        container.querySelectorAll('[data-testid="histogram-bars"] svg > g'),
+      )
+      expect(slots).toHaveLength(24)
+      const drawn = slots.flatMap((g, i) => (g.querySelector('rect') ? [i] : []))
+      expect(drawn).toEqual([2, 20])
+      expect(slots[2].querySelector('rect')?.getAttribute('class')).toBe('fill-foreground')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not show the degraded note while stats are still loading', () => {

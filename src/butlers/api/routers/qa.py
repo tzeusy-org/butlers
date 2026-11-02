@@ -57,6 +57,7 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 from butlers.api.briefing.cache import BriefingCache, get_cache
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
+    Db,
     MCPClientManager,
     get_mcp_manager,
 )
@@ -70,7 +71,7 @@ from butlers.api.models import (
 )
 from butlers.config import ConfigError, load_config
 from butlers.core.failover_classifier import is_provider_auth_marker
-from butlers.core.healing.dispatch import CIRCUIT_BREAKER_FAILURE_STATUSES
+from butlers.core.healing.constants import CIRCUIT_BREAKER_FAILURE_STATUSES
 from butlers.core.healing.fingerprint import compute_fingerprint_from_report
 from butlers.core.model_routing import get_breaker_states
 from butlers.core.qa.github_pr import GithubPrClient, get_pr_client, parse_pr_url
@@ -134,7 +135,7 @@ _QA_CASE_STATE_SQL: dict[str, str] = {
     # 'timeout'/'anonymization_failed' never carry a human-action marker check
     # (failed_with_human_action() only ever escalates 'unfixable'/'failed'), so
     # they always land here alongside marker-less 'failed' rows. Mirrors
-    # ``butlers.core.healing.dispatch.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
+    # ``butlers.core.healing.constants.CIRCUIT_BREAKER_FAILURE_STATUSES`` and the
     # precedence baked into ``butlers.core.qa.severity.state_of_case`` (bu-hmdqz.9).
     "failed": (
         f"a.status IN ('timeout', 'anonymization_failed') "
@@ -149,11 +150,6 @@ _QA_CASE_STATE_SQL: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Dependency stubs
 # ---------------------------------------------------------------------------
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 def _get_force_patrol_fn():
@@ -213,11 +209,11 @@ def _shared_pool(db: DatabaseManager):
     """Return the shared credential pool, raising 503 if unavailable."""
     try:
         return db.credential_shared_pool()
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail="Shared database pool is not available",
-        )
+        ) from exc
 
 
 async def _resolve_github_token(db: DatabaseManager) -> str | None:
@@ -259,7 +255,7 @@ async def _resolve_credentials_status(db: DatabaseManager) -> dict[str, bool]:
     keys and reports **only whether each is present** — secret values are never
     loaded or returned.  This is the production implementation behind the
     ``_get_credentials_status_fn`` dependency, wired by the daemon/app at
-    startup (see ``butlers.api.deps.wire_db_dependencies``).
+    startup (see ``butlers.api.deps.wire_qa_credentials``).
 
     Raises if the shared pool is unavailable; the caller (``get_qa_summary``)
     swallows such failures and reports the status as "unknown" (all ``None``).
@@ -534,12 +530,18 @@ class QaJournalEvent(BaseModel):
     data: dict[str, Any]
 
 
+#: ``unpublished`` requires a publisher trace (a retained sealed export or a
+#: refusal receipt) and ledger proof that no PR exists; ``ambiguous`` means a
+#: retained proposal whose publication outcome awaits exact read-only reconciliation.
+ProposalState = Literal["none", "unpublished", "ambiguous", "published"]
+
+
 class QaCaseDossier(BaseModel):
     """Full case payload for the QA dossier renderer."""
 
     case: QaCaseSummary
     state_track_stage: Literal["detect", "diagnose", "pr", "landed", "escalated", "failed"]
-    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_state: ProposalState = "none"
     proposal_diff_snapshot: list[DiffLine] = Field(default_factory=list)
     fingerprint: str | None = None
     dismissal: QaActiveDismissal | None = None
@@ -1223,7 +1225,7 @@ def _row_to_journal_event(row: Any) -> QaJournalEvent:
 
 # ---------------------------------------------------------------------------
 # Circuit breaker constants — shared by /summary and /circuit-breaker endpoints.
-# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.dispatch
+# CIRCUIT_BREAKER_FAILURE_STATUSES is imported from butlers.core.healing.constants
 # (the canonical definition). Threshold matches QaDispatchConfig default.
 # ---------------------------------------------------------------------------
 
@@ -1469,7 +1471,8 @@ async def _detect_runtime_credential_alert(pool: asyncpg.Pool) -> str | None:
 
 @router.get("/summary", response_model=ApiResponse[QaSummary])
 async def get_qa_summary(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     credentials_status_fn=Depends(_get_credentials_status_fn),
     staffer_info_fn=Depends(_get_staffer_info_fn),
 ) -> ApiResponse[QaSummary]:
@@ -1675,7 +1678,7 @@ async def get_qa_summary(
 
     # All-time PR stats for QA-originated attempts.
     # Uses the same failure statuses as CIRCUIT_BREAKER_FAILURE_STATUSES in
-    # butlers.core.healing.dispatch: 'failed', 'timeout', 'anonymization_failed'.
+    # butlers.core.healing.constants: 'failed', 'timeout', 'anonymization_failed'.
     # 'unfixable' is intentionally excluded — it indicates "no fix is possible"
     # (a design decision), not a dispatch failure.
     pr_stats_row = await pool.fetchrow(
@@ -1850,7 +1853,8 @@ async def list_patrols(
     status: str | None = Query(None, description="Filter by status"),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaPatrolSummary]:
     """List patrol cycles with optional status filter."""
     pool = _shared_pool(db)
@@ -1898,7 +1902,8 @@ async def list_patrols(
 @router.get("/patrols/{patrol_id}", response_model=ApiResponse[QaPatrolDetail])
 async def get_patrol(
     patrol_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaPatrolDetail]:
     """Return a single patrol with all nested findings."""
     pool = _shared_pool(db)
@@ -1960,7 +1965,8 @@ async def list_patrol_findings(
     novel_only: bool = Query(False, description="Only return novel (non-deduplicated) findings"),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaFindingRecord]:
     """List findings for a specific patrol with optional filters."""
     pool = _shared_pool(db)
@@ -2020,7 +2026,8 @@ async def list_patrol_findings(
 )
 async def get_finding_by_attempt(
     attempt_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaFindingRecord]:
     """Return the QA finding that dispatched a given healing attempt.
 
@@ -2083,7 +2090,8 @@ async def list_cases(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(25, ge=1, le=100),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaCaseSummary]:
     """List QA case summaries from QA-originated healing attempts."""
     pool = _shared_pool(db)
@@ -2190,7 +2198,8 @@ async def list_cases(
 @router.get("/cases/{case_id}", response_model=ApiResponse[QaCaseDossier])
 async def get_case(
     case_id: uuid.UUID,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaCaseDossier] | JSONResponse:
     """Return the full dossier payload for one QA case."""
     pool = _shared_pool(db)
@@ -2229,7 +2238,30 @@ async def get_case(
             f.first_seen AS finding_first_seen,
             f.last_seen AS finding_last_seen,
             f.source_session_trigger_source AS finding_source_session_trigger_source,
-            f.structured_evidence AS finding_structured_evidence
+            f.structured_evidence AS finding_structured_evidence,
+            NOT EXISTS (
+                SELECT 1
+                FROM public.qa_publication_operations op
+                WHERE op.attempt_id = a.id
+                  AND (
+                      op.stage IN ('egress_started', 'ambiguous')
+                      OR (
+                          op.kind <> 'branch_push'
+                          AND op.stage NOT IN ('bound', 'failed')
+                          AND op.reconciliation IS DISTINCT FROM 'resource_absent'
+                      )
+                  )
+            ) AS pr_absence_proven,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_exports x
+                WHERE x.attempt_id = a.id
+            ) AS export_retained,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_refusals r
+                WHERE r.attempt_id = a.id
+            ) AS refusal_recorded
         FROM public.healing_attempts a
         LEFT JOIN LATERAL (
             SELECT id, fingerprint, source_type, source_butler, severity,
@@ -2285,11 +2317,20 @@ async def get_case(
     proposal_diff_snapshot = _proposal_diff_from_case_row(row)
     gh_token = await _resolve_github_token(db)
     pr_summary = await _row_to_pr_summary_live(row, token=gh_token, client=get_pr_client())
-    proposal_state: Literal["none", "unpublished", "published"] = "none"
+    proposal_state: ProposalState = "none"
     if pr_summary is not None:
         proposal_state = "published"
     elif proposal_diff_snapshot:
-        proposal_state = "unpublished"
+        # Absent PR metadata is not proof that no PR exists: a lost pr_create
+        # response leaves none while the PR may be live. Claim "unpublished"
+        # only when the publication ledger proves no PR egress can have landed.
+        # An empty ledger proves that only for an attempt the publisher handled:
+        # it retains the sealed export before its first egress, or receipts a
+        # refusal made before retention (core_302), while an attempt from before
+        # the ledger cutover has no export, receipt or ledger rows.
+        handled = row.get("export_retained") is True or row.get("refusal_recorded") is True
+        absence_proven = row.get("pr_absence_proven") is True and handled
+        proposal_state = "unpublished" if absence_proven else "ambiguous"
     dossier = QaCaseDossier(
         case=case,
         state_track_stage=case.state,
@@ -2315,7 +2356,8 @@ async def get_case_journal(
         description="ISO timestamp of the last event already seen",
     ),
     limit: int = Query(50, ge=1, le=500),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaJournalEvent] | JSONResponse:
     """Return a chronological page of journal events for one QA case."""
     pool = _shared_pool(db)
@@ -2382,7 +2424,8 @@ async def list_investigations(
     status: str | None = Query(None, description="Filter by status"),
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaInvestigation]:
     """List QA-originated healing attempts (those with non-null qa_patrol_id).
 
@@ -2448,7 +2491,8 @@ async def list_known_issues(
     ),
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[KnownIssue]:
     """List known issues grouped by fingerprint with aggregated stats.
 
@@ -2605,7 +2649,8 @@ def _build_dismissed_condition(dismissed: bool | None, next_idx: int) -> str:
 async def dismiss_known_issue(
     fingerprint: str,
     body: DismissRequest = Body(default_factory=DismissRequest),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaDismissal]:
     """Dismiss a known issue fingerprint to suppress future investigation dispatch.
 
@@ -2654,7 +2699,8 @@ async def dismiss_known_issue(
 )
 async def undismiss_known_issue(
     fingerprint: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a dismissal for a known issue fingerprint.
 
@@ -2696,7 +2742,8 @@ async def undismiss_known_issue(
 @router.get("/trends", response_model=ApiResponse[QaTrends])
 async def get_qa_trends(
     days: int = Query(7, ge=1, le=30, description="Number of days to include"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaTrends]:
     """Return daily patrol aggregates and per-source finding counts for trend charts.
 
@@ -2950,7 +2997,8 @@ async def force_patrol(
 )
 async def create_synthetic_finding(
     body: SyntheticFindingCreate = Body(default_factory=SyntheticFindingCreate),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SyntheticFindingResponse]:
     """Queue a synthetic QA finding for the next scheduled patrol.
 
@@ -3055,7 +3103,8 @@ async def create_synthetic_finding(
 async def list_dismissals(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaDismissal]:
     """List all active dismissals (dismissed_until > now()).
 
@@ -3102,7 +3151,8 @@ async def list_dismissals(
 @router.delete("/dismissals/{fingerprint}", response_model=ApiResponse[dict], status_code=200)
 async def delete_dismissal(
     fingerprint: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a dismissal by fingerprint.
 
@@ -3161,7 +3211,8 @@ def _row_to_allowed_repo(row: Any) -> AllowedRepo:
     response_model=ApiResponse[list[AllowedRepo]],
 )
 async def list_allowed_repos(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[AllowedRepo]]:
     """Return all repositories in the QA PR creation whitelist, ordered by owner/repo.
 
@@ -3188,7 +3239,8 @@ async def list_allowed_repos(
 )
 async def create_allowed_repo(
     body: AllowedRepoCreate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[AllowedRepo]:
     """Add a repository to the QA PR creation whitelist.
 
@@ -3225,14 +3277,16 @@ async def create_allowed_repo(
             repo,
             body.enabled,
         )
-    except asyncpg.UniqueViolationError:
+    except asyncpg.UniqueViolationError as exc:
         raise HTTPException(
             status_code=409,
             detail=f"Repository '{owner}/{repo}' is already in the whitelist",
-        )
-    except Exception:
+        ) from exc
+    except Exception as exc:
         logger.error("Failed to add allowed repo '%s/%s'", owner, repo, exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to add repository to whitelist")
+        raise HTTPException(
+            status_code=500, detail="Failed to add repository to whitelist"
+        ) from exc
 
     if row is None:
         raise HTTPException(status_code=500, detail="Insert returned no row")
@@ -3251,7 +3305,8 @@ async def patch_allowed_repo(
     owner: str,
     repo: str,
     body: AllowedRepoPatch,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[AllowedRepo]:
     """Toggle the ``enabled`` flag for a whitelisted repository.
 
@@ -3291,7 +3346,8 @@ async def patch_allowed_repo(
 async def delete_allowed_repo(
     owner: str,
     repo: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Remove a repository from the QA PR creation whitelist.
 
@@ -3331,7 +3387,8 @@ async def delete_allowed_repo(
 
 @router.get("/circuit-breaker", response_model=ApiResponse[CircuitBreakerStatus])
 async def get_circuit_breaker_status(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[CircuitBreakerStatus]:
     """Return the current QA dispatch circuit breaker state."""
     pool = _shared_pool(db)
@@ -3366,7 +3423,8 @@ async def get_circuit_breaker_status(
 
 @router.post("/circuit-breaker/reset", response_model=ApiResponse[CircuitBreakerResetResponse])
 async def reset_circuit_breaker(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
     cache: BriefingCache = Depends(get_cache),
 ) -> ApiResponse[CircuitBreakerResetResponse]:
     """Reset the QA circuit breaker by recording an auditable reset marker.
@@ -3430,7 +3488,8 @@ async def reset_circuit_breaker(
 
 @router.get("/settings/repo", response_model=ApiResponse[QaRepoConfig])
 async def get_repo_config(
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaRepoConfig]:
     """Return the current QA repository configuration."""
     pool = _shared_pool(db)
@@ -3457,7 +3516,8 @@ async def get_repo_config(
 @router.put("/settings/repo", response_model=ApiResponse[QaRepoConfig])
 async def update_repo_config(
     body: QaRepoConfigUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaRepoConfig]:
     """Update the QA repository URL.
 
@@ -3492,7 +3552,8 @@ async def update_repo_config(
 @router.put("/settings/git-author", response_model=ApiResponse[QaGitAuthorStatus])
 async def update_git_author(
     body: QaGitAuthorUpdate,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[QaGitAuthorStatus]:
     """Store the QA git author identity in the shared credential store.
 
@@ -3588,7 +3649,8 @@ _QA_SELF_RECURSION_TRIGGER_SOURCES = frozenset({"healing", "qa"})
 async def list_meta_review_findings(
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> PaginatedResponse[QaMetaReviewFinding]:
     """Return QA-self-recursive findings routed to the operator meta-review lane.
 

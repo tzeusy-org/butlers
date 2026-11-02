@@ -2524,3 +2524,127 @@ async def test_override_via_dunbar_tier_set_honored_by_compute_tier_ranking(simp
         "dunbar_tier_set write and _fetch_overrides read are split across stores"
     )
     assert row["dunbar_tier_override"] is True
+
+
+# ===========================================================================
+# relationship-maintenance job composition (bu-idc5mx.4, rev-4907)
+# ===========================================================================
+
+
+@pytest.fixture
+async def maintenance_pool(dunbar_pool):
+    """dunbar_pool plus the expected-signal and identity tables stale-contact evaluation reads."""
+    await dunbar_pool.execute("""
+        CREATE TABLE IF NOT EXISTS public.expected_signals (
+            signal_key                 TEXT PRIMARY KEY,
+            producer                   TEXT NOT NULL,
+            producer_endpoint_identity TEXT,
+            expected_cadence_seconds   BIGINT NOT NULL,
+            last_observed_at           TIMESTAMPTZ,
+            measurability              TEXT NOT NULL,
+            unmeasurable_reason        TEXT,
+            evaluated_at               TIMESTAMPTZ NOT NULL,
+            updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
+    await dunbar_pool.execute("CREATE SCHEMA IF NOT EXISTS relationship")
+    await dunbar_pool.execute("""
+        CREATE TABLE IF NOT EXISTS relationship.entity_facts (
+            id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            subject     UUID NOT NULL,
+            predicate   TEXT NOT NULL,
+            object      TEXT NOT NULL,
+            object_kind TEXT NOT NULL DEFAULT 'literal',
+            validity    TEXT NOT NULL DEFAULT 'active'
+        )
+    """)
+    yield dunbar_pool
+
+
+async def _make_tiered_contact(pool, name: str, tier: int) -> dict:
+    """A named contact whose Dunbar tier is pinned by an active override fact."""
+    contact = await _make_contact(pool, name)
+    await pool.execute(
+        "UPDATE public.entities SET canonical_name = $1 WHERE id = $2", name, contact["entity_id"]
+    )
+    await pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity)
+        VALUES ($1, 'dunbar_tier_override', $2, 'relationship', $3, 'active')
+        """,
+        f"contact:{contact['id']}",
+        str(tier),
+        contact["entity_id"],
+    )
+    return contact
+
+
+async def _log_owner_interaction(pool, entity_id: uuid.UUID, days_ago: float, *, attested: bool):
+    """An outgoing interaction; ``attested`` adds the server owner attestation."""
+    from butlers.tools.relationship.stale_contacts import owner_attestation
+
+    metadata: dict = {"direction": "outgoing"}
+    if attested:
+        metadata["expected_signal_source"] = owner_attestation(principal="owner")
+    await pool.execute(
+        """
+        INSERT INTO facts (subject, predicate, content, scope, entity_id, validity, valid_at,
+                           metadata)
+        VALUES ($1, 'interaction_other', '', 'relationship', $2, 'active', $3, $4)
+        """,
+        f"entity:{entity_id}",
+        entity_id,
+        datetime.now(UTC) - timedelta(days=days_ago),
+        metadata,
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
+async def test_relationship_maintenance_default_wiring_on_real_tier_ranking(maintenance_pool):
+    """The weekly job's production path: evaluation -> compute_tier_ranking -> filter ->
+    compute_urgency(tier_ranking=..., top_n=3) -> render, with only notify captured.
+
+    No all-clear (or anything) is sent while one cadence is unmeasurable. Once its producer is
+    attested, the suggestions follow urgency on the real tier ranking: tier weight lets a
+    tier-5 contact 28 days out outrank a tier-50 contact 90 days out.
+    """
+    from unittest.mock import AsyncMock
+
+    from butlers.tools.relationship.reminders import run_relationship_maintenance
+
+    pool = maintenance_pool
+    ada = await _make_tiered_contact(pool, "Ada", 50)  # 45d cadence: (90-45)/45 * 2.0 = 2.0
+    ben = await _make_tiered_contact(pool, "Ben", 5)  # 14d cadence: (28-14)/14 * 5.0 = 5.0
+    cleo = await _make_tiered_contact(pool, "Cleo", 15)  # 21d cadence: (60-21)/21 * 3.0 = 5.57
+    await _log_owner_interaction(pool, ada["entity_id"], 90, attested=True)
+    await _log_owner_interaction(pool, ben["entity_id"], 28, attested=True)
+    await _log_owner_interaction(pool, cleo["entity_id"], 60, attested=False)
+
+    notify = AsyncMock(return_value="sent")
+    held = await run_relationship_maintenance(pool, notify_fn=notify)
+
+    assert held["status"] == "unmeasurable"
+    assert held["unmeasurable_count"] == 1
+    notify.assert_not_awaited()
+
+    from butlers.tools.relationship.stale_contacts import owner_attestation
+
+    await pool.execute(
+        """
+        UPDATE facts SET metadata = metadata || jsonb_build_object('expected_signal_source', $2::jsonb)
+        WHERE entity_id = $1 AND predicate = 'interaction_other'
+        """,
+        cleo["entity_id"],
+        owner_attestation(principal="owner"),
+    )
+
+    result = await run_relationship_maintenance(pool, notify_fn=notify)
+
+    assert result["status"] == "suggested"
+    assert (result["suggested"], result["overdue"], result["unranked"]) == (3, 3, 0)
+    notify.assert_awaited_once()
+    lines = notify.await_args.args[0].splitlines()
+    assert lines[0] == "Reconnect this week:"
+    assert [line.split(":")[0] for line in lines[1:]] == ["1. Cleo", "2. Ben", "3. Ada"]

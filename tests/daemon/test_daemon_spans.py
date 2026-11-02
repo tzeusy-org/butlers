@@ -6,6 +6,7 @@ Verifies that core tool handlers and module tools are wrapped with
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -67,9 +68,7 @@ class StubSpanModule(Module):
         self.shutdown_called = False
         self.tools_registered = False
 
-    @property
-    def name(self) -> str:
-        return "stub_span"
+    name = "stub_span"
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -145,6 +144,42 @@ def _patch_infra():
     """Return a dict of patches for all infrastructure dependencies."""
     mock_pool = AsyncMock()
 
+    async def _runtime_row(query, *args):
+        if query.lstrip().startswith("SELECT *") and "runtime_config" in query:
+            return {
+                "butler_name": args[0],
+                "core_groups": None,
+                "core_groups_narrowing_reason": None,
+                "catalog_read_sensitivity": "normal",
+                "max_concurrent": 3,
+                "max_queued": 10,
+                "tool_exposure_policy": "eager_filtered",
+                "blind_spot_preamble_enabled": True,
+                "seeded_at": None,
+                "updated_at": None,
+            }
+        return None
+
+    mock_pool.fetchrow = AsyncMock(side_effect=_runtime_row)
+
+    mock_conn = AsyncMock()
+    mock_conn.fetchrow = AsyncMock(return_value=None)
+    mock_conn.fetchval = AsyncMock(return_value=None)
+    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_conn.execute = AsyncMock(return_value=None)
+
+    @asynccontextmanager
+    async def _transaction():
+        yield
+
+    mock_conn.transaction = MagicMock(side_effect=_transaction)
+
+    @asynccontextmanager
+    async def _acquire():
+        yield mock_conn
+
+    mock_pool.acquire = MagicMock(side_effect=_acquire)
+
     mock_db = MagicMock()
     mock_db.provision = AsyncMock()
     mock_db.connect = AsyncMock(return_value=mock_pool)
@@ -175,13 +210,13 @@ def _patch_infra():
         "init_telemetry": patch("butlers.lifecycle.init_telemetry"),
         "sync_schedules": patch("butlers.lifecycle.sync_schedules", new_callable=AsyncMock),
         "Spawner": patch("butlers.lifecycle.Spawner", return_value=mock_spawner),
-        "get_adapter": patch(
-            "butlers.lifecycle.get_adapter",
+        "build_runtime_adapter": patch(
+            "butlers.lifecycle.build_runtime_adapter",
             return_value=type(
                 "MockAdapter",
                 (),
                 {"binary_name": "claude", "__init__": lambda self, **kwargs: None},
-            ),
+            )(),
         ),
         "shutil_which": patch("butlers.lifecycle.shutil.which", return_value="/usr/bin/claude"),
         "start_mcp_server": patch.object(ButlerDaemon, "_start_mcp_server", new_callable=AsyncMock),
@@ -290,7 +325,7 @@ class TestSpanWrappingMCP:
             patches["sync_schedules"],
             patch("butlers.lifecycle.FastMCP", return_value=mock_mcp),
             patches["Spawner"],
-            patches["get_adapter"],
+            patches["build_runtime_adapter"],
             patches["shutil_which"],
             patches["start_mcp_server"],
             patches["recover_route_inbox"],

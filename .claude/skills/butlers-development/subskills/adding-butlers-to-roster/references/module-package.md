@@ -45,9 +45,7 @@ class <Name>Module(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "<name>"
+    name = "<name>"  # discovery reads this without constructing the module
 
     @property
     def config_schema(self) -> type[BaseModel]:
@@ -104,7 +102,7 @@ def register_tools(mcp: Any, module: Any) -> None:
 - Deferred imports inside `register_tools()` to avoid import-time side effects.
 - Type conversions at the MCP boundary (e.g., ISO string → `datetime.fromisoformat()`, float → `Decimal`) when the implementation expects richer types than MCP provides.
 - Empty config is fine — the module just needs to exist to register tools.
-- `migration_revisions()` returns `None` when migrations are handled separately in `roster/{name}/migrations/`.
+- Startup selects migration directories and runs the butler chain once; the optional legacy `migration_revisions()` hook does not select chains.
 
 ## Wiring it in
 

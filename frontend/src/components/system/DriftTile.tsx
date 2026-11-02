@@ -18,6 +18,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useDriftFacts } from "@/hooks/use-system"
@@ -43,22 +44,6 @@ function TileSkeleton() {
   )
 }
 
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Migration Drift</TileTitle>
-        <TileDescription>Codebase vs. deployed schema state</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="drift-tile-error" className="text-destructive text-sm">
-          Could not load migration drift status.
-        </p>
-      </TileContent>
-    </Tile>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // DriftTile
 // ---------------------------------------------------------------------------
@@ -75,14 +60,22 @@ function TileError() {
  *     to QA (>24h persistence).
  */
 export function DriftTile() {
-  const { data: response, isPending, isError } = useDriftFacts()
+  const q = useDriftFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Migration Drift" description="Codebase vs. deployed schema state"
+      errorMessage="Could not load migration drift status." errorTestId="drift-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <DriftContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function DriftContent({ response }: {
+  response: NonNullable<ReturnType<typeof useDriftFacts>["data"]>
+}) {
+  const facts = response.data
 
-  if (!facts?.drift_check_available) {
+  if (!facts.drift_check_available) {
     return (
       <Tile degraded>
         <TileHeader>

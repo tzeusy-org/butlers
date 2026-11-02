@@ -11,25 +11,13 @@ import {
   searchMessages,
 } from "@/api/index.ts";
 import type { ConversationListParams, MessageSearchParams } from "@/api/index.ts";
+import { conversationKeys } from "./conversation-keys.ts";
 
 // ---------------------------------------------------------------------------
 // Query keys
 // ---------------------------------------------------------------------------
 
-export const conversationKeys = {
-  all: (butlerName: string) => ["conversations", butlerName] as const,
-  list: (butlerName: string, params?: ConversationListParams) =>
-    ["conversations", butlerName, "list", params] as const,
-  detail: (butlerName: string, conversationId: string) =>
-    ["conversations", butlerName, conversationId] as const,
-  /** Cross-butler identity lookup by id alone (bu-0ynlk.11) — the
-   * /chat/:conversationId deep link, not scoped to a known butlerName. */
-  byId: (conversationId: string) => ["conversations", "by-id", conversationId] as const,
-  messages: (butlerName: string, conversationId: string) =>
-    ["conversation-messages", butlerName, conversationId] as const,
-  search: (butlerName: string, query: string) =>
-    ["conversations", butlerName, "search", query] as const,
-};
+export { conversationKeys };
 
 /** Query key for the owner-scoped cross-butler message search (bu-0ynlk.9). */
 export const messageSearchKeys = {

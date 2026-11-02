@@ -28,6 +28,7 @@ import type {
   ModelAttentionEpisode,
   ModelCatalogEntry,
 } from "@/api/types.ts";
+import { ModelAllowanceStrip } from "@/components/settings/ModelAllowanceStrip";
 import { Button } from "@/components/ui/button";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
 import { Switch } from "@/components/ui/switch";
@@ -59,6 +60,7 @@ import {
 import {
   useCreateModelCatalogEntry,
   useDeleteModelCatalogEntry,
+  useModelAllowance,
   useModelAttention,
   useModelCatalogDeleteImpact,
   useModelCatalog,
@@ -1409,6 +1411,46 @@ function UsageCell({
 }
 
 // ---------------------------------------------------------------------------
+// Capability chips
+// ---------------------------------------------------------------------------
+
+// Declared capability features (RFC 0036). Names outside this list render nothing.
+const CAPABILITY_FEATURES = [
+  ["tool_use", "Tool use"],
+  ["structured_output", "Structured output"],
+  ["session_resume", "Session resume"],
+  ["vision", "Vision"],
+] as const;
+
+/** Read-only declaration chips. Declarations are claims, not proof. */
+function CapabilityChips({ capabilities }: { capabilities?: Record<string, boolean> }) {
+  const chips = CAPABILITY_FEATURES.flatMap(([key, label]) => {
+    const declared = capabilities?.[key];
+    if (typeof declared === "boolean") {
+      return [{ key, label, state: declared ? "Declared supported" : "Declared unsupported" }];
+    }
+    // Only vision reports absence; other absent features render nothing.
+    return key === "vision" ? [{ key, label, state: "Unknown" }] : [];
+  });
+  return (
+    <div
+      className="flex items-center gap-1 flex-wrap"
+      data-testid="capability-chips"
+      aria-label="Declared capabilities"
+    >
+      {chips.map((chip) => (
+        <span
+          key={chip.key}
+          className="rounded border border-border px-1 font-mono text-[9px] uppercase tracking-widest text-muted-foreground"
+        >
+          {chip.label}: {chip.state}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Model row
 // ---------------------------------------------------------------------------
 
@@ -1602,6 +1644,7 @@ function ModelRow({
                   ? "ineligible after failed probe"
                   : "eligible"}
           </p>
+          <CapabilityChips capabilities={model.capabilities} />
           <div className="flex items-center gap-2 flex-wrap">
             <span>
               Attention: {attentionLoading
@@ -1786,6 +1829,7 @@ export default function SettingsModelsPage() {
 
   const { data, isLoading, isError } = useModelCatalog();
   const attentionQuery = useModelAttention();
+  const allowanceQuery = useModelAllowance();
   const now = new Date();
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const spendSummary = useSpendSummary(
@@ -1944,6 +1988,12 @@ export default function SettingsModelsPage() {
           </div>
         )
       )}
+
+      <ModelAllowanceStrip
+        data={allowanceQuery.data?.data}
+        isError={allowanceQuery.isError}
+        isForbidden={allowanceQuery.isForbidden}
+      />
 
       {/* Add model dialog */}
       <AddModelDialog open={addOpen} onOpenChange={setAddOpen} />

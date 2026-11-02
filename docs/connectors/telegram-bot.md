@@ -21,33 +21,12 @@ the Dashboard Secrets page; neither credential is read from connector environmen
 variables. A failed callback authentication leaves the action pending and never
 claims the decision succeeded.
 
-## Decision Callbacks
+## Retired engineering decision buttons
 
-Decision buttons use the separate `dsk1` prefix. Before ingestion, the connector verifies the
-sender's primary verified owner channel, loads the prompt, and verifies its HMAC against the
-prompt creation time. It forwards the **original** callback token to
-`POST /api/decisions/prompts/{prompt_id}/choose` as JSON `token` alongside `option_index`, with
-`X-Butlers-Approval-Callback-Token` and `X-Butlers-Decision-Actor: owner@telegram`. These existing
-scoped credentials do not authorize the owner-intent or digest routes; an owner API key cannot
-substitute at choose. Use compatible connector/API versions together; tokenless requests have no
-fallback.
-
-The API independently resolves the shared Tier 1 `APPROVAL_CALLBACK_SECRET` from the database
-with `env_fallback=False`, locks the current prompt until the intent transaction commits, and
-checks its current creation-time signature plus exact URL prompt id and body option index before
-any reconciliation or write. Missing DB custody returns `503 callback_verification_unavailable`.
-Invalid or missing tokens return `403 invalid_callback_token`; malformed whole requests, invalid
-path UUIDs and other field errors return `422 invalid_callback_request` (also for mixed errors).
-Missing prompt remains 404, unoffered index 422, changed options and consumed/conflicting choices
-409, and unavailable decision evidence 503. A repeated identical valid tap returns the existing
-intent with `meta.created=false` and the existing Already handled toast.
-
-Audit events retain request/effect metadata with a fixed redacted body, while response errors,
-logs and telemetry omit raw callback tokens, signing secrets and credentials. A token-bearing
-POST transport error logs only a categorical failure, asks the owner to retry and retains the
-keyboard; it does not ingest or error-buffer the update. Malformed `dsk1` Unicode receives only
-the generic acknowledgement. No token expiry, routing activation or reoffer policy is introduced;
-see [Decision beads](../operations/decision-beads.md) for the transaction and refusal contract.
+Engineering decision routing and its callback API are retired. Old decision
+buttons receive only the generic unsupported-callback acknowledgement; they
+cannot choose an option, send a new prompt or enter ingestion. Approval buttons
+retain their existing verified-owner, HMAC, credential and route boundaries.
 
 ## Request Context Mapping
 
@@ -76,6 +55,28 @@ The connector extracts normalized text from Telegram messages using a tiered str
 3. **Media descriptor** -- Synthesized tags for media-only messages:
    - `[Photo]`, `[Sticker: emoji]`, `[Voice message]`, `[Video]`, `[GIF]`, `[Document]`, `[Audio]`, `[Location]`, `[Contact: Name]`, `[Poll: Question]`, `[Dice]`
 4. **None** -- Service messages with no user content (e.g., `new_chat_members`).
+
+## Voice-Note Transcription
+
+Off by default. With `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED=true`, a caption-less voice
+note from the verified owner becomes its transcript in `payload.normalized_text` instead of
+`[Voice message]` (spec: `openspec/specs/telegram-voice-transcription/spec.md`).
+
+- **Pipeline.** Owner check (`resolve_owner_channel_via_definer`) and forward check, then the size
+  (20 MB) and duration (`CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S`) bounds, all before any Telegram
+  file call. Then `getFile` plus a capped download (one retry), an `ffmpeg` transcode to 16 kHz mono
+  PCM (`src/butlers/connectors/telegram_voice.py`), and one call on the shared
+  `TranscriptionClient` from `connectors/live_listener/transcription.py`.
+- **Fallback.** Disabled, non-owner, forwarded, oversize, overlong, download, transcode, STT or
+  empty/low-confidence outcomes keep `[Voice message]`; the message is still ingested.
+- **Outcome.** Every caption-less voice note carries `payload.transcription`
+  (`source_media`, `status`, `confidence`, `language`, `stt_backend`), which Switchboard stores with
+  the message so the responding session can tell the owner a note was not transcribed. The counter
+  `connector_telegram_voice_transcription_total{status}` counts outcomes.
+- **Privacy.** Audio stays in memory for one note and is never written to disk, attached, logged or
+  put in a metric label. Logs never carry transcript text.
+- **Deployment.** No STT service is deployed today. Enabling needs a reachable Wyoming, WebSocket
+  or HTTP endpoint in `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL`; the runtime image ships `ffmpeg`.
 
 ## Update Retrieval Modes
 
@@ -132,11 +133,12 @@ Switchboard through the module's `react_for_ingest()`; the emoji constants live 
 
 ## Environment Variables
 
+The canonical descriptor supplies provider `telegram` and channel `telegram_bot`;
+identity environment variables cannot relabel emitted envelopes.
+
 | Variable | Required | Description |
 |---|---|---|
 | `SWITCHBOARD_MCP_URL` | Yes | SSE endpoint for Switchboard MCP server |
-| `CONNECTOR_PROVIDER` | Yes (default: `telegram`) | Provider name |
-| `CONNECTOR_CHANNEL` | Yes (default: `telegram_bot`) | Channel name |
 | `BUTLER_TELEGRAM_TOKEN` | Yes | Bot token (resolved from DB first, then env) |
 | `CONNECTOR_POLL_INTERVAL_S` | For polling | Poll interval in seconds (default: 1.0) |
 | `CONNECTOR_WEBHOOK_URL` | For webhook | Public webhook URL |
@@ -144,6 +146,10 @@ Switchboard through the module's `react_for_ingest()`; the emoji constants live 
 | `CONNECTOR_HEALTH_PORT` | No (default: 40081) | HTTP port for health endpoint |
 | `CONNECTOR_BUTLER_DB_NAME` | No | Local butler DB for per-butler secret overrides |
 | `BUTLER_SHARED_DB_NAME` | No (default: `butlers`) | Shared credential DB name |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_ENABLED` | No (default: false) | Transcribe owner voice notes |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_URL` | When enabled | STT service URL (no default) |
+| `CONNECTOR_TELEGRAM_VOICE_TRANSCRIPTION_PROTOCOL` | No (default: `wyoming`) | `wyoming`, `websocket` or `http` |
+| `CONNECTOR_TELEGRAM_VOICE_MAX_DURATION_S` | No (default: 120) | Longest voice note transcribed, in seconds |
 
 ## Health Endpoint
 

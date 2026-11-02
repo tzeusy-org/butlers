@@ -29,6 +29,7 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.tools.relationship.entity_merge import (
     EntityMergeResult,
     SourceEntityNotFoundError,
@@ -144,8 +145,8 @@ def _app_with_pool(
     app = create_app()
     patcher = pytest.MonkeyPatch()
     for butler_name, router_module in app.state.butler_routers:
-        if butler_name == "relationship" and hasattr(router_module, "_get_db_manager"):
-            app.dependency_overrides[router_module._get_db_manager] = lambda: mock_db
+        if butler_name == "relationship":
+            app.dependency_overrides[get_db] = lambda: mock_db
             patcher.setattr(router_module, "merge_entity_pair", merge_service)
             break
     app.state.merge_service_patcher = patcher

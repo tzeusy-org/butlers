@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp import FastMCP
 from pydantic import BaseModel, ValidationError
 
 from butlers.modules.base import Module
@@ -32,6 +33,7 @@ from butlers.modules.google_health import (
     GoogleHealthConfig,
     GoogleHealthModule,
 )
+from butlers.testing.mcp import registered_tools
 
 pytestmark = pytest.mark.unit
 
@@ -62,22 +64,8 @@ def health_module() -> GoogleHealthModule:
 
 
 @pytest.fixture
-def mock_mcp() -> MagicMock:
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    return mcp
+def mock_mcp() -> FastMCP:
+    return FastMCP("providers8-google_health-tools")
 
 
 class _FakePool:
@@ -118,31 +106,19 @@ class _FakePool:
         return row.get("valid_at")
 
 
-def _make_connected_module(pool: _FakePool | None = None) -> tuple[GoogleHealthModule, MagicMock]:
-    """Return a module with _scopes_ok=True and a fresh mock_mcp bound to *pool*."""
+def _make_connected_module(
+    pool: _FakePool | None = None,
+) -> tuple[GoogleHealthModule, FastMCP, SimpleNamespace]:
+    """Return a connected module, real MCP server, and explicit pool holder."""
     module = GoogleHealthModule()
     module._scopes_ok = True
-
-    mcp = MagicMock()
-    tools: dict[str, Any] = {}
-
-    def tool_decorator(*_args, **kwargs):
-        name = kwargs.get("name")
-
-        def decorator(fn):
-            tools[name or fn.__name__] = fn
-            return fn
-
-        return decorator
-
-    mcp.tool = tool_decorator
-    mcp._registered_tools = tools
-    mcp._db = SimpleNamespace(pool=pool or _FakePool())
-    return module, mcp
+    mcp = FastMCP("providers8-google-health-connected-tools")
+    db = SimpleNamespace(pool=pool or _FakePool())
+    return module, mcp, db
 
 
-async def _register(module: GoogleHealthModule, mcp: MagicMock) -> None:
-    await module.register_tools(mcp=mcp, config={}, db=mcp._db, butler_name="health")
+async def _register(module: GoogleHealthModule, mcp: FastMCP, db: SimpleNamespace) -> None:
+    await module.register_tools(mcp=mcp, config={}, db=db, butler_name="health")
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +174,7 @@ class TestToolRegistration:
     ) -> None:
         """All eight tools are registered regardless of credentials."""
         await health_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        assert set(mock_mcp._registered_tools.keys()) == EXPECTED_HEALTH_TOOLS
+        assert set((await registered_tools(mock_mcp)).keys()) == EXPECTED_HEALTH_TOOLS
 
     async def test_registers_tools_when_not_connected(
         self, health_module: GoogleHealthModule, mock_mcp: MagicMock
@@ -206,7 +182,7 @@ class TestToolRegistration:
         """Tools are registered even when credentials are absent (degraded mode)."""
         # Module never had on_startup called — _scopes_ok is False
         await health_module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        assert len(mock_mcp._registered_tools) == len(EXPECTED_HEALTH_TOOLS)
+        assert len(await registered_tools(mock_mcp)) == len(EXPECTED_HEALTH_TOOLS)
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +311,7 @@ class TestToolsNotConnected:
         module = GoogleHealthModule()
         # _scopes_ok defaults to False
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        result = await mock_mcp._registered_tools[tool_name]()
+        result = await (await registered_tools(mock_mcp))[tool_name]()
         assert result == {"error": _NOT_CONNECTED_ERROR}
 
 
@@ -349,9 +325,9 @@ class TestToolsEmptyData:
 
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_HEALTH_TOOLS))
     async def test_every_tool_reports_found_false_on_empty_pool(self, tool_name: str) -> None:
-        module, mcp = _make_connected_module(_FakePool({}))
-        await _register(module, mcp)
-        result = await mcp._registered_tools[tool_name]()
+        module, mcp, db = _make_connected_module(_FakePool({}))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))[tool_name]()
         assert result["found"] is False
         assert "message" in result
 
@@ -377,9 +353,9 @@ class TestToolComputation:
                 }
             ]
         }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_sleep_latest"]()
+        module, mcp, db = _make_connected_module(_FakePool(rows))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_sleep_latest"]()
         assert result["found"] is True
         assert result["duration_minutes"] == 452.0
         assert result["efficiency"] == 91
@@ -409,9 +385,9 @@ class TestToolComputation:
                 },
             ]
         }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_sleep_history"](days=7)
+        module, mcp, db = _make_connected_module(_FakePool(rows))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_sleep_history"](days=7)
         assert result["found"] is True
         assert result["avg_duration_minutes"] == 435.0
         assert result["avg_efficiency"] == 85.0
@@ -439,9 +415,9 @@ class TestToolComputation:
                 },
             ]
         }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_hr_history"](days=30)
+        module, mcp, db = _make_connected_module(_FakePool(rows))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_hr_history"](days=30)
         assert result["found"] is True
         assert result["summary"]["min"] == 60
         assert result["summary"]["max"] == 62
@@ -459,9 +435,9 @@ class TestToolComputation:
                 }
             ]
         }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_vo2_max_latest"]()
+        module, mcp, db = _make_connected_module(_FakePool(rows))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_vo2_max_latest"]()
         assert result["found"] is True
         assert result["value"] == 46.5
         assert result["midpoint"] == 46.5
@@ -485,9 +461,9 @@ class TestToolComputation:
                 },
             ],
         }
-        module, mcp = _make_connected_module(_FakePool(rows))
-        await _register(module, mcp)
-        result = await mcp._registered_tools["health_activity_summary"](days=7)
+        module, mcp, db = _make_connected_module(_FakePool(rows))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))["health_activity_summary"](days=7)
         assert result["found"] is True
         assert result["avg_steps"] == 12000.0
         assert result["days_meeting_10k_steps"] == 1
@@ -508,14 +484,14 @@ class TestNoInstructionContract:
     ) -> None:
         module = GoogleHealthModule()
         await module.register_tools(mcp=mock_mcp, config={}, db=None, butler_name="health")
-        result = await mock_mcp._registered_tools[tool_name]()
+        result = await (await registered_tools(mock_mcp))[tool_name]()
         assert "instruction" not in result
 
     @pytest.mark.parametrize("tool_name", sorted(EXPECTED_HEALTH_TOOLS))
     async def test_empty_data_result_has_no_instruction_key(self, tool_name: str) -> None:
-        module, mcp = _make_connected_module(_FakePool({}))
-        await _register(module, mcp)
-        result = await mcp._registered_tools[tool_name]()
+        module, mcp, db = _make_connected_module(_FakePool({}))
+        await _register(module, mcp, db)
+        result = await (await registered_tools(mcp))[tool_name]()
         assert "instruction" not in result
 
 
@@ -528,9 +504,9 @@ class TestNoDirectApiCalls:
     """Verify no tool result contains health.googleapis.com."""
 
     async def test_no_tool_contains_googleapis_url(self) -> None:
-        module, mcp = _make_connected_module(_FakePool({}))
-        await _register(module, mcp)
-        for _name, fn in mcp._registered_tools.items():
+        module, mcp, db = _make_connected_module(_FakePool({}))
+        await _register(module, mcp, db)
+        for _name, fn in (await registered_tools(mcp)).items():
             result = await fn()
             result_str = str(result)
             assert "health.googleapis.com" not in result_str, (

@@ -4,7 +4,7 @@
 The QA Staffer SHALL run a scheduler-driven patrol loop that executes at a configurable interval (default: 10 minutes). Each patrol cycle is a discrete unit of work with its own DB record.
 
 ID: REQ-staffer-qa-011
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Patrol tick fires on schedule
@@ -60,7 +60,7 @@ Scope: v1-mandatory
 Enabled deterministic discovery sources SHALL implement the companion `discover_batch(lookback_minutes: int, checkpoint: SourceCheckpoint | None) -> DiscoveryBatch` method and report a source-generation-bound progress token, covered interval or observation boundary, and complete/partial/unavailable status; durable progress SHALL advance only with persisted findings or explicit durable exclusions.
 
 ID: REQ-staffer-qa-012
-Source: docs/reviews/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
 Scope: v1-mandatory
 
 #### Scenario: Batch protocol preserves existing inbox authority

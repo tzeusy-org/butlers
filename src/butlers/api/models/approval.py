@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class TargetContact(BaseModel):
@@ -171,6 +172,7 @@ class ApprovalDetail(BaseModel):
     blast_radius: Literal["none", "self", "contact", "external"] | None = None
     reversibility: Literal["reversible", "compensable", "irreversible"] | None = None
     proposed_action: dict[str, Any]
+    call_preview: ApprovalCallPreview | None = None
     status: str
     decided_by: str | None = None
     decided_at: datetime | None = None
@@ -305,10 +307,27 @@ class ApprovalsPolicyUpdate(ApprovalsPolicy):
         return self
 
 
+class DisplayedApprovalCall(BaseModel):
+    """The call shown to the owner; never a source of actor authority."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    tool_name: str = Field(min_length=1)
+    args_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ApprovalCallPreview(BaseModel):
+    """Complete deterministic facts of a call safe for one-tap approval."""
+
+    title: str
+    facts: list[dict[str, str]]
+    displayed_call: DisplayedApprovalCall
+
+
 class ApprovalApproveRequest(BaseModel):
     """Request body for POST /api/approvals/{id}/approve."""
 
     edits: dict[str, Any] | None = Field(default=None, description="Optional edits to tool args")
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalDenyRequest(BaseModel):
@@ -409,6 +428,7 @@ class ApprovalActionApproveRequest(BaseModel):
     """Request body for approving an action."""
 
     create_rule: bool = Field(default=False, description="Create a standing rule from this action")
+    displayed_call: DisplayedApprovalCall | None = None
 
 
 class ApprovalActionRejectRequest(BaseModel):
@@ -433,6 +453,77 @@ class ApprovalRuleFromActionRequest(BaseModel):
 
     action_id: str
     constraint_overrides: dict[str, Any] | None = None
+
+
+class StandingReplyTemplateDraftCreateRequest(BaseModel):
+    """Owner request to save an inactive standing-reply template draft.
+
+    ``extra="forbid"`` refuses any activation field (such as ``active``): a draft
+    has no active state and this API can never create one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    butler: str
+    tool_name: str
+    templates: dict[str, str]
+    recipient_entity_ids: list[UUID] = Field(min_length=1)
+    description: str = Field(default="", max_length=500)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+
+
+class StandingReplyTemplateDraftEditRequest(BaseModel):
+    """Owner edit of a draft's content; ``expected_revision`` guards against races."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    templates: dict[str, str]
+    recipient_entity_ids: list[UUID] = Field(min_length=1)
+    description: str = Field(default="", max_length=500)
+
+
+class StandingReplyTemplateDraftRevokeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class StandingReplyTemplatePreviewRequest(BaseModel):
+    """A hypothetical send call to test against a draft.  Nothing is sent or approved."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tool_name: str
+    tool_args: dict[str, Any]
+
+
+class StandingReplyTemplateDraft(BaseModel):
+    """An inactive draft.  ``state`` is ``draft`` or ``revoked``; never active."""
+
+    id: str
+    butler: str
+    tool_name: str
+    templates: dict[str, str]
+    recipient_entity_ids: list[str]
+    description: str
+    state: Literal["draft", "revoked"]
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+    revoked_at: datetime | None = None
+
+
+class StandingReplyTemplatePreview(BaseModel):
+    """Preview-only match result.  ``authority`` is always ``none``."""
+
+    draft_id: str
+    revision: int
+    matched: bool
+    eligible: bool
+    reasons: list[str]
+    slots: dict[str, dict[str, str]]
+    authority: Literal["none"]
 
 
 class ExpireStaleActionsResponse(BaseModel):
@@ -483,3 +574,10 @@ class AutonomySuggestionDismissRequest(BaseModel):
 
     reason: str | None = Field(default=None, description="Optional reason for dismissal")
     cooldown_days: int = Field(default=30, ge=0, description="Days before suggestion can reappear")
+
+
+class ApprovalStepUpOptionsRequest(BaseModel):
+    """Only existing standing-rule consumers; future D13 consumers stay dark."""
+
+    kind: Literal["create", "from_action", "approve_with_rule", "promotion"]
+    parameters: dict[str, Any]

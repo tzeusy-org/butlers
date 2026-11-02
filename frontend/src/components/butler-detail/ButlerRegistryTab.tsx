@@ -5,7 +5,7 @@
  */
 
 import RegistryTable from "@/components/switchboard/RegistryTable.tsx";
-import { ButlerPanelGrid, Panel } from "@/components/butler-detail/atoms";
+import { ButlerPanelGrid, Panel } from "@/components/ui/atoms";
 
 export default function ButlerRegistryTab() {
   return (

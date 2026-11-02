@@ -118,10 +118,10 @@ _TERMINAL_LIFECYCLE_STATES = frozenset({"sent", "failed", "uncertain"})
 
 
 async def _wait_until_terminal(
-    pool: asyncpg.Pool, episode_id: uuid.UUID, *, timeout: float = 5.0
+    pool: asyncpg.Pool, episode_id: uuid.UUID, *, timeout_s: float = 5.0
 ) -> str:
     """Poll for the worker's own progress instead of sleeping a fixed guess."""
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_event_loop().time() + timeout_s
     state = await _lifecycle_state(pool, episode_id)
     while state not in _TERMINAL_LIFECYCLE_STATES and asyncio.get_event_loop().time() < deadline:
         await asyncio.sleep(0.05)

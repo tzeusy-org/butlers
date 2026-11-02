@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,13 +33,11 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerConnectionInfo, get_butler_configs
+from butlers.api.deps import ButlerConnectionInfo, get_butler_configs, get_db
 from butlers.api.routers import system as system_router
-from butlers.api.routers.system import (
-    _commits_behind_main,
-    _get_db_manager,
-)
+from butlers.api.routers.system import _commits_behind_main
 from butlers.core.backup_facts import read_backup_facts_from_dir
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -102,17 +101,8 @@ def _install_fake_github(monkeypatch, *, status_code: int = 200, payload: dict |
 
 def _make_app_with_db(mock_db):
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
-
-
-def _make_record(row: dict) -> MagicMock:
-    rec = MagicMock()
-    rec.__getitem__ = MagicMock(side_effect=lambda k: row[k])
-    rec.get = MagicMock(side_effect=lambda k, default=None: row.get(k, default))
-    for k, v in row.items():
-        setattr(rec, k, v)
-    return rec
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +148,8 @@ def _make_db_endpoint_mock(*, fail_at=None, schema_rows=None, table_rows=None):
         if fail_at in ("schema", "table"):
             raise RuntimeError("permission denied")
         if "GROUP BY" in sql:
-            return [_make_record(r) for r in schema_rows]
-        return [_make_record(r) for r in table_rows]
+            return [Record(r) for r in schema_rows]
+        return [Record(r) for r in table_rows]
 
     pool.fetchval = AsyncMock(side_effect=_fetchval)
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -923,6 +913,61 @@ async def test_conditions_attention_unreadable_is_unavailable_not_silent():
     assert other["attention"] is None
 
 
+@pytest.mark.parametrize(
+    ("age_min", "resolved_after_min", "expected"),
+    [
+        (30, None, "not_raised"),
+        (2, None, "within_grace"),
+        (30, 3, None),
+        (30, 20, "not_raised"),
+        (6, None, "within_grace"),
+        (30, 6, None),
+        (9, None, "not_raised"),
+    ],
+    ids=[
+        "aged-active",
+        "inside-grace",
+        "resolved-inside-grace",
+        "resolved-after-grace",
+        "inside-pass-allowance",
+        "resolved-inside-pass-allowance",
+        "past-pass-allowance",
+    ],
+)
+async def test_conditions_without_marker_report_not_raised_or_within_grace(
+    age_min, resolved_after_min, expected
+):
+    """No marker: aged paging rows read not_raised, never a calm absence (bu-q7vx1q.55)."""
+    detected = datetime.now(UTC) - timedelta(minutes=age_min)
+    row = _paging_condition_rows()[0]
+    row["first_detected_at"] = detected
+    if resolved_after_min is not None:
+        row["state"] = "resolved"
+        row["resolved_at"] = detected + timedelta(minutes=resolved_after_min)
+    attention_pool = AsyncMock()
+    attention_pool.fetch = AsyncMock(return_value=[])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = _make_conditions_pool_mock(rows=[row])
+    mock_db.credential_shared_pool.return_value = attention_pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions")
+    [condition] = resp.json()["data"]["conditions"]
+    got = condition["attention"]
+    assert (got["status"] if got else None) == expected
+
+
+def test_attention_grace_mirror_agrees_with_the_producer():
+    """The Python mirror of the producer's attention grace must match init-db.sql."""
+    from butlers.api.runtime_attention_status import CONDITION_ATTENTION_GRACE
+
+    sql = (Path(__file__).resolve().parents[2] / "scripts" / "init-db.sql").read_text()
+    match = re.search(r"v_attention_grace CONSTANT INTERVAL := interval '(\d+) minutes'", sql)
+    assert match is not None
+    assert CONDITION_ATTENTION_GRACE.total_seconds() == int(match.group(1)) * 60
+
+
 async def test_conditions_rejects_invalid_state():
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = _make_conditions_pool_mock(rows=[])
@@ -1343,6 +1388,114 @@ async def test_backups_run_receipt_survives_a_directory_with_no_dump_at_all(
 
 
 # ---------------------------------------------------------------------------
+# GET /api/system/backups -- off-node restic copy (bu-ivuf9u)
+#
+# deploy/backup/restic_offsite_copy.sh rewrites offsite_last_run.json in the
+# same volume. The chart sets BUTLERS_OFFSITE_COPY_ENABLED only when the copy
+# job exists, so an absent receipt is "no copy yet" there and "not configured"
+# everywhere else.
+# ---------------------------------------------------------------------------
+
+
+def _offsite_receipt(finished_at: datetime, *, result: str = "success", reason: str = "ok") -> str:
+    exit_code = 0 if result == "success" else 1
+    stamp = finished_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (
+        f'{{"result":"{result}","reason":"{reason}","exit_code":{exit_code},'
+        f'"finished_at":"{stamp}","snapshot_id":"0a1b2c3d"}}\n'
+    )
+
+
+async def test_backups_offsite_copy_not_configured_is_reported_as_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Without the chart flag the copy is "disabled", even if a stale receipt lingers."""
+    monkeypatch.delenv("BUTLERS_OFFSITE_COPY_ENABLED", raising=False)
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "offsite_last_run.json").write_text(
+        _offsite_receipt(datetime.now(UTC) - timedelta(days=30)), encoding="utf-8"
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    assert data["offsite_copy"] == {
+        "result": "disabled",
+        "finished_at": None,
+        "reason": None,
+        "snapshot_id": None,
+        "stale": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("receipt_age", "result", "reason", "expected_stale"),
+    [
+        (timedelta(hours=2), "success", "ok", False),
+        (timedelta(hours=40), "success", "ok", True),
+        (timedelta(hours=2), "failed", "repo_unreachable", False),
+    ],
+)
+async def test_backups_offsite_copy_reports_outcome_and_staleness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_age: timedelta,
+    result: str,
+    reason: str,
+    expected_stale: bool,
+):
+    """An enabled copy reports its last run, and a run older than 36h is stale."""
+    monkeypatch.setenv("BUTLERS_OFFSITE_COPY_ENABLED", "1")
+    _write_fresh_dump(tmp_path)
+    (tmp_path / "offsite_last_run.json").write_text(
+        _offsite_receipt(datetime.now(UTC) - receipt_age, result=result, reason=reason),
+        encoding="utf-8",
+    )
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    copy = data["offsite_copy"]
+    assert copy["result"] == result
+    assert copy["reason"] == reason
+    assert copy["snapshot_id"] == "0a1b2c3d"
+    assert copy["stale"] is expected_stale
+    # The local dump is untouched by the off-node verdict.
+    assert data["last_backup_status"] == "healthy"
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        None,
+        "not json",
+        '{"result":"failed","reason":"ssh -i /secret/key user@100.64.0.9 refused",'
+        '"exit_code":1,"finished_at":"2026-05-03T02:00:11Z","snapshot_id":"zz; rm -rf /"}',
+    ],
+)
+async def test_backups_offsite_copy_never_reads_absence_or_hostile_text_as_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt: str | None
+):
+    """Enabled with no readable receipt is unknown and stale; free text never escapes."""
+    monkeypatch.setenv("BUTLERS_OFFSITE_COPY_ENABLED", "1")
+    _write_fresh_dump(tmp_path)
+    if receipt is not None:
+        (tmp_path / "offsite_last_run.json").write_text(receipt, encoding="utf-8")
+
+    data = await _get_backups(tmp_path, monkeypatch)
+
+    copy = data["offsite_copy"]
+    if receipt is not None and receipt.startswith("{"):
+        assert copy["result"] == "failed"
+        assert copy["reason"] == "unrecognized reason"
+        assert copy["snapshot_id"] is None
+    else:
+        assert copy["result"] == "unknown"
+        assert copy["stale"] is True
+    serialized = json.dumps(data)
+    for leaked in ("/secret/key", "100.64.0.9", "rm -rf"):
+        assert leaked not in serialized
+
+
+# ---------------------------------------------------------------------------
 # GET /api/system/backups -- restore_drill ledger read (bu-9r3hd.5)
 # ---------------------------------------------------------------------------
 
@@ -1588,7 +1741,7 @@ def _make_egress_db(
     async def _fetch(sql, *args):
         if audit_fails:
             raise RuntimeError("DB error")
-        return [_make_record(r) for r in audit_rows]
+        return [Record(r) for r in audit_rows]
 
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     pool.fetch = AsyncMock(side_effect=_fetch)
@@ -1728,7 +1881,7 @@ def _make_heartbeat_db(
     async def _sw_fetch(sql, *args):
         if registry_fails:
             raise RuntimeError("DB error")
-        return [_make_record(r) for r in registry_rows]
+        return [Record(r) for r in registry_rows]
 
     sw_pool.fetch = AsyncMock(side_effect=_sw_fetch)
     butler_pool = AsyncMock()
@@ -1760,7 +1913,7 @@ def _make_heartbeat_app(mock_db, roster_names):
     the scenario under test.
     """
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     configs = [ButlerConnectionInfo(name=n, port=40000) for n in roster_names]
     app.dependency_overrides[get_butler_configs] = lambda: configs
     return app
@@ -1803,7 +1956,7 @@ async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_
             observed = fresh_receiver_timestamp if receiver_observation_present else None
         else:
             observed = old_legacy_timestamp
-        return [_make_record({"name": "general", "last_seen_at": observed})]
+        return [Record({"name": "general", "last_seen_at": observed})]
 
     switchboard_pool.fetch.side_effect = _registry_rows
     async with httpx.AsyncClient(
@@ -1823,6 +1976,65 @@ async def test_heartbeat_cutover_uses_receiver_observation_even_with_old_legacy_
         assert general["heartbeat_age_seconds"] is None
     assert general["active_session_count"] == 0
     assert general["error"] is None
+
+
+@pytest.mark.parametrize(
+    ("overrides", "observation", "policy", "eligibility"),
+    [
+        # Fresh failed probe after an earlier healthy observation.
+        ({"observed_state": "unavailable"}, "unavailable", "active", "ineligible"),
+        # A recorded healthy observation past its TTL cannot look green.
+        (
+            {"healthy_observed_at": datetime.now(UTC) - timedelta(seconds=400)},
+            "stale",
+            "active",
+            "ineligible",
+        ),
+        ({"policy_state": "paused"}, "healthy", "paused", "paused"),
+        ({"policy_state": "quarantined"}, "healthy", "quarantined", "ineligible"),
+        ({}, "healthy", "active", "eligible"),
+    ],
+)
+async def test_heartbeat_reports_probe_observation_and_policy_separately(
+    monkeypatch, overrides, observation, policy, eligibility
+):
+    monkeypatch.setenv("BUTLERS_RECEIVER_DERIVED_ROUTE_CUTOVER", "1")
+    now = datetime.now(UTC)
+    healthy_at = now - timedelta(seconds=60)
+    probe_at = now - timedelta(seconds=2)
+    row = {
+        "name": "general",
+        "last_seen_at": healthy_at,
+        "last_probe_at": probe_at,
+        "policy_state": "active",
+        "observed_state": "healthy",
+        "boot_epoch": 4,
+        "observed_boot_epoch": 4,
+        "route_compatible": True,
+        "accepting_routes": True,
+        "healthy_observed_at": healthy_at,
+        "liveness_ttl_seconds": 300,
+        "server_now": now,
+    } | overrides
+    mock_db = _make_heartbeat_db(registry_rows=[row])
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_heartbeat_app(mock_db, ["general"])),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/api/system/butlers/heartbeat")
+
+    assert resp.status_code == 200
+    general = resp.json()["data"]["butlers"][0]
+    # The failed attempt advances only last_probe_at; the legacy time stays
+    # on the earlier verified success and is not the health verdict.
+    assert general["last_probe_at"] == probe_at.isoformat()
+    assert general["last_heartbeat_at"] == healthy_at.isoformat()
+    assert general["heartbeat_age_seconds"] >= 60
+    assert general["observation_state"] == observation
+    assert general["administrative_policy"] == policy
+    assert general["route_compatibility"] == "compatible"
+    assert general["effective_eligibility"] == eligibility
+    assert general["active_session_count"] == 0 and general["error"] is None
 
 
 async def test_heartbeat_schema_unreachable_sets_error():
@@ -1871,6 +2083,9 @@ async def test_heartbeat_null_last_heartbeat_when_not_in_registry():
     general = next(b for b in butlers if b["name"] == "general")
     assert general["last_heartbeat_at"] is None
     assert general["heartbeat_age_seconds"] is None
+    assert general["last_probe_at"] is None
+    assert general["observation_state"] == "observer_unknown"
+    assert general["effective_eligibility"] == "unknown"
     assert general["active_session_count"] == 2
     assert general["error"] is None
 
@@ -2028,7 +2243,7 @@ class TestEgressSpan:
             return None
 
         async def _fetch(sql, *args):
-            return [_make_record(r) for r in audit_rows]
+            return [Record(r) for r in audit_rows]
 
         pool.fetchrow = AsyncMock(side_effect=_fetchrow)
         pool.fetch = AsyncMock(side_effect=_fetch)
@@ -2088,3 +2303,49 @@ class TestEgressSpan:
         spans = otel_exporter.get_finished_spans()
         egress_spans = [s for s in spans if s.name == "system.egress.read"]
         assert len(egress_spans) == 2
+
+
+@pytest.mark.asyncio
+async def test_background_jobs_never_report_storage_failure_as_an_empty_all_clear():
+    from butlers.core.job_health import JobHealthStore
+
+    app = create_app()
+
+    def unavailable():
+        raise RuntimeError("private-storage-token-sentinel")
+
+    app.state.background_job_health = JobHealthStore(unavailable)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/system/background-jobs")
+    assert response.status_code == 200
+    assert response.json()["data"] == {"jobs_available": False, "jobs": []}
+    assert "private-storage-token-sentinel" not in response.text
+
+    app.state.background_job_health = MagicMock()
+    app.state.background_job_health.read = AsyncMock(
+        return_value={
+            "jobs_available": True,
+            "jobs": [
+                {
+                    "name": "external_deadman",
+                    "job_class": "periodic",
+                    "state": "disabled",
+                    "reason": "disabled",
+                    "last_success_at": None,
+                    "last_progress_at": None,
+                    "error_count": 0,
+                    "consecutive_failures": 0,
+                    "transitions": [],
+                }
+            ],
+        }
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/system/background-jobs")
+    assert response.status_code == 200
+    assert response.json()["data"]["jobs_available"] is True
+    assert response.json()["data"]["jobs"][0]["state"] == "disabled"

@@ -9,7 +9,7 @@ import { StatusBadge } from "@/components/sessions/StatusBadge";
 import { PurposeLaneBadge } from "@/components/sessions/PurposeLaneBadge";
 import { EmptyState as EmptyStateUI } from "@/components/ui/empty-state";
 import { SourceDegradedNote } from "@/components/ui/query-boundary";
-import { usePrefetchOnIntent } from "@/hooks/use-prefetch-on-intent";
+import { useNavIntent } from "@/hooks/use-nav-intent";
 import { formatCostUsd } from "@/lib/format-cost";
 import { formatDurationMs } from "@/lib/format-duration";
 import { truncate } from "@/lib/truncate";
@@ -92,7 +92,7 @@ function SessionTableRow({
   onSessionClick,
   children,
 }: SessionTableRowProps) {
-  const prefetch = usePrefetchOnIntent(
+  const prefetch = useNavIntent(
     interactive ? `/sessions/${encodeURIComponent(session.id)}` : null,
   );
 

@@ -22,6 +22,12 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
+from butlers.connectors.catalog import connector_descriptor
+from butlers.connectors.email_spans import email_untrusted_spans
+from butlers.ingestion_bearer_scrub import scrub_message_text
+
+_DESCRIPTOR = connector_descriptor("live_listener")
+
 
 def endpoint_identity(device_name: str) -> str:
     """Return the canonical endpoint identity for a mic device.
@@ -59,9 +65,17 @@ def mint_idempotency_key(endpoint_id: str, unix_ms: int, transcript: str) -> str
     Args:
         endpoint_id: The endpoint identity (``"live-listener:mic:{device_name}"``).
         unix_ms: Millisecond-precision UNIX timestamp of speech segment offset.
-        transcript: The transcribed text (used for content hashing).
+        transcript: The transcribed text (its bearer-scrubbed form is hashed).
     """
-    content_hash = hashlib.sha256(transcript.encode()).hexdigest()
+    # The key is stored beside the scrubbed text (dedupe_key, idempotency_key), so hash the
+    # scrubbed transcript: a hash of the raw one lets a reader brute-force a spoken code.
+    try:
+        hashed = scrub_message_text(
+            transcript, source={"provider": _DESCRIPTOR.provider}, sender={"identity": "ambient"}
+        )
+    except Exception:
+        hashed = "[content withheld: bearer scrub failed]"
+    content_hash = hashlib.sha256(hashed.encode()).hexdigest()
     return f"voice:{endpoint_id}:{unix_ms}:{content_hash[:8]}"
 
 
@@ -103,8 +117,8 @@ def build_voice_envelope(
     return {
         "schema_version": "ingest.v1",
         "source": {
-            "channel": "voice",
-            "provider": "live-listener",
+            "channel": _DESCRIPTOR.channel,
+            "provider": _DESCRIPTOR.provider,
             "endpoint_identity": ep_id,
         },
         "event": {
@@ -125,6 +139,15 @@ def build_voice_envelope(
                 "discretion_reason": discretion_reason,
             },
             "normalized_text": transcript,
+            **(
+                {"untrusted_spans": spans}
+                if (
+                    spans := email_untrusted_spans(
+                        transcript, subject="", has_attached_message=False
+                    )
+                )
+                else {}
+            ),
         },
         "control": {
             "idempotency_key": idempotency_key,

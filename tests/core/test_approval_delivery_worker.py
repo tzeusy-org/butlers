@@ -282,7 +282,12 @@ async def test_source_runtime_reuses_correlation_without_exporting_local_fence()
             "message": "Synthetic approval.",
             "recipient": "owner-synthetic",
         },
-        "actions": [{"verb": "open_dashboard", "dashboard_url": "https://dashboard.example.test"}],
+        "actions": [
+            {
+                "verb": "open_dashboard",
+                "reference": {"kind": "self", "route_key": "approvals_queue", "params": {}},
+            }
+        ],
     }
 
     assert (await runtime.handoff(claim, envelope)).classification == "confirmed"

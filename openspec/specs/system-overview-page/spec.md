@@ -254,6 +254,14 @@ is derived from an actual check (bu-9r3hd.5).
     `result: "pass" | "fail" | "pending" | "degraded"`, and `detail: string | null`.
     `"pending"` means the drill has never run yet -- a real "unknown" state, never
     presented as a passing drill.
+  - `offsite_copy: OffsiteCopyFacts` -- outcome of the most recent off-node restic copy
+    of the dump directory, having `result: "success" | "failed" | "unknown" |
+    "disabled"`, `finished_at: string | null`, `reason: string | null` (a fixed
+    vocabulary), `snapshot_id: string | null` (hex), and `stale: boolean`.
+    `"disabled"` means the deployment runs no copy job; `"unknown"` means it does but
+    no readable receipt exists, which is never presented as a copy. `stale` is `true`
+    when an enabled copy has reported no run within 36 hours. A failed or stale
+    enabled copy is named in the system verdict banner.
 - **AND** the response wraps in the standard `ApiResponse<BackupFacts>` envelope
 
 #### Scenario: Unavailable backup source degrades gracefully
@@ -522,6 +530,22 @@ the dashboard instead of only via direct database access.
   condition, so each suppression is traceable back to the condition that
   caused it
 
+#### Scenario: An aged paging condition with no owner alert reads not raised, never calm
+
+- **WHEN** a fleet-control or overdue-QA condition has been active longer than the
+  producer's attention grace plus one controller pass and no owner-alert marker
+  exists for it
+- **THEN** its `attention.status` is `not_raised` and the panel shows "No owner alert
+  has been raised for this condition" and marks the tile degraded
+- **AND** the same condition still inside that bound reports `within_grace` and
+  renders calmly
+- **AND** a condition resolved inside that bound (its active time at most the grace
+  plus one controller pass) with no marker carries no attention line, because nothing
+  should have paged; one resolved after that bound keeps `not_raised`
+- **AND** an unreadable attention projection still reports `unavailable`, which wins
+  over `not_raised`
+- **AND** the grace reuses the producer's own constant and this surface sends no page
+
 ### Requirement: System Page Privacy Contract
 
 The System page and all `/api/system/*` endpoints SHALL operate under a strict access
@@ -668,6 +692,72 @@ duplicate panel.
 - **THEN** that row never computes or displays a QA-dispatch suppression
   count (owner conditions have no QA-dispatch suppression concept), while
   infra-ledger rows retain the existing suppression-count behavior
+
+### Requirement: Supervised Dashboard Background Work Health
+
+ID: REQ-system-overview-page-008
+Source: Non-Negotiable Rule 4; owner decision bu-c6wjr Option D (2026-08-13)
+Scope: v1-mandatory
+
+The System page SHALL expose persisted work health for every dashboard-api
+`supervise_lifespan_loop` consumer, separately from process liveness, ordinary
+scheduled tasks, and fleet connector health. The supervisor SHALL retain its
+existing restart and cancellation behavior. Recording failure SHALL NOT stop work.
+
+Current state SHALL be fenced by immutable process-instance identity and boot
+ordering: after a newer process claims a job, an older process SHALL NOT update
+its state. A new instance SHALL start without credit for the previous instance's
+success. Periodic work SHALL be `ok` only after a successful tick within its
+configured interval plus grace (one quarter interval, at least five seconds),
+`error` after failed or partially failed work, and `stale` when successful work
+or initial work becomes overdue. Continuous work SHALL be `ok` only with a
+recent connection/progress observation, `degraded` while reconnecting, and
+`error` after three consecutive reconnect failures. Disabled work SHALL be
+`disabled`; absent/current-instance-mismatched evidence SHALL be `unknown`.
+Starting, unknown, stale and unavailable SHALL never imply successful work.
+
+The shared current-state and transition tables SHALL store fixed safe reason
+codes, timestamps and counters, never exception text, tracebacks, URLs or
+credential values. Retention SHALL keep at most 100 transitions per job within
+30 days; every successful recording transaction SHALL prune both bounds, even
+when the current state is unchanged. Dashboard-owned storage SHALL remain
+protected from runtime-role writes and reads after bootstrap public-table grants.
+
+`GET /api/system/background-jobs` SHALL return an owner-dashboard fact envelope
+with `jobs_available` and registered `jobs`, including bounded recent transitions.
+Storage read or outstanding recording failure SHALL return `jobs_available=false`,
+never an empty all-clear. The System page SHALL show loading, request error,
+unavailable, empty, and each job state distinctly, with last successful work or
+connection progress and recorded failure counts. This surface SHALL NOT page,
+notify, execute work, or change scheduling or feature enablement.
+
+#### Scenario: A living loop catches a tick failure
+
+- **WHEN** a supervised loop catches an exception or reports partial failure
+- **THEN** its current health reports failed work while the loop continues
+- **AND** a later successful tick records recovery without storing private error text
+
+#### Scenario: Restart and concurrent old writer
+
+- **WHEN** a newer dashboard process claims a job after an older process succeeded
+- **THEN** the job starts without the old success, and subsequent old writes are fenced
+
+#### Scenario: Continuous connection fails and recovers
+
+- **WHEN** the LISTEN bridge reconnects unsuccessfully three consecutive times
+- **THEN** health moves from degraded to error
+- **AND** a successful listener connection records recovery and fresh progress
+
+#### Scenario: Storage cannot provide work evidence
+
+- **WHEN** recording or reading background health fails
+- **THEN** work continues and the owner sees unavailable evidence, not healthy emptiness
+
+#### Scenario: Retention and privacy survive runtime bootstrap grants
+
+- **WHEN** transitions exceed either retention bound and another tick records
+- **THEN** only the newest 100 within 30 days remain per job, using safe reason codes
+- **AND** runtime roles cannot read or forge dashboard health after bootstrap replay
 
 ## Source References
 

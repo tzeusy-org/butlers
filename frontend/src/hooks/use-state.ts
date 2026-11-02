@@ -26,18 +26,18 @@ export function useButlerState(butlerName: string) {
 }
 
 /** Mutation to set (create/update) a state entry for a butler. */
-export function useSetState(butlerName: string) {
+export function useSetState(butlerName: string, { notify = true }: { notify?: boolean } = {}) {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: ({ key, value }: { key: string; value: unknown }) =>
       setButlerState(butlerName, key, value),
     onSuccess: (_data, variables) => {
-      toast.success(`State key "${variables.key}" saved`);
+      if (notify) toast.success(`State key "${variables.key}" saved`);
       queryClient.invalidateQueries({ queryKey: ["butlers", butlerName, "state"] });
     },
     onError: (error, variables) => {
-      toast.error(`Failed to set "${variables.key}": ${error.message}`);
+      if (notify) toast.error(`Failed to set "${variables.key}": ${error.message}`);
     },
   });
 }

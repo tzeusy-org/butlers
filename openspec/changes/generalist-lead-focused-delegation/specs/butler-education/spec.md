@@ -33,6 +33,8 @@ The education butler SHALL run five scheduled tasks: a nightly analytics job, a 
 Source: RFC 0038 D2, D5
 Scope: v1-mandatory
 
+The weekly stale-flow check is the only sweep that can reach an unfinished mind map, so its work list SHALL be the mind map table rather than teaching-flow state. Keying it off flow state left maps whose flow state was never written permanently unreachable by cleanup.
+
 #### Scenario: Nightly analytics job configuration
 
 - **WHEN** the education butler daemon is running
@@ -50,9 +52,18 @@ Scope: v1-mandatory
 #### Scenario: Weekly stale-flow check configuration
 
 - **WHEN** the education butler daemon is running
-- **THEN** it includes a scheduled task (a deterministic job, or an obligation admission with a capability set declared in git) that checks for teaching flows with `last_session_at` older than 30 days
+- **THEN** it includes a scheduled task (a deterministic job, or an obligation admission with a capability set declared in git) whose work list is drawn from rows in `education.mind_maps` with `status IN ('draft', 'active')`, not from the set of `flow:*` KV keys
+- **AND** the task MUST abandon a map whose teaching flow has `last_session_at` older than 30 days
+- **AND** the task MUST abandon a `draft` map with zero nodes whose `created_at` is older than 24 hours, whether or not it has flow state
 - **AND** the task MUST clean up associated pending review schedules for abandoned flows
 - **AND** the task runs on a weekly cadence (cron expression MUST fire no more than once per day)
+
+#### Scenario: Stale-flow check reaches mind maps with no flow state
+
+- **WHEN** the weekly stale-flow check runs
+- **AND** a `draft` mind map older than 24 hours has zero nodes and no `flow:{mind_map_id}` KV entry
+- **THEN** the task MUST evaluate that map rather than skipping it
+- **AND** it MUST transition the map to `abandoned` via `mind_map_update_status()`
 
 #### Scenario: Daily spaced-repetition nudge configuration
 
@@ -72,7 +83,8 @@ Scope: v1-mandatory
 - **WHEN** `compute_analytics_snapshots` runs
 - **THEN** it MUST execute as a Python coroutine/function within the butler daemon process
 - **AND** it MUST NOT trigger the LLM CLI spawner
-- **AND** it MUST write one row per active mind_map into `analytics_snapshots` with `snapshot_date = today`
+- **AND** it MUST write one row per `active` mind_map into `analytics_snapshots` with `snapshot_date = today`
+- **AND** it MUST NOT write snapshot rows for `draft` mind maps, which have no nodes to measure
 
 #### Scenario: Analytics job is idempotent
 

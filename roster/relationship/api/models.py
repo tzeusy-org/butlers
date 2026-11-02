@@ -387,6 +387,32 @@ class OverdueContactsResponse(BaseModel):
     unmeasurable_count: int
 
 
+class PendingDebriefAttendee(BaseModel):
+    """An attendee frozen into a debrief snapshot (active-posture entities only)."""
+
+    entity_id: str | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class PendingDebrief(BaseModel):
+    """One prompted, unanswered meeting debrief."""
+
+    debrief_id: str
+    number: int | None = None
+    event_title: str | None = None
+    occurrence_start: str
+    prompted_at: str
+    attendees: list[PendingDebriefAttendee]
+
+
+class PendingDebriefsResponse(BaseModel):
+    """Pending debriefs; ``debriefs_available`` is false when the read failed."""
+
+    debriefs: list[PendingDebrief]
+    debriefs_available: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Entity-level tab API models (entity-keyed, facts-based)
 # ---------------------------------------------------------------------------
@@ -1559,23 +1585,6 @@ class EntityFactEntry(FactAttribution):
     staleness_band: str
 
 
-class EntityFactsResponse(BaseModel):
-    """Keyset-paginated response for ``GET /entities/{id}/facts``.
-
-    Keyset (cursor) pagination per the repo convention (CLAUDE.md §"Cursor
-    Pagination"): ordered ``created_at DESC, id DESC``, no ``total`` field.
-
-    - ``items`` — the page of fact rows (active identity rows by default;
-      labeled narrative rows additionally when ``store=all``).
-    - ``next_cursor`` — opaque cursor for the next page (``None`` on last page).
-    - ``has_more`` — True when more rows exist beyond this page.
-    """
-
-    items: list[EntityFactEntry]
-    next_cursor: str | None = None
-    has_more: bool
-
-
 # ---------------------------------------------------------------------------
 # Activity binning (entity v3 — "Activity binning parameter")
 # ---------------------------------------------------------------------------
@@ -1608,6 +1617,42 @@ class ActivityBinsResponse(BaseModel):
     bins: list[ActivityBin]
     degraded: bool = False
     degraded_reason: Literal["chronicler_activity_unavailable"] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Entity commitments (entity-chronicles-and-commitment-doors)
+# ---------------------------------------------------------------------------
+
+
+class EntityCommitmentItem(BaseModel):
+    """One active commitment between the owner and an entity.
+
+    The deliberately minimal Meeting Prep projection: no source, condition ID,
+    episode, state, confidence, timestamps, evidence, or other metadata.
+    """
+
+    kind: Literal["promise", "waiting_for", "follow_up", "obligation", "decision"]
+    direction: Literal["owner_to_other", "other_to_owner"]
+    summary: str
+    deadline: str | None = None
+    escalation_level: Literal["L0", "L1", "L2", "L3"]
+    fingerprint: str
+
+
+class EntityCommitmentsResponse(BaseModel):
+    """Response for ``GET /entities/{id}/commitments``.
+
+    ``degraded`` is true only when the commitment source could not be read;
+    ``degraded_reason`` is then the fixed content-blind discriminator and
+    ``items`` is empty, so a failure never reads as "no commitments".
+    """
+
+    items: list[EntityCommitmentItem]
+    total: int
+    limit: int
+    offset: int
+    degraded: bool = False
+    degraded_reason: Literal["commitment_source_unavailable"] | None = None
 
 
 # ---------------------------------------------------------------------------

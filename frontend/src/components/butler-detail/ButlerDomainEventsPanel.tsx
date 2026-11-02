@@ -40,8 +40,8 @@
 
 import { useId, useState } from "react"
 
-import { MonoLabel, Panel } from "@/components/butler-detail/atoms"
-import type { Tone } from "@/components/butler-detail/atoms-utils"
+import { MonoLabel, Panel } from "@/components/ui/atoms"
+import type { Tone } from "@/components/ui/atoms-utils"
 import { SourceDegradedNote } from "@/components/ui/query-boundary"
 import { Time } from "@/components/ui/time"
 import {

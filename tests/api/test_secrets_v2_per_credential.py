@@ -28,13 +28,15 @@ from asyncpg.exceptions import UndefinedTableError
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     CliRuntimeDetail,
     SystemSecretDetail,
     _content_blind_cli_detail,
     _content_blind_system_detail,
-    _get_db_manager,
 )
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -65,13 +67,6 @@ def _freeze_time(frozen_now: datetime = _FROZEN_NOW):
         yield frozen_now
 
 
-def _make_row(**kwargs) -> MagicMock:
-    """Build a MagicMock that behaves like an asyncpg Record."""
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
-
-
 def _make_entity_info_row(
     *,
     entity_id: str | None = None,
@@ -82,10 +77,10 @@ def _make_entity_info_row(
     last_test_ok: bool | None = None,
     last_test_code: int | None = None,
     last_test_message: str | None = None,
-) -> MagicMock:
+) -> Record:
     row_id = uuid4()
     eid = entity_id or str(uuid4())
-    return _make_row(
+    return make_row(
         id=row_id,
         entity_id=eid,
         type=info_type,
@@ -110,8 +105,8 @@ def _make_system_row(
     last_test_code: int | None = None,
     last_test_message: str | None = None,
     expires_at: datetime | None = None,
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return make_row(
         secret_key=key,
         secret_value=value,
         category=category,
@@ -135,8 +130,8 @@ def _make_cli_row(
     last_test_code: int | None = None,
     last_test_message: str | None = None,
     expires_at: datetime | None = None,
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return make_row(
         secret_key=key,
         secret_value=value,
         category="cli",
@@ -157,8 +152,8 @@ def _make_probe_row(
     message: str | None = None,
     recorded_at: datetime | None = None,
     latency_ms: int | None = None,
-) -> MagicMock:
-    return _make_row(
+) -> Record:
+    return make_row(
         ok=ok,
         code=code,
         message=message,
@@ -233,7 +228,7 @@ def _make_db_manager_for_per_credential(
 def _build_app(mock_db: MagicMock) -> TestClient:
     """Create a TestClient with the given mock DatabaseManager."""
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 
@@ -310,19 +305,19 @@ def test_user_credential_detail_publishes_capability_categories_not_scopes():
     entity_id = str(uuid4())
     refreshed_at = _NOW - timedelta(days=2)
     user_row = _make_entity_info_row(entity_id=entity_id, last_test_ok=True)
-    catalogue_row = _make_row(
+    catalogue_row = make_row(
         provider="google",
         required_scopes=[
             "https://www.googleapis.com/auth/calendar.readonly",
             "https://www.googleapis.com/auth/gmail.readonly",
         ],
     )
-    granted_row = _make_row(
+    granted_row = make_row(
         entity_id=entity_id,
         granted_scopes=["https://www.googleapis.com/auth/calendar.readonly"],
     )
-    expiry_row = _make_row(entity_id=entity_id, last_token_refresh_at=refreshed_at)
-    audit_row = _make_row(
+    expiry_row = make_row(entity_id=entity_id, last_token_refresh_at=refreshed_at)
+    audit_row = make_row(
         target="u:google",
         ts=_NOW,
         actor="owner",
@@ -359,7 +354,7 @@ def test_user_credential_detail_publishes_capability_categories_not_scopes():
 def test_user_credential_detail_maps_unknown_google_scope_to_other():
     """An unrecognised Google scope falls to 'other' rather than leaking through."""
     user_row = _make_entity_info_row(last_test_ok=True)
-    catalogue_row = _make_row(
+    catalogue_row = make_row(
         provider="google",
         required_scopes=["https://www.googleapis.com/auth/sentinel-unmapped-scope"],
     )
@@ -383,7 +378,7 @@ def test_user_credential_detail_maps_unknown_google_scope_to_other():
 def test_user_credential_detail_maps_non_google_scopes_to_connectivity():
     """Non-Google providers have one generic live check: 'connectivity'."""
     user_row = _make_entity_info_row(info_type="telegram_bot_token", last_test_ok=True)
-    catalogue_row = _make_row(provider="telegram_bot", required_scopes=["telegram:bot-token"])
+    catalogue_row = make_row(provider="telegram_bot", required_scopes=["telegram:bot-token"])
     mock_db = _make_db_manager_for_per_credential(user_row=user_row)
     shared_pool = mock_db.credential_shared_pool.return_value
 
@@ -418,22 +413,22 @@ def test_user_credential_detail_omits_every_raw_evidence_sentinel():
         last_test_message="sentinel-failure-tail",
     )
     probe_row = _make_probe_row(ok=False, code=401, message="sentinel-probe-message")
-    catalogue_row = _make_row(
+    catalogue_row = make_row(
         provider="google",
         required_scopes=["https://www.googleapis.com/auth/calendar.readonly"],
     )
-    granted_row = _make_row(
+    granted_row = make_row(
         entity_id=entity_id,
         granted_scopes=["https://www.googleapis.com/auth/gmail.readonly"],
     )
-    audit_row = _make_row(
+    audit_row = make_row(
         target="u:google",
         ts=_NOW,
         actor="owner",
         action="verified",
         note="sentinel-audit-note",
     )
-    capability_row = _make_row(
+    capability_row = make_row(
         credential_key="google_oauth_refresh:sentinel-capability",
         ok=False,
         code=403,
@@ -915,6 +910,19 @@ def test_cli_credential_miss_returns_404():
 
     resp = client.get("/api/secrets/cli/nonexistent-cli-id")
     assert resp.status_code == 404
+
+
+def test_cli_credential_miss_for_store_only_provider_returns_never_set_placeholder():
+    """An unset Claude key opens as never_set, matching its inventory row."""
+    mock_db = _make_db_manager_for_per_credential(cli_row=None)
+    client = _build_app(mock_db)
+
+    resp = client.get("/api/secrets/cli/cli-auth/claude")
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["id"] == "cli-auth/claude"
+    assert data["state"] == "never_set"
+    assert data["fingerprint"] is None
 
 
 def test_cli_credential_miss_no_shared_pool_returns_404():

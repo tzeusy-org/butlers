@@ -61,7 +61,7 @@ The dashboard will be available at `http://localhost:41173` with API requests pr
 
 Linked worktrees may reuse a shared `node_modules` directory. Vite and TypeScript write
 their generated state to this worktree's ignored `.vite/` directory, so the usual commands
-above remain safe. Run `npm run test:worktree-tooling` to check that contract.
+above remain safe.
 
 Alternatively, run the entire stack (Postgres + API + frontend) via Docker Compose from the project root:
 
@@ -100,26 +100,6 @@ Run ESLint checks:
 ```bash
 npm run lint
 ```
-
-### Stories (Ladle)
-
-Component stories are powered by [Ladle](https://www.ladle.dev/) — a lightweight
-Storybook alternative. Stories live next to their components as `*.stories.tsx`
-files.
-
-```bash
-# Serve stories in the browser with hot-reload
-npm run story
-
-# Production build of the story catalogue
-npm run story:build
-```
-
-Stories are located in `src/pages/` and `src/components/`:
-
-| File | What it covers |
-|---|---|
-| `src/pages/ButlerDetailPage.stories.tsx` | Gate-A A2 actions slot: all status states, loading, error |
 
 ### Accessibility (axe-core)
 

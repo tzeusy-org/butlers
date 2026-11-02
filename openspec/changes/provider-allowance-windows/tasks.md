@@ -14,7 +14,7 @@
 
 ## 3. Surfaces
 
-- [ ] 3.1 `GET /api/settings/models/allowance`, Models-tab and System-verdict countdown.
+- [x] 3.1 `GET /api/settings/models/allowance`, Models-tab and System-verdict countdown.
 
 ## 4. Unknown reset
 

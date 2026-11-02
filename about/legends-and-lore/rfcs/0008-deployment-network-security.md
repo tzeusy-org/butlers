@@ -261,8 +261,9 @@ Dashboard `/health` remains process liveness. The canonical public
 `GET /ready` returns a boolean `ready` response shape with content-blind checks for PostgreSQL,
 roster, observer freshness, fleet identity and routability, QA patrol age,
 supervised loops, and L3's effect-free internal Switchboard route preflight.
-Q4 alone owns public `/ready` and its exact owner-auth exception; the Compose
-launcher consumes that route. The preflight checks fixed-target
+Q4 alone owns public `/ready` and its exact owner-auth exception; the Helm
+release wrapper and the retained Compose `butlers deploy` consume that route
+through `butlers deployments await-ready`'s shared gate. The preflight checks fixed-target
 selection and reachability without target MCP calls or durable evidence
 writes, not transactional target acceptance. Compose and production deployment
 completion require two distinct complete observer cycles, two distinct

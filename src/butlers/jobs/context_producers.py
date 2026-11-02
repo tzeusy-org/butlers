@@ -20,9 +20,11 @@ permanently pinned; the signal simply expires.
 Producers and their sources
 ---------------------------
 - **calendar → meeting / focused** (writer ``general``): the currently-active
-  event in the general butler's ``calendar_events`` table. A focus-block title
-  maps to ``focused``; everything else maps to ``meeting``. Expiry is the
-  event's own end time.
+  event in the general butler's ``calendar_events`` table that the owner will
+  attend as busy time. An event the owner declined or marked free
+  (``transparency: transparent``) cannot assert context; an attended opaque
+  event overlapping it still wins. A focus-block title maps to ``focused``;
+  everything else maps to ``meeting``. Expiry is the event's own end time.
 - **home → at_home / in_space** (writer ``home``): fresh presence rows in
   ``ha_entity_snapshot`` belonging to the *owner* (per the
   ``home:presence:owner_entities`` state-store mapping) — a housemate's or
@@ -82,6 +84,7 @@ from butlers.context_bus import (
     ContextSignal,
     clear_context,
     is_user_in_context,
+    set_calendar_context,
     set_context,
 )
 from butlers.core.approvals_policy import (
@@ -89,7 +92,10 @@ from butlers.core.approvals_policy import (
     policy_quiet_hours_deliver_at,
 )
 from butlers.core.state import state_get
-from butlers.core.temporal.calendar_provenance import is_calendar_analysis_candidate
+from butlers.core.temporal.calendar_provenance import (
+    counts_toward_owner_load,
+    is_calendar_analysis_candidate,
+)
 from butlers.jobs.home import HASourceUnmeasurableError, _extract_area, _require_ha_source_healthy
 
 logger = logging.getLogger(__name__)
@@ -134,7 +140,9 @@ async def run_calendar_context_producer(
     ``calendar_events`` (resolved via the general schema search_path) and sets
     the matching signal with the event's end time as expiry. Explicitly
     butler-generated and legacy all-day-shaped rows remain projected but cannot
-    assert context. When no eligible event is active, both ``meeting`` and
+    assert context, and neither can an event the owner declined or marked free
+    (the same attendance rule the conflict radar and day load apply). When no
+    eligible event is active, both ``meeting`` and
     ``focused`` are cleared. Idempotent: safe to run on any cadence.
     """
     del job_args
@@ -160,6 +168,7 @@ async def run_calendar_context_producer(
                 ends_at=candidate["ends_at"],
                 timezone=candidate["timezone"],
             )
+            and counts_toward_owner_load(candidate["metadata"])
         ),
         None,
     )
@@ -173,18 +182,14 @@ async def run_calendar_context_producer(
     signal = classify_calendar_signal(row["title"])
     other = ContextSignal.focused if signal is ContextSignal.meeting else ContextSignal.meeting
 
-    await set_context(
-        pool,
-        butler_name="general",
-        signal_type=signal.value,
-        value=row["title"],
-        expires_at=row["ends_at"],
-        confidence=1.0,
-        metadata={"source": "calendar", "title": row["title"]},
-    )
+    await set_calendar_context(pool, signal.value, expires_at=row["ends_at"])
     # Clear the sibling signal so a meeting→focus transition is immediate.
     await clear_context(pool, "general", other.value)
-    return {"signal": signal.value, "value": row["title"], "cleared": [other.value]}
+    return {
+        "signal": signal.value,
+        "value": "focused" if signal is ContextSignal.focused else "busy",
+        "cleared": [other.value],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -741,10 +746,10 @@ async def run_sleep_window_context_producer(
         policy = await get_approvals_policy_quiet_hours(pool)
     except Exception:
         logger.warning(
-            "sleep producer: approvals_policy unavailable; clearing sleep signal",
+            "sleep producer: approvals_policy unavailable; retaining only original bounded state",
             exc_info=True,
         )
-        policy = None
+        return {"signal": None, "reason": "policy_unavailable"}
 
     now = datetime.now(UTC)
     expires_at = policy_quiet_hours_deliver_at(policy, now=now)

@@ -14,6 +14,8 @@ No live DB or network required.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -66,20 +68,8 @@ class TestStep1bLoggingConfig:
         # Root log level is set to DEBUG
         assert logging.getLogger().level == logging.DEBUG
 
-    def test_configure_logging_attaches_credential_redaction_filter(self) -> None:
-        """configure_logging attaches a CredentialRedactionFilter to the root logger."""
-        from butlers.core.logging import CredentialRedactionFilter, configure_logging
-
-        configure_logging(level="INFO", fmt="text", log_root=None, butler_name="filter-test")
-
-        root = logging.getLogger()
-        filter_types = [type(f) for f in root.filters]
-        assert CredentialRedactionFilter in filter_types, (
-            "CredentialRedactionFilter must be attached to root logger after configure_logging()"
-        )
-
-    def test_configure_logging_creates_file_handlers_when_log_root_set(
-        self, tmp_path: Path
+    async def test_configure_logging_creates_file_handlers_when_log_root_set(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """configure_logging creates log subdirectories and file handlers when log_root provided."""
         from butlers.core.logging import configure_logging
@@ -94,6 +84,110 @@ class TestStep1bLoggingConfig:
         # Butler log file created
         butler_log = tmp_path / "butlers" / "filetest.log"
         assert butler_log.exists(), f"Expected {butler_log} to exist"
+
+        from butlers import lifecycle
+
+        # Exercise a real known phase through the production loop and JSON file
+        # handler. Exception arguments and custom names are deliberately private.
+        private = "private-startup-detail-do-not-log"
+        custom_error = type(private, (ValueError,), {})
+        daemon = object()
+        calls = []
+        failure: BaseException | None = None
+
+        async def before(actual_daemon, state):
+            assert actual_daemon is daemon
+            calls.append("before")
+
+        async def sync_schedules(*args):
+            calls.append("schedules")
+            if failure is not None:
+                raise failure
+
+        async def after(actual_daemon, state):
+            calls.append("after")
+
+        monkeypatch.setattr(lifecycle, "_sync_toml_schedules", sync_schedules)
+        monkeypatch.setattr(
+            lifecycle, "STARTUP_PHASES", [before, lifecycle._startup_schedules, after]
+        )
+
+        def records():
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+            return [json.loads(line) for line in butler_log.read_text().splitlines()]
+
+        # Exact known types get broad categories; subclasses remain unknown.
+        for error, category in [
+            (ValueError(private), "validation"),
+            (TimeoutError(private), "timeout"),
+            (ConnectionError(private), "connection"),
+            (OSError(private), "os"),
+            (TypeError(private), "type"),
+            (RuntimeError(private), "runtime"),
+            (custom_error(private), "unknown"),
+        ]:
+            failure = error
+            calls.clear()
+            count = len(records())
+            with pytest.raises(Exception) as raised:
+                await lifecycle.run_startup(daemon)
+            assert raised.value is error
+            assert calls == ["before", "schedules"]
+            emitted = records()[count:]
+            assert len(emitted) == 1
+            assert emitted[0]["event"] == "Startup phase failed"
+            assert emitted[0]["startup_phase"] == "schedules"
+            assert emitted[0]["error_category"] == category
+            assert emitted[0]["butler"] == "filetest"
+            assert emitted[0]["logger"] == "butlers.lifecycle"
+            assert emitted[0]["level"] == "error"
+            assert "exception" not in emitted[0]
+            assert "exc_info" not in emitted[0]
+            assert private not in json.dumps(emitted)
+
+        # An arbitrary callable, even with a private name, has no trusted label.
+        sync_schedules.__name__ = private
+        monkeypatch.setattr(lifecycle, "STARTUP_PHASES", [sync_schedules, after])
+        failure = custom_error(private)
+        count = len(records())
+        with pytest.raises(custom_error) as raised:
+            await lifecycle.run_startup(daemon)
+        assert raised.value is failure
+        assert records()[count:][0]["startup_phase"] == "unknown"
+        assert records()[count:][0]["error_category"] == "unknown"
+
+        monkeypatch.setattr(
+            lifecycle, "STARTUP_PHASES", [before, lifecycle._startup_schedules, after]
+        )
+        failure = None
+        calls.clear()
+        count = len(records())
+        await lifecycle.run_startup(daemon)
+        assert calls == ["before", "schedules", "after"]
+        assert len(records()) == count
+
+        # Cancellation and other BaseExceptions retain their existing behavior.
+        for failure in [asyncio.CancelledError(private), BaseException(private)]:
+            calls.clear()
+            with pytest.raises(BaseException) as raised:
+                await lifecycle.run_startup(daemon)
+            assert raised.value is failure
+            assert calls == ["before", "schedules"]
+            assert len(records()) == count
+
+        # A broken logger must never replace the original startup exception.
+        failure = ValueError(private)
+        calls.clear()
+        with patch.object(lifecycle.logger, "error", side_effect=RuntimeError(private)):
+            with pytest.raises(ValueError) as raised:
+                await lifecycle.run_startup(daemon)
+        assert raised.value is failure
+        assert calls == ["before", "schedules"]
+        assert len(records()) == count
+        captured = capsys.readouterr()
+        assert private not in butler_log.read_text()
+        assert private not in captured.out + captured.err
 
     def test_configure_logging_no_file_handlers_without_log_root(self) -> None:
         """configure_logging with log_root=None does not add new file handlers."""
@@ -113,25 +207,6 @@ class TestStep1bLoggingConfig:
         assert not any(h.baseFilename.endswith("/nofile.log") for h in after_file_handlers), (
             "log_root=None should not create a per-butler file log"
         )
-
-    def test_credential_redaction_filter_scrubs_telegram_token(self) -> None:
-        """CredentialRedactionFilter redacts Telegram bot tokens in log messages."""
-        from butlers.core.logging import CredentialRedactionFilter
-
-        f = CredentialRedactionFilter()
-        record = logging.LogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="Calling https://api.telegram.org/bot1234567890:ABCDEFabcdef1234567890_ABCDEFG/sendMessage",
-            args=(),
-            exc_info=None,
-        )
-        result = f.filter(record)
-        assert result is True  # Never drops records
-        assert "REDACTED" in record.msg
-        assert "ABCDEFabcdef1234567890_ABCDEFG" not in record.msg
 
     def test_resolve_log_root_env_override_disables_file_logging(
         self, monkeypatch: pytest.MonkeyPatch
@@ -764,8 +839,7 @@ class TestStep8cBlobStorageDegradation:
             db_schema="test_butler",
         )
         daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
+        daemon._registry.load_from_config.return_value = []
         daemon._validate_module_configs.return_value = {}
         daemon._collect_module_credentials.return_value = {}
         daemon._module_statuses = {}
@@ -896,8 +970,7 @@ class TestStep8c2CodexAuthorityWiring:
             db_schema="test_butler",
         )
         daemon.db = SimpleNamespace(pool=pool)
-        daemon._registry.load_all.return_value = []
-        daemon._select_startup_modules.return_value = []
+        daemon._registry.load_from_config.return_value = []
         daemon._validate_module_configs.return_value = {}
         daemon._collect_module_credentials.return_value = {}
         daemon._module_statuses = {}

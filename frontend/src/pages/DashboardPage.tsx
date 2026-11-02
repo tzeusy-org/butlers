@@ -67,6 +67,8 @@ import {
 } from "@/hooks/use-approvals";
 import {
   useApprovalDecisionMutations,
+  ApprovalCallReview,
+  type ViewedApproval,
   UNDO_WINDOW_MS,
   type DecisionVerb,
 } from "@/hooks/use-approval-decisions.ts";
@@ -138,6 +140,9 @@ export default function DashboardPage() {
   // the full Trust Console, instead of firing irreversibly on click.
   const {
     approveMut,
+    review,
+    requestReview,
+    cancelReview,
     denyMut,
     deferMut,
     scheduledDecisions,
@@ -310,8 +315,8 @@ export default function DashboardPage() {
   // shows the inline "Approving in 5s · Undo" state instead of its verb
   // buttons (see AttentionList's pendingDecisionLabel).
   const approveAttention = useCallback(
-    (id: string) => scheduleDecision(id, "approve", () => approve(id)),
-    [approve, scheduleDecision],
+    (id: string) => { void requestReview(id); },
+    [requestReview],
   );
   const denyAttention = useCallback(
     (id: string) => scheduleDecision(id, "deny", () => deny({ id })),
@@ -345,7 +350,7 @@ export default function DashboardPage() {
           onApprove: () => approveAttention(id),
           onDeny: () => denyAttention(id),
           onDefer: () => deferAttention(id),
-          approvePending: approveMut.isPending && approveMut.variables === id,
+          approvePending: approveMut.isPending && approveMut.variables?.id === id,
           denyPending: denyMut.isPending && denyMut.variables?.id === id,
           deferPending: deferMut.isPending && deferMut.variables?.id === id,
         };
@@ -470,6 +475,10 @@ export default function DashboardPage() {
 
   return (
     <Page archetype="editorial" title="Overview">
+      <ApprovalCallReview review={review} onCancel={cancelReview} onConfirm={(view: ViewedApproval) => {
+        cancelReview();
+        scheduleDecision(view.id, "approve", () => approve(view));
+      }} />
       {/*
        * Responsive two-column editorial grid.
        * Narrow (< 1024px / lg): single column, narrative stacked above index.

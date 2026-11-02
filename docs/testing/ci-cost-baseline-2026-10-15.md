@@ -7,11 +7,12 @@ precede the `bu-q1hzqn` pipeline changes; covered CTracer costs cannot be treate
 as savings available in today's untraced jobs. No tests were executed to compile
 this report. Tests: +0 ~0 -0.
 
-The durable [machine-readable evidence](evidence/2026-10-15-ci-cost-baseline.json)
-contains every run/head/tree/attempt, job/step timestamp, runner identity,
-selected population, artifact ID/SHA-256, and per-file cost. It retains all source
-variants. Test case identifiers, parameter values, raw logs and process traces
-are deliberately excluded.
+The machine-readable projection behind these tables (every run/head/tree/attempt,
+job/step timestamp, runner identity, selected population, artifact ID/SHA-256 and
+per-file cost) is no longer committed: CI evidence lives in the CI run artifacts
+of the runs listed below, and the projection itself remains in git history before
+bu-29wkwj.1. Test case identifiers, parameter values, raw logs and process traces
+were deliberately excluded from it.
 
 The [2026-10-17 integration attribution](integration-cost-attribution-2026-10-17.md) adds ten newer hosted phase observations, explicit missing worker clocks and owner-routed candidates; it does not restamp this historical baseline.
 
@@ -225,44 +226,6 @@ remain private scratch, not repository contents. Per-job artifact IDs/digests
 and raw-metadata hashes authenticate retained identities after GitHub expiry;
 full independent reparsing still requires the retained private archives and
 metadata. A digest alone does not prove the projection was computed correctly.
-
-The following offline check reproduces the main quantiles, required completion,
-per-file totals and selected populations from the durable projection. It runs
-no tests and requires no network:
-
-```bash
-/usr/bin/python3 - <<'PYTHON'
-import collections, datetime, json, math, pathlib, statistics
-p = pathlib.Path('docs/testing/evidence/2026-10-15-ci-cost-baseline.json')
-d = json.loads(p.read_text())
-assert d['sample_count'] == len(d['samples']) == 10
-assert not d['acquisition_errors']
-def quantiles(v):
-    v = sorted(v)
-    return statistics.median(v), v[math.ceil(.95 * len(v)) - 1]
-def stamp(v):
-    return datetime.datetime.fromisoformat(v.replace('Z', '+00:00'))
-for i, s in enumerate(d['samples']):
-    assert s['event'] == 'merge_group' and s['run_attempt'] == 1
-    required = [j for j in s['jobs'] if j['name'] in {'check', 'guards', 'frontend'}]
-    assert len(required) == 3 and all(j['conclusion'] == 'success' for j in required)
-    elapsed = (max(stamp(j['completed_at']) for j in required) - stamp(s['created_at'])).total_seconds()
-    assert elapsed == s['required_context_elapsed_s']
-    for lane in ['unit', 'integration']:
-        rows = [r for e in d['files'].values() if e['lane'] == lane for r in e['samples'] if r['sample'] == i]
-        assert sum(r['cases'] for r in rows) == s['inventory']['selected_nodes'][lane]
-        assert len(rows) == s['inventory']['selected_files'][lane]
-for e in d['files'].values():
-    assert len({r['sample'] for r in e['samples']}) == len(e['samples'])
-    median, p95 = quantiles([r['cumulative_testcase_s'] for r in e['samples']])
-    assert (median, p95) == (e['cost']['p50_s'], e['cost']['p95_nearest_rank_s'])
-    assert len({r['git_blob'] for r in e['samples']}) == e['source_variants']
-for name, v in d['summary']['jobs'].items():
-    rows = [j['duration_s'] for s in d['samples'] for j in s['jobs'] if j['name'] == name and j['duration_s'] is not None]
-    assert quantiles(rows) == (v['job']['p50_s'], v['job']['p95_nearest_rank_s'])
-print('PASS: ten exact-attempt populations, required completion and all file/job quantiles')
-PYTHON
-```
 
 Unavailable observations remain first-class gaps: OS image version; pre-run
 queue/requeue delay; unfiltered collection total; per-child collection versus

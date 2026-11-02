@@ -53,20 +53,11 @@ class EducationModule(Module):
     def __init__(self) -> None:
         self._db: Any = None
 
-    @property
-    def name(self) -> str:
-        return "education"
+    name = "education"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return EducationModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # education tables already exist via separate migrations
 
     async def on_startup(
         self, config: Any, db: Any, credential_store: Any = None, blob_store: Any = None

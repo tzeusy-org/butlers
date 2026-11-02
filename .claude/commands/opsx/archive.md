@@ -22,6 +22,13 @@ Archive a completed change in the experimental workflow.
 
 2. **Check artifact completion status**
 
+   Recheck `about/heart-and-soul/development.md`. Missing design is allowed
+   for an eligible single-butler change, whose `single-butler` schema contains
+   proposal, specs and tasks. A change to a cross-butler contract, schema
+   shared across butlers, or security boundary still needs design; resolve a
+   missing required design before archive rather than treating it as optional.
+   Preserve any existing design and the normal delivery/sync/evidence gates.
+
    Run `openspec status --change "<name>" --json` to check artifact completion.
 
    Parse the JSON to understand:

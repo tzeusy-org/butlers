@@ -42,19 +42,18 @@ from butlers.api.conversations import (
     message_create_idempotent,
     message_find_reply_since,
     message_set_session_id_if_null,
-    resolve_resume_handle,
 )
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_mcp_manager
+from butlers.api.deps import ButlerUnreachableError, MCPClientManager, get_db, get_mcp_manager
 from butlers.api.routers import conversations as conversations_router
 from butlers.api.routers.conversations import (
     _SWITCHBOARD_BUTLER,
-    _get_db_manager,
     _persist_dashboard_user_message,
     _resolve_session_id,
     _stream_conversation_response,
     _submit_to_switchboard,
 )
+from butlers.core.conversation_sessions import resolve_resume_handle
 from butlers.core.dashboard_turns import DashboardTurnResult
 
 pytestmark = pytest.mark.unit
@@ -100,7 +99,7 @@ def _app_with_mock_db(
     else:
         mock_db.credential_shared_pool.return_value = mock_pool
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app
 
 
@@ -426,6 +425,22 @@ async def test_submit_to_switchboard_raises_on_deterministic_rejection():
 
     with pytest.raises(ValueError, match="not a registered, routable butler"):
         await _submit_to_switchboard("ghost", envelope, mcp_mgr=mgr)
+
+
+async def test_submit_to_switchboard_transient_persistence_failure_returns_none():
+    """A transient ingest reply is the retryable unreachable path, not a rejection."""
+    mock_client = MagicMock()
+    mock_client.call_tool = AsyncMock(
+        return_value=_FakeMcpResult(
+            {"status": "transient_error", "retryable": True, "error": "retry the submission"}
+        )
+    )
+    mgr = _make_mcp_manager(mock_client)
+    envelope = build_dashboard_envelope(
+        conversation_id=_CONV_ID, message_id=uuid4(), message_text="hi"
+    )
+
+    assert await _submit_to_switchboard("finance", envelope, mcp_mgr=mgr) is None
 
 
 # ---------------------------------------------------------------------------
@@ -980,7 +995,7 @@ def _app_with_mock_db_and_mcp(app: FastAPI, *, mcp_manager, reply_row=None, conv
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = shared_pool
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mcp_manager
     return app, shared_pool
 
@@ -1042,7 +1057,7 @@ async def test_create_conversation_backfills_session_id_when_reply_row_lacks_one
     reply_row = _make_reply_row()  # session_id is None — ambient context absent
     app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
 
-    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db = app.dependency_overrides[get_db]()
     butler_pool = AsyncMock()
     butler_pool.fetchval = AsyncMock(return_value=resolved_session_id)
     mock_db.pool = MagicMock(return_value=butler_pool)
@@ -1088,7 +1103,7 @@ async def test_create_conversation_keeps_ambient_session_id_without_resolving(ap
     reply_row = _make_reply_row(session_id=ambient_session_id)
     app, shared_pool = _app_with_mock_db_and_mcp(app, mcp_manager=mgr, reply_row=reply_row)
 
-    mock_db = app.dependency_overrides[_get_db_manager]()
+    mock_db = app.dependency_overrides[get_db]()
     mock_db.pool = MagicMock(side_effect=AssertionError("must not resolve when already stamped"))
 
     async with httpx.AsyncClient(
@@ -2276,7 +2291,7 @@ class _FakeChatStreamListener:
             self._queue.put_nowait(envelope)
         self.closed = False
 
-    async def get(self, timeout: float) -> dict[str, object] | None:
+    async def get(self, timeout: float) -> dict[str, object] | None:  # noqa: ASYNC109 - fakes ChatStreamListener.get
         try:
             return await asyncio.wait_for(self._queue.get(), timeout=timeout)
         except TimeoutError:
@@ -2463,7 +2478,7 @@ async def test_stream_notify_wake_beats_the_safety_net_poll_interval(monkeypatch
         if listener is not None:
             queued_get = listener.get
 
-            async def receive_wake(timeout):
+            async def receive_wake(timeout):  # noqa: ASYNC109 - fakes ChatStreamListener.get
                 observed.append("listener_wait")
                 event = await queued_get(timeout)
                 observed.append("listener_wake" if event is not None else "listener_timeout")
@@ -2663,7 +2678,7 @@ async def test_stream_conversation_response_registers_switchboard_for_pass_throu
 
 async def test_cancel_with_no_active_turn_is_benign_noop(app):
     """Stop after the turn already finished must never claim it stopped anything."""
-    app.dependency_overrides[_get_db_manager] = lambda: MagicMock(spec=DatabaseManager)
+    app.dependency_overrides[get_db] = lambda: MagicMock(spec=DatabaseManager)
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock(spec=MCPClientManager)
 
     async with httpx.AsyncClient(
@@ -2711,7 +2726,7 @@ async def test_cancel_uses_switchboard_before_classifier_handoff(app):
     )
     mgr = _make_mcp_manager(switchboard_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2781,7 +2796,7 @@ async def test_cancel_prefers_post_classification_target_over_switchboard(app):
         }.__getitem__
     )
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2836,7 +2851,7 @@ async def test_cancel_with_post_classification_target_pending_session_stays_retr
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock()
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2885,7 +2900,7 @@ async def test_cancel_surfaces_target_session_lookup_failures(
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock()
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -2957,7 +2972,7 @@ async def test_cancel_rechecks_handoff_after_switchboard_has_finished(app):
         }.__getitem__
     )
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3039,7 +3054,7 @@ async def test_cancel_rechecks_handoff_after_switchboard_cancel_succeeds(app):
         }.__getitem__
     )
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3085,7 +3100,7 @@ async def test_cancel_confirmed_by_routed_butler_kills_the_session(app):
     )
     mgr = _make_mcp_manager(mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3123,7 +3138,7 @@ async def test_cancel_when_session_already_finished_is_not_rendered_as_stopped(a
     )
     mgr = _make_mcp_manager(mock_client)
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(
@@ -3154,7 +3169,7 @@ async def test_cancel_surfaces_honest_failure_when_butler_unreachable(app):
     mgr = MagicMock(spec=MCPClientManager)
     mgr.get_client = AsyncMock(side_effect=ButlerUnreachableError("finance"))
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_mcp_manager] = lambda: mgr
 
     async with httpx.AsyncClient(

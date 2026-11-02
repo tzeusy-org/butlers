@@ -25,6 +25,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
+from butlers.connectors.catalog import scrub_connector_labels
+from butlers.ingestion_spans import collapse_spans
+
 #: Telegram's service account that delivers login codes.
 TELEGRAM_SERVICE_SENDER = "777000"
 
@@ -317,31 +320,7 @@ def scrub_filtered_preview(
     try:
         # This fallback is a fixed display label, not a caller-controlled string
         # or a new connector registration/authority decision.
-        fallback = (
-            connector_type
-            if connector_type
-            in {
-                "gmail",
-                "telegram",
-                "telegram_bot",
-                "telegram_user",
-                "telegram_user_client",
-                "discord",
-                "discord_user",
-                "whatsapp_user_client",
-                "google_drive",
-                "google_calendar",
-                "google_health",
-                "spotify",
-                "owntracks",
-                "steam",
-                "activitywatch",
-                "home_assistant",
-                "live-listener",
-                "live_listener",
-            }
-            else "unknown"
-        )
+        fallback = connector_type if connector_type in scrub_connector_labels() else "unknown"
         # Keep the shared detector's classification unchanged. These values are
         # used only to prevent a label from reintroducing detected bearer text.
         forbidden = set()
@@ -442,10 +421,16 @@ def scrub_envelope(envelope: Mapping[str, Any]) -> tuple[dict[str, Any], list[Be
     payload = dict(envelope.get("payload") or {})
     found: list[BearerArtifact] = []
     if isinstance(payload.get("normalized_text"), str):
+        original_text = payload["normalized_text"]
         payload["normalized_text"], hits = scrub_text(
-            payload["normalized_text"], provider_domain=domain, aggressive=aggressive
+            original_text, provider_domain=domain, aggressive=aggressive
         )
         found.extend(hits)
+        if payload.get("untrusted_spans") and payload["normalized_text"] != original_text:
+            # The scrub moved text under the connector's span offsets (bu-xmueeq).
+            payload["untrusted_spans"] = collapse_spans(
+                payload["normalized_text"], payload["untrusted_spans"]
+            )
     if payload.get("raw") is not None:
         payload["raw"], hits = scrub_json(
             payload["raw"], provider_domain=domain, aggressive=aggressive

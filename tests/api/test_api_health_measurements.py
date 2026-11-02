@@ -15,7 +15,6 @@ Coverage:
 
 from __future__ import annotations
 
-import sys
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -25,6 +24,8 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -32,17 +33,12 @@ pytestmark = pytest.mark.unit
 _NOW = datetime.now(tz=UTC)
 
 # ---------------------------------------------------------------------------
-# The health butler router is auto-discovered by create_app() and registered
-# in sys.modules under the key 'health_api_router'.  We must override the
-# _get_db_manager function *from that module*, not from a separately loaded
-# copy, because FastAPI dependency_overrides uses object identity.
-#
-# Strategy: call create_app() once to trigger router discovery, then extract
-# the dependency function from sys.modules for later use in overrides.
+# The health router retains its cached module identity; DB overrides now use
+# the public singleton dependency shared by core and roster handlers.
 # ---------------------------------------------------------------------------
 
 _APP_SEED = create_app(api_key="")  # trigger discovery
-_health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
+_health_get_db_manager = get_db
 
 
 # ---------------------------------------------------------------------------
@@ -50,29 +46,17 @@ _health_get_db_manager = sys.modules["health_api_router"]._get_db_manager
 # ---------------------------------------------------------------------------
 
 
-class _Row(dict):
-    """dict subclass mimicking asyncpg Record."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
-
-
 def _make_fact_row(
     *,
     mtype: str = "weight",
-    value: Any = {"kg": 75.5},
+    value: Any = None,
     notes: str | None = None,
     valid_at: datetime | None = None,
-) -> _Row:
-    """Build an asyncpg-like fact row for a measurement."""
-    return _row(
+) -> Record:
+    """Build an asyncpg-like fact row for a measurement (default value: 75.5 kg)."""
+    if value is None:
+        value = {"kg": 75.5}
+    return Record(
         {
             "id": uuid.uuid4(),
             "predicate": f"measurement_{mtype}",

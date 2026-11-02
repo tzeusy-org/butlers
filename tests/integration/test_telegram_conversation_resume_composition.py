@@ -21,12 +21,13 @@ import pytest
 
 from butlers.api import conversations
 from butlers.connectors.telegram_bot import TelegramBotConnector, TelegramBotConnectorConfig
+from butlers.core import conversation_sessions
 from butlers.core.model_routing import QuotaStatus
 from butlers.core.runtimes import DEFAULT_RUNTIME_TYPE
 from butlers.core.spawner import Spawner
 from butlers.core.utils import generate_uuid7_string
+from butlers.tools.switchboard.contracts import IngestEnvelopeV1
 from butlers.tools.switchboard.ingestion.ingest import _build_request_context
-from butlers.tools.switchboard.routing.contracts import IngestEnvelopeV1
 from tests.daemon.test_route_execute_conversation_anchor import (
     _make_butler_toml,
     _NoopLeaseHeartbeat,
@@ -121,10 +122,14 @@ async def test_two_telegram_ingests_share_one_anchor_and_resume(
             return await real_get_or_create(db_pool, **kwargs)
 
         async def get_provider_session(_pool: Any, *args: Any, **kwargs: Any):
-            return await conversations.conversation_get_provider_session(db_pool, *args, **kwargs)
+            return await conversation_sessions.conversation_get_provider_session(
+                db_pool, *args, **kwargs
+            )
 
         async def set_provider_session(_pool: Any, *args: Any, **kwargs: Any):
-            return await conversations.conversation_set_provider_session(db_pool, *args, **kwargs)
+            return await conversation_sessions.conversation_set_provider_session(
+                db_pool, *args, **kwargs
+            )
 
         adapter = _ResumeRecordingAdapter()
         spawner = Spawner(

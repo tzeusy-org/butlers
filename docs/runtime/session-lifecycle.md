@@ -41,7 +41,7 @@ stripped from text fields first, because PostgreSQL text columns reject them. An
 
 ## Healing Fingerprint
 
-After a session fails and the self-healing module computes an error fingerprint, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.
+When an error is fingerprinted for centralized QA tracking, `session_set_healing_fingerprint()` writes a 64-character hex SHA-256 fingerprint to the session row. This is a best-effort update that enables deduplication of healing attempts for identical failure patterns.
 
 ## Active Sessions
 
@@ -119,3 +119,8 @@ curl -s http://localhost:41200/api/butlers/general/sessions | python3 -m json.to
 - [Tool Call Capture](tool-call-capture.md) --- how tool call records are collected for the `tool_calls` field
 - [Model Routing](model-routing.md) --- how the `model`, `complexity`, and `resolution_source` fields are populated
 - [Scheduler Execution](scheduler-execution.md) --- how `schedule:<name>` trigger sources originate
+
+
+## Served identity evidence
+
+Dossier detail shows Requested and ordered serving attempts separately. Authoritative response identity earns Served; CLI usage metadata with unproven/fallback provenance says CLI-reported usage models and actual serving unknown. Historical absence says No served identity recorded; query failure says Serving evidence unavailable. A multiple-model task is not duplicated into successful quality credit for every helper model. Reported and expected CLI versions compare only when both are valid, with drift diagnostic and no deployed-fleet inference. Existing prompts/results/tools are separate established session content, never copied into serving records.

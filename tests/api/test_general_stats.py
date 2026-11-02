@@ -9,7 +9,9 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.router_discovery import discover_butler_routers
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -18,17 +20,6 @@ _MODULE_NAME = "general_api_router"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record (supports dict-style key access)."""
-
-    def __getitem__(self, key):
-        return super().__getitem__(key)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _get_db_dep():
@@ -43,7 +34,7 @@ def _get_db_dep():
             f"Router module '{_MODULE_NAME}' not found after discovery. "
             "Ensure roster/general/api/router.py is present."
         )
-    return sys.modules[_MODULE_NAME]._get_db_manager
+    return get_db
 
 
 def _make_app(app, *, fetchval_seq=None, fetch_seq=None):
@@ -135,10 +126,10 @@ class TestGeneralStatsPopulated:
             fetchval_seq=[3, 25, "books", 15],
             fetch_seq=[
                 [
-                    _row({"bracket": "0", "count": 0}),
-                    _row({"bracket": "1-10", "count": 1}),
-                    _row({"bracket": "11-100", "count": 2}),
-                    _row({"bracket": "101+", "count": 0}),
+                    Record({"bracket": "0", "count": 0}),
+                    Record({"bracket": "1-10", "count": 1}),
+                    Record({"bracket": "11-100", "count": 2}),
+                    Record({"bracket": "101+", "count": 0}),
                 ]
             ],
         )
@@ -160,9 +151,9 @@ class TestGeneralStatsPopulated:
             fetchval_seq=[5, 200, "movies", 150],
             fetch_seq=[
                 [
-                    _row({"bracket": "1-10", "count": 2}),
-                    _row({"bracket": "11-100", "count": 2}),
-                    _row({"bracket": "101+", "count": 1}),
+                    Record({"bracket": "1-10", "count": 2}),
+                    Record({"bracket": "11-100", "count": 2}),
+                    Record({"bracket": "101+", "count": 1}),
                 ]
             ],
         )
@@ -187,7 +178,7 @@ class TestGeneralStatsPopulated:
             fetchval_seq=[1, 5, "notes", 5],
             fetch_seq=[
                 [
-                    _row({"bracket": "1-10", "count": 1}),
+                    Record({"bracket": "1-10", "count": 1}),
                 ]
             ],
         )

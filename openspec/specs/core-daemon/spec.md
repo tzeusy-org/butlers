@@ -45,7 +45,7 @@ Tool groups:
 - `scheduling`: schedule_list, schedule_create, schedule_update, schedule_delete, schedule_trigger, schedule_costs
 - `sessions`: sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions
 - `notifications`: notify, remind
-- `media`: get_attachment
+- `media`: attachment_view, get_attachment
 - `temporal`: deadline_*, event_chain_*, seasonal_period_*
 - `module_mgmt`: module.states, module.set_enabled
 - `switchboard_routing`: ingest, route_to_butler, connector.heartbeat (name-gated: switchboard only)

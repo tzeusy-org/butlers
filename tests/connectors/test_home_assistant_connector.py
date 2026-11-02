@@ -81,7 +81,7 @@ def test_state_changed_passes_parse_ingest_envelope(
     """state_changed envelope must validate against parse_ingest_envelope contract."""
     from pydantic import ValidationError
 
-    from butlers.tools.switchboard.routing.contracts import parse_ingest_envelope
+    from butlers.tools.switchboard.contracts import parse_ingest_envelope
 
     try:
         parse_ingest_envelope(state_changed_envelope)
@@ -458,3 +458,15 @@ def test_main_waits_for_switchboard_ready_before_ws_ingress() -> None:
         "wait_for_switchboard_ready(...) must be awaited before the WS client "
         "task is created, or HA events race Switchboard startup again"
     )
+
+
+def test_descriptor_identity_preserves_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from butlers.connectors import home_assistant as module
+
+    monkeypatch.setenv("SWITCHBOARD_MCP_URL", "http://switchboard.test/sse")
+    monkeypatch.setenv("CONNECTOR_PROVIDER", "ignored-provider")
+    monkeypatch.setenv("CONNECTOR_CHANNEL", "ignored-channel")
+    monkeypatch.setenv("CONNECTOR_HEALTH_PORT", "40123")
+    config = module.HAConnectorConfig.from_env()
+    assert (config.channel, config.provider) == ("home_assistant", "home_assistant")
+    assert config.health_port == 40123

@@ -384,6 +384,7 @@ async def _upsert_catalog(
     retention_class: str | None = None,
     sensitivity: str | None = None,
     object_entity_id: uuid.UUID | None = None,
+    content_authority: str | None = None,
 ) -> None:
     """Upsert a row into public.memory_catalog (best-effort, fire-and-forget).
 
@@ -394,6 +395,10 @@ async def _upsert_catalog(
     importance, retention_class, sensitivity, object_entity_id) map directly
     to the spec-required columns added in core_024.  They are all nullable so
     the call remains backward-compatible before that migration is applied.
+
+    ``content_authority`` copies the source row's authority class (core_299,
+    REQ-module-memory-013) so cross-butler readers can attribute non-owner
+    content; an upsert overwrites it, so a re-stamped source re-syncs here.
 
     Write-time sensitivity exclusion (defense-in-depth): confidential/pii
     rows are never written to the catalog at all -- see
@@ -416,7 +421,7 @@ async def _upsert_catalog(
             summary, embedding, search_vector, memory_type,
             title, predicate, scope, valid_at,
             confidence, importance, retention_class, sensitivity,
-            object_entity_id,
+            object_entity_id, content_authority,
             updated_at
         )
         VALUES (
@@ -425,7 +430,7 @@ async def _upsert_catalog(
             $7, $8, {tsvector_sql("$9")}, $10,
             $11, $12, $13, $14,
             $15, $16, $17, $18,
-            $19,
+            $19, $20,
             now()
         )
         ON CONFLICT (source_schema, source_table, source_id)
@@ -444,6 +449,7 @@ async def _upsert_catalog(
             retention_class  = EXCLUDED.retention_class,
             sensitivity      = EXCLUDED.sensitivity,
             object_entity_id = EXCLUDED.object_entity_id,
+            content_authority = EXCLUDED.content_authority,
             updated_at       = now()
     """
     # When the caller is already persisting a canonical artifact in an outer
@@ -474,6 +480,7 @@ async def _upsert_catalog(
                 retention_class,
                 sensitivity,
                 object_entity_id,
+                content_authority,
             )
 
 
@@ -622,7 +629,7 @@ async def _backfill_facts_to_catalog(
             SELECT f.id, f.subject, f.predicate, f.content, f.embedding,
                    f.entity_id, f.object_entity_id, f.scope, f.valid_at,
                    f.confidence, f.importance, f.retention_class, f.sensitivity,
-                   f.source_butler, f.tenant_id
+                   f.source_butler, f.tenant_id, f.content_authority
             FROM facts f
             WHERE f.validity IN ('active', 'fading')
               AND NOT (COALESCE(f.sensitivity, 'normal') = ANY($3))
@@ -640,7 +647,8 @@ async def _backfill_facts_to_catalog(
                 source_schema, source_table, source_id, source_butler, tenant_id,
                 entity_id, summary, embedding, search_vector, memory_type,
                 title, predicate, scope, valid_at, confidence, importance,
-                retention_class, sensitivity, object_entity_id, updated_at
+                retention_class, sensitivity, object_entity_id, content_authority,
+                updated_at
             )
             SELECT
                 $1, 'facts', c.id, c.source_butler, c.tenant_id,
@@ -651,7 +659,8 @@ async def _backfill_facts_to_catalog(
                 'fact',
                 c.subject || ' ' || c.predicate,
                 c.predicate, c.scope, c.valid_at, c.confidence, c.importance,
-                c.retention_class, c.sensitivity, c.object_entity_id, now()
+                c.retention_class, c.sensitivity, c.object_entity_id, c.content_authority,
+                now()
             FROM candidates c
             ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
             RETURNING 1
@@ -682,7 +691,8 @@ async def _backfill_rules_to_catalog(
     sql = f"""
         WITH candidates AS (
             SELECT r.id, r.content, r.embedding, r.scope, r.confidence,
-                   r.retention_class, r.sensitivity, r.tenant_id, r.source_butler
+                   r.retention_class, r.sensitivity, r.tenant_id, r.source_butler,
+                   r.content_authority
             FROM rules r
             WHERE COALESCE(r.metadata ->> 'forgotten', 'false') <> 'true'
               AND (r.content_authority IN ('owner', 'owner_device') OR r.endorsed_at IS NOT NULL)
@@ -700,7 +710,8 @@ async def _backfill_rules_to_catalog(
             INSERT INTO public.memory_catalog (
                 source_schema, source_table, source_id, source_butler, tenant_id,
                 entity_id, summary, embedding, search_vector, memory_type,
-                title, scope, confidence, retention_class, sensitivity, updated_at
+                title, scope, confidence, retention_class, sensitivity, content_authority,
+                updated_at
             )
             SELECT
                 $1, 'rules', c.id, c.source_butler, c.tenant_id,
@@ -710,7 +721,7 @@ async def _backfill_rules_to_catalog(
                 {tsvector_sql("c.content")},
                 'rule',
                 LEFT(c.content, 100), c.scope, c.confidence,
-                c.retention_class, c.sensitivity, now()
+                c.retention_class, c.sensitivity, c.content_authority, now()
             FROM candidates c
             ON CONFLICT (source_schema, source_table, source_id) DO NOTHING
             RETURNING 1
@@ -821,6 +832,75 @@ async def _reconcile_rules_catalog_disownment(
     return len(rows)
 
 
+# Literal per-table statements (no dynamic relation names; tests/contracts/test_schema_reach.py).
+_SYNC_CATALOG_AUTHORITY_SQL_FACTS = """
+    WITH candidates AS (
+        SELECT mc.source_id, s.content_authority
+        FROM public.memory_catalog mc
+        JOIN facts s ON s.id = mc.source_id
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'facts'
+          AND mc.content_authority IS DISTINCT FROM s.content_authority
+        LIMIT $2
+    )
+    UPDATE public.memory_catalog mc
+    SET content_authority = c.content_authority,
+        updated_at = now()
+    FROM candidates c
+    WHERE mc.source_schema = $1
+      AND mc.source_table = 'facts'
+      AND mc.source_id = c.source_id
+    RETURNING 1
+"""
+
+_SYNC_CATALOG_AUTHORITY_SQL_RULES = """
+    WITH candidates AS (
+        SELECT mc.source_id, s.content_authority
+        FROM public.memory_catalog mc
+        JOIN rules s ON s.id = mc.source_id
+        WHERE mc.source_schema = $1
+          AND mc.source_table = 'rules'
+          AND mc.content_authority IS DISTINCT FROM s.content_authority
+        LIMIT $2
+    )
+    UPDATE public.memory_catalog mc
+    SET content_authority = c.content_authority,
+        updated_at = now()
+    FROM candidates c
+    WHERE mc.source_schema = $1
+      AND mc.source_table = 'rules'
+      AND mc.source_id = c.source_id
+    RETURNING 1
+"""
+
+_SYNC_CATALOG_AUTHORITY_SQL = {
+    "facts": _SYNC_CATALOG_AUTHORITY_SQL_FACTS,
+    "rules": _SYNC_CATALOG_AUTHORITY_SQL_RULES,
+}
+
+
+async def _sync_catalog_authority(
+    pool: Pool,
+    *,
+    source_schema: str,
+    source_table: str,
+    limit: int,
+) -> int:
+    """Copy the source row's ``content_authority`` onto up to *limit* drifted catalog rows.
+
+    Rows cataloged before core_299 start NULL even when their source fact or
+    rule is stamped; this brings them in line (REQ-module-memory-013).  Only
+    rows whose authority differs are touched (``IS DISTINCT FROM``), so a
+    legacy NULL source stays NULL and a re-run is a no-op.  Stale rows are
+    synced too: the column describes provenance, not liveness.
+    """
+    sql = _SYNC_CATALOG_AUTHORITY_SQL.get(source_table)
+    if sql is None:
+        raise ValueError(f"unsupported catalog source table: {source_table!r}")
+    rows = await pool.fetch(sql, source_schema, limit)
+    return len(rows)
+
+
 async def run_memory_catalog_backfill(
     pool: Pool,
     *,
@@ -844,6 +924,10 @@ async def run_memory_catalog_backfill(
     for drift that predates or bypasses the atomic disownment cascade
     (``_cascade_catalog_disownment``).
 
+    Finally copies each source row's ``content_authority`` onto catalog rows
+    whose copy has drifted (``_sync_catalog_authority``), so rows cataloged
+    before the column existed gain their authority without guessing.
+
     Deliberately does NOT open one giant transaction across the full backlog —
     each phase's batch is a single bounded statement, so a run never holds
     locks across thousands of rows.
@@ -860,7 +944,8 @@ async def run_memory_catalog_backfill(
 
     Returns:
         Dict with ``facts_backfilled``, ``rules_backfilled``,
-        ``facts_reconciled``, ``rules_reconciled``, and ``source_schema``.
+        ``facts_reconciled``, ``rules_reconciled``, ``authority_synced``, and
+        ``source_schema``.
     """
     facts_backfilled = await _backfill_facts_to_catalog(
         pool, source_schema=source_schema, limit=batch_size
@@ -874,12 +959,18 @@ async def run_memory_catalog_backfill(
     rules_reconciled = await _reconcile_rules_catalog_disownment(
         pool, source_schema=source_schema, limit=batch_size
     )
+    authority_synced = 0
+    for source_table in ("facts", "rules"):
+        authority_synced += await _sync_catalog_authority(
+            pool, source_schema=source_schema, source_table=source_table, limit=batch_size
+        )
     return {
         "source_schema": source_schema,
         "facts_backfilled": facts_backfilled,
         "rules_backfilled": rules_backfilled,
         "facts_reconciled": facts_reconciled,
         "rules_reconciled": rules_reconciled,
+        "authority_synced": authority_synced,
     }
 
 
@@ -1340,6 +1431,7 @@ async def _insert_fact_record(
     sensitivity: str,
     embedding_model_version: str = "unknown",
     authority: ContentAuthority | None = None,
+    confidence: float = 1.0,
 ) -> None:
     """Insert a single fact row into the ``facts`` table.
 
@@ -1377,6 +1469,7 @@ async def _insert_fact_record(
         sensitivity: Data sensitivity classification string.
         embedding_model_version: Model name used to produce the embedding vector.
         authority: Server-derived content authority to stamp, or ``None`` (legacy).
+        confidence: Base confidence in ``[0, 1]`` (default 1.0).
     """
     sql = f"""
         INSERT INTO facts (
@@ -1407,7 +1500,7 @@ async def _insert_fact_record(
         str(embedding),
         search_text,
         importance,
-        1.0,  # confidence
+        confidence,
         decay_rate,
         permanence,
         source_butler,
@@ -1440,6 +1533,7 @@ async def store_fact(
     embedding_engine: EmbeddingEngine,
     *,
     importance: float = 5.0,
+    confidence: float = 1.0,
     permanence: str = "standard",
     scope: str = "global",
     tags: list[str] | None = None,
@@ -1533,6 +1627,9 @@ async def store_fact(
         consolidation_edge_classification: The executor's local classification
             for a consolidation edge. A missing or mismatched classification
             is rejected before any storage work begins.
+        confidence: Base confidence in ``[0, 1]`` for the fact (and any inverse
+            edge it creates). Defaults to 1.0; deterministic writers with an
+            evidence-derived confidence pass it here so decay starts from it.
 
     Returns:
         A dict with:
@@ -1544,6 +1641,8 @@ async def store_fact(
     """
     if enforce_consolidation_edge_allowlist and object_entity_id is not None:
         _validate_consolidation_narrative_edge(predicate, consolidation_edge_classification)
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError(f"confidence must be within [0, 1], got {confidence!r}")
 
     authority = await _stamp_authority(pool, content_authority, authority_entity_id)
     fact_id = uuid.uuid4()
@@ -1796,6 +1895,21 @@ async def store_fact(
                     # fact already exists; no new guidance is needed).
                     return {"id": existing_idem_id, "supersedes_id": None}
 
+            # Mirrored writes reserve both closure pairs before taking fact-row
+            # locks. Reciprocal writers must share one lock order, not first lock
+            # their respective forward pair and then wait on each other's inverse.
+            _inverse_predicate: str | None = None
+            _gap_closure_allowed = True
+            if _registry_row is not None and entity_id is not None and object_entity_id is not None:
+                if _registry_row.get("is_symmetric"):
+                    _inverse_predicate = predicate
+                else:
+                    _inverse_predicate = _registry_row.get("inverse_of") or None
+                if _inverse_predicate is not None:
+                    _gap_closure_allowed = await knowledge_gaps.reserve_gap_pairs(
+                        conn, [(entity_id, predicate), (object_entity_id, _inverse_predicate)]
+                    )
+
             # Supersession applies only to property facts (valid_at IS NULL).
             # Temporal facts (valid_at IS NOT NULL) always coexist as independent
             # active rows regardless of predicate_registry.is_temporal.
@@ -1934,18 +2048,20 @@ async def store_fact(
                 sensitivity=sensitivity,
                 embedding_model_version=embedding_engine.model_name,
                 authority=authority,
+                confidence=confidence,
             )
 
             # An owner question this fact answers moves to `answerable` in this same
             # transaction (bu-q7vx1q.9), so a rolled-back write never answers a gap.
-            await knowledge_gaps.close_matching_gaps(
-                conn,
-                entity_id=entity_id,
-                predicate=predicate,
-                ref=f"fact:{fact_id}",
-                value=content,
-                authority=authority,
-            )
+            if _gap_closure_allowed:
+                await knowledge_gaps.close_matching_gaps(
+                    conn,
+                    entity_id=entity_id,
+                    predicate=predicate,
+                    ref=f"fact:{fact_id}",
+                    value=content,
+                    authority=authority,
+                )
 
             if entity_id is not None and object_entity_id is not None:
                 # RFC 0031 (bu-8cdl1.8 Slice 2): project the entity-to-entity
@@ -1982,14 +2098,6 @@ async def store_fact(
             # Requires mem_025 migration to be applied (inverse_of and is_symmetric
             # columns must exist on predicate_registry).
             if _registry_row is not None and entity_id is not None and object_entity_id is not None:
-                _inverse_predicate: str | None = None
-                _is_symmetric = _registry_row.get("is_symmetric") or False
-                _inverse_of = _registry_row.get("inverse_of")
-                if _is_symmetric:
-                    _inverse_predicate = predicate
-                elif _inverse_of:
-                    _inverse_predicate = _inverse_of
-
                 if _inverse_predicate is not None:
                     # Compute the inverse fact's idempotency key when applicable.
                     _inv_idem_key: str | None = None
@@ -2080,7 +2188,20 @@ async def store_fact(
                             sensitivity=sensitivity,
                             embedding_model_version=embedding_engine.model_name,
                             authority=authority,
+                            confidence=confidence,
                         )
+                        # Cite the newly active inverse itself, with its swapped
+                        # value and the original server stamp. A temporal skip
+                        # never enters this path and cannot heal a stranded gap.
+                        if _gap_closure_allowed:
+                            await knowledge_gaps.close_matching_gaps(
+                                conn,
+                                entity_id=object_entity_id,
+                                predicate=_inverse_predicate,
+                                ref=f"fact:{_inv_fact_id}",
+                                value=_inv_content,
+                                authority=authority,
+                            )
                         # The mirrored fact is itself a canonical edge-fact row
                         # (entity_id/object_entity_id both set by construction
                         # above) -- it gets its own projected edge under its
@@ -2187,11 +2308,12 @@ async def store_fact(
                 predicate=predicate,
                 scope=scope,
                 valid_at=valid_at,
-                confidence=1.0,
+                confidence=confidence,
                 importance=importance,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
                 object_entity_id=object_entity_id,
+                content_authority=authority.authority,
             )
         except Exception:
             logger.warning(
@@ -2368,6 +2490,7 @@ async def store_rule(
                 scope=scope,
                 retention_class=retention_class,
                 sensitivity=sensitivity,
+                content_authority=authority.authority,
             )
         except Exception:
             logger.warning(
@@ -2991,8 +3114,9 @@ async def retry_dead_letter_episode(
             daemon and MCP callers omit it and retain search-path behavior.
 
     Returns:
-        The updated episode row (dict) if the reset succeeded, or ``None`` if
-        no episode with that id exists.
+        The updated episode row (dict, including the public lifecycle dossier
+        columns, never the lease columns) if the reset succeeded, or ``None``
+        if no episode with that id exists.
 
     Raises:
         EpisodeNotDeadLetterError: If the episode exists but its
@@ -3000,15 +3124,9 @@ async def retry_dead_letter_episode(
     """
     table = _memory_relation("episode", memory_schema)
 
-    row = await pool.fetchrow(
-        f"SELECT consolidation_status FROM {table} WHERE id = $1",
-        episode_id,
-    )
-    if row is None:
-        return None
-    if row["consolidation_status"] != "dead_letter":
-        raise EpisodeNotDeadLetterError(row["consolidation_status"])
-
+    # One schema-qualified conditional UPDATE decides the transition, so two
+    # concurrent requeues produce exactly one reset and one event; the loser
+    # observes the episode's current status in the follow-up read.
     async with pool.acquire() as conn:
         async with conn.transaction():
             updated = await conn.fetchrow(
@@ -3024,21 +3142,27 @@ async def retry_dead_letter_episode(
                 WHERE id = $1 AND consolidation_status = 'dead_letter'
                 RETURNING id, butler, session_id, content, importance, reference_count,
                           consolidated, consolidation_status, created_at,
-                          last_referenced_at, expires_at, metadata
+                          last_referenced_at, expires_at, metadata,
+                          consolidation_attempts, last_consolidation_error,
+                          dead_letter_reason, next_consolidation_retry_at
                 """,
                 episode_id,
             )
             if updated is None:
-                # Raced with a concurrent transition between the pre-check and
-                # this guarded UPDATE — report the current terminal reality.
-                raise EpisodeNotDeadLetterError("dead_letter")
+                current = await conn.fetchrow(
+                    f"SELECT consolidation_status FROM {table} WHERE id = $1",
+                    episode_id,
+                )
+                if current is None:
+                    return None
+                raise EpisodeNotDeadLetterError(current["consolidation_status"])
 
             await conn.execute(
                 """
                 INSERT INTO memory_events
                     (event_type, actor, memory_type, memory_id, payload)
                 VALUES
-                    ('episode_consolidation_retry_requested', 'dashboard_api',
+                    ('episode_consolidation_requeued', 'dashboard_api',
                      'episode', $1, $2)
                 """,
                 episode_id,
@@ -3176,17 +3300,20 @@ async def endorse_rule(
                     INSERT INTO public.memory_catalog (
                         source_schema, source_table, source_id, source_butler, tenant_id,
                         entity_id, summary, embedding, search_vector, memory_type,
-                        title, scope, confidence, retention_class, sensitivity, updated_at
+                        title, scope, confidence, retention_class, sensitivity,
+                        content_authority, updated_at
                     )
                     SELECT $1::text, 'rules', r.id, r.source_butler, r.tenant_id, NULL, r.content,
                            r.embedding, r.search_vector, 'rule', LEFT(r.content, 100),
-                           r.scope, r.confidence, r.retention_class, r.sensitivity, now()
+                           r.scope, r.confidence, r.retention_class, r.sensitivity,
+                           r.content_authority, now()
                     FROM {table} r WHERE r.id = $2
                     ON CONFLICT (source_schema, source_table, source_id) DO UPDATE SET
                         summary = EXCLUDED.summary,
                         embedding = EXCLUDED.embedding,
                         search_vector = EXCLUDED.search_vector,
                         confidence = EXCLUDED.confidence,
+                        content_authority = EXCLUDED.content_authority,
                         invalid_at = NULL,
                         updated_at = now()
                     """,

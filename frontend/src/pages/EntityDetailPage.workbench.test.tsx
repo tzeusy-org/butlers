@@ -70,6 +70,8 @@ vi.mock("@/hooks/use-entities", () => ({
     isLoading: false,
     isError: false,
   })),
+  useEntitySharedChronicles: vi.fn(() => ({ data: { items: [], total: 0, limit: 5, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn() })),
+  useEntityCommitments: vi.fn(() => ({ data: { items: [], total: 0, limit: 50, offset: 0, degraded: false, degraded_reason: null }, isLoading: false, isError: false, isRefetching: false, refetch: vi.fn() })),
   useEntityDeltaFacts: vi.fn(() => ({ data: { marked_at: null, items: [] }, isSuccess: true })),
   useMarkEntityView: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useEntityCoreDates: vi.fn(() => ({ data: { items: [] }, isLoading: false })),
@@ -324,7 +326,7 @@ describe("EntityDetailPage — Workbench KPI strip accuracy", () => {
   it("shows lower-bound counts with '+' suffix when facts window is truncated (has_more=true)", () => {
     // Simulate >200 facts: has_more=true; the visible window has 1 src and 1 channel.
     useEntityFacts.mockReturnValue({
-      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", has_more: true },
+      data: { items: [IDENTITY_FACT, NARRATIVE_FACT], next_cursor: "abc123", limit: 200 },
       isFetching: false,
       error: null,
     });

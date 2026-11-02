@@ -46,6 +46,7 @@ import httpx
 import pytest
 
 from butlers.api.app import create_app
+from butlers.api.deps import get_db_optional
 from butlers.api.routers import oauth as oauth_module
 from butlers.api.routers.oauth import _clear_state_store, _generate_state, _store_state
 
@@ -297,7 +298,7 @@ class _Harness:
 async def _drive(harness: _Harness) -> httpx.Response:
     """Drive ``oauth_provider_callback`` over HTTP for a non-Google provider."""
     app = create_app()
-    app.dependency_overrides[oauth_module._get_db_manager] = lambda: MagicMock()
+    app.dependency_overrides[get_db_optional] = lambda: MagicMock()
     state = _generate_state()
     _store_state(state, provider=_SYNTHETIC_PROVIDER)
 

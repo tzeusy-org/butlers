@@ -403,7 +403,7 @@ class BridgeSubprocessManager:
         except Exception:
             return {}
 
-    async def wait_until_connected(self, timeout: float | None = None) -> None:
+    async def wait_until_connected(self, timeout: float | None = None) -> None:  # noqa: ASYNC109 - callers pass timeout=; rename deferred (#4816)
         """Wait until a healthy bridge status reports ``connected``.
 
         Args:

@@ -5,13 +5,13 @@ restart/backoff/cancellation semantics in isolation) by driving the *real*
 ``butlers.api.app.lifespan`` context manager end-to-end -- with only DB/MCP/
 pricing dependencies mocked out -- to prove:
 
-1. All eight dashboard lifespan background loops are wired through
+1. All nine dashboard lifespan background loops are wired through
    ``supervise_lifespan_loop`` exactly once (the lifespan-inventory test).
-2. Shutdown cancels every one of the eight tasks, including the calendar-sync
+2. Shutdown cancels every one of the nine tasks, including the calendar-sync
    deadman -- which was previously *omitted* from the shutdown cancellation
    block even though it was created at startup (a real bug this bead fixes;
    see the regression assertion below).
-3. None of the eight loops restart as a result of shutdown cancellation.
+3. None of the nine loops restart as a result of shutdown cancellation.
 4. The external-deadman loop is present only when EXTERNAL_DEADMAN_URL is
    configured (existing conditional-start behavior, preserved).
 """
@@ -29,7 +29,7 @@ from butlers.api.db import DatabaseManager
 
 pytestmark = pytest.mark.asyncio
 
-# The eight dashboard lifespan loops, independent of
+# The nine dashboard lifespan loops, independent of
 # EXTERNAL_DEADMAN_URL configuration.
 _ALWAYS_ON_LOOP_NAMES = {
     "secrets_lifecycle",
@@ -40,6 +40,7 @@ _ALWAYS_ON_LOOP_NAMES = {
     "migration_drift",
     "calendar_sync_deadman",
     "fleet_shadow_observer",
+    "fleet_readiness",
 }
 _EXTERNAL_DEADMAN_LOOP_NAME = "external_deadman"
 
@@ -55,6 +56,7 @@ _MODULE_LEVEL_LOOP_FUNCS = [
     "run_migration_drift_loop",
     "run_calendar_sync_deadman_loop",
     "run_external_deadman_loop",
+    "run_readiness_sampler_loop",
 ]
 
 
@@ -81,7 +83,7 @@ def _install_common_mocks(monkeypatch, *, call_counts: dict) -> None:
     monkeypatch.setattr(api_app, "create_owner_auth_service", AsyncMock(return_value=None))
     monkeypatch.setattr(api_app, "close_owner_auth_service", AsyncMock())
     monkeypatch.setattr(api_app, "get_db_manager", MagicMock(return_value=mock_db))
-    monkeypatch.setattr(api_app, "wire_db_dependencies", MagicMock())
+    monkeypatch.setattr(api_app, "wire_qa_credentials", MagicMock())
     monkeypatch.setattr(api_app, "get_mcp_manager", MagicMock())
     monkeypatch.setattr(api_app, "get_pricing", MagicMock())
     monkeypatch.setattr(api_app, "resolve_staleness_window_s", MagicMock(return_value=3600.0))
@@ -133,6 +135,9 @@ def _spy_on_supervisor(monkeypatch) -> list[tuple[str, asyncio.Task]]:
     calls: list[tuple[str, asyncio.Task]] = []
 
     def _spy(name, coro_factory, **kwargs):
+        assert kwargs["health"].spec.name == name
+        expected_class = "continuous" if name == "fleet_events_bridge" else "periodic"
+        assert kwargs["health"].spec.job_class == expected_class
         task = real_supervise(name, coro_factory, **kwargs)
         calls.append((name, task))
         return task

@@ -791,7 +791,7 @@ async def test_reconcile_codex_auth_uses_explicit_flat_authority(tmp_path: Path)
     auth = tmp_path / ".codex" / "auth.json"
     stored = json.dumps({"access_token": "flat-store-token"})
     store = _mock_store()
-    store.load = AsyncMock(return_value=stored)
+    store.load = AsyncMock(side_effect=lambda key: stored if key == "cli-auth/codex" else None)
 
     result = await reconcile_codex_auth(auth, store, butler_name="qa")
 
@@ -1311,7 +1311,6 @@ async def test_two_invocations_only_conditionally_store_on_rotation(
     The write path is conditional, so this regression exercises the durable
     rotation behavior without restoring the old blind ``persist_token`` path.
     """
-    import time
 
     codex_dir = tmp_path / ".codex"
     codex_dir.mkdir()
@@ -1324,8 +1323,9 @@ async def test_two_invocations_only_conditionally_store_on_rotation(
     store = _mock_store()
     persisted_value: str | None = json.dumps({"access_token": "v1"})
 
-    async def _load(_key: str) -> str | None:
-        return persisted_value
+    async def _load(key: str) -> str | None:
+        # No cli-auth/openai key, so every invocation uses device-code auth.
+        return persisted_value if key == "cli-auth/codex" else None
 
     async def _cas(_key: str, value: str, *, expected_value: str | None, **_kwargs) -> bool:
         nonlocal persisted_value
@@ -1357,7 +1357,7 @@ async def test_two_invocations_only_conditionally_store_on_rotation(
         assert store.store_shared_if_unchanged.await_count == 0
 
         # Mutate the auth.json to simulate a token rotation
-        time.sleep(0.01)
+        await asyncio.sleep(0.01)
         _write_auth(auth, {"access_token": "v2"})
 
         # Third invocation flushes the local rotation before it can be overwritten.
@@ -1380,8 +1380,8 @@ async def test_retry_persists_the_final_rotation_against_the_last_spawn_snapshot
     store = _mock_store()
     authority: str | None = first
 
-    async def _load(_key: str) -> str | None:
-        return authority
+    async def _load(key: str) -> str | None:
+        return authority if key == "cli-auth/codex" else None
 
     async def _cas(_key: str, value: str, *, expected_value: str | None, **_kwargs) -> bool:
         nonlocal authority
@@ -1658,7 +1658,7 @@ async def test_invoke_writes_test_result_false_on_refresh_reuse_error(
 
     store = _mock_store()
     stored = (codex_dir / "auth.json").read_text(encoding="utf-8")
-    store.load = AsyncMock(return_value=stored)
+    store.load = AsyncMock(side_effect=lambda key: stored if key == "cli-auth/codex" else None)
 
     adapter = CodexAdapter(
         codex_binary="/usr/bin/codex",
@@ -1754,7 +1754,7 @@ async def test_invoke_does_not_write_test_result_for_unrelated_exit1(
 
     store = _mock_store()
     stored = (codex_dir / "auth.json").read_text(encoding="utf-8")
-    store.load = AsyncMock(return_value=stored)
+    store.load = AsyncMock(side_effect=lambda key: stored if key == "cli-auth/codex" else None)
 
     adapter = CodexAdapter(
         codex_binary="/usr/bin/codex",
@@ -1796,7 +1796,7 @@ async def test_invoke_writes_test_result_true_on_success(
 
     store = _mock_store()
     stored = (codex_dir / "auth.json").read_text(encoding="utf-8")
-    store.load = AsyncMock(return_value=stored)
+    store.load = AsyncMock(side_effect=lambda key: stored if key == "cli-auth/codex" else None)
 
     adapter = CodexAdapter(
         codex_binary="/usr/bin/codex",

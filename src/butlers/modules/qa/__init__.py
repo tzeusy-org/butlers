@@ -54,6 +54,7 @@ from butlers.core.qa.patrol_provenance import (
     enabled_sources_snapshot,
 )
 from butlers.core.qa.patrol_status import QaPatrolStatus, require_patrol_status
+from butlers.core.qa.publication.retention import prune_retained_exports
 from butlers.core.qa.repo_clone import ManagedRepoClone
 from butlers.core.qa.repo_whitelist import RepoWhitelist
 from butlers.core.qa.sources.butler_reports import ButlerReportsSource
@@ -467,22 +468,11 @@ class QaModule(Module):
     # Module ABC
     # ------------------------------------------------------------------
 
-    @property
-    def name(self) -> str:
-        return "qa"
+    name = "qa"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return QaConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        # QA tables (qa_patrols, qa_findings, qa_dismissals) are in the public
-        # schema and managed by the core migration chain (core_051–core_055).
-        return None
 
     # ------------------------------------------------------------------
     # Sensitivity metadata
@@ -1143,7 +1133,22 @@ class QaModule(Module):
                 self._config.retention_cleanup_hour,
             )
             return {"status": "skipped", "cleaned_rows": 0, "malformed_rows": 0}
-        return await self.daily_evidence_cleanup(now=run_at)
+        result = await self.daily_evidence_cleanup(now=run_at)
+        result["pruned_exports"] = await self._prune_retained_exports()
+        return result
+
+    async def _prune_retained_exports(self) -> int:
+        """Empty sealed export bytes past retention (bu-mc01y5.25); never fails the job."""
+        if self._pool is None:
+            return 0
+        try:
+            pruned = await prune_retained_exports(self._pool)
+        except Exception:
+            logger.warning("QaModule: retained QA export prune failed", exc_info=True)
+            return 0
+        if pruned:
+            logger.info("QaModule: pruned %d retained QA export(s) past retention", pruned)
+        return pruned
 
     async def _run_patrol_cycle(self) -> dict:
         """Execute one complete patrol cycle under the asyncio.Lock.

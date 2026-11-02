@@ -4,9 +4,38 @@ Runs Butlers on k3s in namespace `butlers-dev` (`values.dev.yaml`) or `butlers`
 (`values.prod.yaml`). Operator guide: [docs/operations/kubernetes-deployment.md](../../../docs/operations/kubernetes-deployment.md).
 
 ```bash
-scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, helm upgrade, status
+scripts/k8s/deploy-dev.sh   # from the repo root: build + push HEAD, bootstrap, helm upgrade, status
 ```
+
+`make deploy-dev` reruns the deployed tag's `scripts/init-db.sql` (`make bootstrap-dev`) before
+`helm upgrade`. Online migrations only check that privileged bootstrap; they never create it.
 
 `localSecrets.source` (chart default `local`, dev `bws`) chooses whether `make secrets-*` or
 External Secrets owns `butlers-runtime-probe-control` and `butlers-local-env`; see the operator
 guide.
+
+Dev selects `butlersControl.enabled=true`: `butlers-control` runs today's
+Switchboard service on 41100 plus the refusal-only session port 41199, while
+`butlers-up` excludes Switchboard. Probes use service health. Both Deployments
+have exactly one replica with `Recreate`; their session capacities are 1 and 4
+from the owner fleet budget 5. Invalid/nonpositive staged partitions or budgets
+above five refuse rendering. The production default remains disabled/unsplit at
+five. No GOAL private key is provisioned or mounted in this stage.
+
+`butlers-control-ingress` permits service callers within the namespace on 41100.
+Port 41199 permits only pods with this release's instance label and component
+`control-session-health` (operator/test caller) or `session-host` (reserved future
+identity). These labels are trusted deployment identities, not caller input.
+NetworkPolicy enforcement and the owner Telegram smoke still require actual dev
+verification; a successful render proves neither. See [stage operation and rollback](../../../docs/architecture/key-absent-control.md).
+
+`connectorMetrics` (default enabled) makes connector `prometheus_client` metrics scrapeable
+in-cluster. Connector health servers bind `127.0.0.1` and also serve `POST /reload`, so every
+connector with a `healthPort` gets a `metrics-proxy` sidecar
+(`scripts/connector_metrics_proxy.py`) that republishes only `GET /metrics` on the named pod
+port `metrics` (9464). Pods carry `k8s.grafana.com/*` and `prometheus.io/*` scrape annotations;
+`connectorMetrics.podMonitor.enabled` adds a Prometheus Operator `PodMonitor` whose `job` and
+`connector` labels match the Compose scrape jobs. On pods `hostIngress.restrict` isolates, the
+host-ingress policy admits the metrics port from `connectorMetrics.allowFrom` (empty: any
+source). Which discovery the cluster LGTM stack honours is site configuration; confirm the
+targets appear after deploy.

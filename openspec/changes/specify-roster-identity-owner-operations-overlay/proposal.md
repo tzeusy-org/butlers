@@ -1,60 +1,57 @@
 ## Why
 
-At baseline `63de6168fc852fcbf4e8fc24717585f64df0e2a5`, Butlers has two incompatible
-system-prompt authority stories. Vision Rule 5 and the roster contract make git-tracked roster
-content authoritative for butler identity, while the implemented dashboard editor makes the newest
-`public.system_prompt_history` row replace that identity wholesale. The owner approved the bounded
-direction "Roster identity plus owner operations overlay" in `bu-f5146g`; this change drafts the
-separately reviewable contract required before that direction can be adopted or implemented.
+At historical baseline `63de6168fc852fcbf4e8fc24717585f64df0e2a5`, the roster and dashboard
+had incompatible system-prompt authority stories. `bu-f5146g` approved the bounded direction
+"Roster identity plus owner operations overlay", not adoption or implementation of this exact
+artifact. The predecessor evidence map is `docs/plans/system-prompt-authority-decision.md`
+(PR #4152, last changed by `d44446ea0ca6d35eee5098c7d9e4b57de50a5dd3`). Travel's old
+observation was already corrected by PR #4154 (`ebdfd64ea74787a89de3f723d2258304464c840c`);
+QA's approved staffer exception came from PR #3110. These are historical facts, not fresh
+runtime observations.
 
-The evidence map is `docs/plans/system-prompt-authority-decision.md`, merged in PR #4152 and last
-changed by `d44446ea0ca6d35eee5098c7d9e4b57de50a5dd3`. Its Travel observation is stale at this baseline:
-PR #4154 (`ebdfd64ea74787a89de3f723d2258304464c840c`) already restored Travel's first-line shared
-include. This draft preserves that repair and preserves QA's separately approved staffer exception;
-it changes no roster or prompt bytes.
+Adopted RFC0038 D1/D2/D9/D15 supersedes this draft's domain-session composition target.
+Domain `CLAUDE.md` is versioned guidance; the lead system prompt comes from lead policy and
+the owner profile, the child's from its brief. Domain daemons do not compose reasoning-session
+prompts. The generalist collision disposition explicitly requires this rescope before archive,
+including the same-name base and spawner blocks. Conforming text needs no new owner exact-text
+sign-off and changes no RFC0038 decision.
 
 ## What Changes
 
-- **BREAKING**: Replace full database prompt substitution with a closed, ordered composition:
-  resolved roster identity, shared prompt snippets, an optional delimited owner-operations overlay,
-  general timezone/locale/date/time/week/currency/measurement-system settings, situational context,
-  blind-spot disclosure, Switchboard routing instructions,
-  and memory context. An unnamed source cannot enter the system prompt.
-- Keep the resolved roster chain present for every admitted roster agent in the target
-  `roster_overlay` mode. Existing agents may remain in a one-way migration-seeded
-  `precutover_legacy_hold` until individually reviewed; unknown agents and invalid roster roots fail
-  before a target-mode runtime starts rather than allowing mutable database text or a generic
-  fallback to stand in for identity.
-- Specify recursive bare `@file.md` expansion in the shared core-skills seam, separately from the
-  existing non-recursive HTML include contract. Domain butlers retain the first-line
-  `@../shared/AGENTS.md` rule. Staffers use an explicit infrastructure-contract opt-in/opt-out; QA's
-  approved opt-out remains in force and its prompt bytes remain unchanged.
-- Reframe the existing prompt GET/PUT/history surface as owner-overlay management. Writes require
-  fail-closed owner control before body or pool access, server-derived attribution, bounded input,
-  optimistic concurrency, atomic audit, and content-blind non-owner evidence. The dashboard must
-  present roster identity and mutable overlay as distinct sources and disclose that delimiters do
-  not semantically constrain natural-language instructions.
-- Add an independently enforceable database boundary: a direct-login prompt writer using its own
-  pool, a non-login table owner, RLS-scoped runtime reads, and removal of historic runtime,
-  connector, generic API, sequence, and public DML authority. No design depends on API `SET ROLE`.
-- Preserve all historical rows with explicit legacy provenance. Stage schema and credentials before
-  cutover, require owner-reviewed overlay activation, retain a reversible legacy-selection switch
-  during the rollback window, and never silently reinterpret a legacy full replacement as an
-  operations overlay.
-- Specify that rollback switch as a separate owner-gated, append-only, compare-and-swap mode-history
-  control using the same dedicated pool, ownership, RLS, audit, and privacy boundaries as overlays.
-  Database privilege cutover must pass before either mode can make an overlay load-bearing.
-- Make the rollback window fail closed from deployment-owned server configuration. No request,
-  database row, MCP tool, runtime session, or generic API can open or extend it.
-- Inventory every current source and writer seam in `design.md`. The active
-  `specify-improvement-proposal-spine` change remains the only whole-requirement owner of
-  `core-skills / AGENTS.md Read/Write Access`; this change neither modifies that requirement nor
-  adopts its candidate target state.
+- Replace the old eight-layer domain-session prompt with the RFC0038 lead/child contract.
+  A lead starts with fenced goal input, owner profile, lead policy, a domain/guidance index,
+  and its recovery ledger summary. Other context arrives through stamped `context.search`,
+  domain read capabilities and `guidance.load`; children receive their brief and governing
+  guidance references. Domain text, stored overlays and legacy selectors are not extra system
+  prompt sources. Situational-context injection does not survive the cutover.
+- Preserve recursive bare-reference resolution relative to its containing file, canonical-roster
+  confinement, cycle and missing/read-failure bounds, and the distinct non-recursive HTML include
+  contract. Apply them to versioned guidance loading; no runtime adapter expands includes.
+  Domain shared instructions remain explicit. Staffer participation remains an infrastructure
+  contract choice; QA's opt-out and unchanged prompt bytes remain protected. D18 engineering
+  executors are distinct from staffer goals and do not create a domain-session exception.
+- Preserve owner-only management, provenance and history duties without claiming that stored
+  owner operations are the current goal system prompt or an automatic runner input. Retain
+  pre-body/pre-pool authentication, server attribution, central key-or-session admission,
+  independent CSRF/exact-Origin checks for cookie unsafe actions, bounded literal input,
+  compare-and-swap/no-op concurrency and atomic content-blind audit. No new runtime delivery
+  route, grant, subscription or activation mechanism is selected here.
+- Preserve the dedicated direct-login writer, separate non-login owner, least-privilege RLS,
+  fixed role mapping, generic-pool denial, bootstrap reconciliation and real-PostgreSQL proof
+  obligations. Domain credentials do not become a runner credential or cross-domain read path.
+- Preserve every historical row and its exact provenance. Old `roster_overlay`,
+  `precutover_legacy_hold` and `legacy_full_replacement` selectors remain historical migration
+  evidence, not selectable goal-runtime modes. An owner acknowledgement, old rollback deadline
+  or compare-and-swap write cannot override D15 or re-enable domain reasoning sessions.
+  Operational rollback requires its own authority and cannot silently select a second live runtime.
+- Keep the prompt/writer inventories explicitly anchored to the historical source above.
+  `core-skills / AGENTS.md Read/Write Access` remains separately owned by
+  `specify-improvement-proposal-spine`; this change does not modify or adopt it.
 
-This is a draft contract only. It does not authorize implementation, schema or grant changes,
-credential provisioning, prompt or roster edits, runtime/database access, deployment, archive,
-merge, or release. Independent semantic/security review must pass on an exact commit, after which
-the owner must separately adopt that exact reviewed artifact before implementation may be planned.
+This is a spec-only conformance amendment. It authorizes no runtime implementation, prompt/roster
+edit, overlay activation, schema/grant/credential change, database access, deployment, archive or
+release. Future feature adoption, exact-head security review and operational authority gates remain
+separate; they do not gate merging this already-authorized RFC-conforming text.
 
 ## Capabilities
 
@@ -64,31 +61,31 @@ None.
 
 ### Modified Capabilities
 
-- `butler-base-spec`: Preserve roster-rooted identity, domain shared-instruction composition, and
-  the closed-source boundary for every spawned runtime.
-- `core-skills`: Assign recursive, roster-confined bare-reference resolution to shared core without
-  touching the actively contested AGENTS read/write requirement.
-- `core-spawner`: Define the complete allowed prompt-layer order, source ownership, failure posture,
-  and adapter-invariant composition.
-- `dashboard-butler-management`: Replace full-prompt editing semantics with owner-gated,
-  provenance-visible, concurrency-safe overlay management and history.
-- `database-security`: Constrain prompt-history ownership, direct-login writes, RLS reads, historic
-  grants, and bootstrap reconciliation.
-- `staffer-archetype`: Make shared-instruction participation an explicit infrastructure-contract
-  choice for every staffer.
-- `staffer-qa`: Canonicalize QA's approved shared-instruction opt-out without changing QA prompt
-  bytes.
+- `butler-base-spec`: Versioned domain guidance and the lead-policy/owner-profile/child-brief boundary.
+- `core-skills`: Recursive, confined guidance resolution without touching AGENTS read/write ownership.
+- `core-spawner`: Goal versus engineering-executor prompt inputs, retrieval and adapter invariance.
+- `dashboard-butler-management`: Owner-only operations/history without goal-prompt selection authority.
+- `database-security`: Writer/RLS/bootstrap isolation and truthful migration/rollback history.
+- `staffer-archetype`: Explicit shared-guidance participation without a domain-session exception.
+- `staffer-qa`: QA's approved opt-out, isolated engineering executors and exposed staffer-goal distinction.
 
 ## Impact
 
-- Future implementation seams: `src/butlers/core/skills.py`,
-  `src/butlers/core/spawner.py`, `src/butlers/core/spawner_context.py`,
-  `src/butlers/api/routers/butler_management.py`, `src/butlers/api/db.py`,
-  `src/butlers/api/owner_control.py`, a new forward core migration, and bootstrap/finalizer grants.
-- Future verification seams: `tests/features/test_skills.py`,
-  `tests/core/test_core_spawner.py`, `tests/core/test_core_spawner_context.py`,
-  `tests/api/test_butler_management.py`, the existing roster include test, and a real-PostgreSQL
-  migration/role suite using the actual direct-login and runtime-role contexts.
-- Future governance-only QA seam: `roster/qa/MANIFESTO.md` plus `staffer-qa`; QA's `CLAUDE.md` and
-  `AGENTS.md` remain byte-identical. Travel needs no further prompt edit from this change.
-- Tests for this spec-only draft: `Tests: +0 ~0 -0`.
+Only this change's proposal, design, task text and seven capability deltas change. All eight
+requirement names, 69 scenario obligations and 42 existing task checkbox states are retained;
+obsolete mechanisms have explicit goal-runtime dispositions rather than a parallel live target.
+The four completed draft tasks are historical completion, not proof of the pending conversion or
+future implementation. No canonical baseline spec, RFC, roster, product or test is edited.
+The only ratchet change appends the authorized `clause / Interactive response mode /
+e69f93fa9eaa` identity under
+`specify-roster-identity-owner-operations-overlay/butler-base-spec/CLAUDE.md as System Prompt Entry Point`
+in `scripts/spec-overwrite-baseline.json`; no global regeneration or matcher/threshold change occurs.
+
+Future executable owners remain the skills/guidance loader, goal runner and prompt adapters,
+`tests/features/test_skills.py`, `tests/core/test_core_spawner.py`,
+`tests/core/test_core_spawner_context.py`, `tests/api/test_butler_management.py`,
+`tests/config/test_roster_claude_md_include.py`,
+`tests/config/test_delegation_guidance_reachability.py`, and the separately authorized real-PG
+prompt-history role/migration suite. These are future verification obligations, not executed proof.
+QA governance may later update MANIFESTO/capability text only; QA prompt bytes and Travel's repair
+remain unchanged. `Tests: +0 ~0 -0` for this amendment.

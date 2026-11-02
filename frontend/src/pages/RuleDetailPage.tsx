@@ -1,3 +1,4 @@
+import { MemoryProvenanceLine } from "@/components/memory/MemoryProvenanceLine";
 // ---------------------------------------------------------------------------
 // RuleDetailPage — the rule's detail page. (bu-2ix8d.7)
 //
@@ -20,6 +21,7 @@
 import { useState } from "react";
 import { useParams } from "react-router";
 import { toast } from "sonner";
+import { ApiError } from "@/api/client";
 
 import {
   DetailEyebrow,
@@ -108,8 +110,9 @@ function CommitFooter({ rule }: { rule: MemoryRule }) {
 export default function RuleDetailPage() {
   const tz = useTimezone();
   const { ruleId } = useParams<{ ruleId: string }>();
-  const { data, isLoading } = useRule(ruleId ?? null);
-  const rule = data?.data;
+  const { data, isLoading, error, refetch } = useRule(ruleId ?? null);
+  const notFound = error instanceof ApiError && error.status === 404;
+  const rule = notFound ? undefined : data?.data;
 
   // Title: the directive text is the record identity; truncate to 80 chars per spec.
   const title = rule
@@ -161,6 +164,8 @@ export default function RuleDetailPage() {
         ) : undefined
       }
       loading={isLoading}
+      error={notFound ? null : error}
+      onRetry={() => void refetch()}
       empty={
         !rule && !isLoading
           ? {
@@ -173,6 +178,7 @@ export default function RuleDetailPage() {
       {rule && (
         <div className="mx-auto flex max-w-[680px] flex-col gap-6">
           <DetailEyebrow kind="rule" id={rule.id} />
+          <MemoryProvenanceLine record={rule} />
 
           {/* State line — maturity + permanence + scope, in the API's words. */}
           <StateLine

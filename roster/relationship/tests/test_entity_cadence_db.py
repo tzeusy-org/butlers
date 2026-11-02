@@ -15,8 +15,11 @@ import pytest
 from fastapi import FastAPI
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+
+_THIS_FILE = Path(__file__).resolve()
 
 pytestmark = [
     pytest.mark.integration,
@@ -77,8 +80,8 @@ async def test_cadence_counts_only_stable_interaction_events(pool: asyncpg.Pool)
 
     # Exercise the real route and SQL against migrated PostgreSQL. Owner auth
     # belongs to the mounted-app API suite; this case pins the row taxonomy.
-    router_path = Path(__file__).resolve().parents[1] / "api" / "router.py"
-    spec = importlib.util.spec_from_file_location("relationship_cadence_db_router", router_path)
+    router_path = _THIS_FILE.parents[1] / "api" / "router.py"
+    spec = importlib.util.spec_from_file_location("_relationship_cadence_db_router", router_path)
     assert spec is not None and spec.loader is not None
     router_module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = router_module
@@ -87,7 +90,7 @@ async def test_cadence_counts_only_stable_interaction_events(pool: asyncpg.Pool)
     app.include_router(router_module.router)
     db = MagicMock(spec=DatabaseManager)
     db.pool.return_value = pool
-    app.dependency_overrides[router_module._get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"

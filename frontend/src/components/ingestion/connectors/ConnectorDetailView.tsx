@@ -45,6 +45,8 @@ import type {
 import { ReauthCallout } from './ReauthCallout'
 import { ScopeList, type OAuthScope } from './ScopeList'
 import { ConnectorHistogram } from './ConnectorHistogram'
+import { buildBucketSeries, hourlySlotStarts } from '@/lib/bucket-series'
+import { useTickingNow } from '@/hooks/use-ticking-now'
 import {
   deriveConnectorDispatchInfo,
   type ConnectorRecovery,
@@ -134,10 +136,13 @@ export interface ConnectorDetailViewProps {
   onReauth?: () => void
   /** Explicit recovery capability resolved from the connector type. */
   recovery?: ConnectorRecovery
-  /** Called when user clicks "pause poll". */
+  /** Pause the confirmed non-paused connector through the audited server route. */
   onPause?: () => void
-  /** Called when user clicks "run now". */
+  /** Resume from pause only; this does not request an immediate poll. */
   onRunNow?: () => void
+  /** Covers the lifecycle POST and its awaited reader refreshes only. */
+  lifecyclePending?: boolean
+  lifecycleError?: string | null
 }
 
 /** Minimal query state a secondary reader needs to render loading/error honestly. */
@@ -169,17 +174,35 @@ export function ConnectorDetailView({
   recovery,
   onPause,
   onRunNow,
+  lifecyclePending = false,
+  lifecycleError,
 }: ConnectorDetailViewProps) {
   const info = deriveConnectorDispatchInfo(connector)
   const displayName = connector.connector_type.replace(/_/g, ' ')
   const statsUnavailable = statsReader?.isError === true
   const statsLoading = statsReader?.isLoading === true && !stats
 
-  // Derive spark data from timeseries (24h hourly buckets)
-  const spark24h = deriveSparkline(stats)
+  // 24 rolling hourly slots keyed by each row's bucket start (bu-s11n0s.5), so
+  // a bucket is drawn at its real hour rather than its array position. The
+  // window rolls with the wall clock; a stale response leaves its newest slots
+  // unreported instead of shifting old buckets into them.
+  const slotStarts = hourlySlotStarts(useTickingNow(60_000))
+  const timeseries = stats?.timeseries ?? []
+  const spark24h = buildBucketSeries(
+    timeseries,
+    (b) => b.bucket,
+    (b) => b.messages_ingested,
+    slotStarts,
+  )
   // DISTINCT skip/filtered-volume overlay (bu-c48im), rendered as a quiet tick
-  // over the ingested bars — never summed into spark24h.
-  const spark24hFiltered = deriveFilteredSparkline(stats)
+  // over the ingested bars — never summed into spark24h. `?? 0` guards older
+  // cached rows that predate the filtered series.
+  const spark24hFiltered = buildBucketSeries(
+    timeseries,
+    (b) => b.bucket,
+    (b) => b.messages_filtered ?? 0,
+    slotStarts,
+  )
   // hourly_events_available is false only on a genuine backend DB-query failure;
   // in that case both series fall back to all-zero and the histogram would read
   // as an honest quiet window — surface the degraded source inline instead.
@@ -437,25 +460,37 @@ export function ConnectorDetailView({
               }
             />
             {onPause || onRunNow ? (
-              <div className="mt-3.5 flex gap-2">
-                {onPause && (
-                  <button
-                    type="button"
-                    onClick={onPause}
-                    className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors"
-                  >
-                    pause poll
-                  </button>
+              <div className="mt-3.5" role="group" aria-label="Connector lifecycle" aria-busy={lifecyclePending}>
+                <div className="flex gap-2">
+                  {onPause && (
+                    <button
+                      type="button"
+                      onClick={onPause}
+                      disabled={lifecyclePending || connector.state === 'paused'}
+                      className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      Pause
+                    </button>
+                  )}
+                  {onRunNow && (
+                    <button
+                      type="button"
+                      onClick={onRunNow}
+                      disabled={lifecyclePending || connector.state !== 'paused'}
+                      className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors disabled:opacity-40 disabled:pointer-events-none"
+                    >
+                      Resume
+                    </button>
+                  )}
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Resume clears pause; state stays unknown until the next heartbeat.
+                </p>
+                {connector.state !== 'paused' && (
+                  <p className="mt-1 text-xs text-muted-foreground">Resume is available only while paused.</p>
                 )}
-                {onRunNow && (
-                  <button
-                    type="button"
-                    onClick={onRunNow}
-                    className="font-mono text-[11px] border border-border px-3 py-1.5 hover:bg-foreground/5 transition-colors"
-                  >
-                    run now
-                  </button>
-                )}
+                {lifecyclePending && <p role="status" className="mt-2 text-xs text-muted-foreground">Updating connector state.</p>}
+                {lifecycleError && <p role="alert" className="mt-2 text-xs text-muted-foreground">{lifecycleError}</p>}
               </div>
             ) : null}
           </div>
@@ -747,34 +782,4 @@ function connectorStateDotState(state: string): DispatchState {
 function describeConnector(connector: ConnectorDetail): string {
   const t = connector.connector_type.replace(/_/g, ' ')
   return `${t.charAt(0).toUpperCase() + t.slice(1)} connector: ${connector.endpoint_identity}.`
-}
-
-function deriveSparkline(stats: ConnectorStats | undefined): number[] {
-  if (!stats?.timeseries?.length) return Array(24).fill(0)
-
-  // Take up to the last 24 timeseries buckets (hourly)
-  const buckets = stats.timeseries.slice(-24)
-  const padded = Array(24).fill(0)
-  buckets.forEach((b, i) => {
-    const idx = 24 - buckets.length + i
-    padded[idx] = b.messages_ingested
-  })
-  return padded
-}
-
-/**
- * DISTINCT skip/filtered-volume sparkline (bu-c48im), aligned bucket-for-bucket
- * with {@link deriveSparkline}. Sourced from `messages_filtered` — never summed
- * into the ingested series. `?? 0` guards older cached rows missing the field.
- */
-function deriveFilteredSparkline(stats: ConnectorStats | undefined): number[] {
-  if (!stats?.timeseries?.length) return Array(24).fill(0)
-
-  const buckets = stats.timeseries.slice(-24)
-  const padded = Array(24).fill(0)
-  buckets.forEach((b, i) => {
-    const idx = 24 - buckets.length + i
-    padded[idx] = b.messages_filtered ?? 0
-  })
-  return padded
 }

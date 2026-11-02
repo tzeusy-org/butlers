@@ -1,3 +1,4 @@
+import { browserDrafts } from "@/lib/draft-store";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -37,6 +38,7 @@ export function OwnerGate({ children }: { children: ReactNode }) {
     mounted.current = true;
     const controller = new AbortController();
     const unsubscribe = onOwnerSessionLost(() => {
+      void browserDrafts.reset().catch(() => { /* Authentication still ends when browser storage is unavailable. */ });
       void cache.cancelQueries(); cache.clear();
       setStatus(previous => previous ? { ...previous, authenticated: false, session_expires_at: null } : null);
       setMessage("Your session ended. Sign in again.");

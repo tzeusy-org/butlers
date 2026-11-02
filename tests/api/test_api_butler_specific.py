@@ -17,7 +17,6 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
@@ -32,15 +31,13 @@ from butlers.api.deps import (
     get_butler_configs,
     get_mcp_manager,
 )
-from butlers.api.routers.healing import _get_db_manager as _healing_get_db
-from butlers.api.routers.healing import _get_dispatch_fn
+from butlers.api.deps import get_db as _healing_get_db
+from butlers.api.deps import get_db_optional as _spotify_get_db
 from butlers.api.routers.spotify import (
     _clear_state_store as _spotify_clear_states,
 )
 from butlers.api.routers.spotify import _exchange_code_for_tokens, _TokenExchangeError
-from butlers.api.routers.spotify import (
-    _get_db_manager as _spotify_get_db,
-)
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -52,23 +49,6 @@ _roster_root = Path(__file__).resolve().parents[2] / "roster"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-class _Row(dict):
-    """dict subclass that mimics asyncpg Record (supports dict() and attr access)."""
-
-    def __getattr__(self, name: str) -> Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(name) from None
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return super().get(key, default)
-
-
-def _row(data: dict) -> _Row:
-    return _Row(data)
 
 
 def _mock_pool(
@@ -101,7 +81,6 @@ class TestHealingAPI:
         db = _mock_db_shared(pool)
         app = create_app(api_key="")
         app.dependency_overrides[_healing_get_db] = lambda: db
-        app.dependency_overrides[_get_dispatch_fn] = lambda: None
         return app, pool
 
     @pytest.mark.parametrize(
@@ -121,7 +100,7 @@ class TestHealingAPI:
         assert resp.status_code == expected
 
     async def test_list_attempts_returns_paginated_structure(self):
-        row = _row(
+        row = Record(
             {
                 "id": uuid.uuid4(),
                 "fingerprint": "a" * 64,

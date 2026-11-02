@@ -70,17 +70,23 @@ taken from tool arguments or from text inside content, so a forged
 `[Source: Owner ...]` line in a stranger's email grants nothing. Sessions with
 no routing context stamp `system`, not `owner`.
 
-Consolidation gives each derived fact and rule the weakest authority among its
-evidence episodes (differing or unknown authority yields `mixed`). Steering
-memory is gated on that stamp:
+Consolidation splits each claimed `(tenant_id, butler)` group into an owner-class
+partition (`owner`, `owner_device`), a `system` partition and a non-owner
+partition (`third_party`, `mixed` and unstamped NULL), each with its own runtime
+session, request ID and episode set; see [Consolidation](#consolidation). It gives each derived
+fact and rule the weakest authority among its evidence episodes (differing or
+unknown authority yields `mixed`). Steering memory is gated on that stamp:
 
 - **Rules** from non-owner authority are *held*: stored, but absent from recall,
   Active Rules, and `public.memory_catalog` until the owner endorses them with
   `POST /api/memory/rules/{id}/endorse` (list them with `GET /api/memory/rules?held=true`).
   Endorsement is atomic with its audit event and catalog entry, and idempotent.
-- **Profile Facts** admit only owner-class facts. An owner-anchored fact written
-  from someone else's session surfaces only as a Task-Relevant Fact labelled
-  `reported by <sender>`.
+- **Profile Facts** admit only owner-class facts. Every other rendered fact,
+  whoever it is about (the owner or Bob), is a Task-Relevant Fact qualified as
+  `reported by <sender>` (`third_party`), `partly reported by <sender>` (`mixed`)
+  or `source unverified` (NULL). An unresolvable sender name renders as
+  `a third party`; the qualification never depends on the lookup. `system` facts
+  carry no label, and `source_butler` names the curating butler, never the reporter.
 - A non-owner write cannot supersede an owner-authored fact.
 - **Legacy rows** (written before `mem_013`) have no stamp and fail closed: legacy
   rules are held and legacy owner facts are not Profile Facts. They are never
@@ -101,6 +107,23 @@ recording the fact reference, a value excerpt and the fact's server-stamped auth
 captured while the fact already exists is born `answerable`. Capture, closure and that re-check
 serialize on an advisory lock, so a racing write cannot strand an open gap.
 
+When `store_fact` creates a registered inverse or symmetric narrative edge, the generated
+active row also answers the original object's gap. Its citation is the inverse row's own UUID,
+its value is the swapped subject label, and its authority is the original server stamp.
+Mirrored writers reserve both schema-qualified advisory keys in signed database-hash order
+before locking or inserting facts, preventing reciprocal writers from taking opposite lock
+orders. These reservations and both answers commit or roll back with the facts and their graph
+projections. Identity and registry-relational predicates still belong to the Relationship writer.
+
+Gap bookkeeping is best effort: a missing local gap table skips it; an ordinary reservation
+failure skips both closures, while an individual closure failure leaves that gap open without
+discarding a successful sibling. Savepoints protect the canonical fact transaction, and failures
+use the existing warning/count. Cancellation or a canonical write/projection error still rolls
+back the enclosing write. Temporal replay and an already-existing inverse key create no new
+answer; inactive retained rows are never reactivated. There is no historical repair scan, and
+later retraction retains the existing answer snapshot. Gaps retain the local single-owner contract:
+they have no tenant or sensitivity field, so this fix adds neither a tenancy nor a delivery policy.
+
 The `memory_knowledge_gap_delivery` maintenance job (every ten minutes, no LLM session) posts one
 notice per origin thread into `public.dashboard_messages` and marks the gap `delivered`. Owner-class
 and system authority read "Now known"; any other authority reads "Reported by <sender>, not
@@ -108,8 +131,11 @@ verified". A failed post keeps the gap `answerable` and retries with bounded bac
 (`delivery_attempts`, `next_attempt_at`); after five attempts it is recorded on the attention
 ledger and listed with `delivery_failed`. Open gaps past `expires_at` (ninety days) become
 `expired`; `dismissed` and `expired` are terminal and never reopen.
+Delivery remains dashboard-only and at least once: a crash after the independently committed
+message post but before the delivery marker commits can repeat the notice. Normal committed
+delivery and fact replay do not post it again.
 
-`memory_open_gaps` and `GET /api/memory/gaps` (keyset pagination, `meta.sources_degraded`) list
+`memory_open_gaps` and `GET /api/memory/gaps` (a keyset `Page` with top-level `sources_degraded`) list
 gaps with a `coverage_state` from the same vocabulary as predicate coverage: an open gap reads
 `unknown` unless `relationship.fact_coverage` receipts say `absent_proven` or `unavailable`.
 `POST /api/memory/gaps/{id}/dismiss` is the owner's terminal dismissal. Only the dashboard channel
@@ -197,7 +223,58 @@ retired design from maintained requirements and outstanding delivery work.
 
 ## Consolidation
 
-A background worker consumes unconsolidated episodes in deterministic batches and emits new facts, rules, supersessions, confirmations, and provenance links. Every episode reaches exactly one terminal state: `consolidated`, `failed`, or `dead_letter`. Consolidation output is schema-validated before persistence.
+A background worker consumes eligible episodes in deterministic batches and emits
+new facts, rules, supersessions, confirmations, and provenance links. Successful
+episodes become `consolidated`; failures are retried after bounded backoff or
+become `dead_letter` when the retry budget is exhausted. Consolidation output is
+schema-validated before persistence.
+
+**Authority partitions (bu-dhloi1.1, bu-dhloi1.26).** After the fenced claim,
+each `(tenant_id, butler)` group is split by the episodes' persisted
+`content_authority` into an owner-class partition, a `system` partition and a
+non-owner partition (`third_party`, `mixed` and NULL). `system` is kept apart
+from third-party content because a `system` fact renders without attribution: a
+shared session could restate a stranger's words citing only a system episode and
+the fact would lose its label. Each nonempty partition gets its own runtime
+session, request ID and allowed episode set, and its dedup context lists only
+facts and rules of the same partition (filtered in SQL before the `LIMIT`). That
+dedup context is the only stored memory the session sees: the spawner skips
+recall-based memory-context injection for `schedule:consolidation` sessions, and
+the MCP wrappers suppress every tool call such a session makes
+(`consolidation_session_tool_policy`), reads and writes alike, since consolidation
+is output-only. The owner and system sessions therefore have no path to
+third-party content they could restate under their own authority. The suppression keys on the session's
+`trigger_source` parameter the spawner writes into the session's MCP server URL.
+Inside the persistence fence the executor revalidates every source episode's stamp
+against its partition and admits `updated_facts` targets and confirmations only
+within the same tenant, source butler and partition. Evidence citing an episode
+outside the partition fails that partition through the ordinary failed/dead-letter
+path before any fact, rule, link or completion write; the sibling partitions still
+commit independently, and valid third-party evidence stays `third_party`. Each
+successful partition writes its own `public.consolidation_runs` row, and the run's
+`groups_consolidated` counts partitions.
+
+The partitions stop new laundering; they do not reclassify facts consolidated
+before this change. A historical demotion mechanism (operator-only, default
+dry-run, evidence-manifest gated) is separate, not yet built work, and no live
+dry-run, demotion or restore has been run or authorized.
+
+The dashboard owner can recover an eligible dead-letter episode with
+`POST /api/memory/episodes/{episode_id}/requeue`. The owner guard and Origin/CSRF
+checks run before target resolution. Recovery is confined to the owning source's
+memory schema; Chronicler's private `chronicler_mem` schema is excluded. One
+conditional transaction changes `dead_letter` to `pending`, resets
+`consolidation_attempts` to `0`, clears error, retry, terminal-reason and lease
+fields, and records one sanitized lifecycle event. A competing request or a
+non-dead-letter episode receives a conflict without a second recovery event.
+The response means queued for a later ordinary schedule: it does not execute
+consolidation, run a schedule immediately, or expose bulk replay or an MCP
+recovery tool.
+
+The active [memory honesty change](../../openspec/changes/memory-honesty-last-mile/tasks.md)
+also requires a future partitioned obligation-goal implementation. That conversion
+and its switch remain open; the recovery and dashboard changes do not establish
+goal-runtime delivery.
 
 ## Decay and Hygiene
 
@@ -292,6 +369,8 @@ resolves the catalog row's owning butler, and asks that butler's existing
 database access. Inactive or missing pointers return `{"status":"not_found"}`.
 Both tools are read-only and idempotent.
 
+**Content authority.** Each catalog row carries the `content_authority` class of its source fact or rule (`owner`, `owner_device`, `third_party`, `system`, `mixed`, or NULL for unstamped legacy rows; core_299, REQ-module-memory-013). Only the class is public — the sender entity stays in the owning schema. Every catalog write (`store_fact`/`store_rule` write-behind, rule endorsement, the backfill) copies it in the same statement as the rest of the row, and `run_memory_catalog_backfill` re-copies it onto rows whose value drifted (for example rows cataloged before the column existed); a NULL source stays NULL. `search_catalog` and `GET /api/memory/catalog/search` return it per row; `memory_catalog_search` adds an `attribution` (`from a third party`, `partly from a third party`, or `source unverified`; none for owner/system content), and Fleet Knowledge lines show the same label.
+
 **Atomic disownment.** Every path that disowns a canonical memory — `memory_forget` (plain and correction-driven), the decay sweep's terminal expiry transition (facts -> `expired`, rules -> `metadata.forgotten`), and `purge_superseded_facts` — cascades a matching catalog-row disownment (`confidence = 0`, `invalid_at` set) in the **same transaction** as the state change, so a crash between the two can never leave the catalog serving a memory the canonical store has already retracted. `store_fact`'s own supersession cascade remains a separate, best-effort, eventually-consistent write-behind (outside the write transaction) — that path predates and is unrelated to the disownment guarantee above. Fading transitions never cascade: fading facts stay live for retrieval per the memory-retention-policy spec.
 
 The owning `source_schema` for a disownment cascade is resolved from the connection's own `current_schema()` rather than threaded through every caller — butler pools connect with `search_path = <schema>, public`, so this reliably matches whatever schema the row was originally cataloged under.
@@ -354,6 +433,18 @@ Entity identity tables live in the `public` schema: `public.entities`.
 None. The memory module is a leaf module with no dependencies on other modules.
 
 ## Implementation Notes
+
+- Fact and rule dashboard details read persisted `content_authority` and `authority_entity_id`;
+  rule endorsement reads `endorsed_at` and `endorsed_by`. Canonical entity names are resolved
+  independently of a fact's subject. Request IDs never identify an author, a system stamp does
+  not imply scheduled execution, and NULL stamps do not establish record age. The held-guidance
+  link opens the existing rules register with `held=true`; source-episode availability retains
+  its separate link/expired/unresolved presentation.
+
+- Generated inverse gap closure stays on the writer's existing connection. Reserve both actual
+  database advisory keys before any property supersession locks; do not replace the reservation
+  with separate closure connections, text/Python hash ordering, or post-commit work. A skipped
+  temporal inverse has no new UUID to cite. No migration, grant or schema change is needed.
 
 - Importing Memory storage or tools leaves `sentence_transformers`, `transformers` and `torch`
   unloaded. `EmbeddingEngine` pays that dependency/model cost at first construction; registered

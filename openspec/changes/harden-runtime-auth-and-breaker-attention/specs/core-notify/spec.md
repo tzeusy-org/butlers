@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Attention Ledger Recording at the notify() Boundary
@@ -66,6 +71,15 @@ safe receipt even if routing-log, registry, notification-log, audit, or
 attention-ledger persistence later fails. Such later failures SHALL be caught
 and recorded as safe telemetry failures; they SHALL not turn the send into a
 retryable delivery failure.
+
+Goal-runtime notification delivery SHALL remain deterministic Switchboard /
+Messenger service-plane traffic. Model calls reach notify only through their
+granted broker capability; no origin, grant or exposure bypasses recipient
+approval. The delivery endpoint SHALL remain unavailable to model discovery
+and direct session-host access. The retained confirmed-send, not-attempted /
+uncertain, caller-selected retry/defer and best-effort ledger scenarios below
+remain unchanged; admission, broker grants and ledger rows SHALL NOT become
+idempotence authority or a new direct-delivery path.
 
 ID: REQ-core-notify-027
 Source: heart-and-soul/vision.md Rule 3; RFC 0003; RFC 0011 Amendment 1; design.md Decision 5

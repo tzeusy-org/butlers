@@ -505,7 +505,7 @@ async def apply_approval_gates(
     metadata = tool_metadata or {}
     originals: dict[str, Any] = {}
 
-    for tool_name, tool_config in gated_tools.items():
+    for tool_name, _tool_config in gated_tools.items():
         tool_obj = await _resolve_registered_tool(mcp, tool_name)
         if tool_obj is None:
             logger.warning(

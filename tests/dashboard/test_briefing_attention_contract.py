@@ -92,6 +92,8 @@ def _make_pool(scenario: dict) -> AsyncMock:
 
     async def _fetch(sql: str, *args):
         historical = scenario.get("historical_audit_group")
+        if "ambient_projections" in sql:
+            return []
         if historical is not None and "INTERVAL '12 hours'" not in sql:
             return [historical]
         return []

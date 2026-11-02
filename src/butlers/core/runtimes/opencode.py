@@ -34,10 +34,11 @@ import shutil
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import append_stream, observe_invocation
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,27 @@ def _extract_stdout_error_detail(stdout: str) -> str | None:
         if detail:
             return detail
     return None
+
+
+def _opencode_terminal_error_text(stdout: str) -> str | None:
+    """Return the last top-level ``error`` event's ``error`` payload, else ``None``.
+
+    ``opencode run --format json`` emits ``{"type": "error", "error": {...}}``
+    for a ``session.error`` (for example an ``APIError`` rejection). Unlike
+    ``error_detail``, which takes any stdout line carrying a ``message``-like
+    key and falls back to raw stdout, this reads only that CLI event: model
+    text and tool output stay nested inside ``part`` and cannot forge it, so
+    usage-limit detection can trust it.
+    """
+    text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "error":
+            text = _stringify_error_payload(obj.get("error"))
+    return text
 
 
 def _stringify_error_payload(payload: Any) -> str | None:
@@ -941,6 +963,8 @@ class OpenCodeAdapter(RuntimeAdapter):
         """
         return build_config_file(mcp_servers, tmp_dir)
 
+    @override
+    @observe_invocation("opencode")
     async def invoke(
         self,
         prompt: str,
@@ -1080,6 +1104,13 @@ class OpenCodeAdapter(RuntimeAdapter):
                         logger.debug("OpenCode stderr: %s", stderr[:500])
 
                     returncode = proc.returncode if proc.returncode is not None else 0
+                    append_stream(
+                        self,
+                        "opencode",
+                        stdout,
+                        configured=model,
+                        completion="error" if returncode else "success",
+                    )
 
                     self._last_process_info = {
                         "pid": proc.pid,
@@ -1090,6 +1121,8 @@ class OpenCodeAdapter(RuntimeAdapter):
                         "attempt_index": attempt_index,
                         "attempt_count": attempt_count,
                     }
+                    if terminal_text := _opencode_terminal_error_text(stdout):
+                        self._last_process_info["terminal_error_text"] = terminal_text
                     attempt_infos.append(self._last_process_info)
 
                     if returncode != 0:

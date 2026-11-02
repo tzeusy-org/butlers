@@ -25,7 +25,11 @@ import pytest
 from butlers.db import register_jsonb_codec
 from butlers.jobs.briefing import _count_birthdays_on, run_relationship_briefing_contribution
 from butlers.jobs.calendar_overlay import run_relationship_calendar_overlay_contribution
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from butlers.testing.migration import (
+    create_migrated_test_db,
+    migration_bootstrap_db_url,
+    migration_db_name,
+)
 from butlers.tools.relationship.posture import entity_set_posture
 
 pytestmark = [
@@ -295,21 +299,74 @@ async def test_set_posture_rejects_unknown_values_entities_and_the_owner(
 
 
 @pytest.fixture
-async def posture_roles(pool: asyncpg.Pool) -> AsyncIterator[None]:
-    """Create the two NOLOGIN roles the trigger distinguishes; drop only what we made."""
+async def posture_roles(pool: asyncpg.Pool, postgres_container) -> AsyncIterator[None]:
+    """Administer disposable roles separately from the ordinary pool under test."""
+    database = await pool.fetchval("SELECT current_database()")
+    login = await pool.fetchval("SELECT current_user")
+    quoted_login = login.replace('"', '""')
+    admin_url = migration_bootstrap_db_url(postgres_container, database)
+    admin = await asyncpg.connect(admin_url.replace("postgresql+psycopg2://", "postgresql://"))
     created: list[str] = []
+    memberships: list[tuple[str, bool | None]] = []
+    grants: list[tuple[str, str, str]] = []
+    schema_grants: list[str] = []
     try:
-        for role in (_PROBE_ROLE, _RELATIONSHIP_ROLE):
-            if not await pool.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role):
-                await pool.execute(f'CREATE ROLE "{role}" NOLOGIN')
-                created.append(role)
-            await pool.execute(f'GRANT SELECT, UPDATE ON public.entities TO "{role}"')
-    except asyncpg.InsufficientPrivilegeError:
-        pytest.skip("test DB user cannot create roles; role decision is covered separately")
-    yield
-    for role in created:
-        await pool.execute(f'DROP OWNED BY "{role}"')
-        await pool.execute(f'DROP ROLE "{role}"')
+        # Roll back all additions if setup fails partway through either role.
+        async with admin.transaction():
+            for role in (_PROBE_ROLE, _RELATIONSHIP_ROLE):
+                if not await admin.fetchval("SELECT 1 FROM pg_roles WHERE rolname = $1", role):
+                    await admin.execute(f'CREATE ROLE "{role}" NOLOGIN')
+                    created.append(role)
+                if not await admin.fetchval("SELECT pg_has_role($1, $2, 'SET')", login, role):
+                    previous_set = await admin.fetchval(
+                        "SELECT set_option FROM pg_auth_members "
+                        "WHERE roleid = (SELECT oid FROM pg_roles WHERE rolname = $1) "
+                        "AND member = (SELECT oid FROM pg_roles WHERE rolname = $2) "
+                        "AND grantor = (SELECT oid FROM pg_roles WHERE rolname = current_user)",
+                        role,
+                        login,
+                    )
+                    await admin.execute(f'GRANT "{role}" TO "{quoted_login}" WITH SET TRUE')
+                    memberships.append((role, previous_set))
+                if not await admin.fetchval(
+                    "SELECT has_schema_privilege($1, 'public', 'USAGE')", role
+                ):
+                    await admin.execute(f'GRANT USAGE ON SCHEMA public TO "{role}"')
+                    schema_grants.append(role)
+                # Column grants suffice for the unchanged UPDATE/WHERE statements.
+                # Table-level REVOKE would also erase preexisting column grants.
+                for privilege, column in (
+                    ("SELECT", "id"),
+                    ("UPDATE", "posture"),
+                    ("UPDATE", "canonical_name"),
+                ):
+                    if not await admin.fetchval(
+                        "SELECT has_column_privilege($1, 'public.entities', $2, $3)",
+                        role,
+                        column,
+                        privilege,
+                    ):
+                        await admin.execute(
+                            f'GRANT {privilege} ({column}) ON public.entities TO "{role}"'
+                        )
+                        grants.append((role, privilege, column))
+        try:
+            yield
+        finally:
+            async with admin.transaction():
+                for role, privilege, column in reversed(grants):
+                    await admin.execute(
+                        f'REVOKE {privilege} ({column}) ON public.entities FROM "{role}"'
+                    )
+                for role, previous_set in reversed(memberships):
+                    option = "SET OPTION FOR " if previous_set is not None else ""
+                    await admin.execute(f'REVOKE {option}"{role}" FROM "{quoted_login}"')
+                for role in reversed(schema_grants):
+                    await admin.execute(f'REVOKE USAGE ON SCHEMA public FROM "{role}"')
+                for role in reversed(created):
+                    await admin.execute(f'DROP ROLE "{role}"')
+    finally:
+        await admin.close()
 
 
 @pytest.mark.parametrize(

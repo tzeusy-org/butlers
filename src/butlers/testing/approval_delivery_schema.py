@@ -22,6 +22,7 @@ async def install_approval_delivery_schema(pool) -> None:
     for module_name in (
         "butlers.modules.approvals.migrations.015_delivery_intent_recovery",
         "butlers.modules.approvals.migrations.017_delivery_rollout_gate",
+        "butlers.modules.approvals.migrations.018_presentation_args_digest",
     ):
         migration = importlib.import_module(module_name)
         statements: list[str] = []

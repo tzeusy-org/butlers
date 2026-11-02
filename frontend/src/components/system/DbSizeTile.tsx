@@ -17,6 +17,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { useDatabaseFacts } from "@/hooks/use-system"
 import type { SchemaSize } from "@/api/types"
@@ -40,22 +41,6 @@ function TileSkeleton() {
           <Skeleton className="h-4 w-full" />
           <Skeleton className="h-4 w-3/4" />
         </div>
-      </TileContent>
-    </Tile>
-  )
-}
-
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Database Size</TileTitle>
-        <TileDescription>PostgreSQL disk footprint</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="db-size-tile-error" className="text-destructive text-sm">
-          Could not load database size.
-        </p>
       </TileContent>
     </Tile>
   )
@@ -96,15 +81,23 @@ function SchemaRow({ schema, totalBytes }: SchemaRowProps) {
  * null. A follow-up bead will add a size history endpoint to power the chart.
  */
 export function DbSizeTile() {
-  const { data: response, isPending, isError } = useDatabaseFacts()
+  const q = useDatabaseFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Database Size" description="PostgreSQL disk footprint"
+      errorMessage="Could not load database size." errorTestId="db-size-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <DbSizeContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function DbSizeContent({ response }: {
+  response: NonNullable<ReturnType<typeof useDatabaseFacts>["data"]>
+}) {
+  const facts = response.data
 
   // Show at most the top 5 schemas by size (already sorted by API)
-  const topSchemas = (facts?.schemas ?? []).slice(0, 5)
+  const topSchemas = facts.schemas.slice(0, 5)
 
   return (
     <Tile>
@@ -117,7 +110,7 @@ export function DbSizeTile() {
           <div>
             <dt className="text-muted-foreground text-xs">Total size</dt>
             <dd className="text-lg font-semibold tabular-nums">
-              {facts != null ? humanizeBytes(facts.total_size_bytes) : "--"}
+              {humanizeBytes(facts.total_size_bytes)}
             </dd>
           </div>
 
@@ -130,7 +123,7 @@ export function DbSizeTile() {
                     <SchemaRow
                       key={schema.schema_name}
                       schema={schema}
-                      totalBytes={facts?.total_size_bytes ?? 0}
+                      totalBytes={facts.total_size_bytes}
                     />
                   ))}
                 </ul>

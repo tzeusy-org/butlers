@@ -276,6 +276,72 @@ async def confirm_suggestion(
     actor: str,
     decision_memory_writer: DecisionMemoryWriter | None = None,
 ) -> dict[str, Any]:
+    """Only promotion expands authority; demotion keeps its existing door."""
+    from butlers.modules.approvals.stepup import run_rule_write
+
+    try:
+        parsed_id = uuid.UUID(str(suggestion_id))
+    except ValueError:
+        return {"error": f"Invalid suggestion_id: {suggestion_id}"}
+    from butlers.modules.approvals.executor import _approval_write_transaction
+    from butlers.modules.approvals.stepup import is_receipt, remember_rule
+
+    # Classification and the corresponding write share a row lock. A racing
+    # change cannot turn an ordinary demotion into an ungated promotion.
+    async with _approval_write_transaction(pool) as connection:
+        row = await connection.fetchrow(
+            "SELECT * FROM autonomy_suggestions WHERE id=$1 FOR UPDATE", parsed_id
+        )
+        promotion = row is not None and row["suggestion_type"] == "promotion"
+        if not promotion:
+            result = await _confirm_suggestion_write(connection, suggestion_id, actor, None)
+        else:
+            result = await run_rule_write(
+                connection,
+                "promotion",
+                dict(suggestion_id=str(parsed_id)),
+                lambda conn: _confirm_suggestion_write(conn, suggestion_id, actor, None),
+            )
+    outer_state = getattr(pool, "is_in_transaction", None)
+    outer_pending = callable(outer_state) and outer_state()
+    if (
+        "error" not in result
+        and decision_memory_writer is not None
+        and not is_receipt(result)
+        and not outer_pending
+    ):
+        rule_id = result.get("resulting_rule_id")
+        if not promotion and row is not None:
+            raw_args = row["representative_args"]
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            rule_id = args.get("rule_id") if isinstance(args, dict) else rule_id
+        if rule_id is not None:
+            rule = await pool.fetchrow(
+                "SELECT * FROM approval_rules WHERE id=$1", uuid.UUID(str(rule_id))
+            )
+            if rule is not None:
+                from butlers.modules.approvals.models import ApprovalRule
+
+                if promotion:
+                    await remember_rule(
+                        decision_memory_writer, ApprovalRule.from_row(rule).to_dict()
+                    )
+                else:
+                    try:
+                        await decision_memory_writer.record_standing_rule(
+                            ApprovalRule.from_row(rule), active=False
+                        )
+                    except Exception:
+                        logger.exception("Post-commit standing-rule memory writeback failed")
+    return result
+
+
+async def _confirm_suggestion_write(
+    pool: Any,
+    suggestion_id: str | uuid.UUID,
+    actor: str,
+    decision_memory_writer: DecisionMemoryWriter | None = None,
+) -> dict[str, Any]:
     """Confirm a pending promotion or demotion suggestion.
 
     For promotion suggestions: creates a standing rule with exact constraints

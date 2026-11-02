@@ -58,6 +58,43 @@ Owner recognition uses the shared resolution path in
 entity gets the `[Source: Owner (entity_id: ...), via <channel>]` preamble, and contact sync matches
 the owner's email and handle instead of creating a duplicate person.
 
+### Endpoint Custody Holds
+
+A lost, stolen or replaced owner channel can be held in `public.custody_holds` (core_293,
+openspec change `endpoint-custody-holds`). A hold names one canonical owner endpoint target by
+`public.custody_target_digest(predicate, object)`, a SHA-256 over the typed fact form
+`public.resolve_owner_triple` matches: `has-email` and `has-handle` values are trimmed and
+lower-cased, `has-phone` values are digits only. The table stores the digest, never the raw
+identifier. While a hold is active, that definer
+returns no owner row for any candidate that matches the held fact. Its owner-only consumers
+therefore treat the endpoint as not owner: Telegram approval callbacks are acknowledged without a
+decision, Switchboard accepted-source ingress gets no owner stamp, and owner-recipient handoff and
+approval corroboration refuse the owner bypass. A held fact still counts toward ambiguity, and the
+owner's other unheld endpoints keep resolving.
+
+Phone spellings do not share one normalized form (`+65 8765 0123` and `87650123` digest
+differently), so a hold on one owner phone fact also demotes every phone fact of the same entity
+with the same trailing eight digits, whatever that sibling's validity (core_296; core_295 used the
+candidate suffix rule, which is not transitive across a 12-digit and an 8-digit spelling). Every
+candidate the definer matches to a stored phone shares its trailing eight digits, so no chain of
+spellings escapes the hold; the class is deliberately wider than the candidate rule and fails
+closed. A writer therefore does not have to find every spelling, and a spelling added or retired
+after the hold stays covered. The core_145 exact-predicate mode
+(`p_predicate` other than `owner-channel`) only matches `has-email`, `has-handle` and `has-phone`,
+the predicates a hold can name; any other predicate resolves no owner.
+
+Hold history is append-only: generations are monotonic per target and never reset, rows cannot be
+deleted or truncated, and the only permitted change is a single `released_at` stamp. Row level
+security with no policy keeps every runtime role from reading or writing holds. The table, the
+content-blind `public.custody_target_held(predicate, object)` read, the digest function it calls
+and the history guard all belong to the database owner (core_295 moved the last two off the
+migration executor), so no runtime-assumable role can replace code a hold check runs. The core_293
+downgrade refuses while any hold is active.
+
+There is no runtime writer yet. The admitted Switchboard hold engine, protected dashboard/host
+release, the direct `resolve_contact_by_channel` routing path, Messenger egress fallback and the
+security-question flow are later slices of bu-s11n0s.1.
+
 ### Credential Resolution
 
 Module startup code resolves credentials from the owner entity's `entity_info`:

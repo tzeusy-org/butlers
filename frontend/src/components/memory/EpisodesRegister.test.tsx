@@ -54,6 +54,10 @@ function makeEpisode(overrides: Partial<Episode> = {}): Episode {
     last_referenced_at: null,
     expires_at: null,
     metadata: {},
+    consolidation_attempts: 0,
+    last_consolidation_error: null,
+    dead_letter_reason: null,
+    next_consolidation_retry_at: null,
     ...overrides,
   };
 }
@@ -290,9 +294,9 @@ describe("EpisodesRegister — the daybook", () => {
     const mark = mounted.container.querySelector('[aria-label="health"]');
     expect(mark).not.toBeNull();
     expect(mark!.textContent).toBe("H");
-    // It carries a category hue via inline style (color or background).
+    // It carries its identity hue via inline style (color or background).
     const style = (mark as HTMLElement).getAttribute("style") ?? "";
-    expect(style).toContain("category");
+    expect(style).toContain("light-dark(oklch(");
   });
 
   it("keeps an initial-only episode row's full butler identity available on hover", () => {
@@ -400,7 +404,7 @@ describe("EpisodesRegister — the daybook", () => {
     act(() => {
       retryButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mutate).toHaveBeenCalledWith({ butler: "atlas", episodeId: "dead-1" });
+    expect(mutate).toHaveBeenCalledWith({ episodeId: "dead-1" });
     // The row stays expanded — the click must not bubble into the row toggle.
     expect(row.getAttribute("aria-expanded")).toBe("true");
   });

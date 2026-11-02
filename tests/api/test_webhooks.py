@@ -30,8 +30,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.webhooks import _get_db_manager
+from butlers.api.deps import get_db
 from butlers.core.crypto import aes_gcm
+from butlers.testing.records import Record
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -61,12 +62,6 @@ def _make_webhook_record(overrides: dict | None = None) -> dict:
     if overrides:
         base.update(overrides)
     return base
-
-
-def _make_record(row: dict) -> MagicMock:
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k, _r=row: _r[k])
-    return m
 
 
 class _NullTxCtx:
@@ -105,10 +100,8 @@ def _make_pool(
     execute_return: str = "DELETE 1",
 ) -> AsyncMock:
     pool = AsyncMock()
-    pool.fetch = AsyncMock(return_value=[_make_record(r) for r in (rows or [])])
-    pool.fetchrow = AsyncMock(
-        return_value=_make_record(fetchrow_return) if fetchrow_return else None
-    )
+    pool.fetch = AsyncMock(return_value=[Record(r) for r in (rows or [])])
+    pool.fetchrow = AsyncMock(return_value=Record(fetchrow_return) if fetchrow_return else None)
     pool.execute = AsyncMock(return_value=execute_return)
     # pool.acquire() yields the pool mock itself as "conn" (see _AcquireCtx),
     # and pool.transaction() is a no-op context manager, so the route's
@@ -145,7 +138,7 @@ async def test_list_webhooks_empty(app):
     """Empty DB returns empty list."""
     pool = _make_pool(rows=[])
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/webhooks")
@@ -159,7 +152,7 @@ async def test_list_webhooks_returns_rows(app):
     row = _make_webhook_record()
     pool = _make_pool(rows=[row])
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/webhooks")
@@ -182,12 +175,12 @@ async def test_create_webhook(app, monkeypatch):
     # Echo back the prefix the router computed so the row reflects what was stored.
     def _fetchrow(*args, **kwargs):
         prefix = args[6]  # $6 = secret_prefix
-        return _make_record(_make_webhook_record({"secret_prefix": prefix}))
+        return Record(_make_webhook_record({"secret_prefix": prefix}))
 
     pool = _make_pool()
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -224,12 +217,12 @@ async def test_create_webhook_client_secret_ignored(app, monkeypatch):
     monkeypatch.setenv("WEBHOOK_SECRET_KEY", _TEST_KEY_HEX)
 
     def _fetchrow(*args, **kwargs):
-        return _make_record(_make_webhook_record({"secret_prefix": args[6]}))
+        return Record(_make_webhook_record({"secret_prefix": args[6]}))
 
     pool = _make_pool()
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -256,7 +249,7 @@ async def test_list_and_get_omit_secret(app):
     row = _make_webhook_record({"secret_prefix": "abc123…"})
     pool = _make_pool(rows=[row], fetchrow_return=row)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         list_resp = await client.get("/api/webhooks")
@@ -283,14 +276,14 @@ async def test_put_regenerate_rotates_secret(app, monkeypatch):
         calls.append(args)
         if len(calls) == 1:
             # First call: SELECT existing row.
-            return _make_record(existing)
+            return Record(existing)
         # Second call: UPDATE ... RETURNING — reflect the new prefix ($5).
-        return _make_record(_make_webhook_record({"secret_prefix": args[5]}))
+        return Record(_make_webhook_record({"secret_prefix": args[5]}))
 
     pool = _make_pool()
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -323,13 +316,13 @@ async def test_put_without_regenerate_keeps_secret(app):
     def _fetchrow(*args, **kwargs):
         calls.append(args)
         if len(calls) == 1:
-            return _make_record(existing)
-        return _make_record(_make_webhook_record({"secret_prefix": args[5]}))
+            return Record(existing)
+        return Record(_make_webhook_record({"secret_prefix": args[5]}))
 
     pool = _make_pool()
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -361,14 +354,14 @@ async def test_put_concurrent_delete_returns_404(app):
         calls.append(args)
         if len(calls) == 1:
             # First call: SELECT existing row.
-            return _make_record(existing)
+            return Record(existing)
         # Second call: UPDATE ... RETURNING — simulate a concurrent delete.
         return None
 
     pool = _make_pool()
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock) as mock_audit:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -392,7 +385,7 @@ async def test_delete_webhook_success(app):
     """DELETE returns 200 and wiped=True when row exists."""
     pool = _make_pool(execute_return="DELETE 1")
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     with patch("butlers.api.routers.webhooks.audit.append", new_callable=AsyncMock):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -406,7 +399,7 @@ async def test_delete_webhook_not_found(app):
     """DELETE returns 404 when row does not exist."""
     pool = _make_pool(execute_return="DELETE 0")
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.delete(f"/api/webhooks/{_WH_ID}")
@@ -424,7 +417,7 @@ async def test_test_webhook_not_found(app):
     pool = _make_pool()
     pool.fetchrow = AsyncMock(return_value=None)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(f"/api/webhooks/{_WH_ID}/test")
@@ -438,7 +431,7 @@ async def test_test_webhook_returns_result(app):
     pool = _make_pool(fetchrow_return=row)
     pool.execute = AsyncMock(return_value=None)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     from butlers.api.routers.webhooks import WebhookTestResult
 
@@ -555,7 +548,7 @@ async def test_create_webhook_missing_key_fails(app, monkeypatch):
 
     pool = _make_pool()
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post(
@@ -575,7 +568,7 @@ async def test_list_webhooks_503_when_no_switchboard(app):
     """Returns 503 when switchboard pool is unavailable."""
     db = MagicMock(spec=DatabaseManager)
     db.pool.side_effect = KeyError("switchboard")
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.get("/api/webhooks")
@@ -751,12 +744,12 @@ async def test_create_webhook_dispatches_webhook_create_event(app, monkeypatch):
 
     def _fetchrow(*args, **kwargs):
         prefix = args[6]
-        return _make_record(_make_webhook_record({"secret_prefix": prefix}))
+        return Record(_make_webhook_record({"secret_prefix": prefix}))
 
     pool = _make_pool()
     pool.fetchrow = AsyncMock(side_effect=_fetchrow)
     db = _make_db(pool)
-    app.dependency_overrides[_get_db_manager] = lambda: db
+    app.dependency_overrides[get_db] = lambda: db
 
     dispatched_events: list[str] = []
 

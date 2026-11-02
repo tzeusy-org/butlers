@@ -38,6 +38,7 @@ from butlers.api.audit_grouping import (
 from butlers.api.reachability_ledger import open_condition_onset, record_probe
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
+from tests.audit_helpers import clear_audit_log_for_test
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -67,7 +68,7 @@ async def pool(postgres_container, migrated_db_url: str):
         init=register_jsonb_codec,
     )
     await p.execute("TRUNCATE TABLE public.butler_reachability_conditions")
-    await p.execute("TRUNCATE TABLE public.audit_log CASCADE")
+    await clear_audit_log_for_test(p)
     yield p
     await p.close()
 

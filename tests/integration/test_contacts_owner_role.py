@@ -513,7 +513,7 @@ async def test_telegram_absence_finalization_failure_and_restart(
     caplog.set_level("INFO")
     for fault in ["state_save", "disconnect_before_commit"]:
 
-        async def failing_save(*args, executor=None, **kwargs):
+        async def failing_save(*args, executor=None, fault=fault, **kwargs):
             await saved(*args, executor=executor, **kwargs)
             if executor is not None:
                 if fault == "state_save":

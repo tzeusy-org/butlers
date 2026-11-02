@@ -70,6 +70,11 @@ The dock and the popover share the same Switchboard-routed conversation set. All
 - **WHEN** `/chat/:conversationId` is visited
 - **THEN** the frontend calls `GET /api/conversations/{id}` to resolve the owning `butler_name` before fetching messages — the conversation may belong to any butler, not only the Switchboard (any assistant message's copy-link, wherever it renders, points here)
 - **AND** once resolved, messages are fetched via the existing per-butler `GET /api/butlers/{name}/conversations/{id}/messages` route using that resolved `butler_name`
+- **AND** history and sending SHALL be unavailable until the lookup has resolved for the current route; the composer SHALL NOT call a send with the Switchboard fallback, and typed text SHALL be retained
+- **AND** a non-404 lookup failure with no resolved owner SHALL render a named "Conversation owner" alert with Retry; Retry SHALL re-run only the lookup, SHALL NOT send or clear typed text, and on success SHALL restore the resolved butler and its history
+- **AND** once an owner is established, a later background lookup failure SHALL keep that owner and any active Stop control, and SHALL show a stale-owner note instead of clearing the binding
+- **AND** a lookup result for an earlier route id SHALL NOT bind or enable sending on a newer route
+- **AND** bare `/chat` SHALL remain send-capable through the Switchboard butler, and the 404 not-found state below is unchanged
 
 #### Scenario: Unknown conversation id renders an explicit not-found state
 

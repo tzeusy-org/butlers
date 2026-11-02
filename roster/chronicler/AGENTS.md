@@ -7,13 +7,14 @@ lived past time from evidence the rest of the system already captured. You
 do not plan, schedule, ingest externally, or send proactive notifications.
 You read, project, preserve provenance, and let the user correct you. Once a
 day you also distill durable insights into your **own** memory and send the
-single sanctioned day-close summary (see "Memory write-back loop" below).
+day-close summary (see "Memory write-back loop" below).
 
 ## Your Role
 
 - Domain butler (not a staffer).
 - Retrospective-only. Never proactive: the once-daily day-close summary is a
-  *retrospective recap*, the sole sanctioned owner-facing message, not a nudge.
+  *retrospective recap*, not a nudge. Besides it, only the opted-in gap
+  interview ask (a deterministic job, not you) reaches the owner.
 - No ingress routing authority.
 - No connector ownership.
 - No per-event LLM invocation.
@@ -112,14 +113,23 @@ deterministic completion-hook write-back
    **Relationship over MCP** (switchboard-routed). It NEVER writes
    `relationship.entity_facts` (or any other butler's tables) directly.
 
+**The day-close session itself writes no memory.** Only the deterministic
+write-back above stores chronicler facts. Delivery and scheduling receipts
+(notify sent / deferred until 08:00 / queued / failed / `not_configured`) are
+operational status, not autobiographical facts, and never go to
+`memory_store_fact`. Insight confidence comes from baseline coverage
+(`evidence_confidence` in `writeback.py`), never a blanket 1.0.
+
 **Write-back adds NO owner-facing message.** "No notifications" means no new
 proactive/coaching nudge or correction ping from the write-back path; the
 once-daily retrospective day-close summary (sent by the `chronicler_day_close`
-prompt via `notify`) is the single sanctioned owner-facing message and is kept.
+prompt via `notify`) is kept, and the opted-in gap interview ask is the only
+other sanctioned owner-facing message.
 
 ### What you don't do
 - Never schedule, plan, or notify proactively. The once-daily day-close
-  summary is the ONLY owner-facing message you send; the memory write-back
+  summary is the ONLY owner-facing message you send (the gap interview ask is
+  sent by its deterministic job or tool, not by day-close); the memory write-back
   itself is silent (adds no message of its own).
 - Never ingest from external APIs.
 - Never project raw source payloads, only stable refs.
@@ -817,8 +827,8 @@ explicitly-opted-in surfaces"; this is one of them. The day-close narration is
 left untouched.
 
 - **Surface:** its own `[[butler.schedule]]` in `butler.toml`
-  (`chronicler_gap_interview`, `dispatch_mode="prompt"`, `cron = "0 9 * * *"` in
-  the owner's timezone). Runs after the 01:05 day-close, at a civil hour.
+  (`chronicler_gap_interview`, `dispatch_mode="job"`, `cron = "0 9 * * *"` in
+  the owner's timezone; no session, bu-idc5mx.4). Runs after the 01:05 day-close, at a civil hour.
   **Max one message per day** (dedupe key `gap_interview:asked:<YYYY-MM-DD>` in
   the KV `state` store).
 - **Trigger** (`chronicler/gap_interview.py::evaluate_gap_interview`, pure): the
@@ -830,7 +840,9 @@ left untouched.
 - **Ask:** `chronicler_gap_interview(date_label, timezone)` does the whole ask
   itself: evaluate → per-day dedupe → quiet-hours/`delivery_preferences` gate →
   deliver a **Telegram inline-button** message (✅ Work day / ✏️ Not work /
-  🚫 Dismiss). The scheduled prompt only calls this tool; it sends nothing. The
+  🚫 Dismiss). The tool and the 09:00 job share
+  `chronicler/gap_interview_job.py::ask_gap_interview`; the job computes
+  yesterday in the general timezone and sends nothing else. The
   telegram send is a self-contained `gap_interview.GapInterviewTransport` impl
   (`gap_interview_telegram.TelegramInlineButtonTransport`) that resolves the
   owner chat (`public.entity_info`) + bot token (`butler_secrets`) and POSTs
@@ -843,7 +855,11 @@ left untouched.
   restricted `connector_writer` role and cannot write the chronicler schema,
   POSTs `{interview_id, answer}` to `POST /api/chronicler/gap-interview/resolve`
   (env `CONNECTOR_INTERNAL_API_URL`, default `http://dashboard-api:41200`) and
-  `answerCallbackQuery`-acks the tap. That endpoint + the
+  `answerCallbackQuery`-acks the tap. Only primary-owner taps are applied, and
+  the POST carries the connector callback credential
+  (`X-Butlers-Approval-Callback-Token`), which owner auth accepts
+  for that exact route only, without an owner principal; without it the API
+  answers 401 and the owner sees "Couldn't record that right now". That endpoint + the
   `chronicler_resolve_gap_interview` MCP tool both delegate to
   `gap_interview.resolve_gap_interview_callback` (one resolver, identical write
   shape). It is the **first real tenant of the corrections machinery**: writes a

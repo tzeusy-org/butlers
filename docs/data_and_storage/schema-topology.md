@@ -32,10 +32,25 @@ The `public` schema contains tables that multiple butlers need to read. It is th
 - **`public.memory_catalog`** -- Cross-butler discovery index over memory items: a searchable
   summary plus provenance pointers back to the owning butler's schema. It is not a canonical store;
   full recall routes back to the owning schema.
-- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation; core_268 adds set-once `new_object_id` and set-once `result` (checked after the stage-forward rule), a result/stage CHECK and a held-row delete guard):
+- **`public.qa_publication_operations`** -- Durable QA publication operation ledger (core_266; core_267 adds forward-only stage, immutable binding and exact reconciliation; core_268 adds set-once `new_object_id` and set-once `result` (checked after the stage-forward rule), a result/stage CHECK and a held-row delete guard; core_298 lets a held `pr_create` reconcile `resource_found` by adopting a PR number; core_300 adds the set-once `egress_started_at` stamp that absence settles from):
   one row per attempt and closed operation kind, with binding/payload digests, stage and result.
   Only `butler_qa_rw` writes (forced RLS); every runtime role reads. An unresolved row holds its
   fingerprint lineage. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.qa_publication_exports`** -- Retained sealed QA export bytes (core_294): one immutable
+  row per attempt, written by the publisher before its first egress so a failed or ambiguous
+  publication stays recoverable after worktree teardown. core_301 adds `pruned_at`: 30 days after
+  a terminal attempt closes with no held lineage, the bytes are emptied and the row stays as a
+  binding tombstone. Only `butler_qa_rw` writes (forced RLS);
+  every runtime role reads. See [QA Publication Boundary](../operations/qa-publication-boundary.md).
+- **`public.owner_places`** -- The owner place registry (core_303): named places with a stable
+  UUID, kind, five-decimal centre, radius, aliases, exact SSIDs, optional HA zone, `paused`,
+  CAS `version` and soft `deleted_at`. Written only by the owner Home dashboard editor (the table
+  owner); non-FORCE RLS lets only `butler_travel_rw` and `butler_chronicler_rw` read it and no
+  runtime role write it. See [Home Butler](../butlers/home.md#owner-places).
+- **`public.qa_publication_refusals`** -- QA publisher refusal receipts (core_302): one immutable,
+  content-free row (status, category) per attempt the publisher refused before retaining an export,
+  so the case API can prove such an attempt `unpublished`. Fenced like the exports table. See
+  [QA Publication Boundary](../operations/qa-publication-boundary.md).
 - **`public.butler_secrets`** -- The shared credential pool (the fallback tier of the
   [Credential Store](credential-store.md)), created at daemon boot by `ensure_secrets_schema`.
 
@@ -218,3 +233,14 @@ and core-only installations below this additive revision stay unstamped; retries
 unknown state. A caller's dashboard label, actor, status or boolean is not this producer witness.
 The shared public-table grants and trusted-host premise remain unchanged; the stamp is not a
 credential or protection against a compromised trusted database actor.
+
+## Dark Switchboard goal ledger
+
+`sw_047` adds `switchboard.{goals,invocations,effects,budgets,admission_decisions,goal_inbox}`
+for RFC0038's unwired admission slice. `core_273` adds a nullable explicit
+`runtime_config.goal_admission_config` snapshot in each migrated core schema;
+only Switchboard's snapshot is consumed. These ordinary owner-held tables enable
+non-FORCE RLS for the exact Switchboard runtime, preserving migration-owner full
+backup while denying other runtimes after bootstrap regrants. See
+[goal ledger and admission](../architecture/goal-ledger-and-admission.md) for
+source keys, lock order, policy snapshots and actual verification obligations.

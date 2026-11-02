@@ -197,6 +197,17 @@ def _merge_tool_call_records(
     return _dedup_tool_calls_by_id(merged)
 
 
-def _has_non_command_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
-    """Return whether the record set includes any non-bash tool call."""
-    return any(str(call.get("name", "") or "") != "command_execution" for call in tool_calls)
+def _is_mcp_tool_call(call: dict[str, Any]) -> bool:
+    """Return whether a record is MCP work rather than a runtime-native tool.
+
+    Runtime-native work is Codex/OpenCode shell (``command_execution``) or a
+    Claude CLI built-in, which the Claude adapter marks ``builtin``.
+    """
+    if call.get("builtin") is True:
+        return False
+    return str(call.get("name", "") or "") != "command_execution"
+
+
+def _has_mcp_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the record set confirms any MCP tool call."""
+    return any(_is_mcp_tool_call(call) for call in tool_calls)

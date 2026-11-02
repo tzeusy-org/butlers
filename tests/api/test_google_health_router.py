@@ -18,14 +18,12 @@ import httpx
 import pytest
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db_optional as _gh_get_db
 from butlers.api.models.google_health import GoogleHealthConnectorState
 from butlers.api.routers.google_health import (
     GOOGLE_HEALTH_SCOPE_URLS,
     _fetch_heartbeat_rows_by_email,
     _worst_of_state,
-)
-from butlers.api.routers.google_health import (
-    _get_db_manager as _gh_get_db,
 )
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 

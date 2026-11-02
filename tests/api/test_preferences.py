@@ -17,7 +17,7 @@ import pytest
 from asyncpg.exceptions import UndefinedTableError
 
 from butlers.api.db import DatabaseManager
-from butlers.api.routers.preferences import _get_db_manager
+from butlers.api.deps import get_db
 
 pytestmark = pytest.mark.unit
 
@@ -131,7 +131,7 @@ def _app_with_pool(
     else:
         mock_db.pool.return_value = mock_pool
 
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return app, mock_pool, mock_db
 
 

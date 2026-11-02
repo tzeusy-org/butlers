@@ -20,7 +20,7 @@ public shadow. Results are merged and sorted in application code, then capped
 at ``limit``.
 
 SQL column projections and query functions are versioned in
-:mod:`butlers.api.read_models.activity_v1`.
+:mod:`butlers.api.read_models.activity`.
 """
 
 from __future__ import annotations
@@ -28,11 +28,11 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
-from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models.activity_feed import ActivityEvent, ActivityFeed
-from butlers.api.read_models.activity_v1 import (
+from butlers.api.read_models.activity import (
     ActivityActionRow,
     ActivityEpisodeRow,
     ActivitySessionRow,
@@ -53,11 +53,6 @@ router = APIRouter(prefix="/api/butlers", tags=["butlers", "activity-feed"])
 
 _LIMIT_DEFAULT = 10
 _LIMIT_MAX = 50
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +143,8 @@ def _episode_to_event(row: ActivityEpisodeRow) -> ActivityEvent:
 async def get_activity_feed(
     name: str,
     limit: int = Query(_LIMIT_DEFAULT, ge=1, le=_LIMIT_MAX, description="Max events to return"),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ActivityFeed:
     """Return a merged, time-ordered activity feed for a single butler.
 
@@ -173,11 +169,11 @@ async def get_activity_feed(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     events: list[ActivityEvent] = []
 

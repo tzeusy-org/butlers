@@ -350,9 +350,7 @@ class TestMcpOnlyInterButler:
 
         # Build a minimal synthetic module with an arbitrary name
         class _SyntheticModule(Module):
-            @property
-            def name(self) -> str:
-                return "test_synthetic_module_xyzzy"
+            name = "test_synthetic_module_xyzzy"
 
             @property
             def config_schema(self):
@@ -412,18 +410,21 @@ class TestMcpOnlyInterButler:
         """
         import inspect
 
+        from butlers.tools.switchboard.registry.registry import load_available_butlers
         from butlers.tools.switchboard.routing import classify
 
-        src = inspect.getsource(classify)
+        # The classifier's candidate loader is the registry's butler-only loader
+        assert classify._load_available_butlers is load_available_butlers
+        src = inspect.getsource(load_available_butlers)
 
-        # Classify module must reference staffer exclusion
+        # The candidate loader must reference staffer exclusion
         assert "staffer" in src.lower(), (
-            "classify module must reference staffer type for exclusion (RFC 0003)"
+            "candidate loader must reference staffer type for exclusion (RFC 0003)"
         )
 
         # list_butlers with butler_only=True is the exclusion mechanism
         assert "butler_only" in src, (
-            "classify must use butler_only=True to exclude staffers from classification (RFC 0003)"
+            "candidate loader must use butler_only=True to exclude staffers (RFC 0003)"
         )
 
     def test_route_execute_is_the_only_cross_butler_dispatch_mechanism(self):

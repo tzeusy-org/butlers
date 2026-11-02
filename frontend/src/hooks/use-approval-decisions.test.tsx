@@ -205,7 +205,7 @@ describe("useApprovalDecisionMutations -- scheduleDecision (bu-qvnce.4)", () => 
     });
 
     await act(async () => {
-      await result.current.decisions.approveMut.mutateAsync("a1");
+      await result.current.decisions.approveMut.mutateAsync({ id: "a1", displayed_call: { tool_name: "telegram_send_message", args_digest: "a".repeat(64) } });
     });
 
     await waitFor(() => {

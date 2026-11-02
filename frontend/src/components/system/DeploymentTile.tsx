@@ -20,6 +20,7 @@ import {
   TileHeader,
   TileTitle,
 } from "@/components/ui/Tile"
+import { QueryTile } from "@/components/ui/query-tile"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Time } from "@/components/ui/time"
 import { useDeploymentFacts } from "@/hooks/use-system"
@@ -74,22 +75,6 @@ function TileSkeleton() {
   )
 }
 
-function TileError() {
-  return (
-    <Tile degraded>
-      <TileHeader>
-        <TileTitle>Deployment</TileTitle>
-        <TileDescription>What's actually serving right now</TileDescription>
-      </TileHeader>
-      <TileContent>
-        <p data-testid="deployment-tile-error" className="text-destructive text-sm">
-          Could not load deployment status.
-        </p>
-      </TileContent>
-    </Tile>
-  )
-}
-
 // ---------------------------------------------------------------------------
 // DeploymentTile
 // ---------------------------------------------------------------------------
@@ -110,14 +95,22 @@ function TileError() {
  *   - commits_behind_main === 0: green "up to date with origin/main".
  */
 export function DeploymentTile() {
-  const { data: response, isPending, isError } = useDeploymentFacts()
+  const q = useDeploymentFacts()
 
-  if (isPending) return <TileSkeleton />
-  if (isError) return <TileError />
+  return (
+    <QueryTile q={q} title="Deployment" description="What's actually serving right now"
+      errorMessage="Could not load deployment status." errorTestId="deployment-tile-error" loadingFallback={<TileSkeleton />}>
+      {(response) => <DeploymentContent response={response} />}
+    </QueryTile>
+  )
+}
 
-  const facts = response?.data
+function DeploymentContent({ response }: {
+  response: NonNullable<ReturnType<typeof useDeploymentFacts>["data"]>
+}) {
+  const facts = response.data
 
-  if (!facts?.current) {
+  if (!facts.current) {
     return (
       <Tile degraded>
         <TileHeader>

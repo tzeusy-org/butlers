@@ -11,15 +11,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
+
+from butlers.core.job_health import record_tick
+from butlers.core.mcp_urls import resolve_cross_container_mcp_url
 
 IDENTITY_PATH = "/internal/control-plane/identity"
 IDENTITY_SCHEMA = "butler.control.v1"
@@ -27,6 +30,32 @@ MAX_IDENTITY_BYTES = 2048
 PROBE_DEADLINE_S = 3.0
 MAX_PROBE_FANOUT = 4
 SUPPORTED_ROUTE_CONTRACT = 1
+
+#: The fixed Boolean check names public ``GET /ready`` reports (REQ-dashboard-api-063).
+#: Deployment gating (``butlers.core.deploy_readiness``) accepts only these as
+#: failure categories, so a readiness body can never carry private content.
+READINESS_CHECK_KEYS: tuple[str, ...] = (
+    "postgres",
+    "roster",
+    "observer",
+    "fleet",
+    "qa_patrol",
+    "supervisors",
+    "route_canary",
+)
+
+#: Per-daemon separated control-plane facts for the expected names (``$1``).
+#: The one reader shared by the shadow observer and Dashboard ``/ready`` sampling;
+#: ``server_now`` lets callers judge TTL freshness on the database clock.
+FLEET_FACTS_SQL = """
+    SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
+           c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
+           c.healthy_observed_at, r.eligibility_state,
+           r.liveness_ttl_seconds, clock_timestamp() AS server_now
+    FROM switchboard.butler_registry_control_plane AS c
+    JOIN switchboard.butler_registry AS r USING (name)
+    WHERE c.name = ANY($1::text[])
+"""
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +77,23 @@ class ExpectedDaemon:
         return f"http://{self.host}:{self.port}{IDENTITY_PATH}"
 
 
+def _backend_host(port: int) -> str:
+    resolved = urlparse(resolve_cross_container_mcp_url(f"http://localhost:{port}"))
+    return resolved.hostname or "localhost"
+
+
 def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
-    """Freeze the expected set from Git-discovered configs, never DB rows."""
-    host = os.environ.get("BUTLERS_HOST", "localhost")
+    """Freeze the expected set from Git-discovered configs, never DB rows.
+
+    Each backend host follows the canonical destination rule: domains use
+    ``BUTLERS_HOST``; Switchboard's port uses ``SWITCHBOARD_MCP_URL`` when set,
+    so its identity is probed where it runs (``butlers-control`` in the stage).
+    """
     targets = tuple(
         ExpectedDaemon(
             name=config.name,
             port=config.port,
-            host=host,
+            host=_backend_host(config.port),
         )
         for config in configs
     )
@@ -64,7 +102,7 @@ def expected_from_roster(configs: list[Any]) -> tuple[ExpectedDaemon, ...]:
     if len({target.port for target in targets}) != len(targets):
         raise ValueError("duplicate roster port")
     for target in targets:
-        target.url  # Validate the complete trusted endpoint before any I/O.
+        _ = target.url  # Validate the complete trusted endpoint before any I/O.
     return targets
 
 
@@ -346,18 +384,7 @@ async def run_shadow_cycle(
     healthy_count = 0
     unready: list[UnreadyDaemon] = []
     try:
-        rows = await pool.fetch(
-            """
-            SELECT c.name, c.policy_state, c.observed_state, c.boot_epoch,
-                   c.observed_boot_epoch, c.route_compatible, c.accepting_routes,
-                   c.healthy_observed_at, r.eligibility_state,
-                   r.liveness_ttl_seconds
-            FROM switchboard.butler_registry_control_plane AS c
-            JOIN switchboard.butler_registry AS r USING (name)
-            WHERE c.name = ANY($1::text[])
-            """,
-            [target.name for target in expected],
-        )
+        rows = await pool.fetch(FLEET_FACTS_SQL, [target.name for target in expected])
         by_name = {row["name"]: row for row in rows}
         now = await pool.fetchval("SELECT clock_timestamp()")
         mismatches = 0
@@ -478,5 +505,6 @@ async def run_shadow_observer_loop(
                 )
                 if after_cycle is not None:
                     await after_cycle(role_view, cycle)
+                await record_tick(failed=not cycle.complete, interval_s=interval_s)
         finally:
             await prober.cancel_all()

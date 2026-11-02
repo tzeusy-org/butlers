@@ -259,13 +259,12 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             """Create a new event chain.
 
             An event chain defines an automated sequence of actions that fires
-            when a trigger event occurs (calendar event end, deadline expiry, or
+            when a supported trigger event occurs (deadline expiry or
             deadline threshold alert).
 
             Args:
                 name: Unique name for this chain (scoped to this butler).
                 trigger_type: When to fire. One of:
-                    - 'calendar_event_end': fires when a calendar event ends.
                     - 'deadline_passed': fires when a deadline task expires/completes.
                     - 'deadline_threshold': fires when a deadline alert threshold fires.
                 actions: Ordered list of action dicts. Each action must have:
@@ -274,7 +273,7 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
                     - For prompt actions: 'prompt' (non-empty string)
                     - For job actions: 'job_name' (non-empty string);
                         optionally 'job_args' (dict)
-                trigger_reference: Optional event_id or task_id this chain fires for.
+                trigger_reference: Optional deadline task reference this chain fires for.
                     When omitted, the chain fires for all events of the given type.
 
             Returns:
@@ -315,7 +314,8 @@ def register_temporal_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) ->
             Args:
                 chain_id: UUID of the event chain to update.
                 name: New name (optional).
-                trigger_type: New trigger_type (optional).
+                trigger_type: New writable trigger_type (deadline_passed or
+                    deadline_threshold). calendar_event_end is historical and refused.
                 trigger_reference: New trigger_reference (optional; pass empty string
                     to clear the reference so the chain fires for all events).
                 actions: New actions array (optional). Updating actions resets

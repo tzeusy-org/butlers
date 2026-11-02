@@ -30,10 +30,16 @@ import shutil
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, TextIO, override
 
 from butlers.core.child_env import without_owner_auth
 from butlers.core.runtimes.base import RuntimeAdapter, register_adapter
+from butlers.core.runtimes.served_identity import (
+    TerminalResultError,
+    append_stream,
+    observe_invocation,
+    token,
+)
 
 if TYPE_CHECKING:
     from butlers.credential_store import CredentialStore
@@ -64,6 +70,62 @@ def _find_claude_binary() -> str:
             "Install it with: npm install -g @anthropic-ai/claude-code"
         )
     return path
+
+
+def _open_stderr_log(stderr_dir: Path, butler_name: str) -> TextIO:
+    """Open the per-butler stderr log and stamp a session header (blocking file IO)."""
+    stderr_dir.mkdir(parents=True, exist_ok=True)
+    stderr_path = stderr_dir / f"{butler_name}_cc_stderr.log"
+    stderr_log_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
+    ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stderr_log_file.write(f"\n--- runtime session start: {ts} ---\n")
+    stderr_log_file.flush()
+    return stderr_log_file
+
+
+def _tool_call_record(block: dict[str, Any], parent_tool_use_id: Any = None) -> dict[str, Any]:
+    """Normalize a ``tool_use`` block, tagging CLI built-ins and subagent calls.
+
+    MCP tools always reach Claude as ``mcp__<server>__<tool>``; any other name is a
+    CLI built-in (``Bash``, ``Read``, ``ToolSearch``, ``Agent``, ...) and is marked
+    ``builtin`` so the spawner never mistakes it for confirmed MCP work. A call
+    made inside a subagent keeps its ``parent_tool_use_id`` (the ``Agent`` call
+    that launched it) so guardrails can judge each thread on its own.
+    """
+    name = block.get("name", "")
+    record: dict[str, Any] = {
+        "id": block.get("id", ""),
+        "name": name,
+        "input": block.get("input", {}),
+    }
+    if not str(name or "").startswith("mcp__"):
+        record["builtin"] = True
+    if isinstance(parent_tool_use_id, str) and parent_tool_use_id:
+        record["parent_tool_use_id"] = parent_tool_use_id
+    return record
+
+
+def _collect_content(
+    content: Any,
+    text_parts: list[str],
+    tool_calls: list[dict[str, Any]],
+    parent_tool_use_id: Any = None,
+) -> None:
+    """Append a message's text and ``tool_use`` blocks (string or block-list content)."""
+    if isinstance(content, str):
+        if content:
+            text_parts.append(content)
+        return
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text" and block.get("text"):
+            text_parts.append(block["text"])
+        elif block_type == "tool_use":
+            tool_calls.append(_tool_call_record(block, parent_tool_use_id))
 
 
 def _parse_claude_output(
@@ -111,6 +173,8 @@ def _parse_claude_output(
     lines = stdout.strip().splitlines()
     parsed_any_json = False
     fallback_text_parts: list[str] = []
+    native_text_parts: list[str] = []
+    saw_result_text = False
 
     for line in lines:
         line = line.strip()
@@ -137,54 +201,40 @@ def _parse_claude_output(
             result_content = obj.get("result", "")
             if result_content:
                 text_parts.append(str(result_content))
+                saw_result_text = True
             raw_usage = obj.get("usage")
             if isinstance(raw_usage, dict):
-                input_tokens = raw_usage.get("input_tokens")
-                output_tokens = raw_usage.get("output_tokens")
-                if isinstance(input_tokens, int) or isinstance(output_tokens, int):
+                input_tokens = token(raw_usage.get("input_tokens"))
+                output_tokens = token(raw_usage.get("output_tokens"))
+                if input_tokens is not None and output_tokens is not None:
                     usage = {
                         "input_tokens": input_tokens if isinstance(input_tokens, int) else 0,
                         "output_tokens": output_tokens if isinstance(output_tokens, int) else 0,
                     }
-                    cache_read = raw_usage.get("cache_read_input_tokens")
-                    cache_creation = raw_usage.get("cache_creation_input_tokens")
+                    cache_read = token(raw_usage.get("cache_read_input_tokens"))
+                    cache_creation = token(raw_usage.get("cache_creation_input_tokens"))
                     if isinstance(cache_read, int):
                         usage["cache_read_input_tokens"] = cache_read
                     if isinstance(cache_creation, int):
                         usage["cache_creation_input_tokens"] = cache_creation
 
         elif obj_type in ("assistant", "message"):
-            # Assistant or message events — extract text and tool_use from content blocks
-            content = obj.get("content", "")
-            if isinstance(content, str) and content:
-                text_parts.append(content)
-            elif isinstance(content, list):
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    block_type = block.get("type")
-                    if block_type == "text":
-                        text_val = block.get("text", "")
-                        if text_val:
-                            text_parts.append(text_val)
-                    elif block_type == "tool_use":
-                        tool_calls.append(
-                            {
-                                "id": block.get("id", ""),
-                                "name": block.get("name", ""),
-                                "input": block.get("input", {}),
-                            }
-                        )
+            message = obj.get("message")
+            if isinstance(message, dict):
+                # The CLI's native shape nests content under ``message``; its final
+                # text repeats as the result text, so it only answers without one.
+                _collect_content(
+                    message.get("content"),
+                    native_text_parts,
+                    tool_calls,
+                    obj.get("parent_tool_use_id"),
+                )
+            else:
+                _collect_content(obj.get("content", ""), text_parts, tool_calls)
 
         elif obj_type == "tool_use":
             # Standalone tool_use event
-            tool_calls.append(
-                {
-                    "id": obj.get("id", ""),
-                    "name": obj.get("name", ""),
-                    "input": obj.get("input", {}),
-                }
-            )
+            tool_calls.append(_tool_call_record(obj, obj.get("parent_tool_use_id")))
 
         else:
             # Unknown type — check for text or content fields (shared contract)
@@ -193,12 +243,57 @@ def _parse_claude_output(
             elif "content" in obj and isinstance(obj["content"], str):
                 text_parts.append(obj["content"])
 
+    if not saw_result_text:
+        text_parts.extend(native_text_parts)
+
     # If we couldn't parse any JSON, treat entire stdout as result text
     if not parsed_any_json and not text_parts:
         text_parts = fallback_text_parts or ([stdout.strip()] if stdout.strip() else [])
 
     result_text = "\n".join(text_parts) if text_parts else None
     return result_text, tool_calls, usage
+
+
+def _claude_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
+    """Return whether the stream proves a tool ran, for ``is_pre_tool_call``.
+
+    Evidence is any parsed tool call (``_parse_claude_output`` reads the CLI's
+    native nested assistant shape) or a terminal result with ``num_turns > 1``:
+    in ``claude -p`` a further turn only follows a tool result.
+    """
+    if tool_calls:
+        return True
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("type") == "result":
+            turns = obj.get("num_turns")
+            if type(turns) is int and turns > 1:
+                return True
+    return False
+
+
+def _claude_terminal_error_text(stdout: str) -> str | None:
+    """Return the ``result`` text of the last failed result envelope, else ``None``.
+
+    The CLI writes provider rejections such as "Claude AI usage limit
+    reached|<epoch>" there. Unlike ``error_detail`` (raw stdout when stderr is
+    empty) it never includes tool output, so usage-limit detection can trust it.
+    """
+    text: str | None = None
+    for line in stdout.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "result" and obj.get("is_error") is True:
+            result = obj.get("result")
+            text = result.strip() if isinstance(result, str) and result.strip() else None
+    return text
 
 
 def _extract_claude_session_id(stdout: str) -> str | None:
@@ -313,6 +408,8 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             return self._claude_binary
         return _find_claude_binary()
 
+    @override
+    @observe_invocation("claude")
     async def invoke(
         self,
         prompt: str,
@@ -380,6 +477,9 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             If the Claude process exits with a non-zero exit code (including
             a rejected/expired ``resume_session_id`` -- the caller is
             responsible for clearing the stale handle and retrying cold).
+        TerminalResultError
+            If the stream carries a failed terminal result (``is_error``), at
+            any exit code; it keeps the attempt's usage and tool calls.
         """
         import tempfile
 
@@ -410,17 +510,19 @@ class ClaudeCodeAdapter(RuntimeAdapter):
             if api_key:
                 env = {**env, _ANTHROPIC_KEY: api_key}
 
+        # Claude Code refuses bypassPermissions under root unless the process
+        # declares a sandbox. The butlers image runs as root inside its own
+        # container, which is that sandbox; a non-root host keeps the CLI's guard.
+        if os.geteuid() == 0:
+            env = {**env, "IS_SANDBOX": "1"}
+
         # Open per-butler stderr log file for Claude CLI diagnostics
         stderr_log_file = None
         if self._butler_name and self._log_root is not None:
             try:
-                stderr_dir = self._log_root / "butlers"
-                stderr_dir.mkdir(parents=True, exist_ok=True)
-                stderr_path = stderr_dir / f"{self._butler_name}_cc_stderr.log"
-                stderr_log_file = open(stderr_path, "a", buffering=1)  # noqa: SIM115
-                ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-                stderr_log_file.write(f"\n--- runtime session start: {ts} ---\n")
-                stderr_log_file.flush()
+                stderr_log_file = await asyncio.to_thread(
+                    _open_stderr_log, self._log_root / "butlers", self._butler_name
+                )
             except OSError:
                 logger.warning(
                     "Could not open Claude CC stderr log for %s",
@@ -445,6 +547,8 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "-p",
                 "--output-format",
                 "stream-json",
+                # Claude Code rejects -p with stream-json unless --verbose is set.
+                "--verbose",
                 "--bare",
                 "--no-session-persistence",
                 "--permission-mode",
@@ -513,6 +617,13 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                         pass
 
             returncode = proc.returncode or 0
+            served = append_stream(
+                self,
+                "claude",
+                stdout,
+                configured=model,
+                completion="error" if returncode else "success",
+            )
 
             # Capture process info for session diagnostics
             self._last_process_info = {
@@ -523,18 +634,40 @@ class ClaudeCodeAdapter(RuntimeAdapter):
                 "runtime_type": "claude",
             }
 
+            terminal_error = any(item["error"]["is_error"] is True for item in served["executions"])
+            if terminal_error and (terminal_text := _claude_terminal_error_text(stdout)):
+                self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
-                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                error_detail = (
+                    stderr.strip()
+                    or self._last_process_info.get("terminal_error_text")
+                    or stdout.strip()
+                    or f"exit code {returncode}"
+                )
                 logger.error("Claude CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
-                # On non-zero exit the adapter raises immediately — no tool calls
-                # were captured by the adapter itself, so this is pre-tool-call.
-                # The spawner will layer in daemon-side tool-call capture.
-                self._last_process_info["is_pre_tool_call"] = True
-                raise RuntimeError(f"Claude CLI exited with code {returncode}: {error_detail}")
+                message = f"Claude CLI exited with code {returncode}: {error_detail}"
+                if not terminal_error:
+                    # No result envelope: nothing proves work started, so this is
+                    # pre-tool-call. The spawner layers in daemon-side capture.
+                    self._last_process_info["is_pre_tool_call"] = True
+                    raise RuntimeError(message)
+                # CLI 2.1.316+ exits 1 on a failed terminal result such as
+                # error_max_turns; keep its usage and tool evidence.
+                _, tool_calls, usage = _parse_claude_output(stdout, stderr, 0)
+                self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
+                self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(
+                    stdout, tool_calls
+                )
+                raise TerminalResultError(served, usage, tool_calls, message)
 
             result_text, tool_calls, usage = _parse_claude_output(stdout, stderr, returncode)
             self._last_process_info["provider_session_id"] = _extract_claude_session_id(stdout)
+            if terminal_error:
+                self._last_process_info["is_pre_tool_call"] = not _claude_tools_ran(
+                    stdout, tool_calls
+                )
+                raise TerminalResultError(served, usage, tool_calls)
             return result_text, tool_calls, usage
 
         except TimeoutError:

@@ -8,9 +8,13 @@ Provides the canonical first-class record of every event that enters the butler 
 ### Requirement: Ingestion Event Table
 The `public.ingestion_events` table is the canonical first-class record of every event that enters the butler ecosystem through a connector or direct internal dashboard ingress. One row exists per canonical ingestion event after deduplication. The UUID7 primary key is the `request_id` returned to connectors or direct internal callers and propagated to all downstream sessions and traces. Connector-specific `filtered_events` joins and status semantics remain limited to connector records and SHALL NOT be inferred for dashboard events.
 
+ID: REQ-ingestion-event-registry-001
+Source: RFC 0003 § ingest.v1 Envelope Format; dashboard-conversations § Dashboard Ingestion Envelope Construction; design.md Decision 1a
+Scope: v1-mandatory
+
 #### Scenario: Row created on new ingest accept
 - **WHEN** the Switchboard accepts an ingest envelope and no existing row matches the computed dedupe key
-- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, and `triage_target`
+- **THEN** a new row is inserted into `public.ingestion_events` inside the same advisory-lock transaction used for deduplication, with fields: `id` (UUID7), `received_at` (server timestamp), `source_channel`, `source_provider`, `source_endpoint_identity`, `source_sender_identity`, `source_sender_display_name`, `source_thread_identity`, `external_event_id`, `dedupe_key`, `dedupe_strategy`, `ingestion_tier`, `policy_tier`, `triage_decision`, `triage_target`, and `sender_authentication`
 - **AND** `source_sender_display_name` is the raw sender display name from the envelope's `sender.display_name` (e.g. the email `From:` header's display part), or `NULL` when the envelope carried no display name; unlike `source_sender_identity` it is stored verbatim (not normalized) and is used by identity enrichment to name recurring correspondents from the real display name rather than a guess derived from the address local-part
 - **AND** the row's `id` is returned as `request_id` in `IngestAcceptedResponse`
 
@@ -23,6 +27,45 @@ The `public.ingestion_events` table is the canonical first-class record of every
 - **WHEN** two ingestion events are accepted in sequence
 - **THEN** the second event's `id` is lexicographically greater than the first's
 - **AND** UUID7 ordering can substitute for a separate `received_at` index for recency queries
+
+### Requirement: Sender Authentication Verdict
+Every accepted email ingest SHALL record one deterministic sender-authentication verdict on its canonical `public.ingestion_events` row, so downstream readers (the payment-redirect guard, vendor-door confirmation, goal admission) read one stored fact instead of each re-parsing headers. The verdict describes the From domain only. It is not a lookalike score, and it never grants owner origin (RFC 0017 alone decides that). The verdict is the receiving provider's claim as written in the topmost `Authentication-Results` header. It is proof only for mail that reached the mailbox through that provider's SMTP receipt; mail placed without SMTP receipt (IMAP APPEND, an import or an insert) can carry a topmost header the sender wrote, and the verdict does not defend against that.
+
+#### Scenario: Verdict is computed from the topmost Authentication-Results header
+- **WHEN** an email envelope is accepted and its raw payload kept an `Authentication-Results` header
+- **THEN** only the topmost such header is read, and a later or injected one never counts
+- **AND** the column `sender_authentication` is `authenticated` for an aligned `dkim=pass` (its own `header.d`; `header.i` never counts, as DMARC aligns on `d=` only) or a `dmarc=pass` (its own `header.from`) that aligns with the From domain
+- **AND** it is `failed` for a `dmarc` fail or permerror, or a fail on an aligned `dkim`
+- **AND** it is `unverified` for everything else, including `temperror`, `none` and an unaligned pass
+
+#### Scenario: Echoed sender text cannot forge a clause
+- **WHEN** the header holds sender-chosen text (a quoted MAIL FROM, a HELO address literal, the `header.i` local part) containing `;` or `)` that would read as another clause
+- **THEN** quoted-strings, comments and bracket literals are never split, so the echoed text stays inside its own clause and the verdict is not `authenticated` for the From domain
+- **AND** a header that is unbalanced, or holds anything that is not a clause, yields `unverified` for the whole header, unless it still carries a `dmarc` fail or permerror, or a fail on a `dkim` signature whose `header.d` aligns, which yields `failed`
+- **AND** such a header never yields `authenticated`, and a real `dmarc` fail clause beside stray echoed text still yields `failed`
+
+#### Scenario: Alignment is conservative
+- **WHEN** the signing domain and the From domain are the same, or one is a label-boundary subdomain of the other
+- **THEN** they align, provided a parent signer has at least two labels
+- **AND** sibling subdomains do not align, so a tenant of a shared suffix cannot vouch for another tenant
+
+#### Scenario: Missing evidence is unverified, not failed
+- **WHEN** an email envelope carries no raw payload (a metadata-tier row) or no `Authentication-Results` header
+- **THEN** `sender_authentication` is `unverified`
+
+#### Scenario: Non-email rows carry no verdict
+- **WHEN** the accepted envelope's channel is not `email`, or the sender identity is not one bare address with a domain
+- **THEN** `sender_authentication` is `NULL`
+- **AND** rows ingested before the column existed also read `NULL`
+
+#### Scenario: A verifier failure never fails an accepted ingest
+- **WHEN** computing the verdict raises
+- **THEN** the ingest still succeeds with `sender_authentication` `NULL` and a warning is logged
+- **AND** replaying the same envelope computes the same value, and deduplication is unchanged
+
+#### Scenario: The account-security sensor keeps its own view
+- **WHEN** a first-party provider alert is classified
+- **THEN** its alignment stays one-directional against the provider's signing domain and its classification and event are unchanged by the stored verdict
 
 ### Requirement: Ingestion Event Query by ID
 
@@ -38,7 +81,7 @@ The `public.ingestion_events` table is the canonical first-class record of every
 
 ### Requirement: Ingestion Event List (Paginated)
 
-The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items`, `next_cursor` (opaque, or null on the last page), and `has_more`. There is no `offset` or `total`. A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
+The function SHALL return a unified stream of all ingestion events (ingested, filtered, errored) ordered by `received_at DESC, id DESC` using keyset (cursor) pagination, with optional filtering. The function returns a dict with `items` and `next_cursor` (opaque, or null on the last page); a non-null `next_cursor` means more rows remain. There is no `offset`, `total` or `has_more`. A cursor that cannot be decoded, or has the wrong shape for the requested sort, raises the shared invalid-cursor error (HTTP 400 at the API). A `sort="cost"` mode orders by `cost_usd DESC NULLS LAST` and pages via an opaque offset-encoding cursor.
 
 #### Scenario: Paginated list
 - **WHEN** `ingestion_events_list(pool, limit=20, cursor=None)` is called

@@ -62,6 +62,12 @@ vi.mock("@/hooks/use-model-catalog", () => ({
     isLoading: false,
     isError: false,
   })),
+  useModelAllowance: vi.fn(() => ({
+    data: { data: { available: true, accounts: [] } },
+    isLoading: false,
+    isError: false,
+    isForbidden: false,
+  })),
   useReissueModelAttention: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useSetModelTokenLimits: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
   useResetModelUsage: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -632,6 +638,24 @@ describe("SettingsModelsPage — untested model row", () => {
     expect(html).toContain("untested-model");
     expect(html).not.toContain("✓");
     expect(html).not.toContain("✗");
+  });
+});
+
+/** RFC 0036: capability chips are read-only declarations, never proof. */
+describe("SettingsModelsPage — capability chips", () => {
+  it.each([
+    [undefined, "Vision: Unknown"],
+    [false, "Vision: Declared unsupported"],
+    [true, "Vision: Declared supported"],
+  ])("renders vision=%s as %s without proof marks", (vision, label) => {
+    const capabilities: Record<string, boolean> =
+      vision === undefined ? { tool_use: true, bogus_feature: true } : { vision };
+    setHookState({ entries: [makeModel({ capabilities })] });
+    const html = renderPage();
+    expect(html).toContain(label);
+    expect(html).not.toContain("✓");
+    expect(html).not.toContain("bogus_feature");
+    expect(html.toLowerCase()).not.toContain("verified vision");
   });
 });
 

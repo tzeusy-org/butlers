@@ -1,3 +1,8 @@
+Goal-runtime applicability: RFC 0038 D1-D3, D7 and D18; the explicit re-scope
+in generalist-lead-focused-delegation/collision-dispositions.md and task 4.2.
+The retained requirement/scenario names are stable across the switch. Target
+placement is specified below; historical receipts are not target proof.
+
 ## MODIFIED Requirements
 
 ### Requirement: Live Codex Device-Auth Reconciliation
@@ -8,18 +13,35 @@ every topology. In flat topology the authority pool MAY be the same object as
 the local pool, but callers SHALL still select it explicitly rather than
 deriving authority from fallback order. Before a new Codex subprocess is
 launched, the runtime SHALL reconcile that DB-backed authority to the
-canonical local `~/.codex/auth.json` path when the contents differ. The
+canonical `~/.codex/auth.json` path in the session host's credential volume
+when the contents differ. The
 reconciliation SHALL never log credential content, SHALL write a replacement
 atomically with mode `0600`, and SHALL refresh the local rotation baseline
 after a DB-originated write.
 
 All `cli-auth/codex` restore, live Codex reconciliation, Codex
 runtime-originated rotation persistence, Codex dashboard device authentication,
-Codex runtime probes, and Codex-dependent connector startup paths SHALL use the
+Codex runtime probes, and Codex-dependent deterministic caller paths SHALL use the
 explicit authority channel. They SHALL not read a schema-local
 `cli-auth/codex` row as a fallback or bootstrap source. Ordinary domain
 credentials and existing other-provider CLI-auth authority behavior retain
 their existing resolution behavior.
+
+In the goal runtime, the goal runner SHALL resolve the explicit system-global
+Codex authority and retarget device authentication and runtime OAuth
+synchronization through the control-plane service listener to the session
+host's credential volume (RFC 0038 D3). Neither the host nor an invocation SHALL
+read the credential store/database or receive domain/connector credentials.
+Every retained reconciliation scenario below applies to that controlled path,
+including atomic 0600 files, no local fallback/bootstrap, launch-bound CAS
+rotation/health and conservative crash recovery. A domain daemon SHALL NOT
+restore provider credentials to launch reasoning. D18 model functions retain
+only their deterministic caller's applicable narrow provider credentials.
+The probe-control signer remains Dashboard-only and distinct from the goal
+broker signer; neither private key reaches the session host. All retained
+containment, same-descriptor, image/shim, replay/readiness/rotation and
+fail-before-effect scenarios remain mandatory on the corresponding target
+execution path, not satisfied by historical Dashboard-child evidence.
 
 ID: REQ-core-credentials-001
 Source: heart-and-soul/security.md; craft-and-care/security-and-secrets.md; RFC 0006; core-credentials Live Codex Device-Auth Reconciliation; design.md Decision 1
@@ -30,8 +52,14 @@ Scope: v1-mandatory
 - **WHEN** the dashboard stores a newer authoritative `cli-auth/codex` value
   while a daemon remains running with a different local `auth.json`
 - **THEN** the next Codex invocation SHALL use the authoritative value without
-  requiring a daemon restart
+  requiring a daemon or session-host restart
 - **AND** no completed or already-running session SHALL be changed or replayed
+- **AND** after the goal switch, any residual daemon file is ignored and
+  non-authoritative: it is not mounted into a goal, restored by a domain, or
+  used for per-butler launch
+- **AND** the actual control-plane projection reconciles the session host's
+  canonical file to that authority before its next goal invocation, including
+  when the host itself has a different file
 
 #### Scenario: A schema-local row cannot shadow authority
 
@@ -44,9 +72,10 @@ Scope: v1-mandatory
 
 #### Scenario: Multiple shared-volume writers converge on authority
 
-- **WHEN** multiple in-process daemons sharing a Codex runtime filesystem
-  restore CLI auth during startup
-- **THEN** each writes the same authoritative document or reports authority
+- **WHEN** multiple trusted control-plane requests project authority to the
+  session host's Codex credential volume concurrently
+- **THEN** each projection writes the same authoritative document or reports
+  authority
   unavailability
 - **AND** startup order cannot make a schema-local credential the final shared
   file contents
@@ -143,6 +172,9 @@ Scope: v1-mandatory
   explicit authority
 - **AND** the local row SHALL not prevent the dashboard credential from
   reaching the next invocation
+- **AND** a retained schema-local row is diagnostic residual state only;
+  no domain gains provider or credential-store access for reasoning, and
+  the control-plane-to-session-host projection remains the only launch path
 
 #### Scenario: Reconciliation remains credential-safe under degradation
 

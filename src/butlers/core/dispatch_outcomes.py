@@ -10,15 +10,20 @@ that is rolled back to a savepoint so the attempt row still commits, edgeless.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import uuid
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from decimal import Decimal
 
 import asyncpg
 
 from butlers.core.model_routing import CEILING_DENIAL_REASON_PREFIX, get_breaker_state
 from butlers.core.purpose_lane import PURPOSE_LANE_STANDARD, PurposeLane
+from butlers.core.runtimes.served_identity import bounded, compare
+from butlers.core.runtimes.served_identity import token as strict_token
 from butlers.db import encode_jsonb
 from butlers.metrics_registry import get_or_create_counter
 
@@ -308,6 +313,20 @@ class DispatchUsageEvidence:
     memory_context_tokens: int | None = None
     resume_outcome: str | None = None
     usage_source: str = "measured"
+    butler_name: str | None = None
+
+
+def usage_is_measured(usage: dict | None) -> bool:
+    """Preserve legacy optional-zero buckets but refuse explicit unknown/invalid counts."""
+    return isinstance(usage, dict) and all(
+        strict_token(usage.get(key, default)) is not None
+        for key, default in (
+            ("input_tokens", None),
+            ("output_tokens", None),
+            ("cache_read_input_tokens", 0),
+            ("cache_creation_input_tokens", 0),
+        )
+    )
 
 
 def _safe_inc(outcome: str, edge: str) -> None:
@@ -454,6 +473,8 @@ async def record_dispatch_attempt(
     produce_fleet_halt: bool = False,
     usage_evidence: DispatchUsageEvidence | None = None,
     resolution_receipt: dict | None = None,
+    served_identity: dict | None = None,
+    attempt_key: uuid.UUID | None = None,
 ) -> int | None:
     """Persist one attempt with its usage evidence and any operational edge.
 
@@ -484,6 +505,30 @@ async def record_dispatch_attempt(
     try:
         safe_error_message = error_message[:4096] if error_message else None
         safe_resolution_receipt = bound_resolution_receipt(resolution_receipt)
+        served = bounded(served_identity) if served_identity is not None else None
+        if served is not None:
+            winner = (safe_resolution_receipt or {}).get("winner") or {}
+            served = compare(served, winner.get("model_id"))
+        if served is not None and not isinstance(attempt_key, uuid.UUID):
+            raise ValueError("owned serving evidence requires an invocation key")
+        receipt_digest = None
+        if attempt_key is not None:
+            canonical = {
+                "session_id": str(session_id) if session_id else None,
+                "catalog_entry_id": str(catalog_entry_id),
+                "butler": butler,
+                "outcome": outcome,
+                "tool_call_count": tool_call_count,
+                "attempt_index": attempt_index,
+                "logical_session_id": logical_session_id,
+                "purpose_lane": purpose_lane,
+                "resolution_receipt": safe_resolution_receipt,
+                "served_identity": served,
+                "usage": asdict(usage_evidence) if usage_evidence else None,
+            }
+            receipt_digest = hashlib.sha256(
+                json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
         if usage_evidence is not None:
             if usage_evidence.usage_source not in {"measured", "unmeasurable"}:
                 raise ValueError("usage_source must be measured or unmeasurable")
@@ -494,7 +539,7 @@ async def record_dispatch_attempt(
                 usage_evidence.cache_creation_tokens,
             )
             if usage_evidence.usage_source == "measured" and any(
-                value is None for value in token_values
+                strict_token(value) is None for value in token_values
             ):
                 raise ValueError("measured usage requires every token bucket")
             if usage_evidence.usage_source == "unmeasurable" and any(
@@ -535,6 +580,8 @@ async def record_dispatch_attempt(
             outcome not in _QUALIFYING_BREAKER_OUTCOMES
             and not produce_fleet_halt
             and usage_evidence is None
+            and served is None
+            and attempt_key is None
         ):
             try:
                 attempt_id = await pool.fetchval(_DISPATCH_ATTEMPTS_INSERT_RETURNING_ID, *values)
@@ -576,10 +623,36 @@ async def record_dispatch_attempt(
                 await connection.execute(
                     "SELECT set_config('butlers.runtime_attention_producer_abi', '2', true)"
                 )
-                attempt_id = await connection.fetchval(
-                    _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID,
-                    *values,
-                )
+                if attempt_key is not None:
+                    attempt_id = await connection.fetchval(
+                        _DISPATCH_ATTEMPTS_INSERT.replace(
+                            "resolution_receipt, ts)",
+                            "resolution_receipt, served_identity, attempt_key, receipt_sha256, ts)",
+                        ).replace(
+                            "$13, clock_timestamp())", "$13, $14, $15, $16, clock_timestamp())"
+                        )
+                        + " ON CONFLICT (attempt_key) WHERE attempt_key IS NOT NULL "
+                        "DO NOTHING RETURNING id",
+                        *values,
+                        served,
+                        attempt_key,
+                        receipt_digest,
+                    )
+                    if attempt_id is None:
+                        prior = await connection.fetchrow(
+                            "SELECT id,receipt_sha256 FROM public.model_dispatch_attempts "
+                            "WHERE attempt_key=$1",
+                            attempt_key,
+                        )
+                        if prior is not None and prior["receipt_sha256"] == receipt_digest:
+                            return prior["id"]
+                        _safe_inc("degraded", "receipt_conflict")
+                        return None
+                else:
+                    attempt_id = await connection.fetchval(
+                        _DISPATCH_ATTEMPTS_INSERT_RETURNING_ID,
+                        *values,
+                    )
                 if not isinstance(attempt_id, int):
                     raise RuntimeError("dispatch-attempt insert returned no stable bigint id")
 
@@ -587,7 +660,7 @@ async def record_dispatch_attempt(
                     await connection.execute(
                         _ATTEMPT_USAGE_INSERT,
                         catalog_entry_id,
-                        butler,
+                        usage_evidence.butler_name or butler,
                         session_id,
                         usage_evidence.input_tokens,
                         usage_evidence.output_tokens,
@@ -604,6 +677,34 @@ async def record_dispatch_attempt(
                         attempt_id,
                         usage_evidence.usage_source,
                     )
+
+                if served is not None:
+                    for execution in served.get("executions", []):
+                        for ordinal, model in enumerate(execution.get("model_usage", [])):
+                            await connection.execute(
+                                """INSERT INTO public.model_served_usage
+                                  (attempt_id,execution_index,model_ordinal,model_id,
+                                   identity_authority,provenance,input_tokens,output_tokens,
+                                   cache_read_input_tokens,cache_creation_input_tokens,
+                                   reported_cost_usd,cost_scope,evidence_state,recorded_at)
+                                  SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,ts
+                                  FROM public.model_dispatch_attempts WHERE id=$1""",
+                                attempt_id,
+                                execution["execution_index"],
+                                ordinal,
+                                model["model_id"],
+                                model["identity_authority"],
+                                model["provenance"],
+                                model.get("input_tokens"),
+                                model.get("output_tokens"),
+                                model.get("cache_read_input_tokens"),
+                                model.get("cache_creation_input_tokens"),
+                                Decimal(model["reported_cost_usd"])
+                                if model.get("reported_cost_usd") is not None
+                                else None,
+                                model["cost_scope"],
+                                model["evidence_state"],
+                            )
 
                 if outcome == "runtime_failure" and not breaker_was_open:
                     # The breaker path keeps a clock asymmetry the fleet-halt

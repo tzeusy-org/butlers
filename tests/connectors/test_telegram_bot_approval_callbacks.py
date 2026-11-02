@@ -220,13 +220,20 @@ async def test_expired_pending_callback_remains_a_denial_and_is_rendered_termina
 
 
 async def test_non_approval_callback_is_generically_acknowledged_without_ingestion() -> None:
-    connector = _connector()
-    connector._http_client = MagicMock()
-    connector._http_client.post = AsyncMock(return_value=_response())
-    connector._submit_to_ingest = AsyncMock()
+    for callback in (
+        "not-an-approval",
+        "dsk1:12345678123456781234567812345678:0:historical-signature",
+        "dsk1:malformed:☃",
+    ):
+        connector = _connector()
+        connector._http_client = MagicMock()
+        connector._http_client.get = AsyncMock()
+        connector._http_client.post = AsyncMock(return_value=_response())
+        connector._submit_to_ingest = AsyncMock()
 
-    await connector._process_update(_update("not-an-approval"))
+        await connector._process_update(_update(callback))
 
-    connector._submit_to_ingest.assert_not_awaited()
-    connector._http_client.post.assert_awaited_once()
-    assert connector._http_client.post.call_args.args[0].endswith("/answerCallbackQuery")
+        connector._submit_to_ingest.assert_not_awaited()
+        connector._http_client.get.assert_not_awaited()
+        connector._http_client.post.assert_awaited_once()
+        assert connector._http_client.post.call_args.args[0].endswith("/answerCallbackQuery")

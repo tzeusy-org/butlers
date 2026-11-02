@@ -1,3 +1,21 @@
+## RFC 0038 scope and evidence status
+
+All ten original task identities, complete bodies and checkbox states below
+are preserved: seven checked tasks record pre-cutover reconciliation evidence;
+three unchecked tasks remain unexecuted. This amendment does not tick, reopen,
+archive or execute them. Target-session, routing, provider-resume and original
+RFC-edit references below describe that historical phase.
+
+For the successor contract, adopted RFC 0038 D1/D2/D19 and the generalist
+collision disposition replace target-session routing with authenticated,
+deduplicated goal admission. The proposal/design and both delta requirements
+preserve immutable ingress/context/retry provenance and connector boundaries;
+dashboard bodies remain with D19. Goal admission and D19 runtime are not
+claimed implemented. Task 2.2 remains an independently owner-approved roadmap
+operation; task 2.3's prohibition on other tracker mutations still binds.
+Original task 3.2 stays unchecked; this amendment requires its separate
+exact-head conformance review and reserved adoption before publication.
+
 ## 1. Establish the corrected authority
 
 - [x] 1.1 Record the exact landing commit/PR and targeted verification evidence

@@ -18,9 +18,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastmcp.exceptions import ToolError
 
-from butlers.api.db import DatabaseManager
 from butlers.api.deps import (
     ButlerUnreachableError,
+    Db,
     MCPClientManager,
     get_mcp_manager,
     is_tool_absent_error,
@@ -34,11 +34,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/butlers", tags=["butlers", "state"])
 
 
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub -- overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
-
-
 # ---------------------------------------------------------------------------
 # Read endpoints
 # ---------------------------------------------------------------------------
@@ -50,7 +45,8 @@ def _get_db_manager() -> DatabaseManager:
 )
 async def list_state(
     name: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[StateEntry]]:
     """Return all state entries for a butler.
 
@@ -59,11 +55,11 @@ async def list_state(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     rows = await pool.fetch("SELECT key, value, updated_at FROM state ORDER BY key")
 
@@ -86,7 +82,8 @@ async def list_state(
 async def get_state(
     name: str,
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[StateEntry]:
     """Return a single state entry by key.
 
@@ -94,11 +91,11 @@ async def get_state(
     """
     try:
         pool = db.pool(name)
-    except KeyError:
+    except KeyError as exc:
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' database is not available",
-        )
+        ) from exc
 
     row = await pool.fetchrow(
         "SELECT key, value, updated_at FROM state WHERE key = $1",
@@ -127,7 +124,8 @@ async def set_state(
     key: str,
     request: StateSetRequest,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Set a state value via the butler's MCP ``state_set`` tool.
 
@@ -143,14 +141,14 @@ async def set_state(
     try:
         client = await mgr.get_client(name)
         await client.call_tool("state_set", {"key": key, "value": request.value})
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "state.set", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
+        ) from exc
     except ToolError as exc:
         if is_tool_absent_error(exc):
             await log_audit_entry(
@@ -184,7 +182,8 @@ async def delete_state(
     name: str,
     key: str,
     mgr: MCPClientManager = Depends(get_mcp_manager),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a state entry via the butler's MCP ``state_delete`` tool.
 
@@ -200,14 +199,14 @@ async def delete_state(
     try:
         client = await mgr.get_client(name)
         await client.call_tool("state_delete", {"key": key})
-    except ButlerUnreachableError:
+    except ButlerUnreachableError as exc:
         await log_audit_entry(
             db, name, "state.delete", summary, result="error", error="Butler unreachable"
         )
         raise HTTPException(
             status_code=503,
             detail=f"Butler '{name}' is unreachable",
-        )
+        ) from exc
     except ToolError as exc:
         if is_tool_absent_error(exc):
             await log_audit_entry(

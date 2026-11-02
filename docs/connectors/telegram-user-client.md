@@ -161,8 +161,6 @@ services:
     command: telegram-user-client-connector
     environment:
       SWITCHBOARD_MCP_URL: http://switchboard:41100/sse
-      CONNECTOR_PROVIDER: telegram
-      CONNECTOR_CHANNEL: telegram_user_client
       CONNECTOR_MAX_INFLIGHT: "8"
       CONNECTOR_HEALTH_PORT: "40080"
       CONNECTOR_BACKFILL_WINDOW_H: "24"
@@ -356,3 +354,7 @@ grep -i "session.*expired\|FloodWait\|AuthKey" /var/log/butlers/telegram-user-cl
 - [Telegram Bot Connector](telegram-bot.md) -- Bot API connector (separate from user client)
 - [Heartbeat Protocol](heartbeat.md) -- Liveness reporting
 - [Metrics](metrics.md) -- Prometheus instrumentation
+
+Static provider `telegram` and channel `telegram_user_client` come from the
+canonical descriptor. Identity environment variables are unnecessary; credentials,
+endpoint discovery and operational settings retain their existing authority.

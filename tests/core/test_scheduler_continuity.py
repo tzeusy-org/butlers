@@ -43,13 +43,18 @@ def migrated_db_url(postgres_container) -> str:
         postgres_container,
         migration_db_name(),
         chains=["core"],
+        schemas={"core": "general"},
     )
 
 
 @pytest.fixture
 async def pool(migrated_db_url: str):
     p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+        migrated_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "general,public"},
     )
     await p.execute("TRUNCATE TABLE scheduled_tasks CASCADE")
     # public.task_continuity has RLS FORCEd with no DELETE policy (matching

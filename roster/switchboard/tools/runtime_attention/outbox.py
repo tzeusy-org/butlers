@@ -38,6 +38,8 @@ from typing import Any
 
 import asyncpg
 
+from butlers.core.queue_claim import ClaimQueue, claim_batch
+
 # The single service lease, and the role the RLS policy insists on.
 DELIVERY_LEASE_NAME = "runtime_attention_delivery"
 SWITCHBOARD_ROLE = "butler_switchboard_rw"
@@ -65,13 +67,36 @@ STALE_SENDING_SECONDS = 150
 MAX_TRANSPORT_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 5.0)
 
-# Alias-qualified: the claim statement joins its own candidate CTE, so a bare
-# ``id`` in RETURNING is ambiguous.
-_EPISODE_COLUMNS = """
-    outbox.id, outbox.source, outbox.source_snapshot, outbox.payload,
-    outbox.lifecycle_state, outbox.claim_token, outbox.claim_epoch,
-    outbox.delivery_lease_epoch, outbox.claimed_at, outbox.claim_expires_at
-"""
+# Only pending rows are claimed. Expired sending claims retain their identity
+# for recovery to uncertain; they must never be reclaimed for another send.
+_OUTBOX_CLAIMS = ClaimQueue(
+    table="public.runtime_attention_outbox",
+    key="id",
+    eligible="q.lifecycle_state='pending' AND q.next_attempt_at<=now()",
+    order_by="q.next_attempt_at, q.created_at, q.id",
+    claim_set=(
+        ("lifecycle_state", "'sending'"),
+        ("claim_token", "{arg0}::uuid"),
+        ("claim_epoch", "q.claim_epoch+1"),
+        ("delivery_lease_epoch", "{arg1}::bigint"),
+        ("claimed_by_instance", "{owner}"),
+        ("claimed_at", "now()"),
+        ("claim_expires_at", "now()+make_interval(secs=>{lease_seconds})"),
+    ),
+    returning=(
+        "id",
+        "source",
+        "source_snapshot",
+        "payload",
+        "lifecycle_state",
+        "claim_token",
+        "claim_epoch",
+        "delivery_lease_epoch",
+        "claimed_at",
+        "claim_expires_at",
+    ),
+    reclaim_expired=False,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,36 +266,15 @@ class RuntimeAttentionOutbox:
         """
         token = uuid.uuid4()
         async with self._switchboard_tx() as connection:
-            row = await connection.fetchrow(
-                f"""
-                WITH candidate AS (
-                    SELECT id
-                    FROM public.runtime_attention_outbox
-                    WHERE lifecycle_state = 'pending'
-                      AND next_attempt_at <= now()
-                    ORDER BY next_attempt_at ASC, created_at ASC, id ASC
-                    FOR UPDATE SKIP LOCKED
-                    LIMIT 1
-                )
-                UPDATE public.runtime_attention_outbox AS outbox
-                SET lifecycle_state = 'sending',
-                    claim_token = $1,
-                    claim_epoch = outbox.claim_epoch + 1,
-                    delivery_lease_epoch = $2,
-                    claimed_by_instance = $3,
-                    claimed_at = now(),
-                    claim_expires_at = now() + make_interval(secs => $4)
-                FROM candidate
-                WHERE outbox.id = candidate.id
-                  AND outbox.lifecycle_state = 'pending'
-                RETURNING {_EPISODE_COLUMNS}
-                """,  # noqa: S608 - _EPISODE_COLUMNS is a module constant
-                token,
-                lease.epoch,
-                self._instance_id,
-                float(CLAIM_LEASE_SECONDS),
+            rows = await claim_batch(
+                connection,
+                _OUTBOX_CLAIMS,
+                limit=1,
+                owner=self._instance_id,
+                lease_seconds=CLAIM_LEASE_SECONDS,
+                args=(token, lease.epoch),
             )
-        return None if row is None else _episode(row)
+        return _episode(rows[0]) if rows else None
 
     async def claim_is_current(self, episode: OutboxEpisode) -> bool:
         """Return whether this exact claim still owns a ``sending`` row.
@@ -460,7 +464,7 @@ class RuntimeAttentionOutbox:
         ``delivery_error_class``/``delivery_error_detail`` are set to the
         fixed ``('transport_uncertain', 'worker_recovery')`` pair
         ``ck_runtime_attention_outbox_delivery_evidence`` reserves for exactly
-        this recovery-fenced path (mirrors ``routing.transport.WORKER_RECOVERY``).
+        this recovery-fenced path (mirrors ``switchboard.transport.WORKER_RECOVERY``).
         ``notification_ref`` stays NULL: no delivery was observed here, so
         there is no notification to link.
         """

@@ -348,16 +348,22 @@ class TestBackfillCancel:
         """Raises ValueError when job is already completed."""
         existing = _fake_job_row(status="completed")
         pool = _make_pool(fetchrow_return=existing)
-        with pytest.raises(ValueError, match="terminal state"):
+        with pytest.raises(ValueError, match="terminal state") as exc_info:
             await backfill_cancel(pool, job_id=_JOB_ID)
+        assert str(exc_info.value) == (
+            f"Backfill job {_JOB_ID} is in terminal state 'completed' and cannot be cancelled"
+        )
 
     @pytest.mark.asyncio
-    async def test_cancel_error_job_raises(self):
-        """Raises ValueError when job is in error state."""
-        existing = _fake_job_row(status="error")
-        pool = _make_pool(fetchrow_return=existing)
-        with pytest.raises(ValueError, match="terminal state"):
-            await backfill_cancel(pool, job_id=_JOB_ID)
+    @pytest.mark.parametrize("status", ["error", "cost_capped"])
+    async def test_cancel_error_job(self, status):
+        """Both previously failed/capped jobs can be cancelled without resuming spend."""
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(
+            side_effect=[_fake_job_row(status=status), {"status": "cancelled"}]
+        )
+        assert await backfill_cancel(pool, job_id=_JOB_ID) == {"status": "cancelled"}
+        assert "completed_at=now()" in pool.fetchrow.await_args.args[0]
 
 
 # ===========================================================================
@@ -382,17 +388,12 @@ class TestBackfillResume:
         assert result == {"status": "pending"}
 
     @pytest.mark.asyncio
-    async def test_resumes_cost_capped_job(self):
-        """cost_capped job can also be resumed."""
-        existing = _fake_job_row(status="cost_capped")
-        updated = MagicMock()
-        updated.__getitem__ = lambda s, k: {"status": "pending"}[k]
-
-        pool = _make_pool()
-        pool.fetchrow = AsyncMock(side_effect=[existing, updated])
-
-        result = await backfill_resume(pool, job_id=_JOB_ID)
-        assert result == {"status": "pending"}
+    async def test_cost_capped_resume_is_refused(self):
+        """The recorded UNION EXCEPT COST CAP decision forbids continued spending."""
+        pool = _make_pool(fetchrow_return=_fake_job_row(status="cost_capped"))
+        with pytest.raises(ValueError, match="cannot be resumed"):
+            await backfill_resume(pool, job_id=_JOB_ID)
+        pool.fetchrow.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_resume_active_job_raises(self):
@@ -951,3 +952,29 @@ class TestBackfillProgress:
             status="completed",  # Connector thinks it's done
         )
         assert result["status"] == "cost_capped"
+
+    @pytest.mark.asyncio
+    async def test_replayed_progress_token_returns_status_without_reapplying(self):
+        """A retried call whose token already applied answers the current status (bu-f4iw1n).
+
+        The guarded UPDATE matches no row for a replay, so the tool re-reads the
+        authoritative status instead of reporting a fresh write.
+        """
+        select_row = self._make_select_row()
+        replay_status = {"status": "cost_capped"}
+
+        pool = _make_pool()
+        pool.fetchrow = AsyncMock(side_effect=[select_row, None, replay_status])
+
+        result = await backfill_progress(
+            pool,
+            job_id=_JOB_ID,
+            connector_type=_CONNECTOR_TYPE,
+            endpoint_identity=_ENDPOINT_IDENTITY,
+            rows_processed=10,
+            rows_skipped=0,
+            cost_spent_cents_delta=15,
+            progress_token="tok-1",
+        )
+        assert result == {"status": "cost_capped"}
+        assert "tok-1" in pool.fetchrow.call_args_list[1].args

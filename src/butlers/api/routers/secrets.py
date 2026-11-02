@@ -36,9 +36,10 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import Db
 from butlers.api.models import ApiResponse
 from butlers.api.models.secrets import SecretEntry, SecretUpsertRequest
 from butlers.credential_store import CredentialStore
@@ -51,11 +52,6 @@ _SHARED_SECRETS_TARGET = "shared"
 # credential pool (public.butler_secrets).  The old reveal/read endpoints
 # treat it identically to "shared" — both route to credential_shared_pool().
 _SHARED_PUBLIC_TARGET = "shared-public"
-
-
-def _get_db_manager() -> DatabaseManager:
-    """Dependency stub — overridden at app startup or in tests."""
-    raise RuntimeError("DatabaseManager not initialized")
 
 
 # ---------------------------------------------------------------------------
@@ -75,19 +71,19 @@ def _credential_store_for(db: DatabaseManager, butler_name: str) -> CredentialSt
     if normalized_name in (_SHARED_SECRETS_TARGET, _SHARED_PUBLIC_TARGET):
         try:
             pool = db.credential_shared_pool()
-        except KeyError:
+        except KeyError as exc:
             raise HTTPException(
                 status_code=503,
                 detail="Shared credential database is not available",
-            )
+            ) from exc
     else:
         try:
             pool = db.pool(butler_name)
-        except KeyError:
+        except KeyError as exc:
             raise HTTPException(
                 status_code=503,
                 detail=f"Butler '{butler_name}' database is not available",
-            )
+            ) from exc
     return CredentialStore(pool)
 
 
@@ -118,7 +114,8 @@ def _to_secret_entry(meta) -> SecretEntry:
 async def list_secrets(
     name: str,
     category: str | None = Query(default=None, description="Filter by category."),
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[list[SecretEntry]]:
     """List all secrets for a butler (metadata only — values never returned).
 
@@ -138,7 +135,8 @@ async def list_secrets(
 async def get_secret(
     name: str,
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SecretEntry]:
     """Return metadata for a single secret.
 
@@ -166,7 +164,8 @@ async def upsert_secret(
     name: str,
     key: str,
     request: SecretUpsertRequest,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[SecretEntry]:
     """Create or update a secret.
 
@@ -215,7 +214,7 @@ async def upsert_secret(
             expires_at=expires_at,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     # Re-read metadata to return the persisted state
     secrets = await store.list_secrets()
@@ -234,7 +233,8 @@ async def upsert_secret(
 async def delete_secret(
     name: str,
     key: str,
-    db: DatabaseManager = Depends(_get_db_manager),
+    *,
+    db: Db,
 ) -> ApiResponse[dict]:
     """Delete a secret from the butler's secret store.
 

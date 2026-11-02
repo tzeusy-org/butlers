@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import asyncpg
 import pytest
@@ -31,6 +31,7 @@ from butlers.core.qa.sources.infra_state import (
     InfraStateSource,
 )
 from butlers.core.qa.sources.protocol import DiscoverySource
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -50,13 +51,6 @@ def test_backup_fact_reader_is_not_imported_from_the_api_router() -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _row(fields: dict) -> MagicMock:
-    """Build a mock asyncpg Record from a plain dict."""
-    record = MagicMock()
-    record.__getitem__ = lambda self, key: fields[key]
-    return record
 
 
 class _FakePool:
@@ -107,8 +101,8 @@ def _connector_row(
     error_message: str | None = None,
     last_heartbeat_at: datetime | None = None,
     first_seen_at: datetime | None = None,
-) -> MagicMock:
-    return _row(
+) -> Record:
+    return Record(
         {
             "connector_type": connector_type,
             "endpoint_identity": endpoint_identity,
@@ -127,8 +121,8 @@ def _heartbeat_row(
     registered_at: datetime | None = None,
     liveness_ttl_seconds: int = 300,
     quarantined_at: datetime | None = None,
-) -> MagicMock:
-    return _row(
+) -> Record:
+    return Record(
         {
             "name": name,
             "last_seen_at": last_seen_at,
@@ -147,8 +141,8 @@ def _receiver_row(
     current_boot_observed: bool = True,
     registered_at: datetime | None = None,
     liveness_ttl_seconds: int = 300,
-) -> MagicMock:
-    return _row(
+) -> Record:
+    return Record(
         {
             "name": name,
             "observed_state": observed_state,

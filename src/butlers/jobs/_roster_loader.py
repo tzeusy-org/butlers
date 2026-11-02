@@ -2,7 +2,7 @@
 
 Roster job modules live at ``roster/<butler>/jobs/<butler>_jobs.py`` and are
 not installed Python packages.  This module provides ``load_roster_jobs()``
-which uses ``importlib`` to load those files so that scheduled job handlers
+which delegates to the canonical roster finder to load those files so that scheduled job handlers
 in ``daemon.py`` can import functions from them regardless of the working
 directory or ``sys.path`` configuration (e.g. inside Docker containers).
 """

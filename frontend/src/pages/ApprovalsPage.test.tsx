@@ -1148,6 +1148,7 @@ function makePendingDetail(id: string) {
     expires_at: null,
     why: null,
     evidence: [],
+    call_preview: { title: "Send email", facts: [{ label: "Body", value: "Reviewed email" }], displayed_call: { tool_name: "send_email", args_digest: "a".repeat(64) } },
     proposed_action: {
       tool_name: "send_email",
       tool_args: {},
@@ -3997,7 +3998,7 @@ describe("ApprovalsPage — keyboard triage (bu-86c4c.14)", () => {
       await vi.advanceTimersByTimeAsync(5_000);
     });
 
-    expect(approveApproval).toHaveBeenCalledWith("a1");
+    expect(approveApproval).toHaveBeenCalledWith("a1", { displayed_call: { tool_name: "send_email", args_digest: "a".repeat(64) } });
   });
 
   it("undo (clicking the scheduled rail item) cancels the decision before it fires", async () => {

@@ -94,20 +94,11 @@ class SwitchboardModule(Module):
         self._db: Any = None
         self._runtime_attention_task: asyncio.Task[None] | None = None
 
-    @property
-    def name(self) -> str:
-        return "switchboard"
+    name = "switchboard"
 
     @property
     def config_schema(self) -> type[BaseModel]:
         return SwitchboardModuleConfig
-
-    @property
-    def dependencies(self) -> list[str]:
-        return []
-
-    def migration_revisions(self) -> str | None:
-        return None  # switchboard tables already exist via separate migrations
 
     def tool_metadata(self) -> dict[str, ToolMeta]:
         """Declare the connector identity as safety-critical for approval rules."""

@@ -63,6 +63,15 @@ read it for the current names and signatures. The families:
 
 ## Standing Rules
 
+Creating rules (directly, from an action, or with approval) and confirming an
+autonomy promotion require the dashboard's fresh action-bound passkey step-up.
+An authenticated MCP actor or Telegram callback cannot create standing
+permission. They receive `dashboard_step_up_required` with `/approvals` as the
+dashboard door. Ordinary approval, rejection, revocation and demotion remain
+available under their existing authority. See
+[standing-rule confirmation](../identity_and_secrets/dashboard-owner-auth.md#standing-rule-confirmation)
+for the exact session/nonce transaction, backup and deployment boundaries.
+
 Standing rules auto-approve matching invocations. A rule matches when all of these hold:
 
 - Tool name matches.
@@ -81,6 +90,39 @@ Matching precedence is deterministic: constraint specificity (descending) -> bou
 3. Default: non-sensitive.
 
 Sensitive args get `{"type": "exact", "value": ...}`; non-sensitive args get `{"type": "any"}`.
+
+### Standing-reply template drafts (inactive)
+
+The owner can save, edit, inspect and revoke typed standing-reply template drafts
+(`src/butlers/modules/approvals/reply_templates.py`, routes under
+`/api/approvals/reply-templates`). A draft has no approval authority:
+
+- **Drafted** -- saved in `standing_reply_template_drafts`, never in `approval_rules`.
+  The gate reads only `approval_rules`, so a draft is never matched, claimed or executed.
+- **Previewed** -- `POST /api/approvals/reply-templates/{id}/preview` reports whether a
+  hypothetical call matches (`matched`, `eligible`, `reasons`) and always returns
+  `authority: "none"`. An unresolved or unpinned recipient, a missing content argument or
+  an unknown parameter makes it ineligible. The recipient resolves through the gate's own
+  target resolution.
+- **Activated** -- not implemented. There is no activation endpoint, no promotion into
+  `approval_rules` and no `active` field (requests carrying one are refused with 422).
+  Activation, broker enforcement, per-window limits and receipts belong to bu-jv1moa.28.
+
+Every route requires the owner's verified dashboard session; API-key, connector-callback and
+runtime callers get 403 `owner_dashboard_session_required`, and no MCP tool exposes drafts.
+Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); edits have no
+idempotency key, so retrying a committed edit returns 409. A create replayed with the same
+`idempotency_key` and request returns the draft that key created, in its current state (also
+after an edit or revoke): replays compare against the immutable `create_request_digest`, and the
+same key with a different request returns 409 `idempotency_key_reused`.
+
+Grammar: one template per content-bearing argument of the send tool (`text` for
+`telegram_send_message`; `subject` and `body` for `email_send_message`), matched against the
+whole value. Templates are fixed text plus `{name:type}` slots of type `date`, `time`,
+`datetime`, `duration`, `amount` or `count`; adjacent slots and slot-only templates are
+refused, as are free-text, identifier, URL and recipient slots. Each draft pins one or more
+live `public.entities` recipients. WhatsApp and Telegram user-client send tools are refused
+permanently (owner decision bu-bup68v); other tools are refused as unsupported.
 
 ## Action Lifecycle
 
@@ -110,6 +152,7 @@ The module owns tables in the hosting butler's schema (Alembic branch: `approval
 
 - `pending_actions` -- durable queue and audit log for gated invocations. Ordinary terminal actions are retained for 90 days; rejected or abandoned ordered `memory_entity_merge` / legacy `entity_merge` actions remain as durable owner decisions so curation cannot reopen the same pair.
 - `approval_rules` -- standing rules for auto-approval. Its optional `created_from` action ID is historical provenance, so a retained rule does not block deletion of its terminal source action after that action's 90-day window.
+- `standing_reply_template_drafts` -- inactive owner-authored reply templates (see above); revoked drafts are retained, and downgrading `approvals_019` refuses while any draft exists.
 - `approval_events` -- append-only immutable audit log. Its `action_id` and `rule_id` are historical provenance, so deleting a terminal action after its 90-day window or an inactive rule after its 180-day window neither mutates nor deletes the event; events retain their separate 365-day audit window. New non-null action and rule references are still validated when an event is written.
 
 ## Dependencies
@@ -132,7 +175,9 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   `src="relationship"`.
 - Butlers that cannot read `relationship.entity_facts` recognise the owner through
   `public.resolve_owner_triple` (SECURITY DEFINER), called by
-  `identity.resolve_owner_channel_via_definer()` when normal resolution returns None.
+  `identity.resolve_owner_channel_via_definer()` when normal resolution returns None. An actively
+  held endpoint (core_293, see [Endpoint Custody Holds](../identity_and_secrets/owner-identity.md#endpoint-custody-holds))
+  never resolves to owner there.
 - Every channel gate delegates to `identity.resolve_channel_contact_with_owner_corroboration()`,
   which tests ambiguity across all live matching entities before filtering to the owner. The bypass
   goes only to exactly one active identifier on one live, non-merged, non-deleted owner entity;
@@ -143,6 +188,8 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   compare-and-set
   writes (`... WHERE status='pending'`). Expiry is a decision boundary: approve and defer paths
   expire a still-pending action whose `expires_at` has passed instead of acting on it.
+  Dashboard approve-with-edits restores the locked original arguments on a refused decision
+  before committing, preserving an expiry transition without persisting the refused edit.
 - `execute_approved_action` is idempotent per `action_id`: a per-action lock serialises it, an
   `executed` action replays its stored `execution_result`, and the terminal write happens only
   from `approved`.
@@ -173,6 +220,54 @@ recorded failure or uncertain delivery remains visible even for a prepared actio
   every configured approvals source. A missing pool, failed read, duplicate UUID, or wrong source
   withholds the dossier; ordinary unqualified lookup and decision permissions stay unchanged.
   Configuration is retained before provisioning, so a failed pool cannot disappear from this check.
+
+## Approval cards show the exact stored call
+
+The owner push for a single parked action (Telegram) renders the call itself, not
+the assistant's description of it. A per-tool preview registry
+(`src/butlers/modules/approvals/previews.py`) turns the stored `tool_args` into
+fact lines: for email sends every To, Cc and Bcc address, the subject
+and the full body; for Telegram, WhatsApp and `notify` sends the recipient and
+text. A `telegram_react_to_message` preview shows the exact stored chat, positive
+native message ID and emoji on both Telegram and the dashboard. Message IDs must
+be integers (not booleans), and chat and emoji must be nonempty text. Missing or
+malformed fields and unknown reaction kwargs, including empty future arguments,
+offer Open only. The assistant's `why`, `blast_radius` and `reversibility` sit under
+"Assistant says" as claims, with URLs defanged (`hxxps://a[.]b/c`) and each
+span rendered in code formatting so it stays literal after the transport's HTML
+escaping. "Started by" names the owning butler (and marks prepared actions).
+
+Approve and Reject are offered only when the whole call is shown and the card
+fits about 3,500 UTF-16 code units (Telegram's own measure, so an emoji counts
+twice). Otherwise the card says why and offers Open only:
+no registered preview, an argument the preview cannot show (for example
+attachments or a reply markup), a recipient that cannot be enumerated, a body
+with backticks, any C0/C1 control character (other than a newline) or Unicode
+format character such as a bidi override or zero-width space in a shown value
+(these can forge the transport's placeholders or reorder what the owner reads), an
+over-budget call, or an `administer` or protected or
+consequential tool. Register a preview with `register_preview(tool, renderer,
+effect_class=...)`; an unregistered tool is Open only by design.
+
+Each presented card records `args_digest` (SHA-256 of the canonical JSON of the
+stored call) on its `approval_delivery_presentations` row, written under the
+action's row lock when the handoff starts; the handoff does not start if the
+stored call changed since it was rendered, and a card never records a NULL
+digest. A connector-authenticated Telegram tap carries only the action id, so the
+approve endpoint refuses it with 409 "changed since shown" when any presented
+digest differs from the stored call, and the tap edits the message to say nothing
+was executed. This check applies to card taps only: a dashboard approval binds to
+the call the dashboard displayed, and dashboard edits are the owner's explicit
+change. The dashboard dossier and summary review dialog expose only a complete registered
+owner-safe `call_preview`, including the tool identity and argument digest from the
+same stored row. Both approval API routes require that `displayed_call` and
+compare it under the pending-row lock before any owner edit, status/audit write
+or dispatch. Missing, malformed, stale or unshowable calls execute nothing.
+Summary actions first open the complete review; the five-second undo callback
+retains that exact reviewed snapshot even if a later fetch sees a different call.
+No raw secret-field fallback or truncated preview earns an Approve button.
+Rows presented before migration 018 carry no digest and are not checked.
+Migration 018's downgrade refuses while any presentation carries a digest.
 
 ## Related Pages
 

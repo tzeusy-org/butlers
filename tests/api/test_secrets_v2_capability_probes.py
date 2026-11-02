@@ -43,12 +43,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from butlers.api.db import DatabaseManager
+from butlers.api.deps import get_db
 from butlers.api.routers.secrets_v2 import (
     _capability_for_scope,
     _catalogue_row_capability_or_none,
     _fetch_capability_probe_logs_bulk,
-    _get_db_manager,
 )
+from butlers.testing.records import Record
+from butlers.testing.records import row as make_row
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
 pytestmark = pytest.mark.unit
@@ -69,22 +71,16 @@ _GOOGLE_URL_MARKERS = {
 }
 
 
-def _make_row(**kwargs) -> MagicMock:
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda k: kwargs[k])
-    return m
-
-
 def _make_entity_info_row(
     *,
     entity_id: str | None = None,
     info_type: str = "google_oauth_refresh",
     value: str = _REFRESH_TOKEN,
     last_test_ok: bool | None = True,
-) -> MagicMock:
+) -> Record:
     row_id = uuid4()
     eid = entity_id or str(uuid4())
-    return _make_row(
+    return make_row(
         id=row_id,
         entity_id=eid,
         type=info_type,
@@ -98,8 +94,8 @@ def _make_entity_info_row(
     )
 
 
-def _make_butler_secrets_row(key: str, value: str) -> MagicMock:
-    return _make_row(secret_key=key, secret_value=value)
+def _make_butler_secrets_row(key: str, value: str) -> Record:
+    return make_row(secret_key=key, secret_value=value)
 
 
 def _make_shared_pool(
@@ -118,7 +114,7 @@ def _make_shared_pool(
             return None
         if "entity_info" in sql and "WHERE id = $1" in sql:
             if raw_token_value is not None:
-                return _make_row(value=raw_token_value)
+                return make_row(value=raw_token_value)
             return None
         if "entity_info" in sql or "entities" in sql:
             return user_row
@@ -138,7 +134,7 @@ def _make_shared_pool(
         if "google_accounts" in sql and "last_token_refresh_at" in sql:
             if test_mode_expired and user_row is not None:
                 return [
-                    _make_row(
+                    make_row(
                         entity_id=user_row["entity_id"],
                         last_token_refresh_at=_NOW - timedelta(days=10),
                     )
@@ -184,7 +180,7 @@ def _make_db(shared_pool: AsyncMock) -> MagicMock:
 
 def _build_app(mock_db: MagicMock) -> TestClient:
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     return TestClient(app)
 
 
@@ -598,7 +594,7 @@ async def test_fetch_capability_probe_logs_bulk_groups_by_base_key():
     pool = AsyncMock()
     pool.fetch = AsyncMock(
         return_value=[
-            _make_row(
+            make_row(
                 credential_key="google_oauth_refresh:calendar",
                 ok=True,
                 code=None,
@@ -606,7 +602,7 @@ async def test_fetch_capability_probe_logs_bulk_groups_by_base_key():
                 recorded_at=_NOW,
                 latency_ms=120,
             ),
-            _make_row(
+            make_row(
                 credential_key="google_oauth_refresh:health",
                 ok=False,
                 code=403,
@@ -614,7 +610,7 @@ async def test_fetch_capability_probe_logs_bulk_groups_by_base_key():
                 recorded_at=_NOW,
                 latency_ms=95,
             ),
-            _make_row(
+            make_row(
                 credential_key="github_pat:connectivity",
                 ok=True,
                 code=None,

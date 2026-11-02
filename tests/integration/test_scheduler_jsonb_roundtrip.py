@@ -79,9 +79,12 @@ import shutil
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import asyncpg
 import pytest
 
 from butlers.core.scheduler import _fire_chain, tick
+from butlers.db import register_jsonb_codec
+from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -138,12 +141,30 @@ _EVENT_CHAINS_DDL = """
 """
 
 
+@pytest.fixture(scope="module")
+def scheduler_db_url(postgres_container) -> str:
+    """Finish the actual core migrations synchronously before opening the async pool."""
+    return create_migrated_test_db(
+        postgres_container,
+        migration_db_name(),
+        chains=["core"],
+        schemas={"core": "general"},
+    )
+
+
 @pytest.fixture
-async def scheduler_pool(provisioned_postgres_pool):
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_SCHEDULED_TASKS_DDL)
-        await pool.execute(_EVENT_CHAINS_DDL)
+async def scheduler_pool(scheduler_db_url: str):
+    pool = await asyncpg.create_pool(
+        scheduler_db_url,
+        min_size=1,
+        max_size=3,
+        init=register_jsonb_codec,
+        server_settings={"search_path": "general,public"},
+    )
+    try:
         yield pool
+    finally:
+        await pool.close()
 
 
 def _future_date(days: int) -> date:

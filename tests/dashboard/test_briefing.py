@@ -36,7 +36,7 @@ from butlers.api.briefing.fallback import elaborate_fallback
 from butlers.api.briefing.lint import voice_lint_passes
 from butlers.api.briefing.prompts import _build_user_message, elaborate_llm
 from butlers.api.db import DatabaseManager
-from butlers.api.deps import get_butler_configs, get_mcp_manager, get_pricing
+from butlers.api.deps import get_butler_configs, get_db, get_mcp_manager, get_pricing
 from butlers.api.routers.dashboard_briefing import (
     _fetch_approvals_state,
     _fetch_audit_issues,
@@ -44,7 +44,6 @@ from butlers.api.routers.dashboard_briefing import (
     _fetch_dashboard_state,
     _fetch_notifications_state,
     _fetch_qa_state,
-    _get_db_manager,
     _is_missing_relation_error,
     _map_board_rows,
     _owner_local_now,
@@ -164,7 +163,7 @@ def _make_app(pool: AsyncMock, cache: BriefingCache | None = None) -> object:
     mock_db.credential_shared_pool.return_value = pool
 
     app = create_app()
-    app.dependency_overrides[_get_db_manager] = lambda: mock_db
+    app.dependency_overrides[get_db] = lambda: mock_db
     app.dependency_overrides[get_butler_configs] = lambda: []
     app.dependency_overrides[get_mcp_manager] = lambda: MagicMock()
     app.dependency_overrides[get_pricing] = lambda: MagicMock()
@@ -1891,7 +1890,7 @@ class TestUnauthenticated:
         monkeypatch.setenv("DASHBOARD_AUTH_RP_ID", "owner.test.invalid")
         app = create_guarded_app(api_key="test-secret-key")
         app.state.owner_auth_service = _DomainOwnerState("test-secret-key")
-        app.dependency_overrides[_get_db_manager] = lambda: mock_db
+        app.dependency_overrides[get_db] = lambda: mock_db
 
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://owner.test.invalid"

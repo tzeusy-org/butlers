@@ -68,7 +68,7 @@ Every visual color request SHALL resolve through exactly one semantic role:
 
 | Role | Resolver | Token family | Required signal |
 |------|----------|--------------|-----------------|
-| Butler identity | `ButlerMark` (private) | `--category-1..12` | letter-mark only |
+| Butler identity | `ButlerMark` (private) | `ButlerMark` palette map (no CSS variable) | letter-mark only |
 | Operational state | `StateDot` / `stateColorVar` / `stateTextColorVar` | `--red`, `--red-text`, `--amber`, `--amber-text`, `--green`, `--dim`, `--state-unidentified`, `--muted-foreground` | state affordance |
 | Local category | `categoricalHueVar` / `categoricalColor` | `--categorical-1..12` | label, icon, position, or legend |
 | Chart series | `chartSeriesColor` / `chartColor` | `--chart-1..5` | series label or legend |

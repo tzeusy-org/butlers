@@ -33,15 +33,44 @@
  * pending/undo label, not just a boolean. useUndoWindow's generic `meta`
  * payload is what carries that verb through the shared store.
  */
-import { useCallback, useMemo } from "react";
+import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { approveApproval, deferApproval, denyApproval } from "@/api/index.ts";
+import { approveApproval, deferApproval, denyApproval, getApprovalDetail } from "@/api/index.ts";
 import type { ApiResponse, ApprovalAction, ApprovalSummary } from "@/api/index.ts";
+import type { ApprovalCallPreview, DisplayedApprovalCall } from "@/api/types";
 import { toast } from "sonner";
 
 import { useOptimisticMutation } from "@/hooks/use-optimistic-mutation.ts";
 import { useUndoWindow } from "@/hooks/use-undo-window";
+
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+
+export interface ViewedApproval {
+  id: string;
+  displayed_call: DisplayedApprovalCall;
+}
+
+/** A real stored-call review, shared by summary-only surfaces. No raw args. */
+export function ApprovalCallReview({ review, onConfirm, onCancel }: {
+  review?: { id: string; preview: ApprovalCallPreview } | null;
+  onConfirm: (view: ViewedApproval) => void;
+  onCancel: () => void;
+}) {
+  if (!review) return null;
+  return createElement(Dialog, { open: true, onOpenChange: (open) => { if (!open) onCancel(); } },
+    createElement(DialogContent, { className: "max-h-[85vh] overflow-y-auto" },
+      createElement(DialogTitle, null, review.preview.title),
+      createElement(DialogDescription, null, "Review the complete stored call before approving."),
+      ...review.preview.facts.map((fact, index) => createElement("div", { key: index },
+        createElement("strong", null, fact.label),
+        createElement("p", { className: "whitespace-pre-wrap break-words" }, fact.value))),
+      createElement(Button, { onClick: () => onConfirm({
+        id: review.id, displayed_call: { ...review.preview.displayed_call },
+      }) }, "Approve reviewed call"),
+      createElement(Button, { variant: "outline", onClick: onCancel }, "Cancel")));
+}
 
 const WAITING_KEY_PREFIX = ["approvals", "flat", "waiting"] as const;
 const HISTORY_KEY = ["approvals", "history"] as const;
@@ -91,6 +120,35 @@ export function useApprovalDecisionMutations(
   options: UseApprovalDecisionMutationsOptions = {},
 ) {
   const qc = useQueryClient();
+  const [review, setReview] = useState<{ id: string; preview: ApprovalCallPreview } | null>(null);
+  const reviewGeneration = useRef(0);
+  useEffect(() => () => { reviewGeneration.current += 1; }, []);
+  const cancelReview = useCallback(() => {
+    reviewGeneration.current += 1;
+    setReview(null);
+  }, []);
+  const requestReview = useCallback(async (id: string) => {
+    const generation = ++reviewGeneration.current;
+    setReview(null);
+    try {
+      const response = await getApprovalDetail(id);
+      if (generation !== reviewGeneration.current) return;
+      const detail = response.data;
+      const preview = detail.call_preview;
+      if (detail.id !== id || detail.status !== "pending" || !preview
+          || typeof preview.title !== "string" || !Array.isArray(preview.facts)
+          || preview.facts.length === 0
+          || !preview.facts.every((fact) => typeof fact.label === "string" && typeof fact.value === "string")
+          || typeof preview.displayed_call?.tool_name !== "string"
+          || !/^[0-9a-f]{64}$/.test(preview.displayed_call.args_digest)) {
+        toast.error("Open the approval dossier; this call cannot be approved from a summary.");
+        return;
+      }
+      setReview({ id, preview });
+    } catch {
+      if (generation === reviewGeneration.current) toast.error("Unable to load the stored call. Retry review.");
+    }
+  }, []);
   const { onDecided, undoWindow = false } = options;
   const undo = useUndoWindow<DecisionVerb>(NAMESPACE);
 
@@ -124,9 +182,9 @@ export function useApprovalDecisionMutations(
   // decision so the row and its pending-count metadata refresh together.
   const reconcileKeys = [WAITING_KEY_PREFIX, HISTORY_KEY, ACTIONS_KEY_PREFIX];
 
-  const approveMut = useOptimisticMutation<ApiResponse<ApprovalAction>, string, PendingSnapshot>({
-    mutationFn: (id: string) => approveApproval(id),
-    applyOptimisticUpdate: (id) => dropFromPending(id),
+  const approveMut = useOptimisticMutation<ApiResponse<ApprovalAction>, ViewedApproval, PendingSnapshot>({
+    mutationFn: ({ id, displayed_call }) => approveApproval(id, { displayed_call }),
+    applyOptimisticUpdate: ({ id }) => dropFromPending(id),
     rollback,
     invalidateQueryKeys: () => reconcileKeys,
     onSuccess: (res) => {
@@ -193,6 +251,9 @@ export function useApprovalDecisionMutations(
 
   return {
     approveMut,
+    review,
+    requestReview,
+    cancelReview,
     denyMut,
     deferMut,
     /** Ids with a decision scheduled but not yet fired (see `scheduleDecision`). */

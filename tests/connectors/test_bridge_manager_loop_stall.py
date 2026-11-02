@@ -18,6 +18,11 @@ import pytest
 from butlers.connectors.bridge_manager import BridgeConfig, BridgeSubprocessManager
 
 
+def _block_event_loop(seconds: float) -> None:
+    """Deliberately block the calling (event-loop) thread: the fault this test needs."""
+    time.sleep(seconds)
+
+
 @pytest.mark.parametrize(
     ("state", "expected_reason"),
     [("pair_required", "pair_required"), ("disconnected", "Bridge status: disconnected")],
@@ -45,7 +50,7 @@ async def test_start_reaches_a_terminal_state_despite_a_loop_stall_longer_than_t
         mgr._process = proc
 
     async def _stalling_monitor() -> None:
-        time.sleep(0.4)  # blocks the loop between arming the timer and the poller's first turn
+        _block_event_loop(0.4)  # stalls between arming the timer and the poller's first turn
 
     monkeypatch.setattr(mgr, "_spawn", _spawn)
     monkeypatch.setattr(mgr, "_monitor_loop", _stalling_monitor)

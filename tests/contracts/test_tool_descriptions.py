@@ -9,7 +9,6 @@ registers it.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -61,7 +60,7 @@ async def _core_tools(butler_name: str) -> list[Tool]:
     """Register every core group through the daemon's real decorator path."""
     daemon = ButlerDaemon(_REPO_ROOT / "roster" / butler_name, db=SimpleNamespace(pool=AsyncMock()))
     daemon.config = load_config(_REPO_ROOT / "roster" / butler_name)
-    daemon.config.runtime_seed = replace(daemon.config.runtime_seed, core_groups=None)
+    daemon.config.runtime_seed = daemon.config.runtime_seed.model_copy(update={"core_groups": None})
     daemon.mcp = FastMCP(f"descriptions-core-{butler_name}")
     daemon.spawner = MagicMock()
     before = asyncio.all_tasks()

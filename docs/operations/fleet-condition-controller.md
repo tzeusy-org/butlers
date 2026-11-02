@@ -11,6 +11,16 @@ owner-attention episode per active fleet or `patrol_overdue` condition. See
 [Runtime Attention](runtime-attention.md#fleet-and-qa-condition-attention).
 `patrol_stopped_by_policy` is an intentional hold and never pages.
 
+The controller callback and semantic readiness select the startup QA contract
+through `core.qa.patrol_provenance.qa_patrol_contract`. It returns the first
+exact-name `qa` config's existing contract object, including `None` for a
+missing or disabled contract; a later duplicate is not a fallback. Readiness
+first rejects duplicate roster names or ports. The lookup does no I/O and does
+not consult registry activity, rebuild the digest, or enable live reconfiguration.
+A configured but registry-stale QA retains its contract for overdue observation.
+Without a contract, readiness denies the QA check and the controller skips only
+patrol assurance; fleet reconciliation and attention retain their existing flow.
+
 ## Conditions
 
 | Source | Identity | Opens when | Resolves when |
@@ -91,8 +101,10 @@ the handoff:
   retirement signal. All of these must hold: the cycle is complete, the episode
   has a non-null `source_butler`, that butler's `roster/<name>/` directory was
   absent from the Dashboard's startup discovery, and that discovery reported no
-  config that failed to parse. A directory that lacks `butler.toml` still counts
-  as present. Absence from the expected set alone never retires an episode, and
+  config that failed to parse or whose `butler.name` differs from its directory
+  name (liveness episodes key on `butler.name`, the signal on the directory, so a
+  mismatch disables retirement fleet-wide until fixed). A directory that lacks
+  `butler.toml` still counts as present. Absence from the expected set alone never retires an episode, and
   "roster" means the discovery pass at Dashboard startup, not live Git state.
   A Dashboard restart re-evaluates the signal.
 

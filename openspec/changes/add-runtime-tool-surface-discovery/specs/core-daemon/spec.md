@@ -11,7 +11,7 @@ This requirement **supersedes** the tier-based system (UNIVERSAL/DOMAIN/MESSENGE
 - `scheduling` (6): schedule_list, schedule_create, schedule_update, schedule_delete, schedule_trigger, schedule_costs. Only schedule_trigger and schedule_costs are non-staffer-only.
 - `sessions` (5): sessions_list, sessions_get, sessions_summary, sessions_daily, top_sessions. All five are non-staffer-only.
 - `notifications`: notify, remind. The group has 2 tools; only notify is non-staffer-only.
-- `media` (1): get_attachment. No type/name gate.
+- `media`: attachment_view, get_attachment. The group has 2 tools and no type/name gate.
 - `graph` (2): entity_graph_walk, entity_graph_path. No type/name gate; both remain subject to the graph group allowlist.
 - `temporal`: deadline_*, event_chain_*, seasonal_period_*. The complete 13-tool inventory is deadline_create, deadline_update, deadline_list, deadline_delete, event_chain_create, event_chain_update, event_chain_list, event_chain_delete, seasonal_period_create, seasonal_period_update, seasonal_period_list, seasonal_period_delete, seasonal_period_create_preset. All thirteen are non-staffer-only.
 - `module_mgmt` (2): module.states, module.set_enabled. No type/name gate.
