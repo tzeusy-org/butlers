@@ -86,6 +86,7 @@ def _register_real_approval_hooks(request: pytest.FixtureRequest):
 
     pool_fixture_names = (
         "pool",
+        "rel_pool",
         "pool_with_relational_predicates",
         "pa_pool",
         "frc_pool",

@@ -233,7 +233,7 @@ def _counts_as_active(row: asyncpg.Record) -> bool:
 
 
 async def _find_superseded(
-    conn: asyncpg.Connection, plan: DocumentDeadlinePlan
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy, plan: DocumentDeadlinePlan
 ) -> list[asyncpg.Record]:
     """Lock the live same-issuer, same-kind deadlines of other documents this plan replaces.
 
@@ -268,7 +268,7 @@ async def _find_superseded(
 
 
 async def _check_caps(
-    conn: asyncpg.Connection,
+    conn: asyncpg.Connection | asyncpg.pool.PoolConnectionProxy,
     plan: DocumentDeadlinePlan,
     *,
     excluded: list[Any],
@@ -292,6 +292,7 @@ async def _check_caps(
         plan.job_args.get("issuer"),
         excluded,
     )
+    assert counts is not None  # an aggregate query always returns one row
     if counts["issuer"] >= MAX_ACTIVE_PER_ISSUER:
         raise DocumentDeadlineRefused(
             "issuer_cap_reached",

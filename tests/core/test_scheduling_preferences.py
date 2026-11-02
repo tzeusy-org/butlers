@@ -25,8 +25,6 @@ from butlers.core.temporal.scheduling import (
     SchedulingPreferences,
     get_scheduling_preferences,
 )
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 pytestmark = [pytest.mark.unit]
 
@@ -139,37 +137,18 @@ class TestGetSchedulingPreferencesMissingTable:
         assert await get_scheduling_preferences(pool) is None
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision a DB with core migrations applied once per module."""
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core"],
-    )
-
-
 @pytest.mark.integration
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestSchedulingPreferencesDB:
-    @pytest.fixture
-    async def pool(self, migrated_db_url: str):
-        p = await asyncpg.create_pool(
-            migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
-        )
-        await p.execute("TRUNCATE public.owner_scheduling_preferences CASCADE")
-        yield p
-        await p.close()
-
-    async def test_upsert_and_get_round_trip(self, pool):
+    async def test_upsert_and_get_round_trip(self, db_pool):
         from butlers.core.temporal.scheduling import upsert_scheduling_preferences
 
         # None before any upsert
-        assert await get_scheduling_preferences(pool) is None
+        assert await get_scheduling_preferences(db_pool) is None
 
         result = await upsert_scheduling_preferences(
-            pool,
+            db_pool,
             timezone="America/New_York",
             earliest_meeting_time="09:00",
             latest_meeting_time="18:00",
@@ -182,31 +161,31 @@ class TestSchedulingPreferencesDB:
         assert result["no_meeting_blocks"] == [{"start": "12:00", "end": "13:00"}]
 
         # Singleton: a second upsert updates the same row, never inserts a second.
-        await upsert_scheduling_preferences(pool, timezone="Europe/London")
-        count = await pool.fetchval("SELECT COUNT(*) FROM public.owner_scheduling_preferences")
+        await upsert_scheduling_preferences(db_pool, timezone="Europe/London")
+        count = await db_pool.fetchval("SELECT COUNT(*) FROM public.owner_scheduling_preferences")
         assert count == 1
-        prefs = await get_scheduling_preferences(pool)
+        prefs = await get_scheduling_preferences(db_pool)
         assert prefs["timezone"] == "Europe/London"
         # Previously-set fields are preserved across partial update.
         assert prefs["earliest_meeting_time"] == "09:00"
 
-    async def test_invalid_timezone_rejected(self, pool):
+    async def test_invalid_timezone_rejected(self, db_pool):
         from butlers.core.temporal.scheduling import upsert_scheduling_preferences
 
         with pytest.raises(ValueError, match="Unknown timezone"):
-            await upsert_scheduling_preferences(pool, timezone="Invalid/Zone")
+            await upsert_scheduling_preferences(db_pool, timezone="Invalid/Zone")
 
-    async def test_loads_into_scheduling_preferences(self, pool):
+    async def test_loads_into_scheduling_preferences(self, db_pool):
         from butlers.core.temporal.scheduling import upsert_scheduling_preferences
 
         await upsert_scheduling_preferences(
-            pool,
+            db_pool,
             timezone="UTC",
             earliest_meeting_time="09:00",
             latest_meeting_time="17:00",
             meeting_days=["MO", "TU", "WE", "TH", "FR"],
         )
-        prefs = SchedulingPreferences.from_row(await get_scheduling_preferences(pool))
+        prefs = SchedulingPreferences.from_row(await get_scheduling_preferences(db_pool))
         assert prefs is not None and prefs.has_constraints
         # Sunday rejected, weekday morning allowed.
         assert (

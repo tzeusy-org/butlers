@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from collections.abc import AsyncIterator
+from urllib.parse import urlparse
 
 import asyncpg
 import pytest
@@ -22,12 +24,8 @@ from butlers.core.account_security_events import (
     record_security_answer,
 )
 from butlers.core.domain_events import record_event
-from butlers.db import register_jsonb_codec
-from butlers.testing.migration import (
-    create_migrated_test_db,
-    migration_bootstrap_db_url,
-    migration_db_name,
-)
+from butlers.testing.db import open_pool
+from butlers.testing.migration import migration_bootstrap_db_url
 
 pytestmark = [
     pytest.mark.integration,
@@ -36,46 +34,44 @@ pytestmark = [
 ]
 
 
-@pytest.fixture(scope="module")
-def _db_name() -> str:
-    return migration_db_name()
+@pytest.fixture
+def db_url(fresh_db) -> str:
+    """One clone shared by the owner pool and the Switchboard-role pool of a test."""
+    return fresh_db("core")
 
 
-@pytest.fixture(scope="module")
-def db_url(postgres_container, _db_name: str) -> str:
-    return create_migrated_test_db(postgres_container, _db_name, chains=["core"])
-
-
-@pytest.fixture(scope="module")
-def bootstrap_url(postgres_container, _db_name: str, db_url: str) -> str:
-    return migration_bootstrap_db_url(postgres_container, _db_name).replace(
+@pytest.fixture
+def bootstrap_url(postgres_container, db_url: str) -> str:
+    return migration_bootstrap_db_url(postgres_container, urlparse(db_url).path[1:]).replace(
         "postgresql+psycopg2://", "postgresql://", 1
     )
 
 
 @pytest.fixture
-async def pool(db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(db_url, min_size=1, max_size=3)
+async def owner_pool(db_url: str) -> AsyncIterator[asyncpg.Pool]:
+    p = await open_pool(db_url)
     yield p
     await p.close()
 
 
 @pytest.fixture
-async def switchboard_pool(db_url: str) -> asyncpg.Pool:
+async def switchboard_pool(db_url: str) -> AsyncIterator[asyncpg.Pool]:
     # fleet_cases INSERT is RLS-restricted to butler_switchboard_rw (core_217); the
     # answer door runs on Switchboard's own daemon pool, so mirror that identity.
-    # Production pools register the jsonb codec (butlers.db.register_jsonb_codec), which is
-    # why fleet_cases writers pass dict payloads; mirror it, then take the role.
+    # Production pools register the jsonb codec, which is why fleet_cases writers
+    # pass dict payloads; open_pool mirrors it, then the role is taken.
     async def _as_switchboard(conn: asyncpg.Connection) -> None:
-        await register_jsonb_codec(conn)
         await conn.execute("SET ROLE butler_switchboard_rw")
 
-    p = await asyncpg.create_pool(db_url, min_size=1, max_size=3, init=_as_switchboard)
+    p = await open_pool(db_url, init=_as_switchboard)
     yield p
     await p.close()
 
 
-async def test_no_answer_opens_one_case_with_recovery_door(pool, switchboard_pool, bootstrap_url):
+async def test_no_answer_opens_one_case_with_recovery_door(
+    owner_pool, switchboard_pool, bootstrap_url
+):
+    pool = owner_pool
     event_id = await record_event(
         pool,
         event_type=SECURITY_EVENT_TYPE,

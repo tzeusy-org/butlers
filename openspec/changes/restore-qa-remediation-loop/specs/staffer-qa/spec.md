@@ -1,10 +1,10 @@
 ## MODIFIED Requirements
 
 ### Requirement: Patrol Loop Lifecycle
-The QA Staffer SHALL run a scheduler-driven patrol loop that executes at a configurable interval (default: 10 minutes). Each patrol cycle is a discrete unit of work with its own DB record.
+The QA Staffer SHALL run a scheduler-driven patrol loop that executes at a configurable interval (default: 10 minutes). Each patrol cycle is a discrete unit of work with its own DB record. Reactive findings SHALL arrive through the Switchboard service-plane relay, not the deleted generic `route` tool.
 
 ID: REQ-staffer-qa-011
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D7; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Patrol tick fires on schedule
@@ -60,7 +60,7 @@ Scope: v1-mandatory
 Enabled deterministic discovery sources SHALL implement the companion `discover_batch(lookback_minutes: int, checkpoint: SourceCheckpoint | None) -> DiscoveryBatch` method and report a source-generation-bound progress token, covered interval or observation boundary, and complete/partial/unavailable status; durable progress SHALL advance only with persisted findings or explicit durable exclusions.
 
 ID: REQ-staffer-qa-012
-Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; restore-qa-remediation-loop/design.md
+Source: docs/plans/2026-10-14-qa-month-packet.md; heart-and-soul/development.md; RFC0015; RFC 0038 D11 and D17; restore-qa-remediation-loop/design.md; restore-qa-remediation-loop/goal-runtime-reconciliation.md
 Scope: v1-mandatory
 
 #### Scenario: Batch protocol preserves existing inbox authority
@@ -73,6 +73,7 @@ Scope: v1-mandatory
 #### Scenario: Catch-up after interruption
 - **WHEN** QA resumes after a gap longer than the normal overlap window
 - **THEN** it resumes from durable source progress with bounded batches and explicit backlog age
+- **AND** a goal-ledger invocation row read through the sanctioned failure view uses its `invocation_id` as the stable source occurrence key, and an engineering-executor session row uses its session identity
 - **AND** overlapping replay and late-arriving records produce idempotent observations rather than duplicate incident admissions
 - **AND** progress cannot jump past an unpersisted batch or a failed source read
 

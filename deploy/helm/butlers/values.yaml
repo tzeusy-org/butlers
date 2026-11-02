@@ -234,6 +234,7 @@ connectors:
     logSubdir: telegram_bot
     provider: telegram
     channel: telegram_bot
+    healthPort: 40081
     env:
       CONNECTOR_INTERNAL_API_URL: http://dashboard-api:41200
   telegram-user:
@@ -306,6 +307,7 @@ connectors:
     logSubdir: gmail
     provider: gmail
     channel: email
+    healthPort: 40082
     oauth: true
     sharedDb: true
     env:
