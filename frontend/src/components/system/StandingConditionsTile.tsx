@@ -668,6 +668,10 @@ export function StandingConditionsTile() {
   )
   // Offered while commitments exist, and while a sphere is chosen so an empty
   // answer never strands the owner without the control to go back.
+  // The owner ledger answered the sphere query with nothing; infra rows in
+  // `merged` must not hide that.
+  const sphereEmpty =
+    sphere !== "all" && ownerAvailable && (ownerFacts?.conditions.length ?? 0) === 0
   const showSphereFilter = sphere !== "all" || decorated.some(({ commitment }) => commitment)
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>
@@ -721,16 +725,17 @@ export function StandingConditionsTile() {
             <ConditionFilterToggle value={filter} onChange={setFilter} />
             {showSphereFilter ? <SphereFilterToggle value={sphere} onChange={setSphere} /> : null}
           </div>
-          {merged.length === 0 ? (
+          {sphereEmpty ? (
             <p
-              className="text-muted-foreground text-sm"
+              className="text-muted-foreground mb-2 text-sm"
               data-testid="standing-conditions-sphere-empty"
             >
               {sphere === "undeclared"
                 ? "No commitments without a declared sphere recorded."
                 : `No ${sphere} commitments recorded.`}
             </p>
-          ) : visible.length === 0 ? (
+          ) : null}
+          {merged.length === 0 ? null : visible.length === 0 ? (
             <p className="text-muted-foreground text-sm" data-testid="standing-conditions-filtered-empty">
               {filter === "commitments"
                 ? "No commitments recorded."

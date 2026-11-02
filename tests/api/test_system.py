@@ -2403,14 +2403,20 @@ async def test_conditions_without_sphere_adds_no_metadata_predicate():
 
 
 @pytest.mark.parametrize(
-    "params",
+    ("params", "detail"),
     [
-        {"ledger": "infra", "sphere": "work"},
-        {"ledger": "owner", "sphere": "bogus"},
-        {"ledger": "owner", "sphere": ""},
+        ({"ledger": "infra", "sphere": "work"}, "sphere is only valid with ledger=owner"),
+        (
+            {"ledger": "owner", "sphere": "bogus"},
+            "Invalid sphere 'bogus'. Must be one of: personal, undeclared, work",
+        ),
+        (
+            {"ledger": "owner", "sphere": ""},
+            "Invalid sphere ''. Must be one of: personal, undeclared, work",
+        ),
     ],
 )
-async def test_conditions_rejects_invalid_sphere(params):
+async def test_conditions_rejects_invalid_sphere(params, detail):
     pool = _make_conditions_pool_mock(rows=[])
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.pool.return_value = pool
@@ -2419,5 +2425,5 @@ async def test_conditions_rejects_invalid_sphere(params):
     ) as client:
         resp = await client.get("/api/system/conditions", params=params)
     assert resp.status_code == 400
-    assert "undeclared" in resp.json()["detail"] or "ledger" in resp.json()["detail"]
+    assert resp.json()["detail"] == detail
     pool.fetch.assert_not_awaited()

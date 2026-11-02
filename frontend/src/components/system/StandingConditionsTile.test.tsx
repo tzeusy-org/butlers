@@ -911,6 +911,26 @@ describe("StandingConditionsTile -- sphere filter", () => {
     expect(screen.getByText("Standing Conditions")).toBeTruthy()
   })
 
+  it("says a sphere is empty even while infra conditions are listed", () => {
+    resetCommitmentMocks()
+    showConditions([commitmentCondition])
+    renderDom(<StandingConditionsTile />)
+    mockOwnerConditionsResult = { isPending: false, data: makeFacts() }
+    mockConditionsResult = {
+      isPending: false,
+      data: makeFacts({
+        conditions: [{ ...plainOwnerCondition, ledger: "infra", summary: "Deploy drift" }] as ConditionsFacts["conditions"],
+        total: 1,
+      }),
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Work" }))
+    expect(screen.getByTestId("standing-conditions-sphere-empty").textContent).toBe(
+      "No work commitments recorded.",
+    )
+    // Positive control: the infra row is still listed beside the message.
+    expect(screen.getByText("Deploy drift")).toBeTruthy()
+  })
+
   it("never shows the sphere control on an all-clear ledger", () => {
     resetCommitmentMocks()
     mockConditionsResult = { isPending: false, data: makeFacts() }
