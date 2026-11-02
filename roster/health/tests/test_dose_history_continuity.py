@@ -128,32 +128,70 @@ async def test_trend_report_adherence_counts_doses_logged_before_an_edit(health_
     assert row["taken_doses"] == 4
 
 
-async def test_adherence_expected_doses_ignore_the_edit_that_refreshed_created_at(health_pool):
-    from butlers.tools.health import medication_add, medication_history, medication_update
+async def _backdate(pool, fact_id) -> None:
+    await pool.execute(
+        "UPDATE facts SET created_at = now() - interval '60 days' WHERE id = $1", fact_id
+    )
+
+
+async def test_adherence_route_stays_within_100_percent_after_an_edit(health_pool):
+    from butlers.api._roster.health.router import get_medication_adherence
+    from butlers.tools.health import medication_add, medication_update
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
-    await health_pool.execute(
-        "UPDATE facts SET created_at = now() - interval '60 days' WHERE id = $1", med["id"]
-    )
+    await _backdate(health_pool, med["id"])
+    await _log_doses_days_ago(health_pool, str(med["id"]), range(1, 7))
     edited = await medication_update(health_pool, str(med["id"]), dosage="850mg")
+    db = MagicMock()
+    db.pool.return_value = health_pool
 
-    history = await medication_history(health_pool, str(edited["id"]))
+    result = await get_medication_adherence(
+        str(edited["id"]), start=None, end=None, window_days=7, db=db
+    )
 
-    # The edited fact is seconds old, but the medication was first seen 60 days ago.
-    age = datetime.now(UTC) - history["medication"]["first_seen_at"]
-    assert age > timedelta(days=59)
+    # Capping expected doses at the seconds-old edited fact scored 6 doses against ~0.
+    assert result.adherence_rate is not None and result.adherence_rate <= 100
+    assert (result.taken_doses, result.expected_doses) == (6, 7)
 
 
 async def test_trend_report_expected_doses_ignore_the_edit_that_refreshed_created_at(health_pool):
     from butlers.tools.health import medication_add, medication_update, trend_report
 
     med = await medication_add(health_pool, "Metformin", "500mg", "daily")
-    await health_pool.execute(
-        "UPDATE facts SET created_at = now() - interval '60 days' WHERE id = $1", med["id"]
-    )
+    await _backdate(health_pool, med["id"])
+    await _log_doses_days_ago(health_pool, str(med["id"]), range(1, 7))
     await medication_update(health_pool, str(med["id"]), dosage="850mg")
 
     report = await trend_report(health_pool, "week")
 
     (row,) = report["medication_adherence"]
-    assert row["expected_doses"] == 7
+    assert (row["taken_doses"], row["expected_doses"]) == (6, 7)
+    assert row["adherence_rate"] <= 100
+
+
+async def test_a_delete_ends_the_course_and_a_re_add_starts_a_new_one(health_pool):
+    from butlers.tools.health import (
+        medication_add,
+        medication_delete,
+        medication_history,
+        medication_update,
+    )
+
+    med = await medication_add(health_pool, "Metformin", "500mg", "daily")
+    await _backdate(health_pool, med["id"])
+    await _log_doses_days_ago(health_pool, str(med["id"]), range(3, 6))
+    edited = await medication_update(health_pool, str(med["id"]), dosage="850mg")
+    await _log_doses_days_ago(health_pool, str(edited["id"]), range(2, 3))
+    await medication_delete(health_pool, str(edited["id"]))
+    re_added = await medication_add(health_pool, "Metformin", "500mg", "daily")
+
+    history = await medication_history(health_pool, str(re_added["id"]))
+
+    # The owner stopped; the re-add is a new course with no inherited doses or age.
+    assert history["doses"] == []
+    re_added_at = await health_pool.fetchval(
+        "SELECT created_at FROM facts WHERE id = $1", re_added["id"]
+    )
+    assert history["medication"]["first_seen_at"] == re_added_at
+    # The ended course keeps its own history, before and after its edit.
+    assert len((await medication_history(health_pool, str(edited["id"])))["doses"]) == 4
