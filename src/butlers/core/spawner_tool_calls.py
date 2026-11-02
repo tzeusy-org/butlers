@@ -16,7 +16,10 @@ import json
 from typing import Any
 from urllib.parse import urlsplit
 
-from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+from butlers.core.tool_call_capture import (
+    fingerprint_tool_call_payload,
+    plain_tool_call_fingerprint,
+)
 from butlers.mcp_wrappers import (
     _VISIBLE_CAPTURE_INPUT_FIELDS,
     _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL,
@@ -234,7 +237,9 @@ def _merge_tool_call_records(
     def _signature(call: dict[str, Any]) -> str:
         fingerprint = call.get("input_fingerprint")
         if not isinstance(fingerprint, str) or not fingerprint:
-            fingerprint = fingerprint_tool_call_payload(_payload_for_signature(call))
+            # A record without a fingerprint persists its whole input, so the comparable
+            # form is the plain one the daemon records for a lossless capture view.
+            fingerprint = plain_tool_call_fingerprint(_payload_for_signature(call))
         return f"{_canonical_name(call)}|{fingerprint}"
 
     # Pair each executed (capture-side) record with an unclaimed parser record:

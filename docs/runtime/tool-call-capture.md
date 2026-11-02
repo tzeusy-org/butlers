@@ -48,8 +48,9 @@ After a session completes, the spawner calls `_merge_tool_call_records(parsed_ca
    fields plus any per-tool fields in `mcp_wrappers`), so a parameter a tool deliberately never
    stores never reaches `sessions.tool_calls`. A keyed fingerprint of the full raw input is kept
    when the allowlist view drops information, so loop detection still tells calls apart. Shell
-   commands the runtime ran itself (`command_execution`) keep their raw input.
-2. For each executed call, compute a signature from `(tool_name, keyed input fingerprint)` and
+   commands the runtime ran itself (`command_execution`) and Claude built-ins (tagged `builtin`)
+   keep their raw input.
+2. For each executed call, compute a signature from `(tool_name, input fingerprint)` and
    match it to an unmatched parsed call with the same signature.
 3. An executed call that did not match by fingerprint pairs with the next unmatched parsed call of
    the same tool, in call order. A parser cannot know the defaults the daemon binds, so a call
@@ -61,12 +62,17 @@ After a session completes, the spawner calls `_merge_tool_call_records(parsed_ca
 
 The reduced list is also what in-process consumers see: the merged list is
 `SpawnerResult.tool_calls`, which the Switchboard question lanes read. A field a consumer branches
-on (for example `answer_question`'s `scope` and `target`) must therefore be on the allowlist, in
-`_VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL`, or that consumer no longer sees it.
+on (for example `answer_question`'s `scope` and `target`, or `notify`'s `message`, `channel`,
+`intent`, `recipient`, `entity_id` and `request_context`, which day-close narration reads) must
+therefore be on the allowlist, in `_VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL`, or that consumer no
+longer sees it.
 
-The input fingerprint is an HMAC-SHA256 under a random per-process key. It is only compared
-inside the daemon process, and the key is never stored, so a persisted fingerprint cannot be
-brute-forced back to a low-entropy argument. Rows written before this change carry plain sha256
+The daemon's input fingerprint covers the full, default-bound input. It is a plain sha256 only
+when the persisted capture view, with the handler's defaults, reproduces that input exactly: the
+hash then reveals nothing the record does not already hold, and a later process can recompute it
+(day-close recovery does, from `sessions.tool_calls`). Otherwise it is an HMAC-SHA256 under a
+random per-process key that is never stored, so a persisted fingerprint cannot be brute-forced
+back to a low-entropy argument the view dropped. Rows written before this change carry plain sha256
 fingerprints and, for some tools, raw input; scrubbing them is a separate owner-gated data
 operation.
 

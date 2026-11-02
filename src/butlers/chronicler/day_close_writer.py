@@ -61,7 +61,7 @@ from butlers.chronicler.day_close_cache import day_close_cache_key, lock_day_clo
 from butlers.chronicler.editorial import record_coverage_witness
 from butlers.chronicler.prose_admission import INADMISSIBLE_PROSE, classify_day_close_candidate
 from butlers.chronicler.storage import upsert_tier2_cache
-from butlers.core.tool_call_capture import fingerprint_tool_call_payload
+from butlers.core.tool_call_capture import tool_call_fingerprint_matches
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ def _bound_notify_input(calls: list[dict[str, Any]], fingerprint: Any) -> dict[s
         except TypeError:
             continue
         candidate = dict(bound.arguments)
-        if fingerprint_tool_call_payload(candidate) == fingerprint:
+        if tool_call_fingerprint_matches(candidate, fingerprint):
             matches.append(candidate)
     return matches[0] if len(matches) == 1 else None
 

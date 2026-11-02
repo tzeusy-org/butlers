@@ -24,6 +24,7 @@ from butlers.core.tool_call_capture import (
     capture_tool_call,
     fingerprint_tool_call_payload,
     get_current_runtime_trigger_source,
+    plain_tool_call_fingerprint,
 )
 from butlers.exceptions import ChannelEgressOwnershipError, is_channel_egress_tool
 from butlers.module_state import ModuleRuntimeState
@@ -44,6 +45,13 @@ _VISIBLE_CAPTURE_INPUT_FIELDS_BY_TOOL = {
     # fields of the merged tool-call list. A two-value scope enum and a butler name carry
     # no question text or arguments.
     "answer_question": frozenset(("scope", "target")),
+    # Day-close narration (and its recovery from persisted session rows) reads the
+    # owner-default notify it sent from these fields. The message is owner-bound prose that
+    # the notification tables keep anyway; delivery arguments such as subject,
+    # attachments or options stay out of the capture.
+    "notify": frozenset(
+        ("message", "channel", "intent", "recipient", "entity_id", "request_context")
+    ),
 }
 
 _MANUAL_DAY_CLOSE_ALLOWED_TOOLS = frozenset({"chronicler_day_close_bundle"})
@@ -188,15 +196,39 @@ def _log_tool_call_failure(
     )
 
 
-def _tool_input_fingerprint(fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
-    """Fingerprint the full tool input without storing sensitive raw arguments."""
+def _tool_input_fingerprint(
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    tool_name: str | None = None,
+) -> str:
+    """Fingerprint the full tool input without storing sensitive raw arguments.
+
+    The fingerprint is a plain sha256 only when the persisted capture view, with the
+    handler's defaults, reproduces the full input: it then reveals nothing the record does
+    not already hold, and a later process (day-close recovery) can recompute it. Any input
+    the view drops gets the keyed, per-process fingerprint instead.
+    """
     try:
-        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
+        signature = inspect.signature(fn)
+        bound = signature.bind_partial(*args, **kwargs)
         bound.apply_defaults()
         bound_arguments = dict(bound.arguments)
         payload: Any = bound_arguments if bound_arguments else None
     except Exception:
-        payload = {"args": args, "kwargs": kwargs}
+        return fingerprint_tool_call_payload({"args": args, "kwargs": kwargs})
+    view = _visible_capture_input(
+        kwargs, tool_name=tool_name or getattr(fn, "__name__", None), fn=fn, args=args
+    )
+    try:
+        rebound = signature.bind_partial(**view)
+        rebound.apply_defaults()
+        lossless = payload is not None and dict(rebound.arguments) == payload
+    except Exception:
+        lossless = False
+    if lossless:
+        return plain_tool_call_fingerprint(payload)
     return fingerprint_tool_call_payload(payload)
 
 
@@ -269,7 +301,9 @@ class _SpanWrappingMCP:
                     fn=fn,
                     args=args,
                 )
-                input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
+                input_fingerprint = _tool_input_fingerprint(
+                    fn, args, kwargs, tool_name=resolved_tool_name
+                )
                 policy_result = _session_tool_policy(
                     butler_name=self._butler_name,
                     tool_name=resolved_tool_name,
@@ -393,7 +427,9 @@ class _ToolCallLoggingMCP:
                     fn=fn,
                     args=args,
                 )
-                input_fingerprint = _tool_input_fingerprint(fn, args, kwargs)
+                input_fingerprint = _tool_input_fingerprint(
+                    fn, args, kwargs, tool_name=resolved_tool_name
+                )
                 policy_result = _session_tool_policy(
                     butler_name=self._butler_name,
                     tool_name=resolved_tool_name,
