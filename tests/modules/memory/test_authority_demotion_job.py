@@ -204,6 +204,50 @@ def test_approval_binds_exact_manifest_candidates_and_complete_scope() -> None:
     assert corrected.candidate_digest != report.candidate_digest
 
 
+class _SchemaConn:
+    """Answers only the schema-support probe: columns, catalog presence, catalog column."""
+
+    def __init__(self, *, drop: str | None, catalog: bool, catalog_column: bool) -> None:
+        self.columns = [
+            {"table_name": table, "column_name": column}
+            for table, columns in demotion._REQUIRED_COLUMNS.items()
+            for column in columns
+            if (table, column) != ("facts", drop)
+        ]
+        self.answers = ["public.memory_catalog" if catalog else None, catalog_column]
+
+    async def fetch(self, *_args):
+        return self.columns
+
+    async def fetchval(self, *_args):
+        return self.answers.pop(0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("conn", "expected"),
+    [
+        (_SchemaConn(drop=None, catalog=True, catalog_column=True), "present"),
+        (_SchemaConn(drop=None, catalog=False, catalog_column=False), "not_enabled"),
+        (
+            _SchemaConn(drop=None, catalog=True, catalog_column=False),
+            "catalog_authority_unsupported",
+        ),
+        (
+            _SchemaConn(drop="content_authority", catalog=True, catalog_column=True),
+            "unsupported_schema",
+        ),
+    ],
+    ids=["catalog-present", "catalog-absent", "catalog-without-authority", "schema-drift"],
+)
+async def test_schema_support_gate_refuses_drift_and_names_absent_catalog(conn, expected) -> None:
+    try:
+        outcome = await demotion._check_supported_schema(conn, "general")
+    except DemotionRefused as refused:
+        outcome = refused.reason
+    assert outcome == expected
+
+
 def _cli():
     path = Path(__file__).resolve().parents[3] / "scripts" / "memory_authority_demotion.py"
     spec = importlib.util.spec_from_file_location("memory_authority_demotion", path)
@@ -420,6 +464,15 @@ async def test_concurrent_apply_with_one_operation_key_mutates_once(pool) -> Non
         with pytest.raises(DemotionRefused) as refused:
             await demotion.apply(conn, manifest, second)
     assert refused.value.reason == "candidate_count_drift"
+
+    # The applied key presented for a different operation is refused, not replayed.
+    reused = Approval.parse({**_approval_raw(approval), "candidate_digest": "0" * 64})
+    before = await _state(pool, tenant)
+    async with pool.acquire() as conn:
+        with pytest.raises(DemotionRefused) as refused:
+            await demotion.apply(conn, manifest, reused)
+    assert refused.value.reason == "operation_key_reused"
+    assert await _state(pool, tenant) == before
 
 
 def _approval_raw(approval: Approval) -> dict:

@@ -763,6 +763,37 @@ Scope: v1-mandatory
 - **THEN** construction follows the existing synchronized cache and asynchronous acquisition boundary
 - **AND** a still-running worker is not falsely declared cancelled or duplicated merely because its waiter stopped
 
+### Requirement: Operator-only historical authority demotion
+
+Owner-class facts and rules that were consolidated after mem_013, before consolidation was partitioned by content authority, by a butler that also consolidated third-party episodes SHALL be demotable to `mixed` only by an operator-run job.
+- The job SHALL NOT be reachable from a daemon, schedule, MCP tool or API.
+- It SHALL classify one memory schema against an operator-supplied, schema-specific evidence manifest, and it SHALL default to a read-only, content-blind dry run.
+- A row whose install boundary, affected-butler membership or consolidation derivation is not evidenced SHALL be UNKNOWN, never clean.
+- Apply SHALL require an approval bound to the exact manifest digest, candidate digest and candidate count. It SHALL refuse with no writes while any row is UNKNOWN or an endorsed owner-class rule is in scope.
+- Per schema, in one transaction, apply SHALL change only `content_authority` to `mixed` with a compare-and-swap on the prior value. It SHALL carry the change to the row's discovery-catalog entry, staling a rule's entry, and append one receipt per row.
+- A catalog or receipt failure SHALL roll the whole schema back.
+- Replaying an operation key SHALL return its original receipts and write nothing.
+- No restore, inverse promotion or delete SHALL be provided.
+
+ID: REQ-module-memory-020
+Source: owner decision bu-7ry1sy q1 (demote, adopted 2026-10-20); bu-dhloi1.1 AC4/AC5; docs/operations/memory-authority-demotion.md
+Scope: v1-mandatory
+
+#### Scenario: Missing historical evidence blocks apply
+- **WHEN** an owner-class row in the cohort has no `derived_from` evidence link, or the manifest does not evidence a boundary or the cohort member
+- **THEN** the dry run SHALL count that row as UNKNOWN with a closed reason
+- **AND** apply SHALL refuse without changing any row, catalog entry or receipt
+
+#### Scenario: Drift after approval refuses apply
+- **WHEN** a candidate's preimage changes after the approved dry run (for example an owner correction or endorsement)
+- **THEN** apply SHALL refuse with nothing written, because the re-classified candidate set no longer matches the approval
+- **AND** a failing catalog or receipt write mid-apply SHALL roll back every row of that schema
+
+#### Scenario: Replay and reused operation keys
+- **WHEN** an applied operation key is applied again with the same approval, including concurrently
+- **THEN** the rows SHALL be demoted exactly once and the replay SHALL return the original receipts with no new writes
+- **AND** the same key presented with a different approved candidate set SHALL be refused, not replayed
+
 ## Source References
 - PLAN.md §6 Phase 8 — memory fold-in scope.
 - Visual reference: the `MemoryExpanded` redesign prototype (graduated; now shipped in `frontend/`).
