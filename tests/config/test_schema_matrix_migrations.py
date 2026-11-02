@@ -107,6 +107,7 @@ CHAIN_TABLES: dict[str, set[str]] = {
         "approval_events",
         "approval_rules",
         "pending_actions",
+        "standing_reply_template_drafts",
     },
     # contacts_source_accounts dropped by contacts_002 (verified-dead feature table)
     "contacts": {"contacts_source_links", "contacts_sync_state"},

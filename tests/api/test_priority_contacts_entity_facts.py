@@ -32,6 +32,7 @@ from fastapi import FastAPI
 from butlers.api.db import DatabaseManager
 from butlers.api.deps import get_db
 from butlers.api.routers.priority_contacts import _ef_display_value, _entity_facts_values_by_contact
+from butlers.testing.records import Record
 
 pytestmark = pytest.mark.unit
 
@@ -132,12 +133,6 @@ async def test_entity_facts_values_multiple_contacts_share_entity() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_record(row: dict) -> MagicMock:
-    m = MagicMock()
-    m.__getitem__ = MagicMock(side_effect=lambda key: row[key])
-    return m
-
-
 def _wire_app(app: FastAPI, *, pool: AsyncMock) -> None:
     mock_db = MagicMock(spec=DatabaseManager)
     mock_db.credential_shared_pool.return_value = pool
@@ -149,7 +144,7 @@ async def test_list_contact_info_values_from_entity_facts(app: FastAPI) -> None:
     contact_id = uuid4()
     entity_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -158,7 +153,7 @@ async def test_list_contact_info_values_from_entity_facts(app: FastAPI) -> None:
             "entity_id": entity_id,
         }
     )
-    ef_row = _make_record(
+    ef_row = Record(
         {
             "entity_id": entity_id,
             "predicate": "has-email",
@@ -194,7 +189,7 @@ async def test_list_contact_no_entity_id_empty_values(app: FastAPI) -> None:
     """Contact with no entity_id → contact_info_values is []."""
     contact_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -231,7 +226,7 @@ async def test_list_entity_facts_error_returns_empty_values(app: FastAPI) -> Non
     contact_id = uuid4()
     entity_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -270,7 +265,7 @@ async def test_list_contact_info_values_telegram_prefix_stripped(app: FastAPI) -
     contact_id = uuid4()
     entity_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -279,7 +274,7 @@ async def test_list_contact_info_values_telegram_prefix_stripped(app: FastAPI) -
             "entity_id": entity_id,
         }
     )
-    ef_row = _make_record(
+    ef_row = Record(
         {
             "entity_id": entity_id,
             "predicate": "has-handle",
@@ -319,7 +314,7 @@ async def test_list_is_inert_true_when_no_entity_id(app: FastAPI) -> None:
     """Contact with entity_id=None → is_inert=True (3-hop join breaks at hop 1)."""
     contact_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -360,7 +355,7 @@ async def test_list_is_inert_true_when_entity_has_no_email_fact(app: FastAPI) ->
     contact_id = uuid4()
     entity_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -369,7 +364,7 @@ async def test_list_is_inert_true_when_entity_has_no_email_fact(app: FastAPI) ->
             "entity_id": entity_id,
         }
     )
-    ef_row = _make_record(
+    ef_row = Record(
         {
             "entity_id": entity_id,
             "predicate": "has-handle",
@@ -406,7 +401,7 @@ async def test_list_is_inert_false_when_entity_has_email_fact(app: FastAPI) -> N
     contact_id = uuid4()
     entity_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -415,7 +410,7 @@ async def test_list_is_inert_false_when_entity_has_email_fact(app: FastAPI) -> N
             "entity_id": entity_id,
         }
     )
-    ef_row = _make_record(
+    ef_row = Record(
         {
             "entity_id": entity_id,
             "predicate": "has-email",
@@ -458,7 +453,7 @@ async def test_list_is_inert_true_for_entity_with_only_handle_fact(app: FastAPI)
     contact_id = uuid4()
     entity_id = uuid4()
 
-    pc_row = _make_record(
+    pc_row = Record(
         {
             "contact_id": contact_id,
             "added_at": _NOW,
@@ -467,7 +462,7 @@ async def test_list_is_inert_true_for_entity_with_only_handle_fact(app: FastAPI)
             "entity_id": entity_id,
         }
     )
-    ef_row = _make_record(
+    ef_row = Record(
         {
             "entity_id": entity_id,
             "predicate": "has-handle",
