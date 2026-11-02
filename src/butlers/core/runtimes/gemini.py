@@ -329,6 +329,21 @@ def _gemini_tools_ran(stdout: str, tool_calls: list[dict[str, Any]]) -> bool:
     return False
 
 
+# Environment warnings gemini-cli 0.66.0 prints to stderr on every headless run in the
+# container; they never explain a failure, so ``error_detail`` drops them.
+_STDERR_NOISE = (
+    "256-color support not detected",
+    "True color (24-bit) support not detected",
+    "Ripgrep is not available. Falling back to GrepTool.",
+)
+
+
+def _strip_stderr_noise(stderr: str) -> str:
+    """Return ``stderr`` without lines carrying a known gemini-cli environment warning."""
+    lines = stderr.splitlines()
+    return "\n".join(line for line in lines if not any(n in line for n in _STDERR_NOISE))
+
+
 def _gemini_terminal_error_text(stdout: str) -> str | None:
     """Return the last failed ``result`` event's ``error.message``, else ``None``.
 
@@ -551,7 +566,8 @@ class GeminiAdapter(RuntimeAdapter):
             if terminal_error and (terminal_text := _gemini_terminal_error_text(stdout)):
                 self._last_process_info["terminal_error_text"] = terminal_text
             if returncode != 0:
-                error_detail = stderr.strip() or stdout.strip() or f"exit code {returncode}"
+                cause = _strip_stderr_noise(stderr).strip()
+                error_detail = cause or stdout.strip() or f"exit code {returncode}"
                 logger.error("Gemini CLI exited with code %d: %s", returncode, error_detail)
                 self._last_process_info["error_detail"] = error_detail
                 message = f"Gemini CLI exited with code {returncode}: {error_detail}"
