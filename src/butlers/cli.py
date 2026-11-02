@@ -10,12 +10,16 @@ import socket
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import click
 
 from butlers.api.owner_auth.host_cli import auth as owner_auth_commands
 from butlers.config import ConfigError, load_config
 from butlers.db import is_db_unreachable
+
+if TYPE_CHECKING:
+    from butlers.core.deploy_readiness import ReadinessReceipt, SustainedReadinessTarget
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +286,22 @@ def dashboard(host: str, port: int) -> None:
     help="Seconds to wait for /health before failing the deploy",
 )
 @click.option(
+    "--ready-url",
+    "ready_url",
+    default=None,
+    help="Semantic readiness URL sampled after /health (default: --health-url's host with /ready)",
+)
+@click.option(
+    "--readiness-timeout",
+    "readiness_timeout_s",
+    type=float,
+    default=None,
+    help=(
+        "Seconds to wait for sustained semantic readiness; defaults to (and may not be "
+        "below) two QA patrol cadences + the longest liveness TTL + 10 minutes"
+    ),
+)
+@click.option(
     "--project-name",
     "project_name",
     default=None,
@@ -327,6 +347,8 @@ def dashboard(host: str, port: int) -> None:
 def deploy(
     repo_root: Path,
     health_timeout_s: float,
+    ready_url: str | None,
+    readiness_timeout_s: float | None,
     project_name: str | None,
     env_file: str | None,
     health_url: str | None,
@@ -344,8 +366,10 @@ def deploy(
     flags (never an ambient ``COMPOSE_PROFILES=hotreload``
     leftover from a dev shell, and never ``hotreload`` itself, which
     bind-mounts source instead of using the baked image — see bu-hmdqz.1),
-    polls ``/health``, and records the outcome to
-    ``public.deployments`` whether it succeeds or fails.
+    polls ``/health``, then holds completion until ``/ready`` stays true beyond
+    the longest liveness TTL across two distinct observer cycles and two
+    distinct qualifying QA patrols (REQ-dashboard-api-064), and records the
+    outcome to ``public.deployments`` whether it succeeds or fails.
 
     ``--project-name``/``--env-file``/``--health-url`` default to the
     ``.env.prod`` / ``butlers`` project; pass ``--project-name butlers-dev
@@ -355,6 +379,16 @@ def deploy(
     ``--remove-orphans`` would tear it down).
     """
     from butlers.core.deploy import DeployConfig, DeployError, run_deploy
+
+    try:
+        readiness = _sustained_readiness_target(
+            repo_root.resolve() / "roster",
+            ready_url or (_ready_url_for(health_url) if health_url else None),
+            readiness_timeout_s,
+        )
+    except ValueError as exc:
+        click.echo(f"Invalid deploy configuration: {exc}", err=True)
+        sys.exit(1)
 
     config_kwargs: dict[str, object] = {
         "repo_root": repo_root.resolve(),
@@ -370,7 +404,7 @@ def deploy(
         config_kwargs["health_url"] = health_url
 
     try:
-        config = DeployConfig(**config_kwargs)
+        config = DeployConfig(**config_kwargs, readiness=readiness)
     except ValueError as exc:
         click.echo(f"Invalid deploy configuration: {exc}", err=True)
         sys.exit(1)
@@ -387,6 +421,28 @@ def deploy(
         f"Deployed {result.git_sha} (migration_head={result.migration_head}, "
         f"result={result.result})"
     )
+    if result.readiness_receipt is not None:
+        click.echo(f"Semantic readiness receipt: {result.readiness_receipt}")
+
+
+def _ready_url_for(health_url: str) -> str:
+    """The same API's ``/ready``: a dev ``--health-url`` must not sample prod's port."""
+    from urllib.parse import urlsplit
+
+    return urlsplit(health_url)._replace(path="/ready", query="", fragment="").geturl()
+
+
+def _sustained_readiness_target(
+    roster_dir: Path, ready_url: str | None, timeout_s: float | None
+) -> SustainedReadinessTarget:
+    """Derive the deployment readiness wait from the Git roster; raise ValueError if unsound."""
+    from butlers.api.deps import discover_butlers_with_diagnostics
+    from butlers.core.deploy_readiness import DEFAULT_READY_URL, resolve_target
+
+    roster, diagnostics = discover_butlers_with_diagnostics(roster_dir)
+    if not diagnostics.clean:
+        raise ValueError(f"roster at {roster_dir} is missing or has unparseable butlers")
+    return resolve_target(roster, timeout_s=timeout_s, ready_url=ready_url or DEFAULT_READY_URL)
 
 
 @cli.group()
@@ -425,6 +481,79 @@ def deployments_record(source: str, result: str, git_sha: str | None) -> None:
         click.echo(f"Failed to record deployment: {type(exc).__name__}: {exc}", err=True)
         sys.exit(1)
     click.echo(f"Recorded deployment {row_id} (source={source}, result={result})")
+
+
+@deployments.command("await-ready")
+@click.option(
+    "--ready-url",
+    default=None,
+    help="Semantic readiness URL (default: http://localhost:41200/ready, the in-pod API)",
+)
+@click.option(
+    "--timeout",
+    "timeout_s",
+    type=float,
+    default=None,
+    help=(
+        "Seconds to wait; defaults to (and may not be below) two QA patrol cadences "
+        "+ the longest liveness TTL + 10 minutes"
+    ),
+)
+@click.option(
+    "--roster-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Git roster directory (default: the installed roster)",
+)
+@click.option(
+    "--check-only",
+    is_flag=True,
+    default=False,
+    help="Validate the roster-derived policy and --timeout floor, then exit without waiting",
+)
+def deployments_await_ready(
+    ready_url: str | None, timeout_s: float | None, roster_dir: Path | None, check_only: bool
+) -> None:
+    """Hold until semantic readiness is sustained (REQ-dashboard-api-064).
+
+    Run inside the dashboard-api pod after a release's rollouts finish. Prints
+    one content-blind JSON receipt; exits 0 only when /ready stayed true beyond
+    the longest liveness TTL across two distinct observer cycles and two
+    distinct qualifying QA patrols, 1 on timeout, 2 on invalid configuration.
+    ``--check-only`` validates the configuration and exits without any read.
+    """
+    from butlers.api.deps import _DEFAULT_ROSTER_DIR
+
+    try:
+        target = _sustained_readiness_target(
+            roster_dir or _DEFAULT_ROSTER_DIR, ready_url, timeout_s
+        )
+    except ValueError as exc:
+        click.echo(f"Invalid readiness configuration: {exc}", err=True)
+        sys.exit(2)
+    if check_only:
+        click.echo(
+            f"Readiness configuration valid (timeout_s={target.policy.effective_timeout_s:g})"
+        )
+        return
+    try:
+        receipt = asyncio.run(_await_ready(target))
+    except Exception as exc:
+        click.echo(f"Readiness wait failed: {type(exc).__name__}", err=True)
+        sys.exit(1)
+    click.echo(receipt.to_json())
+    sys.exit(0 if receipt.passed else 1)
+
+
+async def _await_ready(target: SustainedReadinessTarget) -> ReadinessReceipt:
+    from butlers.core.deploy import _make_pool
+    from butlers.core.deploy_readiness import await_sustained_readiness
+
+    pool = await _make_pool()
+    try:
+        return await await_sustained_readiness(target, pool)
+    finally:
+        await pool.close()
 
 
 async def _record_deploy_row(*, source: str, result: str, git_sha: str | None) -> str:

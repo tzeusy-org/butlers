@@ -151,7 +151,30 @@ make status-dev
 
 `make deploy-*` runs through `scripts/k8s/record-deploy.sh`, so each release appends one
 `public.deployments` row with `source='deploy'` and `serving_mode='image'`: `success` once `dashboard-api`, `butlers-up` and the optional enabled `butlers-control`
-rollouts have finished, `failed` when `helm upgrade` or a rollout fails. The row is written by
+rollouts have finished **and** semantic readiness has been sustained, `failed` when `helm upgrade`,
+a rollout, or the readiness wait fails.
+
+A finished rollout is not deployment completion: a restarted API can pass `/health` while routing
+fails minutes later. After the rollouts the wrapper runs `butlers deployments await-ready` in the
+`dashboard-api` pod (REQ-dashboard-api-064). It samples the pod's public `GET /ready` plus the
+shared fleet facts and `public.qa_patrols`, and passes only when, after the wait began, it has seen
+two distinct complete receiver-observer cycles, two distinct qualifying scheduled QA patrols
+(different IDs, strictly later completion, current enabled-source digest), and every `/ready`
+sample true for longer than the roster's longest liveness TTL. Any false or unavailable sample
+restarts that sustained window. The deadline defaults to two QA patrol cadences plus that TTL plus
+ten minutes (35 minutes at current defaults); `READINESS_TIMEOUT=<seconds>` may lengthen it, and a
+value below the derived minimum is refused before waiting. The wait prints one content-blind JSON
+receipt (`result`, `rollback` of `not_required`/`recommended`/`operator_review`, fixed
+`failing_categories`, cycle counts and durations) and never rolls back by itself; follow
+the [image rollback](#iterating-on-a-change) when it recommends one. It configures no external functional monitor
+(REQ-dashboard-api-065); the separate-host minimal health monitor is unchanged.
+
+Plan for it: every Helm deploy now takes at least about 20 minutes after the rollouts (two QA
+patrol completions at the ten-minute cadence), and the namespace must be running scheduled QA
+patrols that complete with every enabled source succeeding. Without them, the release fails at
+the deadline (35 minutes by default) and records `failed`. A `READINESS_TIMEOUT` override is
+checked locally (`uv run butlers deployments await-ready --check-only`) before `helm upgrade`, so
+a value below the floor is refused before the cluster changes. The row is written by
 `butlers deployments record` inside the `dashboard-api` pod (`kubectl exec`), so no database
 credential leaves the cluster. The target keeps the release's exit status; if the pod is
 unreachable it prints that no row was recorded, and a failed write after a good release only

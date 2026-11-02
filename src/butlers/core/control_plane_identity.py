@@ -31,6 +31,19 @@ PROBE_DEADLINE_S = 3.0
 MAX_PROBE_FANOUT = 4
 SUPPORTED_ROUTE_CONTRACT = 1
 
+#: The fixed Boolean check names public ``GET /ready`` reports (REQ-dashboard-api-063).
+#: Deployment gating (``butlers.core.deploy_readiness``) accepts only these as
+#: failure categories, so a readiness body can never carry private content.
+READINESS_CHECK_KEYS: tuple[str, ...] = (
+    "postgres",
+    "roster",
+    "observer",
+    "fleet",
+    "qa_patrol",
+    "supervisors",
+    "route_canary",
+)
+
 #: Per-daemon separated control-plane facts for the expected names (``$1``).
 #: The one reader shared by the shadow observer and Dashboard ``/ready`` sampling;
 #: ``server_now`` lets callers judge TTL freshness on the database clock.

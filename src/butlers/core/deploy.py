@@ -8,7 +8,8 @@ build`` + ``docker compose up -d``) by hand — with one idempotent verb:
 Pipeline: build the ``butlers-app`` image stamped with the current git SHA →
 force-rerun the one-shot ``migrations`` service → recreate services under an
 explicit, hotreload/dev-profile-free
-compose invocation → poll ``/health`` → record the outcome to
+compose invocation → poll ``/health`` → wait for sustained semantic
+readiness (``butlers.core.deploy_readiness``; REQ-dashboard-api-064) → record the outcome to
 ``public.deployments`` (success **or** failed — a failed deploy is recorded
 too, so it is visible in the ledger rather than silent; see
 ``butlers.core.deployments``).
@@ -60,6 +61,7 @@ from pathlib import Path
 import asyncpg
 import httpx
 
+from butlers.core.deploy_readiness import SustainedReadinessTarget, await_sustained_readiness
 from butlers.core.deployments import record_deployment, resolve_core_migration_head
 from butlers.db import db_params_from_env
 
@@ -123,7 +125,7 @@ class DeployError(RuntimeError):
     """Raised when a deploy pipeline phase fails; carries the phase name.
 
     ``phase`` is one of ``"build"``, ``"migrate"``, ``"recreate"``,
-    ``"health-check"`` — used verbatim in the failed ledger row's log line
+    ``"health-check"``, ``"semantic-readiness"`` — used verbatim in the failed ledger row's log line
     and in the CLI's error message so a failure is immediately actionable.
     """
 
@@ -224,6 +226,10 @@ class DeployConfig:
     #: See :func:`preflight_check`. Off by default: the canonical prod deploy
     #: must fail closed if it is pointed at a frozen worktree or divergent HEAD.
     allow_dirty_root: bool = False
+    #: Roster-derived sustained-readiness wait (REQ-dashboard-api-064). ``None``
+    #: fails the semantic-readiness phase closed: process ``/health`` alone
+    #: never completes a deploy.
+    readiness: SustainedReadinessTarget | None = None
 
     def __post_init__(self) -> None:
         forbidden = _FORBIDDEN_PROFILES & set(self.profiles)
@@ -779,6 +785,21 @@ async def wait_for_health(config: DeployConfig) -> None:
     raise DeployError("health-check", f"timed out after {config.health_timeout_s}s: {last_error}")
 
 
+async def wait_for_semantic_readiness(config: DeployConfig, pool: asyncpg.Pool) -> str:
+    """Hold completion until readiness is sustained; return the content-blind receipt.
+
+    Raises ``DeployError("semantic-readiness", <receipt>)`` on timeout, a false
+    final sample, or a missing readiness configuration, so a short green
+    ``/health`` window can never record a successful deploy.
+    """
+    if config.readiness is None:
+        raise DeployError("semantic-readiness", "no sustained-readiness configuration")
+    receipt = await await_sustained_readiness(config.readiness, pool)
+    if not receipt.passed:
+        raise DeployError("semantic-readiness", receipt.to_json())
+    return receipt.to_json()
+
+
 async def _make_pool() -> asyncpg.Pool:
     params = db_params_from_env()
     database = os.environ.get("POSTGRES_DB", "butlers")
@@ -808,6 +829,8 @@ class DeployResult:
     #: Preflight guard reasons that were downgraded to warnings via
     #: ``allow_dirty_root`` (empty for a clean canonical-checkout deploy).
     overrides: tuple[str, ...] = ()
+    #: Content-blind sustained-readiness receipt (JSON) for a successful deploy.
+    readiness_receipt: str | None = None
 
 
 async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) -> DeployResult:
@@ -846,6 +869,7 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
             capability = prepare_restore_drill_executor(config, endpoint)
             recreate_services(config, endpoint, capability)
             await wait_for_health(config)
+            readiness_receipt = await wait_for_semantic_readiness(config, pool)
         except DeployError as exc:
             migration_head = await _best_effort_migration_head(pool)
             await record_deployment(
@@ -875,6 +899,7 @@ async def run_deploy(config: DeployConfig, *, pool: asyncpg.Pool | None = None) 
             migration_head=migration_head,
             result="success",
             overrides=overrides,
+            readiness_receipt=readiness_receipt,
         )
     finally:
         if owns_pool:
