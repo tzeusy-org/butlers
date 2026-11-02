@@ -184,7 +184,7 @@ def _row(entry_id: str, origin_ref: str, start: datetime, updated_at: datetime) 
     }
 
 
-def _workspace_db(rows: dict[str, list[dict]], *, dedup_store_up: bool = True) -> MagicMock:
+def _workspace_db(rows: dict[str, list[dict]], *, down: frozenset[str] = frozenset()) -> MagicMock:
     db = MagicMock(spec=DatabaseManager)
     db.butler_names = sorted(rows)
     db.butlers_with_module = MagicMock(return_value=sorted(rows))
@@ -194,13 +194,13 @@ def _workspace_db(rows: dict[str, list[dict]], *, dedup_store_up: bool = True) -
         return found, []
 
     db.fan_out_with_status = AsyncMock(side_effect=_fan_out)
+    outage = OSError("dedup store down")
     dedup_pool = MagicMock()
-    if dedup_store_up:
-        dedup_pool.fetchrow = AsyncMock(return_value=None)
-        dedup_pool.fetch = AsyncMock(return_value=[])
-    else:
-        dedup_pool.fetchrow = AsyncMock(side_effect=OSError("dedup store down"))
-        dedup_pool.fetch = AsyncMock(side_effect=OSError("dedup store down"))
+    # fetchrow reads the dedup rules; fetch reads the keep-separate pins.
+    dedup_pool.fetchrow = AsyncMock(side_effect=outage if "rules" in down else None)
+    dedup_pool.fetch = AsyncMock(side_effect=outage if "pins" in down else None, return_value=[])
+    if "rules" not in down:
+        dedup_pool.fetchrow.return_value = None
     db.pool = MagicMock(return_value=dedup_pool)
     return db
 
@@ -234,8 +234,9 @@ async def test_overlap_identity_survives_a_resync_that_rotates_the_surviving_cop
     assert _fingerprints(before) == _fingerprints(after)
 
 
-async def test_dedup_store_outage_is_reported_on_the_scan() -> None:
-    db = _workspace_db({"general": [_row("a", "A", _DAY, _DAY)]}, dedup_store_up=False)
+@pytest.mark.parametrize("down", ["rules", "pins"])
+async def test_dedup_store_outage_is_reported_on_the_scan(down: str) -> None:
+    db = _workspace_db({"general": [_row("a", "A", _DAY, _DAY)]}, down=frozenset({down}))
 
     result = await query_calendar_conflicts(db, start=_DAY, end=_DAY + timedelta(days=1))
 

@@ -34,8 +34,8 @@ per group.
   (no title, attendee or location in summary or metadata), concurrent scans idempotent.
   Nearest existing test: `tests/jobs/test_calendar_sync_deadman.py` (pattern) and
   `tests/integration/test_calendar_sync_deadman_roundtrip.py` (real Postgres).
-  Tests delta: +9 ~0 -0 expected (revisit at implementation); measured +22 ~1 -0 collected
-  (`tests/jobs/test_calendar_overcommitment.py` 10 functions, 2 parametrized; 2 in
+  Tests delta: +9 ~0 -0 expected (revisit at implementation); measured +23 ~1 -0 collected
+  (`tests/jobs/test_calendar_overcommitment.py` 10 functions, 3 parametrized; 2 in
   `tests/integration/test_calendar_overcommitment_roundtrip.py`; the lifespan inventory test
   extended). Shipped by bu-vcjgo8 as `src/butlers/jobs/calendar_overcommitment.py`.
 
