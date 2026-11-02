@@ -10,12 +10,13 @@ actually produced), then asserts the backfill and its idempotence/rollback.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 from pathlib import Path
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = Path(__file__).resolve().parents[1] / "migrations" / "002_metadata_backfill.py"
 
@@ -23,17 +24,9 @@ _docker = pytest.mark.skipif(not shutil.which("docker"), reason="Docker not avai
 _session_loop = pytest.mark.asyncio(loop_scope="session")
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("_migration_travel_002", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    return mod
-
-
 @pytest.mark.unit
 def test_revision_chain() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     assert mod.revision == "travel_002"
     assert mod.down_revision == "travel_001"
 
@@ -49,7 +42,7 @@ class _CollectingOp:
 
 
 def _upgrade_statements() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     fake = _CollectingOp()
     mod.op = fake
     mod.upgrade()
@@ -57,7 +50,7 @@ def _upgrade_statements() -> list[str]:
 
 
 def _downgrade_statements() -> list[str]:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     fake = _CollectingOp()
     mod.op = fake
     mod.downgrade()

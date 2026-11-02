@@ -37,6 +37,15 @@ async def test_db_scopes_a_butler_schema_and_round_trips_jsonb(db) -> None:
     assert await pool.fetchval("SELECT '{\"a\": 1}'::jsonb") == {"a": 1}
 
 
+@session_loop
+async def test_db_open_pools_a_fresh_db_url_it_will_close(db, fresh_db) -> None:
+    url = fresh_db("core", "switchboard", schemas={"switchboard": "switchboard"})
+    pool = await db.open(url, schema="switchboard")
+    assert (await pool.fetchval("SHOW search_path")).startswith("switchboard")
+    assert await pool.fetchval("SELECT '{\"a\": 1}'::jsonb") == {"a": 1}
+    assert table_exists(url, "state")
+
+
 def test_fresh_db_stops_at_the_requested_revision(fresh_db) -> None:
     head = fresh_db("core")
     early = fresh_db("core", revisions={"core": "core_001"})
