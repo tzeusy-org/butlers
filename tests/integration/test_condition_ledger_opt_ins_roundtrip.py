@@ -20,9 +20,7 @@ from butlers.core.owner_conditions import (
     get_active_condition,
     reconcile_snapshot,
 )
-from butlers.db import register_jsonb_codec
 from butlers.jobs.home_safety import ESCALATION_ADVANCE as SAFETY_LADDER
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -30,20 +28,6 @@ pytestmark = [
     pytest.mark.asyncio(loop_scope="session"),
     pytest.mark.skipif(not docker_available, reason="Docker not available"),
 ]
-
-
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
-@pytest.fixture
-async def pool(migrated_db_url: str) -> asyncpg.Pool:
-    p = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=2, init=register_jsonb_codec
-    )
-    yield p
-    await p.close()
 
 
 async def _gaps_between_escalations(pool: asyncpg.Pool, **opt_ins) -> list[timedelta]:
@@ -84,10 +68,10 @@ async def _gaps_between_escalations(pool: asyncpg.Pool, **opt_ins) -> list[timed
 
 
 async def test_safety_ladder_drives_each_level_and_the_default_is_unchanged(
-    pool: asyncpg.Pool,
+    db_pool: asyncpg.Pool,
 ) -> None:
-    safety = await _gaps_between_escalations(pool, escalation_advance=SAFETY_LADDER)
-    default = await _gaps_between_escalations(pool)
+    safety = await _gaps_between_escalations(db_pool, escalation_advance=SAFETY_LADDER)
+    default = await _gaps_between_escalations(db_pool)
 
     assert safety == [timedelta(hours=1), timedelta(hours=4), timedelta(days=1), timedelta(days=1)]
     assert default == [timedelta(days=1), timedelta(days=3), timedelta(days=7), timedelta(days=7)]
@@ -122,26 +106,26 @@ async def _confirm_after_a_marker(pool: asyncpg.Pool, **opt_ins) -> dict:
     return active["metadata"]
 
 
-async def test_a_preserved_key_survives_a_confirmation_that_lacks_it(pool: asyncpg.Pool) -> None:
-    metadata = await _confirm_after_a_marker(pool, preserve_metadata_keys=("notified_at",))
+async def test_a_preserved_key_survives_a_confirmation_that_lacks_it(db_pool: asyncpg.Pool) -> None:
+    metadata = await _confirm_after_a_marker(db_pool, preserve_metadata_keys=("notified_at",))
 
     assert metadata["notified_at"] == "2026-10-18T12:00:00+00:00"
     assert metadata["detected_since"] == "earlier"
 
 
-async def test_other_producers_keep_replace_semantics(pool: asyncpg.Pool) -> None:
-    metadata = await _confirm_after_a_marker(pool)
+async def test_other_producers_keep_replace_semantics(db_pool: asyncpg.Pool) -> None:
+    metadata = await _confirm_after_a_marker(db_pool)
 
     assert "notified_at" not in metadata
     assert metadata["detected_since"] == "earlier"
 
 
-async def test_a_preserved_key_the_confirmation_carries_wins(pool: asyncpg.Pool) -> None:
+async def test_a_preserved_key_the_confirmation_carries_wins(db_pool: asyncpg.Pool) -> None:
     source = f"test:preserve-win-{uuid.uuid4().hex}"
     fp = compute_fingerprint(source, 1, {"id": "x"})
     for stamp in ("first", "second"):
         await reconcile_snapshot(
-            pool,
+            db_pool,
             source=source,
             observations=[
                 Observation(fingerprint=fp, summary="s", metadata={"notified_at": stamp})
@@ -151,14 +135,14 @@ async def test_a_preserved_key_the_confirmation_carries_wins(pool: asyncpg.Pool)
             preserve_metadata_keys=("notified_at",),
         )
 
-    active = await get_active_condition(pool, source=source, fingerprint=fp)
+    active = await get_active_condition(db_pool, source=source, fingerprint=fp)
     assert active["metadata"]["notified_at"] == "second"
 
 
 @pytest.mark.parametrize("identity_version", [None, 1], ids=["plain", "identity-payload"])
 @pytest.mark.parametrize("opt_ins", [{}, {"preserve_metadata_keys": ("notified_at",)}])
 async def test_a_confirmation_replaces_non_object_stored_metadata(
-    pool: asyncpg.Pool, opt_ins: dict, identity_version: int | None
+    db_pool: asyncpg.Pool, opt_ins: dict, identity_version: int | None
 ) -> None:
     """Double-encoded (string) metadata must not make a confirmation fail (main replaces it)."""
     source = f"test:string-meta-{uuid.uuid4().hex}"
@@ -166,7 +150,7 @@ async def test_a_confirmation_replaces_non_object_stored_metadata(
 
     async def check_in() -> None:
         await reconcile_snapshot(
-            pool,
+            db_pool,
             source=source,
             observations=[
                 Observation(
@@ -182,14 +166,14 @@ async def test_a_confirmation_replaces_non_object_stored_metadata(
         )
 
     await check_in()
-    await pool.execute(
+    await db_pool.execute(
         "UPDATE public.owner_conditions SET metadata = to_jsonb('double-encoded'::text) "
         "WHERE source = $1 AND state IN ('open', 'aging')",
         source,
     )
     await check_in()
 
-    active = await get_active_condition(pool, source=source, fingerprint=fp)
+    active = await get_active_condition(db_pool, source=source, fingerprint=fp)
     expected = {"entity_id": "x"}
     if identity_version is not None:
         expected["identity_payload"] = {"version": identity_version}

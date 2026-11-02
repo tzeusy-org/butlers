@@ -7,6 +7,7 @@ Home Assistant bumps ``last_updated`` on any attribute change.  The edge path ju
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 from butlers.jobs import home as home_jobs
 from butlers.jobs import home_safety
 from butlers.jobs.home_safety import SensorReading, WatchEntry, classify, run_safety_sentinel
+from butlers.testing.db import open_pool
 
 _NOW = datetime(2026, 10, 19, 12, 0, 0, tzinfo=UTC)
 _LEAK = WatchEntry("binary_sensor.kitchen_leak", "leak", "Kitchen leak sensor")
@@ -111,20 +113,12 @@ async def _has_last_changed(pool: asyncpg.Pool) -> bool:
 
 
 @pytest.mark.integration
-async def test_last_changed_migration_upgrades_downgrades_and_reupgrades(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        # ha_entity_snapshot as home_001 creates it, holding a pre-home_005 row.
-        await pool.execute("""
-            CREATE TABLE ha_entity_snapshot (
-                entity_id    TEXT PRIMARY KEY,
-                state        TEXT,
-                attributes   JSONB,
-                last_updated TIMESTAMPTZ,
-                captured_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
+async def test_last_changed_migration_upgrades_downgrades_and_reupgrades(fresh_db) -> None:
+    # The real home chain stopped at home_004, holding a pre-home_005 row.
+    url = await asyncio.to_thread(fresh_db, "core", "home", revisions={"home": "home_004"})
+    pool = await open_pool(url)
+    try:
+        assert not await _has_last_changed(pool)
         await pool.execute(
             "INSERT INTO ha_entity_snapshot (entity_id, state, last_updated) "
             "VALUES ($1, 'on', now())",
@@ -135,12 +129,10 @@ async def test_last_changed_migration_upgrades_downgrades_and_reupgrades(
             await pool.execute(statement)
         assert await _has_last_changed(pool)
         # Nullable: the existing row has no value until the module's next persist.
-        assert (
-            await pool.fetchval(
-                "SELECT last_changed FROM ha_entity_snapshot WHERE entity_id = $1", _LEAK.entity_id
-            )
-            is None
+        changed = await pool.fetchval(
+            "SELECT last_changed FROM ha_entity_snapshot WHERE entity_id = $1", _LEAK.entity_id
         )
+        assert changed is None
         await pool.execute(
             "UPDATE ha_entity_snapshot SET last_changed = now() WHERE entity_id = $1",
             _LEAK.entity_id,
@@ -155,3 +147,5 @@ async def test_last_changed_migration_upgrades_downgrades_and_reupgrades(
             await pool.execute(statement)
         assert await _has_last_changed(pool)
         assert await pool.fetchval("SELECT count(*) FROM ha_entity_snapshot") == 1
+    finally:
+        await pool.close()
