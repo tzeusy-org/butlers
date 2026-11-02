@@ -450,7 +450,8 @@ The insight broker SHALL be implemented as a Switchboard module (`module-insight
   adaptive reduction), (6) select top-B candidates by priority, (7) deliver
   via `notify` (digest for B>1, standalone for B=1), (8) record cooldowns for
   delivered candidates, (9) record engagement tracking rows, (10) clean up old
-  rows (candidates older than 30 days, cooldowns older than 30 days past expiry)
+  bookkeeping rows (cooldowns older than 30 days past expiry, engagement rows
+  older than 30 days); candidates are never deleted by the cycle
 
 #### Scenario: Delivery cycle scheduling
 - **WHEN** the Switchboard butler's `butler.toml` configures the `insight-delivery-cycle`
@@ -485,9 +486,12 @@ User insight preferences SHALL be stored in a dedicated `public.insight_settings
 ### Requirement: Candidate Cleanup
 The system SHALL periodically clean up old insight data to prevent unbounded table growth.
 
-#### Scenario: Candidate row cleanup
+#### Scenario: Candidate rows are not deleted by the delivery cycle
 - **WHEN** the delivery cycle runs its cleanup step
-- **THEN** it SHALL DELETE rows from `public.insight_candidates` where `status` is NOT `'pending'` AND `created_at` is older than 30 days
+- **THEN** it SHALL NOT delete any row from `public.insight_candidates`
+- **AND** terminal (non-`pending`) candidates SHALL be deleted only by the opt-in, default-off,
+  dry-run-capable retention pruner `insight_candidates_prune`, whose default bound is 90 days
+  since `created_at` (`docs/operations/data-retention.md`, pruner [C])
 
 #### Scenario: Cooldown row cleanup
 - **WHEN** the delivery cycle runs its cleanup step

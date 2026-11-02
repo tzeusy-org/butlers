@@ -106,16 +106,18 @@ partitions accumulate.
 
 Candidates move from `pending` to a terminal status (`delivered`, `filtered`,
 `expired`, `withdrawn`).  Only terminal rows are eligible for cleanup; `pending` rows are
-never touched.
+never touched.  The Switchboard's daily insight delivery cycle (`cleanup_old_rows()`) never
+deletes candidates; pruner [C] is the only deletion path.
 
 ---
 
 ### `public.insight_amendments`
 
-**Decision: BOUNDED BY INSIGHT LIFECYCLE**
+**Decision: KEEP FOREVER — correction evidence (owner decision 2026-10-27, bu-tid6bj)**
 
-One row per (delivered candidate, premise resolution), removed by `ON DELETE
-CASCADE` when the candidate is pruned. No independent retention concern.
+One row per (delivered candidate, premise resolution).  The schema still declares
+`ON DELETE CASCADE` from the candidate until bu-q7vx1q.32 removes it, so enabling
+pruner [C] before then would also delete this evidence.
 
 ---
 
