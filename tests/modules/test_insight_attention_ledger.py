@@ -128,14 +128,6 @@ async def _set_owner_attention_policy(
     quiet_end_hour: int | None,
     timezone: str = "UTC",
 ):
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.approvals_policy (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            quiet_start_hour INTEGER,
-            quiet_end_hour INTEGER,
-            timezone TEXT NOT NULL DEFAULT 'UTC'
-        )
-    """)
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)

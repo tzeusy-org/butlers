@@ -25,12 +25,9 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-import asyncpg
 import pytest
 
-from butlers.db import register_jsonb_codec
 from butlers.testing.clock import FakeClock
-from butlers.testing.migration import create_migrated_test_db, migration_db_name
 
 _docker_available = shutil.which("docker") is not None
 
@@ -114,41 +111,21 @@ class TestInsightExpiryHelpers:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision the actual shared context/policy schema once for this module."""
-    return create_migrated_test_db(postgres_container, migration_db_name(), chains=["core"])
-
-
 @pytest.fixture
-async def insight_pool(migrated_db_url: str):
-    """Reset test-owned Insight state on the migrated core schema."""
+async def insight_pool(db_pool):
+    """Test-owned Insight state on a fresh core-migrated clone."""
     from butlers.tools.switchboard.insight.broker import create_insight_tables
 
-    pool = await asyncpg.create_pool(
-        migrated_db_url, min_size=1, max_size=3, init=register_jsonb_codec
+    await create_insight_tables(db_pool)
+    # The core chain seeds the insight_settings singleton; tests start without it.
+    await db_pool.execute("TRUNCATE insight_settings")
+    await _set_owner_attention_policy(
+        db_pool,
+        quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
+        quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
+        timezone=_DEFAULT_QUIET_TIMEZONE,
     )
-    try:
-        await create_insight_tables(pool)
-        await pool.execute("""
-            TRUNCATE insight_amendments, insight_feedback, insight_engagement,
-                insight_candidates, insight_cooldowns, insight_settings,
-                attention_daily_rollup
-        """)
-        await pool.execute("""
-            UPDATE public.user_context
-            SET superseded_at = now()
-            WHERE signal_type <> 'dnd' AND superseded_at IS NULL
-        """)
-        await _set_owner_attention_policy(
-            pool,
-            quiet_start_hour=_DEFAULT_QUIET_START_HOUR,
-            quiet_end_hour=_DEFAULT_QUIET_END_HOUR,
-            timezone=_DEFAULT_QUIET_TIMEZONE,
-        )
-        yield pool
-    finally:
-        await pool.close()
+    return db_pool
 
 
 async def _insert_history_candidate(
@@ -186,14 +163,6 @@ async def _set_owner_attention_policy(
     pool, *, quiet_start_hour: int | None, quiet_end_hour: int | None, timezone: str = "UTC"
 ) -> None:
     """Create the canonical test authority and set its complete/disabled window."""
-    await pool.execute("""
-        CREATE TABLE IF NOT EXISTS public.approvals_policy (
-            id INTEGER PRIMARY KEY DEFAULT 1,
-            quiet_start_hour INTEGER,
-            quiet_end_hour INTEGER,
-            timezone TEXT NOT NULL DEFAULT 'UTC'
-        )
-    """)
     await pool.execute(
         """
         INSERT INTO public.approvals_policy (id, quiet_start_hour, quiet_end_hour, timezone)
