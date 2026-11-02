@@ -15,7 +15,8 @@ from typing import Any
 import pytest
 
 from butlers.config import ScheduleSpec
-from butlers.core.scheduler import schedule_always_in_quiet_window, sync_schedules
+from butlers.core.scheduler.sync import sync_schedules
+from butlers.core.scheduler.timing import schedule_always_in_quiet_window
 
 pytestmark = pytest.mark.unit
 

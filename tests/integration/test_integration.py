@@ -148,7 +148,8 @@ class TestButlerStartupIntegration:
 
     async def test_scheduler_crud_and_tick(self, pool):
         """Scheduler create/list/tick work with a real database."""
-        from butlers.core.scheduler import schedule_create, schedule_list, tick
+        from butlers.core.scheduler.crud import schedule_create, schedule_list
+        from butlers.core.scheduler.dispatch import tick
 
         # Create a scheduled task
         task_id = await schedule_create(pool, "daily-check", "*/5 * * * *", "Run daily check")
@@ -179,7 +180,8 @@ class TestButlerStartupIntegration:
 
     async def test_scheduler_job_mode_crud_and_tick(self, pool):
         """Scheduler supports job-mode create/list/tick with real DB persistence."""
-        from butlers.core.scheduler import schedule_create, schedule_list, tick
+        from butlers.core.scheduler.crud import schedule_create, schedule_list
+        from butlers.core.scheduler.dispatch import tick
 
         task_id = await schedule_create(
             pool,
@@ -228,7 +230,8 @@ class TestButlerStartupIntegration:
     async def test_scheduler_job_mode_tick_avoids_spawner_sessions(self, pool, tmp_path):
         """Job-mode schedules dispatch through deterministic handlers without session spawn."""
         from butlers.config import ButlerConfig
-        from butlers.core.scheduler import schedule_create, tick
+        from butlers.core.scheduler.crud import schedule_create
+        from butlers.core.scheduler.dispatch import tick
         from butlers.daemon import ButlerDaemon
 
         task_id = await schedule_create(
@@ -329,7 +332,7 @@ class TestButlerStartupIntegration:
 
     async def test_all_subsystems_share_pool(self, pool):
         """State, scheduler, and sessions all work together on the same pool."""
-        from butlers.core.scheduler import schedule_create
+        from butlers.core.scheduler.crud import schedule_create
         from butlers.core.sessions import session_create
         from butlers.core.state import state_get, state_set
 
@@ -436,7 +439,7 @@ class TestSchedulerTickIntegration:
 
     async def test_tick_dispatches_due_task(self, pool):
         """tick() dispatches a task with next_run_at in the past and advances next_run_at."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         # Insert a scheduled task with next_run_at in the past
         past = datetime.now(UTC) - timedelta(minutes=30)
@@ -477,7 +480,7 @@ class TestSchedulerTickIntegration:
 
     async def test_session_log_after_dispatch(self, pool):
         """After tick dispatches a task, a session log entry can be created and retrieved."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
         from butlers.core.sessions import session_complete, session_create, sessions_get
 
         # Insert a due task
@@ -529,7 +532,7 @@ class TestSchedulerTickIntegration:
 
     async def test_tick_skips_future_and_disabled_tasks(self, pool):
         """tick() only dispatches enabled tasks that are due."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         past = datetime.now(UTC) - timedelta(minutes=10)
         future = datetime.now(UTC) + timedelta(hours=1)

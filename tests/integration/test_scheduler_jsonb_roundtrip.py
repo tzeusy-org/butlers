@@ -82,7 +82,8 @@ from datetime import UTC, date, datetime, timedelta
 import asyncpg
 import pytest
 
-from butlers.core.scheduler import _fire_chain, tick
+from butlers.core.scheduler.chain_pass import _fire_chain
+from butlers.core.scheduler.dispatch import tick
 from butlers.db import register_jsonb_codec
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 

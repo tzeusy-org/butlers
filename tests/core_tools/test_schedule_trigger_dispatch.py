@@ -158,7 +158,7 @@ async def test_schedule_trigger_dispatches_parsed_complexity(pool, stored, expec
 
     This is the path PR #3052's signature change broke unnoticed — the parse call
     lives outside the tool's try/except, so contract drift raises here."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     daemon = _RecordingDaemon(result={"ok": True})
     schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
@@ -187,7 +187,7 @@ async def test_schedule_trigger_dispatches_parsed_complexity(pool, stored, expec
 
 async def test_schedule_trigger_uses_shared_prompt_and_completion_context(pool):
     """Dashboard Run now binds and completes the same owner-local schedule tuple."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     prompt_context: dict = {}
     completion_context: dict = {}
@@ -241,7 +241,7 @@ async def test_schedule_trigger_uses_shared_prompt_and_completion_context(pool):
 async def test_schedule_trigger_job_mode_dispatches_without_complexity(pool):
     """A ``job``-mode row dispatches by job_name/job_args and forwards no complexity —
     parity with the tick() job-dispatch contract."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     daemon = _RecordingDaemon(result={"evaluated": 1})
     schedule_trigger = _register_and_grab_schedule_trigger(pool, daemon)
@@ -281,7 +281,7 @@ async def test_schedule_trigger_missing_row_returns_error_without_dispatch(pool)
 
 async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
     """The dashboard-facing action is on the canonical scheduling group."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
     task_id = await schedule_create(pool, "toggle-task", "0 9 * * *", "toggle me")
@@ -315,7 +315,7 @@ async def test_schedule_toggle_is_registered_and_returns_observed_receipt(pool):
 
 async def test_schedule_toggle_returns_typed_refusals(pool):
     """Missing, TOML, and other managed rows never impersonate a toggle."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
 
     toggle = _register_and_grab_schedule_toggle(pool, _RecordingDaemon())
     missing = await toggle(task_id=str(uuid.uuid4()), enabled=False)

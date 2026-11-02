@@ -501,7 +501,7 @@ async def _enqueue_deferred_envelope(
     transport, and — before slice 3's ``resolve_cross_container_mcp_url`` fix
     — always failed the same way), this writes a ``notify.v1`` envelope
     directly into ``switchboard.deferred_notifications``. Switchboard's own
-    scheduler tick (``butlers.core.scheduler._tick_deferred_notification_pass``)
+    scheduler tick (``butlers.core.scheduler.deferred_pass._tick_deferred_notification_pass``)
     runs inside butlers-up — the SAME container every butler daemon lives in
     — and flushes it in-process via ``switchboard.notification.deliver.deliver``
     (see ``butlers.background``'s ``_scheduler_notify_fn``), so the retry is

@@ -278,7 +278,7 @@ class TestDeliveryPreferencesDB:
         self, db_pool
     ):
         """A transport-successful nested delivery failure must remain retryable."""
-        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
         from butlers.core.temporal.delivery_db import insert_deferred_notification
 
         now = datetime.now(UTC)
@@ -344,7 +344,7 @@ class TestDeliveryPreferencesDB:
 
     async def test_scheduler_wrapper_marks_sent_delivery_delivered_once(self, db_pool):
         """A successful nested delivery completes one deferred row and ledger event."""
-        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
         from butlers.core.temporal.delivery_db import insert_deferred_notification
 
         now = datetime.now(UTC)
@@ -529,7 +529,7 @@ class TestDeliveryPreferencesDB:
 
     @pytest.mark.parametrize("count", [1, 2])
     async def test_terminal_telegram_flush_commits_failed_tail_without_replay(self, db_pool, count):
-        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
         from butlers.core.temporal.delivery_db import insert_deferred_notification
 
         now = datetime.now(UTC)
@@ -582,7 +582,7 @@ class TestDeliveryPreferencesDB:
 async def test_real_deferred_wrapper_terminal_partial_keeps_failed_tail_across_bookkeeping_fault(
     monkeypatch, terminal_field
 ):
-    from butlers.core.scheduler import _tick_deferred_notification_pass
+    from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 
     for count in (1, 2):
         now = datetime.now(UTC)

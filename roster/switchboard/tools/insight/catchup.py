@@ -30,7 +30,8 @@ from typing import Any
 
 import asyncpg
 
-from butlers.core.scheduler import schedule_create, schedule_update
+from butlers.core.scheduler.crud import schedule_create
+from butlers.core.scheduler.update import schedule_update
 
 logger = logging.getLogger(__name__)
 

@@ -138,7 +138,7 @@ async def test_chronicler_module_registers_narrate_daily_default_schedule(monkey
     async def _fake_ensure(pool, **kwargs):
         calls.append(kwargs)
 
-    monkeypatch.setattr("butlers.core.scheduler.ensure_module_default_schedule", _fake_ensure)
+    monkeypatch.setattr("butlers.core.scheduler.crud.ensure_module_default_schedule", _fake_ensure)
 
     module = _load_chronicler_module()
     fake_db = AsyncMock()

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from butlers.core.scheduler import _group_due_deferred_notifications
+from butlers.core.scheduler.deferred_pass import _group_due_deferred_notifications
 
 pytestmark = pytest.mark.unit
 
@@ -88,7 +88,7 @@ def test_approval_request_deferred_rows_are_not_coalesced() -> None:
 @pytest.mark.asyncio
 async def test_due_owner_attention_hold_is_not_re_gated_after_policy_changes() -> None:
     """The stored UTC decision, not today's policy, controls due-row dispatch."""
-    from butlers.core.scheduler import _tick_deferred_notification_pass
+    from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 
     notification_id = uuid.uuid4()
     envelope = {

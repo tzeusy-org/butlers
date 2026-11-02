@@ -139,7 +139,7 @@ class TestSchedulerDispatchIdempotency:
 
     async def test_single_tick_dispatches_once(self) -> None:
         """One tick() call for one due task → exactly one dispatch."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         task = _make_due_task()
         pool = _ClaimTrackingPool(tasks=[task])
@@ -162,7 +162,7 @@ class TestSchedulerDispatchIdempotency:
         tool is called from a running session — the scenario that produced 4
         sessions in 90 s on 2026-06-20.
         """
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         task = _make_due_task()
         pool = _ClaimTrackingPool(tasks=[task])
@@ -196,7 +196,7 @@ class TestSchedulerDispatchIdempotency:
 
     async def test_second_tick_after_claim_is_skipped(self) -> None:
         """A tick that finds next_run_at already advanced skips without dispatch."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         task = _make_due_task()
         pool = _ClaimTrackingPool(tasks=[task])
@@ -222,7 +222,7 @@ class TestSchedulerDispatchIdempotency:
     async def test_dispatch_once_even_when_dispatch_is_slow(self) -> None:
         """next_run_at is advanced BEFORE dispatch so a concurrent tick is blocked
         even while the first session is still running."""
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         task = _make_due_task()
         pool = _ClaimTrackingPool(tasks=[task])
@@ -262,7 +262,7 @@ class TestSchedulerDispatchIdempotency:
         after disable must not dispatch it again."""
         from datetime import timedelta
 
-        from butlers.core.scheduler import tick
+        from butlers.core.scheduler.dispatch import tick
 
         now = datetime(2026, 6, 20, 1, 15, tzinfo=UTC)
         # until_at is exactly now — next occurrence will be tomorrow, past until_at

@@ -58,7 +58,7 @@ None.
 
 ## Impact
 
-- Scheduler boundary: `src/butlers/core/scheduler.py::ensure_module_default_schedule`
+- Scheduler boundary: `src/butlers/core/scheduler/crud.py::ensure_module_default_schedule`
   and its module-startup callers, with `public.audit_log` as the durable audit
   spine and `/api/audit-log` as the read surface.
 - Retention/statistics boundary: memory cleanup's episode expiry predicate,

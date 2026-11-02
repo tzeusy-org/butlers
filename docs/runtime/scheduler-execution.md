@@ -8,7 +8,7 @@
 
 ![Scheduler Flow](./scheduler-flow.svg)
 
-The scheduler (`src/butlers/core/scheduler.py`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
+The scheduler (`src/butlers/core/scheduler/`) is a cron-driven task dispatch system. At daemon startup, it syncs schedule definitions from `butler.toml` into the `scheduled_tasks` database table. During operation, the daemon periodically calls `tick()`, which evaluates cron expressions and dispatches due tasks to the spawner. The scheduler supports two dispatch modes, deterministic staggering, complexity-aware model selection, and automatic task expiry.
 
 ## Explicit owner break-through at creation
 
@@ -185,7 +185,7 @@ psql -h localhost -U butlers -d butlers -c \
   The migration retains the function and ACL on downgrade because migration
   state cannot prove that all readers were retired. Remove it only after a
   separately reviewed replacement; policy rows and owner holds are unchanged.
-- QA's consumer is `read_qa_schedule_policy()` in `src/butlers/core/scheduler.py`. For
+- QA's consumer is `read_qa_schedule_policy()` in `src/butlers/core/scheduler/claim.py`. For
   `butler_name == "qa"`, `tick()` ignores `eligibility_pool`, the receiver-cutover flag and the
   legacy route resolver. It reads the projection through its primary `pool`, which the daemon wires
   to QA's own `SET ROLE butler_qa_rw` pool, once before the deadline/cron passes and again
@@ -199,7 +199,7 @@ psql -h localhost -U butlers -d butlers -c \
   exception text. A refused cron task is left unclaimed, so it runs exactly once after the hold
   lifts and does not trigger catch-up. Work that was already launched keeps running.
   `asyncio.CancelledError` propagates and does not authorize anything. Other butlers keep the
-  `src/butlers/core/scheduler.py::_butler_dispatch_gated()` path.
+  `src/butlers/core/scheduler/claim.py::_butler_dispatch_gated()` path.
 - `sw_053` generalises that projection as `public.butler_local_schedule_policy()` for every other
   butler. It takes no arguments, derives the butler name from the effective
   `SET ROLE butler_<name>_rw` (anything else is refused with `42501`) and returns `butler_name`,

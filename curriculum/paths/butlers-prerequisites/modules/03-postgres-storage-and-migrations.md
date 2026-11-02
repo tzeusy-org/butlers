@@ -70,7 +70,7 @@ Serialization boundaries matter. A Python dict, a JSON string, and a PostgreSQL 
 
 - `docs/architecture/database-design.md`
 - `docs/data_and_storage/state-store.md`
-- `src/butlers/core/scheduler.py`
+- `src/butlers/core/scheduler/`
 - `src/butlers/modules/approvals/models.py`
 - `tests/modules/test_calendar_reminder_integration.py`
 

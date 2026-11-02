@@ -421,7 +421,7 @@ async def test_deferred_actual_delivery_rechecks_outage_and_recovery(monkeypatch
     async def tick(pool, dispatch, *, notify_fn, **kwargs):
         from uuid import uuid4
 
-        from butlers.core.scheduler import _tick_deferred_notification_pass
+        from butlers.core.scheduler.deferred_pass import _tick_deferred_notification_pass
 
         now = datetime.now(UTC)
         anchor = now - timedelta(minutes=1)

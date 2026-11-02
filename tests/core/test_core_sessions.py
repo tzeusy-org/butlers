@@ -719,7 +719,7 @@ async def test_schedule_costs_date_range_filters_runs(db_pool):
     """from_date/to_date scope run aggregates; schedules with no runs in-window still appear."""
     from datetime import UTC, datetime
 
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
     from butlers.core.sessions import schedule_costs, session_complete, session_create
 
     await schedule_create(db_pool, name="daily-report", cron="0 8 * * *", prompt="run report")
@@ -791,7 +791,7 @@ async def test_schedule_costs_disabled_schedule_reports_history_without_forecast
     forecast -- scheduler.py disables a removed TOML schedule rather than
     deleting it, so its historical sessions must not silently disappear, but
     it also must never rank as if it will keep running (bu-2jtfw.4)."""
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
     from butlers.core.sessions import schedule_costs, session_complete, session_create
 
     await schedule_create(db_pool, name="retired-report", cron="0 8 * * *", prompt="run report")
@@ -1045,7 +1045,7 @@ async def test_spend_schedule_costs_from_db_merges_multi_model(db_pool):
     from butlers.api.deps import ButlerConnectionInfo
     from butlers.api.routers.spend import _get_butler_schedule_costs_from_db
     from butlers.core.pricing import ModelPricing, PricingConfig
-    from butlers.core.scheduler import schedule_create
+    from butlers.core.scheduler.crud import schedule_create
     from butlers.core.sessions import session_complete, session_create
 
     pricing = PricingConfig(
