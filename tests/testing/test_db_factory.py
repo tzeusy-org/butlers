@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import warnings
 
 import pytest
 
@@ -45,12 +46,13 @@ def test_fresh_db_stops_at_the_requested_revision(fresh_db) -> None:
     assert table_exists(head, "entities") and not table_exists(early, "entities")
 
 
-def test_clone_cost_is_reported(fresh_db, record_property) -> None:
+def test_clone_cost_is_reported(fresh_db) -> None:
     fresh_db("core")  # the template exists before timing clones
     started = time.monotonic()
     for _ in range(5):
         fresh_db("core")
     per_clone = (time.monotonic() - started) / 5
-    record_property("core_clone_seconds", round(per_clone, 3))
-    print(f"CORE-CLONE-SECONDS {per_clone:.3f}")
+    # junit properties are lost under xdist and passing output is captured; a warning
+    # reaches the CI log's warnings summary.
+    warnings.warn(f"CORE-CLONE-SECONDS {per_clone:.3f}", UserWarning, stacklevel=1)
     assert per_clone < 30
