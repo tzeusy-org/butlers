@@ -18,6 +18,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
+
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
@@ -76,24 +78,6 @@ def _write_tmp_csv(content: str) -> str:
     return path
 
 
-def _make_pool(
-    *, fetchrow_return=None, fetchval_return=None, execute_return=None, fetch_return=None
-):
-    """Build a minimal async mock pool.
-
-    fetch_return: return value for pool.fetch() (used by _check_duplicates_batch).
-      - None (default) → empty list, meaning no duplicates found.
-      - A non-empty list of rows → those (merchant, amount, posted_at) tuples are
-        treated as existing duplicates and the corresponding batch rows are skipped.
-    """
-    pool = MagicMock()
-    pool.fetchrow = AsyncMock(return_value=fetchrow_return)
-    pool.fetchval = AsyncMock(return_value=fetchval_return)
-    pool.execute = AsyncMock(return_value=execute_return or "INSERT 0 1")
-    pool.fetch = AsyncMock(return_value=fetch_return if fetch_return is not None else [])
-    return pool
-
-
 # ---------------------------------------------------------------------------
 # 5.1  Core import_transactions_from_file behaviour
 # ---------------------------------------------------------------------------
@@ -107,7 +91,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert "import_batch_id" in result
             assert len(result["import_batch_id"]) == 36  # UUID v4
@@ -119,7 +103,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["detected_format"] == "chase"
         finally:
@@ -130,7 +114,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(AMEX_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["detected_format"] == "amex"
         finally:
@@ -141,7 +125,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(CAPITAL_ONE_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["detected_format"] == "capital_one"
         finally:
@@ -152,7 +136,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(GENERIC_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["detected_format"] == "generic"
         finally:
@@ -163,7 +147,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["imported"] == 4
             assert result["skipped"] == 0
@@ -176,7 +160,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             for key in (
                 "total",
@@ -204,7 +188,7 @@ class TestImportTransactionsFromFile:
 
         path = _write_tmp_csv(content)
         try:
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["imported"] == 501
         finally:
@@ -217,7 +201,7 @@ class TestImportTransactionsFromFile:
         try:
             from butlers.tools.finance.data_import import import_transactions_from_file
 
-            pool = _make_pool()
+            pool = fake_pool(fetchval=None, fetch=[], execute="INSERT 0 1")
             result = await import_transactions_from_file(
                 pool,
                 file_path=path,
@@ -239,11 +223,10 @@ class TestImportTransactionsFromFile:
                 inserted_rows.append(args)
                 return "INSERT 0 1"
 
-            pool = _make_pool()
-            pool.execute = AsyncMock(side_effect=fake_execute)
             # No duplicate found
-            pool.fetchrow = AsyncMock(return_value=None)
-            pool.fetchval = AsyncMock(return_value=False)
+            pool = fake_pool(
+                execute=AsyncMock(side_effect=fake_execute), fetchrow=None, fetchval=False, fetch=[]
+            )
 
             result = await import_transactions_from_file(pool, file_path=path, currency="EUR")
             # All 4 rows should have been inserted (execute called 4 times)
@@ -264,8 +247,7 @@ class TestImportDeduplication:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool(fetchval_return=False)
-            pool.execute = AsyncMock()
+            pool = fake_pool(fetchval=False, execute=AsyncMock())
 
             # Patch _check_duplicates_batch to report all rows as duplicates.
             async def all_duplicates(p, batch, account_id):
@@ -287,8 +269,7 @@ class TestImportDeduplication:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool(fetchrow_return=None, fetchval_return=False)
-            pool.execute = AsyncMock()
+            pool = fake_pool(fetchrow=None, fetchval=False, execute=AsyncMock(), fetch=[])
 
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["skipped"] == 0
@@ -530,8 +511,7 @@ class TestPostImportTriggers:
 
         path = _write_tmp_csv(CHASE_CSV)
         try:
-            pool = _make_pool(fetchval_return=False)
-            pool.execute = AsyncMock()
+            pool = fake_pool(fetchval=False, execute=AsyncMock())
 
             # Report all batch rows as duplicates so imported == 0.
             async def all_duplicates(p, batch, account_id):
@@ -781,7 +761,7 @@ class TestErrorHandling:
         """Non-existent file path returns structured error, not exception."""
         from butlers.tools.finance.data_import import import_transactions_from_file
 
-        pool = _make_pool()
+        pool = fake_pool()
         result = await import_transactions_from_file(pool, file_path="/nonexistent/path/import.csv")
         assert result["status"] == "error"
         assert "error" in result
@@ -793,7 +773,7 @@ class TestErrorHandling:
         try:
             from butlers.tools.finance.data_import import import_transactions_from_file
 
-            pool = _make_pool()
+            pool = fake_pool()
             result = await import_transactions_from_file(pool, file_path=path)
             assert result["status"] == "error"
             assert "date" in result["error"].lower()
@@ -820,7 +800,7 @@ class TestErrorHandling:
         """Result always contains import_batch_id (even on errors)."""
         from butlers.tools.finance.data_import import import_transactions_from_file
 
-        pool = _make_pool()
+        pool = fake_pool()
         result = await import_transactions_from_file(pool, file_path="/nonexistent/file.csv")
         # Error case still has import_batch_id
         assert "import_batch_id" in result
