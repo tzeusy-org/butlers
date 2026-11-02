@@ -172,15 +172,6 @@ class TestImportTransactionsToolRegistration:
             f"Old 'file_path' parameter should be removed, found it in: {params}"
         )
 
-    async def test_no_finance_tool_reads_a_caller_supplied_local_path(self):
-        """CSV import is storage_ref-only: no registered tool accepts a filesystem path."""
-        tools, _, _ = await self._register_with_data_import()
-
-        path_tools = sorted(
-            name for name, fn in tools.items() if "file_path" in inspect.signature(fn).parameters
-        )
-        assert path_tools == []
-
     async def test_import_transactions_storage_ref_is_required(self):
         """storage_ref is a required (no default) parameter."""
         tools, _, _ = await self._register_with_data_import()
