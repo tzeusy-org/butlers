@@ -139,8 +139,9 @@ function failureMessage(error: unknown, action: string): string {
 }
 
 /**
- * Owner-only editor for the named places the household's deterministic readers use: the
- * commuting estimate, OwnTracks place labels and Wi-Fi presence. Coordinates and network
+ * Owner-only editor for the owner place registry. Saved places are not read by anything yet:
+ * the commuting estimate, OwnTracks place labels and Wi-Fi presence still use their legacy
+ * configuration until a later cutover moves them onto this registry. Coordinates and network
  * names stay here; no model or prompt receives them.
  */
 export function HomePlacesPanel() {
@@ -150,6 +151,7 @@ export function HomePlacesPanel() {
   const [editing, setEditing] = useState<OwnerPlace | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((current) => ({ ...current, [key]: value }));
@@ -193,19 +195,33 @@ export function HomePlacesPanel() {
     );
   };
 
-  const togglePause = (place: OwnerPlace) =>
+  // Pausing or removing the place open in the form would leave it holding a stale version.
+  const leaveEditIf = (place: OwnerPlace) => {
+    if (editing?.id === place.id) reset();
+  };
+
+  const togglePause = (place: OwnerPlace) => {
+    leaveEditIf(place);
     save.mutate({
       id: place.id,
       input: inputFrom(place, { paused: !place.paused }),
       expectedVersion: place.version,
     });
+  };
+
+  const confirmRemove = (place: OwnerPlace) => {
+    setConfirmingRemove(null);
+    leaveEditIf(place);
+    remove.mutate({ id: place.id, expectedVersion: place.version });
+  };
 
   return (
     <Panel title="Places" span={4} testId="home-places-panel">
       <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Name the places that matter. The commuting estimate, location history and Wi-Fi presence
-          recognise only the places listed here. A paused place is kept but ignored.
+          Name the places that matter. Saved places are not used yet: the commuting estimate,
+          location history and Wi-Fi presence keep their current configuration until they move
+          onto this list. A paused place is kept but will be ignored.
         </p>
 
         {places.isLoading ? (
@@ -216,7 +232,7 @@ export function HomePlacesPanel() {
         {places.isError ? (
           <div className="flex flex-wrap items-center gap-3" aria-live="polite">
             <p className="text-sm text-destructive" data-testid="home-places-error">
-              Couldn&apos;t load your places. The places already saved are still in use.
+              Couldn&apos;t load your places. Nothing has changed.
             </p>
             <Button type="button" variant="outline" size="sm" onClick={() => void places.refetch()}>
               Reload places
@@ -227,9 +243,14 @@ export function HomePlacesPanel() {
           <p className="text-sm text-muted-foreground">No places yet.</p>
         ) : null}
         {remove.isError ? (
-          <p className="text-sm text-destructive" role="alert">
-            {failureMessage(remove.error, "remove the place")}
-          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <p className="text-sm text-destructive" role="alert">
+              {failureMessage(remove.error, "remove the place")}
+            </p>
+            <Button type="button" variant="ghost" size="sm" onClick={() => remove.reset()}>
+              Dismiss
+            </Button>
+          </div>
         ) : null}
         {places.data && places.data.length > 0 ? (
           <ul className="divide-y divide-border" data-testid="home-places-list">
@@ -269,16 +290,42 @@ export function HomePlacesPanel() {
                   >
                     {place.paused ? "Resume" : "Pause"}
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={remove.isPending}
-                    aria-label={`Remove ${place.label}`}
-                    onClick={() => remove.mutate({ id: place.id, expectedVersion: place.version })}
-                  >
-                    Remove
-                  </Button>
+                  {confirmingRemove === place.id ? (
+                    <>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        disabled={remove.isPending}
+                        aria-label={`Confirm removing ${place.label}`}
+                        onClick={() => confirmRemove(place)}
+                      >
+                        Remove for good
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setConfirmingRemove(null)}
+                      >
+                        Keep
+                      </Button>
+                    </>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={remove.isPending}
+                      aria-label={`Remove ${place.label}`}
+                      onClick={() => {
+                        remove.reset();
+                        setConfirmingRemove(place.id);
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  )}
                 </span>
               </li>
             ))}

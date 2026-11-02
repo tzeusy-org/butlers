@@ -369,8 +369,8 @@ class OwnerPlaceInput(BaseModel):
     @classmethod
     def _label(cls, value: str) -> str:
         stripped = value.strip()
-        if not 1 <= len(stripped) <= LABEL_MAX_CHARS:
-            raise ValueError("label length is out of range")
+        if not 1 <= len(stripped) <= LABEL_MAX_CHARS or "\x00" in stripped:
+            raise ValueError("label is out of range")
         return stripped
 
     @field_validator("lat")
@@ -387,8 +387,8 @@ class OwnerPlaceInput(BaseModel):
     @classmethod
     def _aliases(cls, values: list[str]) -> list[str]:
         stripped = [value.strip() for value in values]
-        if any(not 1 <= len(value) <= LABEL_MAX_CHARS for value in stripped):
-            raise ValueError("alias length is out of range")
+        if any(not 1 <= len(value) <= LABEL_MAX_CHARS or "\x00" in value for value in stripped):
+            raise ValueError("alias is out of range")
         if len({value.casefold() for value in stripped}) != len(stripped):
             raise ValueError("aliases repeat")
         return stripped
@@ -396,8 +396,12 @@ class OwnerPlaceInput(BaseModel):
     @field_validator("ssids")
     @classmethod
     def _ssids(cls, values: list[str]) -> list[str]:
-        if any(not 1 <= len(value.encode("utf-8")) <= SSID_MAX_BYTES for value in values):
-            raise ValueError("SSID length is out of range")
+        # PostgreSQL text cannot hold NUL, so it is refused here rather than failing the write.
+        if any(
+            not 1 <= len(value.encode("utf-8")) <= SSID_MAX_BYTES or "\x00" in value
+            for value in values
+        ):
+            raise ValueError("SSID is out of range")
         if len(set(values)) != len(values):
             raise ValueError("SSIDs repeat")
         return values

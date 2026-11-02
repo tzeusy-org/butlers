@@ -131,11 +131,33 @@ describe("HomePlacesPanel", () => {
     const put = server.requests.find((request) => request.method === "PUT");
     expect(put?.body).toMatchObject({ radius_m: 400, expected_version: 3, ssids: ["Office WiFi"] });
 
+    fireEvent.click(screen.getByRole("button", { name: "Edit Office" }));
     fireEvent.click(screen.getByRole("button", { name: "Pause Office" }));
     await within(list).findByText("Paused");
+    // Pausing the place open in the form leaves edit mode instead of keeping a stale version.
+    expect(screen.getByRole("button", { name: "Add place" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Remove Home" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm removing Home" }));
     await waitFor(() => expect(within(list).queryByText("Home")).toBeNull());
+  });
+
+  it("asks before removing: the first click sends no DELETE, and Keep cancels", async () => {
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove Office" }));
+    expect(server.requests.some((request) => request.method === "DELETE")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Keep" }));
+    expect(screen.queryByRole("button", { name: "Confirm removing Office" })).toBeNull();
+    expect(server.requests.some((request) => request.method === "DELETE")).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit Office" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove Office" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm removing Office" }));
+    await waitFor(() => expect(screen.queryByTestId("home-places-list")).toBeNull());
+    expect(server.requests.filter((request) => request.method === "DELETE")).toHaveLength(1);
+    // The removed place no longer holds the form in edit mode.
+    expect(screen.getByRole("button", { name: "Add place" })).toBeTruthy();
   });
 
   it("shows a stale edit as a conflict and leaves edit mode instead of resubmitting", async () => {
