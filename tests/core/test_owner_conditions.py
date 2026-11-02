@@ -181,6 +181,35 @@ class TestExplicitResolutionValidation:
         assert "resolve_condition" in owner_conditions.__all__
 
 
+async def test_the_ledger_opt_ins_default_to_shared_behavior_and_pass_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A producer that omits the opt-ins keeps the shared ladder and replace semantics."""
+    engine = AsyncMock(return_value=[])
+    monkeypatch.setattr(owner_conditions, "_reconcile_snapshot", engine)
+    common = {
+        "source": "finance:bill-overdue",
+        "observations": [Observation(fingerprint="f")],
+        "snapshot_complete": False,
+        "initial_grace_seconds": 0,
+    }
+
+    await reconcile_snapshot(AsyncMock(), **common)
+    defaults = engine.await_args.kwargs
+    await reconcile_snapshot(
+        AsyncMock(),
+        **common,
+        escalation_advance=condition_ledger.ESCALATION_ADVANCE,
+        preserve_metadata_keys=("notified_at",),
+    )
+    given = engine.await_args.kwargs
+
+    assert defaults["escalation_advance"] is None  # engine resolves None to the shared ladder
+    assert tuple(defaults["preserve_metadata_keys"]) == ()
+    assert given["escalation_advance"] is condition_ledger.ESCALATION_ADVANCE
+    assert tuple(given["preserve_metadata_keys"]) == ("notified_at",)
+
+
 def test_reuses_the_same_engine_as_infra_conditions():
     """Both facades must share condition_ledger's engine, not diverge copies."""
     from butlers.core import condition_ledger, infra_conditions, owner_conditions

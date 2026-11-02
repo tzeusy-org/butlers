@@ -178,6 +178,20 @@ per `(source, fingerprint)` identity.
 - **THEN** the episode's escalation level advances and its state becomes
   `aging`, atomically with the confirmation, returning transition
   `escalation_due`
+- **AND** the next due date follows the shared 1-day, 3-day, 7-day advance
+  unless the producer passes its own `escalation_advance` ladder; the
+  initial grace is always the producer's own `initial_grace_seconds`
+
+#### Scenario: A confirmation replaces metadata unless keys are preserved
+
+- **WHEN** `reconcile_snapshot` confirms an active episode
+- **THEN** the episode's non-identity `metadata` is replaced by the
+  observation's metadata, exactly as before the opt-in existed, when the
+  producer passes no `preserve_metadata_keys` or the stored metadata is not
+  a JSON object
+- **AND** a producer that passes `preserve_metadata_keys` keeps each named
+  stored key the confirmation does not carry, so a marker written by a
+  concurrent path (for example `home:safety`'s `notified_at`) survives
 
 #### Scenario: A complete snapshot resolves what it no longer observes
 
