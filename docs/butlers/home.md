@@ -123,7 +123,12 @@ verification matrices; they claim no measured live latency or token savings.
   `conversation.*`, `tts.*`, IR/RF blasters, Zigbee2MQTT gesture `*_action_*` sensors) as healthy at
   `unknown` (`is_steady_state_unknown`). `select_due_issues` throttles repeat alerts via state key
   `home:health_check:last_alerted` and the `realert` threshold (default 24h); returned counts still
-  reflect current state.
+  reflect current state. Best-effort, it also reconciles owner-condition source
+  `home:device-threshold`: identity `{entity_id, issue}` (`battery` or `offline`), only `warning`
+  and `critical` qualify, and severity and battery percentage are evidence. A non-numeric battery
+  is carried forward `confirm_only`; an unmeasurable HA source or empty snapshot skips the
+  reconcile, and a ledger failure never breaks the job. A numeric reading with an old HA
+  `last_updated` counts as measured, since HA bumps it only when the value changes.
 - Actuation outcomes: only a connection-establishment failure or an HTTP rejection is `failed`. A
   timeout or reset after dispatch, or an unparseable 2xx, is `unverified` and still attempts live
   read-back.

@@ -30,23 +30,30 @@ per group.
 
 ## 2. Home device threshold producer (`home:device-threshold`)
 
-- [ ] 2.1 Verify the `[Unknown]` staleness seam: how `ha_entity_snapshot.last_updated`,
+- [x] 2.1 Verify the `[Unknown]` staleness seam: how `ha_entity_snapshot.last_updated`,
   `is_steady_state_unknown` and `_require_ha_source_healthy` interact for a battery sensor that
   stops reporting. Decide whether a stale reading counts as unmeasured.
-- [ ] 2.2 In `run_device_health_check` (`src/butlers/jobs/home.py`), build observations from the
+  Resolved (bu-6im1ew): a stale numeric reading counts as measured. The snapshot's
+  `last_updated` is HA's own, which moves only when the state or attributes change, so an old
+  timestamp on a steady battery level is normal and the snapshot cannot tell it from a silent
+  sensor. `is_steady_state_unknown` only gates offline classification of stateless domains, and
+  `_require_ha_source_healthy` gates the whole run. A sensor HA has lost reads `unavailable` or
+  `unknown` and is carried forward `confirm_only`; a non-finite reading is treated the same.
+- [x] 2.2 In `run_device_health_check` (`src/butlers/jobs/home.py`), build observations from the
   existing battery and offline classification and reconcile `home:device-threshold` with a
   best-effort helper that logs and swallows, mirroring `_reconcile_owner_conditions` in
   `roster/finance/jobs/finance_jobs.py`. Do not reconcile when the HA source is unmeasurable or when the job returns early on an empty
   `ha_entity_snapshot`. Qualify `critical` and `warning` only (not `info`), and carry the active
   battery condition forward with `confirm_only` for a battery entity whose state is not numeric.
-- [ ] 2.3 Tests: open, resolve on recovery (including an `info`-level reading), `info` never
+- [x] 2.3 Tests: open, resolve on recovery (including an `info`-level reading), `info` never
   opens, unavailable battery carried forward, empty snapshot does not reconcile, offline
   escalation keeps one episode, `HASourceUnmeasurableError` leaves conditions active,
   reconciliation failure does not break the job, privacy, no extra attributes.
   Nearest existing test: `tests/jobs/test_home.py` (`run_device_health_check`) with the owner
   condition assertions of `roster/finance/tests/test_jobs.py`
   (`test_insight_scan_overdue_bill_opens_owner_condition`).
-  Tests delta: +8 ~0 -0 expected.
+  Tests delta: +8 ~0 -0 expected; measured +8 ~0 -0 collected (7 functions, one
+  parametrized x2, in `tests/jobs/test_home_device_threshold.py`). Shipped by bu-6im1ew.
 
 ## 3. Health baseline deviation producer (removed)
 

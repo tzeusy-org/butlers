@@ -60,8 +60,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypedDict
 
@@ -76,6 +77,9 @@ from butlers.core.attention_ledger import (
     check_owner_notify_suppression,
     record_attention_event,
 )
+from butlers.core.owner_conditions import Observation as OwnerObservation
+from butlers.core.owner_conditions import compute_fingerprint as owner_condition_fingerprint
+from butlers.core.owner_conditions import reconcile_snapshot as reconcile_owner_condition
 from butlers.core.state import state_get, state_set
 from butlers.core.tool_call_capture import get_current_switchboard_client
 from butlers.credential_store import (
@@ -716,6 +720,102 @@ def select_due_issues(
         else:
             next_alert_state[key] = last_alerted_dt.isoformat()  # type: ignore[union-attr]
     return due, next_alert_state
+
+
+# ---------------------------------------------------------------------------
+# Device threshold owner conditions (bu-6im1ew, REQ-owner-condition-ledger-008)
+# ---------------------------------------------------------------------------
+
+#: Owner condition ledger source for battery and offline crossings.
+DEVICE_THRESHOLD_SOURCE = "home:device-threshold"
+_DEVICE_THRESHOLD_FINGERPRINT_VERSION = 1
+_DEVICE_THRESHOLD_GRACE_S = 3600.0
+_DEVICE_THRESHOLD_QUALIFYING = frozenset({"critical", "warning"})
+
+
+def build_device_threshold_observations(
+    issues: Iterable[dict[str, Any]],
+    *,
+    unmeasured_battery_entity_ids: Iterable[str],
+) -> list[OwnerObservation]:
+    """Build the complete ``home:device-threshold`` observation set for one run.
+
+    Identity is ``{entity_id, issue}``; severity and the battery level are evidence, so an
+    offline device escalating from warning to critical confirms one episode. Only ``critical``
+    and ``warning`` qualify: an ``info`` battery is absent and therefore resolves. A battery
+    entity whose state is not numeric is carried forward ``confirm_only`` with no evidence, so
+    its active condition (and last real reading) is kept and never fabricated or resolved.
+    Summary and metadata carry only what the owner notification shows: entity id, friendly
+    name, issue, severity and, for battery only, the percentage.
+    """
+    observations: list[OwnerObservation] = []
+    for issue in issues:
+        severity = issue["severity"]
+        if severity not in _DEVICE_THRESHOLD_QUALIFYING:
+            continue
+        entity_id = issue["entity_id"]
+        friendly_name = issue["friendly_name"]
+        kind = issue["issue_type"]
+        metadata: dict[str, Any] = {
+            "entity_id": entity_id,
+            "friendly_name": friendly_name,
+            "issue": kind,
+            "severity": severity,
+        }
+        if kind == "battery":
+            metadata["battery_pct"] = issue["value"]
+            summary = f"{friendly_name}: battery at {issue['value']:.0f}% ({severity})"
+        else:
+            summary = f"{friendly_name}: offline ({severity})"
+        observations.append(
+            OwnerObservation(
+                fingerprint=_device_threshold_fingerprint(entity_id, kind),
+                summary=summary,
+                metadata=metadata,
+            )
+        )
+    for entity_id in unmeasured_battery_entity_ids:
+        observations.append(
+            OwnerObservation(
+                fingerprint=_device_threshold_fingerprint(entity_id, "battery"),
+                confirm_only=True,
+            )
+        )
+    return observations
+
+
+def _device_threshold_fingerprint(entity_id: str, issue: str) -> str:
+    return owner_condition_fingerprint(
+        DEVICE_THRESHOLD_SOURCE,
+        _DEVICE_THRESHOLD_FINGERPRINT_VERSION,
+        {"entity_id": entity_id, "issue": issue},
+    )
+
+
+async def _reconcile_device_thresholds(
+    pool: asyncpg.Pool, observations: list[OwnerObservation]
+) -> None:
+    """Best-effort reconcile of one complete, healthy snapshot into the owner ledger.
+
+    A state side effect beside the notification and memory-fact paths, never instead of
+    them: a ledger failure logs and is swallowed so the health check still runs (mirrors
+    Finance's ``_reconcile_owner_conditions``). Callers only reach this after the HA source
+    was confirmed healthy and the snapshot was non-empty, so omission means recovery.
+    """
+    try:
+        await reconcile_owner_condition(
+            pool,
+            source=DEVICE_THRESHOLD_SOURCE,
+            observations=observations,
+            snapshot_complete=True,
+            initial_grace_seconds=_DEVICE_THRESHOLD_GRACE_S,
+        )
+    except Exception:
+        logger.warning(
+            "device_health_check: owner_conditions reconciliation failed for source=%s",
+            DEVICE_THRESHOLD_SOURCE,
+            exc_info=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2081,6 +2181,11 @@ async def run_device_health_check(
        ``select_due_issues`` so an already-known, unresolved issue only
        re-notifies after the configured re-alert window instead of every run.
 
+    Between 4 and 5 it reconciles the ``warning``/``critical`` issues into the owner
+    condition ledger (``home:device-threshold``, best-effort; see
+    ``build_device_threshold_observations``). The early returns on an unmeasurable HA source
+    or an empty snapshot skip that reconcile, so neither ever resolves a condition.
+
     Args:
         pool: asyncpg connection pool for the home butler's database.
         job_args: Optional job arguments (currently unused).
@@ -2141,6 +2246,7 @@ async def run_device_health_check(
     # 3 & 4. Classify battery and offline issues
     # ------------------------------------------------------------------
     issues: list[dict[str, Any]] = []
+    unmeasured_battery_entity_ids: list[str] = []
 
     for row in rows:
         entity_id: str = row["entity_id"]
@@ -2166,6 +2272,11 @@ async def run_device_health_check(
                 battery_pct = float(state)
             except (ValueError, TypeError):
                 battery_pct = None
+            if battery_pct is not None and not math.isfinite(battery_pct):
+                battery_pct = None
+            if battery_pct is None:
+                # No reading is not a recovery: the ledger carries the condition forward.
+                unmeasured_battery_entity_ids.append(entity_id)
 
             if battery_pct is not None and battery_pct <= battery_thresholds["info"]:
                 severity = classify_battery(battery_pct, battery_thresholds)
@@ -2206,6 +2317,21 @@ async def run_device_health_check(
                         "description": f"offline (state: {state})",
                     }
                 )
+
+    # ------------------------------------------------------------------
+    # 4b. Owner condition ledger (best-effort, bu-6im1ew)
+    # ------------------------------------------------------------------
+    # Only reached with a healthy HA source and a non-empty snapshot, so this run is a
+    # complete enumeration. Task 2.1: HA's ``last_updated`` moves only when the state or
+    # attributes change, so an old timestamp on a numeric battery reading is a steady value,
+    # not a silent sensor; a sensor HA has lost shows ``unavailable``/``unknown`` and is
+    # carried forward above. A stale numeric reading therefore counts as measured.
+    await _reconcile_device_thresholds(
+        pool,
+        build_device_threshold_observations(
+            issues, unmeasured_battery_entity_ids=unmeasured_battery_entity_ids
+        ),
+    )
 
     # ------------------------------------------------------------------
     # 5. Store memory facts
