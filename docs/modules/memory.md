@@ -71,9 +71,9 @@ taken from tool arguments or from text inside content, so a forged
 no routing context stamp `system`, not `owner`.
 
 Consolidation splits each claimed `(tenant_id, butler)` group into an owner-class
-partition (`owner`, `owner_device`) and a non-owner partition (`third_party`,
-`system`, `mixed` and unstamped NULL), each with its own runtime session, request
-ID and episode set; see [Consolidation](#consolidation). It gives each derived
+partition (`owner`, `owner_device`), a `system` partition and a non-owner
+partition (`third_party`, `mixed` and unstamped NULL), each with its own runtime
+session, request ID and episode set; see [Consolidation](#consolidation). It gives each derived
 fact and rule the weakest authority among its evidence episodes (differing or
 unknown authority yields `mixed`). Steering memory is gated on that stamp:
 
@@ -229,25 +229,28 @@ episodes become `consolidated`; failures are retried after bounded backoff or
 become `dead_letter` when the retry budget is exhausted. Consolidation output is
 schema-validated before persistence.
 
-**Authority partitions (bu-dhloi1.1).** After the fenced claim, each
-`(tenant_id, butler)` group is split by the episodes' persisted
-`content_authority` into an owner-class partition and a non-owner partition
-(everything else, including NULL). Each nonempty partition gets its own runtime
+**Authority partitions (bu-dhloi1.1, bu-dhloi1.26).** After the fenced claim,
+each `(tenant_id, butler)` group is split by the episodes' persisted
+`content_authority` into an owner-class partition, a `system` partition and a
+non-owner partition (`third_party`, `mixed` and NULL). `system` is kept apart
+from third-party content because a `system` fact renders without attribution: a
+shared session could restate a stranger's words citing only a system episode and
+the fact would lose its label. Each nonempty partition gets its own runtime
 session, request ID and allowed episode set, and its dedup context lists only
 facts and rules of the same partition (filtered in SQL before the `LIMIT`). That
 dedup context is the only stored memory the session sees: the spawner skips
 recall-based memory-context injection for `schedule:consolidation` sessions, and
 the MCP wrappers suppress every tool call such a session makes
 (`consolidation_session_tool_policy`), reads and writes alike, since consolidation
-is output-only. The owner session therefore has no path to third-party content it
-could restate as the owner's. The suppression keys on the session's
+is output-only. The owner and system sessions therefore have no path to
+third-party content they could restate under their own authority. The suppression keys on the session's
 `trigger_source` parameter the spawner writes into the session's MCP server URL.
 Inside the persistence fence the executor revalidates every source episode's stamp
 against its partition and admits `updated_facts` targets and confirmations only
 within the same tenant, source butler and partition. Evidence citing an episode
 outside the partition fails that partition through the ordinary failed/dead-letter
-path before any fact, rule, link or completion write; the sibling partition still
-commits independently, and valid third-party evidence stays `third_party`. Each
+path before any fact, rule, link or completion write; the sibling partitions still
+commit independently, and valid third-party evidence stays `third_party`. Each
 successful partition writes its own `public.consolidation_runs` row, and the run's
 `groups_consolidated` counts partitions.
 

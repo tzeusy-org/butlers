@@ -412,13 +412,13 @@ async def execute_consolidation(
             transaction.
         lease_duration_seconds: Lease duration used to renew a valid claim
             immediately before protected persistence begins.
-        authority_partition: ``"owner"`` or ``"non_owner"`` when the caller
-            consolidated one authority partition (``run_consolidation`` always
-            does). Every source episode's persisted authority is revalidated
-            against it before any write, and update targets and confirmations
-            are admitted only within the same tenant, source butler and
-            partition. ``None`` keeps the legacy unpartitioned behavior for
-            direct callers.
+        authority_partition: ``"owner"``, ``"system"`` or ``"non_owner"`` when
+            the caller consolidated one authority partition
+            (``run_consolidation`` always does). Every source episode's
+            persisted authority is revalidated against it before any write,
+            and update targets and confirmations are admitted only within the
+            same tenant, source butler and partition. ``None`` keeps the
+            legacy unpartitioned behavior for direct callers.
 
     Returns:
         Dict with stats: facts_created, facts_updated, rules_created,
