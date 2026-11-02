@@ -109,7 +109,7 @@ Scope: v1-mandatory
 A separately supervised control-plane controller SHALL observe fleet status and QA patrol age without depending on QA's own scheduler or a service-eligible QA registry row. It SHALL create one stable fleet-level condition for one or more affected expected daemons, attach per-daemon impact evidence, and resolve only after a complete healthy snapshot under the existing infrastructure-condition lifecycle. At cutover, redundant per-butler liveness conditions SHALL retain their impact evidence and remain linked but shall not independently page or start duplicate QA investigations; recovery resolution still requires a complete healthy observation of each affected daemon.
 
 ID: REQ-butler-control-plane-liveness-005
-Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; RFC 0015 patrol; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Episode lifecycle
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; RFC 0015 patrol; openspec/specs/infrastructure-reliability/spec.md §Episode lifecycle
 Scope: v1-mandatory
 
 #### Scenario: Common control failure yields one episode
@@ -178,7 +178,7 @@ The supported rollback of the `core_251` condition-attention producer SHALL roll
 The standard backup excludes both `public.runtime_attention_condition_episodes` and `public.runtime_attention_outbox`. A valid restore that loses both MAY result in one additional page for a still-active eligible fleet or overdue-QA condition in that restored state, once its protected interfaces and normal producer/controller are available. Existing mandatory append/admission and fenced delivery rules SHALL continue to govern: after the new marker exists, concurrent scans, retries and controller restarts reuse that episode. Ordinary outbox retention, escalation and re-enabling with retained markers SHALL NOT re-page, and a surviving uncertain episode SHALL NOT gain an automatic resend path. The restore allowance does not guarantee successful external delivery; another loss of both records in a later restore is a separate restored state.
 
 ID: REQ-butler-control-plane-liveness-007
-Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7; owner decisions bu-6gdfxt (A), bu-43lod8 (A); deploy/backup/pg_dump.sh exclusion set
+Source: RFC 0038 D1/D2/D7; generalist-lead-focused-delegation collision disposition for this change; heart-and-soul/vision.md:51-53,120-137; openspec/specs/infrastructure-reliability/spec.md §Bounded lifecycle escalation; openspec/changes/harden-runtime-auth-and-breaker-attention/specs/runtime-attention-outbox/spec.md §Switchboard-Owned At-Most-Once Attention Delivery; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2 and §7; owner decisions bu-6gdfxt (A), bu-43lod8 (A); deploy/backup/pg_dump.sh exclusion set
 Scope: v1-mandatory
 
 #### Scenario: Correlated fleet expiry produces one owner alert episode

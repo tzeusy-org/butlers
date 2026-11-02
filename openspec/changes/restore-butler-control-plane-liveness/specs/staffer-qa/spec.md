@@ -55,7 +55,7 @@ Scope: v1-mandatory
 QA SHALL associate related per-butler liveness findings with the active fleet-level condition and preserve source evidence without dispatching a separate investigation for each affected daemon.
 
 ID: REQ-staffer-qa-007
-Source: RFC 0038 D2/D7/D18; generalist-lead-focused-delegation QA Patrol Loop Lifecycle; RFC 0015 §D1-4; openspec/changes/define-infrastructure-reliability-lifecycle/specs/infrastructure-reliability/spec.md §Infrastructure-condition QA suppression; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2
+Source: RFC 0038 D2/D7/D18; generalist-lead-focused-delegation QA Patrol Loop Lifecycle; RFC 0015 §D1-4; openspec/specs/infrastructure-reliability/spec.md §Infrastructure-condition QA suppression; docs/plans/2026-09-23-liveness-control-plane-reliability-packet.md §5.2
 Scope: v1-mandatory
 
 #### Scenario: One fleet failure is visible without case explosion
