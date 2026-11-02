@@ -6,9 +6,10 @@ no PR can exist; a retained diff with no local PR metadata is not that proof
 unit suite mocks the projected ``pr_absence_proven`` column, so this module
 drives the real ledger transitions and the real dossier SELECT together.
 
-An empty ledger is that proof only for an attempt whose sealed export the
-publisher retained before its first egress (bu-mc01y5.24): an attempt from
-before the ledger cutover has no ledger rows and no export either.
+An empty ledger is that proof only for an attempt the publisher handled: it
+retained the sealed export before its first egress (bu-mc01y5.24), or receipted
+a refusal made before retention (bu-mc01y5.28).  An attempt from before the
+ledger cutover has no ledger rows, export or receipt.
 """
 
 from __future__ import annotations
@@ -204,6 +205,44 @@ async def test_pr_already_exists_rejection_never_reads_unpublished(
 
     assert result.status is PublicationStatus.AMBIGUOUS
     assert await _proposal_state(admin, attempt_id) == "ambiguous"
+
+
+async def test_refusal_before_retention_reads_unpublished_through_its_receipt(
+    pools: tuple[asyncpg.Pool, asyncpg.Pool],
+) -> None:
+    """A whitelist refusal retains no export; its receipt proves the publisher handled it
+    (bu-mc01y5.28), and a repeated refusal leaves the first receipt standing."""
+    admin, qa = pools
+    attempt_id = await _attempt_with_retained_diff(admin)
+    export = synthetic_export()
+    provider = FakeProvider()
+    publisher = QaPublisher(provider=provider, ledger=PoolLedger(qa), repo_root=Path("/r"))
+    whitelist = MagicMock()
+    whitelist.ensure_loaded = AsyncMock()
+    whitelist.is_allowed = MagicMock(return_value=(False, "denied"))
+
+    for refusing in (whitelist, None):
+        result = await publisher.publish(
+            attempt_id=attempt_id,
+            binding=binding_for(export),
+            export=export,
+            title="fix(qa): ValueError in module:1",
+            body="## Root Cause\nA missing guard.",
+            labels=["self-healing"],
+            whitelist=refusing,
+        )
+        assert (result.status, result.category) == (
+            PublicationStatus.REFUSED,
+            "repo_not_whitelisted",
+        )
+
+    receipts = await admin.fetch(
+        "SELECT status, category FROM public.qa_publication_refusals WHERE attempt_id = $1",
+        attempt_id,
+    )
+    assert [tuple(r) for r in receipts] == [("refused", "repo_not_whitelisted")]
+    assert provider.calls == []
+    assert await _proposal_state(admin, attempt_id) == "unpublished"
 
 
 async def _proposal_state(admin: asyncpg.Pool, attempt_id: uuid.UUID) -> str:

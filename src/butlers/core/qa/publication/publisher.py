@@ -85,6 +85,10 @@ class PublicationLedger(Protocol):
         """Keep the sealed export outside agent control; raise :class:`PublicationRefused`."""
         ...
 
+    async def record_refusal(self, attempt_id: uuid.UUID, *, status: str, category: str) -> None:
+        """Keep a receipt that the publisher refused before retention; may raise."""
+        ...
+
     async def start_egress(self, operation_id: uuid.UUID) -> bool: ...
 
     async def record(
@@ -103,6 +107,9 @@ class PoolLedger:
 
     async def retain(self, attempt_id: uuid.UUID, export: SealedExport) -> None:
         await retention.retain_export(self._pool, attempt_id, export)
+
+    async def record_refusal(self, attempt_id: uuid.UUID, *, status: str, category: str) -> None:
+        await retention.record_refusal(self._pool, attempt_id, status=status, category=category)
 
     async def start_egress(self, operation_id: uuid.UUID) -> bool:
         return await state.mark_egress_started(self._pool, operation_id)
@@ -175,16 +182,20 @@ class QaPublisher:
         """Publish once; a ``None`` whitelist refuses (fail closed)."""
         refused = await self._preflight(binding, export, whitelist)
         if refused is not None:
-            return refused
+            return await self.record_refusal(attempt_id, refused)
         sanitized = _sanitize(title, body, labels, self._repo_root)
         if isinstance(sanitized, str):
-            return PublicationResult(PublicationStatus.ANONYMIZATION_FAILED, sanitized)
+            return await self.record_refusal(
+                attempt_id, PublicationResult(PublicationStatus.ANONYMIZATION_FAILED, sanitized)
+            )
         try:
             # Before any egress: a push or PR that then fails or ends ambiguous must still
             # leave the sealed bytes recoverable after the agent worktree is torn down.
             await self._ledger.retain(attempt_id, export)
         except PublicationRefused as exc:
-            return PublicationResult(PublicationStatus.REFUSED, exc.code)
+            return await self.record_refusal(
+                attempt_id, PublicationResult(PublicationStatus.REFUSED, exc.code)
+            )
 
         transport = ClosedTransport(
             self._provider, binding=binding, labels=sanitized.labels, export=export
@@ -238,6 +249,28 @@ class QaPublisher:
             pr_number=transport.bound_pr,
             pr_url=_pr_url(repository, transport.bound_pr),
         )
+
+    async def record_refusal(
+        self, attempt_id: uuid.UUID, result: PublicationResult
+    ) -> PublicationResult:
+        """Receipt a refusal made before retention, then return ``result`` unchanged.
+
+        The receipt is the case API's proof that the trusted publisher handled an attempt
+        that never reached egress (no retained export exists for it).  A receipt that
+        cannot be written is logged and changes nothing: without it the case API reads
+        the attempt as ``ambiguous``, the conservative answer.
+        """
+        try:
+            await self._ledger.record_refusal(
+                attempt_id, status=result.status.value, category=result.category
+            )
+        except Exception as exc:  # noqa: BLE001 — a lost receipt only weakens a later claim
+            logger.warning(
+                "QA publication refusal receipt unrecorded (attempt=%s): %s",
+                attempt_id,
+                type(exc).__name__,
+            )
+        return result
 
     async def _preflight(
         self, binding: PublicationBinding, export: SealedExport, whitelist: RepoWhitelist | None

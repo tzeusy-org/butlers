@@ -221,10 +221,13 @@ async def test_unknown_error_after_egress_logs_no_content(caplog) -> None:
 async def test_unwhitelisted_or_inactive_attempt_publishes_nothing() -> None:
     provider = FakeProvider()
 
-    refused = await _publish(_publisher(provider, FakeLedger()), uuid.uuid4(), allowed=False)
-    timed_out = await _publish(
-        _publisher(provider, FakeLedger(attempt_status="timeout")), uuid.uuid4()
+    refusing, inactive, attempt_id = (
+        FakeLedger(),
+        FakeLedger(attempt_status="timeout"),
+        uuid.uuid4(),
     )
+    refused = await _publish(_publisher(provider, refusing), attempt_id, allowed=False)
+    timed_out = await _publish(_publisher(provider, inactive), attempt_id)
 
     assert (refused.status, refused.category) == (
         PublicationStatus.REFUSED,
@@ -235,6 +238,10 @@ async def test_unwhitelisted_or_inactive_attempt_publishes_nothing() -> None:
         "attempt_not_active",
     )
     assert provider.calls == []
+    # Refused before retention: a receipt proves the publisher handled it.  The inactive
+    # attempt refused after retention, so its retained export is that proof instead.
+    assert refusing.refusals == {attempt_id: ("refused", "repo_not_whitelisted")}
+    assert inactive.refusals == {} and attempt_id in inactive.exports
 
 
 async def test_swapped_export_bytes_refuse_before_first_push() -> None:
@@ -242,15 +249,17 @@ async def test_swapped_export_bytes_refuse_before_first_push() -> None:
     export = synthetic_export()
     swapped = dataclasses.replace(export, head_sha="d" * 40)
 
+    ledger, attempt_id = FakeLedger(), uuid.uuid4()
     result = await _publish(
-        _publisher(provider, FakeLedger()),
-        uuid.uuid4(),
+        _publisher(provider, ledger),
+        attempt_id,
         export=swapped,
         binding=binding_for(swapped),
     )
 
     assert (result.status, result.category) == (PublicationStatus.REFUSED, "export_tampered")
     assert provider.calls == []
+    assert ledger.refusals == {attempt_id: ("refused", "export_tampered")}
 
 
 @pytest.mark.parametrize(
@@ -263,12 +272,13 @@ async def test_swapped_export_bytes_refuse_before_first_push() -> None:
     ids=["label", "raw-evidence-body", "title"],
 )
 async def test_unsanitizable_pr_text_or_labels_block_before_any_egress(overrides) -> None:
-    provider, ledger = FakeProvider(), FakeLedger()
+    provider, ledger, attempt_id = FakeProvider(), FakeLedger(), uuid.uuid4()
 
-    result = await _publish(_publisher(provider, ledger), uuid.uuid4(), **overrides)
+    result = await _publish(_publisher(provider, ledger), attempt_id, **overrides)
 
     assert result.status is PublicationStatus.ANONYMIZATION_FAILED
     assert provider.calls == [] and ledger.rows == {}
+    assert ledger.refusals == {attempt_id: ("anonymization_failed", result.category)}
 
 
 async def test_failed_push_leaves_the_sealed_export_retained_outside_the_worktree() -> None:
@@ -279,13 +289,20 @@ async def test_failed_push_leaves_the_sealed_export_retained_outside_the_worktre
 
     assert result.status is PublicationStatus.FAILED
     assert ledger.exports[attempt_id] == synthetic_export()
+    assert ledger.refusals == {}
 
 
-@pytest.mark.parametrize("code", ["export_unretained", "export_changed"])
-async def test_unretainable_export_publishes_nothing(code: str) -> None:
-    provider, ledger = FakeProvider(), FakeLedger(retain_refusal=code)
+@pytest.mark.parametrize(
+    ("code", "receipt_lost"),
+    [("export_unretained", False), ("export_changed", False), ("export_unretained", True)],
+)
+async def test_unretainable_export_publishes_nothing(code: str, receipt_lost: bool) -> None:
+    provider, attempt_id = FakeProvider(), uuid.uuid4()
+    ledger = FakeLedger(retain_refusal=code, refusal_unrecordable=receipt_lost)
 
-    result = await _publish(_publisher(provider, ledger), uuid.uuid4())
+    result = await _publish(_publisher(provider, ledger), attempt_id)
 
+    # An unrecordable receipt leaves the refusal unchanged; the case API stays ambiguous.
     assert (result.status, result.category) == (PublicationStatus.REFUSED, code)
     assert provider.calls == [] and ledger.rows == {}
+    assert ledger.refusals == ({} if receipt_lost else {attempt_id: ("refused", code)})

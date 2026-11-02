@@ -530,9 +530,9 @@ class QaJournalEvent(BaseModel):
     data: dict[str, Any]
 
 
-#: ``unpublished`` requires a retained sealed export and ledger proof that no PR
-#: exists; ``ambiguous`` means a retained proposal whose publication outcome awaits
-#: exact read-only reconciliation.
+#: ``unpublished`` requires a publisher trace (a retained sealed export or a
+#: refusal receipt) and ledger proof that no PR exists; ``ambiguous`` means a
+#: retained proposal whose publication outcome awaits exact read-only reconciliation.
 ProposalState = Literal["none", "unpublished", "ambiguous", "published"]
 
 
@@ -2256,7 +2256,12 @@ async def get_case(
                 SELECT 1
                 FROM public.qa_publication_exports x
                 WHERE x.attempt_id = a.id
-            ) AS export_retained
+            ) AS export_retained,
+            EXISTS (
+                SELECT 1
+                FROM public.qa_publication_refusals r
+                WHERE r.attempt_id = a.id
+            ) AS refusal_recorded
         FROM public.healing_attempts a
         LEFT JOIN LATERAL (
             SELECT id, fingerprint, source_type, source_butler, severity,
@@ -2320,9 +2325,11 @@ async def get_case(
         # response leaves none while the PR may be live. Claim "unpublished"
         # only when the publication ledger proves no PR egress can have landed.
         # An empty ledger proves that only for an attempt the publisher handled:
-        # it retains the sealed export before its first egress, while an attempt
-        # from before the ledger cutover has no export and no ledger rows either.
-        absence_proven = row.get("pr_absence_proven") is True and row.get("export_retained") is True
+        # it retains the sealed export before its first egress, or receipts a
+        # refusal made before retention (core_302), while an attempt from before
+        # the ledger cutover has no export, receipt or ledger rows.
+        handled = row.get("export_retained") is True or row.get("refusal_recorded") is True
+        absence_proven = row.get("pr_absence_proven") is True and handled
         proposal_state = "unpublished" if absence_proven else "ambiguous"
     dossier = QaCaseDossier(
         case=case,

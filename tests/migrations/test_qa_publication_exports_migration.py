@@ -1,5 +1,7 @@
 """core_294: retained sealed QA exports (bu-mc01y5.19); core_301: pruning (bu-mc01y5.25).
 
+core_302 (bu-mc01y5.28): the refusal receipt for an attempt refused before retention.
+
 Real-Postgres contract for the spec scenario "Committed proposal cannot be
 published": the sealed artifact is retained outside agent control, only the QA
 role writes it, and a retained row can be neither rewritten nor dropped by a
@@ -275,3 +277,65 @@ def test_prune_downgrade_refuses_while_an_export_is_pruned(
 
     with pytest.raises(DBAPIError, match="pruned export exists"):
         _replay(db_url, "downgrade", "core_301")
+
+
+# --- core_302: the trusted receipt for a refusal before retention (bu-mc01y5.28) ---
+
+_REFUSALS = "public.qa_publication_refusals"
+
+
+def _refusal_sql(attempt_id: uuid.UUID, category: str = "repo_not_whitelisted") -> str:
+    return (
+        f"INSERT INTO {_REFUSALS} (attempt_id, status, category) "
+        f"VALUES ('{attempt_id}', 'refused', '{category}')"
+    )
+
+
+def _replay_refusals(db_url: str, direction: str) -> None:
+    path = _MIGRATION_PATH.with_name("core_302_qa_publication_refusals.py")
+    spec = importlib.util.spec_from_file_location("core_302_replay", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    statements: list[str] = []
+    fake_op = MagicMock()
+    fake_op.execute.side_effect = statements.append
+    with (
+        patch.object(migration, "op", fake_op),
+        patch.object(migration, "_core_302_installation_count", return_value=1),
+    ):
+        getattr(migration, direction)()
+    for statement in statements:
+        _admin(db_url, statement)
+
+
+def test_only_qa_records_an_immutable_refusal_receipt_and_rollback_keeps_it(
+    postgres_container, db_name: str, db_url: str
+) -> None:
+    migration_user = urlparse(db_url).username
+    assert migration_user is not None
+    _bootstrap_rerun(postgres_container, db_name, migration_user)
+    _replay_refusals(db_url, "upgrade")  # idempotent re-apply after init-db.sql re-grants
+    attempt = _new_attempt(db_url)
+
+    with pytest.raises(DBAPIError, match="row-level security|permission denied"):
+        _as_role(db_url, "butler_general_rw", _refusal_sql(attempt))
+    with pytest.raises(DBAPIError, match="ck_qa_publication_refusals_category"):
+        _as_role(db_url, "butler_qa_rw", _refusal_sql(attempt, "Leaked: a@b.io"))
+    assert _as_role(db_url, "butler_qa_rw", _refusal_sql(attempt)) == 1
+    for role in ("butler_qa_rw", "butler_general_rw"):
+        assert _as_role(db_url, role, f"DELETE FROM {_REFUSALS}") == 0
+        seen = _as_role(db_url, role, f"SELECT 1 FROM {_REFUSALS} WHERE attempt_id = '{attempt}'")
+        assert seen == 1
+    # The guard refuses a privileged login too (FORCE lifted inside the rolled-back txn).
+    engine = create_engine(db_url)
+    try:
+        with pytest.raises(DBAPIError, match="refusal receipt is immutable"):
+            with engine.begin() as conn:
+                conn.exec_driver_sql(f"ALTER TABLE {_REFUSALS} NO FORCE ROW LEVEL SECURITY")
+                conn.exec_driver_sql(f"UPDATE {_REFUSALS} SET category = 'other'")
+    finally:
+        engine.dispose()
+
+    with pytest.raises(DBAPIError, match="refusal receipt exists"):
+        _replay_refusals(db_url, "downgrade")

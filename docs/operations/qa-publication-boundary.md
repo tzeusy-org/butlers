@@ -114,9 +114,21 @@ run. A prune failure is logged and does not fail the evidence cleanup. Only the 
 read back as tampered.
 
 The retained bytes exist only for an attempt whose publisher reached retention. A refusal before
-retention (`anonymization_failed`, a denied whitelist) leaves no export. A trusted receipt for those
-refusals is separate work (bu-mc01y5.28). Pruning never removes the row such a receipt would be
-read alongside.
+retention leaves no export, so the publisher records a receipt instead (migration `core_302`,
+bu-mc01y5.28): one row per attempt in `public.qa_publication_refusals` holding the refusal's
+content-free status (`refused` or `anonymization_failed`) and category. It covers every refusal
+before retention: an export that cannot be sealed or bound, a failed preflight (tampered export,
+unbound head, denied or missing whitelist), residual sensitive content in the PR text or labels, and
+an export that cannot be retained. The first receipt wins and a BEFORE UPDATE trigger
+(`qa_publication_refusals_immutable`) refuses rewrites from every role. The fence matches the
+exports table: only `butler_qa_rw` inserts (forced row security), every runtime role reads, there is
+no DELETE policy, the table is excluded from `deploy/backup/pg_dump.sh`, and only the last schema to
+leave `core_302` drops it, and only while it is empty. A receipt that cannot be written is logged
+and changes nothing, so the attempt reads `ambiguous`.
+
+The case API reads `proposal_state` as `unpublished` only with a publisher trace (a retained export,
+pruned or not, or a refusal receipt) and the ledger's proof that no PR egress can have landed. A
+receipt alone never proves absence: a later run that reached egress is still judged by the ledger.
 
 Rollback: remove the injected publisher (the default). Ledger rows, holds and diff snapshots are
 kept, and no remote branch or PR is deleted.

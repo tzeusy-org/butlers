@@ -20,6 +20,11 @@ base, head, commits and digest still bind the proposal for the case API and the
 reconciliation sweep, and no row is ever deleted.  The database guard refuses any other
 rewrite and any prune before eligibility, for every role.  A pruned export refuses with
 ``export_pruned`` on load and on re-retention.
+
+Refusal receipts (bu-mc01y5.28, core_302): a refusal before retention leaves no export,
+so :func:`record_refusal` keeps one immutable, content-free receipt per attempt in
+``public.qa_publication_refusals``.  With the ledger's absence proof it lets the case API
+claim ``unpublished`` for an attempt that never reached egress.
 """
 
 from __future__ import annotations
@@ -187,3 +192,22 @@ async def prune_retained_exports(pool: Any, *, limit: int = PRUNE_BATCH) -> int:
         EXPORT_RETENTION,
     )
     return int(str(status).rsplit(" ", 1)[-1])
+
+
+async def record_refusal(pool: Any, attempt_id: uuid.UUID, *, status: str, category: str) -> None:
+    """Keep the first refusal receipt for ``attempt_id``; datastore errors propagate.
+
+    ``status`` and ``category`` are the publisher's stable, content-free result fields;
+    the table's CHECKs refuse anything else.  A later receipt for the same attempt is a
+    no-op: the first refusal stands and the row is immutable.
+    """
+    await pool.execute(
+        """
+        INSERT INTO public.qa_publication_refusals (attempt_id, status, category)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (attempt_id) DO NOTHING
+        """,
+        attempt_id,
+        status,
+        category,
+    )
