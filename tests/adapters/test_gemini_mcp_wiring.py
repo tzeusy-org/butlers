@@ -94,11 +94,16 @@ async def test_each_invocation_gets_its_own_config_path_and_cleans_up() -> None:
     assert not await asyncio.to_thread(Path(first["settings_path"]).exists)
 
 
-async def test_no_servers_adds_no_mcp_wiring() -> None:
+async def test_no_servers_admits_no_user_or_project_mcp_server() -> None:
     seen = await _invoke({})
     # Settings are still staged (they carry the turn limit) but name no MCP server.
     assert seen["settings"]["mcpServers"] == {}
-    assert "--allowed-mcp-server-names" not in seen["cmd"]
+    # --skip-trust trusts the cwd; without an allowlist the CLI would start every user- or
+    # project-level server. The CLI rejects an empty name, so a name no server uses admits none.
+    cmd = seen["cmd"]
+    assert "--skip-trust" in cmd
+    allowed = cmd[cmd.index("--allowed-mcp-server-names") + 1]
+    assert allowed == "butlers-no-mcp-servers"
 
 
 async def test_invoke_trusts_the_butler_server_so_headless_tool_calls_are_not_denied() -> None:
