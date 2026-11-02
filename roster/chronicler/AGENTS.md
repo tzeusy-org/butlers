@@ -859,7 +859,10 @@ left untouched.
   the POST carries the connector callback credential
   (`X-Butlers-Approval-Callback-Token`), which owner auth accepts
   for that exact route only, without an owner principal; without it the API
-  answers 401 and the owner sees "Couldn't record that right now". That endpoint + the
+  answers 401 and the owner sees "Couldn't record that right now". Once the
+  answer settles (applied, already answered, or expired) the connector edits
+  the question to append the outcome and drops its buttons; failures keep the
+  buttons so the owner can retry. That endpoint + the
   `chronicler_resolve_gap_interview` MCP tool both delegate to
   `gap_interview.resolve_gap_interview_callback` (one resolver, identical write
   shape). It is the **first real tenant of the corrections machinery**: writes a

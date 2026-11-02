@@ -118,7 +118,20 @@ class TestDeliveryUnit:
 @pytest.mark.skipif(not docker_available, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 class TestDeliveryPreferencesDB:
-    # Each test gets a fresh clone; the core chain seeds approvals_policy with no quiet hours.
+    # Each test gets a fresh clone of the core chain.
+
+    @pytest.fixture(autouse=True)
+    async def _no_owner_quiet_hours(self, db_pool):
+        """Disable the owner quiet hours the core chain seeds.
+
+        core_160 seeds 23:00-08:00 Asia/Singapore. The scheduler wrapper re-reads
+        that policy before every deferred send, so without this reset the wrapper
+        tests hold their send whenever the wall clock is 15:00-24:00 UTC.
+        """
+        await db_pool.execute(
+            "UPDATE public.approvals_policy "
+            "SET quiet_start_hour = NULL, quiet_end_hour = NULL WHERE id = 1"
+        )
 
     async def test_upsert_and_get_delivery_preferences(self, db_pool):
         """upsert creates row; second upsert updates without dup; invalid tz raises; get returns row."""
