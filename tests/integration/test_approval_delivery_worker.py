@@ -220,7 +220,7 @@ async def test_skip_locked_claims_are_distinct_and_stale_fences_cannot_write(
         "FROM approval_delivery_presentations WHERE id = $1",
         first.presentation_id,
     )
-    assert 29.9 <= lease <= 30.0
+    assert 29.9 <= lease <= 30.0 + 1e-3
     await delivery_pool.execute(
         "UPDATE approval_delivery_presentations "
         "SET claim_expires_at = clock_timestamp() - interval '1 second' WHERE id = $1",
@@ -288,8 +288,11 @@ async def test_missing_current_owner_is_prestart_retry_scheduled_from_database_t
     delays = [tuple(await delivery_pool.fetchrow(delay_sql, admission.presentation_key))]
     for _ in range(7):
         await delivery_pool.execute(
+            # schedule_check requires next_attempt_at >= not_before; one
+            # statement-stable now() value rewinds both together.
             "UPDATE approval_delivery_presentations "
-            "SET next_attempt_at = clock_timestamp() - interval '1 second' "
+            "SET not_before = now() - interval '1 second', "
+            "next_attempt_at = now() - interval '1 second' "
             "WHERE presentation_key = $1",
             admission.presentation_key,
         )

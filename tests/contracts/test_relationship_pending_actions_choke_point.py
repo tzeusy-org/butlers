@@ -206,42 +206,94 @@ _PENDING_ACTION_STATUS_WRITERS: dict[tuple[str, str], int] = {
 }
 
 
+def _string_value(node: ast.AST) -> str | None:
+    """Static text of a str literal, f-string, or ``+`` chain of them."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value
+            for part in node.values
+            if isinstance(part, ast.Constant) and isinstance(part.value, str)
+        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _string_value(node.left), _string_value(node.right)
+        if left is not None or right is not None:
+            return (left or "") + (right or "")
+    return None
+
+
+def _status_guards(call: ast.Call) -> set[str]:
+    """``ActionStatus.<X>.value`` members bound anywhere in one call."""
+    return {
+        node.value.attr
+        for node in ast.walk(call)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "value"
+        and isinstance(node.value, ast.Attribute)
+    }
+
+
 def _status_writers(rel: str, source: str) -> tuple[dict[tuple[str, str], int], list[str]]:
-    """Return (status-writer inventory, violations) for one source file."""
+    """Return (status-writer inventory, violations) for one source file.
+
+    Writers are found by their SQL text wherever it sits (call argument,
+    keyword, variable, f-string or ``+`` chain) and attributed to the
+    enclosing function, so the inventory check sees every shape.
+    """
     inventory: dict[tuple[str, str], int] = {}
     violations: list[str] = []
     tree = ast.parse(source)
+    parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
 
-    def _visit(node: ast.AST, function: str) -> None:
-        for child in ast.iter_child_nodes(node):
-            name = function
-            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
-                name = child.name
-            if isinstance(child, ast.Call) and child.args:
-                sql = " ".join(
-                    part.value
-                    for part in ast.walk(child.args[0])
-                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
-                )
-                if _PENDING_ACTIONS_UPDATE.search(sql) and _SETS_STATUS.search(sql):
-                    key = (rel, function)
-                    inventory[key] = inventory.get(key, 0) + 1
-                    guard = {
-                        arg.value.attr
-                        for arg in child.args[1:]
-                        if isinstance(arg, ast.Attribute)
-                        and arg.attr == "value"
-                        and isinstance(arg.value, ast.Attribute)
-                    }
-                    if key != _CANONICAL_TERMINAL_WRITER and (
-                        "pending" in sql.lower().split("where", 1)[-1]
-                        or "APPROVED" not in guard
-                        or not guard & {"EXECUTED", "ABANDONED"}
-                    ):
-                        violations.append(f"{rel}:{child.lineno} ({function})")
-            _visit(child, name)
+    def _enclosing(node: ast.AST, kinds: tuple[type, ...]) -> ast.AST | None:
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, kinds):
+                return node
+        return None
 
-    _visit(tree, "<module>")
+    for node in ast.walk(tree):
+        parent = parents.get(node)
+        if isinstance(parent, ast.JoinedStr) or (
+            isinstance(parent, ast.BinOp)
+            and isinstance(parent.op, ast.Add)
+            and _string_value(parent) is not None
+        ):
+            continue  # counted once at the outermost string expression
+        sql = _string_value(node)
+        if not sql or not _PENDING_ACTIONS_UPDATE.search(sql) or not _SETS_STATUS.search(sql):
+            continue
+        function_node = _enclosing(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        function = getattr(function_node, "name", "<module>")
+        key = (rel, function)
+        inventory[key] = inventory.get(key, 0) + 1
+        if key == _CANONICAL_TERMINAL_WRITER:
+            continue
+        # The consuming call either holds the SQL directly or a name bound to it.
+        call = _enclosing(node, (ast.Call,))
+        assigned = parents.get(node)
+        if isinstance(assigned, ast.Assign) and function_node is not None:
+            names = {t.id for t in assigned.targets if isinstance(t, ast.Name)}
+            call = next(
+                (
+                    candidate
+                    for candidate in ast.walk(function_node)
+                    if isinstance(candidate, ast.Call)
+                    and any(
+                        isinstance(arg, ast.Name) and arg.id in names
+                        for arg in [*candidate.args, *(k.value for k in candidate.keywords)]
+                    )
+                ),
+                None,
+            )
+        guards = _status_guards(call) if call is not None else set()
+        if (
+            "pending" in sql.lower().split("where", 1)[-1]
+            or "APPROVED" not in guards
+            or not guards & {"EXECUTED", "ABANDONED"}
+        ):
+            violations.append(f"{rel}:{node.lineno} ({function})")
     return inventory, violations
 
 
@@ -263,17 +315,32 @@ def test_pending_to_terminal_writers_are_the_canonical_inventory() -> None:
     )
     assert inventory == _PENDING_ACTION_STATUS_WRITERS
 
-    planted = (
-        "async def expire_quietly(conn, action_id):\n"
-        "    await conn.execute(\n"
-        "        \"UPDATE relationship.pending_actions SET status = 'expired' \"\n"
-        "        \"WHERE id = $1 AND status = 'pending'\",\n"
-        "        action_id,\n"
-        "    )\n"
-    )
-    found, bad = _status_writers("roster/relationship/planted.py", planted)
-    assert found == {("roster/relationship/planted.py", "expire_quietly"): 1}
-    assert bad == ["roster/relationship/planted.py:2 (expire_quietly)"]
+    planted = {
+        "direct": (
+            "async def expire_quietly(conn, action_id):\n"
+            "    await conn.execute(\n"
+            "        \"UPDATE relationship.pending_actions SET status = 'expired' \"\n"
+            "        \"WHERE id = $1 AND status = 'pending'\",\n"
+            "        action_id,\n"
+            "    )\n"
+        ),
+        "variable": (
+            "async def expire_quietly(conn, action_id):\n"
+            "    sql = f\"UPDATE pending_actions SET status = 'expired' WHERE id = $1\"\n"
+            "    await conn.execute(sql, action_id)\n"
+        ),
+        "keyword": (
+            "async def expire_quietly(conn, action_id):\n"
+            "    await run(\n"
+            '        query="UPDATE pending_actions SET status = $1 " + "WHERE id = $2",\n'
+            "        args=(ActionStatus.APPROVED.value, action_id),\n"
+            "    )\n"
+        ),
+    }
+    for shape, text in planted.items():
+        found, bad = _status_writers("roster/relationship/planted.py", text)
+        assert found == {("roster/relationship/planted.py", "expire_quietly"): 1}, shape
+        assert len(bad) == 1 and bad[0].endswith("(expire_quietly)"), shape
     non_status = (
         "async def defer(conn):\n"
         '    await conn.execute("UPDATE pending_actions SET expires_at = $1 "\n'
