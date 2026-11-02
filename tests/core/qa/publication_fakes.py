@@ -209,7 +209,9 @@ class FakeLedger:
         if observation == "resource_absent" and observed_object_id is not None:
             return False
         if observation == "resource_found" and adopted and adopted_pr_url is not None:
-            if adopted_pr_url.endswith(f"/pull/{observed_object_id}"):
+            if adopted_pr_url.startswith("https://github.com/") and adopted_pr_url.endswith(
+                f"/pull/{observed_object_id}"
+            ):
                 self.attempt_prs.setdefault(
                     row.attempt_id, (int(observed_object_id), adopted_pr_url)
                 )

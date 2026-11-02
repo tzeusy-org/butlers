@@ -251,9 +251,9 @@ async def record_reconciliation(
 
     A ``pr_create`` adoption also names the adopted PR on its attempt in the same
     statement: ``healing_attempts.pr_number`` and ``pr_url`` (``adopted_pr_url``,
-    which must end in ``/pull/<number>``) are filled when the attempt names no PR
-    yet.  A number beyond ``INTEGER`` or a mismatched URL skips that fill; the
-    reconciliation itself still records.
+    which must be ``https://github.com/.../pull/<number>``) are filled when the
+    attempt names no PR yet.  A number beyond ``INTEGER`` or a mismatched URL skips
+    that fill; the reconciliation itself still records.
     """
     try:
         recorded = await pool.fetchval(
@@ -289,7 +289,9 @@ async def record_reconciliation(
                       WHEN reconciled.kind = 'pr_create'
                           AND reconciled.reconciliation = 'resource_found'
                           AND reconciled.reconciled_object_id ~ '^[1-9][0-9]{0,9}$'
-                          AND $6::text LIKE ('%/pull/' || reconciled.reconciled_object_id)
+                          AND $6::text LIKE (
+                              'https://github.com/%/pull/' || reconciled.reconciled_object_id
+                          )
                       THEN reconciled.reconciled_object_id::bigint <= 2147483647
                       ELSE false
                   END
