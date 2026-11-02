@@ -956,23 +956,35 @@ class TestErrorHandling:
             assert result["reason"] == reason
             blob_store.get.assert_not_awaited()
 
-    async def test_undetectable_date_format_returns_error(self):
-        """CSV with unrecognizable date format returns structured error."""
+    @pytest.mark.parametrize(
+        ("csv_text", "missing_columns"),
+        [
+            # Columns resolve, but the date values match no known format.
+            ("Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n", []),
+            # Dates parse, but no merchant or amount column can be found.
+            ("Date,Memo,Sum\n2024-01-15,MERCHANT,-10.00\n", ["merchant", "amount"]),
+        ],
+    )
+    async def test_unknown_format_returns_unrecognized_format_with_headers(
+        self, csv_text, missing_columns
+    ):
+        """Spec 'Unknown format fallback': unrecognized_format plus the headers to map."""
         from butlers.tools.finance.data_import import import_transactions
 
-        bad_csv = "Transaction Date,Description,Amount\nJanuary 15 2024,MERCHANT,-10.00\n"
-        blob_store = self._make_blob_store(bad_csv)
         pool = MagicMock()
+        pool.fetchrow = AsyncMock(return_value=None)
 
         result = await import_transactions(
             pool=pool,
-            blob_store=blob_store,
+            blob_store=self._make_blob_store(csv_text),
             storage_ref="s3://bucket/finance/bad.csv",
             origin_butler="finance",
         )
 
-        assert result["status"] == "error"
-        assert "date" in result["error"].lower()
+        assert result["status"] == "unrecognized_format"
+        assert result["headers"] == csv_text.split("\n", 1)[0].split(",")
+        assert result["missing_columns"] == missing_columns
+        pool.execute.assert_not_called()
 
     async def test_row_with_missing_amount_logged_as_error(self):
         """Row with empty amount is captured in error_details, not raised."""

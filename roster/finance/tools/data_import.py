@@ -350,6 +350,23 @@ def _resolve_generic_cols(headers: list[str]) -> dict[str, str | None]:
     }
 
 
+def _unmapped_required_columns(
+    fmt: dict[str, Any], headers: list[str], column_map: dict[str, str] | None
+) -> list[str]:
+    """Return the required canonical columns a generic CSV leaves unmapped.
+
+    Known formats map every required column by signature, so only the generic
+    fallback can come up short. Caller ``column_map`` entries count as mapped.
+    """
+    if fmt["name"] != "generic":
+        return []
+    resolved = {**_resolve_generic_cols(headers), **(column_map or {})}
+    missing = [col for col in (_COL_DATE, _COL_MERCHANT) if not resolved.get(col)]
+    if not resolved.get(_COL_AMOUNT) and not resolved.get("use_split"):
+        missing.append(_COL_AMOUNT)
+    return missing
+
+
 # ---------------------------------------------------------------------------
 # Row parsing
 # ---------------------------------------------------------------------------
@@ -1010,7 +1027,10 @@ async def import_transactions(
            categories_learned, preview (when dry_run=True, with is_duplicate flags),
            currency_warning (when currency fell back to USD)}``, or
         ``{status: "refused" | "error", ...}`` when the ref is out of scope or
-        unreadable. The pipeline itself lives in ``_import_csv_content``.
+        unreadable, or ``{status: "unrecognized_format", headers, missing_columns,
+        error, ...}`` when the columns or date format cannot be detected (retry
+        with a ``column_map`` built from ``headers``). The pipeline itself lives in
+        ``_import_csv_content``.
     """
     import_batch_id = str(uuid.uuid4())
 
@@ -1327,15 +1347,22 @@ async def _import_csv_content(
     sample_dates = _sample_date_values(content, date_col_name, n=10)
     date_fmt = _detect_date_format(sample_dates)
 
-    if date_fmt is None:
+    # Spec finance-data-import "Unknown format fallback": when the file cannot
+    # be mapped, hand back its headers so the caller can supply a column_map.
+    missing_columns = _unmapped_required_columns(fmt, headers, column_map)
+    if date_fmt is None or missing_columns:
+        if missing_columns:
+            reason = f"No column found for: {', '.join(missing_columns)}."
+        else:
+            reason = f"Could not auto-detect date format. Sample values: {sample_dates[:5]}."
         return {
-            "status": "error",
+            "status": "unrecognized_format",
             "error": (
-                "Could not auto-detect date format. "
-                f"Sample values: {sample_dates[:5]}. "
-                "Provide a column_map with 'date' pointing to the correct column, "
-                "or verify the file contains a date column."
+                f"{reason} Provide a column_map naming the date, merchant, "
+                "and amount columns from the returned headers."
             ),
+            "headers": headers,
+            "missing_columns": missing_columns,
             "import_batch_id": import_batch_id,
             "detected_format": fmt["name"],
         }
