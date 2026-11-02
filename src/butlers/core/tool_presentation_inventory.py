@@ -10056,10 +10056,7 @@ STORE_WRITERS = MappingProxyType(
         ),
         "approval_push_emissions": StoreWriters(
             record_capabilities=(),
-            native_writers=(
-                "butlers.modules.approvals.notifications._record_push_outcome",
-                "butlers.modules.approvals.notifications.reserve_approval_push",
-            ),
+            native_writers=(),
             unknown_writers=True,
         ),
         "approval_rules": StoreWriters(
