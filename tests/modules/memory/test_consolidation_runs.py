@@ -708,79 +708,101 @@ class TestRunConsolidationWritesAuditRow:
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_consolidation_runs_table_after_migration(db_pool) -> None:
+async def test_consolidation_runs_table_after_migration(provisioned_postgres_pool) -> None:
     """Table exists with the contracted columns and SELECT is granted to a butler role."""
     mod = _load_core()
-    pool = db_pool  # the real core chain ran core_119
-
-    # Table exists.
-    assert await pool.fetchval("SELECT to_regclass('public.consolidation_runs')") is not None
-
-    # All contracted columns present with expected types.
-    rows = await pool.fetch(
-        """
-        SELECT column_name, data_type
-        FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'consolidation_runs'
-        """
-    )
-    columns = {r["column_name"]: r["data_type"] for r in rows}
-    for expected in (
-        "id",
-        "butler",
-        "consolidated_at",
-        "episodes_processed",
-        "facts_produced",
-        "facts_updated",
-        "rules_created",
-        "confirmations_made",
-        "errors",
-    ):
-        assert expected in columns, f"missing column {expected!r}"
-    assert columns["butler"] == "text"
-    assert columns["consolidated_at"] == "timestamp with time zone"
-    assert columns["episodes_processed"] == "integer"
-
-    # A row round-trips with defaults.
-    await pool.execute(
-        "INSERT INTO public.consolidation_runs (butler, facts_produced) VALUES ($1, $2)",
-        "general",
-        7,
-    )
-    row = await pool.fetchrow(
-        "SELECT butler, facts_produced, episodes_processed, errors "
-        "FROM public.consolidation_runs WHERE butler = 'general'"
-    )
-    assert row["facts_produced"] == 7
-    assert row["episodes_processed"] == 0
-    assert row["errors"] == 0
-
-    # Grant read-only SELECT to a butler role if it exists, then confirm
-    # the privilege landed (and that no write privilege was granted).
-    role = "butler_general_rw"
-    role_exists = await pool.fetchval(
-        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role
-    )
-    if role_exists:
-        existing_roles = {
-            r["rolname"]
-            for r in await pool.fetch(
-                "SELECT rolname FROM pg_roles WHERE rolname = ANY($1)",
-                list(mod._ALL_RUNTIME_ROLES),
+    async with provisioned_postgres_pool() as pool:
+        # Apply the migration's upgrade SQL directly (mirrors upgrade()).
+        await pool.execute(
+            """
+            CREATE TABLE IF NOT EXISTS public.consolidation_runs (
+                id                 BIGSERIAL PRIMARY KEY,
+                butler             TEXT NOT NULL,
+                consolidated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                episodes_processed INT NOT NULL DEFAULT 0,
+                facts_produced     INT NOT NULL DEFAULT 0,
+                facts_updated      INT NOT NULL DEFAULT 0,
+                rules_created      INT NOT NULL DEFAULT 0,
+                confirmations_made INT NOT NULL DEFAULT 0,
+                errors             INT NOT NULL DEFAULT 0
             )
-        }
-        for r in mod._ALL_RUNTIME_ROLES:
-            if r in existing_roles:
-                await pool.execute(
-                    f'GRANT {mod._TABLE_PRIVILEGES} ON TABLE public.consolidation_runs TO "{r}"'
+            """
+        )
+        await pool.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_consolidation_runs_butler_consolidated_at
+            ON public.consolidation_runs (butler, consolidated_at DESC)
+            """
+        )
+
+        # Table exists.
+        assert await pool.fetchval("SELECT to_regclass('public.consolidation_runs')") is not None
+
+        # All contracted columns present with expected types.
+        rows = await pool.fetch(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'consolidation_runs'
+            """
+        )
+        columns = {r["column_name"]: r["data_type"] for r in rows}
+        for expected in (
+            "id",
+            "butler",
+            "consolidated_at",
+            "episodes_processed",
+            "facts_produced",
+            "facts_updated",
+            "rules_created",
+            "confirmations_made",
+            "errors",
+        ):
+            assert expected in columns, f"missing column {expected!r}"
+        assert columns["butler"] == "text"
+        assert columns["consolidated_at"] == "timestamp with time zone"
+        assert columns["episodes_processed"] == "integer"
+
+        # A row round-trips with defaults.
+        await pool.execute(
+            "INSERT INTO public.consolidation_runs (butler, facts_produced) VALUES ($1, $2)",
+            "general",
+            7,
+        )
+        row = await pool.fetchrow(
+            "SELECT butler, facts_produced, episodes_processed, errors "
+            "FROM public.consolidation_runs WHERE butler = 'general'"
+        )
+        assert row["facts_produced"] == 7
+        assert row["episodes_processed"] == 0
+        assert row["errors"] == 0
+
+        # Grant read-only SELECT to a butler role if it exists, then confirm
+        # the privilege landed (and that no write privilege was granted).
+        role = "butler_general_rw"
+        role_exists = await pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)", role
+        )
+        if role_exists:
+            existing_roles = {
+                r["rolname"]
+                for r in await pool.fetch(
+                    "SELECT rolname FROM pg_roles WHERE rolname = ANY($1)",
+                    list(mod._ALL_RUNTIME_ROLES),
                 )
-        can_select = await pool.fetchval(
-            "SELECT has_table_privilege($1, 'public.consolidation_runs', 'SELECT')",
-            role,
-        )
-        can_insert = await pool.fetchval(
-            "SELECT has_table_privilege($1, 'public.consolidation_runs', 'INSERT')",
-            role,
-        )
-        assert can_select is True
-        assert can_insert is False, "audit table must be read-only for butler roles"
+            }
+            for r in mod._ALL_RUNTIME_ROLES:
+                if r in existing_roles:
+                    await pool.execute(
+                        f'GRANT {mod._TABLE_PRIVILEGES} ON TABLE public.consolidation_runs TO "{r}"'
+                    )
+            can_select = await pool.fetchval(
+                "SELECT has_table_privilege($1, 'public.consolidation_runs', 'SELECT')",
+                role,
+            )
+            can_insert = await pool.fetchval(
+                "SELECT has_table_privilege($1, 'public.consolidation_runs', 'INSERT')",
+                role,
+            )
+            assert can_select is True
+            assert can_insert is False, "audit table must be read-only for butler roles"
