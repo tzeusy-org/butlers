@@ -8,7 +8,10 @@ from typing import Any
 
 from butlers.core.tool_call_capture import get_current_runtime_session_id as _get_session_id
 from butlers.modules.approvals.execution_context import get_approval_execution_context
-from butlers.modules.calendar_approval import calendar_approval_args
+from butlers.modules.calendar_approval import (
+    bind_calendar_approval_calendar,
+    calendar_approval_args,
+)
 
 from .constants import (
     DEFAULT_SCHEDULED_TASK_DURATION_MINUTES,
@@ -132,6 +135,7 @@ class RecurrenceMixin:
         action_payload: dict[str, Any],
         recurrence_scope: str,
         occurrences_touched: int,
+        resolved_calendar_id: str,
     ) -> dict[str, Any] | None:
         """Route large ``series`` / ``following`` mutations through the approval gate.
 
@@ -147,7 +151,9 @@ class RecurrenceMixin:
             return None
         if occurrences_touched < RECURRENCE_HIGH_IMPACT_THRESHOLD:
             return None
-        gated_tool_args = calendar_approval_args(tool_name, **tool_args)
+        gated_tool_args = bind_calendar_approval_calendar(
+            calendar_approval_args(tool_name, **tool_args), resolved_calendar_id
+        )
         agent_summary = (
             f"Calendar recurrence high-impact action: {tool_name} touches "
             f"{occurrences_touched} occurrences (scope={recurrence_scope}, "
@@ -300,6 +306,7 @@ class RecurrenceMixin:
             action_payload=action_payload,
             recurrence_scope=recurrence_scope,
             occurrences_touched=occurrences_touched,
+            resolved_calendar_id=resolved_calendar_id,
         )
         if gate is not None:
             return gate
@@ -474,6 +481,7 @@ class RecurrenceMixin:
             action_payload=action_payload,
             recurrence_scope=recurrence_scope,
             occurrences_touched=occurrences_touched,
+            resolved_calendar_id=resolved_calendar_id,
         )
         if gate is not None:
             return gate

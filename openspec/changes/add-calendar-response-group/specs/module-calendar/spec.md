@@ -126,6 +126,7 @@ Scope: v1-mandatory
 - **AND** no calendar tool input schema SHALL declare a parameter that asserts approval
 - **AND** a gated mutation SHALL run without parking only while the approvals executor replays the exact stored call, proven by the execution context for that tool and argument digest
 - **AND** a parked call SHALL store every public parameter, defaults included, so the replay executes exactly what the owner approved
+- **AND** a parked call to a tool that takes `calendar_id` SHALL bind the concrete calendar resolved at park time, so a later default-calendar change cannot redirect the approved effect; an approved row without a bound `calendar_id` SHALL be refused before effect
 
 #### Scenario: Create butler-generated event
 

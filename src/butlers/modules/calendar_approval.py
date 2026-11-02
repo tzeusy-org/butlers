@@ -120,6 +120,11 @@ _CALLS: dict[str, tuple[tuple[str, ...], dict[str, Any]]] = {
 
 CALENDAR_APPROVAL_TOOLS = frozenset(_CALLS)
 
+# Tools whose effect lands on a provider calendar. Their approved call must name
+# that calendar concretely: ``calendar_id=None`` means "resolve at execution",
+# which would let a later default-calendar change redirect an approved effect.
+_CALENDAR_ID_TOOLS = frozenset(name for name, (_, d) in _CALLS.items() if "calendar_id" in d)
+
 _DATETIMES = frozenset({"start_at", "end_at", "instance_start_at", "until_at"})
 
 
@@ -166,6 +171,21 @@ def calendar_approval_args(tool_name: str, **arguments: Any) -> dict[str, Any]:
     return json.loads(json.dumps(complete, default=_json_value, allow_nan=False))
 
 
+def bind_calendar_approval_calendar(
+    approval_args: dict[str, Any], resolved_calendar_id: str
+) -> dict[str, Any]:
+    """Pin the calendar resolved at park time into a parked call's canonical args.
+
+    An explicit caller ``calendar_id`` is already bound and is kept as given;
+    ``None`` becomes the concrete calendar the gate resolved, so the approved
+    digest covers the calendar the owner saw and replay cannot follow a moved
+    default.
+    """
+    if approval_args.get("calendar_id") is not None:
+        return approval_args
+    return {**approval_args, "calendar_id": resolved_calendar_id}
+
+
 def retire_legacy_calendar_approval_args(
     tool_name: str, stored_args: dict[str, Any]
 ) -> dict[str, Any]:
@@ -177,6 +197,10 @@ def retire_legacy_calendar_approval_args(
     no-authority leftovers are dropped; any other value or unknown key raises
     so the executor refuses before effect. Deletable once no pending calendar
     row carries the marker.
+
+    Rows parked before bu-eio2my may also leave ``calendar_id`` unbound. Those
+    are refused rather than resolved at execution time: the owner never saw
+    the calendar such a replay would touch, so they must re-request.
     """
     public_args = dict(stored_args)
     if "_approval_bypass" in public_args and public_args.pop("_approval_bypass") is not True:
@@ -187,4 +211,7 @@ def retire_legacy_calendar_approval_args(
         and public_args.pop("clear_entity_ids") is not False
     ):
         raise ValueError("invalid legacy calendar approval argument")
-    return calendar_approval_args(tool_name, **public_args)
+    canonical = calendar_approval_args(tool_name, **public_args)
+    if tool_name in _CALENDAR_ID_TOOLS and canonical["calendar_id"] is None:
+        raise ValueError("approved calendar call does not bind a calendar_id; re-request it")
+    return canonical

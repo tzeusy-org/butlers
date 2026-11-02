@@ -201,6 +201,9 @@ None. The approvals module is a leaf module. Other modules interact with it indi
   `calendar_update_event_instance`, `clear_entity_ids: false`); only those exact values are dropped.
   Any other value or unknown key refuses before effect. The marker is never forwarded and grants
   nothing; delete this retirement once no pending calendar row carries it.
+  A row for a tool that takes `calendar_id` must bind it concretely: rows parked before bu-eio2my
+  with `calendar_id: null` are refused before effect (the owner never saw the calendar a replay
+  would resolve to) and must be re-requested.
 - `ButlerDaemon._apply_approval_gates()` (`src/butlers/daemon.py`) falls back to registered MCP
   tool handlers when an approved action's
   `tool_name` is not a gated original, so module-queued actions for non-gated tools can execute.

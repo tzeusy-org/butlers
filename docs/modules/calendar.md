@@ -218,7 +218,10 @@ owners, without keeping a second engine. Every Calendar package Python file is l
   comes from `calendar_approval_args` (`src/butlers/modules/calendar_approval.py`), which both
   the gates (to build the parked `tool_args`) and the tools (to check the context) use. It
   includes every public parameter with its default and stores datetimes as ISO strings; the
-  tools parse them back at entry. The same context lets a replay resume its own pending
+  tools parse them back at entry. When the call omits `calendar_id`, the gate binds the calendar
+  it resolved at park time (`bind_calendar_approval_calendar`), so the approved digest names the
+  calendar the owner saw and a later default-calendar change cannot redirect the replay (overlap
+  gates bind it the same way). The same context lets a replay resume its own pending
   `calendar_action_log` row; any other caller is told the mutation is still queued.
 - `POST /api/calendar/workspace/sync` keeps the raw `query_calendar_sources` fan-out, picks one
   canonical owner per calendar (enabled, `core` capability, freshest) and sends it a single

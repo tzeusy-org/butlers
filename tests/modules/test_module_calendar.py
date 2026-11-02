@@ -748,6 +748,8 @@ class TestCalendarWriteTools:
         assert result["action_id"] == "action-123"
         assert len(enqueue_calls) == 1
         assert enqueue_calls[0][0] == "calendar_create_event"
+        # The parked call names the concrete calendar, not "resolve at replay".
+        assert enqueue_calls[0][1]["calendar_id"] == "primary"
 
 
 # ---------------------------------------------------------------------------
@@ -3974,7 +3976,12 @@ class _RecurringProviderDouble(_ProviderDouble):
 
     async def set_recurrence(self, *, calendar_id, event_id, recurrence, send_updates=None):
         self.set_recurrence_calls.append(
-            {"event_id": event_id, "recurrence": list(recurrence), "send_updates": send_updates}
+            {
+                "calendar_id": calendar_id,
+                "event_id": event_id,
+                "recurrence": list(recurrence),
+                "send_updates": send_updates,
+            }
         )
         return self._event
 
@@ -4089,6 +4096,9 @@ class TestCalendarApprovalAuthority:
             return str(pool.row["id"])
 
         mod.set_approval_enqueuer(enqueue)
+        # The owner approves the default-target calendar resolved at park time.
+        mod._resolved_calendar_id = None
+        mod._default_target_calendar_id = "cal-seen"
         # Keep the workspace pending door real: only a proven executor context
         # may resume it. The remaining projection seams are provider-test doubles.
         mod._load_projection_action = AsyncMock(return_value=None)
@@ -4123,6 +4133,9 @@ class TestCalendarApprovalAuthority:
             assert stored["body"] == call["body"]
             assert "_approval_bypass" not in stored
             assert stored["all_day"] is None and stored["clear_entity_ids"] is False
+            assert stored["calendar_id"] == "cal-seen"
+            # The default moves after approval was requested; replay must not follow it.
+            mod._default_target_calendar_id = "cal-new"
 
             # The parked row is pending, so a session re-issuing the same call
             # (same request_id) is told it is queued and changes nothing.
@@ -4149,6 +4162,7 @@ class TestCalendarApprovalAuthority:
         assert outcomes[0].success and outcomes[1].to_dict() == outcomes[0].to_dict()
         # One following-scope mutation splits the master and creates its remainder.
         assert len(provider.set_recurrence_calls) == len(provider.created_payloads) == 1
+        assert provider.set_recurrence_calls[0]["calendar_id"] == "cal-seen"
         payload = provider.created_payloads[0]
         assert payload.start_at == call["start_at"] and payload.end_at == call["end_at"]
         assert payload.description == call["description"] and payload.body == call["body"]
@@ -4169,6 +4183,31 @@ class TestCalendarApprovalAuthority:
             assert not outcome.success
             assert pool.row["status"] == "approved"
         handler.assert_not_awaited()
+
+    async def test_executor_refuses_row_without_bound_calendar(self):
+        """Rows parked before bu-eio2my left calendar_id unbound; replay would
+        resolve whatever calendar is the default at execution time, so they
+        refuse before effect and the owner re-requests the change."""
+        from butlers.modules.approvals.executor import execute_approved_action
+
+        pool = _CalendarApprovalRow()
+        handler = AsyncMock(return_value={"status": "deleted"})
+        stored = {
+            "event_id": "evt-1",
+            "instance_start_at": "2026-03-03T14:00:00+00:00",
+            "recurrence_scope": "following",
+            "_approval_bypass": True,
+        }
+        for calendar_id, admitted in ((None, False), ("cal-seen", True)):
+            args = stored if calendar_id is None else {**stored, "calendar_id": calendar_id}
+            pool.park("calendar_delete_event_instance", args)
+            pool.row["status"] = "approved"
+            outcome = await execute_approved_action(
+                pool, pool.row["id"], "calendar_delete_event_instance", args, handler
+            )
+            assert outcome.success is admitted
+        handler.assert_awaited_once()
+        assert handler.await_args.kwargs["calendar_id"] == "cal-seen"
 
 
 class _CalendarApprovalRow:

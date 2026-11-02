@@ -196,7 +196,8 @@ def register_event_tools(
                     "visibility": visibility,
                     "notes": notes,
                     "color_id": color_id,
-                    "calendar_id": calendar_id,
+                    # Bind the calendar the owner is shown, not "resolve later".
+                    "calendar_id": resolved_calendar_id,
                     "conflict_policy": resolved_conflict_policy,
                     "entity_ids": [str(e) for e in resolved_entity_ids],
                 },
@@ -599,7 +600,8 @@ def register_event_tools(
                         "recurrence_rule": recurrence_rule,
                         "recurrence_scope": recurrence_scope,
                         "color_id": color_id,
-                        "calendar_id": calendar_id,
+                        # Bind the calendar the owner is shown, not "resolve later".
+                        "calendar_id": resolved_calendar_id,
                         "conflict_policy": resolved_conflict_policy,
                         "entity_ids": (
                             [str(e) for e in entity_ids] if entity_ids is not None else None
