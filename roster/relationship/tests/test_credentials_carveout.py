@@ -29,8 +29,6 @@ from pathlib import Path
 import asyncpg
 import pytest
 
-from butlers.testing.schema_standins import ENTITY_PREDICATE_REGISTRY
-
 # ---------------------------------------------------------------------------
 # Helper: load the migration module.
 # Filenames starting with a digit (016_…) cannot be imported via standard
@@ -94,92 +92,15 @@ pytestmark = [
 
 
 @pytest.fixture
-async def pool(provisioned_postgres_pool):
-    """Fresh DB with public.entities, relationship.credentials, relationship.entity_facts."""
-    async with provisioned_postgres_pool() as p:
-        # 1. public.entities (FK target for relationship.credentials.entity_id)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS public.entities (
-                id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-                canonical_name TEXT        NOT NULL DEFAULT '',
-                name           TEXT        NOT NULL DEFAULT '',
-                entity_type    TEXT        NOT NULL DEFAULT 'person',
-                aliases        TEXT[]      NOT NULL DEFAULT '{}',
-                metadata       JSONB       DEFAULT '{}'::jsonb,
-                roles          TEXT[]      NOT NULL DEFAULT '{}',
-                created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # 2. relationship schema
-        await p.execute("CREATE SCHEMA IF NOT EXISTS relationship")
-
-        # 3. relationship.entity_facts (needed to verify credentials are NOT inserted here)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.entity_facts (
-                id          UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                subject     UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                predicate   TEXT        NOT NULL,
-                object      TEXT        NOT NULL,
-                object_kind TEXT        NOT NULL CHECK (object_kind IN ('literal', 'entity')),
-                src         TEXT        NOT NULL,
-                conf        FLOAT       NOT NULL DEFAULT 1.0
-                                CHECK (conf >= 0.0 AND conf <= 1.0),
-                last_seen   TIMESTAMPTZ,
-                weight      INT,
-                verified    BOOL        NOT NULL DEFAULT false,
-                "primary"   BOOL,
-                validity    TEXT        NOT NULL DEFAULT 'active'
-                                CHECK (validity IN ('active', 'retracted', 'superseded')),
-                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
-            )
-        """)
-
-        # 4. relationship.credentials (the table under test — exact schema from migration)
-        await p.execute("""
-            CREATE TABLE IF NOT EXISTS relationship.credentials (
-                id           UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                entity_id    UUID        NOT NULL REFERENCES public.entities(id) ON DELETE CASCADE,
-                type         TEXT        NOT NULL,
-                value        TEXT        NOT NULL,
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_used_at TIMESTAMPTZ,
-                revoked_at   TIMESTAMPTZ
-            )
-        """)
-
-        # 5. Partial unique index: one active credential per (entity, type)
-        await p.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_cred_entity_type_active
-                ON relationship.credentials (entity_id, type)
-                WHERE revoked_at IS NULL
-        """)
-
-        # 6. Lookup index
-        await p.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cred_entity_id
-                ON relationship.credentials (entity_id)
-        """)
-
-        # 7. entity_predicate_registry (used by credential-vs-fact independence test)
-        await p.execute(ENTITY_PREDICATE_REGISTRY.ddl(schema="relationship"))
-        await p.execute("""
-            INSERT INTO relationship.entity_predicate_registry
-                (predicate, kind, object_kind, description)
-            VALUES ('has-email', 'contact', 'literal', 'Email address.')
-            ON CONFLICT (predicate) DO NOTHING
-        """)
-
-        yield p
+async def rel_pool(db):
+    """Real chains: public.entities, relationship.credentials and relationship.entity_facts."""
+    return await db("core", "memory", "relationship")
 
 
 @pytest.fixture
-async def entity(pool: asyncpg.Pool) -> uuid.UUID:
+async def entity(rel_pool: asyncpg.Pool) -> uuid.UUID:
     """Insert a regular entity and return its id."""
-    eid = await pool.fetchval(
+    eid = await rel_pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
         "VALUES ('Test Person', 'person', '{}') RETURNING id"
     )
@@ -192,9 +113,9 @@ async def entity(pool: asyncpg.Pool) -> uuid.UUID:
 
 
 class TestCredentialInsertReadback:
-    async def test_insert_credential_returns_id(self, pool, entity):
+    async def test_insert_credential_returns_id(self, rel_pool, entity):
         """A credential row can be inserted and its id returned."""
-        cred_id = await pool.fetchval(
+        cred_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, $2, $3) RETURNING id",
             entity,
@@ -203,14 +124,14 @@ class TestCredentialInsertReadback:
         )
         assert cred_id is not None
 
-    async def test_read_back_inserted_credential(self, pool, entity):
+    async def test_read_back_inserted_credential(self, rel_pool, entity):
         """Inserted credential can be read back with all expected fields."""
-        cred_id = await pool.fetchval(
+        cred_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'telegram_session', 'session-data-xyz') RETURNING id",
             entity,
         )
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT * FROM relationship.credentials WHERE id = $1",
             cred_id,
         )
@@ -223,18 +144,18 @@ class TestCredentialInsertReadback:
         assert row["last_used_at"] is None
         assert row["revoked_at"] is None
 
-    async def test_last_used_at_can_be_set(self, pool, entity):
+    async def test_last_used_at_can_be_set(self, rel_pool, entity):
         """last_used_at field is nullable and can be updated."""
-        cred_id = await pool.fetchval(
+        cred_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'blob') RETURNING id",
             entity,
         )
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE relationship.credentials SET last_used_at = now() WHERE id = $1",
             cred_id,
         )
-        row = await pool.fetchrow(
+        row = await rel_pool.fetchrow(
             "SELECT last_used_at FROM relationship.credentials WHERE id = $1",
             cred_id,
         )
@@ -247,14 +168,14 @@ class TestCredentialInsertReadback:
 
 
 class TestCredentialNotInEntityFacts:
-    async def test_credential_entity_facts_is_empty(self, pool, entity):
+    async def test_credential_entity_facts_is_empty(self, rel_pool, entity):
         """Inserting a credential into relationship.credentials does NOT touch entity_facts."""
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_oauth', 'oauth-token')",
             entity,
         )
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1",
             entity,
         )
@@ -263,27 +184,27 @@ class TestCredentialNotInEntityFacts:
             f"found {count} rows"
         )
 
-    async def test_credential_and_fact_are_independent(self, pool, entity):
+    async def test_credential_and_fact_are_independent(self, rel_pool, entity):
         """A credential and a non-secured fact for the same entity coexist independently."""
         # Insert a non-secured email fact
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.entity_facts "
             "    (subject, predicate, object, object_kind, src) "
             "VALUES ($1, 'has-email', 'alice@example.com', 'literal', 'test')",
             entity,
         )
         # Insert a secured credential (goes to credentials, NOT entity_facts)
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'ciphertext-blob')",
             entity,
         )
 
-        fact_count = await pool.fetchval(
+        fact_count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.entity_facts WHERE subject = $1",
             entity,
         )
-        cred_count = await pool.fetchval(
+        cred_count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.credentials WHERE entity_id = $1",
             entity,
         )
@@ -297,59 +218,59 @@ class TestCredentialNotInEntityFacts:
 
 
 class TestUniqueConstraint:
-    async def test_duplicate_active_cred_same_type_raises(self, pool, entity):
+    async def test_duplicate_active_cred_same_type_raises(self, rel_pool, entity):
         """Inserting two active credentials of the same type for the same entity fails."""
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'first-blob')",
             entity,
         )
         with pytest.raises(asyncpg.UniqueViolationError):
-            await pool.execute(
+            await rel_pool.execute(
                 "INSERT INTO relationship.credentials (entity_id, type, value) "
                 "VALUES ($1, 'gmail_token', 'second-blob')",
                 entity,
             )
 
-    async def test_different_types_for_same_entity_are_allowed(self, pool, entity):
+    async def test_different_types_for_same_entity_are_allowed(self, rel_pool, entity):
         """Two active credentials of different types for the same entity are allowed."""
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'blob-a')",
             entity,
         )
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'telegram_session', 'blob-b')",
             entity,
         )
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.credentials WHERE entity_id = $1",
             entity,
         )
         assert count == 2
 
-    async def test_same_type_for_different_entities_are_allowed(self, pool):
+    async def test_same_type_for_different_entities_are_allowed(self, rel_pool):
         """Two different entities can each hold an active credential of the same type."""
-        eid_a = await pool.fetchval(
+        eid_a = await rel_pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Entity A', 'person', '{}') RETURNING id"
         )
-        eid_b = await pool.fetchval(
+        eid_b = await rel_pool.fetchval(
             "INSERT INTO public.entities (canonical_name, entity_type, roles) "
             "VALUES ('Entity B', 'person', '{}') RETURNING id"
         )
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'blob-for-a')",
             eid_a,
         )
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'blob-for-b')",
             eid_b,
         )
-        count = await pool.fetchval(
+        count = await rel_pool.fetchval(
             "SELECT COUNT(*) FROM relationship.credentials WHERE type = 'gmail_token'"
         )
         assert count == 2
@@ -361,69 +282,69 @@ class TestUniqueConstraint:
 
 
 class TestRevocation:
-    async def test_revoked_cred_does_not_block_new_active_cred(self, pool, entity):
+    async def test_revoked_cred_does_not_block_new_active_cred(self, rel_pool, entity):
         """After revoking an old credential, a new active credential of same type can be inserted."""
-        cred_id = await pool.fetchval(
+        cred_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'old-blob') RETURNING id",
             entity,
         )
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE relationship.credentials SET revoked_at = now() WHERE id = $1",
             cred_id,
         )
-        new_id = await pool.fetchval(
+        new_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'new-blob') RETURNING id",
             entity,
         )
         assert new_id is not None
 
-    async def test_revoked_row_persists_alongside_new_active(self, pool, entity):
+    async def test_revoked_row_persists_alongside_new_active(self, rel_pool, entity):
         """After rotation, both the revoked and new active rows exist (audit trail preserved)."""
-        old_id = await pool.fetchval(
+        old_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'old') RETURNING id",
             entity,
         )
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE relationship.credentials SET revoked_at = now() WHERE id = $1",
             old_id,
         )
-        new_id = await pool.fetchval(
+        new_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'new') RETURNING id",
             entity,
         )
 
-        old_row = await pool.fetchrow(
+        old_row = await rel_pool.fetchrow(
             "SELECT revoked_at FROM relationship.credentials WHERE id = $1", old_id
         )
-        new_row = await pool.fetchrow(
+        new_row = await rel_pool.fetchrow(
             "SELECT revoked_at FROM relationship.credentials WHERE id = $1", new_id
         )
 
         assert old_row["revoked_at"] is not None, "Old credential must be marked revoked"
         assert new_row["revoked_at"] is None, "New credential must be active (revoked_at IS NULL)"
 
-    async def test_active_cred_query_excludes_revoked(self, pool, entity):
+    async def test_active_cred_query_excludes_revoked(self, rel_pool, entity):
         """Querying active credentials (revoked_at IS NULL) returns only the new one."""
-        old_id = await pool.fetchval(
+        old_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'old') RETURNING id",
             entity,
         )
-        await pool.execute(
+        await rel_pool.execute(
             "UPDATE relationship.credentials SET revoked_at = now() WHERE id = $1",
             old_id,
         )
-        new_id = await pool.fetchval(
+        new_id = await rel_pool.fetchval(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'new') RETURNING id",
             entity,
         )
 
-        active = await pool.fetch(
+        active = await rel_pool.fetch(
             "SELECT id FROM relationship.credentials "
             "WHERE entity_id = $1 AND type = 'gmail_token' AND revoked_at IS NULL",
             entity,
@@ -431,15 +352,15 @@ class TestRevocation:
         assert len(active) == 1
         assert active[0]["id"] == new_id
 
-    async def test_two_unrevoked_same_type_still_blocked(self, pool, entity):
+    async def test_two_unrevoked_same_type_still_blocked(self, rel_pool, entity):
         """Without revoking the first, a second active cred of same type is rejected."""
-        await pool.execute(
+        await rel_pool.execute(
             "INSERT INTO relationship.credentials (entity_id, type, value) "
             "VALUES ($1, 'gmail_token', 'first')",
             entity,
         )
         with pytest.raises(asyncpg.UniqueViolationError):
-            await pool.execute(
+            await rel_pool.execute(
                 "INSERT INTO relationship.credentials (entity_id, type, value) "
                 "VALUES ($1, 'gmail_token', 'second')",
                 entity,
@@ -452,39 +373,13 @@ class TestRevocation:
 
 
 class TestDowngrade:
-    async def test_drop_indexes_and_table(self, pool):
+    async def test_drop_indexes_and_table(self, rel_pool):
         """Downgrade SQL drops indexes and table without errors; table must not exist after."""
-        # Use an isolated schema to avoid disturbing the shared pool schema.
-        await pool.execute("CREATE SCHEMA IF NOT EXISTS relationship_dg_test")
-        await pool.execute("""
-            CREATE TABLE IF NOT EXISTS relationship_dg_test.credentials (
-                id           UUID        NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
-                entity_id    UUID        NOT NULL,
-                type         TEXT        NOT NULL,
-                value        TEXT        NOT NULL,
-                created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-                last_used_at TIMESTAMPTZ,
-                revoked_at   TIMESTAMPTZ
-            )
-        """)
-        await pool.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS uq_cred_dg_test
-                ON relationship_dg_test.credentials (entity_id, type)
-                WHERE revoked_at IS NULL
-        """)
-        await pool.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cred_dg_test
-                ON relationship_dg_test.credentials (entity_id)
-        """)
+        # The per-test clone carries the real migrated table, so the downgrade
+        # statements (mirroring the migration's downgrade()) run against it.
+        await rel_pool.execute("DROP INDEX IF EXISTS relationship.uq_cred_entity_type_active")
+        await rel_pool.execute("DROP INDEX IF EXISTS relationship.idx_cred_entity_id")
+        await rel_pool.execute("DROP TABLE IF EXISTS relationship.credentials")
 
-        # Simulate downgrade (mirrors the downgrade() function in the migration)
-        await pool.execute("DROP INDEX IF EXISTS relationship_dg_test.uq_cred_dg_test")
-        await pool.execute("DROP INDEX IF EXISTS relationship_dg_test.idx_cred_dg_test")
-        await pool.execute("DROP TABLE IF EXISTS relationship_dg_test.credentials")
-
-        exists = await pool.fetchval("SELECT to_regclass('relationship_dg_test.credentials')")
+        exists = await rel_pool.fetchval("SELECT to_regclass('relationship.credentials')")
         assert exists is None, "credentials table should not exist after downgrade"
-
-        # Cleanup test schema
-        await pool.execute("DROP SCHEMA IF EXISTS relationship_dg_test CASCADE")
