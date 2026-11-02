@@ -14,19 +14,9 @@ from butlers.scheduled_jobs import (
     _run_chronicler_project_calendar_job,
     _run_chronicler_project_sessions_job,
 )
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
-
-
-class _AsyncCtx:
-    def __init__(self, obj: object) -> None:
-        self._obj = obj
-
-    async def __aenter__(self) -> object:
-        return self._obj
-
-    async def __aexit__(self, *_: object) -> None:
-        pass
 
 
 def _pool_with_schema_rows(*schemas: str):
@@ -34,7 +24,7 @@ def _pool_with_schema_rows(*schemas: str):
     conn.fetch = AsyncMock(return_value=[{"table_schema": schema} for schema in schemas])
 
     pool = AsyncMock()
-    pool.acquire = MagicMock(return_value=_AsyncCtx(conn))
+    pool.acquire = MagicMock(side_effect=lambda: AsyncCtx(conn))
     return pool, conn
 
 

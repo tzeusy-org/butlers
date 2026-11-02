@@ -242,6 +242,60 @@ async def test_ambiguous_outcome_holds_until_exact_reconciliation(pool, attempt)
     )
 
 
+_ADOPTED_URL = "https://github.com/acme/butlers/pull/{}"
+
+
+@pytest.mark.parametrize(
+    ("kind", "observed", "url", "prefilled"),
+    [
+        (OperationKind.PR_CREATE, "17", _ADOPTED_URL.format(17), 5),
+        (OperationKind.PR_CREATE, "9999999999", _ADOPTED_URL.format(9999999999), None),
+        (OperationKind.PR_CREATE, "17", _ADOPTED_URL.format(18), None),
+        (OperationKind.PR_CREATE, "17", "https://evil.example/acme/butlers/pull/17", None),
+        (OperationKind.BRANCH_PUSH, _SHA, _ADOPTED_URL.format(_SHA), None),
+    ],
+    ids=["attempt-names-a-pr", "integer-overflow", "url-mismatch", "foreign-url", "not-pr_create"],
+)
+async def test_reconciliation_releases_the_hold_but_skips_an_unsafe_attempt_fill(
+    pool, attempt, kind, observed, url, prefilled
+) -> None:
+    """The adoption fill's guards skip the attempt write, never the reconciliation."""
+    attempt_id, fingerprint = attempt
+    before = (prefilled, _ADOPTED_URL.format(prefilled)) if prefilled else (None, None)
+    await pool.execute(
+        "UPDATE public.healing_attempts SET pr_number = $2::integer, pr_url = $3::text "
+        "WHERE id = $1",
+        attempt_id,
+        *before,
+    )
+    operation = await begin_operation(
+        pool,
+        attempt_id=attempt_id,
+        kind=kind,
+        binding=_binding(),
+        request_digest=_PAYLOAD,
+        expected_object_id=_SHA if kind is OperationKind.BRANCH_PUSH else None,
+    )
+    assert await mark_egress_started(pool, operation.id)
+    assert await record_outcome(pool, operation.id, "ambiguous")
+
+    assert await record_reconciliation(
+        pool, operation.id, "resource_found", observed_object_id=observed, adopted_pr_url=url
+    )
+
+    assert not await get_publication_hold(pool, fingerprint)
+    row = await pool.fetchrow(
+        "SELECT stage, reconciliation, new_object_id FROM public.qa_publication_operations "
+        "WHERE id = $1",
+        operation.id,
+    )
+    assert tuple(row) == ("reconciled", "resource_found", observed)
+    pr = await pool.fetchrow(
+        "SELECT pr_number, pr_url FROM public.healing_attempts WHERE id = $1", attempt_id
+    )
+    assert tuple(pr) == before
+
+
 @pytest.mark.parametrize("terminal_status", ["timeout", "failed"])
 async def test_inactive_attempt_cannot_enter_egress(pool, attempt, terminal_status) -> None:
     attempt_id, fingerprint = attempt
@@ -329,6 +383,11 @@ async def test_sweep_adopts_the_only_pr_for_a_lost_pr_create(pool, attempt) -> N
         operation.id,
     )
     assert tuple(row) == ("reconciled", "resource_found", "17")
+    # The adoption lands on the attempt in the same write, so the case API shows the PR.
+    pr = await pool.fetchrow(
+        "SELECT pr_number, pr_url FROM public.healing_attempts WHERE id = $1", attempt_id
+    )
+    assert tuple(pr) == (17, "https://github.com/acme/butlers/pull/17")
 
     # A lost label set on the adopted PR binds that PR and is swept against its labels.
     labels = ("self-healing", "automated")

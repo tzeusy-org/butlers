@@ -23,6 +23,7 @@ from butlers.api.models.steam import (
     SteamConnectorConfigUpdateRequest,
     SteamPollIntervals,
 )
+from butlers.testing.fake_pool import fake_pool
 
 # ---------------------------------------------------------------------------
 # Mock helpers
@@ -52,16 +53,6 @@ def _make_mock_account() -> Any:
     return acct
 
 
-def _make_pool(conn_mock: Any) -> MagicMock:
-    """Build a pool mock whose acquire() returns an async context manager."""
-    pool = MagicMock()
-    acquire_ctx = AsyncMock()
-    acquire_ctx.__aenter__ = AsyncMock(return_value=conn_mock)
-    acquire_ctx.__aexit__ = AsyncMock(return_value=None)
-    pool.acquire = MagicMock(return_value=acquire_ctx)
-    return pool
-
-
 def _make_db_manager(*, switchboard_pool: Any = None, shared_pool: Any = None) -> Any:
     """Return a minimal DatabaseManager-like mock."""
     mgr = MagicMock()
@@ -83,9 +74,7 @@ def _make_db_manager(*, switchboard_pool: Any = None, shared_pool: Any = None) -
 
 async def test_get_connector_config_returns_defaults_when_no_settings() -> None:
     """When no dashboard settings are stored, effective values equal the compiled defaults."""
-    conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"settings": None})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"settings": None})
 
     with patch(
         "butlers.connectors.cursor_store.load_connector_settings",
@@ -111,8 +100,7 @@ async def test_get_connector_config_returns_stored_values() -> None:
         "max_tracked_games": 5,
         "poll_intervals": {"recently_played": 600, "online_status": 600},
     }
-    conn_mock = AsyncMock()
-    pool = _make_pool(conn_mock)
+    pool = fake_pool()
 
     with patch(
         "butlers.connectors.cursor_store.load_connector_settings",
@@ -152,8 +140,7 @@ async def test_patch_connector_config_persists_and_returns_merged() -> None:
         "heartbeat_interval_s": 60,
         "max_tracked_games": 10,
     }
-    conn_mock = AsyncMock()
-    pool = _make_pool(conn_mock)
+    pool = fake_pool()
 
     with (
         patch(
@@ -186,8 +173,7 @@ async def test_patch_connector_config_poll_intervals() -> None:
     async def _fake_load(pool: Any, ct: str, ei: str) -> dict | None:
         return None
 
-    conn_mock = AsyncMock()
-    pool = _make_pool(conn_mock)
+    pool = fake_pool()
 
     with (
         patch("butlers.connectors.cursor_store.load_connector_settings", new=_fake_load),
@@ -223,8 +209,7 @@ async def test_patch_connector_config_raises_503_when_no_switchboard() -> None:
 async def test_patch_connector_config_noop_when_no_fields() -> None:
     """PATCH with no supplied fields returns current config without calling save."""
     stored = {"account_rescan_s": 100, "heartbeat_interval_s": 45, "max_tracked_games": 8}
-    conn_mock = AsyncMock()
-    pool = _make_pool(conn_mock)
+    pool = fake_pool()
 
     with (
         patch(
@@ -252,9 +237,7 @@ async def test_patch_connector_config_noop_when_no_fields() -> None:
 
 async def test_get_account_config_returns_empty_when_no_overrides() -> None:
     """When metadata has no config keys, returns an empty overrides object."""
-    conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"metadata": {}})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"metadata": {}})
 
     with patch.object(
         steam_router,
@@ -278,9 +261,7 @@ async def test_get_account_config_returns_stored_overrides() -> None:
         "poll_intervals": {"recently_played": 600, "online_status": 120},
         "max_tracked_games": 5,
     }
-    conn_mock = AsyncMock()
-    conn_mock.fetchrow = AsyncMock(return_value={"metadata": metadata})
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(fetchrow={"metadata": metadata})
 
     with patch.object(
         steam_router,
@@ -305,9 +286,7 @@ async def test_get_account_config_returns_stored_overrides() -> None:
 
 async def test_patch_account_config_writes_metadata() -> None:
     """PATCH should execute an UPDATE on steam_accounts.metadata."""
-    conn_mock = AsyncMock()
-    conn_mock.execute = AsyncMock()
-    pool = _make_pool(conn_mock)
+    pool = fake_pool(execute=None)
 
     with patch.object(
         steam_router,
@@ -331,8 +310,8 @@ async def test_patch_account_config_writes_metadata() -> None:
     assert resp.overrides.poll_intervals.recently_played == 600
     assert resp.overrides.max_tracked_games == 5
     # Verify the DB update was called
-    conn_mock.execute.assert_called_once()
-    call_args = conn_mock.execute.call_args[0]
+    pool.execute.assert_called_once()
+    call_args = pool.execute.call_args[0]
     assert "UPDATE public.steam_accounts" in call_args[0]
 
 
@@ -342,8 +321,7 @@ async def test_patch_account_config_returns_404_for_unknown_account() -> None:
 
     from butlers.steam_account_registry import SteamAccountNotFoundError
 
-    conn_mock = AsyncMock()
-    pool = _make_pool(conn_mock)
+    pool = fake_pool()
 
     with patch.object(
         steam_router,
