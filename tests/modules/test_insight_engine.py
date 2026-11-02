@@ -1714,6 +1714,9 @@ class _FakeTensionPool:
     async def fetch(self, sql, *args):
         return self.members
 
+    async def fetchval(self, sql, *args):
+        return (args[0], args[1]) in getattr(self, "recorded", set())
+
 
 def _gift(idx: int, option: str, *, key: str = "gift:ent-1:2026-11-20", **extra) -> dict:
     return {
@@ -1775,17 +1778,25 @@ class TestTensionCluster:
             "message": "Rent due",
             "metadata": {"entity_id": "ent-2"},
         }
+        # Same entity links it into the cluster, but it declares no choice.
+        milestone = {
+            **other,
+            "id": uuid.UUID(int=8),
+            "dedup_key": "relationship:ms:8",
+            "message": "Milestone",
+            "metadata": {"entity_id": "ent-1"},
+        }
         pool = _FakeTensionPool()
         remaining, absorbed = await absorb_tensions(
-            pool, [_gift(1, "tea"), _gift(2, "book"), other], confirm_fn, budget=3
+            pool, [_gift(1, "tea"), _gift(2, "book"), other, milestone], confirm_fn, budget=3
         )
         assert len(asked) == 1
         assert [o.label for o in asked[0].options] == ["book", "tea"]
         assert asked[0].member_ids == (str(uuid.UUID(int=1)), str(uuid.UUID(int=2)))
         assert absorbed == 1
-        assert remaining == [other]
+        assert remaining == [other, milestone]
         digest = await _format_digest(remaining)
-        assert "tea" not in digest and "Rent due" in digest
+        assert "tea" not in digest and "Rent due" in digest and "Milestone" in digest
         # members settle as delivered with the cluster ref stamped for the answer path
         assert any(entry[0] == "execute" and "UPDATE" in entry[1] for entry in pool.log)
 
@@ -1839,6 +1850,11 @@ class TestTensionCluster:
         }
         assert all(c.kwargs["verdict"] == "useful" for c in record.await_args_list)
         assert all(c.kwargs["evidence_ref"].endswith(":book") for c in record.await_args_list)
+        # a retry after a lost receipt must not insert a second feedback row
+        pool.recorded = {(str(m["id"]), "tension:ref-1:book") for m in members}
+        with patch.object(broker, "record_insight_feedback", AsyncMock()) as again:
+            await registration.apply(uuid.uuid4(), "ref-1", "o0")
+        again.assert_not_awaited()
         # expiry never reaches the sink (ConfirmService reports no_answer), and asking
         # alone recorded no feedback.
         assert {v for v in registration.values} == {"o0", "o1", "o2", "o3"}

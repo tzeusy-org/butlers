@@ -1322,15 +1322,30 @@ def _tension_ref(cluster: list[dict[str, Any]]) -> str:
     return hashlib.sha256(keys.encode()).hexdigest()[:32]
 
 
+def _tension_members(cluster: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Members that declare the asked (first conflicting) choice key.
+
+    A cluster can link unrelated candidates by entity or time; only the members
+    taking part in the conflict belong to the question. The rest stay in the digest.
+    """
+    conflicts = _tension_choices(cluster)
+    if not conflicts:
+        return []
+    key = sorted(conflicts)[0]
+    return [c for c in cluster if (choice := _candidate_choice(c)) and choice[0] == key]
+
+
 def tension_question(cluster: list[dict[str, Any]]) -> TensionQuestion | None:
     """Build the owner question for a tension cluster, or None if it cannot be asked.
 
-    Only the first conflicting key is asked; its distinct options (sorted, so the
-    option vocabulary is stable across cycles) must fit the 2-4 option card.
+    Only the first conflicting key is asked, over the members declaring it; its
+    distinct options (sorted, so the option vocabulary is stable across cycles)
+    must fit the 2-4 option card.
     """
     conflicts = _tension_choices(cluster)
     if not conflicts:
         return None
+    cluster = _tension_members(cluster)
     options = sorted(conflicts[sorted(conflicts)[0]])
     if len(options) > _TENSION_MAX_OPTIONS:
         return None
@@ -1397,8 +1412,9 @@ async def absorb_tensions(
                 now,
                 question.ref,
             )
-            await record_cooldowns(conn, cluster, now=now)
-            await record_engagement_rows(conn, cluster, delivered_at=now)
+            members = _tension_members(cluster)
+            await record_cooldowns(conn, members, now=now)
+            await record_engagement_rows(conn, members, delivered_at=now)
         absorbed_ids.update(question.member_ids)
         absorbed += 1
     return [c for c in candidates if str(c["id"]) not in absorbed_ids], absorbed
@@ -1425,6 +1441,14 @@ async def apply_tension_answer(
     chosen = next(o.label for o in question.options if o.value == value)
     evidence = f"tension:{tension_ref}:{chosen}"
     for member in members:
+        # The confirm service re-invokes this after errors and timeouts, and each
+        # feedback call inserts a row: skip members that already carry this evidence.
+        if await pool.fetchval(
+            "SELECT 1 FROM insight_feedback WHERE insight_id = $1::uuid AND evidence_ref = $2",
+            str(member["id"]),
+            evidence,
+        ):
+            continue
         result = await record_insight_feedback(
             pool,
             insight_id=str(member["id"]),
@@ -2467,7 +2491,7 @@ async def delivery_cycle(
     if tensions_asked:
         result["tensions_asked"] = tensions_asked
         effective_budget -= tensions_asked
-        if effective_budget <= 0 or not candidates:
+        if not candidates:
             return result
     weights = await compute_category_budget_weights(
         pool,
