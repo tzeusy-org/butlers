@@ -168,3 +168,28 @@ async def test_a_notify_that_sets_a_non_allowlisted_field_stays_keyed_and_fails_
     selected = _select(_in_a_later_process(record, monkeypatch))
 
     assert selected.invalid
+
+
+async def test_a_rejected_notify_before_its_retry_never_takes_the_executed_row() -> None:
+    """The parser saw notify A (rejected by FastMCP, never executed), then retry B."""
+    from butlers.core.spawner_tool_calls import _merge_tool_call_records
+
+    executed = await _executed_notify(channel="telegram", message=MESSAGE)
+    rejected = {
+        "id": "toolu_a",
+        "name": "mcp__chronicler__notify",
+        "input": {"channel": "sms", "message": "A draft the schema rejected."},
+    }
+    retried = {
+        "id": "toolu_b",
+        "name": "mcp__chronicler__notify",
+        "input": {"channel": "telegram", "message": MESSAGE},
+    }
+
+    merged = _merge_tool_call_records([rejected, retried], [executed], butler_name="chronicler")
+
+    assert [call["id"] for call in merged] == ["toolu_a", "toolu_b"]
+    assert "outcome" not in merged[0]
+    assert merged[1]["outcome"] == "success"
+    selected = _select([_bundle(), *merged])
+    assert not selected.invalid and selected.prose == MESSAGE

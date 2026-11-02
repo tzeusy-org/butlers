@@ -321,3 +321,28 @@ async def test_pass_one_pairs_by_fingerprint_for_a_tool_named_with_its_butler_pr
         executed[0]["input_fingerprint"],
     ]
     assert all(call["name"] == "finance_track_bill" for call in merged)
+
+
+def test_order_pairing_skips_a_parser_call_whose_view_disagrees_with_the_execution() -> None:
+    """A rejected answer_question before its retry stays parser-only; the retry pairs."""
+    executed = {
+        "name": "answer_question",
+        "input": {"scope": "system", "target": "health"},
+        "input_fingerprint": "daemon-keyed",
+        "outcome": "success",
+    }
+    rejected = {
+        "id": "a1",
+        "name": "mcp__switchboard__answer_question",
+        "input": {"scope": "owner", "target": "health", "question": "q"},
+    }
+    retried = {
+        "id": "b1",
+        "name": "mcp__switchboard__answer_question",
+        "input": {"scope": "system", "target": "health", "question": "q"},
+    }
+
+    merged = _merge_tool_call_records([rejected, retried], [executed], butler_name="switchboard")
+
+    assert [call["id"] for call in merged] == ["a1", "b1"]
+    assert [call.get("outcome") for call in merged] == [None, "success"]

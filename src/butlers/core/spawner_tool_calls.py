@@ -149,6 +149,10 @@ def _capture_view(tool_name: str, payload: Any) -> dict[str, Any]:
     return {key: payload[key] for key in fields if key in payload}
 
 
+def _json_normalized(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+
+
 def _strip_parsed_input(call: dict[str, Any], butler_name: str) -> dict[str, Any]:
     """Normalize a parser record's name and reduce its raw input to the capture allowlist.
 
@@ -242,13 +246,31 @@ def _merge_tool_call_records(
             fingerprint = plain_tool_call_fingerprint(_payload_for_signature(call))
         return f"{_canonical_name(call)}|{fingerprint}"
 
+    def _view_agrees(parsed_call: dict[str, Any], executed_call: dict[str, Any]) -> bool:
+        """Every allowlisted value the parser reported equals the executed capture's value.
+
+        A call the server rejected before execution (then retried with other values) must
+        not take its retry's executed record.
+        """
+        parsed_view = parsed_call.get("input")
+        if not isinstance(parsed_view, dict) or not parsed_view:
+            return True
+        executed_view = executed_call.get("input")
+        if not isinstance(executed_view, dict):
+            return False
+        return all(
+            key in executed_view and _json_normalized(executed_view[key]) == _json_normalized(value)
+            for key, value in parsed_view.items()
+        )
+
     # Pair each executed (capture-side) record with an unclaimed parser record:
     # first by name and keyed input fingerprint, then, for what is left, by
-    # name in call order (a parser cannot know the defaults the daemon binds).
+    # name in call order (a parser cannot know the defaults the daemon binds),
+    # but only with a parser record whose allowlisted view agrees with the execution.
     executed_for_parsed: dict[int, int] = {}
     paired_executed: set[int] = set()
 
-    def _pair(key: Any) -> None:
+    def _pair(key: Any, *, check_view: bool = False) -> None:
         for executed_index, executed_call in enumerate(executed_calls):
             if executed_index in paired_executed:
                 continue
@@ -257,7 +279,9 @@ def _merge_tool_call_records(
                 (
                     idx
                     for idx, parsed_call in enumerate(parsed_calls)
-                    if idx not in executed_for_parsed and key(parsed_call) == executed_key
+                    if idx not in executed_for_parsed
+                    and key(parsed_call) == executed_key
+                    and (not check_view or _view_agrees(parsed_call, executed_call))
                 ),
                 None,
             )
@@ -266,7 +290,7 @@ def _merge_tool_call_records(
                 paired_executed.add(executed_index)
 
     _pair(_signature)
-    _pair(_canonical_name)
+    _pair(_canonical_name, check_view=True)
 
     # Emit in the parser's stream order, which interleaves MCP calls with
     # runtime built-ins (Bash, Read, ...) the capture side never sees; the

@@ -355,7 +355,8 @@ def test_only_recomputed_actual_signature_fingerprint_binds_value_carrier(repres
     if representation == "JSON-arguments":
         parser = {"name": "mcp__chronicler__notify", "arguments": json.dumps(payload)}
     merged = _merge_tool_call_records([parser], [captured], butler_name="chronicler")
-    assert len(merged) == 1
+    # A capture without its input view cannot confirm the parser's values, so they stay apart.
+    assert len(merged) == 2
     selected = select_day_close_narration(
         [bundle(), *merged],
         output="Delivery deferred by quiet hours.",
@@ -425,7 +426,7 @@ def test_a_parser_key_outside_the_notify_allowlist_never_reaches_the_merged_reco
         "input": {**notify["input"], "invented_target": "fixture-other"},
     }
     merged = _merge_tool_call_records([parser], [captured], butler_name="chronicler")
-    assert len(merged) == 1 and "invented_target" not in merged[0]["input"]
+    assert all("invented_target" not in call.get("input", {}) for call in merged)
     selected = select_day_close_narration(
         [bundle(), *merged],
         output="Delivery deferred by quiet hours.",

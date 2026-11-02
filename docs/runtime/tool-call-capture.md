@@ -53,8 +53,12 @@ After a session completes, the spawner calls `_merge_tool_call_records(parsed_ca
 2. For each executed call, compute a signature from `(tool_name, input fingerprint)` and
    match it to an unmatched parsed call with the same signature.
 3. An executed call that did not match by fingerprint pairs with the next unmatched parsed call of
-   the same tool, in call order. A parser cannot know the defaults the daemon binds, so a call
-   that omits an optional parameter never matches by fingerprint.
+   the same tool, in call order, whose allowlisted view agrees with the execution: every key the
+   parser view holds must be in the executed input with an equal (JSON-normalised) value. A
+   parser cannot know the defaults the daemon binds, so a call that omits an optional parameter
+   never matches by fingerprint; the view check stops a call the server rejected before it ran
+   (and the model then retried) from taking its retry's executed record. A disagreeing parser
+   call stays unpaired.
 4. Matched pairs are merged (executed data overwrites parsed, preserving extra fields).
 5. Unmatched executed calls are added as-is (calls the parser missed).
 6. Unmatched parsed calls are added as-is (calls that may not have executed), already reduced to
