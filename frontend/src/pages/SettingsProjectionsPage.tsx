@@ -107,14 +107,20 @@ export default function SettingsProjectionsPage() {
   const { data, isLoading, isError, refetch } = useProjections();
   const revoke = useRevokeProjection();
   const rotate = useRotateProjection();
+  const [rotating, setRotating] = useState<ProjectionGrant | null>(null);
   const [revoking, setRevoking] = useState<ProjectionGrant | null>(null);
   const [minted, setMinted] = useState<MintedProjection | null>(null);
 
   const grants = data?.data ?? [];
 
-  function onRotate(grant: ProjectionGrant) {
+  function onRotate() {
+    if (!rotating) return;
+    const grant = rotating;
     rotate.mutate(grant.id, {
-      onSuccess: (response: { data: MintedProjection }) => setMinted(response.data),
+      onSuccess: (response: { data: MintedProjection }) => {
+        setRotating(null);
+        setMinted(response.data);
+      },
       onError: () => toast.error(`Could not rotate the token for ${grant.label}`),
     });
   }
@@ -215,7 +221,7 @@ export default function SettingsProjectionsPage() {
                           variant="outline"
                           disabled={rotate.isPending}
                           aria-label={`Rotate token for ${grant.label}`}
-                          onClick={() => onRotate(grant)}
+                          onClick={() => setRotating(grant)}
                         >
                           Rotate
                         </Button>
@@ -236,6 +242,19 @@ export default function SettingsProjectionsPage() {
           </tbody>
         </table>
       )}
+
+      <ConfirmDialog
+        open={rotating !== null}
+        onOpenChange={(open) => !open && setRotating(null)}
+        title={`Rotate the token for ${rotating?.label ?? "projection"}?`}
+        description="The current token stops working immediately, so the surface goes dark until you paste the new one into it."
+        confirmLabel="Rotate"
+        pendingLabel="Rotating…"
+        variant="destructive"
+        pending={rotate.isPending}
+        onConfirm={onRotate}
+        testId="rotate-projection-dialog"
+      />
 
       <ConfirmDialog
         open={revoking !== null}

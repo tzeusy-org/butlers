@@ -113,6 +113,8 @@ describe("SettingsProjectionsPage", () => {
     view();
     expect(screen.queryByText("synthetic-new-token")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Rotate token for Hall display" }));
+    expect(rotate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("rotate-projection-dialog-confirm"));
     expect(rotate.mock.calls[0][0]).toBe("g-1");
     expect(screen.getByText("synthetic-new-token")).toBeTruthy();
     expect(screen.getByText(/shown once/i)).toBeTruthy();

@@ -31,6 +31,8 @@ export function useRotateProjection() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => rotateProjection(id),
+    // The response carries the one-time token; keep it out of the MutationCache.
+    gcTime: 0,
     onSettled: () => queryClient.invalidateQueries({ queryKey: KEY }),
   });
 }

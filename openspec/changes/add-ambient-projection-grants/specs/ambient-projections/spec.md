@@ -2,7 +2,7 @@
 
 ### Requirement: Owner-minted projection grants
 
-The owner SHALL mint, list and revoke ambient projection grants only through an owner-authenticated dashboard session (owner cookie or owner key): `POST /api/projections`, `GET /api/projections`, `POST /api/projections/{id}/rotate` and `DELETE /api/projections/{id}`. Each grant SHALL record a label, a surface kind (`wall_display`, `eink`, `home_assistant` or `other`), an audience class (`household` or `owner_private`), exactly one route scope (`glance`), an expected fetch interval between one minute and one day, its creation and revocation times, and its last fetch time and status. The token SHALL be generated server-side with at least 256 bits of entropy and returned only in the mint response. Only the SHA-256 digest of the token SHALL be stored, and no list or revoke response SHALL carry the token or the digest. Grants SHALL live in `public.ambient_projections`, written only by the dashboard API's owning login: row-level security SHALL admit SELECT only, and runtime roles' INSERT, UPDATE, DELETE and TRUNCATE privileges SHALL be revoked. Residual risk, accepted by owner decision bu-xfhsrz (option B): every butler runtime role can read the token digests, which do not let it present a token. Rotation is one atomic verb, `POST /api/projections/{id}/rotate`: a single UPDATE replaces the stored digest of an active grant, so the old token stops resolving at commit, the new token is returned only in that response, and the grant keeps its id, label, scope and last-fetch history; a revoked or unknown grant answers 404. Rollback is revoking every grant.
+The owner SHALL mint, list and revoke ambient projection grants only through an owner-authenticated dashboard session (owner cookie or owner key): `POST /api/projections`, `GET /api/projections`, `POST /api/projections/{id}/rotate` and `DELETE /api/projections/{id}`. Each grant SHALL record a label, a surface kind (`wall_display`, `eink`, `home_assistant` or `other`), an audience class (`household` or `owner_private`), exactly one route scope (`glance`), an expected fetch interval between one minute and one day, its creation and revocation times, and its last fetch time and status. The token SHALL be generated server-side with at least 256 bits of entropy and returned only in the mint response and in a rotate response. Only the SHA-256 digest of the token SHALL be stored, and no list or revoke response SHALL carry the token or the digest. Grants SHALL live in `public.ambient_projections`, written only by the dashboard API's owning login: row-level security SHALL admit SELECT only, and runtime roles' INSERT, UPDATE, DELETE and TRUNCATE privileges SHALL be revoked. Residual risk, accepted by owner decision bu-xfhsrz (option B): every butler runtime role can read the token digests, which do not let it present a token. Rotation is one atomic verb, `POST /api/projections/{id}/rotate`: a single UPDATE replaces the stored digest of an active grant, so the old token stops resolving at commit, the new token is returned only in that response, and the grant keeps its id, label, scope and last-fetch history; a revoked or unknown grant answers 404. Rollback is revoking every grant.
 
 ID: REQ-ambient-projections-001
 Source: bu-q7vx1q.11; owner decision bu-xfhsrz option B (2026-10-04); owner decision 2026-11-01 option A
@@ -14,6 +14,14 @@ Scope: v1-mandatory
 - **THEN** the response SHALL carry the token and the glance path once
 - **AND** the stored row SHALL hold the token's SHA-256 digest and not the token
 - **AND** `GET /api/projections` SHALL list the grant without a token or digest
+
+#### Scenario: Rotate swaps the token in one owner verb
+
+- **WHEN** the owner calls `POST /api/projections/{id}/rotate` on an active grant
+- **THEN** the response SHALL carry the new token and the unchanged glance path once
+- **AND** the old token SHALL answer 404 on the glance route from that moment, and the new token SHALL answer 200
+- **AND** the grant's id, label, scope and last-fetch history SHALL be unchanged
+- **AND** a request without owner authentication, or bearing a grant token, SHALL be refused with 401, and a revoked or unknown grant SHALL answer 404
 
 #### Scenario: Minting needs an owner session
 
