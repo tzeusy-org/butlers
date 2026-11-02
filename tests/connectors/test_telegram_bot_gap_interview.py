@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from butlers.connectors.telegram_bot import (
     TelegramBotConnector,
     TelegramBotConnectorConfig,
@@ -151,3 +153,79 @@ async def test_cgi_callback_from_non_owner_is_acked_but_not_applied():
     assert len(posts) == 1
     assert posts[0].args[0].endswith("/answerCallbackQuery")
     assert posts[0].kwargs["json"]["text"] == ""
+
+
+def _cgi_update_with_message(data: str = "cgi:2026-07-02:confirm") -> dict[str, Any]:
+    return {
+        "update_id": 1,
+        "callback_query": {
+            "id": "cbq1",
+            "data": data,
+            "message": {
+                "message_id": 77,
+                "chat": {"id": 42},
+                "text": "Yesterday has about 11.3h of unaccounted waking time",
+            },
+        },
+    }
+
+
+def _urls(connector: TelegramBotConnector) -> list[str]:
+    return [call.args[0] for call in connector._http_client.post.call_args_list]
+
+
+@pytest.mark.parametrize(
+    ("body", "outcome"),
+    [
+        ({"status": "applied"}, "Logged as a work day ✅"),
+        ({"status": "already_answered"}, "Already recorded — thanks!"),
+        (
+            {"status": "error", "error": "unknown_or_expired_interview"},
+            "This confirmation has expired.",
+        ),
+    ],
+)
+async def test_settled_answer_stamps_outcome_and_retires_buttons(body, outcome):
+    connector = _make_connector(internal_api_url="http://dashboard-api:41200")
+    connector._http_client = MagicMock()
+    connector._http_client.post = AsyncMock(return_value=_resp(body=body))
+
+    assert await connector._maybe_handle_gap_interview_callback(_cgi_update_with_message())
+
+    edit = connector._http_client.post.call_args_list[-1]
+    assert edit.args[0].endswith("/editMessageText")
+    assert edit.kwargs["json"]["chat_id"] == "42"
+    assert edit.kwargs["json"]["message_id"] == 77
+    assert "unaccounted waking time" in edit.kwargs["json"]["text"]
+    assert outcome in edit.kwargs["json"]["text"]
+    # Omitting reply_markup is what drops the inline keyboard.
+    assert "reply_markup" not in edit.kwargs["json"]
+
+
+@pytest.mark.parametrize(
+    "resolve",
+    [_resp(status_code=401), _resp(body={"status": "error", "error": "db_down"})],
+)
+async def test_unsettled_answer_keeps_buttons_for_retry(resolve):
+    connector = _make_connector(internal_api_url="http://dashboard-api:41200")
+    connector._http_client = MagicMock()
+    connector._http_client.post = AsyncMock(side_effect=[resolve, _resp()])
+
+    assert await connector._maybe_handle_gap_interview_callback(_cgi_update_with_message())
+
+    urls = _urls(connector)
+    assert not any(u.endswith(("/editMessageText", "/editMessageReplyMarkup")) for u in urls)
+
+
+async def test_failed_text_edit_still_removes_keyboard():
+    connector = _make_connector(internal_api_url="http://dashboard-api:41200")
+    connector._http_client = MagicMock()
+    failed_edit = _resp(status_code=500)
+    failed_edit.raise_for_status.side_effect = RuntimeError("telegram 500")
+    connector._http_client.post = AsyncMock(
+        side_effect=[_resp(body={"status": "applied"}), _resp(), failed_edit, _resp()]
+    )
+
+    assert await connector._maybe_handle_gap_interview_callback(_cgi_update_with_message())
+
+    assert _urls(connector)[-1].endswith("/editMessageReplyMarkup")
