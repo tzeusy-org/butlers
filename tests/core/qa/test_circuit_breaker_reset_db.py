@@ -8,18 +8,20 @@ replaces that with an honest ``public.breaker_resets`` ledger consulted by both
 the dispatch-admission gate (``_is_circuit_breaker_tripped``) and every
 dashboard breaker query.
 
-These tests exercise the real SQL against a provisioned Postgres, proving:
+These tests exercise the real SQL against the real core-migrated schema, proving:
   - a reset writes ONE ``breaker_resets`` row and re-admits the next dispatch,
   - NO synthetic patrol / attempt rows are created on reset,
   - the reset boundary (not a forged sentinel) is what clears the chain, and
     real failures accumulated *after* a reset re-trip the breaker,
   - the genuine failure history stays visible (the real error patrol remains
     the most-recent patrol ``/summary`` would surface).
+
+core_305 stamps ``closed_at`` from database time, and resets default ``reset_at`` to
+database time, so attempts and resets order by the sequence in which they are written.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import asyncpg
@@ -31,53 +33,21 @@ from butlers.api.deps import get_db, get_mcp_manager
 from butlers.core.qa.dispatch import _is_circuit_breaker_tripped
 from tests.api.auth_helpers import create_authenticated_domain_app as create_app
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 _BASE_URL = "http://testserver"
 
 
-async def _make_schema(pool: asyncpg.Pool) -> None:
-    """Minimal slice of the real schema touched by the breaker queries + reset.
-
-    Mirrors the production column set and the ``ON DELETE SET NULL`` FK from
-    core_054 closely enough that the reset endpoint and admission gate run
-    their genuine SQL unchanged.
-    """
-    await pool.execute("""
-        CREATE TABLE public.qa_patrols (
-            id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-            completed_at TIMESTAMPTZ,
-            status       TEXT NOT NULL DEFAULT 'running'
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE public.healing_attempts (
-            id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            status             TEXT NOT NULL,
-            closed_at          TIMESTAMPTZ,
-            healing_session_id UUID,
-            qa_patrol_id       UUID REFERENCES public.qa_patrols(id) ON DELETE SET NULL
-        )
-    """)
-    await pool.execute("""
-        CREATE TABLE public.breaker_resets (
-            id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            breaker  TEXT NOT NULL,
-            reset_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-            reset_by TEXT NOT NULL DEFAULT 'dashboard',
-            reason   TEXT
-        )
-    """)
-
-
-async def _add_failed_attempt(pool: asyncpg.Pool, patrol_id, *, closed_at: datetime) -> None:
+async def _add_failed_attempt(pool: asyncpg.Pool, patrol_id) -> None:
     await pool.execute(
         """
-        INSERT INTO public.healing_attempts (status, closed_at, healing_session_id, qa_patrol_id)
-        VALUES ('failed', $1, gen_random_uuid(), $2)
+        INSERT INTO public.healing_attempts
+            (fingerprint, butler_name, status, severity, exception_type, call_site,
+             healing_session_id, qa_patrol_id)
+        VALUES ($1, 'general', 'failed', 2, 'RuntimeError', 'src/foo.py:bar',
+                gen_random_uuid(), $2)
         """,
-        closed_at,
+        "b" * 64,
         patrol_id,
     )
 
@@ -98,107 +68,86 @@ async def _post_reset(app) -> httpx.Response:
 
 
 @pytest.mark.pg_clock
-async def test_reset_records_ledger_row_and_admits_without_fabrication(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _make_schema(pool)
+async def test_reset_records_ledger_row_and_admits_without_fabrication(db_pool) -> None:
+    pool = db_pool
 
-        # A genuine error patrol + five real failed investigations trip the breaker.
-        patrol_id = await pool.fetchval(
-            "INSERT INTO public.qa_patrols (status, completed_at) "
-            "VALUES ('error', now()) RETURNING id"
+    # A genuine error patrol + five real failed investigations trip the breaker.
+    patrol_id = await pool.fetchval(
+        "INSERT INTO public.qa_patrols (status, completed_at) VALUES ('error', now()) RETURNING id"
+    )
+    for _ in range(5):
+        await _add_failed_attempt(pool, patrol_id)
+
+    assert await _is_circuit_breaker_tripped(pool, 5) is True
+
+    # Reset via the real endpoint.
+    resp = await _post_reset(_app_for(pool))
+    assert resp.status_code == 200
+    assert resp.json()["data"]["reset"] is True
+
+    # Exactly one honest ledger row — who/when/why.
+    reset_rows = await pool.fetch("SELECT breaker, reset_by, reason FROM public.breaker_resets")
+    assert len(reset_rows) == 1
+    assert reset_rows[0]["breaker"] == "qa"
+    assert reset_rows[0]["reset_by"] == "dashboard"
+    assert reset_rows[0]["reason"]
+
+    # NO fabricated history: no synthetic clean patrol, no manual_reset attempt.
+    assert await pool.fetchval("SELECT count(*) FROM public.qa_patrols WHERE status = 'clean'") == 0
+    assert await pool.fetchval("SELECT count(*) FROM public.qa_patrols") == 1  # only the error one
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.healing_attempts WHERE status = 'manual_reset'"
         )
-        base = datetime.now(tz=UTC) - timedelta(hours=1)
-        for i in range(5):
-            await _add_failed_attempt(pool, patrol_id, closed_at=base + timedelta(minutes=i))
+        == 0
+    )
+    assert await pool.fetchval("SELECT count(*) FROM public.healing_attempts") == 5
 
-        assert await _is_circuit_breaker_tripped(pool, 5) is True
+    # The breaker now admits the next dispatch...
+    assert await _is_circuit_breaker_tripped(pool, 5) is False
 
-        # Reset via the real endpoint.
-        resp = await _post_reset(_app_for(pool))
-        assert resp.status_code == 200
-        assert resp.json()["data"]["reset"] is True
-
-        # Exactly one honest ledger row — who/when/why.
-        reset_rows = await pool.fetch("SELECT breaker, reset_by, reason FROM public.breaker_resets")
-        assert len(reset_rows) == 1
-        assert reset_rows[0]["breaker"] == "qa"
-        assert reset_rows[0]["reset_by"] == "dashboard"
-        assert reset_rows[0]["reason"]
-
-        # NO fabricated history: no synthetic clean patrol, no manual_reset attempt.
-        assert (
-            await pool.fetchval("SELECT count(*) FROM public.qa_patrols WHERE status = 'clean'")
-            == 0
-        )
-        assert (
-            await pool.fetchval("SELECT count(*) FROM public.qa_patrols") == 1
-        )  # only the error one
-        assert (
-            await pool.fetchval(
-                "SELECT count(*) FROM public.healing_attempts WHERE status = 'manual_reset'"
-            )
-            == 0
-        )
-        assert await pool.fetchval("SELECT count(*) FROM public.healing_attempts") == 5
-
-        # The breaker now admits the next dispatch...
-        assert await _is_circuit_breaker_tripped(pool, 5) is False
-
-        # ...while the genuine failure history stays visible: the most-recent
-        # non-running patrol /summary would surface is still the real 'error' one.
-        last_status = await pool.fetchval(
-            "SELECT status FROM public.qa_patrols WHERE status != 'running' "
-            "ORDER BY started_at DESC LIMIT 1"
-        )
-        assert last_status == "error"
+    # ...while the genuine failure history stays visible: the most-recent
+    # non-running patrol /summary would surface is still the real 'error' one.
+    last_status = await pool.fetchval(
+        "SELECT status FROM public.qa_patrols WHERE status != 'running' "
+        "ORDER BY started_at DESC LIMIT 1"
+    )
+    assert last_status == "error"
 
 
-async def test_reset_boundary_retrips_on_new_post_reset_failures(
-    provisioned_postgres_pool,
-) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _make_schema(pool)
-        patrol_id = await pool.fetchval(
-            "INSERT INTO public.qa_patrols (status) VALUES ('error') RETURNING id"
-        )
-        base = datetime.now(tz=UTC) - timedelta(hours=1)
-        for i in range(5):
-            await _add_failed_attempt(pool, patrol_id, closed_at=base + timedelta(minutes=i))
-        assert await _is_circuit_breaker_tripped(pool, 5) is True
+async def test_reset_boundary_retrips_on_new_post_reset_failures(db_pool) -> None:
+    pool = db_pool
+    patrol_id = await pool.fetchval(
+        "INSERT INTO public.qa_patrols (status) VALUES ('error') RETURNING id"
+    )
+    for _ in range(5):
+        await _add_failed_attempt(pool, patrol_id)
+    assert await _is_circuit_breaker_tripped(pool, 5) is True
 
-        # Record a reset AFTER those failures.
-        reset_at = datetime.now(tz=UTC)
-        await pool.execute(
-            "INSERT INTO public.breaker_resets (breaker, reset_at) VALUES ('qa', $1)", reset_at
-        )
-        assert await _is_circuit_breaker_tripped(pool, 5) is False
+    # Record a reset AFTER those failures.
+    await pool.execute("INSERT INTO public.breaker_resets (breaker) VALUES ('qa')")
+    assert await _is_circuit_breaker_tripped(pool, 5) is False
 
-        # Four fresh post-reset failures — still below threshold, still admits.
-        for i in range(4):
-            await _add_failed_attempt(
-                pool, patrol_id, closed_at=reset_at + timedelta(minutes=i + 1)
-            )
-        assert await _is_circuit_breaker_tripped(pool, 5) is False
+    # Four fresh post-reset failures — still below threshold, still admits.
+    for _ in range(4):
+        await _add_failed_attempt(pool, patrol_id)
+    assert await _is_circuit_breaker_tripped(pool, 5) is False
 
-        # The fifth post-reset failure re-trips the breaker on the real chain.
-        await _add_failed_attempt(pool, patrol_id, closed_at=reset_at + timedelta(minutes=10))
-        assert await _is_circuit_breaker_tripped(pool, 5) is True
+    # The fifth post-reset failure re-trips the breaker on the real chain.
+    await _add_failed_attempt(pool, patrol_id)
+    assert await _is_circuit_breaker_tripped(pool, 5) is True
 
 
-async def test_reset_is_noop_when_not_tripped(provisioned_postgres_pool) -> None:
-    async with provisioned_postgres_pool(schema="public") as pool:
-        await _make_schema(pool)
-        patrol_id = await pool.fetchval(
-            "INSERT INTO public.qa_patrols (status) VALUES ('error') RETURNING id"
-        )
-        base = datetime.now(tz=UTC) - timedelta(hours=1)
-        for i in range(3):  # below threshold
-            await _add_failed_attempt(pool, patrol_id, closed_at=base + timedelta(minutes=i))
+async def test_reset_is_noop_when_not_tripped(db_pool) -> None:
+    pool = db_pool
+    patrol_id = await pool.fetchval(
+        "INSERT INTO public.qa_patrols (status) VALUES ('error') RETURNING id"
+    )
+    for _ in range(3):  # below threshold
+        await _add_failed_attempt(pool, patrol_id)
 
-        resp = await _post_reset(_app_for(pool))
-        assert resp.status_code == 200
-        assert resp.json()["data"]["reset"] is False
-        # No ledger row written when there was nothing to reset.
-        assert await pool.fetchval("SELECT count(*) FROM public.breaker_resets") == 0
+    resp = await _post_reset(_app_for(pool))
+    assert resp.status_code == 200
+    assert resp.json()["data"]["reset"] is False
+    # No ledger row written when there was nothing to reset.
+    assert await pool.fetchval("SELECT count(*) FROM public.breaker_resets") == 0
