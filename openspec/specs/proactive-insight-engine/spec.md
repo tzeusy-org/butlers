@@ -875,7 +875,7 @@ A candidate MAY carry a typed `premise` naming the fact its message asserts: `{"
 - **AND** the stored `insight_candidates.message` is unchanged
 
 ### Requirement: In-Place Amendment of Delivered Insights
-When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. The owner-condition ledger's `reconcile_snapshot` `post_write` hook SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the reconcile transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
+When a delivered candidate's `owner_condition` premise resolves, the delivered message SHALL be corrected without a new notification. Both owner-condition resolution paths, the ledger's `reconcile_snapshot` `post_write` hook and the explicit `resolve_condition` facade, SHALL enqueue one `public.insight_amendments` row per delivered candidate whose premise names the resolved condition, inside the resolving transaction, idempotent on `(candidate_id, premise fingerprint + resolved_at)`. The delivery cycle SHALL apply pending amendments before any early return, independent of quiet hours, verbosity and budget.
 
 #### Scenario: A standalone Telegram delivery is edited in place
 - **WHEN** a pending amendment's candidate was delivered standalone with a stored chat id and provider message id
@@ -889,6 +889,21 @@ When a delivered candidate's `owner_condition` premise resolves, the delivered m
 #### Scenario: Repeated reconciles stay single
 - **WHEN** the same resolved condition is reconciled again
 - **THEN** exactly one amendment exists for the candidate and episode, and a second cycle performs no second edit
+
+#### Scenario: An explicit resolution amends exactly like a snapshot resolution
+- **WHEN** an owner condition that is the premise of a delivered candidate is resolved by the explicit `resolve_condition` facade
+- **THEN** exactly one amendment is enqueued for that candidate in the same transaction as the resolution, and resolving again enqueues none
+- **AND** a failed enqueue never rolls back the resolution
+
+#### Scenario: A forged enqueue writes nothing
+- **WHEN** a role granted EXECUTE on the SECURITY DEFINER `public.enqueue_premise_amendments` calls it for a condition with no `resolved` `owner_conditions` row, or with a `resolved_at` that differs from that row's
+- **THEN** it returns 0 and writes nothing
+- **AND** a genuine call keys the episode on the ledger row's own fingerprint and `resolved_at`
+
+#### Scenario: Amendment evidence outlives candidate cleanup
+- **WHEN** a candidate that has an amendment is deleted
+- **THEN** the amendment row remains, and the delivery cycle skips it without error
+- **AND** broker cleanup settles a `pending` or `fold` amendment whose candidate is gone to the terminal `orphaned` state; amendment rows are never deleted
 
 ### Requirement: Premise Amendment Migration Evidence
 
@@ -959,7 +974,7 @@ Scope: v1-mandatory
 
 #### Scenario: Independent lifecycle proof retains historical contracts and attribution
 - **WHEN** the bounded repair is validated, reviewed and delivered through normal native/source/hosted/protected operations
-- **THEN** all existing amendment states, candidate retention/cascade, documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
+- **THEN** all existing amendment states, candidate retention (core_312 replaced the cascade with indefinite amendment retention), documented core168/241/255 lossy folds, cumulative CHECK and q34 provenance assertions remain enforced with independent durable readback
 - **AND** function ownership/caller/EXECUTE and FK/FORCE-RLS hardening are reported separately, source/mock/collection or historical diagnostic green is never called SQL repair, and full original delivery outcomes remain required for closure
 
 ### Requirement: Finance contribution protection survives durable insight processing
