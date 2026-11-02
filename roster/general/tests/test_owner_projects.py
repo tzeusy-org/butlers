@@ -28,12 +28,7 @@ from butlers.api import dashboard_audit_middleware
 from butlers.api.app import create_app
 from butlers.api.deps import get_db_optional
 from butlers.migrations import _build_alembic_config
-from butlers.testing.migration import (
-    assert_at_chain_head,
-    create_migrated_test_db,
-    create_migrated_test_pool,
-    migration_db_name,
-)
+from butlers.testing.migration import assert_at_chain_head
 from tests.api.auth_helpers import _DomainOwnerState, create_authenticated_domain_app
 
 _DOCKER = shutil.which("docker") is not None
@@ -204,18 +199,9 @@ async def test_links_take_typed_opaque_ids_only(seams, ref_kind: str, ref_id: st
 
 
 @pytest.fixture
-async def pool(postgres_container):
-    p = await create_migrated_test_pool(
-        postgres_container,
-        chains=["core", "general"],
-        schemas={"general": "general"},
-        pool_schema="general",
-        max_pool_size=6,
-    )
-    try:
-        yield p
-    finally:
-        await p.close()
+async def projects_pool(db):
+    """A General-schema pool on the shared migrated clone (core in public, General schema)."""
+    return await db("core", "general", schemas={"general": "general"}, schema="general", max_size=6)
 
 
 async def _row_counts(pool: asyncpg.Pool) -> dict[str, int]:
@@ -237,9 +223,10 @@ async def _row_counts(pool: asyncpg.Pool) -> dict[str, int]:
 @pytest.mark.skipif(not _DOCKER, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_project_lifecycle_versions_links_and_no_side_effects(
-    pool, seams, monkeypatch
+    projects_pool, seams, monkeypatch
 ) -> None:
     """Create, replay, dedupe, CAS edit, links, close and expire; nothing else changes."""
+    pool = projects_pool
     outbound: list[object] = []
 
     async def no_network(_transport, request):
@@ -351,8 +338,11 @@ async def test_project_lifecycle_versions_links_and_no_side_effects(
 @pytest.mark.integration
 @pytest.mark.skipif(not _DOCKER, reason="Docker not available")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_database_freezes_terminal_projects_and_edits_persist_due_expiry(pool, seams) -> None:
+async def test_database_freezes_terminal_projects_and_edits_persist_due_expiry(
+    projects_pool, seams
+) -> None:
     """Below the API, a closed or expired project takes no version or link change."""
+    pool = projects_pool
     seams.manager.serving = pool
     async with _client(_mounted(seams.manager, session=True)) as http:
         closed = (await http.post(_ROUTE, json=_create(idempotency_key="c1"))).json()["data"]
@@ -423,13 +413,8 @@ def _migrate(db_url: str, target: str) -> None:
 
 @pytest.mark.integration
 @pytest.mark.skipif(not _DOCKER, reason="Docker not available")
-def test_gen_004_upgrades_downgrades_and_retains_charter_history(postgres_container) -> None:
-    db_url = create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["general"],
-        schemas={"general": "general"},
-    )
+def test_gen_004_upgrades_downgrades_and_retains_charter_history(fresh_db) -> None:
+    db_url = fresh_db("general", schemas={"general": "general"})
     engine = create_engine(db_url, connect_args={"options": "-c search_path=general,public"})
 
     def present(conn) -> bool:
