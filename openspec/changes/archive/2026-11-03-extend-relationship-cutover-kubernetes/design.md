@@ -7,10 +7,10 @@ owner, with `bu-2z6jyb` unsigned admission and `bu-jnnxtq` socket isolation
 serialized into its same proof surface. Their blocked/frozen ownership is not
 transferred. CLOSED owner-A and merge policy are consumed without another vote.
 
-The complete [existing eight requirements](../authorize-relationship-effective-time-cutover/specs/relationship-effective-time-cutover/spec.md),
-[design](../authorize-relationship-effective-time-cutover/design.md),
-[tasks](../authorize-relationship-effective-time-cutover/tasks.md) and
-[Compose operator packet](../../../docs/operations/relationship-effective-time-cutover.md)
+The complete [existing eight requirements](../../authorize-relationship-effective-time-cutover/specs/relationship-effective-time-cutover/spec.md),
+[design](../../authorize-relationship-effective-time-cutover/design.md),
+[tasks](../../authorize-relationship-effective-time-cutover/tasks.md) and
+[Compose operator packet](../../../../docs/operations/relationship-effective-time-cutover.md)
 remain unchanged. Kubernetes extends the proof; it cannot reinterpret the
 Compose v1 fields or turn its file fence into cluster admission. `rel_035`
 expand and actual meeting-debrief `rel_036` remain immutable. G is selected

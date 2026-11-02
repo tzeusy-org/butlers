@@ -1,3 +1,10 @@
+> **Archived unadopted on 2026-11-03 (`bu-mw7muo`).** The owner answered `bu-4awqyt` with
+> choice B on 2026-10-20: the Relationship legacy-index cutover is a plain hard cutover with no
+> signer, receipt or orchestrator fence. This Kubernetes extension was never adopted, and its
+> `specs/` delta was removed on archive, so nothing from it reached `openspec/specs`. The delta
+> remains in git history before this archive. The governing contract is
+> [`authorize-relationship-effective-time-cutover`](../../authorize-relationship-effective-time-cutover/proposal.md).
+
 ## 1. Source-only proposal
 
 - [x] 1.1 Trace the actual immutable k3s/Helm controller, init, runtime, migration,
