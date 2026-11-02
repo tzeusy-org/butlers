@@ -207,11 +207,23 @@ async def test_pr_already_exists_rejection_never_reads_unpublished(
     assert await _proposal_state(admin, attempt_id) == "ambiguous"
 
 
+@pytest.mark.parametrize(
+    ("allowed", "labels", "receipt"),
+    [
+        (False, ["self-healing"], ("refused", "repo_not_whitelisted")),
+        # The real sanitizer's code must satisfy the receipt CHECK (PR #5200 review).
+        (True, ["self-healing", "999.1.1.1"], ("anonymization_failed", "pr_labels_unsanitized")),
+    ],
+    ids=["whitelist-denied", "anonymization-failed"],
+)
 async def test_refusal_before_retention_reads_unpublished_through_its_receipt(
     pools: tuple[asyncpg.Pool, asyncpg.Pool],
+    allowed: bool,
+    labels: list[str],
+    receipt: tuple[str, str],
 ) -> None:
-    """A whitelist refusal retains no export; its receipt proves the publisher handled it
-    (bu-mc01y5.28), and a repeated refusal leaves the first receipt standing."""
+    """A refusal before retention retains no export; its receipt proves the publisher
+    handled it (bu-mc01y5.28), and a repeated refusal leaves the first receipt standing."""
     admin, qa = pools
     attempt_id = await _attempt_with_retained_diff(admin)
     export = synthetic_export()
@@ -219,28 +231,25 @@ async def test_refusal_before_retention_reads_unpublished_through_its_receipt(
     publisher = QaPublisher(provider=provider, ledger=PoolLedger(qa), repo_root=Path("/r"))
     whitelist = MagicMock()
     whitelist.ensure_loaded = AsyncMock()
-    whitelist.is_allowed = MagicMock(return_value=(False, "denied"))
+    whitelist.is_allowed = MagicMock(return_value=(allowed, "policy"))
 
-    for refusing in (whitelist, None):
+    for _ in range(2):
         result = await publisher.publish(
             attempt_id=attempt_id,
             binding=binding_for(export),
             export=export,
             title="fix(qa): ValueError in module:1",
             body="## Root Cause\nA missing guard.",
-            labels=["self-healing"],
-            whitelist=refusing,
+            labels=labels,
+            whitelist=whitelist,
         )
-        assert (result.status, result.category) == (
-            PublicationStatus.REFUSED,
-            "repo_not_whitelisted",
-        )
+        assert (result.status.value, result.category) == receipt
 
     receipts = await admin.fetch(
         "SELECT status, category FROM public.qa_publication_refusals WHERE attempt_id = $1",
         attempt_id,
     )
-    assert [tuple(r) for r in receipts] == [("refused", "repo_not_whitelisted")]
+    assert [tuple(r) for r in receipts] == [receipt]
     assert provider.calls == []
     assert await _proposal_state(admin, attempt_id) == "unpublished"
 

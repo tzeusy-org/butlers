@@ -116,10 +116,13 @@ read back as tampered.
 The retained bytes exist only for an attempt whose publisher reached retention. A refusal before
 retention leaves no export, so the publisher records a receipt instead (migration `core_302`,
 bu-mc01y5.28): one row per attempt in `public.qa_publication_refusals` holding the refusal's
-content-free status (`refused` or `anonymization_failed`) and category. It covers every refusal
+content-free status (`refused` or `anonymization_failed`) and snake_case category code (for example
+`repo_not_whitelisted`, `pr_labels_unsanitized`; the CHECK admits `^[a-z][a-z0-9_]{0,63}$` only). It covers every refusal
 before retention: an export that cannot be sealed or bound, a failed preflight (tampered export,
 unbound head, denied or missing whitelist), residual sensitive content in the PR text or labels, and
-an export that cannot be retained. The first receipt wins and a BEFORE UPDATE trigger
+an export that cannot be retained. The insert policy refuses a receipt for an attempt that already
+has a ledger operation, a retained export or a PR number, so a receipt only ever marks an attempt
+that never reached retention. The first receipt wins and a BEFORE UPDATE trigger
 (`qa_publication_refusals_immutable`) refuses rewrites from every role. The fence matches the
 exports table: only `butler_qa_rw` inserts (forced row security), every runtime role reads, there is
 no DELETE policy, the table is excluded from `deploy/backup/pg_dump.sh`, and only the last schema to

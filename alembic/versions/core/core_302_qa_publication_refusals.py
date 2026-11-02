@@ -17,6 +17,10 @@ first receipt wins and the row is immutable, so a later run cannot rewrite it.  
 only proves the publisher handled the attempt; the ledger absence proof still decides
 whether a PR can exist.
 
+A receipt may exist only for an attempt that never reached retention: the insert policy
+refuses one when the attempt already has a ledger operation, a retained export, or a PR
+number.  ``category`` is a snake_case code (``^[a-z][a-z0-9_]{0,63}$``), never prose.
+
 The fence follows core_294.  ``scripts/init-db.sql`` re-grants public-schema DML to every
 runtime role, so forced row security is the durable fence: only ``butler_qa_rw`` inserts,
 every role reads (the row is a status and a fixed category, no proposal content).  There
@@ -127,7 +131,7 @@ def upgrade() -> None:
             CONSTRAINT ck_qa_publication_refusals_status
                 CHECK (status IN ('refused', 'anonymization_failed')),
             CONSTRAINT ck_qa_publication_refusals_category
-                CHECK (category ~ '^[a-z][a-z0-9_ ]{{0,79}}$')
+                CHECK (category ~ '^[a-z][a-z0-9_]{{0,63}}$')
         )
         """
     )
@@ -166,7 +170,22 @@ def upgrade() -> None:
     op.execute(
         f"""
         CREATE POLICY qa_publication_refusals_insert ON {_TABLE}
-            FOR INSERT WITH CHECK (current_user = '{_QA_ROLE}')
+            FOR INSERT WITH CHECK (
+                current_user = '{_QA_ROLE}'
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.qa_publication_operations AS op
+                    WHERE op.attempt_id = qa_publication_refusals.attempt_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.qa_publication_exports AS x
+                    WHERE x.attempt_id = qa_publication_refusals.attempt_id
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM public.healing_attempts AS a
+                    WHERE a.id = qa_publication_refusals.attempt_id
+                      AND a.pr_number IS NOT NULL
+                )
+            )
         """
     )
 

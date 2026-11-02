@@ -130,18 +130,22 @@ class _Sanitized:
 
 
 def _sanitize(title: str, body: str, labels: list[str], repo_root: Path) -> _Sanitized | str:
-    """Anonymize and validate every externally visible field; a string is the failure reason."""
+    """Anonymize and validate every externally visible field; a string is the failure code.
+
+    Codes are stable snake_case categories (they reach the refusal receipt, whose CHECK
+    admits nothing else), never prose or field content.
+    """
     clean_title = anonymize(title, repo_root)
     clean_body = anonymize(body, repo_root)
     title_ok, _ = validate_anonymized(clean_title)
     body_ok, _ = validate_anonymized(clean_body)
     if not title_ok or not body_ok:
-        return "residual sensitive content in PR text"
+        return "pr_text_unsanitized"
     if any(marker in clean_body for marker in _RAW_EVIDENCE_MARKERS):
-        return "raw evidence marker in PR body"
+        return "pr_body_raw_evidence"
     clean_labels, label_violations = sanitize_labels(labels, repo_root)
     if label_violations:
-        return "residual sensitive content in PR labels"
+        return "pr_labels_unsanitized"
     return _Sanitized(clean_title, clean_body, tuple(clean_labels))
 
 

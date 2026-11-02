@@ -320,8 +320,10 @@ def test_only_qa_records_an_immutable_refusal_receipt_and_rollback_keeps_it(
 
     with pytest.raises(DBAPIError, match="row-level security|permission denied"):
         _as_role(db_url, "butler_general_rw", _refusal_sql(attempt))
-    with pytest.raises(DBAPIError, match="ck_qa_publication_refusals_category"):
-        _as_role(db_url, "butler_qa_rw", _refusal_sql(attempt, "Leaked: a@b.io"))
+    # A category is a snake_case code: no prose, case or punctuation gets through.
+    for prose in ("Leaked: a@b.io", "residual sensitive content in PR text", "raw evidence"):
+        with pytest.raises(DBAPIError, match="ck_qa_publication_refusals_category"):
+            _as_role(db_url, "butler_qa_rw", _refusal_sql(attempt, prose))
     assert _as_role(db_url, "butler_qa_rw", _refusal_sql(attempt)) == 1
     for role in ("butler_qa_rw", "butler_general_rw"):
         assert _as_role(db_url, role, f"DELETE FROM {_REFUSALS}") == 0
@@ -339,3 +341,26 @@ def test_only_qa_records_an_immutable_refusal_receipt_and_rollback_keeps_it(
 
     with pytest.raises(DBAPIError, match="refusal receipt exists"):
         _replay_refusals(db_url, "downgrade")
+
+
+def test_refusal_receipt_is_refused_once_the_attempt_reached_retention_or_a_pr(
+    db_url: str,
+) -> None:
+    """A receipt marks only an attempt that never reached retention (insert policy)."""
+    _replay_refusals(db_url, "upgrade")
+    retained, with_pr, with_ledger = (_new_attempt(db_url) for _ in range(3))
+    _as_role(db_url, "butler_qa_rw", _insert_sql(retained))
+    _admin(db_url, f"UPDATE public.healing_attempts SET pr_number = 7 WHERE id = '{with_pr}'")
+    _close(db_url, with_ledger, days_ago=1)
+    _as_role(
+        db_url,
+        "butler_qa_rw",
+        "INSERT INTO public.qa_publication_operations (attempt_id, kind, stage, stage_order, "
+        "binding_digest, request_digest, result, ended_at, egress_started_at) "
+        f"VALUES ('{with_ledger}', 'branch_push', 'ambiguous', 3, '{'1' * 64}', '{'2' * 64}', "
+        "'ambiguous', now(), now())",
+    )
+
+    for attempt in (retained, with_pr, with_ledger):
+        with pytest.raises(DBAPIError, match="row-level security"):
+            _as_role(db_url, "butler_qa_rw", _refusal_sql(attempt))
