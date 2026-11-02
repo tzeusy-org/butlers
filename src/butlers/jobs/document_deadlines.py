@@ -8,8 +8,8 @@ goes only to the owner through :func:`butlers.jobs.owner_notify.send_owner_teleg
 the owner-only recipient and the attention ledger apply. A notice that is not delivered
 raises, so the deadline pass leaves its threshold unfired and retries on a later tick.
 
-Failed sends back off: each attempt's ledger row carries a per-(deadline, threshold)
-``dedup_key``, and the next attempt waits :func:`retry_backoff` of the failure count,
+Failed sends back off: each attempt's ledger row carries a per-(butler, deadline,
+threshold) ``dedup_key``, and the next attempt waits :func:`retry_backoff` of the failure count,
 measured from the newest failed row. A Switchboard outage therefore writes one failed row
 per backoff step rather than one per tick, and the threshold still fires once delivery
 recovers. The ledger is the only state; nothing is stored on the deadline row.
@@ -49,16 +49,18 @@ def retry_backoff(failures: int) -> timedelta:
     return min(RETRY_BACKOFF_BASE * 2 ** min(failures - 1, 16), RETRY_BACKOFF_CAP)
 
 
-def attempt_key(job_args: dict[str, Any]) -> str | None:
+def attempt_key(job_args: dict[str, Any], *, origin_butler: str) -> str | None:
     """Ledger ``dedup_key`` shared by every send attempt for one deadline threshold.
 
-    It hashes the document, kind, target date and threshold, so a re-set date or the next
-    threshold starts with no failures and the document id stays out of the ledger. Rows
-    missing any part get no key and no backoff.
+    It hashes the origin butler, document, kind, target date and threshold, so a re-set
+    date, the next threshold or another butler's deadline (the ledger is cross-butler)
+    starts with no failures, and the document id stays out of the ledger. Rows missing any
+    part get no key and no backoff.
     """
     context = job_args.get("deadline")
     threshold = context.get("fired_threshold") if isinstance(context, dict) else None
     parts = [
+        origin_butler,
         job_args.get("document_id"),
         job_args.get("kind"),
         context.get("target_date") if isinstance(context, dict) else None,
@@ -115,7 +117,7 @@ async def run_paperwork_deadline_notice(
     reason = await owner_notify.check_owner_notify_suppression(pool, log_context=NOTICE_JOB_NAME)
     if reason is not None:
         raise DeadlineDispatchDeferred(reason)
-    key = attempt_key(job_args)
+    key = attempt_key(job_args, origin_butler=origin_butler)
     if key is not None:
         failures, since_last = await failed_attempts(pool, dedup_key=key)
         if since_last is not None and since_last < retry_backoff(failures):

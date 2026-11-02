@@ -315,15 +315,8 @@ class TestAttentionEventRecordedSince:
 
 
 class TestFailedAttempts:
-    """bu-jv1moa.54: a retrying job's failed rows under one dedup_key drive its backoff."""
-
-    async def test_reads_failed_rows_for_the_key(self):
-        pool = AsyncMock()
-        pool.fetchrow = AsyncMock(return_value={"failures": 2, "since_last": timedelta(minutes=7)})
-
-        assert await failed_attempts(pool, dedup_key="job:k") == (2, timedelta(minutes=7))
-        query, dedup_key = pool.fetchrow.await_args.args
-        assert "outcome = 'failed'" in query and dedup_key == "job:k"
+    """bu-jv1moa.54: ledger trouble never blocks a retrying send (real-PG counting lives in
+    tests/integration/test_attention_ledger_roundtrip.py)."""
 
     @pytest.mark.parametrize("broken", ["no_pool", "query_error"])
     async def test_fails_open_to_no_failures(self, broken):

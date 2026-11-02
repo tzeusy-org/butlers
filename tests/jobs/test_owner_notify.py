@@ -240,7 +240,8 @@ async def test_failed_paperwork_notice_backs_off_per_threshold(
     since_last = None if since_last_min is None else timedelta(minutes=since_last_min)
     attempts = AsyncMock(return_value=(failures, since_last))
     monkeypatch.setattr("butlers.jobs.document_deadlines.failed_attempts", attempts)
-    handler = get_deterministic_schedule_job_registry()["finance"]["paperwork_deadline_notify"]
+    registry = get_deterministic_schedule_job_registry()
+    handler = registry["finance"]["paperwork_deadline_notify"]
 
     def args(doc: str = "s3://b/bill.pdf", days_before: int = 3) -> dict:
         return {
@@ -262,9 +263,11 @@ async def test_failed_paperwork_notice_backs_off_per_threshold(
     assert await handler(MagicMock(), args()) == {"outcome": owner_notify.DELIVERED}
     key = boundary["ledger"].await_args.kwargs["dedup_key"]
     assert attempts.await_args.kwargs == {"dedup_key": key}
-    # One key per (document, kind, date, threshold): another threshold starts fresh.
+    # One key per (butler, document, kind, date, threshold): the ledger is cross-butler,
+    # so another butler, threshold or document starts fresh.
     await handler(MagicMock(), args(days_before=7))
     await handler(MagicMock(), args(doc="s3://b/other.pdf"))
+    await registry["general"]["paperwork_deadline_notify"](MagicMock(), args())
     keys = [c.kwargs["dedup_key"] for c in boundary["ledger"].await_args_list]
-    assert len(set(keys)) == 3 and all(k.startswith("paperwork_deadline_notify:") for k in keys)
+    assert len(set(keys)) == 4 and all(k.startswith("paperwork_deadline_notify:") for k in keys)
     assert "bill.pdf" not in key

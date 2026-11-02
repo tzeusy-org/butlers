@@ -29,7 +29,7 @@ import asyncpg
 import pytest
 
 from butlers.api.routers.attention_ledger import _query_ledger, _query_ledger_summary
-from butlers.core.attention_ledger import record_attention_event
+from butlers.core.attention_ledger import failed_attempts, record_attention_event
 from butlers.testing.migration import create_migrated_test_db, migration_db_name
 from butlers.tools.switchboard.insight.broker import expire_candidates
 from scripts import repair_attention_ledger_metadata as metadata_repair
@@ -697,3 +697,28 @@ async def test_exact_metadata_repair_preserves_native_values_and_atomicity(
             await metadata_repair.verify_repair(
                 independent, plan, target=target, expected_texts=repeat_texts
             )
+
+
+async def test_failed_attempts_counts_only_failed_rows_under_the_key(db_pool) -> None:
+    """bu-jv1moa.54: a retrying job's backoff counts its own failed rows, nothing else."""
+    for outcome, key in [
+        ("failed", "job:a"),
+        ("failed", "job:a"),
+        ("delivered", "job:a"),
+        ("suppressed", "job:a"),
+        ("deferred", "job:a"),
+        ("failed", "job:b"),
+    ]:
+        assert await record_attention_event(
+            db_pool, origin_butler="general", source="notify", outcome=outcome, dedup_key=key
+        )
+    await db_pool.execute(
+        "UPDATE public.attention_ledger SET occurred_at = occurred_at - interval '1 hour' "
+        "WHERE dedup_key = 'job:a' AND outcome = 'failed'"
+    )
+
+    failures, since_last = await failed_attempts(db_pool, dedup_key="job:a")
+
+    assert failures == 2
+    assert timedelta(minutes=59) < since_last < timedelta(minutes=61)
+    assert await failed_attempts(db_pool, dedup_key="job:none") == (0, None)
