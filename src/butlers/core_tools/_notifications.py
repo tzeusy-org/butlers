@@ -685,7 +685,7 @@ def register_notification_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable
                         )
                     _specs = validate_attachment_specs(attachments)
                     _resolved = await resolve_attachments(
-                        _specs, getattr(daemon, "blob_store", None)
+                        _specs, getattr(daemon, "blob_store", None), origin_butler=butler_name
                     )
                 except AttachmentError as exc:
                     return {"status": "error", "code": exc.code, "error": str(exc)}

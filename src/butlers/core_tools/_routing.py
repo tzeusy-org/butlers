@@ -403,6 +403,7 @@ ROUTED_COMMUNICATION_CHANNEL_IDENTITY_TYPES: dict[str, str] = {
 
 def _telegram_files_command(
     telegram_module: Any,
+    origin: str,
     chat_id: str,
     text: str,
     attachments: list[dict[str, Any]],
@@ -428,6 +429,7 @@ def _telegram_files_command(
             text,
             attachments,
             reply_to_message_id,
+            origin_butler=origin,
             **rendering_kwargs,
         ),
     )
@@ -542,7 +544,13 @@ async def _build_routed_delivery_command(
                 raise ValueError("notify_request.delivery.recipient is required for send intent.")
             if attachments:
                 return _telegram_files_command(
-                    telegram_module, recipient, rendered_text, attachments, None, rendering_kwargs
+                    telegram_module,
+                    origin,
+                    recipient,
+                    rendered_text,
+                    attachments,
+                    None,
+                    rendering_kwargs,
                 )
             return _RoutedDeliveryCommand(
                 channel=channel,
@@ -561,6 +569,7 @@ async def _build_routed_delivery_command(
             if attachments:
                 return _telegram_files_command(
                     telegram_module,
+                    origin,
                     chat_id,
                     rendered_text,
                     attachments,
@@ -608,6 +617,7 @@ async def _build_routed_delivery_command(
         if attachments:
             return _telegram_files_command(
                 telegram_module,
+                origin,
                 fallback_recipient,
                 rendered_text,
                 attachments,

@@ -138,8 +138,12 @@ def validate_attachment_specs(raw: Any) -> list[dict[str, Any]]:
             spec["content_text"] = validate_inline_content(spec["media_type"], content_text)
         caption = item.get("caption")
         if caption is not None:
-            if not isinstance(caption, str) or len(caption) > CAPTION_LIMIT:
-                raise _invalid(f"caption must be a string of at most {CAPTION_LIMIT} characters")
+            # Telegram counts caption length in UTF-16 code units.
+            if (
+                not isinstance(caption, str)
+                or len(caption.encode("utf-16-le")) // 2 > CAPTION_LIMIT
+            ):
+                raise _invalid(f"caption must be at most {CAPTION_LIMIT} UTF-16 code units")
             spec["caption"] = caption
         sha256 = item.get("sha256")
         if sha256 is not None:
@@ -155,29 +159,44 @@ def validate_attachment_specs(raw: Any) -> list[dict[str, Any]]:
     return specs
 
 
-def check_storage_ref(storage_ref: str, blob_store: Any) -> None:
-    """Refuse a ref outside this deployment's blob scheme and bucket."""
+CONNECTOR_BLOB_PREFIX = "connectors"
+
+
+def check_storage_ref(storage_ref: str, blob_store: Any, *, origin_butler: str) -> None:
+    """Refuse a ref outside the sending butler's RFC 0016 key prefix.
+
+    The butler key prefix is the blob isolation boundary: a butler may attach
+    only ``{bucket}/{origin_butler}/...`` or connector-ingested
+    ``{bucket}/connectors/...`` blobs (for example a photo the owner sent).
+    """
     try:
         ref = BlobRef.parse(storage_ref)
     except ValueError as exc:
         raise _invalid("storage_ref must have the form s3://bucket/key") from exc
     scheme = getattr(blob_store, "scheme", "s3")
-    bucket = getattr(blob_store, "bucket", None)
     if ref.scheme != scheme:
         raise _invalid("storage_ref uses a scheme this deployment does not store")
-    if isinstance(bucket, str) and bucket:
-        if not ref.key.startswith(f"{bucket}/") or ref.key == f"{bucket}/":
-            raise _invalid("storage_ref names a bucket this deployment does not store")
-    elif "/" not in ref.key.strip("/"):
-        raise _invalid("storage_ref must have the form s3://bucket/key")
+    ref_bucket, _, object_key = ref.key.partition("/")
+    bucket = getattr(blob_store, "bucket", None)
+    if isinstance(bucket, str) and bucket and ref_bucket != bucket:
+        raise _invalid("storage_ref names a bucket this deployment does not store")
+    segments = object_key.split("/")
+    if len(segments) < 2 or any(segment in {"", ".", ".."} for segment in segments):
+        raise _invalid("storage_ref must have the form s3://bucket/<owner>/<key>")
+    if not origin_butler or segments[0] not in {origin_butler, CONNECTOR_BLOB_PREFIX}:
+        raise AttachmentError(
+            "attachment_forbidden",
+            "storage_ref is outside this butler's blob prefix and the connector prefix",
+        )
 
 
 async def resolve_attachments(
-    specs: Sequence[Mapping[str, Any]], blob_store: Any
+    specs: Sequence[Mapping[str, Any]], blob_store: Any, *, origin_butler: str
 ) -> list[ResolvedAttachment]:
     """Fetch and verify every attachment before any send.
 
-    Raises :class:`AttachmentError` for a missing blob or unavailable store
+    Raises :class:`AttachmentError` for a ref outside the sender's blob prefix
+    (``attachment_forbidden``), a missing blob or unavailable store
     (``attachment_unavailable``), a size violation (``attachment_too_large``)
     or a pinned digest that no longer matches (``attachment_digest_mismatch``).
     """
@@ -190,7 +209,7 @@ async def resolve_attachments(
                 raise AttachmentError(
                     "attachment_unavailable", "blob storage is not configured for this butler"
                 )
-            check_storage_ref(storage_ref, blob_store)
+            check_storage_ref(storage_ref, blob_store, origin_butler=origin_butler)
             try:
                 data = await blob_store.get(storage_ref)
             except BlobNotFoundError as exc:

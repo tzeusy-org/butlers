@@ -425,7 +425,7 @@ async def test_attachment_delivery_parks_with_pinned_digests_and_replay_reverifi
     store = _EnvelopeApprovalStore()
     daemon.db.pool = store
     telegram = next(module for module in daemon._modules if module.name == "telegram")
-    ref = "s3://butlers/finance/statement.pdf"
+    ref = "s3://butlers/health/statement.pdf"
     blobs = {ref: b"%PDF reviewed statement"}
 
     async def get_blob(storage_ref):

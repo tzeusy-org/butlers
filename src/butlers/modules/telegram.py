@@ -165,6 +165,23 @@ def _telegram_error_text(exc: httpx.HTTPStatusError) -> str:
     return description if isinstance(description, str) else str(exc)
 
 
+_PHOTO_REJECTION_MARKERS = ("PHOTO_INVALID_DIMENSIONS", "IMAGE_PROCESS_FAILED", "PHOTO_INVALID")
+
+
+def _telegram_photo_rejected(response: httpx.Response) -> bool:
+    """Only an explicit 400 photo-processing rejection permits a document resend."""
+    if response.status_code != 400:
+        return False
+    try:
+        data = response.json()
+    except (ValueError, TypeError):
+        return False
+    description = data.get("description") if isinstance(data, dict) else None
+    return isinstance(description, str) and any(
+        marker in description.upper() for marker in _PHOTO_REJECTION_MARKERS
+    )
+
+
 class TelegramModule(Module):
     """Telegram module providing identity-prefixed Telegram MCP tools.
 
@@ -531,6 +548,7 @@ class TelegramModule(Module):
         attachments: list[dict[str, Any]],
         reply_to_message_id: int | None = None,
         *,
+        origin_butler: str,
         render_links_inert: bool = False,
     ) -> dict[str, Any]:
         """Deliver files with sendPhoto/sendDocument, text as caption when it fits.
@@ -550,7 +568,11 @@ class TelegramModule(Module):
             await require_permission(
                 self._permission_pool(), self._butler_name, NOTIFY_PERMISSION, fail_closed=True
             )
-            resolved = await resolve_attachments(specs, self._blob_store)
+            # origin_butler is the Messenger-verified notify.v1 sender; refs
+            # outside its RFC 0016 key prefix (or the connector prefix) refuse.
+            resolved = await resolve_attachments(
+                specs, self._blob_store, origin_butler=origin_butler
+            )
             audit_summary["attachments"] = attachment_audit_summary(resolved)
             text_chunks = split_telegram_text(text) if text.strip() else []
             caption_first = (
@@ -644,9 +666,33 @@ class TelegramModule(Module):
         reply_to_message_id: int | None,
         deadline: float,
     ) -> dict[str, Any]:
-        """Upload one file; a caption parse rejection falls back to plain once."""
-        field = "photo" if item.is_photo else "document"
-        method = "sendPhoto" if item.is_photo else "sendDocument"
+        """Upload one file; a caption parse rejection falls back to plain once.
+
+        A photo Telegram refuses to process (dimensions or image decoding) is
+        re-sent once as a document: an explicit 400 means nothing was posted.
+        """
+        if item.is_photo:
+            try:
+                return await self._upload_as(
+                    "sendPhoto", "photo", chat_id, item, caption, reply_to_message_id, deadline
+                )
+            except httpx.HTTPStatusError as exc:
+                if not _telegram_photo_rejected(exc.response):
+                    raise
+        return await self._upload_as(
+            "sendDocument", "document", chat_id, item, caption, reply_to_message_id, deadline
+        )
+
+    async def _upload_as(
+        self,
+        method: str,
+        field: str,
+        chat_id: str,
+        item: ResolvedAttachment,
+        caption: str | None,
+        reply_to_message_id: int | None,
+        deadline: float,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"chat_id": chat_id}
         if reply_to_message_id is not None:
             payload["reply_to_message_id"] = reply_to_message_id

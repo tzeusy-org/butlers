@@ -25,7 +25,7 @@ If `request_context.source_channel` is `"telegram_user_client"`, you MUST NOT ca
   - Use "send" for new outbound messages
 - `emoji`: Required when intent is "react" (e.g., "✅", "👍", "❤️")
 - `attachments`: Telegram send/reply only. A list of up to 10 files, each with `filename`, `media_type` and exactly one of:
-  - `storage_ref`: an existing blob such as `s3://butlers/...`, for example a photo the owner sent earlier or a stored import file;
+  - `storage_ref`: an existing blob under your own butler's prefix (`s3://<bucket>/<your-butler>/...`) or the connector prefix (`s3://<bucket>/connectors/...`, for example a photo the owner sent earlier);
   - `content_text`: a small generated file (at most 256 KB) with media type `text/csv`, `text/calendar`, `text/markdown`, `application/json` or `text/plain`.
 
   Add an optional `caption` per file. Images arrive as photos and everything else as documents. Your `message` becomes the caption when it fits in 1024 characters; otherwise it is sent first. Email refuses attachments (`unsupported_attachment`). A missing or invalid file sends nothing.

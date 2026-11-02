@@ -2,7 +2,7 @@
 
 ## Surface
 
-`notify(attachments=[{filename, media_type, storage_ref | content_text, caption?}])` applies to Telegram `send`/`reply` only. Limits: at most 10 files; inline text at most 256 KB and one of text/plain, text/csv, text/markdown, text/calendar or application/json; each blob at most 50 MB. A `storage_ref` must parse as `s3://<deployment bucket>/<key>`. Shape checks run before any I/O.
+`notify(attachments=[{filename, media_type, storage_ref | content_text, caption?}])` applies to Telegram `send`/`reply` only. Limits: at most 10 files; inline text at most 256 KB and one of text/plain, text/csv, text/markdown, text/calendar or application/json; each blob at most 50 MB. A `storage_ref` must parse as `s3://<deployment bucket>/<owner>/<key>`, where `<owner>` is the sending butler (RFC 0016 key-prefix isolation) or `connectors` (connector-ingested blobs such as an owner's Telegram photo). notify() enforces this against its own butler name, and Messenger enforces it again against the verified `origin_butler` (`attachment_forbidden`). Shape checks run before any I/O.
 
 ## Pinning and replay
 
@@ -10,7 +10,7 @@ notify() fetches every blob through the daemon BlobStore and computes sha256 and
 
 ## Telegram delivery
 
-Images (jpeg, png, webp, at most 10 MB) use multipart `sendPhoto`; everything else uses `sendDocument`. When the text renders to a single chunk of at most 1024 UTF-16 units and the first file has no caption of its own, the text becomes that file's HTML caption. A caption parse rejection falls back once to plain text. Otherwise the text goes first through the existing splitter, and the files follow as replies to its last chunk. 429 responses use the existing bounded retry. A failure after any accepted message is the existing terminal partial delivery. The receipt is the last message id, and all ids are audited.
+Images (jpeg, png, webp, at most 10 MB) use multipart `sendPhoto`; everything else uses `sendDocument`. An explicit 400 photo-processing rejection (for example `PHOTO_INVALID_DIMENSIONS`) is re-sent once as a document. When the text renders to a single chunk of at most 1024 UTF-16 units and the first file has no caption of its own, the text becomes that file's HTML caption. A caption parse rejection falls back once to plain text. Otherwise the text goes first through the existing splitter, and the files follow as replies to its last chunk. 429 responses use the existing bounded retry. A failure after any accepted message is the existing terminal partial delivery. The receipt is the last message id, and all ids are audited.
 
 ## Exposure and channels
 

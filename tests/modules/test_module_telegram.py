@@ -1246,7 +1246,7 @@ def _files_module(blobs: dict[str, bytes] | None = None) -> TelegramModule:
         blobs
         if blobs is not None
         else {
-            "s3://butlers/telegram/photo.png": _PNG,
+            "s3://butlers/connectors/photo.png": _PNG,
             "s3://butlers/finance/statement.pdf": _PDF,
         }
     )
@@ -1275,7 +1275,7 @@ async def test_send_files_photo_document_inline_caption_and_content_free_audit()
         {
             "filename": "photo.png",
             "media_type": "image/png",
-            "storage_ref": "s3://butlers/telegram/photo.png",
+            "storage_ref": "s3://butlers/connectors/photo.png",
         },
         {
             "filename": "statement.pdf",
@@ -1289,7 +1289,9 @@ async def test_send_files_photo_document_inline_caption_and_content_free_audit()
         patch.object(module, "_base_url", return_value="https://telegram.test"),
         patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
     ):
-        result = await module._send_files("123", "Here is **October**", attachments)
+        result = await module._send_files(
+            "123", "Here is **October**", attachments, origin_butler="finance"
+        )
 
     assert [call["method"] for call in calls] == ["sendPhoto", "sendDocument", "sendDocument"]
     assert calls[0]["files"] == {"photo": ("photo.png", _PNG, "image/png")}
@@ -1330,6 +1332,7 @@ async def test_send_files_long_text_goes_first_and_files_reply_to_last_chunk():
                 }
             ],
             reply_to_message_id=7,
+            origin_butler="finance",
         )
     assert [call["method"] for call in calls] == ["sendMessage", "sendDocument"]
     assert calls[0]["json"]["reply_to_message_id"] == 7
@@ -1341,8 +1344,14 @@ async def test_send_files_long_text_goes_first_and_files_reply_to_last_chunk():
 @pytest.mark.parametrize(
     ("attachment", "code"),
     [
-        ({"storage_ref": "s3://butlers/missing.pdf"}, "attachment_unavailable"),
+        ({"storage_ref": "s3://butlers/finance/missing.pdf"}, "attachment_unavailable"),
         ({"storage_ref": "s3://other-bucket/finance/statement.pdf"}, "attachment_invalid"),
+        ({"storage_ref": "s3://butlers/health/statement.pdf"}, "attachment_forbidden"),
+        ({"storage_ref": "s3://butlers/finance/../health/x.pdf"}, "attachment_invalid"),
+        (
+            {"storage_ref": "s3://butlers/finance/statement.pdf", "caption": "😀" * 513},
+            "attachment_invalid",
+        ),
         ({"storage_ref": "file:///etc/passwd"}, "attachment_invalid"),
         (
             {"storage_ref": "s3://butlers/finance/statement.pdf", "sha256": "0" * 64},
@@ -1367,7 +1376,7 @@ async def test_send_files_refuses_before_any_telegram_call(attachment, code):
     good = {
         "filename": "photo.png",
         "media_type": "image/png",
-        "storage_ref": "s3://butlers/telegram/photo.png",
+        "storage_ref": "s3://butlers/connectors/photo.png",
     }
     bad = {"filename": "f.pdf", "media_type": "application/pdf", **attachment}
     with (
@@ -1376,7 +1385,7 @@ async def test_send_files_refuses_before_any_telegram_call(attachment, code):
         patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock) as audit,
     ):
         with pytest.raises(AttachmentError) as error:
-            await module._send_files("123", "short", [good, bad])
+            await module._send_files("123", "short", [good, bad], origin_butler="finance")
     assert error.value.code == code
     assert calls == []
     assert audit.await_args.kwargs["error"] == code
@@ -1403,9 +1412,47 @@ async def test_send_files_upload_failure_after_text_is_terminal_partial_delivery
                         "storage_ref": "s3://butlers/finance/statement.pdf",
                     }
                 ],
+                origin_butler="finance",
             )
     assert error.value.message_ids == (101,)
     assert error.value.retryable is False
     assert len(calls) == 2
     assert audit.await_args.kwargs["error"] == "telegram_partial_delivery"
     assert module._chat_locks == {}
+
+
+async def test_send_files_photo_rejected_for_dimensions_falls_back_to_document():
+    module = _files_module()
+    calls: list[str] = []
+
+    async def post(url, *, json=None, data=None, files=None):
+        calls.append(url.rsplit("/", 1)[1] + ":" + next(iter(files)))
+        if len(calls) == 1:
+            return httpx.Response(
+                400,
+                request=httpx.Request("POST", url),
+                json={"ok": False, "description": "Bad Request: PHOTO_INVALID_DIMENSIONS"},
+            )
+        return httpx.Response(
+            200, request=httpx.Request("POST", url), json={"ok": True, "result": {"message_id": 9}}
+        )
+
+    with (
+        patch.object(module, "_get_client", return_value=MagicMock(post=post)),
+        patch.object(module, "_base_url", return_value="https://telegram.test"),
+        patch("butlers.modules.telegram.write_audit_entry", new_callable=AsyncMock),
+    ):
+        result = await module._send_files(
+            "123",
+            "A panorama",
+            [
+                {
+                    "filename": "photo.png",
+                    "media_type": "image/png",
+                    "storage_ref": "s3://butlers/connectors/photo.png",
+                }
+            ],
+            origin_butler="finance",
+        )
+    assert calls == ["sendPhoto:photo", "sendDocument:document"]
+    assert result["result"]["message_ids"] == [9]
