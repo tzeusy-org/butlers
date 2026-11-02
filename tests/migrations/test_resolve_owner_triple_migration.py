@@ -49,39 +49,33 @@ pytestmark = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Module-scoped fixtures (provisioned once per test module)
+# Fixtures (a fresh migrated clone per test)
 # ──────────────────────────────────────────────────────────────────────────────
 
 _ISOLATED_ROLE = "butler_isolated_rw_core145"
 _ISOLATED_ROLE_PASSWORD = "isolated_test_pw_core145"
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container) -> str:
-    """Provision core, relationship, and Messenger approvals schemas.
-
-    The ``core`` chain creates ``public.entities`` and
-    ``public.resolve_owner_triple`` (core_145).  The ``relationship`` chain
-    creates ``relationship.entity_facts``.  The approvals chain supplies real
-    pending/rule tables under Messenger's schema for guard-level assertions.
-    """
-    return create_migrated_test_db(
-        postgres_container,
-        migration_db_name(),
-        chains=["core", "relationship", "approvals"],
+@pytest.fixture
+def owner_db_url(fresh_db) -> str:
+    """Core (``resolve_owner_triple``), relationship facts, and Messenger approvals."""
+    return fresh_db(
+        "core",
+        "relationship",
+        "approvals",
         schemas={"relationship": "relationship", "approvals": "messenger"},
     )
 
 
-@pytest.fixture(scope="module")
-async def migration_pool(migrated_db_url: str) -> asyncpg.Pool:
+@pytest.fixture
+async def migration_pool(owner_db_url: str) -> asyncpg.Pool:
     """Migration-role asyncpg pool to the migrated disposable database."""
-    pool = await asyncpg.create_pool(migrated_db_url, min_size=1, max_size=3)
+    pool = await asyncpg.create_pool(owner_db_url, min_size=1, max_size=3)
     yield pool
     await pool.close()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     """Seed owner + non-owner entities and matching ``entity_facts`` rows.
 
@@ -239,10 +233,10 @@ async def seeded_data(migration_pool: asyncpg.Pool) -> dict:
     }
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 async def isolated_role_pool(
     postgres_container,
-    migrated_db_url: str,
+    owner_db_url: str,
 ) -> asyncpg.Pool:
     """Pool connected as a schema-isolated butler role.
 
@@ -259,7 +253,7 @@ async def isolated_role_pool(
     runs under SET ROLE butler_<schema>_rw and cannot read relationship.entity_facts
     directly.  The SECURITY DEFINER function bridges that gap.
     """
-    parsed = urlparse(migrated_db_url)
+    parsed = urlparse(owner_db_url)
     db_name = parsed.path.lstrip("/")
 
     # The migrated DB URL deliberately authenticates as a NOCREATEROLE normal
@@ -308,10 +302,10 @@ async def isolated_role_pool(
     await pool.close()
 
 
-@pytest.fixture(scope="module")
-async def messenger_role_pool(migrated_db_url: str) -> asyncpg.Pool:
+@pytest.fixture
+async def messenger_role_pool(owner_db_url: str) -> asyncpg.Pool:
     """Production Database pool constrained by the real Messenger runtime role."""
-    parsed = urlparse(migrated_db_url)
+    parsed = urlparse(owner_db_url)
     database = Database(
         db_name=parsed.path.lstrip("/"),
         schema="messenger",
