@@ -6237,6 +6237,11 @@ export interface SystemConditionsParams {
   source?: string;
   /** "open" | "aging" | "resolved" */
   state?: string;
+  /**
+   * "work" | "personal" | "undeclared" -- owner ledger only (400 otherwise).
+   * Narrows to commitments by the sphere the owner declared.
+   */
+  sphere?: string;
   offset?: number;
   limit?: number;
 }
@@ -6260,6 +6265,7 @@ export function getSystemConditions(
   if (params.ledger) query.set("ledger", params.ledger);
   if (params.source) query.set("source", params.source);
   if (params.state) query.set("state", params.state);
+  if (params.sphere) query.set("sphere", params.sphere);
   if (params.offset !== undefined) query.set("offset", String(params.offset));
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   const qs = query.toString();

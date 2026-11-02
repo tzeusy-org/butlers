@@ -693,6 +693,28 @@ duplicate panel.
   count (owner conditions have no QA-dispatch suppression concept), while
   infra-ledger rows retain the existing suppression-count behavior
 
+#### Scenario: Sphere filter narrows owner-ledger commitments server-side
+
+- **WHEN** `GET /api/system/conditions?ledger=owner&sphere=<work|personal|undeclared>`
+  is called
+- **THEN** only owner-ledger commitment rows (`metadata.class = 'commitment'`)
+  are returned: `work` and `personal` match `metadata.sphere` exactly, and
+  `undeclared` matches commitment rows with no `sphere` key
+- **AND** the predicate runs in SQL, so `total` counts the filtered set rather
+  than the fetched page
+- **AND** a `sphere` with `ledger=infra`, or any other value, returns HTTP 400
+  naming the allowed values; omitting `sphere` leaves the response unchanged
+- **AND** no sphere is ever inferred (REQ-commitment-lifecycle-010)
+
+#### Scenario: Panel offers a sphere control only for commitments
+
+- **WHEN** the Standing Conditions panel shows owner-ledger commitment rows
+- **THEN** it offers an All spheres / Work / Personal / Undeclared control that
+  refetches the owner ledger with the chosen `sphere`, leaving the infra
+  query and infra rows unchanged
+- **AND** the control stays visible while a sphere is chosen, with an explicit
+  empty message when that sphere has no commitments
+
 ### Requirement: Supervised Dashboard Background Work Health
 
 ID: REQ-system-overview-page-008

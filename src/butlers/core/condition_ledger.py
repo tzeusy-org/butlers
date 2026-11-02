@@ -83,7 +83,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -872,6 +872,8 @@ async def list_conditions(
     table: str,
     source: str | None = None,
     state: str | None = None,
+    metadata_equals: Mapping[str, str] | None = None,
+    metadata_missing: Sequence[str] = (),
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[int, list[dict[str, Any]]]:
@@ -880,6 +882,11 @@ async def list_conditions(
     Returns ``(total, rows)`` where ``total`` is the unfiltered-by-page count
     matching the given filters (for pagination), and ``rows`` is the current
     page ordered by ``first_detected_at DESC``.
+
+    ``metadata_equals`` keeps rows whose top-level ``metadata->>key`` equals
+    the value; ``metadata_missing`` keeps rows whose ``metadata`` has no such
+    key. Keys travel as bind parameters. Both run in SQL so ``total`` counts
+    the filtered set, not the fetched page.
     """
     conditions: list[str] = []
     args: list[Any] = []
@@ -892,6 +899,14 @@ async def list_conditions(
     if state is not None:
         conditions.append(f"state = ${idx}")
         args.append(state)
+        idx += 1
+    for key, value in (metadata_equals or {}).items():
+        conditions.append(f"metadata ->> ${idx} = ${idx + 1}")
+        args.extend([key, value])
+        idx += 2
+    for key in metadata_missing:
+        conditions.append(f"NOT (metadata ? ${idx})")
+        args.append(key)
         idx += 1
 
     where = (" WHERE " + " AND ".join(conditions)) if conditions else ""

@@ -54,11 +54,16 @@ let mockOwnerConditionsResult: ConditionsHookResult | null = null
 let mockSuppressionCounts: Map<string, number> = new Map()
 let mockSuppressionIsError = false
 
+// Every params object the tile hands to useSystemConditions, in call order.
+let conditionsHookCalls: { ledger?: string; sphere?: string }[] = []
+
 vi.mock("@/hooks/use-system", () => ({
-  useSystemConditions: (params?: { ledger?: string }) =>
-    params?.ledger === "owner" && mockOwnerConditionsResult !== null
+  useSystemConditions: (params?: { ledger?: string; sphere?: string }) => {
+    conditionsHookCalls.push(params ?? {})
+    return params?.ledger === "owner" && mockOwnerConditionsResult !== null
       ? mockOwnerConditionsResult
-      : mockConditionsResult,
+      : mockConditionsResult
+  },
 }))
 
 vi.mock("@/hooks/use-healing", () => ({
@@ -476,6 +481,7 @@ const plainOwnerCondition = {
 }
 
 function resetCommitmentMocks(): void {
+  conditionsHookCalls = []
   mockSuppressionCounts = new Map()
   mockSuppressionIsError = false
   mockOwnerConditionsResult = null
@@ -839,6 +845,78 @@ describe("StandingConditionsTile -- class filter", () => {
     // Positive control: the honest all-clear empty state is what rendered.
     expect(screen.getByText("No standing conditions recorded.")).toBeTruthy()
     expect(screen.queryByTestId("standing-conditions-filter")).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// bu-q7vx1q.64: sphere filter -- server-side, over the owner ledger's commitments
+// ---------------------------------------------------------------------------
+
+describe("StandingConditionsTile -- sphere filter", () => {
+  afterEach(() => {
+    cleanup()
+    resetCommitmentMocks()
+  })
+
+  const lastOwnerCall = () => conditionsHookCalls.filter((c) => c.ledger === "owner").at(-1)
+
+  it("offers the sphere control only when commitment rows exist", () => {
+    resetCommitmentMocks()
+    showConditions([plainOwnerCondition])
+    const { unmount } = renderDom(<StandingConditionsTile />)
+    // Positive control: the plain row rendered, so absence is meaningful.
+    expect(screen.getByText("Bill overdue: Utility Co")).toBeTruthy()
+    expect(screen.queryByTestId("standing-conditions-sphere")).toBeNull()
+    unmount()
+
+    showConditions([commitmentCondition, plainOwnerCondition])
+    renderDom(<StandingConditionsTile />)
+    expect(screen.getByTestId("standing-conditions-sphere")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Undeclared" })).toBeTruthy()
+  })
+
+  it("refetches the owner ledger with the chosen sphere and leaves infra alone", () => {
+    resetCommitmentMocks()
+    showConditions([commitmentCondition])
+    renderDom(<StandingConditionsTile />)
+    expect(lastOwnerCall()?.sphere).toBeUndefined()
+
+    fireEvent.click(screen.getByRole("button", { name: "Work" }))
+    expect(lastOwnerCall()).toEqual({ limit: 20, ledger: "owner", sphere: "work" })
+    expect(screen.getByRole("button", { name: "Work" }).getAttribute("aria-pressed")).toBe("true")
+    const infraCalls = conditionsHookCalls.filter((c) => c.ledger === undefined)
+    expect(infraCalls.every((c) => c.sphere === undefined)).toBe(true)
+
+    fireEvent.click(screen.getByRole("button", { name: "Undeclared" }))
+    expect(lastOwnerCall()?.sphere).toBe("undeclared")
+
+    fireEvent.click(screen.getByTestId("standing-conditions-sphere-all"))
+    expect(lastOwnerCall()?.sphere).toBeUndefined()
+  })
+
+  it("keeps the control and says so when a sphere has no commitments", () => {
+    resetCommitmentMocks()
+    showConditions([commitmentCondition])
+    renderDom(<StandingConditionsTile />)
+    // The server now answers the filtered query with an empty page.
+    mockOwnerConditionsResult = { isPending: false, data: makeFacts() }
+    mockConditionsResult = { isPending: false, data: makeFacts() }
+    fireEvent.click(screen.getByRole("button", { name: "Personal" }))
+    expect(screen.getByTestId("standing-conditions-sphere-empty").textContent).toBe(
+      "No personal commitments recorded.",
+    )
+    expect(screen.getByRole("button", { name: "Personal" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    )
+    expect(screen.getByText("Standing Conditions")).toBeTruthy()
+  })
+
+  it("never shows the sphere control on an all-clear ledger", () => {
+    resetCommitmentMocks()
+    mockConditionsResult = { isPending: false, data: makeFacts() }
+    renderDom(<StandingConditionsTile />)
+    expect(screen.getByText("No standing conditions recorded.")).toBeTruthy()
+    expect(screen.queryByTestId("standing-conditions-sphere")).toBeNull()
   })
 })
 

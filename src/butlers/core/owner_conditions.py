@@ -70,7 +70,7 @@ resolution) — every function below is a thin facade binding
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 import asyncpg
@@ -215,6 +215,8 @@ async def list_conditions(
     *,
     source: str | None = None,
     state: str | None = None,
+    metadata_equals: Mapping[str, str] | None = None,
+    metadata_missing: Sequence[str] = (),
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[int, list[dict[str, Any]]]:
@@ -222,10 +224,19 @@ async def list_conditions(
 
     Returns ``(total, rows)`` where ``total`` is the unfiltered-by-page count
     matching the given filters (for pagination), and ``rows`` is the current
-    page ordered by ``first_detected_at DESC``.
+    page ordered by ``first_detected_at DESC``. ``metadata_equals`` /
+    ``metadata_missing`` narrow on top-level metadata keys in SQL (see the
+    shared engine).
     """
     return await _list_conditions(
-        pool, table=_TABLE, source=source, state=state, offset=offset, limit=limit
+        pool,
+        table=_TABLE,
+        source=source,
+        state=state,
+        metadata_equals=metadata_equals,
+        metadata_missing=metadata_missing,
+        offset=offset,
+        limit=limit,
     )
 
 

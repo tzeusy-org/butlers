@@ -2349,3 +2349,75 @@ async def test_background_jobs_never_report_storage_failure_as_an_empty_all_clea
     assert response.status_code == 200
     assert response.json()["data"]["jobs_available"] is True
     assert response.json()["data"]["jobs"][0]["state"] == "disabled"
+
+
+async def _get_owner_conditions(pool: AsyncMock, **params: str) -> httpx.Response:
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        return await client.get("/api/system/conditions", params={"ledger": "owner", **params})
+
+
+@pytest.mark.parametrize(
+    ("sphere", "predicate_sql", "predicate_args"),
+    [
+        (
+            "work",
+            "metadata ->> $1 = $2 AND metadata ->> $3 = $4",
+            ["class", "commitment", "sphere", "work"],
+        ),
+        (
+            "personal",
+            "metadata ->> $1 = $2 AND metadata ->> $3 = $4",
+            ["class", "commitment", "sphere", "personal"],
+        ),
+        (
+            "undeclared",
+            "metadata ->> $1 = $2 AND NOT (metadata ? $3)",
+            ["class", "commitment", "sphere"],
+        ),
+    ],
+)
+async def test_conditions_sphere_filters_in_sql_for_rows_and_total(
+    sphere, predicate_sql, predicate_args
+):
+    """The predicate runs in SQL on both the page and the count (no client-side undercount)."""
+    pool = _make_conditions_pool_mock(rows=[_make_condition_row()], total=7)
+    resp = await _get_owner_conditions(pool, sphere=sphere)
+    assert resp.status_code == 200
+    assert resp.json()["data"]["total"] == 7
+    for call in (pool.fetchval.await_args, pool.fetch.await_args):
+        query, *args = call.args
+        assert predicate_sql in query
+        assert args[: len(predicate_args)] == predicate_args
+
+
+async def test_conditions_without_sphere_adds_no_metadata_predicate():
+    pool = _make_conditions_pool_mock(rows=[_make_condition_row()])
+    resp = await _get_owner_conditions(pool)
+    assert resp.status_code == 200
+    assert "metadata ->>" not in pool.fetch.await_args.args[0]
+    assert "metadata ->>" not in pool.fetchval.await_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"ledger": "infra", "sphere": "work"},
+        {"ledger": "owner", "sphere": "bogus"},
+        {"ledger": "owner", "sphere": ""},
+    ],
+)
+async def test_conditions_rejects_invalid_sphere(params):
+    pool = _make_conditions_pool_mock(rows=[])
+    mock_db = MagicMock(spec=DatabaseManager)
+    mock_db.pool.return_value = pool
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_make_app_with_db(mock_db)), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system/conditions", params=params)
+    assert resp.status_code == 400
+    assert "undeclared" in resp.json()["detail"] or "ledger" in resp.json()["detail"]
+    pool.fetch.assert_not_awaited()

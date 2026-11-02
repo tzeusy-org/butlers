@@ -491,6 +491,63 @@ function ConditionFilterToggle({
   )
 }
 
+type SphereFilter = "all" | "work" | "personal" | "undeclared"
+
+const SPHERE_OPTIONS: { value: SphereFilter; label: string }[] = [
+  { value: "all", label: "All spheres" },
+  { value: "work", label: "Work" },
+  { value: "personal", label: "Personal" },
+  { value: "undeclared", label: "Undeclared" },
+]
+
+/**
+ * Sphere filter over owner-ledger commitments (bu-q7vx1q.64).
+ *
+ * Unlike the class filter this one is server-side: the endpoint paginates, so
+ * filtering the fetched page would undercount. "Undeclared" is its own
+ * choice; a commitment without a declared sphere is never guessed into one.
+ */
+function SphereFilterToggle({
+  value,
+  onChange,
+}: {
+  value: SphereFilter
+  onChange: (next: SphereFilter) => void
+}) {
+  return (
+    <div
+      role="group"
+      aria-label="Commitment sphere"
+      data-testid="standing-conditions-sphere"
+      className="mb-2 ml-2 inline-flex items-center rounded-md border border-border"
+    >
+      {SPHERE_OPTIONS.map(({ value: optValue, label }) => {
+        const isActive = value === optValue
+        return (
+          <button
+            key={optValue}
+            type="button"
+            aria-pressed={isActive}
+            onClick={() => onChange(optValue)}
+            data-testid={`standing-conditions-sphere-${optValue}`}
+            className={cn(
+              "inline-flex items-center justify-center px-2 py-1",
+              "font-mono text-[10px] uppercase tabular-nums",
+              "transition-colors",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-background focus-visible:ring-offset-1",
+              isActive && "bg-foreground text-background",
+              !isActive && "bg-transparent text-foreground hover:bg-muted",
+              "first:rounded-l-sm last:rounded-r-sm",
+            )}
+          >
+            {label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 /**
  * Float deadline-bearing commitments to the top, soonest (and most overdue)
  * first; leave every other row in the merged list's existing
@@ -526,7 +583,11 @@ function collectCounterpartyIds(conditions: ConditionEntry[]): string[] {
 
 export function StandingConditionsTile() {
   const infraQuery = useSystemConditions({ limit: 20 })
-  const ownerQuery = useSystemConditions({ limit: 20, ledger: "owner" })
+  const [sphere, setSphere] = useState<SphereFilter>("all")
+  const ownerQuery = useSystemConditions(
+    sphere === "all" ? { limit: 20, ledger: "owner" } : { limit: 20, ledger: "owner", sphere },
+    { keepPreviousData: true },
+  )
   const [filter, setFilter] = useState<ConditionFilter>("all")
 
   // Counterparty ids are read off the raw query payloads rather than the
@@ -586,7 +647,7 @@ export function StandingConditionsTile() {
     ownerAvailable ? (ownerFacts?.conditions ?? []) : [],
   )
 
-  if (merged.length === 0 && infraAvailable && ownerAvailable) {
+  if (merged.length === 0 && infraAvailable && ownerAvailable && sphere === "all") {
     return (
       <TileFrame testId="standing-conditions-empty">
         <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
@@ -605,6 +666,9 @@ export function StandingConditionsTile() {
       condition.attention?.status === "unavailable" ||
       (condition.attention?.status === "not_raised" && condition.state !== "resolved"),
   )
+  // Offered while commitments exist, and while a sphere is chosen so an empty
+  // answer never strands the owner without the control to go back.
+  const showSphereFilter = sphere !== "all" || decorated.some(({ commitment }) => commitment)
   const visible = sortForDisplay(
     decorated.filter(({ commitment }) =>
       filter === "all"
@@ -649,12 +713,24 @@ export function StandingConditionsTile() {
           Loading QA dispatch suppression counts.
         </p>
       ) : null}
-      {merged.length === 0 ? (
+      {merged.length === 0 && sphere === "all" ? (
         <p className="text-muted-foreground text-sm">No standing conditions recorded.</p>
       ) : (
         <>
-          <ConditionFilterToggle value={filter} onChange={setFilter} />
-          {visible.length === 0 ? (
+          <div>
+            <ConditionFilterToggle value={filter} onChange={setFilter} />
+            {showSphereFilter ? <SphereFilterToggle value={sphere} onChange={setSphere} /> : null}
+          </div>
+          {merged.length === 0 ? (
+            <p
+              className="text-muted-foreground text-sm"
+              data-testid="standing-conditions-sphere-empty"
+            >
+              {sphere === "undeclared"
+                ? "No commitments without a declared sphere recorded."
+                : `No ${sphere} commitments recorded.`}
+            </p>
+          ) : visible.length === 0 ? (
             <p className="text-muted-foreground text-sm" data-testid="standing-conditions-filtered-empty">
               {filter === "commitments"
                 ? "No commitments recorded."
