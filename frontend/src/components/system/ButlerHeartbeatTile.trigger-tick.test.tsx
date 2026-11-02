@@ -9,14 +9,20 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import { cleanup, fireEvent, render, screen, waitFor, act } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useButlerHeartbeats } from "@/hooks/use-system";
+import { MemoryRouter, useLocation } from "react-router";
 
 vi.mock("@/hooks/use-butler-status-board", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/hooks/use-butler-status-board")>();
   return { ...actual, useButlerStatusBoard: vi.fn() };
 });
 
+vi.mock("@/hooks/use-system", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/hooks/use-system")>();
+  return {...actual, useButlerHeartbeats: vi.fn()};
+});
 vi.mock("@/hooks/use-butlers", () => ({
   useForceButlerTick: vi.fn(),
 }));
@@ -98,15 +104,19 @@ function makeAggregates(overrides: Partial<StatusBoardAggregates> = {}): StatusB
 
 const mockMutate = vi.fn();
 
+function LocationEcho() { return <output data-testid="current-path">{useLocation().pathname}</output>; }
+
 function renderTile() {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={["/system"]}>
+      <LocationEcho />
       <ButlerHeartbeatTile />
     </MemoryRouter>,
   );
 }
 
 beforeEach(() => {
+  vi.mocked(useButlerHeartbeats).mockReturnValue({ data: {data: {butlers: []}}, isPending: false, isError: false, isFetching: false, refetch: vi.fn() } as unknown as ReturnType<typeof useButlerHeartbeats>);
   mockMutate.mockClear();
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
@@ -127,6 +137,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("ButlerHeartbeatTile — Trigger tick click wiring", () => {
@@ -136,6 +147,7 @@ describe("ButlerHeartbeatTile — Trigger tick click wiring", () => {
     fireEvent.click(screen.getByRole("button", { name: "Trigger tick" }));
 
     expect(mockMutate).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("current-path").textContent).toBe("/system");
     expect(mockMutate).toHaveBeenCalledWith(
       "overdue-butler",
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
@@ -176,6 +188,56 @@ describe("ButlerHeartbeatTile — Trigger tick click wiring", () => {
 
     const button = screen.getByRole("button", { name: "Triggering…" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
+    fireEvent.click(button);
+    expect(mockMutate).not.toHaveBeenCalled();
   });
 
+});
+
+describe("ButlerHeartbeatTile -- real heartbeat query refresh", () => {
+  it("acknowledges loading and empty data, retains rows on failures and recovers current observation", async () => {
+    const actual = await vi.importActual<typeof import("@/hooks/use-system")>("@/hooks/use-system");
+    vi.mocked(useButlerHeartbeats).mockImplementation(actual.useButlerHeartbeats);
+    let response: Response | null = null;
+    let release: ((response: Response) => void) | undefined;
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      calls.push(`${init?.method ?? "GET"} ${url}`);
+      return response ? Promise.resolve(response.clone()) : new Promise<Response>((resolve) => {release = resolve;});
+    }));
+    const client = new QueryClient({defaultOptions: {queries: {retry: false, gcTime: 0}}});
+    const known = {name: "overdue-butler", last_heartbeat_at: "2001-01-01T00:00:00Z", last_probe_at: "2080-01-01T00:00:00Z",
+      last_session_at: null, active_session_count: 0, heartbeat_age_seconds: 999999,
+      observation_state: "healthy", administrative_policy: "paused", route_compatibility: "compatible", effective_eligibility: "paused"};
+    const success = (butlers: unknown[]) => new Response(JSON.stringify({data: {butlers}, meta: {}}), {status: 200});
+    const values = () => [...screen.getByRole("link", {name: "View overdue-butler"}).querySelectorAll("dd")].map((value) => value.textContent);
+    const refresh = async () => { await act(async () => {await client.refetchQueries({queryKey: ["system-butler-heartbeats"]});}); };
+    try {
+      render(<QueryClientProvider client={client}><MemoryRouter><ButlerHeartbeatTile /></MemoryRouter></QueryClientProvider>);
+      expect(screen.getByText("Loading heartbeat facts…").textContent).toContain("Loading");
+      expect(values()[0]).toBe("unknown");
+      await waitFor(() => expect(release).toBeTypeOf("function"));
+      await act(async () => {release!(new Response(JSON.stringify({error: {code: "UNAVAILABLE", message: "hidden server text"}}), {status: 503}));});
+      await waitFor(() => expect(screen.getByText(/Heartbeat facts unavailable/).textContent).toContain("unavailable"));
+      expect(values()).toEqual(["unknown", "unknown", "unknown", "unknown"]);
+      response = success([]); await refresh();
+      await waitFor(() => expect(screen.getByText("No heartbeat facts recorded.").textContent).toContain("No heartbeat"));
+      expect(values()[0]).toBe("unknown");
+      response = success([known]); await refresh();
+      await waitFor(() => expect(values()).toEqual(["healthy", "paused", "compatible", "paused"]));
+      for (const code of [401, 403, 503]) {
+        response = new Response(JSON.stringify({error: {code: "UNAVAILABLE", message: "hidden server text"}}), {status: code});
+        await refresh();
+        await waitFor(() => expect(values()[0]).toBe("unknown"));
+        expect(screen.getByText(/Last-known facts/).textContent).toContain("current observation unknown");
+        expect(screen.queryByText("hidden server text")).toBeNull();
+        response = success([known]); await refresh();
+        await waitFor(() => expect(values()[0]).toBe("healthy"));
+      }
+      response = success([{...known, observation_state: "unavailable", administrative_policy: "active", effective_eligibility: "ineligible"}]); await refresh();
+      await waitFor(() => expect(values()).toEqual(["unavailable", "active", "compatible", "ineligible"]));
+      expect(mockMutate).not.toHaveBeenCalled();
+      expect(calls.every((entry) => entry === "GET /api/system/butlers/heartbeat")).toBe(true);
+    } finally { cleanup(); client.clear(); }
+  });
 });

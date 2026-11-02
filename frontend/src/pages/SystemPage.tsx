@@ -33,6 +33,7 @@ import {
 import { Page } from "@/components/ui/page";
 import { useButlerStatusBoard } from "@/hooks/use-butler-status-board";
 import { useConnectorSummaries } from "@/hooks/use-ingestion";
+import { useButlerHeartbeats } from "@/hooks/use-system";
 import { usePageActions, type PageAction } from "@/hooks/use-page-actions";
 
 // ---------------------------------------------------------------------------
@@ -62,12 +63,11 @@ function SystemTile({ title, action, children }: SystemTileProps) {
 // ---------------------------------------------------------------------------
 
 function TopologyTile() {
-  // Canonical liveness source (bu-86c4c.17): the topology graph now colors
-  // its nodes from the SAME activity/tone verdict as the roster board and
-  // the heartbeat tile (useButlerStatusBoard / GET /api/butlers/board),
-  // rather than a separate useButlers() status probe. This closes the bug
-  // where a butler could render green here while amber-stale in a list.
+  // Keep the topology's existing board activity/tone contract. The heartbeat
+  // tile separately displays receiver observation and service-policy facts;
+  // neither query snapshot is an atomic or row-wide availability verdict.
   const { rows, aggregates } = useButlerStatusBoard();
+  const { refetch: refetchHeartbeats } = useButlerHeartbeats();
   const {
     data: connectorsResponse,
     isLoading: connectorsLoading,
@@ -77,7 +77,7 @@ function TopologyTile() {
 
   // Hot-loop keyboard coverage (bu-ep4ks.12): /system had zero
   // useRegisterShortcut coverage. "r" refreshes the same butler-status and
-  // connector data this tile (and the rest of the page's tiles) already poll.
+  // connector data this tile already polls, plus the independent heartbeat facts.
   const pageActions = useMemo<PageAction[]>(
     () => [
       {
@@ -89,10 +89,11 @@ function TopologyTile() {
         handler: () => {
           void aggregates.refetch();
           void refetchConnectors();
+          void refetchHeartbeats();
         },
       },
     ],
-    [aggregates, refetchConnectors],
+    [aggregates, refetchConnectors, refetchHeartbeats],
   );
   usePageActions(pageActions);
 
