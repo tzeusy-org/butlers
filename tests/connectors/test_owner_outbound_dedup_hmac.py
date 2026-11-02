@@ -69,3 +69,18 @@ async def test_missing_key_fails_closed_and_warns_once_at_resolve(
 
     assert inserted is False
     pool.fetchval.assert_not_awaited()
+
+
+async def test_probe_error_fails_closed_with_a_distinct_log(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = AsyncMock()
+    store.resolve = AsyncMock(side_effect=RuntimeError("secret-value-xyz"))
+    with caplog.at_level(logging.WARNING, logger=oe.__name__):
+        assert await oe.resolve_dedup_key(store) is False
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("probe failed" in m for m in messages)
+    assert not any("not provisioned" in m for m in messages)
+    assert not any("secret-value-xyz" in m for m in messages)
+    assert oe._hash_dedup_material("telegram", "100:42") is None

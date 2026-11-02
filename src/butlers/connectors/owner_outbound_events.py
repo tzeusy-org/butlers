@@ -85,15 +85,24 @@ async def resolve_dedup_key(credential_store: Any) -> bool:
     is configured, ``record_owner_outbound_point`` writes nothing.
     """
     value: str | None = None
+    probe_failed = False
     if credential_store is not None:
         try:
             value = await credential_store.resolve(
                 OWNER_OUTBOUND_DEDUP_KEY_NAME, env_fallback=False
             )
-        except Exception:  # noqa: BLE001 - a probe failure must not block startup
+        except Exception as exc:  # noqa: BLE001 - a probe failure must not block startup
             value = None
+            probe_failed = True
+            # Log only the exception type: never the message, which could echo a value.
+            logger.warning(
+                "%s credential-store probe failed (%s); owner-outbound point events "
+                "will not be recorded until the connector restarts with the store reachable",
+                OWNER_OUTBOUND_DEDUP_KEY_NAME,
+                type(exc).__name__,
+            )
     configured = configure_dedup_key(value)
-    if not configured:
+    if not configured and not probe_failed:
         logger.warning(
             "%s is not provisioned: owner-outbound point events will not be recorded",
             OWNER_OUTBOUND_DEDUP_KEY_NAME,

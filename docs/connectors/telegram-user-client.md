@@ -78,7 +78,9 @@ user-client) also need the system secret `OWNER_OUTBOUND_DEDUP_KEY` in the share
 store (`butler_secrets`, no environment fallback). It keys the HMAC over `chat_id:message_id`
 that forms the dedup key, so stored rows cannot be matched back to a chat by enumerating
 sequential message ids. If the key is missing, the connector logs one startup warning and
-records no point events; it never falls back to an unkeyed hash. Rotating the key only lets a
+records no point events; it never falls back to an unkeyed hash. The key is resolved once at
+connector startup, so provisioning it (or recovering from a credential-store probe failure,
+which logs a distinct `probe failed` warning) takes effect only after a connector restart. Rotating the key only lets a
 replayed message be recorded once more. Rows written before the key existed hold a legacy
 unkeyed SHA-256 key; they cannot be rehashed, so removing them is an owner-gated data scrub.
 
