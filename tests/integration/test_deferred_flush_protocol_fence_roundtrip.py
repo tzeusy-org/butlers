@@ -31,7 +31,10 @@ _NOW = datetime(2026, 10, 19, 8, 0, tzinfo=UTC)
 @pytest.fixture
 async def sb_pool(db):
     return await db(
-        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+        "core",
+        "switchboard",
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        schema="switchboard",
     )
 
 

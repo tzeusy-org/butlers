@@ -7,13 +7,14 @@ against a migrated database (Docker; CI-only).
 
 from __future__ import annotations
 
-import importlib.util
 import shutil
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[2]
@@ -43,16 +44,8 @@ _PROTOCOL_STATUSES = (
 )
 
 
-def _load_migration():
-    spec = importlib.util.spec_from_file_location("core_310", _MIGRATION_PATH)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def _emitted(fn_name: str) -> str:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
     mock_op = MagicMock()
     with patch.object(mod, "op", mock_op):
         getattr(mod, fn_name)()
@@ -61,7 +54,7 @@ def _emitted(fn_name: str) -> str:
 
 @pytest.mark.unit
 def test_revision_chain_is_a_single_additive_step() -> None:
-    mod = _load_migration()
+    mod = load_migration(_MIGRATION_PATH)
 
     assert (mod.revision, mod.down_revision) == ("core_310", "core_309")
     assert mod.branch_labels is None and mod.depends_on is None
@@ -134,7 +127,10 @@ def test_downgrade_restores_the_pre_protocol_status_check() -> None:
 @pytest.fixture
 async def sb_pool(db):
     return await db(
-        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+        "core",
+        "switchboard",
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        schema="switchboard",
     )
 
 

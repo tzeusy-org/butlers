@@ -51,7 +51,10 @@ def test_only_the_grant_sits_inside_the_privilege_handler() -> None:
 @pytest.fixture
 async def sb_pool(db):
     return await db(
-        "core", "switchboard", schemas={"switchboard": "switchboard"}, schema="switchboard"
+        "core",
+        "switchboard",
+        schemas={"core": "switchboard", "switchboard": "switchboard"},
+        schema="switchboard",
     )
 
 
