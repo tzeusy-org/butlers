@@ -199,6 +199,7 @@ function mockHooks(
   profiles: ConnectorProfile[] = [],
   responseOverrides: {
     hourly_events_available?: boolean
+    listening_available?: boolean
     device_liveness_available?: boolean
     owntracks_cadence_available?: boolean
   } = {},
@@ -940,6 +941,16 @@ describe('hourly_events_available degraded note (bu-scyro)', () => {
 
     expect(container.textContent).toMatch(/24h activity/)
     expect(container.textContent).toMatch(/hourly event source unavailable/)
+  })
+
+  it('names a failed heartbeat read so unhatched sparklines never pass for listening (bu-s11n0s.5)', () => {
+    mockHooks([HEALTHY_CONNECTOR], [], { listening_available: true })
+    renderRoster(container, root)
+    expect(container.textContent).not.toMatch(/heartbeat history unavailable/)
+
+    mockHooks([HEALTHY_CONNECTOR], [], { listening_available: false })
+    renderRoster(container, root)
+    expect(container.textContent).toMatch(/heartbeat history unavailable/)
   })
 })
 

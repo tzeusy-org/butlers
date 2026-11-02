@@ -1100,6 +1100,9 @@ async def list_connector_summaries_with_aggregates(
     # (subject only to hourly_events_available on a genuine query failure).
     hourly_map: dict[tuple[str, str], list[int]] = {}
     hourly_filtered_map: dict[tuple[str, str], list[int]] = {}
+    # Failed-event counts, used only so hourly_listening sees the same traffic
+    # (ingested, failed or filtered) as the detail stats route.
+    hourly_failed_map: dict[tuple[str, str], list[int]] = {}
     hourly_events_available = True
     now_utc = _dt.datetime.now(_dt.UTC)
     # Truncate to the start of the current hour so bucket 23 is the most recent
@@ -1121,12 +1124,12 @@ async def list_connector_summaries_with_aggregates(
                         source_endpoint_identity AS endpoint_identity,
                         date_trunc('hour', received_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
                             AS hour_bucket,
-                        'ingested'               AS source,
+                        status                   AS source,
                         count(*)                 AS event_count
                     FROM public.ingestion_events
                     WHERE received_at >= $1
-                      AND status = 'ingested'
-                    GROUP BY source_channel, source_endpoint_identity,
+                      AND status IN ('ingested', 'failed')
+                    GROUP BY source_channel, source_endpoint_identity, status,
                              date_trunc('hour', received_at AT TIME ZONE 'UTC')
                     UNION ALL
                     SELECT
@@ -1145,10 +1148,14 @@ async def list_connector_summaries_with_aggregates(
                 window_start,
             )
             # Populate bucket arrays for each connector key seen in hourly_rows,
-            # routing to the ingested or filtered map by the `source` discriminator.
+            # routing by the `source` discriminator. 'failed' rows feed only the
+            # listening traffic signal, never the ingested/filtered series.
             for hr in hourly_rows:
                 key = (hr["connector_type"], hr["endpoint_identity"])
-                target_map = hourly_map if hr["source"] == "ingested" else hourly_filtered_map
+                target_map = {
+                    "ingested": hourly_map,
+                    "failed": hourly_failed_map,
+                }.get(hr["source"], hourly_filtered_map)
                 if key not in target_map:
                     target_map[key] = [0] * 24
                 # Determine which bucket index this hour falls into (0 = oldest, 23 = newest)
@@ -1349,10 +1356,22 @@ async def list_connector_summaries_with_aggregates(
             heartbeat_buckets=heartbeat_hours,
             recording_since=recording_since,
             as_of=now_utc,
-            has_traffic=[
-                bool(ingested or filtered)
-                for ingested, filtered in zip(hourly, hourly_filtered, strict=True)
-            ],
+            # If the hourly counts failed, traffic is unknown, so no slot may
+            # claim the "no traffic" half of deafness: treat every slot as
+            # possibly trafficked, leaving non-live slots unknown.
+            has_traffic=(
+                [
+                    bool(ingested or failed or filtered)
+                    for ingested, failed, filtered in zip(
+                        hourly,
+                        hourly_failed_map.get(key, [0] * 24),
+                        hourly_filtered,
+                        strict=True,
+                    )
+                ]
+                if hourly_events_available
+                else [True] * 24
+            ),
         )
         # Sum the hourly timeseries (already a real 24h window from public.ingestion_events)
         # to produce a true last-24h ingestion count.  The raw counter_messages_ingested is

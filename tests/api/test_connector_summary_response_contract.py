@@ -97,6 +97,15 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
                     event_count=count,
                 )
                 for kind, count in [("ingested", 7), ("filtered", 11)]
+            ] + [
+                # A failed event an hour earlier: traffic for listening only.
+                dict(
+                    connector_type="owntracks",
+                    endpoint_identity="synthetic-online",
+                    hour_bucket=now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1),
+                    source="failed",
+                    event_count=1,
+                )
             ]
         if source == failed_source:
             raise OSError(f"synthetic {source} source unavailable")
@@ -186,9 +195,12 @@ async def test_canonical_summary_serialization_and_schema(failed_source):
             assert online["hourly_filtered_events"] == [0] * 23 + [
                 0 if failed_source == "hourly" else 11
             ]
-            assert online["hourly_listening"] == (
-                ["unknown"] * 24 if failed_source == "listening" else ["deaf"] * 23 + ["live"]
-            )
+            # Failed traffic (slot 22) contradicts deafness, as on the detail route;
+            # unknown traffic (hourly read failed) leaves every non-live slot unknown.
+            assert online["hourly_listening"] == {
+                "listening": ["unknown"] * 24,
+                "hourly": ["unknown"] * 23 + ["live"],
+            }.get(failed_source, ["deaf"] * 22 + ["unknown", "live"])
             assert bool(online["operational_warnings"]) is (failed_source != "cadence")
             if failed_source == "devices":
                 assert online["devices"] is None

@@ -171,6 +171,10 @@ export function ConnectorsRoster() {
   // (older cached response) must NOT be treated as false. Never let that render as
   // an honest "quiet 24h" — surface the degraded source inline instead.
   const hourlyEventsAvailable = connectorsResp?.data?.hourly_events_available !== false
+  // listening_available (bu-s11n0s.5) is false only when the heartbeat-history
+  // read failed; every slot is then "unknown", so no sparkline is hatched and
+  // that absence must not read as "every connector was listening".
+  const listeningAvailable = connectorsResp?.data?.listening_available !== false
 
   // device_liveness_available (bu-e16to/bu-fm3my) is false only when the backend's
   // per-device liveness query itself raised — in that case every connector's
@@ -407,6 +411,14 @@ export function ConnectorsRoster() {
             <SourceDegradedNote
               label="24h activity"
               detail="hourly event source unavailable, sparklines and events · 24h above are incomplete"
+              onRetry={() => void refetchConnectors()}
+              className="mt-4"
+            />
+          )}
+          {!listeningAvailable && (
+            <SourceDegradedNote
+              label="listening state"
+              detail="heartbeat history unavailable, not-listening hours cannot be shown on the sparklines above"
               onRetry={() => void refetchConnectors()}
               className="mt-4"
             />
