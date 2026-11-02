@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import pytest
 
+from butlers.testing.fake_pool import fake_pool
 from butlers.tools.switchboard.routing.rule_promotion import (
     DEFAULT_MIN_ELAPSED_FLOOR,
     PromotionTriggerResult,
@@ -288,38 +289,6 @@ class TestIsClearlyAutomated:
 # ---------------------------------------------------------------------------
 
 
-class _FakePool:
-    """Minimal stand-in for asyncpg.Pool driven by canned per-call results.
-
-    ``fetch_results`` / ``fetchrow_results`` / ``fetchval_results`` are
-    consumed in call order — this mirrors the fixed sequence of queries
-    ``_process_candidate`` issues for a given code path (see
-    rule_promotion.py: pending-check, evidence fetch, headers fetch, insert).
-    """
-
-    def __init__(
-        self,
-        *,
-        fetch_results=None,
-        fetchrow_results=None,
-        fetchval_results=None,
-        execute_result: str = "UPDATE 1",
-    ):
-        self._fetch_results = list(fetch_results or [])
-        self._fetchrow_results = list(fetchrow_results or [])
-        self._fetchval_results = list(fetchval_results or [])
-        self.execute = AsyncMock(return_value=execute_result)
-
-    async def fetch(self, *_args, **_kwargs):
-        return self._fetch_results.pop(0) if self._fetch_results else []
-
-    async def fetchrow(self, *_args, **_kwargs):
-        return self._fetchrow_results.pop(0) if self._fetchrow_results else None
-
-    async def fetchval(self, *_args, **_kwargs):
-        return self._fetchval_results.pop(0) if self._fetchval_results else None
-
-
 class _FakeEvaluator:
     def __init__(self, *, action: str = "pass_through"):
         self._decision = SimpleNamespace(action=action)
@@ -343,10 +312,11 @@ class TestRunRulePromotionTrigger:
         candidates = [{"sender_key": "billing@chase.com", "source_channel": "email"}]
         evidence = [_verdict_row(day=3), _verdict_row(day=2), _verdict_row(day=1)]
         new_id = uuid4()
-        pool = _FakePool(
-            fetch_results=[candidates, evidence, []],  # candidates, evidence, headers
-            fetchrow_results=[None],  # no pending suggestion
-            fetchval_results=[new_id],  # insert succeeds
+        pool = fake_pool(
+            # candidates, evidence, headers
+            fetch=AsyncMock(side_effect=[candidates, evidence, []]),
+            fetchrow=AsyncMock(side_effect=[None, None]),  # no pending, no active cooldown
+            fetchval=AsyncMock(side_effect=[new_id]),  # insert succeeds
         )
         evaluator = _FakeEvaluator(action="pass_through")
 
@@ -359,7 +329,10 @@ class TestRunRulePromotionTrigger:
     async def test_skips_candidate_below_threshold(self):
         candidates = [{"sender_key": "new@sender.com", "source_channel": "email"}]
         evidence = [_verdict_row(day=1), _verdict_row(day=2)]  # only 2, threshold is 3
-        pool = _FakePool(fetch_results=[candidates, evidence], fetchrow_results=[None])
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, evidence]),
+            fetchrow=AsyncMock(side_effect=[None, None]),
+        )
         evaluator = _FakeEvaluator()
 
         result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
@@ -371,9 +344,9 @@ class TestRunRulePromotionTrigger:
         """Scenario: 'Existing rule suppresses re-proposal'."""
         candidates = [{"sender_key": "vip@chase.com", "source_channel": "email"}]
         evidence = [_verdict_row(day=1), _verdict_row(day=2), _verdict_row(day=3)]
-        pool = _FakePool(
-            fetch_results=[candidates, evidence, []],
-            fetchrow_results=[None],
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, evidence, []]),
+            fetchrow=AsyncMock(side_effect=[None, None]),
         )
         evaluator = _FakeEvaluator(action="route_to")  # a rule already matches
 
@@ -388,10 +361,10 @@ class TestRunRulePromotionTrigger:
         that made Dismiss cosmetic and the card reappear every scan."""
         candidates = [{"sender_key": "declined@sender.com", "source_channel": "google_drive"}]
         active_cooldown = {"id": uuid4(), "cooldown_until": _ts(day=28)}
-        pool = _FakePool(
-            fetch_results=[candidates],  # returns before any evidence fetch
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates]),  # returns before any evidence fetch
             # 1st fetchrow: no pending suggestion; 2nd: an active dismissal cooldown.
-            fetchrow_results=[None, active_cooldown],
+            fetchrow=AsyncMock(side_effect=[None, active_cooldown]),
         )
         evaluator = _FakeEvaluator()
 
@@ -406,10 +379,10 @@ class TestRunRulePromotionTrigger:
         candidates = [{"sender_key": "lapsed@sender.com", "source_channel": "email"}]
         evidence = [_verdict_row(day=3), _verdict_row(day=2), _verdict_row(day=1)]
         new_id = uuid4()
-        pool = _FakePool(
-            fetch_results=[candidates, evidence, []],
-            fetchrow_results=[None, None],  # no pending, no active cooldown
-            fetchval_results=[new_id],
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, evidence, []]),
+            fetchrow=AsyncMock(side_effect=[None, None]),  # no pending, no active cooldown
+            fetchval=AsyncMock(side_effect=[new_id]),
         )
         evaluator = _FakeEvaluator(action="pass_through")
 
@@ -425,7 +398,10 @@ class TestRunRulePromotionTrigger:
             _verdict_row(day=2, target="finance"),
             _verdict_row(day=1, target="finance"),
         ]
-        pool = _FakePool(fetch_results=[candidates, evidence], fetchrow_results=[None])
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, evidence]),
+            fetchrow=AsyncMock(side_effect=[None, None]),
+        )
         evaluator = _FakeEvaluator()
 
         result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
@@ -437,10 +413,10 @@ class TestRunRulePromotionTrigger:
         RETURNING nothing) must not raise or double-count as created."""
         candidates = [{"sender_key": "race@sender.com", "source_channel": "email"}]
         evidence = [_verdict_row(day=1), _verdict_row(day=2), _verdict_row(day=3)]
-        pool = _FakePool(
-            fetch_results=[candidates, evidence, []],
-            fetchrow_results=[None],
-            fetchval_results=[None],  # ON CONFLICT DO NOTHING -> no id returned
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, evidence, []]),
+            fetchrow=AsyncMock(side_effect=[None, None]),
+            fetchval=AsyncMock(side_effect=[None]),  # ON CONFLICT DO NOTHING -> no id returned
         )
         evaluator = _FakeEvaluator(action="pass_through")
 
@@ -459,12 +435,13 @@ class TestRunRulePromotionTrigger:
             "proposed_action": "route_to:finance",
         }
         new_agreeing = [{"decided_at": _ts(day=5)}]
-        pool = _FakePool(
+        pool = fake_pool(
             # Candidate scan, latest evidence for the coverage recheck, then
             # the post-suggestion evidence to bump. The synthetic evidence has
             # no event id, so the header helper makes no DB fetch.
-            fetch_results=[candidates, [_verdict_row(day=3)], new_agreeing],
-            fetchrow_results=[pending],
+            fetch=AsyncMock(side_effect=[candidates, [_verdict_row(day=3)], new_agreeing]),
+            fetchrow=AsyncMock(side_effect=[pending]),
+            execute="UPDATE 1",
         )
         evaluator = _FakeEvaluator()
 
@@ -482,10 +459,11 @@ class TestRunRulePromotionTrigger:
             "last_evidence_at": _ts(day=1),
             "proposed_action": "route_to:finance",
         }
-        pool = _FakePool(
+        pool = fake_pool(
             # Candidate scan, then the latest evidence used for policy coverage.
-            fetch_results=[candidates, [_verdict_row(day=3)]],
-            fetchrow_results=[pending],
+            fetch=AsyncMock(side_effect=[candidates, [_verdict_row(day=3)]]),
+            fetchrow=AsyncMock(side_effect=[pending]),
+            execute="UPDATE 1",
         )
         evaluator = _FakeEvaluator(action="skip")
 
@@ -508,10 +486,10 @@ class TestRunRulePromotionTrigger:
             "last_evidence_at": _ts(day=1),
             "proposed_action": "route_to:finance",
         }
-        pool = _FakePool(
-            fetch_results=[candidates, [_verdict_row(day=3)]],
-            fetchrow_results=[pending],
-            execute_result="UPDATE 0",
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, [_verdict_row(day=3)]]),
+            fetchrow=AsyncMock(side_effect=[pending]),
+            execute="UPDATE 0",
         )
         evaluator = _FakeEvaluator(action="skip")
 
@@ -530,9 +508,9 @@ class TestRunRulePromotionTrigger:
             "last_evidence_at": _ts(day=1),
             "proposed_action": "skip",
         }
-        pool = _FakePool(
-            fetch_results=[candidates, [_verdict_row(day=3)], []],
-            fetchrow_results=[pending],
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates, [_verdict_row(day=3)], []]),
+            fetchrow=AsyncMock(side_effect=[pending]),
         )
         evaluator = _FakeEvaluator()
 
@@ -547,11 +525,10 @@ class TestRunRulePromotionTrigger:
             {"sender_key": "bad@sender.com", "source_channel": "email"},
         ]
 
-        class _BoomPool(_FakePool):
-            async def fetchrow(self, *_args, **_kwargs):
-                raise RuntimeError("boom")
-
-        pool = _BoomPool(fetch_results=[candidates])
+        pool = fake_pool(
+            fetch=AsyncMock(side_effect=[candidates]),
+            fetchrow=AsyncMock(side_effect=RuntimeError("boom")),
+        )
         evaluator = _FakeEvaluator()
 
         result = await run_rule_promotion_trigger(pool, evaluator=evaluator)
@@ -561,7 +538,7 @@ class TestRunRulePromotionTrigger:
 
     async def test_skips_candidates_missing_sender_key_or_channel(self):
         candidates = [{"sender_key": "", "source_channel": "email"}]
-        pool = _FakePool(fetch_results=[candidates])
+        pool = fake_pool(fetch=AsyncMock(side_effect=[candidates]))
         evaluator = _FakeEvaluator()
 
         result = await run_rule_promotion_trigger(pool, evaluator=evaluator)

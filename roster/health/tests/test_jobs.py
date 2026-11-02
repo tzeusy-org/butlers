@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import re
 import shutil
 import uuid
@@ -12,6 +11,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from butlers.testing.migration import load_migration
 
 _THIS_FILE = Path(__file__).resolve()
 
@@ -124,11 +125,7 @@ async def _setup_health_schema(pool) -> None:
         "core_210_expected_signals.py",
         "core_211_expected_signal_endpoint_identity.py",
     ):
-        migration_path = _THIS_FILE.parents[3] / "alembic/versions/core" / migration_name
-        spec = importlib.util.spec_from_file_location(migration_path.stem, migration_path)
-        assert spec is not None and spec.loader is not None
-        migration = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(migration)
+        migration = load_migration(_THIS_FILE.parents[3] / "alembic/versions/core" / migration_name)
         statements: list[str] = []
         mocked_op = MagicMock()
         mocked_op.execute.side_effect = statements.append
@@ -1671,22 +1668,13 @@ async def test_correlation_environment_no_reader_skipped(provisioned_postgres_po
 # ---------------------------------------------------------------------------
 
 
-def _load_migration(name: str, root: str):
-    path = _THIS_FILE.parents[3] / root / name
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 async def _setup_visit_brief_tables(pool) -> None:
     """Calendar ledger (core_003) and ``visit_briefs`` (health_005) in the default schema."""
     for name, root in (
         ("core_003_calendar.py", "alembic/versions/core"),
         ("005_visit_briefs.py", "roster/health/migrations"),
     ):
-        migration = _load_migration(name, root)
+        migration = load_migration(_THIS_FILE.parents[3] / root / name)
         statements: list[str] = []
         mocked_op = MagicMock()
         mocked_op.execute.side_effect = statements.append

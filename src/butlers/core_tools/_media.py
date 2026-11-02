@@ -36,7 +36,8 @@ def register_media_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
         For an image, call ``attachment_view`` instead — it returns a real
         image content block with no inline-size cap. This tool refuses (a
         typed ``status: "refused"`` result, not a base64 dump) any blob whose
-        base64 encoding would exceed the inline cap.
+        base64 encoding would exceed the inline cap, and any ref outside this
+        butler's blob prefix and the connector prefix (``attachment_forbidden``).
 
         Parameters
         ----------
@@ -54,7 +55,7 @@ def register_media_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             Or, when refused: ``{"status": "refused", "reason": ..., ...}``.
         """
         try:
-            return await _get_attachment(daemon.blob_store, storage_ref)
+            return await _get_attachment(daemon.blob_store, storage_ref, origin_butler=butler_name)
         except BlobNotFoundError:
             # Return structured error instead of raising
             return {
@@ -90,8 +91,9 @@ def register_media_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
 
         Returns the image itself (an MCP image content block), the correct
         way to hand a model vision input — never a JSON blob with a base64
-        field. A blob over the vision size cap, a non-image media type, or a
-        blob that cannot be found returns a typed refusal
+        field. A blob over the vision size cap, a non-image media type, a ref
+        outside this butler's blob prefix and the connector prefix, or a blob
+        that cannot be found returns a typed refusal
         (``{"status": "refused", "reason": ...}``) instead.
 
         Parameters
@@ -100,7 +102,7 @@ def register_media_tools(ctx: ToolContext, mcp: Any, _core_tool: Callable) -> No
             Storage reference string (e.g., 's3://bucket/general/2026/02/16/abc123.jpg')
         """
         try:
-            return await _attachment_view(daemon.blob_store, storage_ref)
+            return await _attachment_view(daemon.blob_store, storage_ref, origin_butler=butler_name)
         except Exception as exc:
             logger.exception("attachment_view failed for %s", storage_ref)
             return {
