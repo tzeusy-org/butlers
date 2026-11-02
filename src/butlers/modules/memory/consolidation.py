@@ -4,8 +4,8 @@ Provides two main entry points:
 
 * ``run_consolidation`` — fetches unconsolidated episodes via a lease-based
   ``FOR UPDATE SKIP LOCKED`` claim ordered by ``(tenant_id, butler, created_at,
-  id)``, groups by ``(tenant_id, source butler)``, splits each group into an
-  owner-class and a non-owner authority partition, orchestrates the full
+  id)``, groups by ``(tenant_id, source butler)``, splits each group into
+  owner-class, system and non-owner authority partitions, orchestrates the full
   consolidation pipeline per partition (prompt building, CC spawning, parsing,
   and execution), and marks episodes as consolidated or failed.
 * ``run_episode_cleanup`` — deletes expired episodes and enforces a capacity
@@ -58,8 +58,7 @@ from butlers.core.queue_claim import ClaimFailure, ClaimQueue, claim_batch, fail
 from butlers.modules.memory.consolidation_executor import execute_consolidation
 from butlers.modules.memory.consolidation_parser import parse_consolidation_output
 from butlers.modules.memory.content_authority import (
-    NON_OWNER_PARTITION,
-    OWNER_PARTITION,
+    PARTITIONS,
     partition_of,
     partition_sql,
 )
@@ -204,8 +203,9 @@ async def run_consolidation(
     processing.
 
     Each ``(tenant_id, butler)`` group is split by persisted episode authority
-    into an owner-class partition (``owner``/``owner_device``) and a non-owner
-    partition (everything else, including NULL). For each nonempty partition:
+    into an owner-class partition (``owner``/``owner_device``), a ``system``
+    partition and a non-owner partition (``third_party``, ``mixed`` and NULL).
+    For each nonempty partition:
     1. Fetch existing facts and rules of the same partition for dedup context
     2. Build consolidation prompt via ``build_consolidation_prompt``
     3. Spawn a runtime instance with the consolidate skill
@@ -240,7 +240,7 @@ async def run_consolidation(
         - ``butlers_processed``: number of distinct (tenant_id, butler) groups.
         - ``groups``: mapping of "tenant_id/butler_name" to episode count.
         - ``groups_consolidated``: number of authority partitions successfully
-          processed (at most two per group).
+          processed (at most three per group).
         - ``facts_created``: total new facts stored.
         - ``facts_updated``: total facts updated.
         - ``rules_created``: total new rules stored.
@@ -295,9 +295,9 @@ async def run_consolidation(
     all_errors: list[str] = []
 
     # Process each (tenant_id, butler_name) group (only if spawner is provided).
-    # Each group is split by persisted episode authority: owner-class evidence
-    # and every other authority get separate runtime sessions, so neither can
-    # restate the other's content under its own evidence (bu-dhloi1.1).
+    # Each group is split by persisted episode authority: owner-class, system and
+    # third-party-class evidence get separate runtime sessions, so none can
+    # restate another's content under its own evidence (bu-dhloi1.1, .26).
     if cc_spawner is not None:
         for (tenant_id, butler_name), group_episodes in groups.items():
             for partition, episodes in _partition_by_authority(group_episodes):
@@ -338,13 +338,14 @@ async def run_consolidation(
 
 
 def _partition_by_authority(episodes: list[dict]) -> list[tuple[str, list[dict]]]:
-    """Split one claimed group into its nonempty authority partitions, owner first.
+    """Split one claimed group into its nonempty authority partitions.
 
     The partition comes from each episode's persisted ``content_authority``
-    stamp; NULL, ``system``, ``mixed`` and ``third_party`` all fall outside the
-    owner class.  Claim order is preserved within each partition.
+    stamp: owner-class, ``system``, and everything else (``third_party``,
+    ``mixed``, NULL), in that order.  Claim order is preserved within each
+    partition.
     """
-    partitions: dict[str, list[dict]] = {OWNER_PARTITION: [], NON_OWNER_PARTITION: []}
+    partitions: dict[str, list[dict]] = {partition: [] for partition in PARTITIONS}
     for episode in episodes:
         partitions[partition_of(episode.get("content_authority"))].append(episode)
     return [(partition, members) for partition, members in partitions.items() if members]
@@ -368,15 +369,15 @@ async def _consolidate_partition(
 
     Returns the executor result when every episode in the partition was
     finalized, else ``None`` after appending a sanitized error.  A failure here
-    marks only this partition's episodes failed: the sibling partition of the
-    same tenant/butler is independent.
+    marks only this partition's episodes failed: the sibling partitions of the
+    same tenant/butler are independent.
     """
     group_episode_ids = [uuid.UUID(str(ep["id"])) for ep in episodes]
     authority_filter = partition_sql(partition)
     try:
         # 1. Fetch existing facts and rules for dedup context, filtered to this
-        # partition's authority before the LIMIT so the owner session never
-        # sees (and so cannot restate) non-owner content.
+        # partition's authority before the LIMIT so the owner and system sessions
+        # never see (and so cannot restate) third-party content.
         # Includes 'fading' facts (bu-5ud8p.1): they are still live,
         # and consolidation should recognize an episode that reconfirms
         # a fading fact as an update to it, not create a duplicate.

@@ -860,22 +860,33 @@ class _PartitionPool(_AtomicPool):
 
 
 @pytest.mark.asyncio
-async def test_episode_outside_its_partition_fails_before_any_write(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("partition", "cited_authority"),
+    [
+        ("owner", "owner"),
+        # bu-dhloi1.26: a system session that also saw a third-party episode could
+        # restate it citing only the system episode, stamping it unlabelled system.
+        ("system", "system"),
+    ],
+)
+async def test_episode_outside_its_partition_fails_before_any_write(
+    monkeypatch, partition: str, cited_authority: str
+) -> None:
     """REQ-module-memory-005: a stamp that left the partition fails the whole group."""
-    owner_episode, stranger_episode = uuid.uuid4(), uuid.uuid4()
+    cited_episode, stranger_episode = uuid.uuid4(), uuid.uuid4()
     store_fact_mock = AsyncMock(return_value={"id": uuid.uuid4(), "supersedes_id": None})
     monkeypatch.setattr(consolidation_executor, "store_fact", store_fact_mock)
     monkeypatch.setattr(
         consolidation_executor, "_lookup_episode_ttl_days", AsyncMock(return_value=7)
     )
-    pool = _PartitionPool({owner_episode: "owner", stranger_episode: "third_party"})
+    pool = _PartitionPool({cited_episode: cited_authority, stranger_episode: "third_party"})
     parsed = ConsolidationResult(
         new_facts=[
             NewFact(
                 subject="owner",
                 predicate="preference",
                 content="likes quiet dinners",
-                evidence_episode_ids=[str(owner_episode)],
+                evidence_episode_ids=[str(cited_episode)],
             )
         ]
     )
@@ -885,9 +896,9 @@ async def test_episode_outside_its_partition_fails_before_any_write(monkeypatch)
             pool=pool,
             embedding_engine=object(),
             parsed=parsed,
-            source_episode_ids=[owner_episode, stranger_episode],
+            source_episode_ids=[cited_episode, stranger_episode],
             butler_name="relationship",
-            authority_partition="owner",
+            authority_partition=partition,
         )
 
     store_fact_mock.assert_not_awaited()
@@ -899,7 +910,12 @@ async def test_episode_outside_its_partition_fails_before_any_write(monkeypatch)
     ("partition", "authority", "predicate"),
     [
         ("owner", "owner", "content_authority IN ('owner', 'owner_device')"),
-        ("non_owner", None, "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device')"),
+        ("system", "system", "content_authority = 'system'"),
+        (
+            "non_owner",
+            None,
+            "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device', 'system')",
+        ),
     ],
 )
 async def test_partition_scopes_update_targets_and_confirmations(

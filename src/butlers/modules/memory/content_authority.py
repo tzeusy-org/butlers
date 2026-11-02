@@ -45,13 +45,20 @@ OWNER_CLASS: frozenset[str] = frozenset({OWNER, OWNER_DEVICE})
 #: NULL authority with no endorsement evaluates to NULL, which excludes the row.
 RULE_ADMITTED_SQL = "(content_authority IN ('owner', 'owner_device') OR endorsed_at IS NOT NULL)"
 
-#: Consolidation partitions (bu-dhloi1.1).  Owner-class evidence is consolidated
-#: apart from every other authority (``third_party``, ``system``, ``mixed`` and an
-#: unknown NULL), so one runtime session can never restate one authority's
-#: content under another's evidence.
+#: Consolidation partitions (bu-dhloi1.1, bu-dhloi1.26).  Each partition is
+#: consolidated in its own runtime session, so no session can restate one
+#: authority's content under another's evidence:
+#:
+#: * ``owner``     -- owner-class evidence (``owner``, ``owner_device``).
+#: * ``system``    -- ``system`` evidence.  Kept apart from third-party content
+#:   because a ``system`` fact renders unlabelled: a shared session could
+#:   restate a stranger's words citing only a system episode.
+#: * ``non_owner`` -- everything a third party may have authored
+#:   (``third_party``, ``mixed`` and an unknown NULL); all of it renders labelled.
 OWNER_PARTITION = "owner"
+SYSTEM_PARTITION = "system"
 NON_OWNER_PARTITION = "non_owner"
-PARTITIONS: frozenset[str] = frozenset({OWNER_PARTITION, NON_OWNER_PARTITION})
+PARTITIONS: tuple[str, ...] = (OWNER_PARTITION, SYSTEM_PARTITION, NON_OWNER_PARTITION)
 
 _DASHBOARD_CHANNEL = "dashboard"
 
@@ -74,7 +81,11 @@ def is_owner_class(authority: str | None) -> bool:
 
 def partition_of(authority: str | None) -> str:
     """The consolidation partition of one persisted authority (NULL is non-owner)."""
-    return OWNER_PARTITION if is_owner_class(authority) else NON_OWNER_PARTITION
+    if is_owner_class(authority):
+        return OWNER_PARTITION
+    if authority == SYSTEM:
+        return SYSTEM_PARTITION
+    return NON_OWNER_PARTITION
 
 
 def partition_sql(partition: str, column: str = "content_authority") -> str:
@@ -82,12 +93,14 @@ def partition_sql(partition: str, column: str = "content_authority") -> str:
 
     ``column`` is a reviewed code constant, never caller input.  The non-owner
     predicate admits NULL explicitly, so an unstamped legacy row is never
-    treated as owner-class.
+    treated as owner-class or system.
     """
     if partition == OWNER_PARTITION:
         return f"{column} IN ('owner', 'owner_device')"
+    if partition == SYSTEM_PARTITION:
+        return f"{column} = 'system'"
     if partition == NON_OWNER_PARTITION:
-        return f"COALESCE({column}, '') NOT IN ('owner', 'owner_device')"
+        return f"COALESCE({column}, '') NOT IN ('owner', 'owner_device', 'system')"
     raise ValueError(f"unknown consolidation partition {partition!r}")
 
 

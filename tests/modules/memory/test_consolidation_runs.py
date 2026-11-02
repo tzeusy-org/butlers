@@ -418,18 +418,20 @@ class TestRunConsolidationWritesAuditRow:
         assert all(uuid.UUID(request_id).version == 4 for request_id in request_ids)
         assert len(set(request_ids)) == 2
 
-    async def test_owner_and_non_owner_episodes_consolidate_in_separate_sessions(
+    async def test_each_authority_partition_consolidates_in_its_own_session(
         self, monkeypatch
     ) -> None:
         """REQ-module-memory-005: one tenant/butler group splits by persisted authority."""
         owner_ids = [uuid.uuid4(), uuid.uuid4()]
+        system_ids = [uuid.uuid4()]
         other_ids = [uuid.uuid4(), uuid.uuid4(), uuid.uuid4()]
         authorities = {
             owner_ids[0]: "owner",
-            owner_ids[1]: "owner_device",
             other_ids[0]: "third_party",
+            system_ids[0]: "system",
+            owner_ids[1]: "owner_device",
             other_ids[1]: None,
-            other_ids[2]: "system",
+            other_ids[2]: "mixed",
         }
         claim_rows = [
             {
@@ -488,25 +490,38 @@ class TestRunConsolidationWritesAuditRow:
             pool, embedding_engine=None, cc_spawner=spawner
         )
 
-        assert spawner.calls == 2
-        assert prompts == [owner_ids, other_ids]
-        assert [call["source_episode_ids"] for call in execute_calls] == [owner_ids, other_ids]
-        assert [call["authority_partition"] for call in execute_calls] == ["owner", "non_owner"]
-        assert len({call["request_id"] for call in execute_calls}) == 2
-        assert stats["groups"] == {"t1/general": 5}
-        assert stats["groups_consolidated"] == 2
-        assert stats["episodes_consolidated"] == 5
-        assert len(pool.consolidation_run_inserts()) == 2
+        # A system-stamped episode gets its own session (bu-dhloi1.26): sharing one
+        # with third-party content would let it restate that content as system.
+        assert spawner.calls == 3
+        assert prompts == [owner_ids, system_ids, other_ids]
+        assert [call["source_episode_ids"] for call in execute_calls] == [
+            owner_ids,
+            system_ids,
+            other_ids,
+        ]
+        assert [call["authority_partition"] for call in execute_calls] == [
+            "owner",
+            "system",
+            "non_owner",
+        ]
+        assert len({call["request_id"] for call in execute_calls}) == 3
+        assert stats["groups"] == {"t1/general": 6}
+        assert stats["groups_consolidated"] == 3
+        assert stats["episodes_consolidated"] == 6
+        assert len(pool.consolidation_run_inserts()) == 3
 
         # Dedup candidates are filtered by partition in SQL, before LIMIT, so a
-        # third-party fact or rule never reaches the owner session's prompt.
-        assert len(dedup_queries) == 4
-        owner_facts, owner_rules, other_facts, other_rules = dedup_queries
-        for query in (owner_facts, owner_rules):
-            assert "content_authority IN ('owner', 'owner_device')" in query
-            assert query.index("content_authority") < query.index("LIMIT")
-        for query in (other_facts, other_rules):
-            assert "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device')" in query
+        # third-party fact or rule never reaches the owner or system prompt.
+        assert len(dedup_queries) == 6
+        predicates = [
+            "content_authority IN ('owner', 'owner_device')",
+            "content_authority = 'system'",
+            "COALESCE(content_authority, '') NOT IN ('owner', 'owner_device', 'system')",
+        ]
+        for index, query in enumerate(dedup_queries):
+            predicate = predicates[index // 2]
+            assert predicate in query
+            assert query.index(predicate) < query.index("LIMIT")
 
     async def test_failed_partition_does_not_block_the_other_partition(self, monkeypatch) -> None:
         owner_id, other_id = uuid.uuid4(), uuid.uuid4()
