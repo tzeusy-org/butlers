@@ -8,15 +8,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from opentelemetry import metrics
-from opentelemetry.metrics import _internal as _metrics_internal
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-from opentelemetry.util._once import Once
 
 from butlers.core.logging import reset_butler_context, set_butler_context
 from butlers.core.metrics import record_knowledge_gap_closure_failure
 from butlers.modules.memory import knowledge_gaps
+from tests.core.test_otel_metrics import (
+    _collect_metrics,
+    _make_in_memory_provider,
+    _reset_metrics_global_state,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -25,26 +25,17 @@ COUNTER = "butlers.memory.knowledge_gap_closure_failures_total"
 
 @pytest.fixture
 def reader():
-    _metrics_internal._METER_PROVIDER_SET_ONCE = Once()
-    _metrics_internal._METER_PROVIDER = None
-    in_memory = InMemoryMetricReader()
-    metrics.set_meter_provider(MeterProvider(metric_readers=[in_memory]))
+    _provider, in_memory = _make_in_memory_provider()
     try:
         yield in_memory
     finally:
-        _metrics_internal._METER_PROVIDER_SET_ONCE = Once()
-        _metrics_internal._METER_PROVIDER = None
+        _reset_metrics_global_state()
 
 
-def _points(reader: InMemoryMetricReader) -> list[Any]:
-    points: list[Any] = []
-    data = reader.get_metrics_data()
-    for rm in data.resource_metrics if data else []:
-        for sm in rm.scope_metrics:
-            for metric in sm.metrics:
-                if metric.name == COUNTER:
-                    points.extend(metric.data.data_points)
-    return points
+def _points(reader: Any) -> list[Any]:
+    if reader.get_metrics_data() is None:  # nothing was ever recorded
+        return []
+    return list(_collect_metrics(reader).get(COUNTER, []))
 
 
 def _close(conn: Any):
