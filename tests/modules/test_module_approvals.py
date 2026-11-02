@@ -845,6 +845,116 @@ class TestRuleMatching:
         assert match is None
 
 
+class TestStandingReplyTemplateGrammar:
+    """Typed whole-body template grammar for inactive drafts (bu-jv1moa.10).
+
+    REQ-module-approvals-007
+    """
+
+    _TEMPLATE = "Running late, there by {at:time} on {day:date}, about {wait:duration}."
+
+    @pytest.mark.parametrize(
+        ("source", "value", "expected"),
+        [
+            (
+                _TEMPLATE,
+                "Running late, there by 18:30 on 2026-11-03, about 15 minutes.",
+                {"at": "18:30", "day": "2026-11-03", "wait": "15 minutes"},
+            ),
+            ("Paid {total:amount} for {n:count} tickets", "Paid 42.50 for 3 tickets", {}),
+            # Extra and missing fixed text, and wrong slot value types, never match.
+            (_TEMPLATE, "Running late, there by 18:30 on 2026-11-03, about 15 minutes. PS", None),
+            (_TEMPLATE, "there by 18:30 on 2026-11-03, about 15 minutes.", None),
+            (_TEMPLATE, "Running late, there by soon on 2026-11-03, about 15 minutes.", None),
+            (_TEMPLATE, "Running late, there by 18:30 on 2026-13-45, about 15 minutes.", None),
+            ("Paid {total:amount} for {n:count} tickets", "Paid ten for 3 tickets", None),
+        ],
+    )
+    def test_whole_body_typed_slot_matching(self, source, value, expected):
+        from butlers.modules.approvals.reply_templates import match_template, parse_template
+
+        slots = match_template(parse_template(source), value)
+        if expected is None:
+            assert slots is None
+        else:
+            assert slots is not None
+            assert expected.items() <= slots.items()
+
+    @pytest.mark.parametrize(
+        ("tool_name", "templates", "code"),
+        [
+            ("telegram_send_message", {"text": "See {link:url}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "Ref {ref:identifier}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "Note: {body:text}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "To {who:recipient}"}, "slot_type_forbidden"),
+            ("telegram_send_message", {"text": "{d:date}{t:time} ok"}, "adjacent_slots"),
+            ("telegram_send_message", {"text": "{n:count}"}, "template_without_fixed_text"),
+            ("email_send_message", {"body": "Thanks"}, "content_arguments_mismatch"),
+            ("whatsapp_send_message", {"text": "On my way"}, "personal_account_send_forbidden"),
+            ("telegram_user_send_message", {"text": "Hi"}, "personal_account_send_forbidden"),
+            ("telegram_reply_to_message", {"text": "Hi"}, "unsupported_send_tool"),
+        ],
+    )
+    def test_invalid_drafts_are_refused(self, tool_name, templates, code):
+        from butlers.modules.approvals.reply_templates import (
+            TemplateDraftInvalid,
+            canonicalize_draft,
+        )
+
+        with pytest.raises(TemplateDraftInvalid) as refused:
+            canonicalize_draft(
+                tool_name=tool_name, templates=templates, recipient_entity_ids=[uuid.uuid4()]
+            )
+        assert refused.value.code == code
+
+    def test_preview_is_ineligible_for_incomplete_recipients_or_content(self):
+        from butlers.modules.approvals.reply_templates import (
+            canonicalize_draft,
+            preview_template_draft,
+        )
+
+        friend = uuid.uuid4()
+        canonical, recipients = canonicalize_draft(
+            tool_name="telegram_send_message",
+            templates={"text": "Be there at {at:time}"},
+            recipient_entity_ids=[friend],
+        )
+        draft = {
+            "id": uuid.uuid4(),
+            "revision": 1,
+            "status": "draft",
+            "tool_name": "telegram_send_message",
+            "content_templates": canonical,
+            "recipient_entity_ids": recipients,
+        }
+
+        def preview(args, entity):
+            return preview_template_draft(
+                draft,
+                tool_name="telegram_send_message",
+                tool_args=args,
+                resolved_recipient_entity_id=entity,
+            )
+
+        good = preview({"chat_id": "1", "text": "Be there at 18:30"}, friend)
+        assert (good["matched"], good["eligible"], good["authority"]) == (True, True, "none")
+        cases = [
+            ({"chat_id": "1", "text": "Be there at 18:30"}, None, "recipient_unresolved"),
+            ({"chat_id": "1", "text": "Be there at 18:30"}, uuid.uuid4(), "recipient_not_pinned"),
+            ({"chat_id": "1"}, friend, "content_incomplete"),
+            (
+                {"chat_id": "1", "text": "Be there at 18:30", "reply_markup": {}},
+                friend,
+                "unknown_parameters",
+            ),
+        ]
+        for args, entity, reason in cases:
+            result = preview(args, entity)
+            assert result["eligible"] is False
+            assert reason in result["reasons"]
+            assert result["authority"] == "none"
+
+
 # ---------------------------------------------------------------------------
 # Redaction
 # ---------------------------------------------------------------------------

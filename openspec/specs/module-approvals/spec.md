@@ -266,6 +266,41 @@ Scope: v1-mandatory
 - **AND** sensitive args (heuristic or module-declared) suggest `exact` pinned to current value
 - **AND** non-sensitive args suggest `any`
 
+### Requirement: Inactive Standing-Reply Template Drafts
+
+The owner MUST be able to save, edit, inspect and revoke typed standing-reply template drafts through the dashboard, and a draft MUST carry no approval authority. A draft is stored in `standing_reply_template_drafts`, outside `approval_rules`, with the send tool, one canonical typed template per content-bearing argument, the resolved recipient entities it is pinned to, a `revision` and audit timestamps. A template matches a whole argument value: fixed text plus typed slots (`date`, `time`, `datetime`, `duration`, `amount`, `count`) only; free-text, identifier, URL and recipient slots are refused (`REQ-capability-authorization-006`). Personal WhatsApp and Telegram user-client send tools are refused (owner decision bu-bup68v); a Telegram bot or email draft does not imply permission to send. A draft has three distinguishable stages, of which this slice implements two: drafted (saved, inactive), previewed (a hypothetical call reported as matching or ineligible, with `authority: "none"`), and activated. There is no activation path, no promotion into `approval_rules` and no caller-controlled active flag; activation, broker enforcement, per-window limits and receipts are deferred to a separately adopted contract (bu-jv1moa.28). Third-party-fillability and category choices are not persisted until their contract is adopted (bu-dhloi1.19).
+
+ID: REQ-module-approvals-007
+Source: security.md Approval Gates; RFC 0038 D4 and D13; owner decisions bu-o3638f and bu-bup68v; bu-jv1moa.10
+Scope: v1-mandatory
+
+#### Scenario: Only the owner's dashboard session authors drafts
+
+- **WHEN** a caller without a verified owner dashboard session (an API key, connector callback or runtime session) calls any `/api/approvals/reply-templates` route
+- **THEN** it is refused with 403 `owner_dashboard_session_required` before any draft is read or written
+- **AND** no MCP tool exposes draft authoring
+
+#### Scenario: Draft writes are revisioned and idempotent
+
+- **WHEN** two edits race with the same `expected_revision`
+- **THEN** exactly one commits and the other returns 409 `stale_revision`
+- **AND** a create replayed with the same `idempotency_key` and content returns the original draft, while the same key with different content returns 409
+- **AND** an invalid template, an unresolved recipient or an unsupported send tool is refused without persistence
+- **AND** revoke marks the draft `revoked` and retains it
+
+#### Scenario: A draft never approves or executes a call
+
+- **WHEN** a gated send matches a saved draft exactly
+- **THEN** the approval gate parks it as it would with no draft
+- **AND** no standing rule is created or claimed and the executor is not reached
+- **AND** a request carrying `active`, or a call naming a draft id, gains no authority
+
+#### Scenario: Preview reports eligibility without authority
+
+- **WHEN** the owner previews a hypothetical call against a draft
+- **THEN** the result reports `matched`, `eligible` and reasons, and `authority` is always `none`
+- **AND** an unresolved or unpinned recipient, a missing content argument or an unknown parameter makes the preview ineligible
+
 ### Requirement: Risk Tier Enforcement
 
 The module MUST classify tools into explicit risk tiers (`low`, `medium`, `high`, `critical`) via policy metadata in `[modules.approvals]` config. Default risk tier is `medium`.

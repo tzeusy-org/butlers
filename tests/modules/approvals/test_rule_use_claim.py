@@ -20,6 +20,7 @@ import pytest
 
 from butlers.db import register_jsonb_codec
 from butlers.identity import ResolvedContact
+from butlers.modules.approvals import reply_templates
 from butlers.modules.approvals.executor import execute_approved_action
 from butlers.modules.approvals.gate import _make_gate_wrapper
 from butlers.modules.approvals.models import ActionStatus
@@ -50,7 +51,10 @@ async def pool(migrated_db_url: str):
     db_pool = await asyncpg.create_pool(
         migrated_db_url, min_size=1, max_size=8, init=register_jsonb_codec
     )
-    await db_pool.execute("TRUNCATE approval_events, pending_actions, approval_rules CASCADE")
+    await db_pool.execute(
+        "TRUNCATE approval_events, pending_actions, approval_rules, "
+        "standing_reply_template_drafts CASCADE"
+    )
     yield db_pool
     await db_pool.close()
 
@@ -257,3 +261,115 @@ async def test_gate_parks_when_the_matched_rule_became_unusable_before_the_claim
     assert park.await_count == 1
     assert await _approved_count(pool, rule_id) == 0
     assert await _use_count(pool, rule_id) == before
+
+
+async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_send(pool) -> None:
+    """A draft saved through the real authoring path has no authority at the real gate.
+
+    REQ-module-approvals-007 (bu-jv1moa.10): the matching send parks as usual, no
+    rule is created or claimed and the executor is never reached.  Also covers
+    revision races, idempotent replay and a call forging the draft's id.
+    """
+    friend = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name, entity_type, roles) "
+        "VALUES ($1, 'person', ARRAY['contact']) RETURNING id",
+        f"Template Friend {uuid.uuid4()}",
+    )
+    draft_args = dict(
+        tool_name=TOOL,
+        templates={"text": "On my way, there by {at:time}"},
+        recipient_entity_ids=[friend],
+        description="running late",
+        idempotency_key=f"draft-{uuid.uuid4()}",
+    )
+    async with pool.acquire() as conn:
+        draft = await reply_templates.create_template_draft(conn, **draft_args)
+        replay = await reply_templates.create_template_draft(conn, **draft_args)
+    assert replay["id"] == draft["id"]
+    assert await pool.fetchval("SELECT count(*) FROM standing_reply_template_drafts") == 1
+
+    async def _edit(text: str):
+        async with pool.acquire() as conn:
+            return await reply_templates.edit_template_draft(
+                conn,
+                draft_id=draft["id"],
+                expected_revision=1,
+                templates={"text": text},
+                recipient_entity_ids=[friend],
+                description="running late",
+            )
+
+    raced = await asyncio.gather(
+        _edit("On my way, there by {at:time}!"),
+        _edit("Leaving now, there by {at:time}"),
+        return_exceptions=True,
+    )
+    committed = [r for r in raced if isinstance(r, dict)]
+    conflicts = [r for r in raced if isinstance(r, reply_templates.TemplateDraftConflict)]
+    assert (len(committed), len(conflicts)) == (1, 1)
+    assert committed[0]["revision"] == 2
+    draft = committed[0]
+    text = reply_templates.render_template(draft["content_templates"]["text"]).replace(
+        "{at:time}", "18:30"
+    )
+
+    # Positive control: the call below really does match the saved draft.
+    preview = reply_templates.preview_template_draft(
+        draft,
+        tool_name=TOOL,
+        tool_args={"chat_id": "42", "text": text},
+        resolved_recipient_entity_id=friend,
+    )
+    assert (preview["matched"], preview["eligible"], preview["authority"]) == (True, True, "none")
+
+    sent: list[dict] = []
+
+    async def telegram_send_message(chat_id: str, text: str) -> dict:
+        sent.append({"chat_id": chat_id, "text": text})
+        return {"status": "sent"}
+
+    wrapper = _make_gate_wrapper(
+        tool_name=TOOL,
+        original_fn=telegram_send_message,
+        pool=pool,
+        expiry_hours=72,
+        risk_tier=MagicMock(value="medium"),
+        rule_precedence=("contact_role", "standing_rule"),
+        butler_name="messenger",
+    )
+    contact = ResolvedContact(entity_id=friend, name="Template Friend", roles=["contact"])
+    executor = AsyncMock()
+    with (
+        patch(
+            "butlers.modules.approvals.gate._resolve_target_contact",
+            new=AsyncMock(return_value=contact),
+        ),
+        patch("butlers.modules.approvals.gate.execute_approved_action", new=executor),
+        patch("butlers.fleet_events.publish_fleet_event", new=AsyncMock()),
+    ):
+        parked = await wrapper(
+            chat_id="42", text=text, _why="The friend asked for an ETA.", _evidence=[]
+        )
+        forged = await wrapper(
+            chat_id="42",
+            text=text,
+            template_id=str(draft["id"]),
+            _why="The friend asked for an ETA.",
+            _evidence=[],
+        )
+
+    assert parked["status"] == "pending_approval"
+    assert "error" in forged
+    executor.assert_not_awaited()
+    assert sent == []
+    assert await pool.fetchval("SELECT count(*) FROM approval_rules") == 0
+    rows = await pool.fetch("SELECT id, status, approval_rule_id FROM pending_actions")
+    assert [(str(r["id"]), r["status"], r["approval_rule_id"]) for r in rows] == [
+        (parked["action_id"], ActionStatus.PENDING.value, None)
+    ]
+    assert (
+        await pool.fetchval(
+            "SELECT status FROM standing_reply_template_drafts WHERE id = $1", draft["id"]
+        )
+        == "draft"
+    )
