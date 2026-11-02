@@ -109,10 +109,17 @@ async def test_recipient_expiry_race_and_restart_application(confirms):
         await conn.execute(
             "ALTER TABLE public.pending_confirms DISABLE TRIGGER confirm_identity_guard"
         )
-        await conn.execute(
-            "UPDATE public.pending_confirms SET answered_at=now()-interval '15 days' WHERE id=$1",
-            card["id"],
+        # The owner is under FORCE RLS with no UPDATE policy; backdate as the service role.
+        await conn.execute("SET LOCAL ROLE butler_switchboard_rw")
+        assert (
+            await conn.execute(
+                "UPDATE public.pending_confirms SET answered_at=now()-interval '15 days' "
+                "WHERE id=$1",
+                card["id"],
+            )
+            == "UPDATE 1"
         )
+        await conn.execute("RESET ROLE")
         await conn.execute(
             "ALTER TABLE public.pending_confirms ENABLE TRIGGER confirm_identity_guard"
         )
