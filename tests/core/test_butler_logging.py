@@ -19,6 +19,7 @@ import pytest
 
 from butlers.core.butler_logging import ButlerLogger, _level_rank
 from butlers.core.logging import _butler_context
+from butlers.testing.fake_pool import AsyncCtx
 
 pytestmark = pytest.mark.unit
 
@@ -47,21 +48,8 @@ def _make_pool(*, raise_on_execute: Exception | None = None) -> MagicMock:
         conn.execute = AsyncMock(return_value=None)
 
     pool = MagicMock()
-    pool.acquire = MagicMock(return_value=_async_ctx(conn))
+    pool.acquire = MagicMock(side_effect=lambda *_args, **_kwargs: AsyncCtx(conn))
     return pool, conn
-
-
-class _async_ctx:
-    """Minimal async context manager wrapping an object."""
-
-    def __init__(self, obj):
-        self._obj = obj
-
-    async def __aenter__(self):
-        return self._obj
-
-    async def __aexit__(self, *args):
-        pass
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from butlers.credential_store import resolve_owner_entity_info
+from butlers.testing.records import Record, row
 
 pytestmark = pytest.mark.unit
 
@@ -25,10 +26,8 @@ def _make_pool(*, fetchrow_return=None, raises: Exception | None = None) -> Magi
     return pool, conn
 
 
-def _make_row(value: str) -> MagicMock:
-    row = MagicMock()
-    row.__getitem__ = MagicMock(side_effect=lambda k: value if k == "value" else None)
-    return row
+def _make_row(value: str) -> Record:
+    return row(value=value)
 
 
 async def test_resolve_owner_entity_info():
