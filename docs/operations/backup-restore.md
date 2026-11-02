@@ -154,6 +154,7 @@ plane by name:
 | `public.runtime_probe_control_receipts` | Fenced runtime probe control receipts |
 | `public.qa_publication_operations` | Fenced QA publication operation control |
 | `public.qa_publication_exports` | Retained sealed QA export bytes (fenced like the ledger) |
+| `public.qa_publication_refusals` | QA publisher refusal receipts (fenced like the ledger); a restore reads those attempts `ambiguous` |
 | `public.expected_signals` | Rebuildable liveness-qualified cadence projection; source observations and connector heartbeats remain backed up |
 
 This is a deliberate completeness decision, not a workaround for a failing

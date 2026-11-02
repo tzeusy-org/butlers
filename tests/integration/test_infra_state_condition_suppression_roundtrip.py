@@ -669,6 +669,14 @@ class TestQaPatrolAssurance:
         await reconcile_qa_patrol_assurance(pool, reader, contract)
         assert await self._active(pool) == set()
 
+        # The deployment gate (REQ-dashboard-api-064) counts the same
+        # qualification: only the genuine patrol, never the nonqualifying rows.
+        from butlers.core.deploy_readiness import read_patrols
+
+        window = await pool.fetchval("SELECT clock_timestamp() - interval '1 hour'")
+        assert [p[0] for p in await read_patrols(pool, contract.digest, window)] == [str(genuine)]
+        assert await read_patrols(pool, contract.digest, await pool.fetchval("SELECT now()")) == ()
+
     async def test_absence_is_overdue_or_policy_stopped_until_a_qualifying_patrol(
         self, qa_pool: asyncpg.Pool
     ) -> None:

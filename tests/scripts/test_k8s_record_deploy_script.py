@@ -22,6 +22,7 @@ case "$*" in
     [ -n "$CONTROL_PRESENT" ] && echo deployment.apps/butlers-control
     exit 0 ;;
   *"rollout status deploy/$FAIL_ROLLOUT"*) [ -n "$FAIL_ROLLOUT" ] && exit 1 ;;
+  *"deployments await-ready"*) [ -n "$FAIL_READY" ] && exit 1 ;;
   *" exec "*) [ -n "$FAIL_EXEC" ] && exit 1 ;;
 esac
 exit 0
@@ -32,7 +33,11 @@ exit 0
 def bin_dir(tmp_path: Path) -> Path:
     path = tmp_path / "bin"
     path.mkdir()
-    stubs = {"helm": '[ -n "$FAIL_HELM" ] && exit 3; exit 0', "kubectl": _KUBECTL}
+    stubs = {
+        "helm": '[ -n "$FAIL_HELM" ] && exit 3; exit 0',
+        "kubectl": _KUBECTL,
+        "uv": '[ -n "$FAIL_CHECK" ] && exit 2; exit 0',
+    }
     for name, extra in stubs.items():
         stub = path / name
         stub.write_text(_STUB.format(extra=extra), encoding="utf-8")
@@ -50,9 +55,15 @@ def _run(tmp_path: Path, bin_dir: Path, **fail: str) -> tuple[int, str, list[str
         "FAIL_ROLLOUT": "",
         "FAIL_EXEC": "",
         "FAIL_QUERY": "",
+        "FAIL_READY": "",
+        "FAIL_CHECK": "",
         "CONTROL_PRESENT": "1",
         **{
-            ("CONTROL_PRESENT" if key == "control_present" else f"FAIL_{key.upper()}"): value
+            (
+                key.upper()
+                if key in {"control_present", "readiness_timeout"}
+                else f"FAIL_{key.upper()}"
+            ): value
             for key, value in fail.items()
         },
     }
@@ -78,8 +89,24 @@ def test_success_records_one_success_row_after_both_rollouts(tmp_path: Path, bin
         "kubectl -n ns-x rollout status deploy/butlers-control --timeout=10m",
     ]
     assert len(_records(calls)) == 1
+    # Rollout is not completion: the sustained semantic readiness wait runs in the
+    # API pod after every rollout and before the success row (REQ-dashboard-api-064).
+    assert calls[-2] == ("kubectl -n ns-x exec --pod-running-timeout=30s deploy/dashboard-api -- "
+                         "/app/.venv/bin/butlers deployments await-ready")  # fmt: skip
     assert calls[-1].endswith("deploy/dashboard-api -- /app/.venv/bin/butlers deployments record "
                               "--source deploy --result success")  # fmt: skip
+
+
+def test_unsustained_readiness_records_failed_row_and_fails_the_release(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    code, _stderr, calls = _run(tmp_path, bin_dir, ready="1")
+    assert code == 1
+    assert len(_records(calls)) == 1
+    assert calls[-1].endswith("--source deploy --result failed --git-sha tag123")
+
+    code, _stderr, calls = _run(tmp_path, bin_dir, rollout="dashboard-api")
+    assert not any("await-ready" in c for c in calls)
 
 
 def test_helm_failure_records_failed_row_and_skips_rollout_waits(
@@ -188,3 +215,22 @@ def test_a_failed_record_after_a_failed_release_does_not_blame_reachability(
     assert code == 3
     assert "no deployment row recorded" in stderr
     assert "unreachable" not in stderr
+
+
+def test_readiness_timeout_override_is_validated_before_helm_changes_the_cluster(
+    tmp_path: Path, bin_dir: Path
+) -> None:
+    code, stderr, calls = _run(tmp_path, bin_dir, readiness_timeout="60", check="1")
+    assert code == 2
+    assert "refused before helm upgrade" in stderr
+    assert [c.split()[0] for c in calls] == ["uv"]  # no helm, rollout, wait, or record
+
+    code, stderr, calls = _run(tmp_path, bin_dir, readiness_timeout="7200")
+    assert code == 0, stderr
+    assert calls[0].startswith("uv run --project ")
+    assert "await-ready --check-only --timeout 7200" in calls[0]
+    assert calls[1].startswith("helm upgrade")
+    assert any("await-ready --timeout 7200" in c for c in calls)
+
+    _code, _stderr, calls = _run(tmp_path, bin_dir)
+    assert not any(c.startswith("uv ") for c in calls)  # no override, no local check

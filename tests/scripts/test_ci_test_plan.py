@@ -82,7 +82,7 @@ def test_decide_mode_keeps_a_clean_scoped_plan_scoped(
         ["tests/test_selected.py"],
         ["conftest.py"],
         ["uv.lock"],
-        [".github/ci-test-weights.json"],
+        [".github/workflows/ci.yml"],
         ["src/butlers/core/db.py"],
     ):
         widened = ci_route.route(**{**inputs, "files": changed})

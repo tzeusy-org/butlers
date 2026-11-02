@@ -5,7 +5,7 @@
 > jobs, the weight observer (`ci_weight_candidates.py`, `ci-shard-weights.yml`) and the preflight
 > receipt reconciler are retired; check-totals compares each lane's group counts with one fresh
 > `--collect-only` count that check-preflight takes beside the groups. This page records the retired computed-partition design and
-> its measurements; `ci_partition.py` survives only for the manual watchdog diagnostic.
+> its measurements; `ci_partition.py` and the manual watchdog diagnostic were retired with it (bu-29wkwj.8).
 
 The backend has five unit and six integration computed file shards, independent
 preflight and affected paths, and the always-running fail-closed fan-in. All

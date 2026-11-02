@@ -64,6 +64,7 @@ from butlers.core.qa.patrol_provenance import (
     LATEST_SCHEDULED_HANDOFF_SQL,
     QUALIFYING_PATROL_STATUSES,
     QaPatrolContract,
+    qa_patrol_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -500,10 +501,7 @@ def controller_after_cycle(
     legacy episode resolves by retirement.
     """
     expected_names = frozenset(config.name for config in configs)
-    qa_contract = next(
-        (getattr(config, "qa_patrol_contract", None) for config in configs if config.name == "qa"),
-        None,
-    )
+    qa_contract = qa_patrol_contract(configs)
 
     async def after_cycle(policy_reader: Any, cycle: ShadowCycle) -> None:
         await run_controller_pass(

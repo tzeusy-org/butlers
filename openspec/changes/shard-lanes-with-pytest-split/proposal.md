@@ -10,7 +10,7 @@ The 2026-10-21 simplicity audit found that backend CI sharding is computed by ab
 - The nightly covered groups also measure per-test durations. A `durations-refresh` job merges them, uploads the file, and opens a PR on Monday's scheduled run or a manual dispatch on main. It never pushes to main.
 - The browser (Playwright) job builds its own bundle and no longer waits for guards.
 - Retired: the `inventory` and `coverage-inventory` jobs, `scripts/ci_weight_candidates.py`, `scripts/ci_preflight_reconcile.py`, `scripts/ci_frontend_evidence.py` and `.github/workflows/ci-shard-weights.yml`. `make check` and pre-push run the per-lane budget instead of the fresh partition check.
-- Kept for the manual watchdog diagnostic only (owned by change `capture-ci-shard-watchdog-diagnostics`): `scripts/ci_partition.py`, `scripts/check_ci_test_shards.py`, `scripts/ci_inventory_collector.py`, `scripts/ci_shard_observer.py` and `.github/ci-test-weights.json`. No required or nightly job reads them. A follow-up retires them with that diagnostic.
+- Kept for the manual watchdog diagnostic only (owned by change `capture-ci-shard-watchdog-diagnostics`): `scripts/ci_partition.py`, `scripts/check_ci_test_shards.py`, `scripts/ci_inventory_collector.py`, `scripts/ci_shard_observer.py` and `.github/ci-test-weights.json`. No required or nightly job reads them. A follow-up retires them with that diagnostic (done under bu-29wkwj.8; `ci_shard_observer.py` stays because the scoped `check-affected` collector imports its hooks).
 
 ## Capabilities
 

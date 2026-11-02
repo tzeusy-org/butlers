@@ -53,6 +53,22 @@ LAST_QUALIFYING_PATROL_SQL: Final[str] = """
       AND completed_at IS NOT NULL
 """
 
+#: Distinct qualifying patrols that completed after a deployment window opened
+#: (REQ-dashboard-api-064). Same qualification as the readiness check above;
+#: the deployment gate counts durable IDs with strictly increasing completion
+#: times, so re-reading one patrol never counts as a second cycle.
+QUALIFYING_PATROLS_SINCE_SQL: Final[str] = """
+    SELECT id, completed_at
+    FROM public.qa_patrols
+    WHERE origin = 'scheduled'
+      AND discovery_complete IS TRUE
+      AND status = ANY($1::text[])
+      AND enabled_sources_config_digest = $2
+      AND completed_at > $3
+    ORDER BY completed_at, id
+    LIMIT 16
+"""
+
 
 #: The fleet-condition handoff mode QA's newest scheduled patrol ran with
 #: (bu-vfobja). Legacy and synthetic rows carry NULL and are skipped: they are
@@ -91,6 +107,18 @@ class QaPatrolContract:
     @property
     def overdue_after_s(self) -> float:
         return float(self.patrol_interval_minutes * 60 * OVERDUE_CADENCE_MULTIPLIER)
+
+
+def qa_patrol_contract(configs: Iterable[Any]) -> QaPatrolContract | None:
+    """Return the first exact QA config's contract, including a missing/disabled one.
+
+    Read the startup sequence in order without recomputing the contract or
+    consulting runtime registry state. A later duplicate cannot supply a fallback.
+    """
+    return next(
+        (getattr(config, "qa_patrol_contract", None) for config in configs if config.name == "qa"),
+        None,
+    )
 
 
 def contract_from_module_config(qa_config: Mapping[str, Any]) -> QaPatrolContract | None:

@@ -1615,11 +1615,13 @@ async def test_leaking_commit_escalates_anonymization_failed_without_egress(
 ) -> None:
     secret = "sk-ant-abcdefghijklmnopqrst"
     repo, base = _publishing_repo(tmp_path, content=f"token = '{secret}'\n")
-    provider, attempt_id = FakeProvider(), uuid.uuid4()
+    provider, ledger, attempt_id = FakeProvider(), FakeLedger(), uuid.uuid4()
 
-    mocks = await _run_published_investigation(repo, base, provider, FakeLedger(), attempt_id)
+    mocks = await _run_published_investigation(repo, base, provider, ledger, attempt_id)
 
     assert provider.calls == []
+    # The export never sealed, so a receipt is the publisher's only trace (bu-mc01y5.28).
+    assert ledger.refusals == {attempt_id: ("anonymization_failed", "content_leak")}
     assert mocks["update"].await_args.args[2] == "anonymization_failed"
     escalation = mocks["event"].await_args.kwargs
     assert (escalation["step"], escalation["detail"]) == ("escalated", "content_leak")

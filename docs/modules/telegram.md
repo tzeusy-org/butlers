@@ -61,6 +61,17 @@ Automatic deferred/Secrets/Insight/Health consumers record the failed tail in th
 
 Edits cannot add messages. They clamp source conservatively to 4000 UTF-16 units including `… (truncated)`, use the same renderer and at most one bounded plain edit after explicit parse rejection, and retain the existing structured refusal for other 400s. Inert sends bypass rendering, split raw text with a per-chunk UTF-16 `pre` entity and keep previews disabled. Ordinary sends gain no `link_preview_options` override.
 
+## File sending
+
+`notify(attachments=[...])` delivers files to Telegram through Messenger's `telegram_send_files` command and the module's `_send_files`. It is not a separate MCP tool. Each item names `filename`, `media_type` and exactly one of `storage_ref` (an existing blob under the sending butler's prefix `s3://<bucket>/<butler>/...` or the connector prefix `s3://<bucket>/connectors/...`, for example a photo the owner sent earlier; other refs return `attachment_forbidden`) or `content_text` (a generated text/plain, text/csv, text/markdown, text/calendar or application/json file of at most 256 KB). A notification takes at most 10 files of at most 50 MB each.
+
+- **Pinning.** notify() fetches every file and pins its sha256 and size on the approval arguments and the `notify.v1` envelope. The module fetches and verifies every file again before its first Telegram call. A missing blob, an unavailable store or changed bytes send nothing (`attachment_unavailable`, `attachment_digest_mismatch`). Approved replay can therefore only send reviewed bytes.
+- **Photo or document.** image/jpeg, image/png and image/webp up to 10 MB go out with multipart `sendPhoto`; everything else uses `sendDocument`. A photo Telegram refuses to process (for example invalid dimensions) is re-sent once as a document.
+- **Caption.** When the text renders to one chunk of at most 1024 UTF-16 code units and the first file has no caption of its own, the text is that file's HTML caption, with one plain fallback on a parse rejection. Otherwise the text goes first through the splitter above, and the files follow as replies to its last chunk.
+- **Failures.** 429 handling matches text sends. A failure after any accepted message is a `TelegramPartialDeliveryError` (`partial_delivery=true, retryable=false`). The receipt is the last message id.
+- **Exposure and channels.** Inert-required (`render_links_inert`) delivery with files parks for owner approval, because file contents cannot be made inert. Email and WhatsApp refuse attachments with `unsupported_attachment`.
+- **Logging.** `telegram_send_files` audit rows and the Switchboard notification log carry media types, sizes, digests and message ids, never file bytes or inline text.
+
 ## Lifecycle Reactions
 
 The module defines three reaction constants used by the daemon's ingest pipeline:

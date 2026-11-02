@@ -8,11 +8,23 @@ and threshold configuration used by the home butler's dashboard endpoints.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, computed_field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+
+from butlers.owner_places import (
+    COORDINATE_DECIMALS,
+    LABEL_MAX_CHARS,
+    MAX_ALIASES,
+    MAX_SSIDS,
+    RADIUS_MAX_M,
+    RADIUS_MIN_M,
+    SSID_MAX_BYTES,
+)
 
 
 class EntityStateResponse(BaseModel):
@@ -312,3 +324,114 @@ class SafetyWatchUpsertRequest(BaseModel):
         if not stripped:
             raise ValueError("owner_label must not be blank")
         return stripped
+
+
+# ---------------------------------------------------------------------------
+# Owner place registry (public.owner_places, core_303; bu-jv1moa.7)
+# ---------------------------------------------------------------------------
+
+_HA_ZONE_PATTERN = re.compile(r"\Azone\.[a-z0-9_]+\Z", re.ASCII)
+
+
+def _coordinate(value: Any, *, bound: int) -> float:
+    """Accept a finite JSON number within ``±bound`` at no more than five decimals."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("coordinate must be a number")
+    if not math.isfinite(value) or not -bound <= value <= bound:
+        raise ValueError("coordinate is out of range")
+    exponent = Decimal(repr(value)).normalize().as_tuple().exponent
+    if isinstance(exponent, int) and exponent < -COORDINATE_DECIMALS:
+        raise ValueError("coordinate carries more than five decimals")
+    return float(value)
+
+
+class OwnerPlaceInput(BaseModel):
+    """The full editable shape of one owner place.
+
+    Every field is required on each write so an edit is a whole-row replacement under
+    compare-and-swap.  The label and aliases are trimmed; SSIDs are matched byte-exact
+    and case-sensitively, so they are never trimmed or case-folded.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    label: str
+    kind: Literal["home", "work", "airport", "other"]
+    lat: Any
+    lon: Any
+    radius_m: int = Field(..., ge=RADIUS_MIN_M, le=RADIUS_MAX_M)
+    aliases: list[str] = Field(default_factory=list, max_length=MAX_ALIASES)
+    ssids: list[str] = Field(default_factory=list, max_length=MAX_SSIDS)
+    ha_zone: str | None = None
+    paused: bool = False
+
+    @field_validator("label")
+    @classmethod
+    def _label(cls, value: str) -> str:
+        stripped = value.strip()
+        if not 1 <= len(stripped) <= LABEL_MAX_CHARS or "\x00" in stripped:
+            raise ValueError("label is out of range")
+        return stripped
+
+    @field_validator("lat")
+    @classmethod
+    def _lat(cls, value: Any) -> float:
+        return _coordinate(value, bound=90)
+
+    @field_validator("lon")
+    @classmethod
+    def _lon(cls, value: Any) -> float:
+        return _coordinate(value, bound=180)
+
+    @field_validator("aliases")
+    @classmethod
+    def _aliases(cls, values: list[str]) -> list[str]:
+        stripped = [value.strip() for value in values]
+        if any(not 1 <= len(value) <= LABEL_MAX_CHARS or "\x00" in value for value in stripped):
+            raise ValueError("alias is out of range")
+        if len({value.casefold() for value in stripped}) != len(stripped):
+            raise ValueError("aliases repeat")
+        return stripped
+
+    @field_validator("ssids")
+    @classmethod
+    def _ssids(cls, values: list[str]) -> list[str]:
+        # PostgreSQL text cannot hold NUL, so it is refused here rather than failing the write.
+        if any(
+            not 1 <= len(value.encode("utf-8")) <= SSID_MAX_BYTES or "\x00" in value
+            for value in values
+        ):
+            raise ValueError("SSID is out of range")
+        if len(set(values)) != len(values):
+            raise ValueError("SSIDs repeat")
+        return values
+
+    @field_validator("ha_zone")
+    @classmethod
+    def _ha_zone(cls, value: str | None) -> str | None:
+        if value is not None and _HA_ZONE_PATTERN.fullmatch(value) is None:
+            raise ValueError("Home Assistant zone id is malformed")
+        return value
+
+
+class OwnerPlaceUpdate(OwnerPlaceInput):
+    """A whole-row edit guarded by the version the editor last read."""
+
+    expected_version: int = Field(..., ge=1)
+
+
+class OwnerPlaceResponse(BaseModel):
+    """One registry row as the owner's dashboard editor sees it."""
+
+    id: UUID
+    label: str
+    kind: Literal["home", "work", "airport", "other"]
+    lat: float
+    lon: float
+    radius_m: int
+    aliases: list[str]
+    ssids: list[str]
+    ha_zone: str | None
+    paused: bool
+    version: int
+    updated_at: datetime

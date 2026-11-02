@@ -50,6 +50,7 @@ import httpx
 from butlers.core.control_plane_identity import (
     FLEET_FACTS_SQL,
     PROBE_DEADLINE_S,
+    READINESS_CHECK_KEYS,
     DashboardProbeRoleView,
     ExpectedDaemon,
     ShadowCycle,
@@ -59,19 +60,12 @@ from butlers.core.job_health import JobHealthStore, record_tick
 from butlers.core.qa.patrol_provenance import (
     LAST_QUALIFYING_PATROL_SQL,
     QUALIFYING_PATROL_STATUSES,
+    qa_patrol_contract,
 )
 
 logger = logging.getLogger(__name__)
 
-CHECK_KEYS: Final[tuple[str, ...]] = (
-    "postgres",
-    "roster",
-    "observer",
-    "fleet",
-    "qa_patrol",
-    "supervisors",
-    "route_canary",
-)
+CHECK_KEYS: Final[tuple[str, ...]] = READINESS_CHECK_KEYS
 #: Dashboard lifespan control loops whose supervised health readiness requires.
 READINESS_CONTROL_LOOPS: Final[tuple[str, ...]] = ("fleet_shadow_observer",)
 READINESS_JOB_NAME: Final[str] = "fleet_readiness"
@@ -135,9 +129,7 @@ class FleetReadiness:
         self._switchboard: ExpectedDaemon | None = next(
             (target for target in self._expected if target.name == "switchboard"), None
         )
-        self._qa_contract = next(
-            (getattr(c, "qa_patrol_contract", None) for c in configs if c.name == "qa"), None
-        )
+        self._qa_contract = qa_patrol_contract(configs)
         self._job_health = job_health
         self._clock = clock
         self._client_factory = client_factory or (

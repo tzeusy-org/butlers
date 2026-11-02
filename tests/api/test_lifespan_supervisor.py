@@ -707,6 +707,69 @@ async def _exercise_hidden_tick_failure(monkeypatch, fault, expected):
 
 
 async def test_actual_shadow_callback_incomplete_work_is_not_a_healthy_probe(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from butlers.core import fleet_conditions
+    from butlers.core.control_plane_identity import ShadowCycle
+    from butlers.core.qa.patrol_provenance import QaPatrolContract, contract_from_module_config
+
+    selected = QaPatrolContract(("infra_state", "session_records"), 3)
+    decoy = QaPatrolContract(("log_scanner",), 90)
+    first_qa = SimpleNamespace(name="qa", qa_patrol_contract=selected)
+    configs = [
+        SimpleNamespace(name="general", qa_patrol_contract=decoy),
+        first_qa,
+        SimpleNamespace(name="qa", qa_patrol_contract=decoy),
+        SimpleNamespace(name="switchboard"),
+    ]
+    pool, policy_reader = object(), object()
+    cycle = ShadowCycle(True, 3, 3, 0, 3)
+
+    def is_retired(name):
+        return name == "retired"
+
+    with monkeypatch.context() as isolated:
+        run_pass = AsyncMock()
+        isolated.setattr(fleet_conditions, "run_controller_pass", run_pass)
+        callback = fleet_conditions.controller_after_cycle(pool, configs, is_retired)
+        first_qa.qa_patrol_contract = decoy
+        configs.append(SimpleNamespace(name="health"))
+        await callback(policy_reader, cycle)
+        run_pass.assert_awaited_once_with(
+            pool,
+            policy_reader,
+            cycle,
+            frozenset({"general", "qa", "switchboard"}),
+            selected,
+            is_retired,
+        )
+        assert run_pass.await_args.args[4] is selected
+        assert run_pass.await_args.args[4].digest == selected.digest
+        assert run_pass.await_args.args[4].overdue_after_s == 360
+
+    with monkeypatch.context() as isolated:
+        fleet, patrol, attention = AsyncMock(), AsyncMock(), AsyncMock()
+        isolated.setattr(fleet_conditions, "reconcile_fleet_condition", fleet)
+        isolated.setattr(fleet_conditions, "reconcile_qa_patrol_assurance", patrol)
+        isolated.setattr(fleet_conditions, "append_due_condition_attention", attention)
+        for absent in (
+            [SimpleNamespace(name="general", qa_patrol_contract=decoy)],
+            [SimpleNamespace(name="qa"), SimpleNamespace(name="qa", qa_patrol_contract=selected)],
+            [
+                SimpleNamespace(
+                    name="qa", qa_patrol_contract=contract_from_module_config({"enabled": False})
+                ),
+                SimpleNamespace(name="qa", qa_patrol_contract=selected),
+            ],
+        ):
+            await fleet_conditions.controller_after_cycle(pool, absent, is_retired)(
+                policy_reader, cycle
+            )
+        patrol.assert_not_awaited()
+        assert fleet.await_count == attention.await_count == 3
+        assert all(call.args[3] is is_retired for call in fleet.await_args_list)
+
     groups = [
         (("fleet", "qa", "attention_query", "attention_episode", "handoff", "policy"), "error"),
         (("paused", "legacy"), "ok"),
@@ -727,12 +790,14 @@ async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected
     from butlers.core import control_plane_identity as identity
     from butlers.core import fleet_conditions
     from butlers.core.job_health import JobHealthStore, mark_tick_incomplete
+    from butlers.core.qa.patrol_provenance import QaPatrolContract
 
     events, callbacks = [], []
     phase = {"recovered": False}
     gate = asyncio.Queue()
     now = datetime.now(UTC)
     cycle = identity.ShadowCycle(True, 1, 1, 0, 1)
+    contract = QaPatrolContract(("infra_state", "session_records"), 3)
 
     class RecordingStore(JobHealthStore):
         async def write(self, spec, state, reason, **evidence):
@@ -755,8 +820,9 @@ async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected
         failing("handoff")
         return None  # A genuine legacy/missing handoff observation is not a failed query.
 
-    async def fetchval(sql, *_):
+    async def fetchval(sql, *args):
         if sql == fleet_conditions.LAST_QUALIFYING_PATROL_SQL:
+            assert args == (list(fleet_conditions.QUALIFYING_PATROL_STATUSES), contract.digest)
             failing("qa")
             return now - timedelta(days=1)
         assert sql == "SELECT clock_timestamp()"
@@ -796,7 +862,7 @@ async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected
         SimpleNamespace(
             name="qa",
             port=41103,
-            qa_patrol_contract=SimpleNamespace(digest="source-digest", overdue_after_s=300),
+            qa_patrol_contract=contract,
         )
     ]
     actual_callback = fleet_conditions.controller_after_cycle(pool, configs)
@@ -837,6 +903,13 @@ async def _exercise_shadow_callback_incomplete_work(monkeypatch, fault, expected
         assert any(
             call.args[0] == 'SET ROLE "butler_switchboard_rw"'
             for call in conn.execute.await_args_list
+        )
+        assert any(
+            observation.metadata["enabled_sources_config_digest"] == contract.digest
+            and observation.metadata["overdue_after_s"] == contract.overdue_after_s
+            for call in reconcile.await_args_list
+            if call.kwargs["source"] == fleet_conditions.QA_PATROL_SOURCE
+            for observation in call.kwargs["observations"]
         )
         if fault == "paused":
             assert any(

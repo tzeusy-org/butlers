@@ -64,6 +64,11 @@ def _patch_pipeline(monkeypatch, *, git_sha: str, fail_at: str | None = None) ->
         lambda config: RestoreDrillEndpoint("postgres.example.test", "198.51.100.42", 5432),
     )
     monkeypatch.setattr("butlers.core.deploy.wait_for_health", _wait_ok)
+
+    async def _ready_ok(config, pool):
+        return '{"result":"success"}'
+
+    monkeypatch.setattr("butlers.core.deploy.wait_for_semantic_readiness", _ready_ok)
     monkeypatch.setattr("butlers.core.deploy.resolve_git_sha", lambda repo_root: git_sha)
     # Preflight (linked-worktree / non-ancestor-HEAD guard) needs a real git
     # repo; this roundtrip uses a fake `/repo` path, so stub it as a clean pass.

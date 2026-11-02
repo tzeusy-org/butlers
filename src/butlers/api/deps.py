@@ -68,6 +68,9 @@ class ButlerConnectionInfo:
     # The configured coverage a qualifying QA patrol must prove; set only for
     # a roster butler with an enabled ``[modules.qa]`` table.
     qa_patrol_contract: QaPatrolContract | None = None
+    # Registration liveness TTL from ``[butler.runtime_seed]``; deployment
+    # readiness derives its sustained window from the roster's longest one.
+    liveness_ttl_seconds: int | None = None
 
     @property
     def sse_url(self) -> str:
@@ -350,6 +353,7 @@ def discover_butlers_with_diagnostics(
                     modules=frozenset(config.modules.keys()),
                     type=config.type.value,
                     qa_patrol_contract=qa_patrol_contract,
+                    liveness_ttl_seconds=config.runtime_seed.liveness_ttl_seconds,
                 )
             )
         except ConfigError as exc:

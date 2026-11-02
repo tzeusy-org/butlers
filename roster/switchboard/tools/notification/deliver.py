@@ -314,7 +314,15 @@ async def _deliver_via_notify_request(
         recipient = notify_request.request_context.source_thread_identity or ""
     message = notify_request.delivery.message
     log_metadata = dict(metadata or {})
-    log_metadata["notify_request"] = notify_request.model_dump(mode="json", exclude_none=True)
+    logged_request = notify_request.model_dump(mode="json", exclude_none=True)
+    if logged_request["delivery"].get("attachments"):
+        from butlers.core.notify_attachments import redact_attachment_content
+
+        # The notifications log keeps refs, media types, sizes and digests only.
+        logged_request["delivery"]["attachments"] = redact_attachment_content(
+            logged_request["delivery"]["attachments"]
+        )
+    log_metadata["notify_request"] = logged_request
     log_metadata["request_context"] = request_context.model_dump(mode="json")
 
     # Create a switchboard-scoped context for the route.v1 envelope so the

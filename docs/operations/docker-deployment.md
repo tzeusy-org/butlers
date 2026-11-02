@@ -288,8 +288,19 @@ It runs, in order:
    `COMPOSE_PROFILES=hotreload` cannot silently pull the bind-mounted
    hotreload services into a prod recreate.
 4. **Verify** — polls `GET /health` until `status: "ok"` or the `--timeout`
-   elapses.
-5. **Record** — writes one row to `public.deployments` (git SHA, migration
+   elapses. Process health only proves the container started.
+5. **Wait for sustained semantic readiness** — samples `GET /ready`
+   (`--ready-url`, default `http://localhost:41200/ready`) through the same gate as
+   `butlers deployments await-ready` (REQ-dashboard-api-064): two distinct complete
+   observer cycles, two distinct qualifying scheduled QA patrols, and `/ready` true
+   beyond the roster's longest liveness TTL, all after the wait began. The
+   `--readiness-timeout` defaults to two QA patrol cadences plus that TTL plus ten
+   minutes (35 minutes at current defaults); shorter values are refused before any
+   build. Timeout fails the deploy with a content-blind receipt and rollback
+   classification; it configures no external functional monitor. The gate reads the
+   Switchboard fleet facts under `butler_switchboard_rw`, so the deploy login needs
+   that role membership or the wait fails closed with `evidence_unavailable`.
+6. **Record** — writes one row to `public.deployments` (git SHA, migration
    head, `success` or `failed`) via `butlers.core.deployments`, on *every*
    outcome — a failed deploy is visible in the ledger, not silent.
 
