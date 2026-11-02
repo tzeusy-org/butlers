@@ -33,15 +33,9 @@ from tests.api.test_owner_auth_store import host
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="session")]
 
 
-@pytest.fixture(scope="module")
-def migrated_db_url(postgres_container):
-    return create_migrated_test_db(
-        postgres_container, migration_db_name(), chains=["core", "approvals"]
-    )
-
-
 @pytest.fixture
-async def authority(migrated_db_url, postgres_container):
+async def authority(fresh_db, postgres_container):
+    migrated_db_url = await asyncio.to_thread(fresh_db, "core", "approvals")
     parsed = urlparse(migrated_db_url)
     admin_url = migration_bootstrap_db_url(postgres_container, parsed.path.lstrip("/"))
     admin = await asyncpg.create_pool(

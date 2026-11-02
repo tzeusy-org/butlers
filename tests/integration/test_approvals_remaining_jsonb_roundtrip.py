@@ -62,13 +62,6 @@ from butlers.modules.approvals.autonomy_tracker import record_approval
 from butlers.modules.approvals.execution_context import get_approval_execution_context
 from butlers.modules.approvals.models import ActionStatus, PendingAction
 from butlers.modules.approvals.module import ApprovalsModule
-from butlers.testing.schema_standins import (
-    APPROVAL_EVENTS,
-    APPROVAL_RULES,
-    AUTONOMY_APPROVAL_HISTORY,
-    AUTONOMY_SUGGESTIONS,
-    PENDING_ACTIONS,
-)
 
 docker_available = shutil.which("docker") is not None
 pytestmark = [
@@ -91,20 +84,9 @@ def admitted_standing_rule_boundary(monkeypatch):
 
 
 @pytest.fixture
-async def approvals_full_pool(provisioned_postgres_pool):
-    """Provision a fresh database with the full approvals + autonomy schema.
-
-    The approvals tables come from :mod:`butlers.testing.schema_standins`, so
-    the parity guard keeps every fixture table honest against the approvals
-    chain.
-    """
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(PENDING_ACTIONS.ddl())
-        await pool.execute(APPROVAL_RULES.ddl())
-        await pool.execute(APPROVAL_EVENTS.ddl())
-        await pool.execute(AUTONOMY_APPROVAL_HISTORY.ddl())
-        await pool.execute(AUTONOMY_SUGGESTIONS.ddl())
-        yield pool
+async def approvals_full_pool(db):
+    """A fresh database migrated by the real approvals chain."""
+    return await db("approvals")
 
 
 async def _insert_pending_action(
