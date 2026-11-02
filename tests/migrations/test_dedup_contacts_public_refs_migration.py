@@ -60,88 +60,73 @@ class TestMigrationStructure:
 # (b) Integration: dedup behaviour against a live DB
 # ---------------------------------------------------------------------------
 
-_PROVISION_SCHEMA = """
-CREATE SCHEMA IF NOT EXISTS connectors;
-CREATE TABLE public.entities (id UUID PRIMARY KEY DEFAULT gen_random_uuid());
-CREATE TABLE public.contacts (
-    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    entity_id  UUID REFERENCES public.entities(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE TABLE public.priority_contacts (
-    contact_id UUID PRIMARY KEY,
-    entity_id  UUID
-);
-CREATE TABLE connectors.home_assistant_persons (
-    ha_entity_id TEXT PRIMARY KEY,
-    contact_id   UUID,
-    entity_id    UUID
-);
-"""
-
 
 @pytest.mark.integration
 @pytest.mark.asyncio(loop_scope="session")
 @pytest.mark.skipif(not shutil.which("docker"), reason="Docker not available")
-async def test_dedup(provisioned_postgres_pool) -> None:
+async def test_dedup(db) -> None:
     mod = _load_migration()
-    async with provisioned_postgres_pool() as pool:
-        await pool.execute(_PROVISION_SCHEMA)
-        e1 = await pool.fetchval("INSERT INTO public.entities DEFAULT VALUES RETURNING id")
-        c1 = await pool.fetchval(
-            "INSERT INTO public.contacts (entity_id, created_at) VALUES ($1, now() - interval '2 days') RETURNING id",
-            e1,
-        )
-        c2 = await pool.fetchval(
-            "INSERT INTO public.contacts (entity_id, created_at) VALUES ($1, now() - interval '1 day') RETURNING id",
-            e1,
-        )
-        await pool.execute(
-            "INSERT INTO public.priority_contacts (contact_id, entity_id) VALUES ($1,$3),($2,$3)",
-            c1,
-            c2,
-            e1,
-        )
-        await pool.execute(
-            "INSERT INTO connectors.home_assistant_persons (ha_entity_id, contact_id, entity_id) VALUES ('person.x',$1,$2)",
-            c2,
-            e1,
-        )
+    # The real contact refs as core_133's predecessor (core_132) left them.
+    pool = await db("core", revisions={"core": "core_132"})
+    e1 = await pool.fetchval(
+        "INSERT INTO public.entities (canonical_name) VALUES ('core-133 dup') RETURNING id"
+    )
+    c1 = await pool.fetchval(
+        "INSERT INTO public.contacts (name, entity_id, created_at) "
+        "VALUES ('Dup', $1, now() - interval '2 days') RETURNING id",
+        e1,
+    )
+    c2 = await pool.fetchval(
+        "INSERT INTO public.contacts (name, entity_id, created_at) "
+        "VALUES ('Dup', $1, now() - interval '1 day') RETURNING id",
+        e1,
+    )
+    await pool.execute(
+        "INSERT INTO public.priority_contacts (contact_id, entity_id) VALUES ($1,$3),($2,$3)",
+        c1,
+        c2,
+        e1,
+    )
+    await pool.execute(
+        "INSERT INTO connectors.home_assistant_persons (ha_entity_id, contact_id, entity_id) VALUES ('person.x',$1,$2)",
+        c2,
+        e1,
+    )
 
-        await pool.execute(mod._SNAPSHOT_AND_DEDUP_SQL)
+    await pool.execute(mod._SNAPSHOT_AND_DEDUP_SQL)
 
-        # priority_contacts collapsed to the single canonical c1.
-        assert await pool.fetchval("SELECT count(*) FROM public.priority_contacts") == 1
-        assert (
-            await pool.fetchval(
-                "SELECT count(*) FROM public.priority_contacts WHERE contact_id = $1", c1
-            )
-            == 1
+    # priority_contacts collapsed to the single canonical c1.
+    assert await pool.fetchval("SELECT count(*) FROM public.priority_contacts") == 1
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.priority_contacts WHERE contact_id = $1", c1
         )
-        assert (
-            await pool.fetchval(
-                "SELECT count(*) FROM public.priority_contacts WHERE contact_id = $1", c2
-            )
-            == 0
+        == 1
+    )
+    assert (
+        await pool.fetchval(
+            "SELECT count(*) FROM public.priority_contacts WHERE contact_id = $1", c2
         )
+        == 0
+    )
 
-        # ha_persons repointed to canonical c1.
-        assert (
-            await pool.fetchval(
-                "SELECT contact_id FROM connectors.home_assistant_persons WHERE ha_entity_id = 'person.x'"
-            )
-            == c1
+    # ha_persons repointed to canonical c1.
+    assert (
+        await pool.fetchval(
+            "SELECT contact_id FROM connectors.home_assistant_persons WHERE ha_entity_id = 'person.x'"
         )
+        == c1
+    )
 
-        # Snapshot written.
-        assert (
-            await pool.fetchval("SELECT to_regclass('public.priority_contacts_dedup_bak_core_133')")
-            is not None
-        )
+    # Snapshot written.
+    assert (
+        await pool.fetchval("SELECT to_regclass('public.priority_contacts_dedup_bak_core_133')")
+        is not None
+    )
 
-        # Idempotent re-run.
-        await pool.execute(mod._SNAPSHOT_AND_DEDUP_SQL)
-        assert await pool.fetchval("SELECT count(*) FROM public.priority_contacts") == 1
+    # Idempotent re-run.
+    await pool.execute(mod._SNAPSHOT_AND_DEDUP_SQL)
+    assert await pool.fetchval("SELECT count(*) FROM public.priority_contacts") == 1
 
 
 @pytest.mark.integration
