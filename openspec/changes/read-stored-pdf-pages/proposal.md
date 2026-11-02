@@ -6,7 +6,7 @@ A butler cannot read a stored PDF over about 48 KB: `get_attachment` embeds blob
 
 ## What Changes
 
-- New core media tool `attachment_read(storage_ref, page_start, page_count)`. It extracts page-numbered text from a stored PDF locally with pypdfium2 (no egress), at most 20 pages and 16,000 characters a call, with a `next_page_start` hint.
+- New core media tool `attachment_read(storage_ref, page_start, page_count)`. It extracts page-numbered text from a stored PDF locally with pypdfium2 (no egress), at most 20 pages and 16,000 characters a call, with a `next_page_start` hint. Extraction runs in a resource-limited child process (512 MB address space, 15 s), with the character budget applied per page, so a decompression bomb is refused as `extraction_limit_exceeded`.
 - Typed refusals for a non-PDF, an encrypted or corrupt PDF, a PDF over 20 MB, a page range past the end and a ref outside the caller's RFC 0016 prefix. A page with no text layer returns a "page image needed" hint.
 - The tool declares RFC 0038 D4 metadata (effect class read, untrusted sensitive output, no recipient parameters). It lands dark: the daemon catalogs it, then disables it on FastMCP so today's classify-and-route sessions can neither list nor call it until the goal-runtime cutover presents it.
 - `get_attachment`'s 64 KB inline contract is unchanged.

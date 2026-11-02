@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import mimetypes
-import re
-import threading
+import resource
+import sys
+from pathlib import Path
 from typing import Any
 
-import pypdfium2 as pdfium
 from fastmcp.utilities.types import Image
 
 from butlers.core.notify_attachments import AttachmentError, check_storage_ref
@@ -239,53 +240,73 @@ UNTRUSTED_TEXT_NOTICE = (
 )
 NO_TEXT_LAYER_HINT = "No text layer on this page (likely a scan); page image needed."
 
-# PDFium is not thread-safe; extraction runs in a worker thread, one at a time.
-_PDFIUM_LOCK = threading.Lock()
-_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# Extraction runs in a child interpreter (butlers.tools._pdf_extract) so a
+# decompression-bomb page can exhaust only the child: its address space is
+# capped and it is killed at the wall-clock deadline. The child inherits no
+# environment, so daemon secrets never sit beside untrusted PDF parsing.
+EXTRACT_MEMORY_LIMIT_BYTES = 512 * 1024 * 1024
+EXTRACT_TIMEOUT_SECONDS = 15.0
+# Run by path, not -m: importing the butlers package costs seconds per call.
+_EXTRACTOR_SCRIPT = Path(__file__).with_name("_pdf_extract.py")
+_MAX_EXTRACT_OUTPUT_BYTES = 4 * MAX_READ_CHARS * 6  # JSON escapes, with headroom
 
-
-class _PdfRefusal(Exception):
-    def __init__(self, reason: str, hint: str) -> None:
-        super().__init__(reason)
-        self.reason = reason
-        self.hint = hint
+_REFUSAL_HINTS = {
+    "encrypted_pdf": "The PDF is password-protected and cannot be read.",
+    "corrupt_pdf": "The PDF is damaged or not a valid PDF.",
+    "extraction_limit_exceeded": (
+        "Reading these pages exceeded the memory or time limit (the PDF may be "
+        "malformed or hostile). Try a smaller page_count, or treat it as unreadable."
+    ),
+}
 
 
 def _refusal(reason: str, storage_ref: str, **extra: Any) -> dict[str, Any]:
     return {"status": "refused", "reason": reason, "storage_ref": storage_ref, **extra}
 
 
-def _extract_pages(data: bytes, page_start: int, page_count: int) -> tuple[int, list[str]]:
-    """Return (total pages, raw text of pages page_start..page_start+page_count-1)."""
-    with _PDFIUM_LOCK:
-        try:
-            document = pdfium.PdfDocument(data)
-        except pdfium.PdfiumError as exc:
-            if getattr(exc, "err_code", None) == pdfium.raw.FPDF_ERR_PASSWORD:
-                raise _PdfRefusal(
-                    "encrypted_pdf", "The PDF is password-protected and cannot be read."
-                ) from exc
-            raise _PdfRefusal("corrupt_pdf", "The PDF is damaged or not a valid PDF.") from exc
-        try:
-            total = len(document)
-            if page_start > total:
-                raise _PdfRefusal(
-                    "invalid_page_range", f"page_start {page_start} is past the last page {total}."
-                )
-            texts = []
-            for index in range(page_start - 1, min(total, page_start - 1 + page_count)):
-                page = document[index]
-                textpage = page.get_textpage()
-                try:
-                    texts.append(textpage.get_text_range())
-                finally:
-                    textpage.close()
-                    page.close()
-            return total, texts
-        except pdfium.PdfiumError as exc:
-            raise _PdfRefusal("corrupt_pdf", "The PDF is damaged or not a valid PDF.") from exc
-        finally:
-            document.close()
+def _limit_child() -> None:
+    limit = EXTRACT_MEMORY_LIMIT_BYTES
+    resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    cpu = int(EXTRACT_TIMEOUT_SECONDS) + 1
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+
+
+async def _extract_in_child(data: bytes, page_start: int, page_count: int) -> dict[str, Any]:
+    """Run bounded extraction in a resource-limited child; never raises for a breach."""
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-I",  # isolated: no env vars, user site or script dir on sys.path
+        str(_EXTRACTOR_SCRIPT),
+        str(page_start),
+        str(page_count),
+        str(MAX_READ_CHARS),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        env={},
+        preexec_fn=_limit_child,
+    )
+    try:
+        stdout, _ = await asyncio.wait_for(
+            process.communicate(data), timeout=EXTRACT_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return {"refusal": "extraction_limit_exceeded"}
+    except BaseException:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise
+    if process.returncode != 0 or len(stdout) > _MAX_EXTRACT_OUTPUT_BYTES:
+        return {"refusal": "extraction_limit_exceeded"}
+    try:
+        result = json.loads(stdout)
+    except ValueError:
+        return {"refusal": "extraction_limit_exceeded"}
+    return result if isinstance(result, dict) else {"refusal": "extraction_limit_exceeded"}
 
 
 async def attachment_read(
@@ -361,31 +382,33 @@ async def attachment_read(
             media_type=media_type,
             hint="The blob is named .pdf but its bytes are not a PDF.",
         )
-    try:
-        total, raw_texts = await asyncio.to_thread(_extract_pages, data, page_start, page_count)
-    except _PdfRefusal as refusal:
-        return _refusal(refusal.reason, storage_ref, hint=refusal.hint)
+    extracted = await _extract_in_child(data, page_start, page_count)
+    reason = extracted.get("refusal")
+    if reason == "invalid_page_range":
+        return _refusal(
+            reason,
+            storage_ref,
+            hint=f"page_start {page_start} is past the last page {extracted.get('total')}.",
+        )
+    if reason is not None:
+        reason = reason if reason in _REFUSAL_HINTS else "extraction_limit_exceeded"
+        return _refusal(reason, storage_ref, hint=_REFUSAL_HINTS[reason])
 
+    total = int(extracted["total"])
     pages: list[dict[str, Any]] = []
-    budget = MAX_READ_CHARS
     truncated = False
-    for offset, raw in enumerate(raw_texts):
-        number = page_start + offset
-        text = _CONTROL_CHARS.sub("", raw.replace("\r\n", "\n").replace("\r", "\n")).strip()
-        if not text:
+    for entry in extracted["pages"]:
+        number, text = int(entry["page"]), str(entry["text"])
+        if entry.get("truncated"):
+            # A single page longer than the whole budget: its head only.
+            pages.append({"page": number, "text": text, "truncated": True})
+            truncated = True
+        elif text:
+            pages.append({"page": number, "text": text})
+        else:
             pages.append(
                 {"page": number, "text": "", "no_text_layer": True, "hint": NO_TEXT_LAYER_HINT}
             )
-            continue
-        if len(text) > budget:
-            if pages:
-                break
-            # A single page longer than the whole budget: return its head.
-            pages.append({"page": number, "text": text[:budget], "truncated": True})
-            truncated = True
-            break
-        pages.append({"page": number, "text": text})
-        budget -= len(text)
 
     last = pages[-1]["page"]
     next_page_start = last + 1 if last < total else None

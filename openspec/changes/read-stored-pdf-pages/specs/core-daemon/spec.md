@@ -6,7 +6,7 @@ ID: REQ-core-daemon-008
 Source: bu-jv1moa.4; RFC 0016; RFC 0038 D4, D6 and the dark build
 Scope: v1-mandatory
 
-The `media` core group SHALL include `attachment_read(storage_ref, page_start = 1, page_count = 10)`. It SHALL read a stored PDF blob of at most 20 MB under the calling butler's RFC 0016 prefix `{bucket}/{butler}/` or the connector prefix `{bucket}/connectors/`, extract text locally with no external egress, and return at most 20 pages and 16,000 characters of page-numbered text with `next_page_start` naming the first page not returned. Every result SHALL label the text `content_trust = "untrusted"` and carry it only as JSON string data. A page with no text layer SHALL return empty text with `no_text_layer = true` and a hint that a page image is needed. A non-PDF blob, an encrypted or corrupt PDF, an oversized blob, a page range past the end and a ref outside those prefixes SHALL each return a typed refusal (`status = "refused"` with a `reason`) and no page text. The tool SHALL declare D4 metadata with effect class `read`, untrusted sensitive output and no recipient parameters. Until the RFC 0038 cutover it SHALL be in the daemon's tool catalog but disabled on the FastMCP server, so classify-and-route sessions can neither list nor call it. `get_attachment`'s 64 KB inline contract SHALL NOT change.
+The `media` core group SHALL include `attachment_read(storage_ref, page_start = 1, page_count = 10)`. It SHALL read a stored PDF blob of at most 20 MB under the calling butler's RFC 0016 prefix `{bucket}/{butler}/` or the connector prefix `{bucket}/connectors/`, extract text locally with no external egress, and return at most 20 pages and 16,000 characters of page-numbered text with `next_page_start` naming the first page not returned. Every result SHALL label the text `content_trust = "untrusted"` and carry it only as JSON string data. A page with no text layer SHALL return empty text with `no_text_layer = true` and a hint that a page image is needed. Extraction SHALL run in a child process with no inherited environment, a capped address space and a wall-clock timeout, SHALL apply the character budget per page before copying text out, and SHALL open no further page once the budget is spent. A child that breaches its memory or time limit SHALL yield the refusal `extraction_limit_exceeded`, and the daemon SHALL keep running. A non-PDF blob, an encrypted or corrupt PDF, an oversized blob, a page range past the end and a ref outside those prefixes SHALL each return a typed refusal (`status = "refused"` with a `reason`) and no page text. The tool SHALL declare D4 metadata with effect class `read`, untrusted sensitive output and no recipient parameters. Until the RFC 0038 cutover it SHALL be in the daemon's tool catalog but disabled on the FastMCP server, so classify-and-route sessions can neither list nor call it. `get_attachment`'s 64 KB inline contract SHALL NOT change.
 
 #### Scenario: A large bill is read by page
 
@@ -22,6 +22,11 @@ The `media` core group SHALL include `attachment_read(storage_ref, page_start = 
 
 - **WHEN** the stored PDF is password-protected
 - **THEN** the tool returns `status = "refused"` with reason `encrypted_pdf` and no text
+
+#### Scenario: A decompression bomb
+
+- **WHEN** a small PDF holds a compressed page that inflates to millions of characters
+- **THEN** the tool returns `status = "refused"` with reason `extraction_limit_exceeded` within the timeout, and the daemon process is unaffected
 
 #### Scenario: Dark before the cutover
 
