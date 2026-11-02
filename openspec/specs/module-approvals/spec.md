@@ -284,7 +284,8 @@ Scope: v1-mandatory
 
 - **WHEN** two edits race with the same `expected_revision`
 - **THEN** exactly one commits and the other returns 409 `stale_revision`
-- **AND** a create replayed with the same `idempotency_key` and content returns the original draft, while the same key with different content returns 409
+- **AND** a create replayed with the same `idempotency_key` and the same create request returns the draft that key created, in its current state, even after it was edited or revoked; the key is bound to a digest of the original create request, so the same key with a different request returns 409 `idempotency_key_reused`
+- **AND** an edit carries no idempotency key, so retrying an edit that already committed returns 409 `stale_revision`
 - **AND** an invalid template, an unresolved recipient or an unsupported send tool is refused without persistence
 - **AND** revoke marks the draft `revoked` and retains it
 

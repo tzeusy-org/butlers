@@ -12,8 +12,11 @@ or execute it.  The table deliberately has no ``active`` column and no link to
 ``approval_rules``: activation is a later, separately adopted contract
 (bu-jv1moa.28), not a flag flip.
 
-``revision`` is the optimistic-concurrency token for owner edits and
-``idempotency_key`` makes a replayed create return the original draft.  Revoke
+``revision`` is the optimistic-concurrency token for owner edits.
+``idempotency_key`` plus the immutable ``create_request_digest`` (SHA-256 of the
+canonical create request) make a replayed create return the draft that key
+created, even after it was edited or revoked; the same key with a different
+request is a conflict.  Revoke
 marks a draft unavailable and keeps the row as audit history.
 
 Downgrade drops the table, which would destroy owner-authored drafts, so it
@@ -42,6 +45,7 @@ def upgrade() -> None:
             status TEXT NOT NULL DEFAULT 'draft',
             revision INTEGER NOT NULL DEFAULT 1,
             idempotency_key TEXT NOT NULL,
+            create_request_digest TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             revoked_at TIMESTAMPTZ,

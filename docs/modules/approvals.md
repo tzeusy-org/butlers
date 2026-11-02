@@ -110,8 +110,11 @@ The owner can save, edit, inspect and revoke typed standing-reply template draft
 
 Every route requires the owner's verified dashboard session; API-key, connector-callback and
 runtime callers get 403 `owner_dashboard_session_required`, and no MCP tool exposes drafts.
-Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); a create replayed
-with the same `idempotency_key` returns the original draft.
+Edits and revokes carry `expected_revision` (stale: 409 `stale_revision`); edits have no
+idempotency key, so retrying a committed edit returns 409. A create replayed with the same
+`idempotency_key` and request returns the draft that key created, in its current state (also
+after an edit or revoke): replays compare against the immutable `create_request_digest`, and the
+same key with a different request returns 409 `idempotency_key_reused`.
 
 Grammar: one template per content-bearing argument of the send tool (`text` for
 `telegram_send_message`; `subject` and `body` for `email_send_message`), matched against the

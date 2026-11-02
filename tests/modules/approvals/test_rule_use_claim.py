@@ -268,7 +268,8 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
 
     REQ-module-approvals-007 (bu-jv1moa.10): the matching send parks as usual, no
     rule is created or claimed and the executor is never reached.  Also covers
-    revision races, idempotent replay and a call forging the draft's id.
+    revision races, idempotent replay (also after an edit and a revoke) and a call
+    forging the draft's id.
     """
     friend = await pool.fetchval(
         "INSERT INTO public.entities (canonical_name, entity_type, roles) "
@@ -309,6 +310,10 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
     assert (len(committed), len(conflicts)) == (1, 1)
     assert committed[0]["revision"] == 2
     draft = committed[0]
+    # A retried create after the edit still replays (bound to the create, not current content).
+    async with pool.acquire() as conn:
+        replay_after_edit = await reply_templates.create_template_draft(conn, **draft_args)
+    assert (replay_after_edit["id"], replay_after_edit["revision"]) == (draft["id"], 2)
     text = reply_templates.render_template(draft["content_templates"]["text"]).replace(
         "{at:time}", "18:30"
     )
@@ -373,3 +378,9 @@ async def test_saved_reply_template_draft_never_approves_or_executes_a_matching_
         )
         == "draft"
     )
+
+    async with pool.acquire() as conn:
+        await reply_templates.revoke_template_draft(conn, draft_id=draft["id"], expected_revision=2)
+        replay_after_revoke = await reply_templates.create_template_draft(conn, **draft_args)
+    assert (replay_after_revoke["id"], replay_after_revoke["status"]) == (draft["id"], "revoked")
+    assert await pool.fetchval("SELECT count(*) FROM standing_reply_template_drafts") == 1

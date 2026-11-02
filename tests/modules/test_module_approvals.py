@@ -868,6 +868,10 @@ class TestStandingReplyTemplateGrammar:
             (_TEMPLATE, "Running late, there by soon on 2026-11-03, about 15 minutes.", None),
             (_TEMPLATE, "Running late, there by 18:30 on 2026-13-45, about 15 minutes.", None),
             ("Paid {total:amount} for {n:count} tickets", "Paid ten for 3 tickets", None),
+            # Non-ASCII digits are not digits here (Arabic-Indic, fullwidth).
+            ("Pay {total:amount} now", "Pay \u0661\u0662\u0663 now", None),
+            ("In {wait:duration} ok", "In \uff15 days ok", None),
+            ("Seats: {n:count}", "Seats: \u0663", None),
         ],
     )
     def test_whole_body_typed_slot_matching(self, source, value, expected):
@@ -906,6 +910,59 @@ class TestStandingReplyTemplateGrammar:
                 tool_name=tool_name, templates=templates, recipient_entity_ids=[uuid.uuid4()]
             )
         assert refused.value.code == code
+
+    async def test_create_replay_is_bound_to_the_original_request_not_current_content(self):
+        """An edited or revoked draft still replays its create; another request conflicts."""
+        from unittest.mock import AsyncMock
+
+        from butlers.modules.approvals.reply_templates import (
+            TemplateDraftConflict,
+            create_template_draft,
+        )
+
+        friend = uuid.uuid4()
+        request = dict(
+            tool_name="telegram_send_message",
+            templates={"text": "Be there at {at:time}"},
+            recipient_entity_ids=[friend],
+            description="eta",
+            idempotency_key="k1",
+        )
+        stored: dict[str, Any] = {}
+
+        async def insert_then_replay(sql, *args):
+            if sql.startswith("INSERT"):
+                if stored:
+                    return None  # ON CONFLICT (idempotency_key) DO NOTHING
+                stored.update(
+                    id=args[0],
+                    tool_name=args[1],
+                    content_templates=args[2],
+                    recipient_entity_ids=args[3],
+                    description=args[4],
+                    create_request_digest=args[6],
+                    status="draft",
+                    revision=1,
+                )
+                return dict(stored)
+            return dict(stored)
+
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=[{"id": friend}])
+        conn.fetchrow = AsyncMock(side_effect=insert_then_replay)
+
+        created = await create_template_draft(conn, **request)
+        # The owner edits, then revokes; a retried create still names that same draft.
+        stored.update(content_templates={"text": [{"text": "Edited"}]}, revision=2)
+        after_edit = await create_template_draft(conn, **request)
+        assert (after_edit["id"], after_edit["revision"]) == (created["id"], 2)
+        stored.update(status="revoked", revision=3)
+        after_revoke = await create_template_draft(conn, **request)
+        assert (after_revoke["id"], after_revoke["status"]) == (created["id"], "revoked")
+
+        with pytest.raises(TemplateDraftConflict) as reused:
+            await create_template_draft(conn, **{**request, "description": "different"})
+        assert reused.value.code == "idempotency_key_reused"
 
     def test_preview_is_ineligible_for_incomplete_recipients_or_content(self):
         from butlers.modules.approvals.reply_templates import (

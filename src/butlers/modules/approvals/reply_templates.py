@@ -23,6 +23,8 @@ recipient is pinned to a resolved entity.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -162,7 +164,8 @@ def match_template(segments: list[dict[str, str]], value: Any) -> dict[str, str]
         re.escape(s["text"]) if "text" in s else f"(?P<{s['slot']}>{_SLOT_PATTERNS[s['type']]})"
         for s in segments
     )
-    found = re.fullmatch(pattern, value)
+    # re.ASCII: ``\d`` must not admit non-ASCII digits (Arabic-Indic, fullwidth, ...).
+    found = re.fullmatch(pattern, value, flags=re.ASCII)
     if found is None:
         return None
     slots = found.groupdict()
@@ -270,6 +273,25 @@ async def _require_resolved_recipients(conn: Any, recipients: list[uuid.UUID]) -
         raise TemplateDraftInvalid("recipient_unresolved")
 
 
+def create_request_digest(
+    *,
+    tool_name: str,
+    content_templates: dict[str, list[dict[str, str]]],
+    recipient_entity_ids: list[uuid.UUID],
+    description: str,
+) -> str:
+    """SHA-256 over the canonical create request, persisted to bind its idempotency key."""
+    payload = {
+        "tool_name": tool_name,
+        "content_templates": content_templates,
+        "recipient_entity_ids": [str(e) for e in recipient_entity_ids],
+        "description": description,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 async def create_template_draft(
     conn: Any,
     *,
@@ -279,17 +301,29 @@ async def create_template_draft(
     description: str,
     idempotency_key: str,
 ) -> dict[str, Any]:
-    """Persist a new inactive draft; a replayed idempotency key returns the original."""
+    """Persist a new inactive draft.
+
+    Replaying the same key with the same request returns the draft that key created,
+    in its current state (after an edit or revoke too); the same key with a different
+    request is a conflict.
+    """
     if not idempotency_key.strip():
         raise TemplateDraftInvalid("idempotency_key_required")
     canonical, recipients = canonicalize_draft(
         tool_name=tool_name, templates=templates, recipient_entity_ids=recipient_entity_ids
     )
     await _require_resolved_recipients(conn, recipients)
+    digest = create_request_digest(
+        tool_name=tool_name,
+        content_templates=canonical,
+        recipient_entity_ids=recipients,
+        description=description,
+    )
     row = await conn.fetchrow(
         "INSERT INTO standing_reply_template_drafts "
-        "(id, tool_name, content_templates, recipient_entity_ids, description, idempotency_key) "
-        "VALUES ($1, $2, $3, $4::uuid[], $5, $6) "
+        "(id, tool_name, content_templates, recipient_entity_ids, description, idempotency_key, "
+        "create_request_digest) "
+        "VALUES ($1, $2, $3, $4::uuid[], $5, $6, $7) "
         "ON CONFLICT (idempotency_key) DO NOTHING RETURNING *",
         uuid.uuid4(),
         tool_name,
@@ -297,6 +331,7 @@ async def create_template_draft(
         recipients,
         description,
         idempotency_key,
+        digest,
     )
     if row is not None:
         return _row_to_draft(row)
@@ -306,15 +341,12 @@ async def create_template_draft(
     )
     if existing is None:  # pragma: no cover - the conflicting row cannot vanish (no deletes)
         raise TemplateDraftConflict("idempotency_key_conflict")
-    original = _row_to_draft(existing)
-    if (
-        original["tool_name"] != tool_name
-        or original["content_templates"] != canonical
-        or original["recipient_entity_ids"] != recipients
-        or original["description"] != description
-    ):
+    # Compare against the immutable digest of the create that minted this key, never the
+    # draft's current (editable) content: a retried create after an edit or revoke is
+    # still a replay and returns that same draft, in its current state.
+    if existing["create_request_digest"] != digest:
         raise TemplateDraftConflict("idempotency_key_reused")
-    return original
+    return _row_to_draft(existing)
 
 
 async def get_template_draft(conn: Any, draft_id: uuid.UUID) -> dict[str, Any]:
