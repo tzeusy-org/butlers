@@ -29,6 +29,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, time
+from typing import Any
 
 # Textual frequency → doses per day conversion table.
 # All keys are normalised to lowercase with leading/trailing whitespace stripped.
@@ -266,3 +267,29 @@ def dose_of_medication_sql(param: str) -> str:
               )
         )
     )"""
+
+
+async def medication_first_seen(pool: Any, medication_id: str) -> datetime | None:
+    """Earliest ``created_at`` across every medication fact of the same subject.
+
+    Each edit supersedes the medication fact with a fresh ``created_at``, so the
+    current fact's age understates how long the medication has existed; the
+    expected-dose age cap uses this first-seen time instead (bu-wfxau8). Same
+    subject rule as ``dose_of_medication_sql``. ``None`` when the id is unknown.
+    """
+    return await pool.fetchval(
+        """
+        SELECT MIN(same_med.created_at)
+        FROM facts same_med
+        WHERE same_med.predicate = 'medication'
+          AND same_med.scope = 'health'
+          AND same_med.subject = (
+              SELECT this_med.subject
+              FROM facts this_med
+              WHERE this_med.id::text = $1
+                AND this_med.predicate = 'medication'
+                AND this_med.scope = 'health'
+          )
+        """,
+        medication_id,
+    )

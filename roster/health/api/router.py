@@ -826,7 +826,7 @@ async def get_medication_adherence(
         doses_per_day=doses_per_day,
         window_start=effective_start,
         window_end=effective_end,
-        medication_created_at=medication.get("created_at"),
+        medication_created_at=medication.get("first_seen_at") or medication.get("created_at"),
     )
 
     adherence_rate: float | None = None
